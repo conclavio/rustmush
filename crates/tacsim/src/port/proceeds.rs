@@ -256,6 +256,11 @@ impl ProceedsPolicy for CoopProceeds {
         let Some(port) = programme_port(w) else {
             return Err(refuse(SALE_BOOKS_DARK.to_owned()));
         };
+        // Doc 18 cut IC14 row 66 (documented, no behaviour change): the reference is
+        // read here, when the sale's contract is built, and the share is frozen on
+        // the quote; the live ask can move before the settlement, so the share may
+        // drift from it by at most one draw window. Re-reading it at settlement with a
+        // remainder cut is the owner's open question Q-18-50.
         let (reference, memo) = reference_of(
             w,
             port.programme.reference.get(sale.commodity),

@@ -60,11 +60,14 @@ use support::ground::{UNSIGNED, sign};
 /// doc 18 cut IC12 re-published both (the five 18a details under plain keys — C09
 /// `hull registry board`, C14 `sailing plan forms`, P05 `sailing plan pad`, P11
 /// `yard time board` and `insurers mark` — and Ceres' verb meta-text struck);
-/// Stickney was 2 from cut IC8 (the P11 fittings card's text, lead 2c).
+/// Stickney was 2 from cut IC8 (the P11 fittings card's text, lead 2c). Doc 18
+/// cut IC14 (row 50, lead ruling L26) re-published Stickney at 4 with three verb
+/// meta-text clauses struck — P04 `shift boards`, P07 `intake board`, P08 `price
+/// board` — and nothing else ([`stickney_v3_json`] rebuilds v3 to its old pin).
 fn station_version(pack: &str) -> u32 {
     match pack {
         CERES_PACK => 2,
-        STICKNEY_PACK => 3,
+        STICKNEY_PACK => 4,
         _ => 1,
     }
 }
@@ -87,9 +90,13 @@ const PINNED: [(&str, &str); 4] = [
     ),
     (
         STICKNEY_PACK,
-        "df2e5af11f18c4a5c71bea9e0b5b187b7cdb97c037aecc6b433b9ee3a0d1b2eb",
+        "f1bdc803c5adca043d576013fb5c94bc2b4b6f0434e91f82fe123fcbab2f16f6",
     ),
 ];
+
+/// Stickney v3's pinned digest (doc 18 cut IC12), the content [`stickney_v3_json`]
+/// rebuilds.
+const STICKNEY_V3_DIGEST: &str = "df2e5af11f18c4a5c71bea9e0b5b187b7cdb97c037aecc6b433b9ee3a0d1b2eb";
 
 /// The files under `crates/tacsim/content/`, in `STATION_SOURCES` order.
 const FILES: [&str; 4] = [
@@ -1314,9 +1321,10 @@ fn paints_a_price(text: &str) -> bool {
 
 /// **The five details ship under plain keys** (doc 18 cut IC12 items 4.1–4.2; 18a
 /// §1.3 C09/C14, §2.3 P05/P11; lead ruling L7: the 18a names with hyphens and the
-/// apostrophe dropped). A fresh boot latches Ceres at 2 and Stickney at 3; a player
+/// apostrophe dropped). A fresh boot latches Ceres at 2 and Stickney at 4; a player
 /// standing in each room reads each detail by its key; no detail in either pack
-/// paints a market figure or names an engine word; and no Ceres detail names a verb.
+/// paints a market figure or names an engine word; and no detail in either pack
+/// names a verb (Ceres since IC12, Stickney since its v4, doc 18 cut IC14 row 50).
 #[test]
 fn ic12_the_five_details_ship_under_plain_keys() {
     let mut tw = booted();
@@ -1354,13 +1362,123 @@ fn ic12_the_five_details_ship_under_plain_keys() {
             }
         }
     }
-    // Ceres' verb meta-text is struck (lead ruling L8's "engine word"): no `+`
-    // directly before a letter anywhere in a detail — a verb in parentheses or
-    // quotes is caught as surely as one standing alone.
-    for (room, def) in rooms_of(CERES_PACK) {
-        for (key, text) in &def.details {
-            assert!(!names_a_verb(text), "{room} `{key}` names a verb: {text}");
+    // The verb meta-text is struck (lead ruling L8's "engine word"; Stickney's
+    // three clauses by IC14's v4): no `+` directly before a letter anywhere in a
+    // detail of either pack — a verb in parentheses or quotes is caught as surely
+    // as one standing alone.
+    for pack in [CERES_PACK, STICKNEY_PACK] {
+        for (room, def) in rooms_of(pack) {
+            for (key, text) in &def.details {
+                assert!(
+                    !names_a_verb(text),
+                    "{pack} {room} `{key}` names a verb: {text}"
+                );
+            }
         }
+    }
+}
+
+/// Stickney's three v3 clauses IC14's v4 struck, as `(room, detail, v4 text, v3
+/// text)`: each v3 text is its v4 text with the clause and its punctuation back.
+const STICKNEY_V3_CLAUSES: [(&str, &str, &str, &str); 3] = [
+    (
+        "room.p04_concourse",
+        "shift boards",
+        " marked YARD PERSONNEL.",
+        " marked YARD PERSONNEL (+atlas has the same map, in words).",
+    ),
+    (
+        "room.p07_receiving",
+        "intake board",
+        "the figures are the board's own and change",
+        "the figures are the board's own (it is what +market/list prints here) and change",
+    ),
+    (
+        "room.p08_exchange",
+        "price board",
+        "The figures are Kasei's and change when Kasei says so.",
+        "The figures are Kasei's and change when Kasei says so; +market/list has them to the credit.",
+    ),
+];
+
+/// Put Stickney's three struck clauses back into `doc` (the v4 document).
+fn restore_stickney_clauses(doc: &mut Value) {
+    for (room, key, v4, v3) in STICKNEY_V3_CLAUSES {
+        let text = doc["entries"][room]["def"]["details"][key]
+            .as_str()
+            .unwrap_or_else(|| panic!("{room} `{key}`"))
+            .to_owned();
+        assert_eq!(text.matches(v4).count(), 1, "{room} `{key}`: {text}");
+        doc["entries"][room]["def"]["details"][key] = serde_json::json!(text.replace(v4, v3));
+    }
+}
+
+/// The bytes of Stickney v3 (doc 18 cut IC12), rebuilt from the shipped v4: the
+/// three clauses restored and the version put back, re-signed. Checked against
+/// v3's pinned digest, so v4 differs from v3 by exactly the three clauses.
+fn stickney_v3_json() -> String {
+    let mut doc = pack_json(STICKNEY_PACK);
+    doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    restore_stickney_clauses(&mut doc);
+    doc["manifest"]["version"] = serde_json::json!(3);
+    sign(&serde_json::to_string_pretty(&doc).expect("serializes"))
+}
+
+/// **Doc 18 cut IC14 row 50 (lead ruling L26): Stickney v4 strikes three clauses
+/// and nothing else.** The v4 document with the three clauses restored and the
+/// version put back is v3's content exactly (its digest is v3's pin), and a world
+/// latched at v3 takes v4 through `@atlas/pack plan` then `apply`, making no
+/// object, after which the three boards read without a verb.
+#[test]
+fn ic14_stickney_v4_strikes_three_clauses_and_nothing_else() {
+    let v3 = stickney_v3_json();
+    let parsed = parse_pack(&v3).expect("the rebuild parses");
+    assert_eq!(parsed.manifest().version(), 3);
+    assert_eq!(
+        parsed.computed_digest().expect("digests").to_hex(),
+        STICKNEY_V3_DIGEST,
+        "v4 is v3 less the three clauses"
+    );
+    let mut old = mush_atlas::starter::packs().expect("the starter packs");
+    old.extend(boot_packs().expect("the game packs"));
+    for (name, json) in STATION_SOURCES {
+        let bytes = if name == STICKNEY_PACK {
+            v3.clone()
+        } else {
+            json.to_owned()
+        };
+        old.push(mush_content::load_pack(&bytes).expect("the station pack verifies"));
+    }
+    let mut tw = TestWorld::with_modules(support::roster_booting(config(), old));
+    let version = |tw: &TestWorld| {
+        content(tw)
+            .latches
+            .applied(&id(STICKNEY_PACK))
+            .map(mush_content::Applied::version)
+    };
+    assert_eq!(version(&tw), Some(3));
+    let store = fold_module_ops(tw.take_module_ops());
+    let mut tw = tw
+        .reboot_into(production_roster_with_starter(config()), store)
+        .expect("a kept world boots the new binary");
+    assert_eq!(version(&tw), Some(3), "the boot pass never upgrades");
+    let objects = live_objects(&tw);
+    let (plan, apply) = plan_and_apply(&mut tw, STICKNEY_PACK);
+    assert!(
+        apply.contains(&format!("Applied {STICKNEY_PACK}@4: ")),
+        "{plan}\n{apply}"
+    );
+    assert!(!apply.contains("STOPPED"), "{apply}");
+    assert_eq!(version(&tw), Some(4));
+    assert_eq!(live_objects(&tw), objects, "an update makes no object");
+    let reader = tw.spawn_player("Reader");
+    for (room, key, v4, _) in STICKNEY_V3_CLAUSES {
+        let here = obj(&tw, STICKNEY_PACK, room);
+        tw.world_mut().move_to(reader, here).expect("placed");
+        let events = tw.run(reader, &format!("look {key}"));
+        let out = said(&tw, &events, reader);
+        assert!(out.contains(v4.trim()), "`look {key}` in {room}: {out}");
+        assert!(!names_a_verb(&out), "`look {key}` in {room}: {out}");
     }
 }
 
@@ -1380,7 +1498,8 @@ const CERES_V1_MAP: &str = "The Public Deck and the Freight Deck in cutaway, wit
 
 /// The bytes of a station pack's previous published version, rebuilt from the
 /// shipped one: Ceres v1 (cut IC1) and Stickney v2 (cut IC8) — the five details
-/// removed, Ceres' four struck clauses restored, the version put back, re-signed.
+/// removed, Ceres' four struck clauses and Stickney's three (doc 18 cut IC14)
+/// restored, the version put back, re-signed.
 /// The rebuild is checked against the old pinned digests, so it is exactly what a
 /// kept world latched.
 fn old_station_json(pack: &str) -> String {
@@ -1419,6 +1538,7 @@ fn old_station_json(pack: &str) -> String {
         doc["entries"]["room.c08_chandlery"]["def"]["details"]["chit board"] =
             serde_json::json!(chit);
     } else {
+        restore_stickney_clauses(&mut doc);
         doc["manifest"]["version"] = serde_json::json!(2);
     }
     sign(&serde_json::to_string_pretty(&doc).expect("serializes"))
@@ -1443,8 +1563,8 @@ fn plan_and_apply(tw: &mut TestWorld, pack: &str) -> (String, String) {
 /// a latched pack"). Ceres v1 and Stickney v2 are rebuilt from the shipped bytes to
 /// their pinned digests; a world boots them; a new binary booted over the kept store
 /// leaves both latches where they were; `@atlas/pack plan` then `apply` takes Ceres
-/// to 2 and Stickney to 3, after which the five details read in their rooms and no
-/// object was made.
+/// to 2 and Stickney to its shipped version (4 since doc 18 cut IC14), after which
+/// the five details read in their rooms and no object was made.
 #[test]
 fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_and_apply() {
     let ceres_v1 = old_station_json(CERES_PACK);
@@ -1506,7 +1626,10 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
     );
     let objects = live_objects(&tw);
     // The operator's two acts per pack.
-    for (pack, to) in [(CERES_PACK, 2), (STICKNEY_PACK, 3)] {
+    for (pack, to) in [
+        (CERES_PACK, station_version(CERES_PACK)),
+        (STICKNEY_PACK, station_version(STICKNEY_PACK)),
+    ] {
         let (plan, apply) = plan_and_apply(&mut tw, pack);
         assert!(
             apply.contains(&format!("Applied {pack}@{to}: ")),
@@ -1599,4 +1722,21 @@ fn ic12_the_ic_door_has_no_staff_exemption() {
     let out = said(&tw, &events, staff);
     assert!(out.contains(&ic_return::left_at_line(&PORTS[1])), "{out}");
     assert_eq!(location(&tw, staff), Some(LIMBO), "the door held");
+}
+
+/// **`+ic` inside the corridor answers `ALREADY_IN`** (doc 18 cut IC14 row 37; doc 18
+/// §4.5): a character standing in Ceres' concourse types `+ic` and hears exactly
+/// [`ic_return::ALREADY_IN`], and nothing moves.
+#[test]
+fn ic14_ic_inside_the_corridor_answers_already_in() {
+    let mut tw = booted();
+    let c04 = obj(&tw, CERES_PACK, "room.c04_concourse");
+    let pilot = tw.spawn_player("Pilot");
+    tw.world_mut().move_to(pilot, c04).expect("placed");
+    let events = tw.run(pilot, "+ic");
+    assert_eq!(
+        told(&tw, &events, pilot),
+        vec![ic_return::ALREADY_IN.to_owned()]
+    );
+    assert_eq!(location(&tw, pilot), Some(c04), "not moved");
 }

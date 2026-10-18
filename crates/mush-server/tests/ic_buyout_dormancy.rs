@@ -1377,6 +1377,18 @@ async fn ic13_a_buyout_passes_title_once_ends_the_lease_and_silences_the_share()
             && line.ends_with("[ready]"),
         "{line}"
     );
+    // Doc 18 cut IC14 row 34: the whole line, byte for byte, on the production root.
+    assert_eq!(
+        line,
+        format!(
+            "ceres_port hulls: {made} of {made} made, {} titled to {}; {} laid up and free, 0 \
+             leased, 1 graduated ({} to Vex). [ready]",
+            made - 1,
+            trust_name(&rig.tw),
+            made - 1,
+            row.mark
+        )
+    );
     stock(&mut rig).await;
     let ash = pilot(&mut rig, "Ash", "ashacct").await;
     let ash_row = enrol(&mut rig, ash, "Tern").await;
@@ -2283,4 +2295,549 @@ async fn ic13_a_queued_order_waits_out_the_buyout_and_runs_on_the_title() {
     );
     assert_eq!(pool(&mut rig.tw, hold, "provisions"), food_before + 1);
     assert_no_pages(&rig.tw);
+}
+
+// ---------------------------------------------------------------------------
+// Doc 18 cut IC14 — the convergence residuals of IC13 (rows 4, 12, 32–34)
+// ---------------------------------------------------------------------------
+
+/// The Trust's display name, read from the shipped Ceres entry (never typed).
+fn trust_name(_tw: &TestWorld) -> String {
+    let def = port_def("ceres_port");
+    let programme = def.programme.as_ref().expect("the programme");
+    def.orgs
+        .iter()
+        .find(|o| o.id == programme.org)
+        .map(|o| o.name.clone())
+        .expect("the Trust's entry")
+}
+
+/// **Write documents straight into the kept store** (the brief's "writing the document
+/// directly in the folded store and rebooting"): the legacy work flushed, one batch of
+/// `JsonSet`s in `ns`, then a restart reads them back. A test-side injection of a state
+/// no staff act reaches; never a production switch.
+async fn write_docs(rig: &mut Rig, ns: &str, docs: Vec<(smol_str::SmolStr, serde_json::Value)>) {
+    flush(rig).await;
+    let mut batch = persist::batch_from_dirty(rig.tw.world(), BTreeSet::new(), rig.serial, true);
+    batch.module_ops = docs
+        .into_iter()
+        .map(|(key, value)| mush_core::ModuleOp {
+            ns: smol_str::SmolStr::new(ns),
+            op: mush_core::ModuleWrite::JsonSet { key, value },
+        })
+        .collect();
+    let receipt = rig.store.write(batch).await.expect("the batch commits");
+    assert_eq!(receipt.serial, rig.serial);
+    rig.serial = rig.serial.saturating_add(1);
+    restart(rig, |_| true).await;
+}
+
+/// Freeze an economy account through its stored document (no staff verb freezes one;
+/// `@account/unfreeze` lifts it).
+async fn freeze_account(rig: &mut Rig, account: mush_economy::AccountId) {
+    let mut doc = serde_json::to_value(
+        economy(&rig.tw)
+            .snapshot()
+            .account(account)
+            .cloned()
+            .expect("the account"),
+    )
+    .expect("an account document");
+    doc["status"] = serde_json::json!("Frozen");
+    write_docs(
+        rig,
+        mush_economy::NS,
+        vec![(mush_economy::account_key(account), doc)],
+    )
+    .await;
+    assert_eq!(
+        economy(&rig.tw)
+            .snapshot()
+            .account(account)
+            .map(|a| a.status),
+        Some(mush_economy::AccountStatus::Frozen),
+        "the account reads frozen after the restart"
+    );
+}
+
+/// How many of `who`'s queued reconnect notices are exactly `line`.
+fn notices_of(tw: &TestWorld, who: ObjId, line: &str) -> usize {
+    tacsim::port_tick::pending_notices(tw.world(), who)
+        .iter()
+        .filter(|l| l.as_str() == line)
+        .count()
+}
+
+/// **Doc 18 cut IC14 row 4 (lead ruling L10): a Revoked charter with a live lease
+/// converges.** The state a recall whose `end_lease` returned `Err` leaves — the
+/// enrolment Revoked, its lease still Active — written into the store and booted; the
+/// recall arm retries `end_lease`: the lease is Cancelled, the hull goes back to the
+/// pool (its hold the Trust's), the pilot is told once and holds no helm.
+#[tokio::test]
+async fn ic14_a_revoked_charter_with_a_live_lease_converges() {
+    let mut rig = boot("livelease").await;
+    let _ = sweep(&mut rig, 120).await;
+    stock(&mut rig).await;
+    let vex = pilot(&mut rig, "Vex", "vexacct").await;
+    let row = enrol(&mut rig, vex, "Salt Moth").await;
+    let hold = hold_of(&rig.tw, &row);
+    let e = enrolment(&rig.tw, vex);
+    let revoked = Enrolment {
+        status: EnrolmentStatus::Revoked,
+        ended_at: Some(rig.tw.world().now()),
+        ended: Some(EndCause::Dormant),
+        ..e.clone()
+    };
+    write_docs(
+        &mut rig,
+        tacsim::NS,
+        vec![(
+            tacsim::port::coop::enrolment_key(e.account),
+            serde_json::to_value(&revoked).expect("an enrolment document"),
+        )],
+    )
+    .await;
+    assert_eq!(enrolment(&rig.tw, vex).status, EnrolmentStatus::Revoked);
+    assert_eq!(
+        contract_state(&rig.tw, e.lease),
+        ContractState::Active,
+        "the lease is still live"
+    );
+    for _ in 0..3 {
+        let _ = fire_quietly(&mut rig).await;
+    }
+    assert_eq!(contract_state(&rig.tw, e.lease), ContractState::Cancelled);
+    assert_eq!(
+        vault_owner(&rig.tw, hold),
+        trust(&rig.tw),
+        "back in the pool"
+    );
+    assert!(tacsim::port::helm_of(rig.tw.world(), vex).is_none());
+    let returned = tacsim::port::recall::RETURNED_NOTICE
+        .replace("{name}", "Salt Moth")
+        .replace("{mark}", &row.mark);
+    assert_eq!(notices_of(&rig.tw, vex, &returned), 1, "told once");
+    for _ in 0..3 {
+        let _ = fire_quietly(&mut rig).await;
+    }
+    assert_eq!(notices_of(&rig.tw, vex, &returned), 1, "and only once");
+    assert_no_pages(&rig.tw);
+}
+
+/// Steps shared by the two re-charter tests: a pilot with a queued buy, the buyout
+/// entered, the Trust's account frozen (so the re-charter's lease offer refuses: its
+/// rent names that account), and staff cancelling the buyout. Returns the pilot, the
+/// row, the plan's order and the pre-buyout enrolment.
+async fn refunded_with_the_trust_frozen(rig: &mut Rig) -> (ObjId, HullRow, u32, Enrolment) {
+    let _ = sweep(rig, 120).await;
+    stock(rig).await;
+    let vex = pilot(rig, "Vex", "vexacct").await;
+    let row = enrol(rig, vex, "Salt Moth").await;
+    let hull = ObjId(row.hull);
+    top_up_to(rig, vex, LENS_AVAILABLE).await;
+    let first = enrolment(&rig.tw, vex);
+    let _ = sweep(rig, 31).await;
+    let filed = run(rig, vex, "+ship/order buy provisions 1").await;
+    let order = orders(&rig.tw, hull)
+        .cursor
+        .unwrap_or_else(|| panic!("a cursor: {filed}"));
+    let out = run(rig, vex, "+coop/buyout").await;
+    assert!(
+        out.contains("The title passes to you at the next settlement."),
+        "{out}"
+    );
+    let c = enrolment(&rig.tw, vex).buyout.expect("the buyout contract");
+    freeze_account(rig, trust_account(&rig.tw)).await;
+    let _ = rig.tw.run(GOD, &format!("@contract/cancel #{c}"));
+    flush(rig).await;
+    assert_eq!(contract_state(&rig.tw, c), ContractState::Cancelled);
+    let pending = enrolment(&rig.tw, vex);
+    assert_eq!(
+        pending.status,
+        EnrolmentStatus::BuyoutPending,
+        "the failed re-charter leaves the enrolment buyout-pending"
+    );
+    let relet = tacsim::port::buyout::RELET_PENDING
+        .replace("{name}", "Salt Moth")
+        .replace("{mark}", &row.mark)
+        .replace("{buyout}", &cr(first.buyout_minor));
+    assert_eq!(notices_of(&rig.tw, vex, &relet), 1, "told once");
+    (vex, row, order, first)
+}
+
+/// **Doc 18 cut IC14 row 12 (lead ruling L11; proposed Q-18-71): a failed re-charter
+/// retries until the pilot is chartered.** The observer's first re-charter fails (the
+/// Trust's account frozen, so the lease offer refuses), the pilot is told
+/// `RELET_PENDING` once, the recall arm pages once and the queued plan waits under
+/// `HELD_RELET`; staff lift the freeze and the next due retry re-charters her — Active
+/// on a new lease, `BUYOUT_REFUNDED` told once, and no Revoked state ever written.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn ic14_a_failed_relet_retries_until_the_pilot_is_chartered() {
+    let mut rig = boot("relet").await;
+    let (vex, row, order, first) = refunded_with_the_trust_frozen(&mut rig).await;
+    let hull = ObjId(row.hull);
+    let hold = hold_of(&rig.tw, &row);
+    let food_before = pool(&mut rig.tw, hold, "provisions");
+    // First sight: the arm records the observer's attempt and pages; the next fire the
+    // order arm holds the step under the re-charter's own note.
+    let _ = fire_quietly(&mut rig).await;
+    assert_eq!(
+        tacsim::port_tick::recall_pages(rig.tw.world()),
+        vec![hull.0]
+    );
+    let _ = fire_quietly(&mut rig).await;
+    let reason = tacsim::port::executor::HELD_RELET.replace("{name}", "Salt Moth");
+    let doc = orders(&rig.tw, hull);
+    assert!(
+        doc.hold
+            .as_ref()
+            .is_some_and(|h| h.retry && h.order == order && h.reason == reason),
+        "{:?}",
+        doc.hold
+    );
+    let waits = tacsim::port::executor::WAITING_LINE
+        .replace("{n}", &order.to_string())
+        .replace("{reason}", &reason);
+    assert_eq!(doc.log.iter().filter(|l| l.text == waits).count(), 1);
+    // Staff lift the freeze; the next due retry re-charters.
+    let trust_acct = trust_account(&rig.tw);
+    let out = run(&mut rig, GOD, &format!("@account/unfreeze {trust_acct}")).await;
+    assert!(out.contains("unfrozen"), "{out}");
+    let mut chartered = false;
+    for _ in 0..40 {
+        let _ = fire_quietly(&mut rig).await;
+        let e = enrolment(&rig.tw, vex);
+        assert_ne!(e.status, EnrolmentStatus::Revoked, "never revoked");
+        if e.status == EnrolmentStatus::Active {
+            chartered = true;
+            break;
+        }
+    }
+    assert!(chartered, "re-chartered within the backoff");
+    let renewed = enrolment(&rig.tw, vex);
+    assert_ne!(renewed.lease, first.lease, "a new lease");
+    assert_eq!(
+        contract_state(&rig.tw, renewed.lease),
+        ContractState::Active
+    );
+    let refunded = tacsim::port::buyout::BUYOUT_REFUNDED
+        .replace("{name}", "Salt Moth")
+        .replace("{mark}", &row.mark)
+        .replace("{buyout}", &cr(first.buyout_minor));
+    assert_eq!(
+        notices_of(&rig.tw, vex, &refunded),
+        1,
+        "BUYOUT_REFUNDED once"
+    );
+    let relet = tacsim::port::buyout::RELET_PENDING
+        .replace("{name}", "Salt Moth")
+        .replace("{mark}", &row.mark)
+        .replace("{buyout}", &cr(first.buyout_minor));
+    assert_eq!(notices_of(&rig.tw, vex, &relet), 1, "RELET_PENDING once");
+    assert_eq!(
+        tacsim::port_tick::recall_pages(rig.tw.world()),
+        vec![hull.0],
+        "one page"
+    );
+    // Brief B3: the silent re-check drops `HELD_RELET`'s note once she is chartered
+    // again, and the queued buy runs on the renewed charter.
+    for _ in 0..20 {
+        if orders(&rig.tw, hull)
+            .order(order)
+            .is_some_and(|o| o.state == OrderState::Done)
+        {
+            break;
+        }
+        let _ = fire_quietly(&mut rig).await;
+        let _ = sweep(&mut rig, 31).await;
+        let queued = drain(&mut rig.tw);
+        land_quietly(&mut rig, &queued).await;
+    }
+    let doc = orders(&rig.tw, hull);
+    assert_eq!(
+        doc.order(order).map(|o| o.state),
+        Some(OrderState::Done),
+        "{doc:#?}"
+    );
+    assert!(doc.hold.is_none(), "HELD_RELET dropped: {:?}", doc.hold);
+    assert_eq!(
+        doc.log.iter().filter(|l| l.text == waits).count(),
+        1,
+        "the note dropped without a second line"
+    );
+    assert_eq!(pool(&mut rig.tw, hold, "provisions"), food_before + 1);
+}
+
+/// **Doc 18 cut IC14 row 12: a re-charter that never lands gives up after six.** The
+/// freeze is never lifted: the arm makes the observer's attempt plus five retries, each
+/// after the doubling backoff (24, 48, 96, 192 and 384 fires), and only then ends the
+/// enrolment exactly as cut IC13 built it — Revoked, `EndCause::LeaseEnded`,
+/// `BUYOUT_UNLEASED` told once. The attempts are read from the arm's own record
+/// (`port_tick::relet_attempts`) every fire: it counts 1 (the observer's, recorded at
+/// first sight) through 5, each step due exactly its backoff after the last, and the
+/// sixth attempt gives up and clears it — exactly `MAX_RELET_ATTEMPTS` re-charters.
+/// Staff are paged at first sight through the recall arm's one latch, and the give-up
+/// arm logs its own error. A refused offer mints no lease, so no lease contract was
+/// made at all.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn ic14_a_relet_that_never_lands_gives_up_after_six() {
+    let mut rig = boot("relet6").await;
+    let (vex, row, _order, first) = refunded_with_the_trust_frozen(&mut rig).await;
+    let hull = ObjId(row.hull);
+    let contracts = contract_count(&rig.tw);
+    assert_eq!(
+        tacsim::port_tick::relet_attempts(rig.tw.world(), hull),
+        None,
+        "the arm has not seen the hull yet"
+    );
+    let _ = fire_quietly(&mut rig).await;
+    let sighted = tacsim::port_tick::fires(rig.tw.world());
+    assert_eq!(
+        tacsim::port_tick::relet_attempts(rig.tw.world(), hull),
+        Some((1, sighted + tacsim::port::buyout::relet_backoff(1))),
+        "first sight records the observer's attempt"
+    );
+    assert_eq!(
+        tacsim::port_tick::recall_pages(rig.tw.world()),
+        vec![hull.0],
+        "and pages once"
+    );
+    let wait: u64 = [24_u64, 48, 96, 192, 384].iter().sum();
+    // Every change of the arm's record, in order: (attempts made, the fire it changed).
+    let mut seen: Vec<(u8, u64)> = vec![(1, sighted)];
+    let mut revoked_at = None;
+    for _ in 0..(wait + 40) {
+        let _ = fire_quietly(&mut rig).await;
+        let at = tacsim::port_tick::fires(rig.tw.world());
+        match tacsim::port_tick::relet_attempts(rig.tw.world(), hull) {
+            Some((made, due)) => {
+                if seen.last().map(|(m, _)| *m) != Some(made) {
+                    assert_eq!(
+                        due,
+                        at + tacsim::port::buyout::relet_backoff(made),
+                        "attempt {made} is due its backoff on"
+                    );
+                    seen.push((made, at));
+                }
+            }
+            None => {
+                assert_eq!(
+                    enrolment(&rig.tw, vex).status,
+                    EnrolmentStatus::Revoked,
+                    "the record clears only when the arm gives up"
+                );
+                revoked_at = Some(at);
+                break;
+            }
+        }
+        assert_eq!(
+            enrolment(&rig.tw, vex).status,
+            EnrolmentStatus::BuyoutPending,
+            "buyout-pending through every retry"
+        );
+    }
+    let revoked_at = revoked_at.expect("the arm gave up");
+    let made: Vec<u8> = seen.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        made,
+        (1..tacsim::port::buyout::MAX_RELET_ATTEMPTS).collect::<Vec<u8>>(),
+        "five attempts that stayed pending; the sixth gave up"
+    );
+    for pair in seen.windows(2) {
+        let ((before, at), (_, next)) = (pair[0], pair[1]);
+        assert_eq!(
+            next - at,
+            tacsim::port::buyout::relet_backoff(before),
+            "each retry waits its doubling backoff: {seen:?}"
+        );
+    }
+    assert!(
+        revoked_at >= sighted + wait,
+        "not before the five backoffs: sighted at {sighted}, revoked at {revoked_at}"
+    );
+    let e = enrolment(&rig.tw, vex);
+    assert_eq!(e.ended, Some(EndCause::LeaseEnded));
+    assert_eq!(contract_count(&rig.tw), contracts, "no lease was minted");
+    let unleased = tacsim::port::buyout::BUYOUT_UNLEASED
+        .replace("{name}", "Salt Moth")
+        .replace("{mark}", &row.mark)
+        .replace("{buyout}", &cr(first.buyout_minor));
+    assert_eq!(
+        notices_of(&rig.tw, vex, &unleased),
+        1,
+        "BUYOUT_UNLEASED once"
+    );
+    for _ in 0..30 {
+        let _ = fire_quietly(&mut rig).await;
+    }
+    assert_eq!(notices_of(&rig.tw, vex, &unleased), 1, "and never again");
+    assert_eq!(
+        tacsim::port_tick::relet_attempts(rig.tw.world(), hull),
+        None,
+        "and the arm never tries again"
+    );
+    assert_eq!(
+        tacsim::port_tick::recall_pages(rig.tw.world()),
+        vec![hull.0],
+        "the first-sight page is the recall arm's one latch"
+    );
+}
+
+/// **Doc 18 cut IC14 row 32: the buyout's failure residues — the one a staff act
+/// reaches.** The pilot's escrow refused after the offer (an approval rule on her
+/// account, a real staff act): the verb cancels its own contract through
+/// `cancel_own`, answers `BUYOUT_FAILED`, and the charter stands — no BuyoutPending,
+/// the lease Active, the buyout contract Cancelled, nothing held. The other residues
+/// (`end_lease` Retrying → `BUYOUT_HELD`, `end_lease` Err, the Trust's acceptance not
+/// activating) are not reachable on the production root without a production change
+/// (cut IC14 report, NOT DONE); `recall_outcome`'s unit test pins the Retrying/Err
+/// mapping the recall shares.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn ic14_the_buyout_residues() {
+    let mut rig = boot("residues").await;
+    let _ = sweep(&mut rig, 120).await;
+    stock(&mut rig).await;
+    let vex = pilot(&mut rig, "Vex", "vexacct").await;
+    let row = enrol(&mut rig, vex, "Salt Moth").await;
+    let hull = ObjId(row.hull);
+    top_up_to(&mut rig, vex, LENS_AVAILABLE).await;
+    let me = credit_account(&rig.tw, &PrincipalId::Object(vex));
+    let first = enrolment(&rig.tw, vex);
+
+    // (a) The escrow refused after the offer.
+    let out = run(
+        &mut rig,
+        GOD,
+        &format!("@account/approval {me}=100 threshold:1"),
+    )
+    .await;
+    assert!(!out.contains("Usage"), "{out}");
+    let before = contract_count(&rig.tw);
+    let out = run(&mut rig, vex, "+coop/buyout").await;
+    assert!(out.contains(tacsim::port::buyout::BUYOUT_FAILED), "{out}");
+    let e = enrolment(&rig.tw, vex);
+    assert_eq!(e.status, EnrolmentStatus::Active, "no BuyoutPending");
+    assert_eq!(e.buyout, None);
+    assert_eq!(contract_state(&rig.tw, e.lease), ContractState::Active);
+    assert_eq!(contract_count(&rig.tw), before + 1, "the offer was made");
+    let offered = economy(&rig.tw)
+        .snapshot()
+        .contracts()
+        .map(|c| c.id)
+        .max()
+        .expect("the buyout contract");
+    assert_eq!(
+        contract_state(&rig.tw, offered.0),
+        ContractState::Cancelled,
+        "cancelled through its own cancel"
+    );
+    assert_eq!(available(&rig.tw, me), LENS_AVAILABLE, "nothing held");
+    let out = run(&mut rig, GOD, &format!("@account/approval {me}=none")).await;
+    assert!(out.contains("Cleared"), "{out}");
+    // With the rule cleared the same buyout goes through: the residue blocked nothing.
+    let out = run(&mut rig, vex, "+coop/buyout").await;
+    assert!(
+        out.contains("The title passes to you at the next settlement."),
+        "{out}"
+    );
+    assert_eq!(
+        enrolment(&rig.tw, vex).status,
+        EnrolmentStatus::BuyoutPending
+    );
+    assert_eq!(available(&rig.tw, me), LENS_AVAILABLE - first.buyout_minor);
+    let _ = hull;
+}
+
+/// **Doc 18 cut IC14 row 33: a blocked recall holds the plan once and pages once.** A
+/// dormant hull docked at Stickney with cargo cannot be recalled; the arm holds her
+/// plan (`HELD_DORMANT`) and pages once — and on each re-entry past
+/// `RECALL_RECHECK_FIRES` writes nothing (`hold_plan`'s written-once rule), pages
+/// nothing (`page_once`) and re-arms its backoff.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn ic14_a_blocked_recall_holds_the_plan_once_and_pages_once() {
+    const D: i64 = 7 * 86_400;
+    let mut rig = boot("reentry").await;
+    let _ = sweep(&mut rig, 120).await;
+    stock(&mut rig).await;
+    let vex = pilot(&mut rig, "Vex", "vexacct").await;
+    let row = enrol(&mut rig, vex, "Salt Moth").await;
+    let hull = ObjId(row.hull);
+    let _outfit = outfit(&mut rig, vex).await;
+    board_from_chandlery(&mut rig, vex, "Salt Moth").await;
+    let out = run(&mut rig, vex, "+ship/undock stickney").await;
+    assert!(out.contains("Clearance filed for Stickney Yards"), "{out}");
+    let (burned_at, ticket) = launch(&mut rig, hull).await;
+    arrive(&mut rig, hull, &ticket).await;
+    let p01 = station_room(&rig.tw, "stickney_port", "room.p01_berth_gallery");
+    let ashore = run(&mut rig, vex, "+ship/leave").await;
+    assert_eq!(location(&rig.tw, vex), Some(p01), "{ashore}");
+    let _ = run(&mut rig, vex, "+ship/order depart ceres at=now").await;
+    let _ = fire_quietly(&mut rig).await;
+    let now = rig.tw.world().now();
+    let _ = sweep(&mut rig, burned_at + D + 3_600 - now).await;
+    let _ = fire_quietly(&mut rig).await;
+    let held = orders(&rig.tw, hull);
+    assert_eq!(held.state, PlanState::Held, "{held:?}");
+    assert_eq!(
+        tacsim::port_tick::recall_pages(rig.tw.world()),
+        vec![hull.0]
+    );
+    let mut blocked =
+        tacsim::port_tick::recall_blocked_at(rig.tw.world(), hull.0).expect("the backoff is armed");
+    for _ in 0..2 {
+        for _ in 0..(tacsim::port::recall::RECALL_RECHECK_FIRES + 1) {
+            let _ = fire_quietly(&mut rig).await;
+        }
+        assert_eq!(orders(&rig.tw, hull), held, "written once");
+        assert_eq!(
+            tacsim::port_tick::recall_pages(rig.tw.world()),
+            vec![hull.0],
+            "paged once"
+        );
+        let again = tacsim::port_tick::recall_blocked_at(rig.tw.world(), hull.0).expect("re-armed");
+        assert!(
+            again > blocked,
+            "the backoff re-armed: {blocked} -> {again}"
+        );
+        blocked = again;
+    }
+    assert_eq!(enrolment(&rig.tw, vex).status, EnrolmentStatus::Active);
+}
+
+/// **Doc 18 cut IC14 row 34: the recalled hulls line on the production root, byte for
+/// byte.** Staff cancel a charter's lease; until the return arm's next fire the hulls
+/// line reads `, 1 recalled, not yet returned ({mark})` exactly; then she is back.
+#[tokio::test]
+async fn ic14_the_recalled_hulls_line_on_the_production_root() {
+    let mut rig = boot("recalledline").await;
+    let _ = sweep(&mut rig, 120).await;
+    stock(&mut rig).await;
+    let vex = pilot(&mut rig, "Vex", "vexacct").await;
+    let row = enrol(&mut rig, vex, "Salt Moth").await;
+    let hold = hold_of(&rig.tw, &row);
+    let e = enrolment(&rig.tw, vex);
+    let _ = run(&mut rig, GOD, &format!("@contract/cancel #{}", e.lease)).await;
+    assert_eq!(enrolment(&rig.tw, vex).status, EnrolmentStatus::Revoked);
+    let made = port_map(&rig.tw, "ceres_port").hulls.len();
+    let line = hulls_line(&mut rig).await;
+    assert_eq!(
+        line,
+        format!(
+            "ceres_port hulls: {made} of {made} made and titled to {}; {} laid up and free, 0 \
+             leased, 1 recalled, not yet returned ({}). [ready]",
+            trust_name(&rig.tw),
+            made - 1,
+            row.mark
+        )
+    );
+    let _ = fire_quietly(&mut rig).await;
+    assert_eq!(
+        vault_owner(&rig.tw, hold),
+        trust(&rig.tw),
+        "back in the pool"
+    );
 }

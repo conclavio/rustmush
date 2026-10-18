@@ -67,9 +67,17 @@ use crate::store::{TacsimStore, put_orders, put_voyage};
 
 /// How many fixed-point passes `fill` makes before it gives up (D-18-41).
 pub const FILL_ITERATIONS: u32 = 6;
-/// Doc 18's "unverified after twelve fires" at the 5 s cadence: the first re-stage
-/// of a market leg (lead ruling L6).
-pub const ORDER_RESTAGE_SECS: i64 = 60;
+/// The first re-stage of a market leg (lead ruling L6): since doc 18 cut IC14 row 6
+/// (lead ruling L21) one market sweep and a half — `mush_market::SWEEP_PERIOD_SECS` +
+/// 30 = 90 s, asserted by a test — not the sweep period itself. At 60 s it equalled the
+/// market's 60 s sweep, so a leg staged at the boot instant met its first re-stage in
+/// the same fire as the reboot-re-armed sweep that mirrors its landing, and a landed
+/// Draw was re-staged before its mirror ran (a wasted replay, IC11's residual). Reading
+/// the draw receipt from here instead (the lead's first option) cannot be built: the
+/// receipt is market-owned typed state and `Ctx::action_state`'s owner scope refuses
+/// it to the TacSim context (IC7's own finding). A literal, because the market's period
+/// is a `u64` and this crate's lints refuse the cast.
+pub const ORDER_RESTAGE_SECS: i64 = 90;
 /// How long past the first re-stage the second deadline waits (reviewer F3): the
 /// inventory mirror, the market mirror and the economy's Fact sweep the evidence
 /// comes from, plus two fires.
@@ -810,6 +818,42 @@ pub(crate) fn no_route_line(w: &World, def: &PortDef) -> String {
         .replace("{list}", &list.join(", "))
 }
 
+/// **What the later orders before the next depart buy of one consumable** (doc 18 cut
+/// IC14 row 26; lead ruling L22).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cover {
+    /// A later `fill` of it: the next depart's need is met by that order.
+    Fill,
+    /// The sum of the later `Units(n)` buys of it (saturating).
+    Units(u64),
+}
+
+/// **The later cover of `good`** (pure; doc 18 cut IC14 row 26): the orders after
+/// position `index` up to (not including) the next open depart, open ones only
+/// (Pending or Inflight), that buy `good` — a `fill` among them is [`Cover::Fill`],
+/// else the sum of their unit counts. `HELD_SHORT_FOR_DEPART` follows doc 18 §4.4's
+/// wording ("when the shortfall would fail the next depart") with it: an explicit buy
+/// short of the need holds only when these still leave it short.
+#[must_use]
+pub(crate) fn later_cover(doc: &Orders, index: usize, good: &CanonicalId) -> Cover {
+    let mut units = 0_u64;
+    for order in doc.orders.iter().skip(index.saturating_add(1)) {
+        if !matches!(order.state, OrderState::Pending | OrderState::Inflight) {
+            continue;
+        }
+        match &order.what {
+            What::Depart { .. } => break,
+            What::Buy { good: g, qty, .. } if g == good => match qty {
+                Qty::Fill => return Cover::Fill,
+                Qty::Units(n) => units = units.saturating_add(*n),
+                Qty::All => {}
+            },
+            What::Buy { .. } | What::Sell { .. } | What::Stop => {}
+        }
+    }
+    Cover::Units(units)
+}
+
 /// **The fill targets of the first depart at or after queue place `from`** over
 /// `project_cargo` of the orders from `from` (inclusive) up to it, at its
 /// `not_before` (D-18-41, reviewer F10(2)); `Ok(None)` when no depart follows. A buy
@@ -1305,11 +1349,14 @@ pub(crate) fn plan_queue(
                         ceiling_kg,
                     }) => lines.push(format!(
                         "  Order {id}, depart for {port}: payload {} t; it would hold: {}.",
-                        tonnes_one_decimal(payload_kg),
+                        crate::port::voyage::tonnes_over(payload_kg, ceiling_kg),
                         inline_reason(
                             &OVERLOADED
                                 .replace("{name}", &name)
-                                .replace("{payload}", &tonnes_one_decimal(payload_kg))
+                                .replace(
+                                    "{payload}",
+                                    &crate::port::voyage::tonnes_over(payload_kg, ceiling_kg),
+                                )
                                 .replace("{ceiling}", &(ceiling_kg / 1_000).to_string())
                         )
                     )),
@@ -1460,6 +1507,15 @@ pub(crate) fn market_line(error: &MarketError) -> String {
         MarketError::Contract(error) => error.to_string(),
         MarketError::Economy(error) => error.to_string(),
     }
+}
+
+/// **Whether a market refusal is engine back-pressure** (doc 18 cut IC14 row 2;
+/// reviewer F3): the sell gate's own-queue line (`SELL_BUSY`) and its full-queue line
+/// (`SELL_QUEUE_FULL`). Neither refuses the order: the step waits a fire, exactly as
+/// `SwapRefused::Pending` does (which pre-checks only the pilot's own entry), with no
+/// log line, no refusal count and no document write.
+fn is_back_pressure(line: &str) -> bool {
+    line == mush_market::SELL_QUEUE_FULL || line == mush_market::SELL_BUSY
 }
 
 /// The kind of act an order stages.
@@ -2149,6 +2205,12 @@ pub(crate) fn order_step(
                     skip_or_hold(ctx.w, &mut out, id, on_short, &house_line);
                     commit(ctx, out, Step::Worked)
                 }
+                // Doc 18 cut IC14 row 2 (reviewer F3): a full engine queue (or the
+                // pilot's own queued entry) is engine back-pressure, not a refusal of
+                // the order — counting it toward `MAX_ORDER_REFUSALS` would hold an
+                // offline captain's plan after three busy fires. Wait a fire; write
+                // nothing. The Buy arm is unchanged (cut IC14 row 124).
+                Ok(Err(error)) if is_back_pressure(&market_line(&error)) => Step::Deferred,
                 Ok(Err(error)) => refused_after_call(ctx, hull, &pre, &error),
                 Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => {
                     Step::Deferred
@@ -2219,10 +2281,21 @@ fn restaged(
     doc: Orders,
     result: Result<Option<ContractId>, MarketError>,
 ) -> Step {
-    let w: &World = ctx.w;
-    let Some(record) = doc.inflight.clone() else {
-        return Step::Idle;
-    };
+    match restage_outcome(ctx.w, doc, result) {
+        Some((out, step)) => commit(ctx, out, step),
+        None => Step::Idle,
+    }
+}
+
+/// [`restaged`]'s decision, pure over the world (doc 18 cut IC14 row 3: split out so
+/// the `DELIVER_LANDED` and `DELIVER_UNCONFIRMED` answers are unit-tested): the
+/// document as it should be written and the step, or `None` with nothing in flight.
+fn restage_outcome(
+    w: &World,
+    doc: Orders,
+    result: Result<Option<ContractId>, MarketError>,
+) -> Option<(Outcome, Step)> {
+    let record = doc.inflight.clone()?;
     let id = record.order;
     let first = record.restaged == 0;
     let mut out = Outcome::new(doc);
@@ -2264,6 +2337,16 @@ fn restaged(
             set(&mut out, if first { 1 } else { 2 });
             Step::Worked
         }
+        // Doc 18 cut IC14 row 3: the leg already landed (its marker is written and the
+        // mirror has not swept it yet) — neither a refusal nor a miss. Exactly what
+        // `Ok(None)` does; the step's pull verification reads the landing.
+        // `DELIVER_UNCONFIRMED` gets no arm of its own: it falls into the `Err` arms
+        // below, so a re-stage that can never read the marker ends in the existing
+        // `HELD_UNCONFIRMED` hold and page at the second deadline (lead ruling L32).
+        Err(error) if market_line(&error) == mush_market::DELIVER_LANDED => {
+            set(&mut out, if first { 1 } else { 2 });
+            Step::Worked
+        }
         Err(error) if first => {
             tracing::warn!(hull = out.doc.hull.0, order = id, error = %market_line(&error), "tacsim: a queued leg's first re-stage was refused; its verification resolves it");
             set(&mut out, 1);
@@ -2288,7 +2371,7 @@ fn restaged(
             }
         }
     };
-    commit(ctx, out, step)
+    Some((out, step))
 }
 
 /// Whether the plan's author is buying this hull out (cut IC13): their governing
@@ -2300,6 +2383,15 @@ fn buying_out(w: &World, hull: ObjId, pilot: ObjId, doc: &Orders) -> bool {
             .is_some_and(|e| {
                 e.pilot == pilot && e.status == crate::port::coop::EnrolmentStatus::BuyoutPending
             })
+}
+
+/// Whether the hull's governing enrolment waits on a re-charter (doc 18 cut IC14 row
+/// 12): `BuyoutPending` with its buyout refunded and its old lease terminal
+/// (`crate::port::buyout::relet_pending`).
+fn reletting(w: &World, hull: ObjId) -> bool {
+    w.module_state::<TacsimStore>()
+        .and_then(|store| store.enrolment_for_hull(hull))
+        .is_some_and(|e| crate::port::buyout::relet_pending(w, e))
 }
 
 /// **What is due for one hull this fire**, read under a shared borrow: the re-stage,
@@ -2342,6 +2434,9 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
     let name = name_of(w, hull);
     let charter_note = HELD_CHARTER.replace("{name}", &name);
     let buyout_note = HELD_BUYOUT.replace("{name}", &name);
+    // Doc 18 cut IC14 row 12: while a refunded buyout's re-charter retries, the
+    // buyout's "she sails on your title" is false; the wait says what is true.
+    let relet_note = HELD_RELET.replace("{name}", &name);
     let mut doc = doc;
     if !leased {
         if doc.state == PlanState::Paused {
@@ -2354,7 +2449,11 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
         // holds neither charter nor title, so the step waits — under the buyout's own
         // note, not the lapsed charter's — and runs on the title once it passes.
         let reason = if buying_out(w, hull, pilot, &doc) {
-            &buyout_note
+            if reletting(w, hull) {
+                &relet_note
+            } else {
+                &buyout_note
+            }
         } else {
             &charter_note
         };
@@ -2365,7 +2464,10 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
         return Plan::Idle;
     }
     if doc.hold.as_ref().is_some_and(|note| {
-        note.retry && (note.reason == charter_note || note.reason == buyout_note)
+        note.retry
+            && (note.reason == charter_note
+                || note.reason == buyout_note
+                || note.reason == relet_note)
     }) {
         // "Re-checked silently each fire": the note drops without a line (the lapsed
         // charter's, or the buyout window's once the title has passed).
@@ -2652,10 +2754,16 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
                 .as_ref()
                 .map_or(u64::MAX, |a| funds_units(available, reserve, a.price));
             let (q, bounds) = clamp_buy(want, over, stock, room, affordable);
-            // A consumable short of the next departure's need holds, buying nothing.
+            // A consumable short of the next departure's need holds, buying nothing —
+            // doc 18 cut IC14 row 26 (lead ruling L22): only when the later consumable
+            // orders before that depart would still leave it short.
             if let (Some(kind), Some((target, port))) = (consumable, &target) {
                 let aboard = aboard_of(goods, &readings, kind);
-                if aboard.saturating_add(q) < *target {
+                let short = match later_cover(&doc, index, &good) {
+                    Cover::Fill => false,
+                    Cover::Units(later) => aboard.saturating_add(q).saturating_add(later) < *target,
+                };
+                if short {
                     let reason = HELD_SHORT_FOR_DEPART
                         .replace("{bought}", &format!("{q} {unit}"))
                         .replace("{port}", port)
@@ -2984,6 +3092,10 @@ pub const HELD_CHARTER: &str = "your charter of the {name} is no longer in force
 /// The buyout window (cut IC13, owner item O6): `{name}`.
 pub const HELD_BUYOUT: &str =
     "your buyout of the {name} is being entered; she sails on your title once it passes.";
+/// A refunded buyout whose re-charter is retrying (doc 18 cut IC14 row 12; lead ruling
+/// L11; owner voice, cut IC14 O1): the wait's note in place of [`HELD_BUYOUT`], whose
+/// "she sails on your title" is false then. `{name}`.
+pub const HELD_RELET: &str = "the {name}'s charter is being renewed after your buyout came back; she sails again once it is.";
 /// The second unverified miss.
 pub const HELD_UNCONFIRMED: &str = "the counter has not confirmed it; staff have been told.";
 /// A staff stand-down: `{port}`.
@@ -3204,15 +3316,32 @@ mod tests {
         .unwrap();
         assert_eq!(full.tank, 70);
         // The LEAST fixed point: a step planner with two fixed points (10 t below
-        // 400 t of payload, 50 t at or above it) settles on the lower one from below.
-        let step = |payload: u64| Ok(plan_with(if payload >= 400_000 { 50 } else { 10 }, 0));
-        let least = fill_targets(&goods, &empty, &BTreeMap::new(), 0, 0, 0, 1, 100, step).unwrap();
-        assert_eq!(least.tank, 10);
+        // 150 t of payload, 50 t at or above it) settles on the lower one from below.
+        // Doc 18 cut IC14 row 41: the step sits inside the reachable range, below the
+        // Dray's 181 t payload ceiling (it was at 400 t, a payload no hull carries).
+        let step = |payload: u64| Ok(plan_with(if payload >= 150_000 { 50 } else { 10 }, 0));
+        let least = fill_targets(
+            &goods,
+            &empty,
+            &BTreeMap::from([(cid("metals"), 100)]),
+            0,
+            0,
+            0,
+            1,
+            100,
+            step,
+        )
+        .unwrap();
+        assert_eq!(
+            least.tank, 10,
+            "100 t of cargo and 10 t of fuel: under the step"
+        );
+        // From 50 t aboard the same 100 t of cargo weighs 150 t: the step's upper point.
         let greater = fill_targets(
             &goods,
             &readings(&[("propellant", 50)]),
             &BTreeMap::from([(cid("metals"), 100)]),
-            300_000,
+            0,
             50,
             0,
             1,
@@ -3433,6 +3562,79 @@ mod tests {
         assert_eq!(
             reserve_for(&targets, 1, 0, None, Some(cr(10)), None),
             cr(190)
+        );
+    }
+
+    #[test]
+    fn ic14_the_first_restage_waits_a_sweep_and_a_half() {
+        let market = i64::try_from(mush_market::SWEEP_PERIOD_SECS).expect("a small period");
+        assert_eq!(ORDER_RESTAGE_SECS, market + 30);
+        assert_ne!(
+            ORDER_RESTAGE_SECS % market,
+            0,
+            "never on a market sweep boundary"
+        );
+    }
+
+    /// **Doc 18 cut IC14 row 26: `later_cover` reads the open buys of the good between
+    /// an order and the next open depart** — a later `fill` is `Fill`, later unit buys
+    /// sum, done or skipped orders, other goods and anything past the depart count for
+    /// nothing.
+    #[test]
+    fn ic14_later_cover_reads_up_to_the_next_open_depart() {
+        let buy = |id: u32, good: &str, qty: Qty| {
+            pending(
+                id,
+                What::Buy {
+                    good: cid(good),
+                    qty,
+                    max_major: None,
+                    on_short: OnShort::Partial,
+                },
+            )
+        };
+        let depart = |id: u32| {
+            pending(
+                id,
+                What::Depart {
+                    to: cid("stickney"),
+                    not_before: crate::port::when::NotBefore::Now,
+                    not_after_s: None,
+                    on_fail: OnShort::Hold,
+                    crew: Vec::new(),
+                },
+            )
+        };
+        let rm = cid("propellant");
+        let mut doc = Orders::fresh(ObjId(5011), ObjId(42), 1);
+        let mut done = buy(3, "propellant", Qty::Units(50));
+        done.state = OrderState::Done;
+        doc.orders = vec![
+            buy(1, "propellant", Qty::Units(1)),
+            buy(2, "propellant", Qty::Units(4)),
+            done,
+            buy(4, "provisions", Qty::Units(9)),
+            buy(5, "propellant", Qty::Units(6)),
+            depart(6),
+            buy(7, "propellant", Qty::Fill),
+        ];
+        doc.next_id = 8;
+        assert_eq!(later_cover(&doc, 0, &rm), Cover::Units(10), "4 + 6 only");
+        assert_eq!(
+            later_cover(&doc, 4, &rm),
+            Cover::Units(0),
+            "nothing after 5"
+        );
+        assert_eq!(later_cover(&doc, 6, &rm), Cover::Units(0), "the last order");
+        doc.orders[1] = buy(2, "propellant", Qty::Fill);
+        assert_eq!(later_cover(&doc, 0, &rm), Cover::Fill, "a later fill");
+        // A depart that is no longer open is not the boundary.
+        doc.orders[5].state = OrderState::Skipped;
+        doc.orders[1] = buy(2, "propellant", Qty::Units(4));
+        assert_eq!(
+            later_cover(&doc, 0, &rm),
+            Cover::Fill,
+            "past the skipped depart"
         );
     }
 
@@ -3702,6 +3904,108 @@ mod tests {
         assert_eq!(
             format!("burn 37 t; it would hold: {clause}."),
             "burn 37 t; it would hold: The plan for Ceres Freeport burns 37 t of reaction mass; the tank holds 1 t."
+        );
+    }
+
+    /// A sell order in flight, staged at `staged_utc`, re-staged `restaged` times.
+    fn sell_in_flight(restaged: u8) -> Orders {
+        let mut doc = Orders::fresh(ObjId(5011), ObjId(42), 1);
+        doc.orders = vec![pending(
+            1,
+            What::Sell {
+                good: cid("metals"),
+                qty: Qty::All,
+                min_major: None,
+                on_short: OnShort::Partial,
+            },
+        )];
+        doc.next_id = 2;
+        doc.derive_cursor();
+        doc.inflight = Some(Inflight {
+            order: 1,
+            attempt: 1,
+            key: "market.lot.deliver.7".to_owned(),
+            refs: crate::port::orders::InflightRefs {
+                quote: Some(3),
+                contract: Some(7),
+                ticket: None,
+            },
+            staged_utc: 0,
+            issued_ic: 0,
+            restaged,
+            want: 20,
+            qty: 20,
+            bounds: Vec::new(),
+            line: None,
+        });
+        doc
+    }
+
+    /// **Doc 18 cut IC14 row 3: a re-stage that finds the leg landed is neither a
+    /// refusal nor a miss** — at the first and the second deadline it advances
+    /// `restaged` exactly as `Ok(None)` does, holds nothing and counts nothing.
+    #[test]
+    fn ic14_a_landed_restage_advances_like_a_quiet_one() {
+        let w = World::new_minimal();
+        for (before, after) in [(0_u8, 1_u8), (1, 2)] {
+            let landed = Err(MarketError::bad(mush_market::DELIVER_LANDED));
+            let (out, step) =
+                restage_outcome(&w, sell_in_flight(before), landed).expect("in flight");
+            let (quiet, quiet_step) =
+                restage_outcome(&w, sell_in_flight(before), Ok(None)).expect("in flight");
+            assert_eq!(step, Step::Worked);
+            assert_eq!(step, quiet_step);
+            assert_eq!(out.doc, quiet.doc, "exactly what Ok(None) writes");
+            assert_eq!(out.doc.inflight.as_ref().map(|r| r.restaged), Some(after));
+            assert!(out.doc.hold.is_none(), "no hold");
+            assert_eq!(out.doc.state, PlanState::Running);
+            assert_eq!(out.doc.order(1).map(|o| o.refusals), Some(0), "no count");
+        }
+    }
+
+    /// **Doc 18 cut IC14 (lead ruling L32, reviewer F15): a re-stage that cannot read
+    /// the marker ends in the stopped hold**, never a silent retry: the first deadline
+    /// advances `restaged` to 1, the second holds `HELD_UNCONFIRMED`.
+    #[test]
+    fn ic14_an_unconfirmed_restage_holds_at_the_second_deadline() {
+        let w = World::new_minimal();
+        let unconfirmed = || Err(MarketError::bad(mush_market::DELIVER_UNCONFIRMED));
+        let (first, step) =
+            restage_outcome(&w, sell_in_flight(0), unconfirmed()).expect("in flight");
+        assert_eq!(step, Step::Worked);
+        assert_eq!(first.doc.inflight.as_ref().map(|r| r.restaged), Some(1));
+        assert!(first.doc.hold.is_none());
+        let (second, _) = restage_outcome(&w, first.doc, unconfirmed()).expect("in flight");
+        assert_eq!(second.doc.inflight.as_ref().map(|r| r.restaged), Some(2));
+        assert_eq!(second.doc.state, PlanState::Held);
+        let hold = second.doc.hold.as_ref().expect("the stopped hold");
+        assert_eq!((hold.order, hold.reason.as_str()), (1, HELD_UNCONFIRMED));
+    }
+
+    /// **Doc 18 cut IC14 row 2 (reviewer F3): engine back-pressure is not a refusal.**
+    /// Both of the sell gate's queue lines are back-pressure; nothing else is.
+    #[test]
+    fn ic14_the_queue_lines_are_back_pressure() {
+        assert!(is_back_pressure(mush_market::SELL_QUEUE_FULL));
+        assert!(is_back_pressure(mush_market::SELL_BUSY));
+        assert!(!is_back_pressure(mush_market::HOUSE_CANNOT_PAY));
+        assert!(!is_back_pressure(mush_market::NOT_BUYING));
+    }
+
+    /// **Doc 18 §9 risk 19, cut IC14 row 1: the marker retention horizon outlives
+    /// every window that reads a marker** — the sale's draw window, the executor's
+    /// first re-stage and its settle grace, and two market sweeps, each named.
+    #[test]
+    fn ic14_marker_retention_outlives_every_window_that_reads_a_marker() {
+        let sweep = i64::try_from(mush_market::SWEEP_PERIOD_SECS).expect("a small period");
+        let window = mush_market::DRAW_WINDOW_SECS
+            + ORDER_RESTAGE_SECS
+            + ORDER_SETTLE_GRACE_SECS
+            + 2 * sweep;
+        assert!(
+            mush_inventory::MARKER_RETENTION_SECS >= window,
+            "{} < {window}",
+            mush_inventory::MARKER_RETENTION_SECS
         );
     }
 }

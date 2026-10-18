@@ -12,7 +12,7 @@
 //! - **ending the charter**: the enrolment is written `Revoked` with its cause
 //!   ([`EndCause`]) **first**, so the observer's IC6 fold ignores the lease's
 //!   Cancelled event, then the lease ends through `mush_economy::end_lease`;
-//! - **returning the hull** ([`return_hull`]): the pilot's sailing plan is held, anyone
+//! - **returning the hull** (`return_hull`): the pilot's sailing plan is held, anyone
 //!   aboard is put ashore at the gallery, the hold vault is **re-homed to the Trust**
 //!   (never closed: a closed vault keeps its backing index and the hull could never be
 //!   chartered again, L5) with the remaining fuel and stores forfeit inside it (owner
@@ -31,8 +31,6 @@
 //! No step here submits anything authoritative and none swaps the actor:
 //! `end_lease`, `rehome_vault`, `put_orders`, `set_name` and the placements are
 //! normal-lane writes (L12).
-
-use std::collections::BTreeSet;
 
 use mush_core::{CmdError, Ctx, ObjId, ObjKind, World};
 use mush_economy::{EconomyStore, LeaseEnd, LeaseKey, VaultId};
@@ -491,24 +489,21 @@ pub(crate) fn recall(
         lessor: trust.clone(),
         premises: e.hull,
     };
-    let done = match mush_economy::end_lease(ctx, mush_economy::ContractId(e.lease), &key) {
-        Ok(LeaseEnd::Ended | LeaseEnd::AlreadyEnded) => {
-            return_unchecked(ctx, &revoked, trust, scope)
-        }
-        Ok(LeaseEnd::Retrying) => {
-            tracing::error!(
-                lease = e.lease,
-                hull = e.hull.0,
-                "tacsim: a recall's lease end is retrying; the recall arm returns the hull once \
-                 the lease is terminal; `@contract/show #<lease>`"
-            );
-            RecallDone {
-                lease_retrying: true,
-                ..RecallDone::default()
+    let ended = mush_economy::end_lease(ctx, mush_economy::ContractId(e.lease), &key);
+    let done = match recall_outcome(&ended) {
+        RecallOutcome::Return => return_unchecked(ctx, &revoked, trust, scope),
+        RecallOutcome::Retry => {
+            match &ended {
+                Err(error) => {
+                    tracing::error!(lease = e.lease, %error, "tacsim: a recall's lease did not end; the recall arm retries it");
+                }
+                Ok(_) => tracing::error!(
+                    lease = e.lease,
+                    hull = e.hull.0,
+                    "tacsim: a recall's lease end is retrying; the recall arm returns the hull \
+                     once the lease is terminal; `@contract/show #<lease>`"
+                ),
             }
-        }
-        Err(error) => {
-            tracing::error!(lease = e.lease, %error, "tacsim: a recall's lease did not end");
             RecallDone {
                 lease_retrying: true,
                 ..RecallDone::default()
@@ -524,6 +519,28 @@ pub(crate) fn recall(
         crate::port_tick::notify(ctx, e.pilot, &line);
     }
     Ok(done)
+}
+
+/// What a recall does after its `end_lease` (doc 18 cut IC14 row 32: the decision
+/// split out of [`recall`] so it is unit-tested without a world).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RecallOutcome {
+    /// The lease is over: the return half runs now.
+    Return,
+    /// `Retrying`, or `end_lease` refused: the enrolment is already `Revoked`
+    /// (written first) and the lease still live, so the recall arm finishes it —
+    /// the Return arm once the lease is terminal, or (cut IC14 row 4) its
+    /// revoked-with-a-live-lease retry of `end_lease`.
+    Retry,
+}
+
+/// **The recall's answer to its `end_lease`** (pure; doc 18 cut IC14 row 32).
+#[must_use]
+pub(crate) fn recall_outcome<E>(ended: &Result<LeaseEnd, E>) -> RecallOutcome {
+    match ended {
+        Ok(LeaseEnd::Ended | LeaseEnd::AlreadyEnded) => RecallOutcome::Return,
+        Ok(LeaseEnd::Retrying) | Err(_) => RecallOutcome::Retry,
+    }
 }
 
 /// The asker's own `Active` enrolment with a live charter, or the refusal
@@ -816,6 +833,34 @@ fn awaiting_return(w: &World, store: &TacsimStore, e: &Enrolment) -> bool {
     })
 }
 
+/// **A Revoked charter whose own lease is still live** (doc 18 cut IC14 row 4; lead
+/// ruling L10): the state a recall whose `end_lease` returned `Err` leaves — the
+/// enrolment `Revoked`, the hull's governing enrolment, and the Trust's live lease on
+/// the hull **is** the enrolment's own `e.lease`. The recall arm retries `end_lease`
+/// for it under the backoff until the lease ends, then runs the return half.
+fn revoked_with_live_lease(w: &World, store: &TacsimStore, e: &Enrolment) -> bool {
+    if e.status != EnrolmentStatus::Revoked || !governs(store, e) {
+        return false;
+    }
+    let Some(trust) = programme_port(w).and_then(|port| port.trust()) else {
+        return false;
+    };
+    trust_lease_on(w, &trust, e.hull).is_some_and(|lease| lease.id.0 == e.lease)
+}
+
+/// **Whether `e` waits on a re-charter that is due this fire** (doc 18 cut IC14 row
+/// 12; lead ruling L11): the governing enrolment, `relet_pending` (BuyoutPending, its
+/// buyout refunded, its old lease terminal), and the recorded attempt's fire reached —
+/// or no attempt recorded yet (first sight: the observer made the first).
+fn relet_due(w: &World, store: &TacsimStore, state: &PortTickState, e: &Enrolment) -> bool {
+    governs(store, e)
+        && crate::port::buyout::relet_pending(w, e)
+        && state
+            .relet_attempts
+            .get(&e.hull)
+            .is_none_or(|(_, due)| state.fires >= *due)
+}
+
 /// Whether `e` is a live charter of its hull (`Active`, the live charter naming its
 /// lease on its hull).
 fn live(w: &World, e: &Enrolment) -> bool {
@@ -828,6 +873,16 @@ fn page_once(state: &mut PortTickState, hull: ObjId) -> bool {
     state.recall_warned.insert(hull.0)
 }
 
+/// **The governing enrolment of each hull row** (doc 18 cut IC14 row 18), in row order:
+/// one per hull that has one, so the recall arm visits at most the pool's rows however
+/// many enrolments a world has accumulated.
+fn governing_rows<'a>(store: &'a TacsimStore, hulls: &[ObjId]) -> Vec<&'a Enrolment> {
+    hulls
+        .iter()
+        .filter_map(|hull| store.enrolment_for_hull(*hull))
+        .collect()
+}
+
 /// **The recall agents this fire** (agent = the hull, principal = the enrolment's
 /// pilot): every **Dormant** charter and every hull **awaiting its return**, hulls in
 /// their backoff and hulls with a pending voyage skipped. The pending-voyage skip
@@ -836,6 +891,12 @@ fn page_once(state: &mut PortTickState, hull: ObjId) -> bool {
 /// lead 2f asks for ("`@tacsim/port clear #<hull>` first") is the launch arm's own
 /// held-launch page (`launch_hold`), and this arm adds no second one. A burned ticket
 /// is a departure (L3), and an unburned filing lapses after `LAUNCH_GRACE_FIRES`.
+///
+/// Doc 18 cut IC14 row 18: the walk is over the programme port's map **hull rows**
+/// (bounded by the pool of eight), each read for its governing enrolment, never the
+/// whole enrolment history. Cut IC14 rows 4 and 12 add two more due states: a
+/// Revoked charter whose own lease is still live, and a refunded buyout whose
+/// re-charter is due.
 pub(crate) fn recall_agents(ctx: &Ctx<'_>, state: &mut PortTickState) -> Vec<(ObjId, ObjId)> {
     let w: &World = ctx.w;
     let fires = state.fires;
@@ -848,13 +909,23 @@ pub(crate) fn recall_agents(ctx: &Ctx<'_>, state: &mut PortTickState) -> Vec<(Ob
     let Some(days) = dormancy_days(w) else {
         return Vec::new();
     };
-    let mut seen: BTreeSet<ObjId> = BTreeSet::new();
+    let hulls: Vec<ObjId> = programme_port(w)
+        .map(|port| port.map.hulls.iter().map(|row| ObjId(row.hull)).collect())
+        .unwrap_or_default();
+    // Doc 18 cut IC14 row 12: the re-charter bookkeeping is kept to hulls whose
+    // governing enrolment still waits on one (bounded by the pool).
+    state.relet_attempts.retain(|hull, _| {
+        store
+            .enrolment_for_hull(*hull)
+            .is_some_and(|e| crate::port::buyout::relet_pending(w, e))
+    });
     let mut agents = Vec::new();
     let mut dark: Vec<ObjId> = Vec::new();
-    for e in store.enrolments() {
+    for e in governing_rows(store, &hulls) {
+        // Doc 18 cut IC14 row 11: an unreadable sailing plan is skipped as a filed one
+        // is (fail closed; the port tick pages it once).
         if state.recall_backoff.contains_key(&e.hull.0)
-            || crate::port::voyage::pending_of(w, e.hull).is_some()
-            || seen.contains(&e.hull)
+            || crate::port::voyage::voyage_blocks(w, e.hull)
         {
             continue;
         }
@@ -868,9 +939,10 @@ pub(crate) fn recall_agents(ctx: &Ctx<'_>, state: &mut PortTickState) -> Vec<(Ob
             }
         } else {
             awaiting_return(w, store, e)
+                || revoked_with_live_lease(w, store, e)
+                || relet_due(w, store, state, e)
         };
         if due {
-            seen.insert(e.hull);
             agents.push((e.hull, e.pilot));
         }
     }
@@ -933,6 +1005,22 @@ pub(crate) fn recall_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: Ob
         state.recall_backoff.insert(hull.0, state.fires);
         return if wrote { Step::Worked } else { Step::Idle };
     }
+    // ---- doc 18 cut IC14 row 4 (lead ruling L10): a Revoked charter's live lease ----
+    let lease_live = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .is_some_and(|store| revoked_with_live_lease(ctx.w, store, &e));
+    if lease_live {
+        return end_revoked_lease(ctx, state, &e);
+    }
+    // ---- doc 18 cut IC14 row 12 (lead ruling L11): a refunded buyout's re-charter ----
+    let relet = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .is_some_and(|store| relet_due(ctx.w, store, state, &e));
+    if relet {
+        return relet_step(ctx, state, &e);
+    }
     let awaiting = ctx
         .w
         .module_state::<TacsimStore>()
@@ -962,11 +1050,180 @@ pub(crate) fn recall_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: Ob
     }
 }
 
+/// **End a Revoked charter's still-live lease, then return the hull** (doc 18 cut IC14
+/// row 4; lead ruling L10): `end_lease` again — `Ended | AlreadyEnded` runs the return
+/// half (the pilot told [`RETURNED_NOTICE`] on success); `Retrying` backs off with
+/// nothing paged; `Err` pages once and backs off. Every due fire retries, so a later
+/// success converges.
+fn end_revoked_lease(ctx: &mut Ctx<'_>, state: &mut PortTickState, e: &Enrolment) -> Step {
+    let Some((trust, _)) = trust_of(ctx.w) else {
+        state.recall_backoff.insert(e.hull.0, state.fires);
+        return Step::Idle;
+    };
+    let key = LeaseKey {
+        lessor: trust,
+        premises: e.hull,
+    };
+    match mush_economy::end_lease(ctx, mush_economy::ContractId(e.lease), &key) {
+        Ok(LeaseEnd::Ended | LeaseEnd::AlreadyEnded) => match return_hull(ctx, e) {
+            Ok(_) => {
+                crate::port_tick::notify(ctx, e.pilot, &named(RETURNED_NOTICE, e));
+                Step::Worked
+            }
+            Err((block, _)) => {
+                // The lease is over now; the ordinary Return arm takes it from here.
+                tracing::info!(
+                    hull = e.hull.0,
+                    ?block,
+                    "tacsim: a revoked charter's lease ended; the hull returns once it may"
+                );
+                state.recall_backoff.insert(e.hull.0, state.fires);
+                Step::Worked
+            }
+        },
+        Ok(LeaseEnd::Retrying) => {
+            state.recall_backoff.insert(e.hull.0, state.fires);
+            Step::Idle
+        }
+        Err(error) => {
+            if page_once(state, e.hull) {
+                tracing::error!(
+                    hull = e.hull.0,
+                    lease = e.lease,
+                    %error,
+                    "tacsim: a revoked charter's lease will not end; the pilot still holds it; \
+                     `@contract/show #<lease>`"
+                );
+            }
+            state.recall_backoff.insert(e.hull.0, state.fires);
+            Step::Idle
+        }
+    }
+}
+
+/// **One re-charter of a refunded buyout** (doc 18 cut IC14 row 12; lead ruling L11;
+/// proposed Q-18-71). First sight (no attempt recorded: the observer made the first
+/// and it failed): record attempt 1, due [`crate::port::buyout::relet_backoff`]`(1)`
+/// fires on, and page once. Each due retry runs
+/// [`crate::port::buyout::relet`] with its attempt number — the last
+/// ([`crate::port::buyout::MAX_RELET_ATTEMPTS`]) gives up exactly as cut IC13 built it
+/// — and on another failure records the attempt, due after the doubling backoff.
+fn relet_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, e: &Enrolment) -> Step {
+    let Some(&(made, _)) = state.relet_attempts.get(&e.hull) else {
+        state.relet_attempts.insert(
+            e.hull,
+            (
+                1,
+                state
+                    .fires
+                    .saturating_add(crate::port::buyout::relet_backoff(1)),
+            ),
+        );
+        if page_once(state, e.hull) {
+            tracing::error!(
+                hull = e.hull.0,
+                pilot = e.pilot.0,
+                buyout = e.buyout,
+                "tacsim: a refunded buyout's re-charter failed; retrying under a backoff; \
+                 `@contract/show #<buyout>`"
+            );
+        }
+        return Step::Idle;
+    };
+    let attempt = made.saturating_add(1);
+    let give_up = attempt >= crate::port::buyout::MAX_RELET_ATTEMPTS;
+    if crate::port::buyout::relet(ctx, e, attempt, give_up) || give_up {
+        state.relet_attempts.remove(&e.hull);
+    } else {
+        state.relet_attempts.insert(
+            e.hull,
+            (
+                attempt,
+                state
+                    .fires
+                    .saturating_add(crate::port::buyout::relet_backoff(attempt)),
+            ),
+        );
+    }
+    Step::Worked
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const D: i64 = 7 * DAY_SECS;
+
+    /// Doc 18 cut IC14 row 18: twenty lifetime enrolments over eight hulls — twelve
+    /// ended, eight governing — give the recall arm eight rows, each the hull's latest.
+    #[test]
+    fn ic14_the_recall_walk_visits_one_row_per_hull() {
+        let mut store = TacsimStore::default();
+        let base = |n: u32| Enrolment {
+            schema: crate::port::coop::ENROLMENT_SCHEMA,
+            account: mush_core::AccountId::mint(&format!("pilot{n}"), i64::from(n) + 1)
+                .expect("an account"),
+            pilot: ObjId(1_000 + n),
+            programme: mush_core::CanonicalId::new("coop.first_captain").expect("id"),
+            pack: mush_core::CanonicalId::new("tacsim.pack.lane").expect("id"),
+            entry: mush_core::CanonicalId::new("ceres_port").expect("id"),
+            hull: ObjId(500 + n % 8),
+            mark: format!("FPC-D-040{}", n % 8 + 1),
+            laid_up_name: "Slack Water".to_owned(),
+            name: "Salt Moth".to_owned(),
+            lease: u64::from(n) + 7,
+            vault: 3,
+            credit_account: 11,
+            stake_minor: 2_500_000,
+            share_permille: 250,
+            buyout_minor: 9_000_000,
+            enrolled_at: 1_000,
+            status: EnrolmentStatus::Active,
+            leased_at: 1_000,
+            buyout: None,
+            ended_at: None,
+            ended: None,
+            sales: 0,
+            margin_minor: 0,
+            shares_minor: 0,
+        };
+        for n in 0..20_u32 {
+            let mut e = base(n);
+            if n < 12 {
+                e.status = EnrolmentStatus::Revoked;
+                e.ended_at = Some(2_000 + i64::from(n));
+                e.ended = Some(EndCause::LeaseEnded);
+            }
+            store.enrolments.insert(e.account, e);
+        }
+        let hulls: Vec<ObjId> = (0..8).map(|n| ObjId(500 + n)).collect();
+        let rows = governing_rows(&store, &hulls);
+        assert_eq!(rows.len(), 8, "one row per hull");
+        for (row, hull) in rows.iter().zip(&hulls) {
+            assert_eq!(row.hull, *hull);
+            assert_eq!(row.status, EnrolmentStatus::Active, "the governing one");
+        }
+    }
+
+    /// Doc 18 cut IC14 row 32: the recall's answer to its `end_lease` — an ended lease
+    /// returns the hull now; `Retrying` and an `Err` leave the return to the recall arm
+    /// (`lease_retrying: true`, the enrolment already written Revoked first).
+    #[test]
+    fn ic14_a_retrying_or_refused_lease_end_leaves_the_return_to_the_arm() {
+        assert_eq!(
+            recall_outcome::<()>(&Ok(LeaseEnd::Ended)),
+            RecallOutcome::Return
+        );
+        assert_eq!(
+            recall_outcome::<()>(&Ok(LeaseEnd::AlreadyEnded)),
+            RecallOutcome::Return
+        );
+        assert_eq!(
+            recall_outcome::<()>(&Ok(LeaseEnd::Retrying)),
+            RecallOutcome::Retry
+        );
+        assert_eq!(recall_outcome(&Err("refused")), RecallOutcome::Retry);
+    }
 
     /// Doc 18 cut IC13 (L3): dormancy is judged from durable departures only.
     #[test]

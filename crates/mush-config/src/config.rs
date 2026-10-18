@@ -921,8 +921,9 @@ pub struct TacsimTimeCfg {
 }
 
 /// `[tacsim.time.ephemeris]` — the constant sky (doc 10 T17 as amended by doc 18
-/// §4.8; 14-spatial-implementation-plan §3.8). `rate = 0` is the ruling and the
-/// default; `deny_unknown_fields` for the same reason as [`TacsimTimeCfg`].
+/// §4.8; 14-spatial-implementation-plan §3.8). `rate = 0` is the default (doc 18
+/// D-18-42 rules the constant sky for the slice); `deny_unknown_fields` for the same
+/// reason as [`TacsimTimeCfg`].
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EphemerisCfg {

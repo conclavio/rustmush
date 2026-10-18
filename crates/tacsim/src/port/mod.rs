@@ -16,7 +16,7 @@
 //!   `tacsim:port:{pack}/{entry}` document per port entry;
 //! - [`apply`] — the `PortApplier`: the domain, the treasury, the orgs and
 //!   their capital (doc 18 §4.7 parts a–c), once, under the content latch;
-//! - [`readiness`] — the readiness report `@tacsim/port status` renders and
+//! - [`readiness`](mod@readiness) — the readiness report `@tacsim/port status` renders and
 //!   cut IC6 gates `+coop/enrol` on;
 //! - [`credit`] — `+credit`, the pilot's own account.
 //!
@@ -149,8 +149,9 @@ pub use map::{
     TrancheRow, VendorRow, port_map_key,
 };
 pub use market::{
-    HOLD_ELSEWHERE, HOLD_NOT_HERE, HOLD_UNDER_WAY, HoldPlan, NOT_IN_PORT, NOT_YOUR_CHARTER,
-    PlanCompartment, PortCapacity, PortPartyCaps, PortVenueGate, capacity_line, governed_hold,
+    HOLD_CLEARED, HOLD_ELSEWHERE, HOLD_NOT_HERE, HOLD_PAPERS_DARK, HOLD_UNDER_WAY, HoldPlan,
+    NOT_IN_PORT, NOT_YOUR_CHARTER, PlanCompartment, PortCapacity, PortPartyCaps, PortVenueGate,
+    capacity_line, governed_hold,
 };
 pub use orders::{
     HoldNote, Inflight, InflightRefs, LogLine, MAX_DEPART_CREW, MAX_ORDER_LOG_BYTES,

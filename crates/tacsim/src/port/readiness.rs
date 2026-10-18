@@ -74,8 +74,13 @@ pub enum Binding {
     /// drawn sale's contract settles on.
     MarketFacts,
     /// Cut IC10: whether anything answers the `inventory` fact namespace, which a
-    /// sale into a bid's contract settles on (lead 2g).
+    /// sale into a bid's contract settles on (lead 2g). Since cut IC14 (row 1) also
+    /// Missing when the applied-marker mirror is incomplete, since an incomplete
+    /// mirror answers nothing (E7c2 fold R3).
     InventoryFacts,
+    /// Doc 18 §9 risk 19, cut IC14: the inventory mirror's headroom; reported and
+    /// paged, never gated, as the sky is (proposed Q-18-72).
+    Markers,
 }
 
 /// **A line's state.** Only [`LineState::Ready`] counts as ready.
@@ -317,7 +322,7 @@ pub fn readiness(w: &World) -> Readiness {
             // Doc 18 cut IC12 (§4.8 "pages if the sky rate is non-zero while any
             // lane body lacks `epoch_ic`"): a moving sky moves such a body from the
             // server's epoch, not the date its numbers were read for — flagged here,
-            // paged once per boot by the port tick (`port_tick`'s `sky_paged`), and
+            // paged once per boot by the port tick (`port_tick`'s `sky_pages`), and
             // never gated (D-18-50). Rate 0 is untouched byte for byte.
             let (state, text) = match body_without_epoch(pack, ephemeris) {
                 Some(body) => (
@@ -401,10 +406,76 @@ pub fn readiness(w: &World) -> Readiness {
     report
 }
 
+/// **The `InventoryFacts` line** (doc 18 cut IC10; cut IC14 row 1): Ready when a
+/// provider answers the `inventory` namespace and the applied-marker mirror is
+/// complete (or no inventory store is composed to say otherwise — the `Markers`
+/// line reports that); Missing when nothing answers, or (cut IC14) when the mirror
+/// is incomplete, since an incomplete mirror answers **nothing** (E7c2 fold R3) and
+/// no sale into a bid could settle.
+#[must_use]
+pub(crate) fn inventory_facts_line(provider: bool, complete: Option<bool>) -> ReadinessLine {
+    let (state, text) = match (provider, complete) {
+        (false, _) => (
+            LineState::Missing,
+            "inventory facts: nothing answers the inventory namespace, so sales into bids \
+             refuse.",
+        ),
+        (true, Some(false)) => (
+            LineState::Missing,
+            "inventory facts: the applied-marker mirror is incomplete, so sales into bids \
+             cannot settle.",
+        ),
+        (true, Some(true) | None) => (
+            LineState::Ready,
+            "inventory facts: answered, so sales into bids can settle.",
+        ),
+    };
+    ReadinessLine {
+        port: None,
+        binding: Binding::InventoryFacts,
+        state,
+        text: text.to_owned(),
+    }
+}
+
+/// **The `Markers` line** (doc 18 §9 risk 19, cut IC14 row 1): the inventory
+/// mirror's headroom — `held` applied markers of the mirror's `max`. Ready while
+/// `held` is at most three quarters of `max`; Flagged above it (the operator's
+/// signal: past `max` every inventory fact goes dark, world-wide); Missing with no
+/// inventory store composed. Reported and paged once per boot by the port tick,
+/// **never** gated ([`gated`](crate::port::coop::gated); proposed Q-18-72).
+#[must_use]
+pub(crate) fn markers_line(held: Option<usize>, max: usize) -> ReadinessLine {
+    let (state, text) = match held {
+        None => (
+            LineState::Missing,
+            "markers: no inventory store is composed.".to_owned(),
+        ),
+        Some(n) if n.saturating_mul(4) <= max.saturating_mul(3) => (
+            LineState::Ready,
+            format!("markers: {n} of {max} applied markers held."),
+        ),
+        Some(n) => (
+            LineState::Flagged,
+            format!(
+                "markers: {n} of {max} applied markers held; past {max} every inventory fact \
+                 goes dark."
+            ),
+        ),
+    };
+    ReadinessLine {
+        port: None,
+        binding: Binding::Markers,
+        state,
+        text,
+    }
+}
+
 /// **The report with cut IC8's lines** (doc 18 §4.7 "Boot-once acts and the
 /// readiness report"; lead ruling L9): [`readiness`] — its IC3, IC4 and IC6 lines
 /// byte-identical — with the `MarketFacts` line spliced in right after the
-/// treasury line(s) and (cut IC10) the `InventoryFacts` line right after it, and per port, after its last line (the hulls line when it
+/// treasury line(s), (cut IC10) the `InventoryFacts` line right after it and (cut
+/// IC14) the `Markers` headroom line right after that, and per port, after its last line (the hulls line when it
 /// has one), one `Pools` line per vendor, one `Listings` line per ask and one
 /// `Bids` line per bid, in authored order. Pools and receipts are typed state,
 /// readable only through a module context, which is why this takes `ctx`;
@@ -431,23 +502,16 @@ pub fn readiness_in(ctx: &mush_core::Ctx<'_>) -> Readiness {
         }
     };
     // ---- doc 18 cut IC10: inventory facts, right after the market facts ----
-    let inventory_facts = if mush_economy::has_fact_provider(w, mush_inventory::NS) {
-        ReadinessLine {
-            port: None,
-            binding: Binding::InventoryFacts,
-            state: LineState::Ready,
-            text: "inventory facts: answered, so sales into bids can settle.".to_owned(),
-        }
-    } else {
-        ReadinessLine {
-            port: None,
-            binding: Binding::InventoryFacts,
-            state: LineState::Missing,
-            text: "inventory facts: nothing answers the inventory namespace, so sales into bids \
-                   refuse."
-                .to_owned(),
-        }
-    };
+    let inventory = w.module_state::<mush_inventory::InventoryStore>();
+    let inventory_facts = inventory_facts_line(
+        mush_economy::has_fact_provider(w, mush_inventory::NS),
+        inventory.map(mush_inventory::InventoryStore::is_complete),
+    );
+    // ---- doc 18 §9 risk 19, cut IC14: the mirror's headroom, right after ----
+    let markers = markers_line(
+        inventory.map(mush_inventory::InventoryStore::markers),
+        mush_inventory::MAX_APPLIED_MARKERS,
+    );
     let after_treasury = report
         .lines
         .iter()
@@ -457,6 +521,9 @@ pub fn readiness_in(ctx: &mush_core::Ctx<'_>) -> Readiness {
     report
         .lines
         .insert(after_treasury.saturating_add(1), inventory_facts);
+    report
+        .lines
+        .insert(after_treasury.saturating_add(2), markers);
     // ---- per port, after its last line ----
     let Some(store) = w.module_state::<TacsimStore>() else {
         return report;
@@ -1218,6 +1285,84 @@ mod tests {
                 "  org [pending]".to_owned(),
                 "Not ready: 1 of 2 lines are pending, missing or flagged.".to_owned(),
             ]
+        );
+    }
+
+    /// Doc 18 §9 risk 19, cut IC14: the `Markers` line is Ready up to three
+    /// quarters of the mirror's cap and Flagged past it (3,072 / 3,073 of 4,096),
+    /// Missing with no store — and it never gates `+coop/enrol`.
+    #[test]
+    fn ic14_the_markers_line_reports_headroom_and_never_gates() {
+        let max = mush_inventory::MAX_APPLIED_MARKERS;
+        let ready = markers_line(Some(3_072), max);
+        assert_eq!(
+            (ready.binding, ready.state, ready.text.as_str()),
+            (
+                Binding::Markers,
+                LineState::Ready,
+                "markers: 3072 of 4096 applied markers held."
+            )
+        );
+        let flagged = markers_line(Some(3_073), max);
+        assert_eq!(flagged.state, LineState::Flagged);
+        assert_eq!(
+            flagged.text,
+            "markers: 3073 of 4096 applied markers held; past 4096 every inventory fact goes \
+             dark."
+        );
+        let none = markers_line(None, max);
+        assert_eq!(
+            (none.state, none.text.as_str()),
+            (
+                LineState::Missing,
+                "markers: no inventory store is composed."
+            )
+        );
+        for line in [flagged, none] {
+            let report = Readiness { lines: vec![line] };
+            assert!(
+                crate::port::coop::enrol_gate(&report).is_ok(),
+                "reported, never gated"
+            );
+            assert!(!report.is_ready());
+        }
+    }
+
+    /// Doc 18 cut IC14 row 1: an incomplete applied-marker mirror answers no
+    /// inventory fact, so the `InventoryFacts` line goes Missing — and that line
+    /// gates enrolment.
+    #[test]
+    fn ic14_an_incomplete_mirror_closes_enrolment() {
+        let incomplete = inventory_facts_line(true, Some(false));
+        assert_eq!(
+            (
+                incomplete.binding,
+                incomplete.state,
+                incomplete.text.as_str()
+            ),
+            (
+                Binding::InventoryFacts,
+                LineState::Missing,
+                "inventory facts: the applied-marker mirror is incomplete, so sales into bids \
+                 cannot settle."
+            )
+        );
+        let report = Readiness {
+            lines: vec![incomplete],
+        };
+        assert!(
+            crate::port::coop::enrol_gate(&report).is_err(),
+            "the gate shuts on an incomplete mirror"
+        );
+        assert_eq!(
+            inventory_facts_line(true, Some(true)).text,
+            "inventory facts: answered, so sales into bids can settle."
+        );
+        assert_eq!(inventory_facts_line(true, None).state, LineState::Ready);
+        assert_eq!(
+            inventory_facts_line(false, Some(true)).text,
+            "inventory facts: nothing answers the inventory namespace, so sales into bids \
+             refuse."
         );
     }
 }

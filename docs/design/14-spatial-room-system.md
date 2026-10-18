@@ -334,6 +334,11 @@ Two packs ship in the repository and apply at first boot when `[game].starter_ar
 school: per doc 06 §15 the packs' `brief` records that origin, the quotations stay short, and
 nothing else is imported.
 
+**As built (doc 18 IC0):** three starter packs ship, compiled in and digest-pinned —
+`region.limbo`, `neighborhood.ooc_area` and `neighborhood.staff_lobby` — holding seventeen lot rooms
+(16b cut C.1 added the simulator lobby, the red room and the blue room), the bus interior and Limbo
+(`crates/mush-atlas/src/starter.rs:1-46`, `LOT_ROOMS = 17`).
+
 **`region.limbo`** — one surface region, "the lot", 400 m square, flat at datum 0 with a raised
 loading dock (+1.2 m) on the back lot; locality `locality.lot`; background recipe "paved lot";
 the connection `connection.lot_tour` (journey; mode `bus`; a corridor from the OOC bus stop past
@@ -476,6 +481,12 @@ heightfields (3.5) refine it later through the same records.
   or being told), filters modes by what the character has, chooses the route by the connection's
   policy and shows alternatives only where mode or hazard differ; a ride (`foot`, `car`, `transit`)
   needs no object; a carrier journey moves the vehicle and everyone aboard (C16A).
+
+  **As built (doc 18 IC1):** the mode filter is true as written since IC1 removed `spacecraft` from
+  `SELF_MODES` (`crates/mush-atlas/src/travel.rs:96`): no player verb traverses a `spacecraft`
+  connection, and a lane passage is flown only by `+ship/undock` or the sailing plan (doc 18 §4.8).
+  D-14-5 / 14a 5A (carrier interiors get local frames) is not foreclosed: the Dray's six interior rooms
+  can take a local atlas frame later.
 - **Clocks.** A connection's cost policy yields IC seconds; the journey is stamped and advanced on
   `WorldIc` (`World::world_ic_now`); real time elapsed is IC over the campaign rate
   (`[game].ic_ratio`, or `[tacsim.time].rate` for that campaign). Two guards make compression

@@ -627,7 +627,7 @@ pub(crate) fn stowage_held(economy: &EconomyStore, trust: &PrincipalId, stowage:
 /// **Whether a hull may be chartered** (`next_loaner`'s rule made concrete,
 /// lead ruling L9): live; its asset `Active` and titled to the Trust; no live
 /// Trust lease on it; `Direct` on the programme port's own domain and not under
-/// way; its airlock and stowage recorded; and its stowage not [`stowage_held`] —
+/// way; its airlock and stowage recorded; and its stowage not `stowage_held` —
 /// no vault, or the Trust's own Active vault, which cut IC13's recall leaves
 /// behind (the next enrolment re-owns it).
 #[must_use]
@@ -668,6 +668,9 @@ pub fn hull_is_free(w: &World, port: &ProgrammePort<'_>, row: &HullRow) -> bool 
         && docked
         && !under_way
         && !backed
+        // Doc 18 cut IC14 row 11 (lead ruling L17): the desk never lends a hull whose
+        // sailing papers do not read (or that has a passage filed).
+        && !crate::port::voyage::voyage_blocks(w, hull)
 }
 
 /// **Every free hull**, ascending hull id; the next loaner is the first.
@@ -708,6 +711,10 @@ pub const fn gated(binding: Binding) -> bool {
         // D-18-50: the readiness gate checks the world rate and reports the sky; it
         // never gates on it.
         Binding::Sky => false,
+        // Doc 18 §9 risk 19, cut IC14 (proposed Q-18-72): the mirror's headroom is
+        // reported and paged, never gated, in D-18-50's sky manner; an actually
+        // incomplete mirror closes enrolment through the `InventoryFacts` line.
+        Binding::Markers => false,
     }
 }
 
@@ -871,7 +878,7 @@ pub(crate) fn account_books<'a>(
 }
 
 /// The row of `hull` in the port's map.
-pub(crate) fn row_of<'a>(port: &ProgrammePort<'a>, hull: ObjId) -> Option<&'a HullRow> {
+fn row_of<'a>(port: &ProgrammePort<'a>, hull: ObjId) -> Option<&'a HullRow> {
     port.map.hulls.iter().find(|row| row.hull == hull.0)
 }
 
@@ -1587,7 +1594,7 @@ fn enrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 ///
 /// **Cut IC13 (lead ruling L7)**: a `BuyoutPending` enrolment whose lease or whose
 /// buyout contract reaches a terminal state goes to
-/// [`crate::port::buyout::settle_buyout`], which reads both contracts from the
+/// `crate::port::buyout::settle_buyout`, which reads both contracts from the
 /// economy (never the event alone) and graduates, re-charters, or waits.
 /// `Graduated` and `Revoked` enrolments, `Disputed` and every non-terminal state:
 /// nothing. Never panics, no `?`; a no-op on a roster without the TacSim layer.
@@ -1940,7 +1947,7 @@ mod tests {
     /// binding is [`gated`]; the sky never shuts it (D-18-50).
     #[test]
     fn ic12_the_gate_refuses_on_every_gated_line_and_never_on_the_sky() {
-        const EVERY: [Binding; 15] = [
+        const EVERY: [Binding; 16] = [
             Binding::Lane,
             Binding::Sky,
             Binding::Rate,
@@ -1956,6 +1963,7 @@ mod tests {
             Binding::Bids,
             Binding::MarketFacts,
             Binding::InventoryFacts,
+            Binding::Markers,
         ];
         let port = CanonicalId::new("ceres_port").ok();
         let line = |binding, state| ReadinessLine {
@@ -1972,7 +1980,8 @@ mod tests {
         };
         assert!(enrol_gate(&open).is_ok());
         for binding in EVERY {
-            assert_eq!(gated(binding), binding != Binding::Sky, "{binding:?}");
+            let ungated = matches!(binding, Binding::Sky | Binding::Markers);
+            assert_eq!(gated(binding), !ungated, "{binding:?}");
             for state in [LineState::Pending, LineState::Missing, LineState::Flagged] {
                 let mut report = open.clone();
                 for row in &mut report.lines {
@@ -1986,9 +1995,12 @@ mod tests {
                 } else {
                     assert!(
                         enrol_gate(&report).is_ok(),
-                        "the sky is reported, never gated"
+                        "the sky and the marker headroom are reported, never gated"
                     );
-                    assert!(!report.is_ready(), "the summary still counts the sky");
+                    assert!(
+                        !report.is_ready(),
+                        "the summary still counts the sky and the markers"
+                    );
                 }
             }
         }

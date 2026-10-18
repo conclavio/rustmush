@@ -93,6 +93,11 @@ node hop. A torch cutter mid-lane between Phobos and Kirkwood is minutes out of 
 commander knows it — the default state of every ship in the corridor, and the row that keeps the
 setting honest. Only a **mobile half** aboard changes it (§7.2), and none exists at world start.
 
+**As built (doc 18 IC9):** a passage's legs are frozen in its ticket's `PassagePlan` at departure
+(doc 18 §4.8, D-18-46; `crates/tacsim/src/port/voyage.rs`). At P-A, R5 reads the moving sky's `Sky`
+positions and the ship's frozen plan legs, and D-15-11 is honoured with the route's light distance
+taken from the plan, not re-derived from a sky that has moved since.
+
 ### 3.5 The lag table
 
 One way, IC time. "In coverage" assumes both ends inside a node's coverage and an empty queue. The
@@ -111,6 +116,10 @@ Luna hub means Earth's own traffic first crosses to Luna at light speed.
 | Ship mid-lane, Phobos ↔ Kirkwood | ≈ 4–19 min to the nearer end | the same, then the node hop |
 
 Earth is a little worse off than Luna by design: the network is Luna's (§4).
+
+**As built (doc 18 IC9):** the last row's interpolation reads the ship's frozen plan legs (doc 18
+D-18-46): at P-A, R5 takes the route's light distance from the plan and the end bodies' `Sky`
+positions.
 
 ## 4. Topology at world start: the Luna star (D-15-6)
 

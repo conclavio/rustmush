@@ -2742,7 +2742,7 @@ pub struct Departure {
 /// runs first**, public so a caller can dry-run every refusal `depart` would give
 /// before it spends anything.
 ///
-/// In order: [`journey_ineligible`] (gone, kind, already under way, the seal, the
+/// In order: `journey_ineligible` (gone, kind, already under way, the seal, the
 /// census, a held placement, quarantine); the carrier's origin anchor and its
 /// equality with the route's origin endpoint ([`ROUTE_NOT_FROM_HERE`]); the
 /// arrival placement at the route's destination endpoint (a domain that is not

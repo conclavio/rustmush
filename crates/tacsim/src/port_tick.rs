@@ -5,7 +5,7 @@
 //! obeys the tick-cadence rule (`mush-campaign/src/tick.rs:28-37`): a tick runs
 //! as GOD and submits nothing authoritative itself, because two GOD submissions
 //! in one drain void each other. So every authoritative act this tick makes is
-//! made by [`Fire::as_principal`], which swaps `ctx.actor` to the principal an
+//! made by `Fire::as_principal`, which swaps `ctx.actor` to the principal an
 //! agent acts for (the `mush-npc` precedent) for ONE closed call, and counts that
 //! call as the principal's one act this fire (D-18-32: at most one authoritative
 //! submission per actor per fire). **Nothing in the tick calls
@@ -16,7 +16,7 @@
 //! cursor over agent ids, at most [`MAX_AGENTS_VISITED_PER_FIRE`] visits and
 //! [`MAX_AGENTS_WORKED_PER_FIRE`] units of work per fire, the cursor moved past
 //! the last visited agent. Fairness between agents sharing one principal is a
-//! RAM debt per principal (lead ruling L8, [`arbitrate`]).
+//! RAM debt per principal (lead ruling L8, `arbitrate`).
 //!
 //! The arms it carries, in dispatch order ahead of the probe:
 //!
@@ -101,10 +101,14 @@ pub const NOTICE_HEADING: &str = "While you were off watch:";
 
 // ---- registration ------------------------------------------------------------
 
-/// Register the port tick (doc 18 cut IC5): the two typed families, the crate's
-/// one `outcome` and one `action` validator, in a test world the probe (family,
-/// definitions and provider), [`PortHandles`], [`PortTickState`], the
-/// `tacsim.port` tick and the [`ReconnectNotices`] hook.
+/// Register the port tick (doc 18 cut IC5): the port's typed families, the crate's
+/// one `outcome` and one `action` validator, the `tacsim_port_stock` provider (doc 18
+/// cut IC8) and the `tacsim_port_burn` provider (cut IC9) — each when the inventory
+/// cell is filled (and the burn's drive table built), their definitions regardless —
+/// in a test world the probe (family, definitions and provider), [`PortHandles`],
+/// [`PortTickState`], the `tacsim.port` tick and the [`ReconnectNotices`] hook. Cut
+/// IC11's order arm registers no provider of its own: it runs the burn and the
+/// market's closed calls as the plan's author.
 ///
 /// The order is the inventory provider's interleaved one
 /// (`mush-inventory/src/provider.rs:891-966`): an action descriptor must
@@ -358,9 +362,29 @@ pub struct PortTickState {
     /// Doc 18 cut IC8 (lead ruling L19): the drift pages raised this boot, by
     /// `(vault, good)` — each pool pages once per boot.
     pub(crate) paged: BTreeSet<(u64, CanonicalId)>,
-    /// Doc 18 cut IC12: the moving-sky page raised this boot (once) — doc 18 §4.8
-    /// "pages if the sky rate is non-zero while any lane body lacks `epoch_ic`".
-    pub(crate) sky_paged: bool,
+    /// Doc 18 cut IC12: the moving-sky pages raised this boot — doc 18 §4.8 "pages
+    /// if the sky rate is non-zero while any lane body lacks `epoch_ic`". A count
+    /// since cut IC14 (row 39), so a test proves one page, not only the latch; it
+    /// never exceeds one a boot.
+    pub(crate) sky_pages: u32,
+    /// Doc 18 §9 risk 19, cut IC14: the marker-headroom pages raised this boot —
+    /// the `Markers` readiness line Flagged; at most one a boot.
+    pub(crate) marker_pages: u32,
+    /// Doc 18 cut IC14 row 11: the hulls whose unreadable sailing plan has paged this
+    /// boot (once each; bounded by the voyage keys, one per hull).
+    pub(crate) voyage_warned: BTreeSet<u32>,
+    /// Doc 18 cut IC14 row 11: the unreadable-sailing-plan pages raised this boot.
+    pub(crate) voyage_pages: u32,
+    /// Doc 18 cut IC14 row 29 (lead ruling L24): stock rows the clerk skips this boot,
+    /// by issue key text — a mint submitted `MAX_STOCK_ATTEMPTS` times with no receipt.
+    /// Bounded by `crate::port::stock::MAX_CLERK_ROWS`.
+    pub(crate) stock_skipped: BTreeSet<String>,
+    /// Doc 18 cut IC14 row 29: mints submitted with no receipt yet, by issue key text.
+    /// Bounded by `crate::port::stock::MAX_CLERK_ROWS`.
+    pub(crate) stock_attempts: BTreeMap<String, u8>,
+    /// Doc 18 cut IC14 row 29: the ports whose map records rows past the clerk's bound,
+    /// warned once a boot each (bounded by the lane's ports).
+    pub(crate) stock_uncarried: BTreeSet<CanonicalId>,
     /// Doc 18 cut IC8: listings the release arm has already logged a skip or a
     /// refusal for this boot (each is logged once).
     pub(crate) release_warned: BTreeSet<u64>,
@@ -404,6 +428,11 @@ pub struct PortTickState {
     /// Doc 18 cut IC13: blocked recalls, by hull -> the fire it was blocked on; the
     /// recall agent passes over each for `crate::port::recall::RECALL_RECHECK_FIRES`.
     pub(crate) recall_backoff: BTreeMap<u32, u64>,
+    /// Doc 18 cut IC14 row 12 (lead ruling L11): a refunded buyout's re-charters, by
+    /// hull -> (attempts made, the fire the next is due). RAM only, so a reboot resets
+    /// the count (bounded by reboots); retained each fire to hulls whose governing
+    /// enrolment still waits on a re-charter, so bounded by the pool of eight.
+    pub(crate) relet_attempts: BTreeMap<ObjId, (u8, u64)>,
 }
 
 impl PortTickState {
@@ -432,6 +461,9 @@ pub struct PortFireStats {
     pub deferred: u32,
     /// Agents refused (gone, GOD or gone principal, unreadable read).
     pub refused: u32,
+    /// Doc 18 cut IC14 row 20 (lead ruling L16): agents waiting on staff or a backoff
+    /// that have already paged — counted, never the generic refusal warning.
+    pub held: u32,
 }
 
 /// The last fire's stats, `None` before the first fire that found the layer on.
@@ -451,18 +483,56 @@ pub fn drift_pages(w: &World) -> Vec<(u64, CanonicalId)> {
         .unwrap_or_default()
 }
 
-/// **Whether the port tick has paged the moving sky this boot** (doc 18 cut IC12;
-/// §4.8): a status read for tests, beside [`drift_pages`]. `true` once a fire with
-/// the layer on found a non-zero sky rate and a lane body without `epoch_ic`
-/// (`crate::port::readiness::body_without_epoch`); the page is raised once a boot.
+/// **How many times the port tick has paged the moving sky this boot** (doc 18 cut
+/// IC12; §4.8; a count since cut IC14, row 39): a status read for tests, beside
+/// [`drift_pages`]. One once a fire with the layer on found a non-zero sky rate and
+/// a lane body without `epoch_ic` (`crate::port::readiness::body_without_epoch`);
+/// the page is raised once a boot, so it never exceeds one.
 #[must_use]
-pub fn sky_paged(w: &World) -> bool {
+pub fn sky_pages(w: &World) -> u32 {
     w.module_state::<PortTickState>()
-        .is_some_and(|state| state.sky_paged)
+        .map_or(0, |state| state.sky_pages)
+}
+
+/// **The fire a hull's blocked recall was last backed off on, this boot** (doc 18 cut
+/// IC14 row 33): a status read for tests beside [`recall_pages`] — a blocked recall
+/// re-arms it each time the arm re-enters after `RECALL_RECHECK_FIRES`.
+#[must_use]
+pub fn recall_blocked_at(w: &World, hull: u32) -> Option<u64> {
+    w.module_state::<PortTickState>()
+        .and_then(|state| state.recall_backoff.get(&hull).copied())
+}
+
+/// **A refunded buyout's re-charter attempts so far and the fire the next is due**
+/// (doc 18 cut IC14 row 12; proposed Q-18-71): a status read for tests beside
+/// [`recall_pages`]. `None` before the recall arm first sees the hull and again once
+/// the re-charter landed or the arm gave up.
+#[must_use]
+pub fn relet_attempts(w: &World, hull: ObjId) -> Option<(u8, u64)> {
+    w.module_state::<PortTickState>()
+        .and_then(|state| state.relet_attempts.get(&hull).copied())
+}
+
+/// **How many fires found the layer on this boot** (doc 18 cut IC14): a status read
+/// for tests that count fires against a backoff.
+#[must_use]
+pub fn fires(w: &World) -> u64 {
+    w.module_state::<PortTickState>()
+        .map_or(0, |state| state.fires)
+}
+
+/// **How many times the port tick has paged the marker headroom this boot** (doc 18
+/// §9 risk 19, cut IC14): one once a fire found the `Markers` readiness line Flagged
+/// (more than three quarters of `mush_inventory::MAX_APPLIED_MARKERS` held); at most
+/// one a boot.
+#[must_use]
+pub fn marker_pages(w: &World) -> u32 {
+    w.module_state::<PortTickState>()
+        .map_or(0, |state| state.marker_pages)
 }
 
 /// **The hulls the recall arm has paged this boot** (doc 18 cut IC13), in order — a
-/// status read for tests beside [`sky_paged`].
+/// status read for tests beside [`sky_pages`].
 #[must_use]
 pub fn recall_pages(w: &World) -> Vec<u32> {
     w.module_state::<PortTickState>()
@@ -472,10 +542,10 @@ pub fn recall_pages(w: &World) -> Vec<u32> {
 
 /// Doc 18 cut IC12 (§4.8; lead ruling L13): the moving-sky page, once a boot. The
 /// readiness report flags the Sky line on the same condition and stays a pure read;
-/// the page lives here, on the fire, latched in [`PortTickState::sky_paged`]. It is
-/// never a gate (D-18-50).
+/// the page lives here, on the fire, counted in [`PortTickState::sky_pages`] (at
+/// most one a boot). It is never a gate (D-18-50).
 fn page_moving_sky(w: &World, state: &mut PortTickState) {
-    if state.sky_paged {
+    if state.sky_pages > 0 {
         return;
     }
     let Some(store) = w.module_state::<TacsimStore>() else {
@@ -492,7 +562,63 @@ fn page_moving_sky(w: &World, state: &mut PortTickState) {
             rate = ephemeris.rate,
             "tacsim: the sky moves but a lane body has no epoch_ic"
         );
-        state.sky_paged = true;
+        state.sky_pages = state.sky_pages.saturating_add(1);
+    }
+}
+
+/// Doc 18 cut IC14 row 11 (lead ruling L17): each unreadable sailing plan pages once a
+/// boot, beyond the boot log line — every gate treats it as filed meanwhile.
+fn page_dark_voyages(w: &World, state: &mut PortTickState) {
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return;
+    };
+    for hull in store.voyages_unreadable() {
+        if state.voyage_warned.insert(hull.0) {
+            tracing::error!(
+                hull = hull.0,
+                runbook = "repair the tacsim:voyage:<hull> document; every gate treats the \
+                           hull as cleared until it reads",
+                "tacsim: a hull's sailing plan does not read; it is held out of the pool"
+            );
+            state.voyage_pages = state.voyage_pages.saturating_add(1);
+        }
+    }
+}
+
+/// **How many unreadable sailing plans the port tick has paged this boot** (doc 18
+/// cut IC14 row 11): a status read for tests; each hull at most once a boot.
+#[must_use]
+pub fn voyage_pages(w: &World) -> u32 {
+    w.module_state::<PortTickState>()
+        .map_or(0, |state| state.voyage_pages)
+}
+
+/// Doc 18 §9 risk 19, cut IC14: the marker-headroom page, once a boot, in the
+/// [`page_moving_sky`] manner. The readiness report flags the `Markers` line on the
+/// same condition ([`crate::port::readiness::markers_line`]) and stays a pure read;
+/// the page lives here, counted in [`PortTickState::marker_pages`]. Never a gate
+/// (proposed Q-18-72): it is the operator's signal that the inventory mirror nears
+/// the cap past which every inventory fact goes dark.
+fn page_marker_headroom(w: &World, state: &mut PortTickState) {
+    if state.marker_pages > 0 {
+        return;
+    }
+    let Some(inventory) = w.module_state::<mush_inventory::InventoryStore>() else {
+        return;
+    };
+    let line = crate::port::readiness::markers_line(
+        Some(inventory.markers()),
+        mush_inventory::MAX_APPLIED_MARKERS,
+    );
+    if line.state == crate::port::readiness::LineState::Flagged {
+        tracing::error!(
+            runbook = "docs/ops.md \"Applied-marker retention (doc 18 cut IC14)\"",
+            held = inventory.markers(),
+            max = mush_inventory::MAX_APPLIED_MARKERS,
+            "tacsim: the inventory mirror holds more than three quarters of its applied-marker \
+             cap; past it every inventory fact goes dark"
+        );
+        state.marker_pages = state.marker_pages.saturating_add(1);
     }
 }
 
@@ -518,6 +644,10 @@ pub(crate) enum Step {
     Deferred,
     /// Agent gone, principal GOD or gone, or an unreadable read; logged once per boot.
     Refused,
+    /// Doc 18 cut IC14 row 20 (lead ruling L16): a step that is waiting on staff or a
+    /// backoff and has already paged (a held launch); counted, never the generic
+    /// warning.
+    Held,
 }
 
 /// The arms, in dispatch order (one step per agent per fire, D-18-32).
@@ -575,6 +705,13 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     let mut state = std::mem::take(slot);
     state.fires = state.fires.saturating_add(1);
     page_moving_sky(ctx.w, &mut state);
+    page_marker_headroom(ctx.w, &mut state);
+    page_dark_voyages(ctx.w, &mut state);
+    // Doc 18 cut IC14 row 21: the first fire after a boot tells the grants the RAM
+    // verification lost.
+    if state.fires == 1 {
+        crate::port::voyage::launch_retell(ctx, &state);
+    }
     let stats = walk(ctx, &mut state);
     state.last_fire = Some(stats);
     if let Some(slot) = ctx.w.module_state_mut::<PortTickState>() {
@@ -599,19 +736,16 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     crate::port::executor::order_verify(ctx, state);
     // Doc 18 cut IC8: the stock clerks of every present lane port map whose lane
     // is latched (a retired lane seeds nothing), then at most one release agent.
+    // Doc 18 cut IC14 row 31 (lead ruling L25): latched per ENTRY — a port entry a
+    // later lane version dropped keeps its map, and its clerk is not offered.
     let clerks: Vec<ObjId> = ctx
         .w
         .module_state::<TacsimStore>()
         .map(|store| {
-            let latched = CanonicalId::new(crate::definitions::content::LANE_PACK)
-                .ok()
-                .is_some_and(|lane| store.applied_in(ctx.w, &lane).is_some());
-            if !latched {
-                return Vec::new();
-            }
             store
                 .port_maps()
                 .filter(|map| map.pack.as_str() == crate::definitions::content::LANE_PACK)
+                .filter(|map| crate::port::stock::entry_latched(ctx.w, &map.entry))
                 .filter_map(|map| map.clerk.as_ref().map(|clerk| ObjId(clerk.thing)))
                 .collect()
         })
@@ -704,6 +838,7 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
                 fire.stats.submitted = fire.stats.submitted.saturating_add(1);
             }
             Step::Deferred => fire.stats.deferred = fire.stats.deferred.saturating_add(1),
+            Step::Held => fire.stats.held = fire.stats.held.saturating_add(1),
             Step::Refused => {
                 fire.stats.refused = fire.stats.refused.saturating_add(1);
                 if state.warned.insert(agent) {

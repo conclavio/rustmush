@@ -181,6 +181,30 @@ fn catalog_of(good: &CanonicalId) -> CatalogRef {
     }
 }
 
+/// **A storefront item that already backs a vault is refused** (doc 18 cut IC14 row
+/// 30): the economy keeps one vault per backing (`@vault/create`'s check), so an
+/// unrecorded vendor whose storefront item already backs a vault would make a second
+/// vault the snapshot's backing index cannot hold.
+fn backs_no_vault(
+    w: &World,
+    id: &CanonicalId,
+    org: &CanonicalId,
+    storefront: ObjId,
+) -> Result<(), String> {
+    let backing = w.module_state::<EconomyStore>().and_then(|economy| {
+        economy
+            .snapshot()
+            .vault_by_backing(&CustodyRef::Container(storefront))
+            .map(|v| v.id.0)
+    });
+    match backing {
+        Some(n) => Err(format!(
+            "{id}: vendor {org}: storefront: that item already backs vault #{n}"
+        )),
+        None => Ok(()),
+    }
+}
+
 /// **Parts d–e's refusals, before any write** (doc 18 cut IC8; the `PortApplier`'s
 /// preflight, after its IC3/IC4 drift checks): the market is composed; every stock, ask
 /// and bid good has a catalogue entry `catalog_entries()` derives; each storefront and
@@ -190,7 +214,8 @@ fn catalog_of(good: &CanonicalId) -> CatalogRef {
 /// posted afresh has an in-range intake, no unrecorded twin and room under the
 /// vendor's listing cap (fixer F3); no recorded bid is dropped, and no revision would
 /// take a bid's remaining intake past `MAX_QUANTITY` (cut IC10: a cut below what is
-/// left saturates at 0, the exhausted bid).
+/// left saturates at 0, the exhausted bid); no unrecorded storefront already backs a
+/// vault ([`backs_no_vault`], cut IC14 row 30).
 ///
 /// # Errors
 ///
@@ -337,6 +362,9 @@ pub(crate) fn preflight(
                         vendor.storefront
                     ));
                 }
+                // Doc 18 cut IC14 row 30: `@vault/create`'s one-vault-per-backing rule,
+                // refused here before any write rather than discovered inside `put`.
+                backs_no_vault(w, id, org, storefront)?;
                 authored_object(w, &def.area, &vendor.signatory, "npc")
                     .map_err(|detail| format!("{id}: vendor {org}: signatory: {detail}"))?;
             }
@@ -512,6 +540,8 @@ pub(crate) fn put(
                 .map_err(|detail| format!("{id}: vendor {org}: storefront: {detail}"))?;
             let signatory = authored_object(ctx.w, &def.area, &vendor.signatory, "npc")
                 .map_err(|detail| format!("{id}: vendor {org}: signatory: {detail}"))?;
+            // Doc 18 cut IC14 row 30: the preflight's rule, re-run where the vault is made.
+            backs_no_vault(ctx.w, id, org, storefront)?;
             let vault = alloc_vault_id(ctx).map_err(|e| format!("{id}: vendor {org}: {e}"))?;
             mush_economy::create_vault(
                 ctx,

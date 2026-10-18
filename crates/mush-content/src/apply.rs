@@ -260,6 +260,13 @@ pub trait EntryApplier: Send + Sync {
     /// what stopped it (16b cut D.5: the atlas refuses an exit whose name would
     /// swallow a kernel command).
     ///
+    /// It may also read the world when the refusal must take the whole pack because
+    /// the default `update` retires before it creates, so a refusal in `create` would
+    /// latch the pack with the old entry gone (doc 18 cut IC14 row 24, the IC9
+    /// residual: the atlas refuses an exit update whose end is anchored aboard a
+    /// hull). Such a check reads only, and answers the same before and after any
+    /// earlier entry in the apply.
+    ///
     /// Default: nothing.
     ///
     /// # Errors

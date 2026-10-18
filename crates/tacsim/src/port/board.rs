@@ -12,10 +12,12 @@
 //! `+market/list` stays the market's own render.
 //!
 //! The board prints no recommended mix. P07's "funded balance" figure (18a P07 Items;
-//! IC8 L15 deferred it to cut IC10) is deferred again, to IC12's readiness/board pass
-//! (doc 18 cut IC10, lead 2h-v). Cut IC10 adds only the exhausted bid's "not buying".
-//! Nothing renders for any other room, nor while the store is absent or the layer is
-//! disabled; nothing is written.
+//! IC8 L15 deferred it to cut IC10, IC10 to IC12) is built by doc 18 cut IC14 (row 53;
+//! Q-18-47): on the board of the [`FUNDS_BOARD_ROLE`] room only, after each bidding
+//! house's bid lines, [`BID_FUNDS_LINE`] says what the house has on hand (its
+//! account's available balance), and is omitted when that cannot be read. Cut IC10
+//! adds the exhausted bid's "not buying". Nothing renders for any other room, nor
+//! while the store is absent or the layer is disabled; nothing is written.
 
 use std::sync::Arc;
 
@@ -39,6 +41,32 @@ use crate::store::TacsimStore;
 
 /// The line the board block opens with.
 pub const BOARD_HEADING: &str = "The board:";
+
+/// **P07's funded balance** (doc 18 cut IC14 row 53; 18a P07 Items; Q-18-47): after a
+/// house's bid lines on the [`FUNDS_BOARD_ROLE`] board, `{house}` its name and
+/// `{available}` its account's available balance in the credit's render.
+pub const BID_FUNDS_LINE: &str = "{house} has {available} on hand to pay for what it buys.";
+
+/// The board role whose board carries [`BID_FUNDS_LINE`]: the intake board 18a puts
+/// in P07 (lane v3 names that room's role `receiving`).
+pub const FUNDS_BOARD_ROLE: &str = "receiving";
+
+/// What the house behind `row` has on hand: its market vendor's account's posted
+/// balance less what is held, in the credit's render. `None` when anything on the
+/// way is unreadable.
+fn house_funds(w: &World, market: &MarketStore, row: &VendorRow) -> Option<String> {
+    let vendor = market.vendor(mush_market::VendorId(row.vendor?))?;
+    let account = w
+        .module_state::<EconomyStore>()?
+        .snapshot()
+        .account(vendor.account)
+        .cloned()?;
+    let available = account
+        .posted_balance
+        .minor()
+        .saturating_sub(account.held_amount.minor());
+    Some(money(w, Amount::from_minor(available)))
+}
 
 /// **Thousands grouped with commas** (`9,600`; doc 18 §4.3 writes "seeded 9,600 t").
 #[must_use]
@@ -203,11 +231,13 @@ fn port_lines(
             out.push(line);
         }
     }
+    let funds_board = roles.iter().any(|r| r.as_str() == FUNDS_BOARD_ROLE);
     for vendor in &def.vendors {
         let Some(row) = map.vendors.get(&vendor.org) else {
             continue;
         };
         let signatory = name_of(w, row.signatory);
+        let mut bid_lines = 0_usize;
         for bid in vendor
             .bids
             .iter()
@@ -233,6 +263,19 @@ fn port_lines(
                 _ => format!("  wanted, {label}: not buying ({house})."),
             };
             out.push(line);
+            bid_lines = bid_lines.saturating_add(1);
+        }
+        // Doc 18 cut IC14 row 53: P07's funded balance, after the house's bid lines.
+        if funds_board
+            && bid_lines > 0
+            && let Some(available) = house_funds(w, market, row)
+        {
+            out.push(format!(
+                "  {}",
+                BID_FUNDS_LINE
+                    .replace("{house}", &house_name(def, &vendor.org, None))
+                    .replace("{available}", &available)
+            ));
         }
     }
 }

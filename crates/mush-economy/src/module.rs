@@ -460,6 +460,9 @@ pub struct EconomyStore {
     /// Q-18-10, cut IC7), asked only after `party_caps` said no. `None` is the
     /// pre-IC7 behaviour exactly.
     pub(crate) party_cap_source: Option<Arc<dyn crate::contract::PartyCapSource>>,
+    /// The composition-frozen dispute veto (doc 18 cut IC14 row 7). `None` is the
+    /// pre-IC14 behaviour exactly: any party may dispute a live contract.
+    pub(crate) dispute_guard: Option<Arc<dyn crate::contract::DisputeGuard>>,
     /// The wiring-frozen canon read seam (E6b, DL-09). `None` is the pre-E6b
     /// behaviour: the RAM tail alone, and nothing across a restart.
     pub(crate) canon_evidence: crate::attest::CanonEvidenceSeam,
@@ -633,6 +636,7 @@ impl EconomyStore {
             canon_tail: std::collections::VecDeque::new(),
             party_caps: Arc::default(),
             party_cap_source: None,
+            dispute_guard: None,
             canon_evidence: None,
             canon_boot_scan_done: false,
             canon_rescanning: false,
@@ -985,6 +989,12 @@ impl EconomyStore {
     #[must_use]
     pub(crate) fn party_cap_source(&self) -> Option<Arc<dyn crate::contract::PartyCapSource>> {
         self.party_cap_source.clone()
+    }
+    /// The dispute veto, if one was wired (doc 18 cut IC14 row 7) — an `Arc` clone,
+    /// so it can be asked after the store borrow ends.
+    #[must_use]
+    pub(crate) fn dispute_guard(&self) -> Option<Arc<dyn crate::contract::DisputeGuard>> {
+        self.dispute_guard.clone()
     }
     /// Count one refusal against `actor` (E6b, C16). Bounded by
     /// [`MAX_REFUSAL_ACTORS`]: at the cap the least recently refused actor is
@@ -1517,6 +1527,8 @@ pub struct EconomyModule {
     /// Doc 18 §4.1/§4.7 (Q-18-10, cut IC7): the content-resolved party-capability
     /// source, consulted only after `party_caps` answered no.
     party_cap_source: Option<Arc<dyn crate::contract::PartyCapSource>>,
+    /// Doc 18 cut IC14 row 7: the composition-frozen dispute veto.
+    dispute_guard: Option<Arc<dyn crate::contract::DisputeGuard>>,
 }
 
 impl EconomyModule {
@@ -1694,6 +1706,23 @@ impl EconomyModule {
         self.party_cap_source = Some(source);
         self
     }
+
+    /// **Wire the dispute veto** (doc 18 cut IC14 row 7, lead ruling L6), in the
+    /// [`Self::with_party_cap_source`] shape: composition-frozen, asked by
+    /// `@contract/dispute` for a non-admin party after the party resolves and before
+    /// the state check, and never by staff's `@contract/resolve` or an admin's
+    /// dispute. The market's `SaleDisputeGuard` refuses a seller disputing their own
+    /// sale into a bid (which would freeze the house's escrow and the bid's intake
+    /// for nothing: the sale settles on the goods' own marker). Omitting it is the
+    /// pre-IC14 behaviour exactly.
+    #[must_use]
+    pub fn with_dispute_guard(
+        mut self,
+        guard: Arc<dyn crate::contract::DisputeGuard>,
+    ) -> EconomyModule {
+        self.dispute_guard = Some(guard);
+        self
+    }
 }
 
 /// **The one party-capability predicate** (E6b DL-11, extended by doc 18 §4.1/§4.7
@@ -1715,7 +1744,8 @@ pub(crate) fn party_cap(
     if store.has_party_cap(principal, cap) {
         return true;
     }
-    // Clone the source out so the store borrow is not what the source reads under.
+    // The source is asked under the store's shared borrow; it reads the world, never
+    // the store mutably.
     store
         .party_cap_source()
         .is_some_and(|source| source.has_cap(w, principal, cap))
@@ -1856,6 +1886,7 @@ impl GameModule for EconomyModule {
         store.canon_outcome_kinds = self.canon_outcome_kinds.clone();
         store.party_caps = self.party_caps.clone();
         store.party_cap_source = self.party_cap_source.clone();
+        store.dispute_guard = self.dispute_guard.clone();
         store.canon_evidence = self.canon_evidence.clone();
         // Doc 13 W2: the window's count bound, now that the config is in.
         let evicted = store.evict_window(ctx.w.now());

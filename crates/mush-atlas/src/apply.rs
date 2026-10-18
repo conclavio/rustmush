@@ -255,7 +255,7 @@ impl EntryApplier for KindApplier {
     fn check(
         &self,
         ctx: &Ctx<'_>,
-        _pack: &Pack,
+        pack: &Pack,
         id: &CanonicalId,
         entry: &RawEntry,
     ) -> Result<(), String> {
@@ -263,11 +263,12 @@ impl EntryApplier for KindApplier {
             return Ok(());
         }
         // A malformed exit is `create_exit`'s to report, with the rest of its
-        // refusals; this check only ever answers the one question.
+        // refusals; this check only ever answers its two questions.
         let Ok(def) = entry.decode::<ExitDef>() else {
             return Ok(());
         };
-        check_exit_names(ctx, id, &def.names)
+        check_exit_names(ctx, id, &def.names)?;
+        check_exit_unanchored(ctx, pack, id, &def)
     }
 
     fn retire_check(
@@ -1426,6 +1427,51 @@ fn check_exit_names(ctx: &Ctx<'_>, id: &CanonicalId, names: &[String]) -> Result
                      '{command}', which works in every room, and an exit would swallow it"
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+/// **The anchored refusal, before any retire** (doc 18 cut IC14 row 24, the IC9
+/// residual): an exit UPDATE is remade — the default `update` retires the old exit
+/// before `create_exit` runs — so a refusal left to `create_exit` alone would latch
+/// the pack with the old exit gone. This check reads only (the world and the atlas
+/// records, never this apply's work; `EntryApplier::check`'s contract allows it for
+/// exactly this case): each end `create_exit` asks about (`to`, and `from` when the
+/// row names the way back) is resolved through the rooms this pack already made and
+/// the required packs' records, and one anchored aboard a hull refuses the pack with
+/// `create_exit`'s own sentence. An end that does not resolve here (a room this apply
+/// would make, or a bad reference) answers `Ok`: it is `create_exit`'s to report, and
+/// `create_exit` keeps its own check.
+fn check_exit_unanchored(
+    ctx: &Ctx<'_>,
+    pack: &Pack,
+    id: &CanonicalId,
+    def: &ExitDef,
+) -> Result<(), String> {
+    let Some(state) = ctx.state::<AtlasState>() else {
+        return Ok(());
+    };
+    let own = pack.manifest().id();
+    let placed: BTreeMap<CanonicalId, ObjId> = state
+        .records
+        .roomgeo
+        .values()
+        .filter(|g| &g.key.pack == own)
+        .map(|g| (g.key.entry.clone(), g.room))
+        .collect();
+    let resolver = Resolver::new(pack, &placed, &state.records);
+    let mut ends = vec![def.to.as_str()];
+    if def.names.len() == 2 {
+        ends.push(def.from.as_str());
+    }
+    for authored in ends {
+        if let Ok(room) = resolver.room(authored)
+            && mush_sim::anchored_space_of(ctx.w, room).is_some()
+        {
+            return Err(format!(
+                "{id}: {authored} is a room aboard a moving hull; no exit leads into one"
+            ));
         }
     }
     Ok(())

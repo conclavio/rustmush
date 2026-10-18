@@ -280,6 +280,29 @@ both write the atlas's site and request records.
 
 [[delegation]]
 writer = "tacsim"
+ns = "content"
+declared_by = "tacsim"
+reason = """
+Doc 18 cut IC14 row 48 (lead ruling L28): tacsim::seed::apply drives \
+mush_content::apply_pack for `@tacsim/seed <pack> commit` under the tacsim \
+module's identity, so the content latch row it commits carries tacsim on the \
+content namespace. The reproduction (tacsim/tests/lane.rs \
+ic14_a_staff_seed_survives_a_fold_and_reboot) showed the pair refused.
+"""
+
+[[delegation]]
+writer = "tacsim"
+ns = "atlas"
+declared_by = "tacsim"
+reason = """
+Doc 18 cut IC14 row 48 (lead ruling L28): the same seed drives the atlas's \
+entry appliers under the tacsim module's identity, which write the site, \
+connection and room records the pack describes. The same reproduction showed \
+the pair refused.
+"""
+
+[[delegation]]
+writer = "tacsim"
 ns = "tactics"
 declared_by = "tacsim"
 reason = """

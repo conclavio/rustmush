@@ -475,6 +475,16 @@ impl TacsimStore {
         self.orders.values()
     }
 
+    /// **The hulls whose sailing plan's key is claimed but whose body did not read**
+    /// (doc 18 cut IC14 row 11; the [`Self::orders_unreadable`] precedent): the port
+    /// tick pages each once a boot.
+    pub fn voyages_unreadable(&self) -> impl Iterator<Item = ObjId> + '_ {
+        self.voyage_keys
+            .iter()
+            .filter_map(|key| crate::port::voyage::voyage_key_owner(key))
+            .filter(|hull| !self.voyages.contains_key(hull))
+    }
+
     /// Every hull whose queued sailing plan's key is claimed with no readable body,
     /// in key order (the order arm pages each once a boot).
     pub fn orders_unreadable(&self) -> impl Iterator<Item = ObjId> + '_ {
@@ -731,6 +741,17 @@ impl TacsimStore {
         self.latched_route(w, id).map(|(def, _, _)| def)
     }
 
+    /// **A route by id at one pack version, from the content latch** (doc 18 cut
+    /// IC14 row 47): the latched route only when this world applied exactly
+    /// `version` of a pack defining it, never the newest-applied version
+    /// [`TacsimStore::route_in_world`] falls back to. `@corridor/show <id>@<version>`
+    /// reads it.
+    #[must_use]
+    pub fn route_in_world_at(&self, w: &World, id: &CanonicalId, version: u32) -> Option<RouteDef> {
+        self.latched_route_at(w, id, Some(version))
+            .map(|(def, _, _)| def)
+    }
+
     /// The content-latch half of [`TacsimStore::route_in_world`]: the newest
     /// loaded version this world applied whose places the latch placed and whose
     /// route materializes, with the pack and the symbolic entry it came from. One
@@ -741,9 +762,21 @@ impl TacsimStore {
         w: &World,
         id: &CanonicalId,
     ) -> Option<(RouteDef, &RulesPack, &RouteEntry)> {
+        self.latched_route_at(w, id, None)
+    }
+
+    /// [`TacsimStore::latched_route`] over the candidates of one pack `version`
+    /// only, when one is named (doc 18 cut IC14 row 47).
+    fn latched_route_at(
+        &self,
+        w: &World,
+        id: &CanonicalId,
+        version: Option<u32>,
+    ) -> Option<(RouteDef, &RulesPack, &RouteEntry)> {
         let mut candidates: Vec<(&(CanonicalId, u32), &LoadedPack)> = self
             .loaded
             .iter()
+            .filter(|((_, v), _)| version.is_none_or(|want| *v == want))
             .filter(|(_, loaded)| matches!(loaded.pack.entry(id), Some(PackEntry::Route(_))))
             .collect();
         candidates.sort_by_key(|(key, _)| std::cmp::Reverse(key.1));
@@ -1905,5 +1938,57 @@ mod tests {
             serde_json::from_value(value).expect("and re-enters through its wire");
         assert_eq!(back, record);
         assert_eq!(back.objects() as usize, crate::pack::MAX_SEED_OBJECTS);
+    }
+
+    // ---- doc 18 cut IC14 row 36: `load`'s reconnect-notice branches ----
+
+    /// A queue for `who` with one line, as its document.
+    fn notice_doc(who: u32) -> serde_json::Value {
+        let mut queue = crate::port_tick::NoticeQueue::new(ObjId(who));
+        queue.push(1_000, "The Salt Moth has docked.");
+        serde_json::to_value(&queue).expect("a queue serializes")
+    }
+
+    fn notice_key(who: u32) -> SmolStr {
+        SmolStr::new(format!("{}{who}", crate::port_tick::NOTICE_PREFIX))
+    }
+
+    /// Load `bad` beside a good queue for #7; `#7`'s queue survives, and no queue is
+    /// held for any character but #7.
+    fn only_seven_survives(bad: (SmolStr, serde_json::Value)) {
+        let kv = vec![(notice_key(7), notice_doc(7)), bad];
+        let store = load(&kv, TacsimConfig::default());
+        assert_eq!(
+            store.notices.keys().copied().collect::<Vec<_>>(),
+            vec![ObjId(7)],
+            "every other queue intact, the bad one held for nobody"
+        );
+        assert_eq!(store.notices.get(&ObjId(7)).map(|q| q.lines.len()), Some(1));
+    }
+
+    /// Doc 18 cut IC14 row 36: a notice document whose key names no character is
+    /// skipped, and nothing else is.
+    #[test]
+    fn ic14_a_notice_document_with_a_bad_key_is_skipped() {
+        only_seven_survives((
+            SmolStr::new(format!("{}abc", crate::port_tick::NOTICE_PREFIX)),
+            notice_doc(9),
+        ));
+    }
+
+    /// Doc 18 cut IC14 row 36: the identity rule — a queue whose body names another
+    /// character than its key's is dropped.
+    #[test]
+    fn ic14_a_notice_document_naming_another_character_is_dropped() {
+        only_seven_survives((notice_key(8), notice_doc(9)));
+    }
+
+    /// Doc 18 cut IC14 row 36: a queue that fails its own check (a wrong schema) is
+    /// dropped.
+    #[test]
+    fn ic14_a_notice_document_failing_its_check_is_dropped() {
+        let mut bad = notice_doc(8);
+        bad["schema"] = serde_json::json!(99);
+        only_seven_survives((notice_key(8), bad));
     }
 }

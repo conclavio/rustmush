@@ -1826,6 +1826,8 @@ fn ic6_look_names_the_hull_and_the_port() {
                 "Displays:",
                 "  HOLD empty; 0/100 t · 0.0/120 m³",
                 "  TANKAGE 0/80 t",
+                // Doc 18 cut IC14 row 54: the burn gauge under the tank line.
+                "  Burn for the filed plan: none filed.",
                 "  STORES 0/120 crew-days",
             ]
         ),
@@ -1878,8 +1880,16 @@ fn ic6_the_gauges_read_the_hold_pools() {
     let cells = load_cells_block();
     let mut passage: Vec<&str> = vec![status, "Manifest slate:"];
     passage.extend(summary.iter().map(String::as_str));
+    // Doc 18 cut IC14 row 54: the Bridge's displays carry the burn gauge under the
+    // TANKAGE line; the passage's manifest slate does not.
+    let burn_none = format!("  {}", tacsim::port::ship::BURN_GAUGE_NONE);
     let mut bridge: Vec<&str> = vec![status, "Displays:"];
-    bridge.extend(summary.iter().map(String::as_str));
+    for line in &summary {
+        bridge.push(line.as_str());
+        if line.starts_with("  TANKAGE ") {
+            bridge.push(burn_none.as_str());
+        }
+    }
     let mut hold: Vec<&str> = vec![status];
     hold.extend(cells.iter().map(String::as_str));
     for (step, room, block) in [
@@ -1899,7 +1909,11 @@ fn ic6_the_gauges_read_the_hold_pools() {
         (
             "eng",
             "engineering",
-            vec![status, "Tank gauges: reaction mass, 42 of 80 t."],
+            vec![
+                status,
+                "Tank gauges: reaction mass, 42 of 80 t.",
+                tacsim::port::ship::BURN_GAUGE_NONE,
+            ],
         ),
     ] {
         let _ = run(&mut rig.tw, who, step);
@@ -2199,4 +2213,113 @@ fn with_offer_keys(tw: &mut TestWorld) {
         )
         .expect("an offer key ring"),
     );
+}
+
+/// **A refused move leaves the person placed** (doc 18 cut IC14 row 19; lead ruling
+/// L12): `put_ashore` moves first and unplaces only once the move landed, so a gallery
+/// the person cannot be moved into (here a cycle: the gallery room carried in the
+/// pilot's own inventory) refuses `+ship/leave` with the person still in the Airlock
+/// and still placed aboard — never unplaced and left behind.
+#[test]
+fn ic14_a_refused_move_leaves_the_person_placed() {
+    let (mut rig, who) = enrolled();
+    let row = ceres_map(&rig.tw).hulls[0].clone();
+    let rooms = hull_rooms(&row);
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, who, gallery);
+    let out = run(&mut rig.tw, who, "+ship/board");
+    assert!(out.contains("You cycle the lock into"), "{out}");
+    assert_eq!(location(&rig.tw, who), Some(rooms["airlock"]));
+    rig.tw
+        .world_mut()
+        .move_to(gallery, who)
+        .expect("the gallery is carried");
+    let out = run(&mut rig.tw, who, "+ship/leave");
+    assert!(out.contains(tacsim::port::ship::LOCK_STUCK), "{out}");
+    assert_eq!(
+        location(&rig.tw, who),
+        Some(rooms["airlock"]),
+        "still aboard"
+    );
+    assert!(
+        matches!(
+            placement(&rig.tw, who),
+            mush_sim::data::SpatialParent::Interior { space, .. } if space == rooms["airlock"]
+        ),
+        "still placed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Doc 18 cut IC14 row 35: the IC6 test gaps
+// ---------------------------------------------------------------------------
+
+/// **A failed stake post leaves the recorded residue** (doc 18 cut IC14 row 35; IC6
+/// L16). Staff put an approval rule on the Trust's programme account (a real staff
+/// act), so `+coop/enrol`'s stake post — the last fallible step, after the lease offer
+/// and the pilot's acceptance — answers `NeedsApproval`: the desk answers `FAILED`, and
+/// **after a reboot** the durable residue is exactly what IC6 records — the pilot's
+/// opened, empty `tacsim.credit` account and a Cancelled lease — and no enrolment.
+#[test]
+fn ic14_a_failed_stake_post_leaves_the_recorded_residue() {
+    let mut rig = boot(Roster::bare());
+    let trust_acct = trust_account(&rig.tw);
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@account/approval {}=100 threshold:1", trust_acct.0),
+    );
+    assert!(!out.contains("Usage"), "{out}");
+    let who = pilot(&mut rig, "Pilot", 1);
+    assert_eq!(
+        own_account(&rig.tw, who),
+        None,
+        "no account before the desk"
+    );
+    let out = enrol(&mut rig, who, "Salt Moth");
+    assert!(out.contains(tacsim::port::coop::FAILED), "{out}");
+    let rig = reboot_with(rig, Roster::bare(), |_| {});
+    let opened = own_account(&rig.tw, who).expect("the opened account survives");
+    assert_eq!(balance(&rig.tw, opened), 0, "empty: the stake never posted");
+    let leases: Vec<ContractState> = economy(&rig.tw)
+        .snapshot()
+        .contracts()
+        .filter(|c| c.consent.parties.contains(&PrincipalId::Object(who)))
+        .map(|c| c.state)
+        .collect();
+    assert_eq!(
+        leases,
+        vec![ContractState::Cancelled],
+        "one lease, Cancelled"
+    );
+    assert!(
+        store(&rig.tw).enrolment_of(who).is_none(),
+        "no enrolment document"
+    );
+}
+
+/// **A revocation survives a reboot** (doc 18 cut IC14 row 35): the IC6 staff cancel
+/// revokes the charter; folded and rebooted, the enrolment reads Revoked from the
+/// store and `+ship/board` still refuses.
+#[test]
+fn ic14_a_revocation_survives_a_reboot() {
+    let (mut rig, who) = enrolled();
+    let lease = lease_of(&rig.tw, who);
+    let _ = rig.tw.run(GOD, &format!("@contract/cancel #{}", lease.0));
+    let before = store(&rig.tw)
+        .enrolment_of(who)
+        .expect("the enrolment")
+        .clone();
+    assert_eq!(before.status, EnrolmentStatus::Revoked);
+    let mut rig = reboot_with(rig, Roster::bare(), |_| {});
+    let after = store(&rig.tw)
+        .enrolment_of(who)
+        .expect("the enrolment after the reboot")
+        .clone();
+    assert_eq!(after, before, "the revocation is durable");
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, who, gallery);
+    let out = run(&mut rig.tw, who, "+ship/board");
+    assert!(out.contains("You hold no charter."), "{out}");
+    assert_eq!(location(&rig.tw, who), Some(gallery));
 }

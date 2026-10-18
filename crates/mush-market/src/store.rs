@@ -151,9 +151,41 @@ pub struct MarketStore {
     /// visited. RAM only and never persisted (IC5's rotation idiom): a reboot starts the
     /// rotation again from the lowest id, which costs one lap and loses nothing.
     pub(crate) draw_cursor: Option<QuoteId>,
+    /// Doc 18 cut IC14 row 9 (lead ruling L4): the sales into bids whose settlement the
+    /// economy healed and never announced, stamped by this boot's
+    /// `reconcile_contracts` and not yet told to the proceeds policy. RAM only and
+    /// never persisted; drained at the top of the first sweep after boot (the game's
+    /// store is hydrated by then). Bounded by `MAX_RECONCILED_QUOTES`, the reconcile's
+    /// own walk. A crash between the boot and that sweep loses the fold: the narrow
+    /// residue of the old gap (the quote is stamped, so the next boot does not see it
+    /// again).
+    pub(crate) healed_sales: Vec<QuoteId>,
+    /// Doc 18 cut IC14 row 16: the sweep each kept lapsed hold-backed listing's
+    /// `hold_standing` was last read on, by listing. RAM only; retained each sweep to
+    /// the lapsed set, so bounded by `MAX_LISTINGS`.
+    pub(crate) hold_checked: BTreeMap<ListingId, u64>,
+    /// Doc 18 cut IC14 row 16: the sweep number each lapsed listing's holder release
+    /// was staged at (`lot::release_lapsed_hold`). For `HOLD_RECHECK_SWEEPS` sweeps
+    /// after it the listing's hold is read on every sweep, so a release that lands is
+    /// seen on the next sweep rather than after the backoff. RAM only; retained with
+    /// `hold_checked`, so bounded the same way.
+    pub(crate) release_staged: BTreeMap<ListingId, u64>,
+    /// Doc 18 cut IC14 row 16: the market sweeps run this boot (RAM only).
+    pub(crate) sweeps: u64,
+    /// Doc 18 cut IC14 row 16: how many `hold_standing` reads the sweep made this boot
+    /// (a counter for tests, [`MarketStore::hold_reads`]).
+    pub(crate) hold_reads: u64,
 }
 
 impl MarketStore {
+    /// How many times the sweep read a kept lapsed hold-backed listing's standing this
+    /// boot (doc 18 cut IC14 row 16): at most once per [`crate::HOLD_RECHECK_SWEEPS`]
+    /// sweeps per listing.
+    #[must_use]
+    pub fn hold_reads(&self) -> u64 {
+        self.hold_reads
+    }
+
     // ---- the frozen wiring ------------------------------------------------
 
     /// **The system principal a stocked asset's title is minted under, when the
@@ -252,8 +284,14 @@ impl MarketStore {
                 grade: *grade,
             }),
             Supply::Stock { vault } => {
-                let entry = self.entry_of(&l.catalog)?;
-                if entry.representation != Representation::Lot {
+                // Doc 18 cut IC14 row 14 (lead ruling L8): the kind frozen at
+                // publication wins; only a pre-IC14 row (`None`) still derives it from
+                // the live catalogue entry, until its next write stamps it.
+                let draws = match l.draw {
+                    Some(frozen) => frozen,
+                    None => self.derived_draw(l),
+                };
+                if !draws {
                     return None;
                 }
                 let commodity = mush_core::CanonicalId::new(l.catalog.code.as_str()).ok()?;
@@ -265,6 +303,18 @@ impl MarketStore {
             // Doc 18 cut IC8: a standing bid sells nothing, so it moves no matter.
             Supply::Market { .. } | Supply::Procurement { .. } | Supply::Wanted { .. } => None,
         }
+    }
+
+    /// **Whether a listing would sell by Draw by IC7's live derivation** (doc 18 cut
+    /// IC14 row 14): a `Supply::Stock` listing on an entry whose representation is
+    /// `Representation::Lot`. Read only for a pre-IC14 listing (`draw: None`), by
+    /// [`Self::lot_matter`] and by `put_listing` to stamp such a row on its first write.
+    #[must_use]
+    pub(crate) fn derived_draw(&self, l: &Listing) -> bool {
+        matches!(l.source, Supply::Stock { .. })
+            && self
+                .entry_of(&l.catalog)
+                .is_some_and(|entry| entry.representation == Representation::Lot)
     }
 
     /// **The live standing bid one vendor posts for one commodity, if any** (doc 18 cut
@@ -659,8 +709,24 @@ macro_rules! put_record {
     };
 }
 
+/// Install a listing into RAM, re-derive the indexes and queue its document — the
+/// single write path. Doc 18 cut IC14 row 14: a listing written before IC14 (`draw:
+/// None`) is stamped here with the kind IC7's live derivation gives at this moment, so
+/// every re-save (a revision bump at activation, a re-post, a release) freezes it and it
+/// is never re-derived after.
+pub(crate) fn put_listing(ctx: &mut Ctx<'_>, mut l: Listing) {
+    if l.draw.is_none() {
+        let derived = ctx
+            .w
+            .module_state::<MarketStore>()
+            .is_some_and(|store| store.derived_draw(&l));
+        l.draw = Some(derived);
+    }
+    put_listing_record(ctx, l);
+}
+
 put_record!(
-    put_listing,
+    put_listing_record,
     Listing,
     listings,
     |l: &Listing| (l.id, listing_key(l.id)),

@@ -49,8 +49,7 @@ use tacsim::port::voyage::{
     VoyageState, voyage_key,
 };
 use tacsim::port::{
-    HOLD_UNDER_WAY, HullRow, PortDef, PortHandles, PortMap, PortMapState, PortVenueGate, Ticket,
-    TicketId, room_key,
+    HullRow, PortDef, PortHandles, PortMap, PortMapState, PortVenueGate, Ticket, TicketId, room_key,
 };
 use tacsim::port_tick::{NOTICE_HEADING, pending_notices};
 use tacsim::{Sky, TacsimConfig, TacsimStore};
@@ -855,17 +854,20 @@ fn ic9_undock_flies_the_lane_and_docks_at_stickney() {
         )),
         "{look}"
     );
-    // While filed (L13, item 11): the venue gate treats the hull as under way, and
-    // the readiness hulls line counts it departing.
+    // While filed (L13, item 11): nothing loads — since doc 18 cut IC14 row 23 in the
+    // cleared hull's own words, `HOLD_CLEARED` — and the readiness hulls line counts it
+    // departing.
     let ceres = mush_market::MarketId::new("ceres").expect("venue");
     assert_eq!(
         PortVenueGate
             .admit(rig.tw.world(), pilot, &ceres, None, Presence::Ship(hull))
             .map_err(|r| r.line),
-        Err(HOLD_UNDER_WAY.replace("{name}", "Salt Moth").replace(
-            "{port}",
-            &tacsim::port::coop::port_name(&port_def("ceres_port"))
-        )),
+        Err(tacsim::port::HOLD_CLEARED
+            .replace("{name}", "Salt Moth")
+            .replace(
+                "{port}",
+                &tacsim::port::coop::port_name(&port_def("ceres_port"))
+            )),
         "nothing loads into a filed hold"
     );
     let report = status(&mut rig.tw);
@@ -2163,5 +2165,532 @@ fn ic9_f2_a_ticket_that_disagrees_with_the_filed_plan_holds_the_launch() {
         ticket(&mut rig.tw, hull, pending.seq),
         Some(burned),
         "the ticket is untouched"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Doc 18 cut IC14 (rows 10, 11, 20, 21, 38): the launch arm's residuals
+// ---------------------------------------------------------------------------
+
+/// How many times `line`'s head reaches `who` in `events` or the reconnect queue.
+fn grants_heard(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjId) -> usize {
+    let head = "Clearance granted.";
+    said(tw, events, who).matches(head).count()
+        + pending_notices(tw.world(), who)
+            .iter()
+            .filter(|line| line.starts_with(head))
+            .count()
+}
+
+/// **Doc 18 cut IC14 row 20 (lead ruling L16): a held launch warns once across its
+/// backoffs.** The destination paused, the launch holds: across three backoff cycles
+/// the pilot is told `LAUNCH_HELD` once, every fire's stats count no refusal (the walk's
+/// generic "a port agent was refused" warning never fires for it) and the retries count
+/// as held.
+#[test]
+fn ic14_a_held_launch_warns_once_across_backoffs() {
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let _pending = undock_and_burn(&mut rig, pilot, hull);
+    let stickney = domain_of(&rig.tw, "stickney_port");
+    let _ = run(&mut rig.tw, GOD, &format!("@domain/pause {stickney}"));
+    let held = LAUNCH_HELD
+        .replace("{name}", "Salt Moth")
+        .replace("{port}", "Stickney Yards");
+    let (mut told, mut held_steps) = (0, 0);
+    for _ in 0..(3 * (LAUNCH_GRACE_FIRES + 1)) {
+        let events = fire_quietly(&mut rig);
+        told += said(&rig.tw, &events, pilot).matches(&held).count();
+        let stats = tacsim::port_tick::last_fire(rig.tw.world()).expect("a fire");
+        assert_eq!(stats.refused, 0, "never the generic refusal: {stats:?}");
+        held_steps += stats.held;
+    }
+    assert_eq!(told, 1, "LAUNCH_HELD told once");
+    assert!(
+        held_steps >= 3,
+        "each backoff's retry is a held step: {held_steps}"
+    );
+    assert!(journey(&rig.tw, hull).is_none(), "no journey while held");
+}
+
+/// **Doc 18 cut IC14 row 10 (lead ruling L15): a lapse waits while a commit is
+/// pending.** A clearance whose burn was taken off the queue (never landed) would lapse
+/// after its grace; while a prepared transaction owns the engine's typed store — the
+/// state a burn in the writer's custody leaves — the step defers and the pending stays;
+/// once that transaction installs, the lapse proceeds and is told once.
+#[test]
+fn ic14_a_lapse_waits_while_a_commit_is_pending() {
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let (out, dropped) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(out.contains("Clearance filed"), "{out}");
+    assert_eq!(dropped.len(), 1, "the burn is taken off the queue");
+    // Hold a prepared transaction across the fires (any family: one prepared action
+    // owns the store at a time).
+    let families = rig
+        .tw
+        .world()
+        .module_state::<InventoryHandles>()
+        .expect("inventory handles")
+        .0
+        .clone();
+    let installation = {
+        let engine = rig.tw.engine_mut();
+        let mut txn = engine
+            .action_transaction(&families.pools)
+            .expect("an inventory transaction");
+        families
+            .credit(
+                &mut txn,
+                EndpointRef(VaultId(999_999)),
+                &CanonicalId::new("metals").expect("a good"),
+                1,
+            )
+            .expect("a credit");
+        txn.prepare().expect("it prepares").into_parts().1
+    };
+    let lapsed = CLEARANCE_LAPSED.replace("{port}", "Stickney Yards");
+    let mut told = 0;
+    for _ in 0..(LAUNCH_GRACE_FIRES + 4) {
+        let events = fire_quietly(&mut rig);
+        told += said(&rig.tw, &events, pilot).matches(&lapsed).count();
+    }
+    assert_eq!(told, 0, "no lapse while a commit is pending");
+    assert!(
+        voyage(&rig.tw, hull).and_then(|v| v.pending).is_some(),
+        "the pending stays"
+    );
+    rig.tw
+        .engine_mut()
+        .install_prepared_action(installation)
+        .expect("the held commit installs");
+    for _ in 0..(LAUNCH_GRACE_FIRES + 4) {
+        let events = fire_quietly(&mut rig);
+        told += said(&rig.tw, &events, pilot).matches(&lapsed).count();
+    }
+    assert_eq!(told, 1, "then it lapses, told once");
+    assert!(voyage(&rig.tw, hull).and_then(|v| v.pending).is_none());
+}
+
+/// **Doc 18 cut IC14 row 38 (IC9's T7): a lapse defers while the burn is still
+/// queued.** The burn left in the engine's queue past the grace: the step answers
+/// `Deferred`, the pending stays, and no `CLEARANCE_LAPSED` is told.
+#[test]
+fn ic14_t7_a_lapse_defers_while_the_burn_is_still_queued() {
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let out = run(&mut rig.tw, pilot, "+ship/undock stickney");
+    assert!(out.contains("Clearance filed"), "{out}");
+    assert!(
+        rig.tw.engine().has_authoritative_submit_for(pilot),
+        "the burn is queued"
+    );
+    let lapsed = CLEARANCE_LAPSED.replace("{port}", "Stickney Yards");
+    let mut told = 0;
+    let mut deferred = 0;
+    for _ in 0..(LAUNCH_GRACE_FIRES + 4) {
+        // Fired without draining the queue: the burn stays where the driver left it.
+        let t = rig.tw.world().now().saturating_add(6);
+        rig.tw.set_now(t);
+        let events = rig.tw.fire_due(t.saturating_mul(1_000));
+        told += said(&rig.tw, &events, pilot).matches(&lapsed).count();
+        deferred += tacsim::port_tick::last_fire(rig.tw.world()).map_or(0, |s| s.deferred);
+    }
+    assert_eq!(told, 0, "no lapse");
+    assert!(deferred > 0, "the step deferred");
+    assert!(voyage(&rig.tw, hull).and_then(|v| v.pending).is_some());
+}
+
+/// **Doc 18 cut IC14 row 38 (IC9's T9): a rate change mid-journey keeps the frozen
+/// leg seconds.** Launched at rate 24, the world set to 3,600× mid-leg: the journey's
+/// leg seconds are still the ticket's and its IC arrival unchanged — only the real ETA
+/// (a render of the rate) moves.
+#[test]
+fn ic14_t9_a_rate_change_mid_journey_keeps_the_frozen_leg_seconds() {
+    let (mut rig, pilot, row) = aboard_with_load(24, 42, 21);
+    let hull = ObjId(row.hull);
+    let _ = undock_and_burn(&mut rig, pilot, hull);
+    for _ in 0..4 {
+        let _ = fire_quietly(&mut rig);
+        if journey(&rig.tw, hull).is_some() {
+            break;
+        }
+    }
+    let ticket = ticket(&mut rig.tw, hull, 1).expect("the ticket");
+    let secs: Vec<u32> = ticket.plan.legs.iter().map(|l| l.secs).collect();
+    let before = journey(&rig.tw, hull).expect("under way");
+    assert_eq!(before.leg_times(), Some(&secs[..]));
+    let arrival = before.arrival_at();
+    let _ = run(&mut rig.tw, GOD, "@tacsim/time rate=3600");
+    assert_eq!(world_rate(&rig.tw), 3_600);
+    let _ = fire_quietly(&mut rig);
+    let after = journey(&rig.tw, hull).expect("still under way");
+    assert_eq!(after.leg_times(), Some(&secs[..]), "the frozen leg seconds");
+    assert_eq!(
+        after.arrival_at(),
+        arrival,
+        "the IC arrival is the ticket's"
+    );
+    let ship = run(&mut rig.tw, pilot, "+ship");
+    assert!(ship.contains("under way for Stickney Yards"), "{ship}");
+}
+
+/// **Doc 18 cut IC14 row 21 (lead rulings L8b, L20): a reboot between the launch and
+/// its verification tells the grant once.** The launch flies on one fire; the server
+/// reboots before the next (its RAM verification gone); the first fire after the boot
+/// verifies by pull and tells `CLEARANCE_GRANTED` once, writing `Voyage.told`; a second
+/// reboot tells nothing more.
+#[test]
+fn ic14_a_reboot_between_launch_and_verify_tells_the_grant_once() {
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let mut granted = 0;
+    for _ in 0..4 {
+        let events = fire_quietly(&mut rig);
+        granted += grants_heard(&rig.tw, &events, pilot);
+        if journey(&rig.tw, hull).is_some() {
+            break;
+        }
+    }
+    assert!(journey(&rig.tw, hull).is_some(), "launched");
+    assert_eq!(granted, 0, "not yet verified");
+    assert_eq!(voyage(&rig.tw, hull).map(|v| v.told), Some(0));
+    let mut rig = reboot_with(rig, Roster::default());
+    for _ in 0..2 {
+        let events = fire_quietly(&mut rig);
+        granted += said(&rig.tw, &events, pilot)
+            .matches("Clearance granted.")
+            .count();
+    }
+    granted += pending_notices(rig.tw.world(), pilot)
+        .iter()
+        .filter(|line| line.starts_with("Clearance granted."))
+        .count();
+    assert_eq!(granted, 1, "told once after the reboot");
+    assert_eq!(
+        voyage(&rig.tw, hull).map(|v| v.told),
+        Some(pending.seq),
+        "told is durable"
+    );
+    let queued = pending_notices(rig.tw.world(), pilot)
+        .iter()
+        .filter(|line| line.starts_with("Clearance granted."))
+        .count();
+    let mut rig = reboot_with(rig, Roster::default());
+    let mut again = 0;
+    for _ in 0..2 {
+        let events = fire_quietly(&mut rig);
+        again += said(&rig.tw, &events, pilot)
+            .matches("Clearance granted.")
+            .count();
+    }
+    let after = pending_notices(rig.tw.world(), pilot)
+        .iter()
+        .filter(|line| line.starts_with("Clearance granted."))
+        .count();
+    assert_eq!(again, 0, "a second reboot tells nothing");
+    assert_eq!(after, queued, "and queues nothing new");
+}
+
+/// **Doc 18 cut IC14 row 21 (lead ruling L20), the common case: a grant told by the
+/// live verification is durable.** The launch flies and the next fire verifies it in
+/// RAM and tells `CLEARANCE_GRANTED` once — writing `Voyage.told` in that fire — so a
+/// reboot mid-leg (the journey still running, `launch_retell` looking) tells nothing
+/// again and queues nothing.
+#[test]
+fn ic14_a_grant_told_live_is_not_retold_after_a_reboot() {
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let mut granted = 0;
+    for _ in 0..6 {
+        let events = fire_quietly(&mut rig);
+        granted += grants_heard(&rig.tw, &events, pilot);
+        if granted > 0 {
+            break;
+        }
+    }
+    assert_eq!(granted, 1, "the live verification tells the grant once");
+    assert!(journey(&rig.tw, hull).is_some(), "under way");
+    assert_eq!(
+        voyage(&rig.tw, hull).map(|v| v.told),
+        Some(pending.seq),
+        "the live verification writes told"
+    );
+    let queued = pending_notices(rig.tw.world(), pilot)
+        .iter()
+        .filter(|line| line.starts_with("Clearance granted."))
+        .count();
+    let mut rig = reboot_with(rig, Roster::default());
+    assert!(
+        journey(&rig.tw, hull).is_some(),
+        "still under way after the boot"
+    );
+    let mut again = 0;
+    for _ in 0..3 {
+        let events = fire_quietly(&mut rig);
+        again += said(&rig.tw, &events, pilot)
+            .matches("Clearance granted.")
+            .count();
+    }
+    let after = pending_notices(rig.tw.world(), pilot)
+        .iter()
+        .filter(|line| line.starts_with("Clearance granted."))
+        .count();
+    assert_eq!(again, 0, "a reboot mid-leg retells nothing");
+    assert_eq!(after, queued, "and queues nothing new");
+}
+
+/// **Doc 18 cut IC14 row 11 (lead ruling L17): an unreadable sailing plan fails closed
+/// everywhere.** The filed hull's `tacsim:voyage:` document corrupted in the folded
+/// store and booted: `+ship/leave` and `+ship/board` refuse with `VOYAGE_DARK`, the
+/// hold refuses to load with `HOLD_PAPERS_DARK`, the buyout and the recall refuse, the
+/// hulls line counts the hull departing and stays Ready, the desk never lends it — and
+/// a second pilot still enrols on another hull; the port tick pages it once.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn ic14_an_unreadable_sailing_plan_fails_closed_everywhere() {
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let hull = ObjId(row.hull);
+    let (out, _dropped) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(out.contains("Clearance filed"), "{out}");
+    let key = voyage_key(hull);
+    let mut rig = reboot_editing(rig, Roster::default(), |folded| {
+        let doc = folded
+            .get_mut(tacsim::NS)
+            .and_then(|data| data.kv.iter_mut().find(|(k, _)| *k == key))
+            .expect("the sailing plan document");
+        doc.1 = serde_json::json!({ "schema": 1, "nonsense": true });
+    });
+    assert!(matches!(
+        store(&rig.tw).voyage_state(hull),
+        VoyageState::Unreadable
+    ));
+    let _ = rig.tw.connect(pilot);
+    let dark = VOYAGE_DARK.replace("{name}", "Salt Moth");
+    // Leave, from the Airlock.
+    let out = run(&mut rig.tw, pilot, "+ship/leave");
+    assert!(out.contains(&dark), "leave: {out}");
+    // The hold refuses to load.
+    let ceres = mush_market::MarketId::new("ceres").expect("venue");
+    assert_eq!(
+        PortVenueGate
+            .admit(rig.tw.world(), pilot, &ceres, None, Presence::Ship(hull))
+            .map_err(|r| r.line),
+        Err(tacsim::port::HOLD_PAPERS_DARK
+            .replace("{name}", "Salt Moth")
+            .replace(
+                "{port}",
+                &tacsim::port::coop::port_name(&port_def("ceres_port"))
+            )),
+        "nothing loads"
+    );
+    // Staff take the pilot ashore; boarding refuses too.
+    support::with_ctx(&mut rig.tw, |ctx| {
+        mush_sim::unplace(ctx, pilot, "staff took the pilot ashore").expect("unplaces")
+    });
+    let gallery = c01(&rig.tw);
+    teleport(&mut rig.tw, pilot, gallery);
+    let out = run(&mut rig.tw, pilot, "+ship/board");
+    assert!(out.contains(&dark), "board: {out}");
+    // The buyout (at the desk) and the staff recall refuse.
+    let registry = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, registry);
+    let out = run(&mut rig.tw, pilot, "+coop/buyout");
+    let cleared = tacsim::port::buyout::CLEARED_WAIT.replace("{name}", "Salt Moth");
+    assert!(out.contains(&cleared), "buyout: {out}");
+    let out = run(&mut rig.tw, GOD, "@coop/revoke Pilot=testing");
+    assert!(
+        out.contains("Not revoked: ") && out.contains(&cleared),
+        "revoke: {out}"
+    );
+    // The hulls line counts it departing and stays Ready; the desk never lends it.
+    let report = status(&mut rig.tw);
+    let line = report
+        .lines()
+        .find(|l| l.contains("ceres_port hulls: "))
+        .expect("a hulls line");
+    assert!(
+        line.contains(", 1 departing.") && line.ends_with("[ready]"),
+        "{line}"
+    );
+    let port = tacsim::port::programme_port(rig.tw.world()).expect("the programme port");
+    assert!(!tacsim::port::coop::hull_is_free(
+        rig.tw.world(),
+        &port,
+        &row
+    ));
+    // A second pilot still enrols, on another hull.
+    let second = self::pilot(&mut rig, "Second", 2);
+    let out = run(&mut rig.tw, second, "+coop/enrol Tern");
+    assert!(out.contains("now the Tern"), "{out}");
+    let charter = tacsim::port::live_charter(rig.tw.world(), second).expect("a charter");
+    assert_ne!(charter.hull, hull, "never the dark hull");
+    for _ in 0..3 {
+        let _ = fire_quietly(&mut rig);
+    }
+    assert_eq!(
+        tacsim::port_tick::voyage_pages(rig.tw.world()),
+        1,
+        "paged once"
+    );
+}
+
+/// **Doc 18 cut IC14 row 11 (lead ruling L17), the desk's own gate**: a laid-up hull
+/// nobody charters — no Trust lease on it, its stowage backing nothing — whose
+/// `tacsim:voyage:` document does not read is never lent. Its corrupt document is
+/// written into the folded store and booted: `hull_is_free` answers false for it (and
+/// only the sailing-plan gate can say so, the hull being otherwise free), `free_hulls`
+/// leaves it out, a new pilot's `+coop/enrol` lends the next free hull, and the port
+/// tick pages it once.
+#[test]
+fn ic14_a_free_hull_whose_sailing_plan_does_not_read_is_never_lent() {
+    let rig = stocked();
+    let port = tacsim::port::programme_port(rig.tw.world()).expect("the programme port");
+    let free_before: Vec<u32> = tacsim::port::coop::free_hulls(rig.tw.world(), &port)
+        .iter()
+        .map(|row| row.hull)
+        .collect();
+    let (&dark, &next) = match free_before.as_slice() {
+        [dark, next, ..] => (dark, next),
+        other => panic!("at least two free hulls at Ceres: {other:?}"),
+    };
+    let key = voyage_key(ObjId(dark));
+    let mut rig = reboot_editing(rig, Roster::default(), |folded| {
+        let data = folded.get_mut(tacsim::NS).expect("tacsim's folded store");
+        assert!(
+            data.kv.iter().all(|(k, _)| *k != key),
+            "a laid-up hull has no sailing plan yet"
+        );
+        data.kv.push((
+            key.clone(),
+            serde_json::json!({ "schema": 1, "nonsense": true }),
+        ));
+    });
+    assert!(matches!(
+        store(&rig.tw).voyage_state(ObjId(dark)),
+        VoyageState::Unreadable
+    ));
+    let port = tacsim::port::programme_port(rig.tw.world()).expect("the programme port");
+    let row = port
+        .map
+        .hulls
+        .iter()
+        .find(|row| row.hull == dark)
+        .expect("the dark hull's row");
+    assert!(
+        !tacsim::port::coop::hull_is_free(rig.tw.world(), &port, row),
+        "a hull whose papers do not read is not free"
+    );
+    let free_after: Vec<u32> = tacsim::port::coop::free_hulls(rig.tw.world(), &port)
+        .iter()
+        .map(|row| row.hull)
+        .collect();
+    let expected: Vec<u32> = free_before.iter().copied().filter(|h| *h != dark).collect();
+    assert_eq!(free_after, expected, "only the dark hull leaves the pool");
+    // A new pilot enrols on the next free hull, never the dark one.
+    let newcomer = pilot(&mut rig, "Newcomer", 3);
+    let out = run(&mut rig.tw, newcomer, "+coop/enrol Tern");
+    assert!(out.contains("now the Tern"), "{out}");
+    let charter = tacsim::port::live_charter(rig.tw.world(), newcomer).expect("a charter");
+    assert_eq!(charter.hull, ObjId(next), "the next free hull is lent");
+    for _ in 0..3 {
+        let _ = fire_quietly(&mut rig);
+    }
+    assert_eq!(
+        tacsim::port_tick::voyage_pages(rig.tw.world()),
+        1,
+        "paged once"
+    );
+}
+
+/// `look` in hull room `id` of `row` as `who` (teleported there).
+fn look_aboard(rig: &mut Rig, who: ObjId, row: &HullRow, id: &str) -> Vec<String> {
+    let room = room_of(row, id);
+    rig.tw.world_mut().move_to(who, room).expect("walks there");
+    run(&mut rig.tw, who, "look")
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// **Doc 18 cut IC14 row 54 (IC11 L21; Q-18-47): the burn-and-reserve gauge.** In
+/// Engineering the tank line is followed by `BURN_GAUGE_NONE` while nothing is filed;
+/// once `+ship/undock` files the passage, by `BURN_GAUGE` with the plan's burn and the
+/// tank less it; once the burn lands (the tank debited), the same burn with the tank
+/// as the reserve. The Bridge carries it under its TANKAGE line; the Crew compartment
+/// and the Hold carry neither form. Nothing is written by a look.
+#[test]
+fn ic14_the_burn_gauge_reads_the_filed_plan() {
+    use tacsim::port::ship::{BURN_GAUGE, BURN_GAUGE_NONE};
+    let (mut rig, pilot, row) = aboard_with_load(3_600, 42, 21);
+    let hull = ObjId(row.hull);
+    let none = BURN_GAUGE_NONE.to_owned();
+    let tank = "Tank gauges: reaction mass, 42 of 80 t.".to_owned();
+    let after = |lines: &[String], line: &str| {
+        lines
+            .iter()
+            .position(|l| l == line)
+            .and_then(|at| lines.get(at + 1).cloned())
+    };
+    let engineering = look_aboard(&mut rig, pilot, &row, "engineering");
+    assert_eq!(
+        after(&engineering, &tank),
+        Some(none.clone()),
+        "{engineering:#?}"
+    );
+    let bridge = look_aboard(&mut rig, pilot, &row, "bridge");
+    assert_eq!(
+        after(&bridge, "  TANKAGE 42/80 t"),
+        Some(format!("  {none}")),
+        "{bridge:#?}"
+    );
+    for room in ["crew", "hold", "passage"] {
+        let lines = look_aboard(&mut rig, pilot, &row, room);
+        assert!(
+            !lines.iter().any(|l| l.contains("Burn for the filed plan")),
+            "{room}: {lines:#?}"
+        );
+    }
+    // Filed: the plan's burn, the tank less it.
+    let _ = look_aboard(&mut rig, pilot, &row, "crew");
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(out.contains("Clearance filed for Stickney Yards"), "{out}");
+    let burn = voyage(&rig.tw, hull)
+        .and_then(|v| v.pending)
+        .expect("a filed passage")
+        .plan
+        .burn_t;
+    let filed = BURN_GAUGE
+        .replace("{burn}", &burn.to_string())
+        .replace("{reserve}", &(42 - burn).to_string());
+    let engineering = look_aboard(&mut rig, pilot, &row, "engineering");
+    assert_eq!(
+        after(&engineering, &tank),
+        Some(filed.clone()),
+        "{engineering:#?}"
+    );
+    for room in ["crew", "hold"] {
+        let lines = look_aboard(&mut rig, pilot, &row, room);
+        assert!(
+            !lines.iter().any(|l| l.contains("Burn for the filed plan")),
+            "{room}: {lines:#?}"
+        );
+    }
+    // The burn lands: the tank is debited, and the reserve is what it holds.
+    land_all(&mut rig, &queued);
+    let debited = format!("Tank gauges: reaction mass, {} of 80 t.", 42 - burn);
+    let engineering = look_aboard(&mut rig, pilot, &row, "engineering");
+    assert_eq!(
+        after(&engineering, &debited),
+        Some(filed.clone()),
+        "the reserve is unchanged by the debit: {engineering:#?}"
+    );
+    let bridge = look_aboard(&mut rig, pilot, &row, "bridge");
+    assert_eq!(
+        after(&bridge, &format!("  TANKAGE {}/80 t", 42 - burn)),
+        Some(format!("  {filed}")),
+        "{bridge:#?}"
     );
 }

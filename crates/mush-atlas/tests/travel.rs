@@ -960,19 +960,10 @@ fn s10_a_journey_under_way_ends_where_it_stands_when_its_road_is_reapplied() {
         .lines()
         .find_map(|l| l.trim().strip_prefix("fingerprint "))
         .and_then(|rest| rest.split_whitespace().next())
-        .unwrap_or_else(|| {
-            panic!(
-                "no fingerprint in:
-{planned}"
-            )
-        })
+        .unwrap_or_else(|| panic!("no fingerprint in:\n{planned}"))
         .to_string();
     let applied = run(&mut tw, GOD, &format!("@atlas/pack apply {fingerprint}"));
-    assert!(
-        applied.contains("Applied"),
-        "{planned}
-{applied}"
-    );
+    assert!(applied.contains("Applied"), "{planned}\n{applied}");
     assert!(
         revision_of(&tw).is_some_and(|r| r > before),
         "the re-applied road's revision moved up"

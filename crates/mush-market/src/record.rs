@@ -685,6 +685,16 @@ pub struct Listing {
     pub expires: EconomicDeadline,
     /// Bumped by every write; a quote is bound to it.
     pub revision: u64,
+    /// Doc 18 cut IC14 row 14 (lead ruling L8): whether this `Supply::Stock` listing
+    /// sells by Draw, decided once at publication by `draw_listing_precheck` and never
+    /// re-derived from the live catalogue entry. `None` only on a listing written
+    /// before IC14, whose kind is still derived from the live catalogue entry as IC7
+    /// built it, until its next write stamps it (`store::put_listing`). Every other
+    /// supply writes `Some(false)`. Optional on the wire because the market's boot
+    /// **skips** a listing that does not decode, so a required field would silently
+    /// drop every kept listing.
+    #[serde(default)]
+    pub draw: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -707,6 +717,8 @@ struct ListingWire {
     expires: EconomicDeadline,
     #[serde(default)]
     revision: u64,
+    #[serde(default)]
+    draw: Option<bool>,
 }
 
 impl TryFrom<ListingWire> for Listing {
@@ -732,6 +744,12 @@ impl TryFrom<ListingWire> for Listing {
         }
         if w.definition_version == 0 {
             return Err(RecordError("a listing's definition version is zero"));
+        }
+        // Doc 18 cut IC14 row 14: only a storefront listing can draw.
+        if w.draw == Some(true) && !matches!(w.source, Supply::Stock { .. }) {
+            return Err(RecordError(
+                "a listing that is not stock cannot sell by Draw",
+            ));
         }
         // An `Asset` listing conveys exactly one named object; every other shape
         // names none. That is the invariant `TitleTransfer` needs and the reason a
@@ -786,6 +804,7 @@ impl TryFrom<ListingWire> for Listing {
             visibility: w.visibility,
             expires: w.expires,
             revision: w.revision,
+            draw: w.draw,
         })
     }
 }
@@ -1053,20 +1072,6 @@ pub struct PaidLot {
     pub marker: Option<SmolStr>,
 }
 
-/// The longest applied-marker id inventory's family admits (cut IC10).
-pub const MAX_MARKER_ID_BYTES: usize = 96;
-
-/// Whether `id` is an `inventory_applied` key: 1..=96 bytes of lowercase hex (the
-/// family's key rule, `mush_inventory::module`; cut IC10).
-#[must_use]
-pub fn is_marker_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= MAX_MARKER_ID_BYTES
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
 impl PaidLot {
     /// The record's invariants: two distinct endpoints, a cutoff on exactly the Draw
     /// and Deliver kinds, never before the deal itself, and a well-formed marker on
@@ -1084,7 +1089,7 @@ impl PaidLot {
         match (self.kind, self.draw_by, self.marker.as_deref()) {
             (PaidKind::Draw, Some(by), None) if by >= self.accepted_at => Ok(()),
             (PaidKind::Deliver, Some(by), Some(marker))
-                if by >= self.accepted_at && is_marker_id(marker) =>
+                if by >= self.accepted_at && mush_inventory::is_marker_id(marker) =>
             {
                 Ok(())
             }

@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "neighborhood.stickney_yards",
-    "version": 3,
+    "version": 4,
     "kind": "neighborhood",
-    "digest": "df2e5af11f18c4a5c71bea9e0b5b187b7cdb97c037aecc6b433b9ee3a0d1b2eb",
+    "digest": "f1bdc803c5adca043d576013fb5c94bc2b4b6f0434e91f82fe123fcbab2f16f6",
     "requires": [
       {
         "id": "region.stickney_yards",
@@ -315,7 +315,7 @@
         },
         "kind": "circulation",
         "details": {
-          "shift boards": "Drydock 2 on third rotation; Drydock 4 RESERVED — GUARD; a crew call for a Hod refit, Settlement citizens preferred. A public map of the station hangs at the end, the Freight Deck drawn as a grey band marked YARD PERSONNEL (+atlas has the same map, in words).",
+          "shift boards": "Drydock 2 on third rotation; Drydock 4 RESERVED — GUARD; a crew call for a Hod refit, Settlement citizens preferred. A public map of the station hangs at the end, the Freight Deck drawn as a grey band marked YARD PERSONNEL.",
           "viewports": "Small, round, thick. Through each one a slice of crater floor, a truss, a work lamp, and a scrap of Mars.",
           "recruiting bill": "ORBITAL GUARD — THE CORRIDOR IS OURS TO KEEP. A Vigil at full torch, drawn larger than it is. Someone has pencilled a tally under it.",
           "handlines": "Two lines, inbound and outbound, with a painted arrow every five metres. Newcomers hold both."
@@ -383,7 +383,7 @@
         },
         "kind": "indoor",
         "details": {
-          "intake board": "CONCENTRATE — the bid, per tonne — intake remaining. WATER ICE — the bid, per tonne — intake remaining; the figures are the board's own (it is what +market/list prints here) and change when Kasei says so. The concentrate line has been painted over once, downward; the refinery is water-starved and bids the ice up and the ore down, and the clerk will say so if asked. FUNDS: a figure Kasei does not hide, because it is the figure that decides whether a hull gets paid today.",
+          "intake board": "CONCENTRATE — the bid, per tonne — intake remaining. WATER ICE — the bid, per tonne — intake remaining; the figures are the board's own and change when Kasei says so. The concentrate line has been painted over once, downward; the refinery is water-starved and bids the ice up and the ore down, and the clerk will say so if asked. FUNDS: a figure Kasei does not hide, because it is the figure that decides whether a hull gets paid today.",
           "assay scales": "A bench of grade scales and a core sampler. A lot's grade is read here and written on the manifest; the price is per tonne of what the scales say, not what the seller says.",
           "barred window": "The bonded hall: racked pallets under yellow lamps, tracked dollies, a manifest clerk on a tether, and a freight door at the far end with a berth number beside it. No public way in.",
           "hatch": "An alloy hatch with a card reader and no handle on this side. YARD PERSONNEL ONLY, and under it, smaller, THAT MEANS YOU."
@@ -417,7 +417,7 @@
         },
         "kind": "indoor",
         "details": {
-          "price board": "ALLOY STOCK, STRUCTURAL — per t — remaining. PROPELLANT, DRIVE — per t — remaining. The figures are Kasei's and change when Kasei says so; +market/list has them to the credit. Below Kasei's lines, in the Yard's own stencil: YARD FITTINGS, CRATED — PER TONNE, THE YARD'S FIGURE — STICKNEY YARDS — SIGNED AT THE SERVICE COUNTER, with a chalked note beside it, CRATED: 2.3 CUBES TO THE TONNE. A Dray captain who reads both boards sees the return run's arithmetic: alloy stock fills the rating, fittings fill the bay, and the hull that leaves with both full pays best.",
+          "price board": "ALLOY STOCK, STRUCTURAL — per t — remaining. PROPELLANT, DRIVE — per t — remaining. The figures are Kasei's and change when Kasei says so. Below Kasei's lines, in the Yard's own stencil: YARD FITTINGS, CRATED — PER TONNE, THE YARD'S FIGURE — STICKNEY YARDS — SIGNED AT THE SERVICE COUNTER, with a chalked note beside it, CRATED: 2.3 CUBES TO THE TONNE. A Dray captain who reads both boards sees the return run's arithmetic: alloy stock fills the rating, fittings fill the bay, and the hull that leaves with both full pays best.",
           "bids board": "KASEI METALS BUYS: concentrate and water ice, the bid per tonne beside each line with the intake left this cycle; the figures are the board's own, never the paint's. Under it, contractors' chits: a tonne of alloy offcuts wanted, a Hod seat to Isidis offered.",
           "stair well": "A rung stair in a railed well, seven metres down to the Freight Deck, with a handline beside the rungs for those who prefer to float it. RECEIVING COUNTER — PUBLIC; the arrow is green.",
           "floor": "Pallet scoring in the alloy, in parallel lines from the well to the door. Freight used to come up this way. Now it does not, and the lines are a record."

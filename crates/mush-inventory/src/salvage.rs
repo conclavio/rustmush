@@ -435,7 +435,12 @@ impl ActionProvider for SalvageProvider {
                 )
             })?;
         Ok(Some(ProviderOfferDraft {
-            fixed_parameters: json!({ "now": engine.world.world_ic_now() }),
+            // Doc 18 cut IC14 row 1: the real second rides beside the IC stamp,
+            // for the marker ring's age (`InventoryFamilies::retain_marker`).
+            fixed_parameters: json!({
+                "now": engine.world.world_ic_now(),
+                "wall": engine.world.now(),
+            }),
             parameters: ProjectedParameterSchema::new(parameters).map_err(|_| {
                 error(
                     ActionErrorCode::Integrity,
@@ -472,6 +477,7 @@ impl ActionProvider for SalvageProvider {
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let parameters = self.parameters(invocation)?.clone();
         let now = prepare_now(&parameters)?;
+        let wall = crate::provider::prepare_wall(&parameters)?;
         let (root, from) = parse_site(&text_field(&parameters, "site")?).ok_or_else(refuse)?;
         let to = text_field(&parameters, "to")?
             .parse::<u64>()
@@ -520,6 +526,17 @@ impl ActionProvider for SalvageProvider {
         .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
         txn.insert(&self.families.applied, &marker_id, marker)
             .map_err(|_| error(ActionErrorCode::Integrity, NO_SUCH_WRECK))?;
+        // Doc 18 §9 risk 19, cut IC14 row 1: the marker joins its source
+        // endpoint's ring in this same bundle; a full young ring refuses the
+        // whole recovery (nothing is written).
+        self.families
+            .retain_marker(txn, from, &marker_id, wall)
+            .map_err(|source| match source {
+                crate::pool::InventoryError::MarkerRingFull => {
+                    error(ActionErrorCode::ProviderRejected, source.to_string())
+                }
+                _ => error(ActionErrorCode::Integrity, NO_SUCH_WRECK),
+            })?;
 
         let mut data = BTreeMap::<String, Value>::new();
         data.insert("actor".to_owned(), json!(invocation.actor().0));

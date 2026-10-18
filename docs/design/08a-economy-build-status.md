@@ -227,6 +227,45 @@ Plus: `mush_org::audit(ctx, OrgAction)` records an org-authority act that mutate
 - **Durable gates (core):** `gate_on_durable_ack_strict()` for money; the non-strict
   `gate_on_durable_ack()` for the E3 control-doc writes (approval rules, vault/account/asset status).
 
+**As built (doc 18 IC0–IC14):** the trade run (doc 18) consumed and added these seams; each is a
+ledger row here, with its cut (code at `94679739` plus cut IC14):
+
+- **The Lot short-circuit and the listing-TTL cap (IC0):** `deliver()` and `cannot_deliver` share
+  `settles_inside_the_contract` (true for `Representation::Asset` and `Representation::Lot`,
+  `mush-market/src/module.rs`), so a settled lot sale never walks the delivery table; a lot listing's
+  real-time window is cut to its hold's IC lifetime (`api::list_goods`), and the hold is read at the
+  quote and the accept.
+- **`EconomyModule::with_party_cap_source` (IC7):** a composition-frozen `PartyCapSource`, asked only
+  after the frozen party-cap table said no; it confers no money authority. TacSim's `PortPartyCaps`
+  (IC8) names the port institutions.
+- **`MarketModule::with_venue_gate` and `Presence::{Here, Ship}` (IC7):** the presence gate a game
+  layer installs (TacSim's `PortVenueGate`: the port's rooms, or the pilot's docked hull).
+- **`Supply::Wanted` (IC8):** a standing bid as a listing (`post_wanted`), which IC10's lot sell arm
+  (`sell_into_bid`) sells into; an exhausted bid stands at quantity 0.
+- **`LotOp::Draw` (IC7) and `LotOp::Deliver` (IC10):** the drawn ask from a storefront pool and the
+  sale's hand-over, both legs of the one `market_lot` action.
+- **The `CapacityProvider` hook (IC7, IC8):** `MarketModule::with_capacity_provider`; TacSim's
+  `PortCapacity` measures a hold's two limits before any money moves.
+- **`MarketModule::with_proceeds_policy` (IC10):** the `ProceedsPolicy` seam; TacSim's `CoopProceeds`
+  takes the Co-op's share and folds each settled sale once.
+- **The contract-keyed lot leg (IC7):** a paid leg is keyed `market.lot.<op>.<contract:x>`, so a
+  re-stage is the same request and moves nothing twice.
+- **The lapsed-hold release by the port tick, as the holder (IC8; Q-18-31):** the market sweep keeps a
+  lapsed hold-backed listing until its hold reads Gone, and the holder's own
+  `release_lapsed_hold` (TacSim's port tick acting as the holder) releases it — never the GOD sweep.
+- **`InventoryFamilies::transfer_marked` (IC10):** a transfer that writes its own
+  `inventory.transferred` marker under an offer-time-derivable id; since IC14 the marker is also
+  recorded in its source endpoint's `inventory.marker_ring` (doc 18 §9 risk 19).
+- **The `page_stale_contracts` lease exemption (IC6, narrowed in IC7):** a live lease holding no escrow
+  is never paged as stale; an escrowed one still is.
+- **`mush_economy::rehome_vault` (IC13):** re-own a vault (the recall's hold back to the Trust), one
+  vault document written and re-indexed, never closed.
+- **`EconomyModule::with_dispute_guard` (IC14):** a composition-frozen `DisputeGuard` asked by a
+  non-admin party's `@contract/dispute`; the market's `SaleDisputeGuard` refuses a seller disputing
+  their own sale into a bid.
+- **Not needed:** the keyed `create_system_obligation` variant (Q-18-27) and an optional
+  `LeaseSpec.rent` (Q-18-29); the slice runs on the existing calls.
+
 ## Decisions made while building (not all in the original doc 08 draft)
 
 1. **Org creation is staff-only** (E1). Player-created orgs wait for a milestone with an economy

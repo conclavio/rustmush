@@ -348,6 +348,26 @@ impl Ctx<'_> {
     pub fn authoritative_pending(&self, actor: ObjId) -> bool {
         self.out.authoritative_pending(actor)
     }
+
+    /// Whether the engine's authoritative submit queue is full (doc 18 cut
+    /// IC14 row 2): a full queue drops a leg the command staged after its
+    /// money moved, so a command that escrows first asks; it counts the
+    /// queued actors and every authoritative submission deferred earlier in
+    /// this outbox ([`Outbox::authoritative_queue_full`]).
+    #[must_use]
+    pub fn authoritative_queue_full(&self) -> bool {
+        self.out.authoritative_queue_full()
+    }
+
+    /// Whether a prepared action owns the typed store (doc 18 cut IC14 row
+    /// 10): a prepared action — staged or in the writer's custody — whose
+    /// post-images are not installed yet; a tick that would clear state such
+    /// an action depends on waits a fire
+    /// ([`ModuleActionState::commit_pending`](crate::action_state::ModuleActionState::commit_pending)).
+    #[must_use]
+    pub fn authoritative_commit_pending(&self) -> bool {
+        self.typed_state.commit_pending()
+    }
 }
 
 /// A command implementation. Registered as `Arc<dyn CommandHandler>`

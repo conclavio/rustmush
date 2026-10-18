@@ -76,7 +76,7 @@ pub const MAX_PORT_CAPITAL_MAJOR: u64 = 100_000_000;
 pub const MAX_TRANCHE_MAJOR: u64 = 800_000;
 /// **The `tacsim.credit` mint cap the game contributes**, in major units
 /// (D-18-14; doc 18 §4.7 "Config flips"): above [`MAX_TRANCHE_MAJOR`], so every
-/// tranche fits under it, and below anything a single drip should ever be.
+/// tranche fits under it, and above any single drip the game issues.
 pub const PORT_MINT_CAP_MAJOR: u64 = 1_000_000;
 /// The largest hull pool one programme may author.
 pub const MAX_PROGRAMME_POOL: u32 = 16;
@@ -376,6 +376,17 @@ impl PortDef {
                 self.vendors.len()
             ));
         }
+        // Doc 18 cut IC14 row 29 (lead ruling L24): the stock clerk carries at most
+        // `MAX_CLERK_ROWS` rows for a port, so a port may author no more across its
+        // vendors (a row past it would never be minted, and the clerk's arm stalled on
+        // it). The caller names the entry.
+        let stock_rows: usize = self.vendors.iter().map(|v| v.stock.len()).sum();
+        if stock_rows > crate::port::stock::MAX_CLERK_ROWS {
+            return Err(format!(
+                "vendors: a port stocks at most {} rows across its vendors, not {stock_rows}",
+                crate::port::stock::MAX_CLERK_ROWS
+            ));
+        }
         for vendor in &self.vendors {
             if !ids.contains(&vendor.org) {
                 return Err(format!(
@@ -406,10 +417,19 @@ impl PortDef {
                 }
             }
             for row in &vendor.stock {
-                if row.qty == 0 || row.issue == 0 || row.grade > 100 {
+                // Doc 18 cut IC14 row 28: a quantity past the market's own cap would list
+                // min(pool, cap) and read as drift for ever, so it is refused here.
+                if row.qty == 0
+                    || row.qty > mush_market::MAX_QUANTITY
+                    || row.issue == 0
+                    || row.grade > 100
+                {
                     return Err(format!(
-                        "vendor {}: stock {}: qty and issue must be at least 1 and grade 0..=100",
-                        vendor.org, row.good
+                        "vendor {}: stock {}: qty must be 1..={} and issue at least 1 and grade \
+                         0..=100",
+                        vendor.org,
+                        row.good,
+                        mush_market::MAX_QUANTITY
                     ));
                 }
             }
@@ -979,5 +999,65 @@ mod tests {
             ..vendor
         });
         assert!(refused(&def).contains("is not one of this port's orgs"));
+    }
+
+    /// Doc 18 cut IC14 rows 28 and 29 (lead ruling L24): a stock row's quantity is
+    /// bounded by the market's own cap, and a port authors no more stock rows across its
+    /// vendors than its clerk carries.
+    #[test]
+    fn ic14_stock_rows_are_bounded_by_the_market_and_the_clerk() {
+        let row = |good: &str, qty: u64| StockRowDef {
+            good: cid(good),
+            qty,
+            grade: 0,
+            issue: 1,
+        };
+        let vendor = |org: &str, stock: Vec<StockRowDef>| VendorDef {
+            org: cid(org),
+            storefront: "neighborhood.ceres_freeport.room.c07_exchange".to_owned(),
+            agent: cid("npc.someone"),
+            signatory: "neighborhood.ceres_freeport.npc.someone".to_owned(),
+            stock,
+            asks: Vec::new(),
+            bids: Vec::new(),
+        };
+        let mut def = port();
+        def.vendors.push(vendor(
+            "coop",
+            vec![row("metals", mush_market::MAX_QUANTITY + 1)],
+        ));
+        assert_eq!(
+            refused(&def),
+            format!(
+                "vendor coop: stock metals: qty must be 1..={} and issue at least 1 and grade \
+                 0..=100",
+                mush_market::MAX_QUANTITY
+            )
+        );
+        let mut def = port();
+        def.vendors.push(vendor(
+            "coop",
+            vec![row("metals", mush_market::MAX_QUANTITY)],
+        ));
+        assert!(
+            !refused(&def).contains("qty must be"),
+            "the cap itself is admitted: {}",
+            refused(&def)
+        );
+        // Five vendors of thirteen rows each: 65, one past the clerk's 64.
+        let mut def = port();
+        for n in 0..5 {
+            let id = format!("org{n}");
+            def.orgs.push(org(&id, 1_000));
+            let rows = (0..13).map(|g| row(&format!("good{g}"), 1)).collect();
+            def.vendors.push(vendor(&id, rows));
+        }
+        assert_eq!(
+            refused(&def),
+            format!(
+                "vendors: a port stocks at most {} rows across its vendors, not 65",
+                crate::port::stock::MAX_CLERK_ROWS
+            )
+        );
     }
 }

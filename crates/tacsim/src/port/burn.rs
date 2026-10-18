@@ -11,7 +11,7 @@
 //! holds ([`BurnTable`], D-18-11 "the drive table the provider holds"), refuses
 //! an overloaded hull, a short tank, a short locker and any mismatch, debits the
 //! propellant and provisions pools through the delegated inventory families, and
-//! inserts the `tacsim.ticket` carrying the whole [`PassagePlan`] (D-18-46).
+//! inserts the `tacsim.ticket` carrying the whole [`PassagePlan`](crate::port::families::PassagePlan) (D-18-46).
 //!
 //! **The plan reaches the prepare only from the server's own filed document**
 //! (lead ruling L4): the offer carries the hull's pending voyage as a

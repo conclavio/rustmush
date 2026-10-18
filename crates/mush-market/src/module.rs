@@ -170,6 +170,18 @@ pub trait VenueGate: Send + Sync + std::fmt::Debug {
         venue: &crate::MarketId,
         seller: &PrincipalId,
     ) -> bool;
+    /// The name of the person who signs for `seller` at `market`, when the gate
+    /// knows one (doc 18 cut IC14 row 52; §4.3; Q-18-47): `+market/accept`'s success
+    /// line names them. Default: nobody, so every gate that does not answer keeps
+    /// the line unchanged.
+    fn signatory(
+        &self,
+        _w: &mush_core::World,
+        _market: &crate::MarketId,
+        _seller: &PrincipalId,
+    ) -> Option<String> {
+        None
+    }
 }
 
 /// What a governed endpoint's limits are, resolved where a World exists and carried,

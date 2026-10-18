@@ -1167,3 +1167,107 @@ fn ic8_lapsed_holds_lists_only_lapsed_hold_listings() {
         "the limit bounds it"
     );
 }
+
+/// **Doc 18 cut IC14 row 15: a non-holder hears `NO_SUCH_LISTING` for any listing.**
+/// `release_lapsed_hold` checks custody before it checks whether the listing is
+/// hold-backed, so a stranger's answer for a Draw (storefront) listing and for a
+/// hold-backed listing is the one byte-identical refusal — whether a listing holds
+/// stock is not something a stranger learns. The holder still hears the specific line.
+#[test]
+fn ic14_a_non_holder_hears_no_such_listing_for_any_listing() {
+    let mut r = rig();
+    let held = stock_hold(&mut r, 10, 1);
+    // The Draw listing on another good's storefront pool (one live listing per pool).
+    let families = r.families.clone();
+    seed(
+        &mut r.tw,
+        &families,
+        EndpointRef(r.shop_vault),
+        "ore0",
+        5,
+        LotId(0xd0),
+    );
+    let said = ok(
+        &mut r.tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{}=ic8:ore0 price=700 qty=1",
+            r.vendor.0
+        ),
+    );
+    let drawn = market(&r.tw)
+        .live_listings()
+        .map(|l| l.id)
+        .max()
+        .expect("the Draw listing");
+    assert_ne!(drawn, held, "{said}");
+    let pat = r.pat;
+    let mut answers = Vec::new();
+    for id in [drawn, held] {
+        let answer = with_probe(&mut r.tw, pat, move |ctx| {
+            mush_market::release_lapsed_hold(ctx, id)
+        });
+        answers.push(answer);
+    }
+    for answer in &answers {
+        assert_eq!(
+            answer,
+            &Err(MarketError::NoStanding(mush_market::NO_SUCH_LISTING)),
+            "{answers:?}"
+        );
+    }
+    assert!(r.tw.engine_mut().take_authoritative_submit().is_none());
+    // The holder (staff) still hears why a Draw listing has nothing to release.
+    let answer = with_probe(&mut r.tw, GOD, move |ctx| {
+        mush_market::release_lapsed_hold(ctx, drawn)
+    });
+    assert_eq!(
+        answer,
+        Err(MarketError::bad(
+            "That listing holds no stock, so there is nothing to release."
+        ))
+    );
+}
+
+/// **Doc 18 cut IC14 row 16: a kept lapsed hold is read once per ten sweeps.** On a
+/// roster without a releaser the sweep keeps a lapsed hold-backed listing until its
+/// hold reads `Gone`; the read now backs off per listing — 20 sweeps make two reads —
+/// while a holder's staged release lifts the backoff, so its landing is seen on the
+/// next sweep.
+#[test]
+fn ic14_a_kept_lapsed_hold_is_read_once_per_ten_sweeps() {
+    let mut r = rig();
+    let id = stock_hold(&mut r, 10, 1);
+    let expires = market(&r.tw).listing(id).expect("listed").expires.at;
+    let start = market(&r.tw).hold_reads();
+    for n in 1..=20 {
+        sweep_at(&mut r.tw, expires + 61 * n);
+    }
+    assert!(market(&r.tw).listing(id).is_some(), "kept: the hold stands");
+    assert_eq!(
+        market(&r.tw).hold_reads() - start,
+        2,
+        "two reads in 20 sweeps"
+    );
+    // The holder releases the hold: a staged release is read on every sweep for a
+    // backoff window, so the landing deletes the listing on the very next sweep.
+    let answer = with_probe(&mut r.tw, GOD, move |ctx| {
+        mush_market::release_lapsed_hold(ctx, id)
+    });
+    assert_eq!(answer, Ok(()));
+    land(&mut r.tw, 0xc4).expect("the release lands");
+    let base = expires + 61 * 20;
+    let mut gone_after = None;
+    for n in 1..=mush_market::HOLD_RECHECK_SWEEPS {
+        sweep_at(&mut r.tw, base + 61 * i64::try_from(n).expect("small"));
+        if market(&r.tw).listing(id).is_none() {
+            gone_after = Some(n);
+            break;
+        }
+    }
+    assert_eq!(
+        gone_after,
+        Some(1),
+        "a released hold's listing is deleted on the next sweep"
+    );
+}

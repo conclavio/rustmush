@@ -3967,3 +3967,77 @@ async fn ic12_the_sailing_plan_skips_and_holds() {
     );
     assert_no_pages(&rig.tw);
 }
+
+/// **Doc 18 cut IC14 row 40 (lead ruling L23): a counter refusal is retried, on the
+/// shipped packs.** A hull docked at Stickney with metal concentrate aboard queues
+/// `sell metals all` while staff have suspended Kasei Metals (`@org/status
+/// #<org>=suspended`, a real staff act): the market refuses the sale at the counter
+/// (`NOT_BUYING`), the plan's log carries `REFUSED_RETRY` once and the order waits a
+/// minute; staff lift the suspension and the retry sells. `INTAKE_TAKEN` stays at the
+/// unit level: no staff act on the shipped packs exhausts a bid's intake (Kasei's 4,000
+/// and 9,600 t against a 100 t hold).
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn ic14_a_counter_refusal_is_retried_on_the_shipped_packs() {
+    use tacsim::port::executor as ex;
+
+    let mut rig = boot("refusedretry").await;
+    let _ = sweep(&mut rig, 120).await;
+    stock(&mut rig).await;
+    let cy = pilot(&mut rig, "Cy", "cyacct").await;
+    let row = enrol(&mut rig, cy, "Salt Moth").await;
+    let hull = ObjId(row.hull);
+    let hold = hold_of(&rig.tw, &row);
+    let outfit = outfit(&mut rig, cy).await;
+    top_up(&mut rig, cy, 10_000_000).await;
+    board_from_chandlery(&mut rig, cy, "Salt Moth").await;
+    set_rate(&mut rig, 3_600).await;
+    let filed = run(&mut rig, cy, "+ship/undock stickney").await;
+    assert!(filed.contains("Clearance filed"), "{filed}");
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued).await;
+    let _ = fire_quietly(&mut rig).await;
+    let flown = ticket(&mut rig.tw, hull, 1).expect("the ticket");
+    let _ = to_ic(&mut rig, flown.plan.depart_ic + flown.plan.total_s).await;
+    let _ = fire_quietly(&mut rig).await;
+    assert!(!under_way(&rig.tw, hull), "docked at Stickney");
+    assert_eq!(pool(&mut rig.tw, hold, "metals"), outfit.metals);
+
+    // Staff suspend Kasei; the queued sale is refused at the counter and retried.
+    let kasei = port_map(&rig.tw, P).orgs[&cid("kasei")].org;
+    let out = run(&mut rig, GOD, &format!("@org/status #{kasei}=suspended")).await;
+    assert!(!out.contains("Usage"), "{out}");
+    let _ = file(&mut rig, cy, "sell metals all").await;
+    disconnect(&mut rig.tw, cy);
+    let retry = ex::REFUSED_RETRY
+        .replace("{n}", "1")
+        .replace("{line}", mush_market::NOT_BUYING);
+    let _ = fire_until(&mut rig, 6, |_| false, |rig| has_log(&rig.tw, hull, &retry)).await;
+    let doc = orders(&rig.tw, hull);
+    assert_eq!(doc.order(1).map(|o| o.refusals), Some(1), "{:#?}", doc.log);
+    assert_eq!(doc.order(1).map(|o| o.state), Some(OrderState::Pending));
+    assert_eq!(
+        pool(&mut rig.tw, hold, "metals"),
+        outfit.metals,
+        "nothing sold"
+    );
+    // Lifted: the retry sells.
+    let out = run(&mut rig, GOD, &format!("@org/status #{kasei}=active")).await;
+    assert!(!out.contains("Usage"), "{out}");
+    let _ = fire_until(
+        &mut rig,
+        60,
+        |_| false,
+        |rig| order_state(&rig.tw, hull, 1) == Some(OrderState::Done),
+    )
+    .await;
+    assert_eq!(pool(&mut rig.tw, hold, "metals"), 0, "sold after the lift");
+    assert_eq!(
+        log_texts(&rig.tw, hull)
+            .iter()
+            .filter(|l| **l == retry)
+            .count(),
+        1,
+        "REFUSED_RETRY logged once"
+    );
+}

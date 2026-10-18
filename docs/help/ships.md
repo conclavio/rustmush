@@ -26,8 +26,9 @@ cleared for a port, or under way with the leg and the time it is due. The rooms
 with instruments show their readings as well.
 
 While you are aboard, the ship is where you are: the exits of Limbo (`o`, `s`)
-and `home` do not take you off it, and nothing crosses the hull under way. You
-leave by the Airlock, in port.
+and `home` do not take you off it, and nothing you do crosses the hull under
+way: your own moves out of the hold refuse until she docks. You leave by the
+Airlock, in port.
 
 ## The hold
 

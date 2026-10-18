@@ -457,6 +457,36 @@ impl Outbox {
             )
     }
 
+    /// Whether the engine's authoritative submit queue is full for a new
+    /// actor (doc 18 cut IC14 row 2): the number of **distinct** actors in
+    /// the noted set (exactly the engine queue's keys at the note) together
+    /// with the actor of every [`Deferred::AuthoritativeSubmit`] this outbox
+    /// already carries is at least
+    /// [`AUTHORITATIVE_SUBMIT_QUEUE_MAX`](crate::engine::AUTHORITATIVE_SUBMIT_QUEUE_MAX).
+    ///
+    /// It mirrors [`authoritative_pending`](Self::authoritative_pending)'s
+    /// two sources: in `fire_due` several handlers run before the one drain
+    /// (the TacSim executor sells as up to eight pilots in one fire, `@wait`
+    /// lines fire there too), and each one's deferred submission lands in
+    /// this same outbox, which the noted snapshot cannot see. The drain
+    /// admits in deferred order, so a submission whose actor is not yet
+    /// counted is refused exactly when that count has reached the cap. A
+    /// command that moves money before its leg is staged asks first.
+    ///
+    /// Outside a note (a boot hook, a test with no engine) the noted set is
+    /// empty and only this outbox's deferred submissions count — the same
+    /// honest blind spot `authoritative_pending` has.
+    #[must_use]
+    pub fn authoritative_queue_full(&self) -> bool {
+        let mut actors: std::collections::BTreeSet<ObjId> = self.pending_authoritative.clone();
+        for d in &self.deferred {
+            if let Deferred::AuthoritativeSubmit(request) = d {
+                actors.insert(request.actor);
+            }
+        }
+        actors.len() >= crate::engine::AUTHORITATIVE_SUBMIT_QUEUE_MAX
+    }
+
     /// Pin the deferred-work queued **so far** as non-truncatable: a later
     /// [`truncate_deferred`](Self::truncate_deferred) can only discard entries
     /// pushed after this call.

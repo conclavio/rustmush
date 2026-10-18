@@ -700,19 +700,48 @@ fn accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .rhs()
         .and_then(|rhs| rhs.split_whitespace().next().and_then(parse_u64))
         .map(|id| mush_inventory::EndpointRef(mush_economy::VaultId(id)));
+    // Doc 18 cut IC14 row 52 (§4.3; Q-18-47): who signs for the seller, read before
+    // the accept (the listing may be drawn down by it); the venue gate names them,
+    // and a gate that does not leaves the line as it was.
+    let signs = accept_signatory(ctx, id);
     match crate::trade::accept_at(ctx, id, destination, crate::module::Presence::Here) {
         Ok(contract) => {
+            let signs = signs
+                .map(|(signatory, shop)| {
+                    ACCEPT_SIGNS
+                        .replace("{signatory}", &signatory)
+                        .replace("{shop}", &shop)
+                })
+                .unwrap_or_default();
             info(
                 ctx,
                 format!(
                     "Agreed. Contract #{contract} carries it; your payment is escrowed and \
-                     settles when the terms are met."
+                     settles when the terms are met.{signs}"
                 ),
             );
             Ok(())
         }
         Err(e) => Err(refuse_market(ctx, &e)),
     }
+}
+
+/// **The accept line's signatory clause** (doc 18 cut IC14 row 52; §4.3; Q-18-47),
+/// appended to `+market/accept`'s success line when the venue gate names who signs
+/// for the seller: `{signatory}` that person's name, `{shop}` the vendor's name.
+pub const ACCEPT_SIGNS: &str = " {signatory} signs for {shop}.";
+
+/// Who signs for quote `id`'s seller, and the vendor's name, when the composed venue
+/// gate names a signatory (doc 18 cut IC14 row 52). `None` for an unknown quote, a
+/// listing or vendor no longer on the books, no gate, or a gate that names nobody.
+fn accept_signatory(ctx: &Ctx<'_>, id: QuoteId) -> Option<(String, String)> {
+    let store = ctx.w.module_state::<MarketStore>()?;
+    let quote = store.quote(id)?;
+    let listing = store.listing(quote.listing)?;
+    let shop = store.vendor(listing.vendor)?.name.to_string();
+    let signatory =
+        crate::module::venue_gate(ctx.w)?.signatory(ctx.w, &quote.market, &quote.seller)?;
+    Some((signatory, shop))
 }
 
 /// The lot arm's parsed arguments: the bid listing, the quantity, and the `from=`
@@ -776,6 +805,13 @@ fn sell(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return match crate::trade::sell_into_bid(ctx, &req) {
                 Ok(sale) => {
                     info(ctx, sale.line);
+                    // Doc 18 cut IC14 row 2 (lead ruling L2): the remedy, a second
+                    // line on the typed verb only, so the policy's sale line and
+                    // the executor's log lines do not change.
+                    info(
+                        ctx,
+                        crate::trade::SELL_REMEDY.replace("{quote}", &sale.quote.0.to_string()),
+                    );
                     Ok(())
                 }
                 Err(e) => Err(refuse_market(ctx, &e)),

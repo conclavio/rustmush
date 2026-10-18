@@ -72,7 +72,7 @@ pub use module::{
 };
 pub use pool::{
     InventoryError, InventoryFamilies, LotSale, MARKER_CAUSAL_MAX_BYTES, Moved, SettledSale,
-    derive_lot_id, derive_tranche_id, derived_marker_id, pool_key, pool_resource,
+    derive_lot_id, derive_tranche_id, derived_marker_id, is_marker_id, pool_key, pool_resource,
     reservation_deadline, reservation_id_from_text, reservation_id_text, tranche_key,
 };
 pub use provider::{
@@ -81,11 +81,13 @@ pub use provider::{
 };
 pub use record::{
     AppliedMarker, EndpointRef, FACT_LOT_CREATED, FACT_SALVAGE_RECOVERED, FACT_TRANSFERRED, Grade,
-    INV_PAGE, InventoryRecordError, Lineage, Lot, LotCensus, LotId, MAX_APPLIED_MARKERS, MAX_GRADE,
-    MAX_LINEAGE_DEPTH, MAX_LOT_PARENTS, MAX_LOT_QUANTITY, MAX_LOTS_PER_ENDPOINT, MAX_POOL_QUANTITY,
-    MAX_POOLS_PER_ENDPOINT, MAX_RETAINED_TERMINAL_RESERVATIONS, MAX_TRANCHE_ABSORBED,
-    MAX_TRANCHE_GENERATIONS, MAX_TRANCHE_INHERITED, NS, Pool, PoolCensus, PoolTranche,
-    RESERVATION_TTL_IC_DAYS, RESERVATION_TTL_SECS, TrancheId, owner,
+    INV_PAGE, InventoryRecordError, Lineage, Lot, LotCensus, LotId, MARKER_RETENTION_SECS,
+    MAX_APPLIED_MARKERS, MAX_GRADE, MAX_LINEAGE_DEPTH, MAX_LOT_PARENTS, MAX_LOT_QUANTITY,
+    MAX_LOTS_PER_ENDPOINT, MAX_MARKER_ID_BYTES, MAX_MARKER_RING, MAX_POOL_QUANTITY,
+    MAX_POOLS_PER_ENDPOINT, MAX_RETAINED_MARKERS_PER_ENDPOINT, MAX_RETAINED_TERMINAL_RESERVATIONS,
+    MAX_RING_EVICTIONS_PER_PUSH, MAX_TRANCHE_ABSORBED, MAX_TRANCHE_GENERATIONS,
+    MAX_TRANCHE_INHERITED, MarkerRing, NS, Pool, PoolCensus, PoolTranche, RESERVATION_TTL_IC_DAYS,
+    RESERVATION_TTL_SECS, RingEntry, TrancheId, owner,
 };
 pub use salvage::{
     ACTION_SALVAGE, MAX_SALVAGE_ENDPOINTS, MAX_SALVAGE_SITES, MAX_SALVAGE_WRECKS, NO_SUCH_WRECK,

@@ -155,9 +155,11 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     //
     // Under the module's `LegacyPostImage` class (lead ruling L12: a class is
     // per verb, and each verb carries a writing switch). `+coop` and
-    // `+coop/statement` are pure reads; `+coop/enrol` is ONE command and ONE
-    // batch through the economy's own API (account, lease, stake, vault) plus
-    // tacsim's one enrolment document and the hull's rename. `+ship` and
+    // `+coop/statement` are pure reads; its writing switches are `enrol`,
+    // `buyout` and `release` (doc 18 cut IC13), and `@coop/revoke` is staff's.
+    // `+coop/enrol` is ONE command and ONE batch through the economy's own API
+    // (account, lease, stake, vault) plus tacsim's one enrolment document and the
+    // hull's rename. `+ship` and
     // `+ship/hold` are pure reads; `+ship/board` and `+ship/leave` are
     // placement verbs through mush-sim (leave also writes the last-port
     // marker). None submits anything authoritative. (`+ship` moved to its own
@@ -543,9 +545,14 @@ fn corridor_of(ctx: &Ctx<'_>, raw: &str) -> Result<mush_sim::RouteDef, CmdError>
             .map(|(_, _, def)| def),
         None => store.route(&id),
     };
+    // Doc 18 cut IC14 row 47: a named version falls back only to the latched
+    // route of exactly that version, never to the newest-applied one.
     found
         .cloned()
-        .or_else(|| store.route_in_world(ctx.w, &id))
+        .or_else(|| match version {
+            Some(version) => store.route_in_world_at(ctx.w, &id, version),
+            None => store.route_in_world(ctx.w, &id),
+        })
         .ok_or_else(|| CmdError::msg(NO_SUCH_CORRIDOR))
 }
 

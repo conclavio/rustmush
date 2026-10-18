@@ -10,25 +10,25 @@
 //!   sequence (`last_seq`; IC11 reuses it as the order queue's minter). The burn's
 //!   offer reads the pending passage from here, so the plan reaches the prepare
 //!   only from the server's own document ([`crate::port::burn`]).
-//! - **`+ship/plan [<port>]`** ([`plan_cmd`]): a write-nothing dry run — both hold
+//! - **`+ship/plan [<port>]`** (`plan_cmd`): a write-nothing dry run — both hold
 //!   slacks with the binding measure, the room per good on this port's board, the
 //!   payload, the burn, the stores and the passage in IC and real time.
-//! - **`+ship/undock <port>`** ([`undock_cmd`]): every refusal before any write
+//! - **`+ship/undock <port>`** (`undock_cmd`): every refusal before any write
 //!   (the launch included, dry-run through `mush_sim::depart_ineligible`, lead
 //!   ruling L28), then the voyage document and ONE authoritative
 //!   `tacsim_port_burn` as the pilot.
-//! - **The launch arm** ([`launch_step`], [`launch_verify`]) on the `tacsim.port`
+//! - **The launch arm** (`launch_step`, `launch_verify`) on the `tacsim.port`
 //!   tick: it finds the burned ticket and calls `mush_sim::depart` with the plan's
 //!   frozen leg times from the plan's own `depart_ic` (lead ruling L3) — a direct
 //!   placement write, no submission and no swap (L7) — atomically with clearing
 //!   the pending; a launch held by a later change pages staff once and retries
-//!   after its backoff ([`launch_hold`], L29); a burn that never lands lapses
+//!   after its backoff (`launch_hold`, L29); a burn that never lands lapses
 //!   after [`LAUNCH_GRACE_FIRES`] (L26).
-//! - **The goods-not-yet-aboard rule** ([`goods_pending_aboard`], lead ruling L13):
+//! - **The goods-not-yet-aboard rule** (`goods_pending_aboard`, lead ruling L13):
 //!   promised matter holds the hull, read over mush-market's public reads only —
 //!   and, since doc 18 cut IC10, a sale's goods still leaving the hold
 //!   ([`GOODS_LEAVING`]).
-//! - **The passage renders** ([`passage_of`]): `+ship`'s first line and the hull
+//! - **The passage renders** (`passage_of`): `+ship`'s first line and the hull
 //!   rooms' status line, departing and under way (the leg, the ETA in IC and real
 //!   time), and the carrier hooks' narration texts.
 //!
@@ -108,6 +108,12 @@ pub struct Voyage {
     pub hull: ObjId,
     /// The last burn sequence this hull minted (0 before the first); never reused.
     pub last_seq: u32,
+    /// Doc 18 cut IC14 row 21 (lead rulings L8b, L20): the highest `seq` whose launch
+    /// the pilot was told of (`CLEARANCE_GRANTED`), so the grant is told once across
+    /// any number of reboots. Required on the wire (no default: voyage documents are
+    /// slice-only and pre-launch; a defaulted 0 would re-tell every old grant once);
+    /// never above `last_seq`.
+    pub told: u32,
     /// The passage filed and not yet launched, lapsed or stood down.
     pub pending: Option<PendingVoyage>,
 }
@@ -160,6 +166,9 @@ impl Voyage {
         if self.schema != VOYAGE_SCHEMA {
             return Err(format!("a sailing plan is schema {VOYAGE_SCHEMA}"));
         }
+        if self.told > self.last_seq {
+            return Err("a sailing plan tells no launch it has not burned".to_owned());
+        }
         let Some(pending) = &self.pending else {
             return Ok(());
         };
@@ -191,6 +200,23 @@ pub enum VoyageState<'a> {
     Present(&'a Voyage),
     /// A claimed key whose body did not read: fail closed.
     Unreadable,
+}
+
+/// **Whether a hull's sailing plan blocks a hold-, crew- or pool-changing act** (doc
+/// 18 cut IC14 row 11; lead ruling L17): a pending passage is filed, or the document
+/// does not read — an unreadable plan is treated as filed at every gate (fail closed),
+/// in each gate's own words.
+#[must_use]
+pub fn voyage_blocks(w: &World, hull: ObjId) -> bool {
+    voyage_dark(w, hull) || pending_of(w, hull).is_some()
+}
+
+/// Whether the hull's sailing plan is a claimed key whose body did not read (doc 18
+/// cut IC14 row 11).
+#[must_use]
+pub fn voyage_dark(w: &World, hull: ObjId) -> bool {
+    w.module_state::<TacsimStore>()
+        .is_some_and(|store| matches!(store.voyage_state(hull), VoyageState::Unreadable))
 }
 
 /// The hull's pending passage, when its plan reads and one is filed.
@@ -381,6 +407,20 @@ fn eta(w: &World, target_ic: i64) -> Option<(String, String)> {
 pub(crate) fn tonnes_one_decimal(kg: u64) -> String {
     let tenths = kg.saturating_add(50) / 100;
     format!("{}.{}", tenths / 10, tenths % 10)
+}
+
+/// **A payload over its rail, in tonnes to one decimal** (doc 18 cut IC14 row 22; lead
+/// ruling L18): when `kg` exceeds `ceiling_kg` the tenths round **up**, so a payload
+/// over the rating never reads equal to it (181,001 kg against 181,000 reads `181.1`,
+/// not `181.0`); otherwise [`tonnes_one_decimal`].
+#[must_use]
+pub(crate) fn tonnes_over(kg: u64, ceiling_kg: u64) -> String {
+    if kg > ceiling_kg {
+        let tenths = kg.div_ceil(100);
+        format!("{}.{}", tenths / 10, tenths % 10)
+    } else {
+        tonnes_one_decimal(kg)
+    }
 }
 
 // ---- lane geography ----------------------------------------------------------------
@@ -829,6 +869,15 @@ fn match_destination<'d>(dests: &'d [Destination], word: &str) -> Option<&'d Des
         })
 }
 
+/// **The destination a queued depart names, exactly** (doc 18 cut IC14 row 25): the
+/// routes key equal to the stored canonical venue word, case-sensitively — never the
+/// live verb's prefix fallback, so a stored word that is only a prefix of a port's name
+/// (a plan written before a port was renamed, or a hand-edited one) resolves to
+/// nothing and holds `NO_ROUTE` rather than flying somewhere else.
+fn match_destination_exact<'d>(dests: &'d [Destination], word: &str) -> Option<&'d Destination> {
+    dests.iter().find(|d| d.venue.as_str() == word)
+}
+
 /// [`NO_ROUTE`] for a berth.
 fn no_route(here: &str, dests: &[Destination]) -> String {
     let list: Vec<&str> = dests.iter().map(|d| d.port.as_str()).collect();
@@ -1214,7 +1263,7 @@ fn plan_block(
             lines.push(format!(
                 "Payload {} t is over the rated {} t; no passage can be planned until the hold is \
                  lightened.",
-                tonnes_one_decimal(payload_kg),
+                tonnes_over(payload_kg, ceiling),
                 ceiling / 1_000
             ));
             return Ok(lines);
@@ -1383,7 +1432,7 @@ pub(crate) fn prepare_departure(
     };
     let name = name_of(w, hull);
     let dark = || refusal(K::PlanDark, PLAN_DARK.replace("{name}", &name));
-    let last_seq = match w
+    let (last_seq, told) = match w
         .module_state::<TacsimStore>()
         .map_or(VoyageState::Absent, |store| store.voyage_state(hull))
     {
@@ -1399,9 +1448,9 @@ pub(crate) fn prepare_departure(
                         .replace("{port}", &venue_name(w, &pending.to_venue)),
                 ));
             }
-            voyage.last_seq
+            (voyage.last_seq, voyage.told)
         }
-        VoyageState::Absent => 0,
+        VoyageState::Absent => (0, 0),
     };
     let Some(view) = hull_view(w, hull) else {
         let line = no_charter(w, pilot).to_string();
@@ -1424,7 +1473,13 @@ pub(crate) fn prepare_departure(
     };
     let here = port_name(def);
     let dests = destinations(w, def);
-    let dest = match_destination(&dests, dest_word)
+    // Doc 18 cut IC14 row 25: a queued depart resolves its stored venue word exactly;
+    // the live `+ship/undock` keeps the prefix matcher.
+    let found = match queued {
+        Queued::Live => match_destination(&dests, dest_word),
+        Queued::Order { .. } => match_destination_exact(&dests, dest_word),
+    };
+    let dest = found
         .cloned()
         .ok_or_else(|| refusal(K::NoRoute, no_route(&here, &dests)))?;
     let port = dest.port.clone();
@@ -1473,7 +1528,7 @@ pub(crate) fn prepare_departure(
                 K::Overloaded,
                 OVERLOADED
                     .replace("{name}", &name)
-                    .replace("{payload}", &tonnes_one_decimal(payload_kg))
+                    .replace("{payload}", &tonnes_over(payload_kg, ceiling_kg))
                     .replace("{ceiling}", &(ceiling_kg / 1_000).to_string()),
             ));
         }
@@ -1556,6 +1611,7 @@ pub(crate) fn prepare_departure(
         schema: VOYAGE_SCHEMA,
         hull,
         last_seq,
+        told,
         pending: Some(pending),
     };
     if voyage.check().is_err() {
@@ -1667,17 +1723,49 @@ pub(crate) fn launched(w: &World, hull: ObjId, route: &CanonicalId, depart_ic: i
         .is_some_and(|journey| journey.route().id() == route && journey.departed().at == depart_ic)
 }
 
-/// Clear a hull's pending passage, keeping its sequence (never reused).
+/// Clear a hull's pending passage, keeping its sequence (never reused) and what the
+/// pilot was told (doc 18 cut IC14 row 21).
 fn clear_pending(ctx: &mut Ctx<'_>, hull: ObjId, seq: u32) {
+    let told = told_of(ctx.w, hull).min(seq);
     put_voyage(
         ctx,
         &Voyage {
             schema: VOYAGE_SCHEMA,
             hull,
             last_seq: seq,
+            told,
             pending: None,
         },
     );
+}
+
+/// The hull's `Voyage.told` (0 with no readable document).
+fn told_of(w: &World, hull: ObjId) -> u32 {
+    match w
+        .module_state::<TacsimStore>()
+        .map_or(VoyageState::Absent, |store| store.voyage_state(hull))
+    {
+        VoyageState::Present(voyage) => voyage.told,
+        VoyageState::Absent | VoyageState::Unreadable => 0,
+    }
+}
+
+/// Record that the pilot was told of `seq`'s launch (doc 18 cut IC14 row 21): the
+/// document re-written with `told = seq`, nothing else changed. A document that does
+/// not read is left alone.
+fn mark_told(ctx: &mut Ctx<'_>, hull: ObjId, seq: u32) {
+    let voyage = match ctx
+        .w
+        .module_state::<TacsimStore>()
+        .map_or(VoyageState::Absent, |store| store.voyage_state(hull))
+    {
+        VoyageState::Present(voyage) if voyage.told < seq && seq <= voyage.last_seq => Voyage {
+            told: seq,
+            ..voyage.clone()
+        },
+        VoyageState::Present(_) | VoyageState::Absent | VoyageState::Unreadable => return,
+    };
+    put_voyage(ctx, &voyage);
 }
 
 /// **The launch agents** this fire: one per hull whose sailing plan reads with a
@@ -1758,7 +1846,15 @@ pub(crate) fn launch_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: u3
         // No ticket: the burn may still be in flight (IC8's seam), else it lapses
         // after its grace, and the sequence is burned so a late landing is
         // impossible (the offer needs the pending).
-        if ctx.authoritative_pending(pending.pilot) {
+        // Doc 18 cut IC14 row 10 (lead ruling L15): a burn passes queue → synchronous
+        // prepare and stage → the writer's custody → install, and the ticket appears
+        // only at the install, so `ticket_at` alone cannot see the middle. The lapse
+        // waits while the pilot's burn is queued (`authoritative_pending`) **and**
+        // while any prepared action owns the typed store
+        // (`authoritative_commit_pending`: one at a time, so a burn in custody is
+        // seen) — delayed a fire by another actor's commit at worst, never clearing a
+        // pending a landing burn still needs.
+        if ctx.authoritative_pending(pending.pilot) || ctx.authoritative_commit_pending() {
             return Step::Deferred;
         }
         let first_seen = *state.filed_seen.entry(hull.0).or_insert(state.fires);
@@ -1900,7 +1996,9 @@ pub(crate) fn launch_hold(
         notify(ctx, pending.pilot, &line);
     }
     state.launch_backoff.insert(hull.0, state.fires);
-    Step::Refused
+    // Doc 18 cut IC14 row 20 (lead ruling L16): already paged, so a held step — never
+    // the walk's generic refusal warning, which re-fired every backoff cycle.
+    Step::Held
 }
 
 /// **The launch's pull verification** (top of every fire; no swap): a launch
@@ -1932,6 +2030,8 @@ pub(crate) fn launch_verify(ctx: &mut Ctx<'_>, state: &mut PortTickState) {
                 .replace("{port}", &venue_name(ctx.w, &launching.to_venue))
                 .replace("{icdays}", &ic_days(remaining));
             notify(ctx, launching.pilot, &line);
+            // Doc 18 cut IC14 row 21: durable, so a reboot never tells it again.
+            mark_told(ctx, hull, launching.seq);
             state.launching.remove(&hull_id);
         } else if state.fires.saturating_sub(launching.staged_fire) >= LAUNCH_WATCH_FIRES {
             tracing::warn!(
@@ -1941,6 +2041,62 @@ pub(crate) fn launch_verify(ctx: &mut Ctx<'_>, state: &mut PortTickState) {
             );
             state.launching.remove(&hull_id);
         }
+    }
+}
+
+/// **The grants a reboot lost** (doc 18 cut IC14 row 21; lead ruling L20): on the
+/// first fire after a boot, every readable sailing plan with no pending passage and a
+/// burned sequence the pilot was not told of (`last_seq > told`) is verified by pull —
+/// its ticket `(hull, last_seq)` read, the hull's journey departed at the ticket's
+/// `depart_ic` — and its `CLEARANCE_GRANTED` told once (the render and the notice rule
+/// [`launch_verify`] applies), `told` written. A launch the RAM map is still verifying
+/// is left to it, so nothing is told twice.
+pub(crate) fn launch_retell(ctx: &mut Ctx<'_>, state: &PortTickState) {
+    let untold: Vec<(ObjId, u32)> = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .map(|store| {
+            store
+                .voyages()
+                .filter(|v| v.pending.is_none() && v.last_seq > v.told)
+                .filter(|v| !state.launching.contains_key(&v.hull.0))
+                .map(|v| (v.hull, v.last_seq))
+                .collect()
+        })
+        .unwrap_or_default();
+    for (hull, seq) in untold {
+        let Ok(Some(ticket)) = ticket_at(ctx, TicketId { hull, seq }) else {
+            continue;
+        };
+        let journey = ctx
+            .w
+            .module_state::<mush_sim::JourneyBook>()
+            .and_then(|book| book.get(hull))
+            .filter(|journey| journey.departed().at == ticket.plan.depart_ic)
+            .cloned();
+        let Some(journey) = journey else {
+            continue;
+        };
+        // The ticket names neither the filer nor the destination's venue: the helm
+        // (the charter's tenant or the title holder) is told, and the destination is
+        // the journey's own far end, as `+ship` names it.
+        let Some(pilot) = crate::port::coop::helm_holder(ctx.w, hull) else {
+            continue;
+        };
+        let destination = journey.route().endpoints().1;
+        let port = port_of_host(ctx.w, destination)
+            .map_or_else(|| name_of(ctx.w, destination), |(name, _)| name);
+        let remaining = journey.arrival_at().map_or(ticket.plan.total_s, |at| {
+            at.saturating_sub(ctx.w.world_ic_now().at)
+        });
+        let line = CLEARANCE_GRANTED
+            .replace("{burn}", &ticket.plan.burn_t.to_string())
+            .replace("{days}", &ticket.plan.crew_days.to_string())
+            .replace("{name}", &name_of(ctx.w, hull))
+            .replace("{port}", &port)
+            .replace("{icdays}", &ic_days(remaining));
+        notify(ctx, pilot, &line);
+        mark_told(ctx, hull, seq);
     }
 }
 
@@ -2037,6 +2193,7 @@ mod tests {
             schema: VOYAGE_SCHEMA,
             hull: ObjId(5011),
             last_seq: 3,
+            told: 3,
             pending: None,
         };
         assert!(empty.check().is_ok());
@@ -2117,6 +2274,7 @@ mod tests {
             schema: VOYAGE_SCHEMA,
             hull: ObjId(5011),
             last_seq: 3,
+            told: 3,
             pending: Some(filed(4)),
         };
         good.check().unwrap();
@@ -2173,5 +2331,46 @@ mod tests {
         assert_eq!(parse_args("").unwrap(), None);
         assert!(parse_args("stickney via=kirkwood_depot").is_err());
         assert!(parse_args("stickney at=+2h").is_err());
+    }
+
+    /// Doc 18 cut IC14 row 21 (lead ruling L8b): `told` is required on the wire and
+    /// never above `last_seq`.
+    #[test]
+    fn ic14_told_is_required_and_bounded() {
+        let voyage = Voyage {
+            schema: VOYAGE_SCHEMA,
+            hull: ObjId(5011),
+            last_seq: 3,
+            told: 2,
+            pending: None,
+        };
+        assert!(voyage.check().is_ok());
+        assert!(
+            Voyage {
+                told: 4,
+                ..voyage.clone()
+            }
+            .check()
+            .is_err(),
+            "told past last_seq"
+        );
+        let mut wire = serde_json::to_value(&voyage).expect("serializes");
+        wire.as_object_mut().map(|m| m.remove("told"));
+        assert!(
+            serde_json::from_value::<Voyage>(wire).is_err(),
+            "no default: a document without `told` does not read"
+        );
+    }
+
+    /// Doc 18 cut IC14 row 22 (lead ruling L18): over the rail the tenths round up, so
+    /// 181,001–181,049 kg never read "181.0" against a rated 181 t.
+    #[test]
+    fn ic14_an_over_rail_payload_never_reads_equal_to_its_rating() {
+        for kg in [181_001_u64, 181_049, 181_050] {
+            assert_eq!(tonnes_over(kg, 181_000), "181.1", "{kg}");
+        }
+        assert_eq!(tonnes_over(181_000, 181_000), "181.0");
+        assert_eq!(tonnes_over(142_184, 181_000), tonnes_one_decimal(142_184));
+        assert_eq!(tonnes_over(181_101, 181_000), "181.2");
     }
 }

@@ -57,6 +57,14 @@ pub const NOT_IN_PORT: &str =
 /// The hull is under way (`{name}`, `{port}`).
 pub const HOLD_UNDER_WAY: &str =
     "The {name} is under way, so its hold cannot load in {port}. Nothing was charged.";
+/// A docked hull with a filed clearance (doc 18 cut IC14 row 23; lead ruling L19; owner
+/// voice, cut IC14 O1): `{name}`, `{port}`. [`HOLD_UNDER_WAY`] stays for a hull under
+/// way.
+pub const HOLD_CLEARED: &str =
+    "The {name} is cleared to sail, so its hold cannot load in {port}. Nothing was charged.";
+/// A hull whose sailing papers do not read (doc 18 cut IC14 row 11; lead ruling L17;
+/// owner voice, cut IC14 O1): treated as filed. `{name}`, `{port}`.
+pub const HOLD_PAPERS_DARK: &str = "The {name}'s sailing papers cannot be read right now, so its hold cannot load in {port}. Nothing was charged.";
 /// The hull is berthed at another port (`{name}`, `{other}`, `{port}`).
 pub const HOLD_ELSEWHERE: &str = "The {name} is berthed at {other}, not {port}, so its hold cannot load here. Nothing was charged.";
 /// The hull is at no berth (`{name}`, `{port}`).
@@ -163,11 +171,19 @@ fn hull_admits(w: &World, actor: ObjId, def: &PortDef, hull: ObjId) -> Result<()
     }
     let port = port_name(def);
     let name = name_of(w, hull);
-    // Doc 18 cut IC9 (lead ruling L13): a docked hull with a filed clearance is
-    // treated as under way — nothing may load into a hold whose passage is filed.
+    // Doc 18 cut IC9 (lead ruling L13): nothing may load into a hold whose passage is
+    // filed — since cut IC14 (row 23) in its own words, `HOLD_CLEARED`; and (row 11)
+    // papers that do not read are treated as filed, `HOLD_PAPERS_DARK`.
+    if crate::port::voyage::voyage_dark(w, hull) {
+        return Err(refusal(
+            HOLD_PAPERS_DARK
+                .replace("{name}", &name)
+                .replace("{port}", &port),
+        ));
+    }
     if crate::port::voyage::pending_of(w, hull).is_some() {
         return Err(refusal(
-            HOLD_UNDER_WAY
+            HOLD_CLEARED
                 .replace("{name}", &name)
                 .replace("{port}", &port),
         ));
@@ -268,6 +284,22 @@ impl VenueGate for PortVenueGate {
         port_of_venue(w, venue)
             .and_then(|(_, map)| map)
             .is_some_and(|map| vendor_orgs(map).contains(org))
+    }
+
+    /// Doc 18 cut IC14 row 52 (§4.3; Q-18-47): the signatory NPC the port map
+    /// records for the vendor whose org is `seller`, by name.
+    fn signatory(&self, w: &World, market: &MarketId, seller: &PrincipalId) -> Option<String> {
+        let PrincipalId::Organization(org) = seller else {
+            return None;
+        };
+        let (_, map) = port_of_venue(w, market)?;
+        let map = map?;
+        let row = map
+            .vendors
+            .iter()
+            .find(|(id, _)| map.orgs.get(*id).is_some_and(|o| OrgId(o.org) == *org))
+            .map(|(_, row)| row)?;
+        w.get(ObjId(row.signatory)).map(|o| o.name.clone())
     }
 }
 

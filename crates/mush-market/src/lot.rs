@@ -345,6 +345,23 @@ fn prepare_now(parameters: &serde_json::Map<String, Value>) -> Result<ClockStamp
         })
 }
 
+/// The **real** (OOC) second the offer was drafted (doc 18 §9 risk 19, cut IC14 row
+/// 1): the offer's `"wall"` fixed parameter, which the Deliver prepare hands
+/// `transfer_marked` for the source's marker ring. Absent or not an integer refuses
+/// as a missing `"now"` does — an offer drafted before cut IC14 is re-drafted, never
+/// stamped with a guess.
+fn prepare_wall(parameters: &serde_json::Map<String, Value>) -> Result<i64, ActionError> {
+    parameters
+        .get("wall")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| {
+            error(
+                ActionErrorCode::Unavailable,
+                "the world clock is unavailable",
+            )
+        })
+}
+
 // ---- doc 18 cut IC7: the paid-leg projection --------------------------------
 
 /// The most paid entries of each kind one offer carries — the per-buyer open-quote cap,
@@ -742,8 +759,12 @@ impl ActionProvider for MarketLotProvider {
         // ≤ 512 bytes plus an 80-byte marker — 8 × 2,560 + 8 × 512 + 8 × 600 ≈ 30 KiB,
         // still well under the 64 KiB `MAX_ACTION_PARAMETER_BYTES` bound.
         Ok(Some(ProviderOfferDraft {
+            // Doc 18 cut IC14 row 1: the real second rides beside the IC stamp,
+            // read by the Deliver prepare for the source's marker ring
+            // (`InventoryFamilies::retain_marker`).
             fixed_parameters: json!({
                 "now": engine.world.world_ic_now(),
+                "wall": engine.world.now(),
                 "paid": Value::Object(paid.entries),
             }),
             parameters: ProjectedParameterSchema::new(parameters).map_err(|_| {
@@ -1074,6 +1095,7 @@ impl MarketLotProvider {
         quantity: u64,
         data: &mut BTreeMap<String, Value>,
     ) -> Result<String, ActionError> {
+        let wall = prepare_wall(parameters)?;
         let endpoint = endpoint_field(parameters, "endpoint")?;
         let source = endpoint_field(parameters, "source")?;
         let destination = endpoint_field(parameters, "destination")?;
@@ -1100,7 +1122,7 @@ impl MarketLotProvider {
         let marker = entry
             .get("marker")
             .and_then(Value::as_str)
-            .filter(|marker| crate::record::is_marker_id(marker))
+            .filter(|marker| mush_inventory::is_marker_id(marker))
             .map(smol_str::SmolStr::new)
             .ok_or_else(rejected)?;
         self.families
@@ -1113,6 +1135,7 @@ impl MarketLotProvider {
                 &marker,
                 invocation.actor(),
                 now,
+                wall,
             )
             .map_err(|source| refuse(&source))?;
         data.insert("contract".to_owned(), json!(contract.0));
@@ -1569,7 +1592,7 @@ pub fn lapsed_holds_where(
 /// and L20; D-18-26, Q-18-31: never by the GOD lapse sweep). The listing must exist, be
 /// hold-backed and be lapsed, and `ctx.actor` must be able to take from its endpoint
 /// (`mush_inventory::may_take`). It stages the one `release` leg through
-/// [`stage`] **as `ctx.actor`**, keyed exactly as every release is
+/// `stage` **as `ctx.actor`**, keyed exactly as every release is
 /// (`market.lot.release.{listing:x}.{ic second:x}`); the reservation it releases is the
 /// derived [`listing_reservation`]. It **does not delete the document**: the market
 /// sweep deletes it once the hold reads `Gone`, which is the releaser's pull
@@ -1594,16 +1617,26 @@ pub fn release_lapsed_hold(
             crate::api::NO_SUCH_LISTING,
         ));
     };
+    // Doc 18 cut IC14 row 15: custody FIRST, from any supply, so a non-holder hears the
+    // one byte-identical `NO_SUCH_LISTING` for every listing — whether it is
+    // hold-backed is not something a stranger learns (existence hiding).
+    let custody = match &listing.source {
+        crate::record::Supply::Lot { endpoint, .. } => Some(endpoint.0),
+        crate::record::Supply::Stock { vault } | crate::record::Supply::Wanted { vault, .. } => {
+            Some(mush_inventory::EndpointRef(*vault))
+        }
+        crate::record::Supply::Market { .. } | crate::record::Supply::Procurement { .. } => None,
+    };
+    if !custody.is_some_and(|endpoint| mush_inventory::may_take(ctx.w, ctx.actor, endpoint)) {
+        return Err(crate::api::MarketError::NoStanding(
+            crate::api::NO_SUCH_LISTING,
+        ));
+    }
     let Some((endpoint, commodity, grade)) = listing.source.lot() else {
         return Err(crate::api::MarketError::bad(
             "That listing holds no stock, so there is nothing to release.",
         ));
     };
-    if !mush_inventory::may_take(ctx.w, ctx.actor, endpoint) {
-        return Err(crate::api::MarketError::NoStanding(
-            crate::api::NO_SUCH_LISTING,
-        ));
-    }
     if !crate::projection::lapsed(listing.expires.at, listing.expires.clock, ctx.w.now()) {
         return Err(crate::api::MarketError::bad(
             "That listing has not lapsed; withdraw it to give its stock back.",
@@ -1624,6 +1657,12 @@ pub fn release_lapsed_hold(
         return Err(crate::api::MarketError::bad(
             "This server cannot move lot stock right now, so nothing was released.",
         ));
+    }
+    // Doc 18 cut IC14 row 16: the sweep reads this listing's hold on every sweep for a
+    // backoff window from here, so the release's landing deletes it promptly.
+    if let Some(store) = ctx.w.module_state_mut::<crate::store::MarketStore>() {
+        let at = store.sweeps;
+        store.release_staged.insert(id, at);
     }
     Ok(())
 }

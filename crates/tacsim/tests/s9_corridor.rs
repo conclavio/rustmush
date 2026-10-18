@@ -239,10 +239,7 @@ fn no_player_verb_traverses_a_spacecraft_connection() {
     // atlas journey starts.
     for who in [pilot, GOD] {
         let events = tw.run(who, "+travel Phobos Yard");
-        let out = tw.seen_by(&events, who).join(
-            "
-",
-        );
+        let out = tw.seen_by(&events, who).join("\n");
         assert!(
             out.contains("You know no way to \"Phobos Yard\" from here."),
             "{out}"

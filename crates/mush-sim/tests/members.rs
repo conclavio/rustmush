@@ -961,3 +961,112 @@ fn ic4_aboard_rooms_hear_the_leg_boundary_and_the_arrival() {
     ));
     check_invariants(&tw);
 }
+
+// ---- doc 18 cut IC14 row 46: the engine's rooms and vault backings ----------
+
+/// The rig at the refusal test's start: the fixture, its records, an empty log.
+fn refusal_rig() -> (TestWorld, Fx, Vec<ModuleOp>) {
+    let mut tw = boot();
+    let fx = objects(&mut tw);
+    records(&mut tw, &fx);
+    let mut log = Vec::new();
+    drain(&mut tw, &mut log);
+    (tw, fx, log)
+}
+
+/// `Transition::Members` refused with nothing persisted and the records unchanged.
+fn refused_members(
+    tw: &mut TestWorld,
+    log: &mut Vec<ModuleOp>,
+    space: ObjId,
+    rooms: &[ObjId],
+) -> SpatialError {
+    let before = state(tw).spaces.clone();
+    let mark = log.len();
+    let err = members(tw, log, space, rooms).expect_err("refused");
+    assert_eq!(log.len(), mark, "a refusal persists nothing ({err})");
+    assert_eq!(state(tw).spaces, before, "a refusal mutates nothing");
+    err
+}
+
+/// **Doc 18 cut IC14 row 46: Limbo is never a member room.**
+#[test]
+fn ic14_members_refuse_limbo() {
+    let (mut tw, fx, mut log) = refusal_rig();
+    let e = refused_members(&mut tw, &mut log, fx.lock, &[fx.lock, LIMBO]);
+    assert_eq!(e, SpatialError::Members(format!("{LIMBO} is Limbo")));
+    check_invariants(&tw);
+}
+
+/// **Doc 18 cut IC14 row 46: the recovery room is never a member room.**
+#[test]
+fn ic14_members_refuse_the_recovery_room() {
+    let (mut tw, fx, mut log) = refusal_rig();
+    tw.world_mut()
+        .module_state_mut::<SpatialState>()
+        .expect("sim state")
+        .recovery_room = fx.deck;
+    let e = refused_members(&mut tw, &mut log, fx.lock, &[fx.lock, fx.spine, fx.deck]);
+    assert_eq!(
+        e,
+        SpatialError::Members(format!("{} is the recovery room", fx.deck))
+    );
+}
+
+/// **Doc 18 cut IC14 row 46: the in-transit room is never a member room.**
+#[test]
+fn ic14_members_refuse_the_in_transit_room() {
+    let (mut tw, fx, mut log) = refusal_rig();
+    tw.world_mut()
+        .module_state_mut::<SpatialState>()
+        .expect("sim state")
+        .in_transit_room = fx.deck;
+    let e = refused_members(&mut tw, &mut log, fx.lock, &[fx.lock, fx.spine, fx.deck]);
+    assert_eq!(
+        e,
+        SpatialError::Members(format!("{} is the in-transit room", fx.deck))
+    );
+}
+
+/// **Doc 18 cut IC14 row 46: a room that backs a custody vault is never a member
+/// room** (a member is walkable; doc 18 §9 refuses a walkable room as a vault
+/// backing). On the custody rig's composition (org, sim, economy with the
+/// interior custody provider), a container vault on Deck refuses Deck as a member
+/// with the vault's number; without the vault the same set is accepted.
+#[test]
+fn ic14_members_refuse_a_vault_backing_room() {
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_org::OrgModule::new()),
+        Box::new(SimulationModule::new()),
+        Box::new(mush_economy::EconomyModule::with_custody(vec![
+            std::sync::Arc::new(InteriorCustodyProvider),
+        ])),
+    ]);
+    let fx = objects(&mut tw);
+    records(&mut tw, &fx);
+    let mut log = Vec::new();
+    drain(&mut tw, &mut log);
+    ok(
+        &mut tw,
+        &format!("@vault/create strongroom=container:#{}", fx.deck.0),
+    );
+    let vault = tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|store| {
+            store
+                .snapshot()
+                .vault_by_backing(&CustodyRef::Container(fx.deck))
+                .map(|v| v.id.0)
+        })
+        .expect("the vault backs Deck");
+    drain(&mut tw, &mut log);
+    let e = refused_members(&mut tw, &mut log, fx.lock, &[fx.lock, fx.spine, fx.deck]);
+    assert_eq!(
+        e,
+        SpatialError::Members(format!("{} backs vault #{vault}", fx.deck))
+    );
+    // Without Deck the set is the boundary rule's, and accepted.
+    members(&mut tw, &mut log, fx.lock, &[fx.lock, fx.spine]).expect("accepted");
+    check_invariants(&tw);
+}

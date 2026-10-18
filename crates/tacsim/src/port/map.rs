@@ -251,7 +251,7 @@ pub struct HullRow {
     /// complete).
     pub rooms: BTreeMap<CanonicalId, u32>,
     /// The exits made so far, `ObjId.0`, in template order: pair i is `2i`
-    /// (names[0]) and `2i+1` (names[1]).
+    /// (`names[0]`) and `2i+1` (`names[1]`).
     pub exits: Vec<u32>,
 }
 

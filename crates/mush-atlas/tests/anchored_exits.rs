@@ -87,7 +87,8 @@ fn block(version: u32, extra: &[(&str, Value)]) -> Pack {
     signed(doc)
 }
 
-fn modules(shelf: Pack) -> Vec<Box<dyn GameModule>> {
+/// The modules, with `boot` as the Block version applied at boot.
+fn modules_booting(boot: Pack, shelf: Pack) -> Vec<Box<dyn GameModule>> {
     let mut appliers = Appliers::new();
     mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
     vec![
@@ -96,7 +97,7 @@ fn modules(shelf: Pack) -> Vec<Box<dyn GameModule>> {
         Box::new(
             ContentModule::new()
                 .with_appliers(appliers)
-                .with_boot_packs(vec![region(), block(1, &[])]),
+                .with_boot_packs(vec![region(), boot]),
         ),
     ]
 }
@@ -186,7 +187,12 @@ fn space_with_member(tw: &mut TestWorld, name: &str, anchor: SpaceAnchor, member
 /// A world at Block v1 with Bee a member of a space riding a hull and Cee a
 /// member of an unanchored space; `shelf` is the next version.
 fn world(shelf: Pack) -> TestWorld {
-    let mut tw = TestWorld::with_modules(modules(shelf));
+    world_booting(block(1, &[]), shelf)
+}
+
+/// [`world`] with `boot` as the Block version applied at boot.
+fn world_booting(boot: Pack, shelf: Pack) -> TestWorld {
+    let mut tw = TestWorld::with_modules(modules_booting(boot, shelf));
     let bee = named(&tw, ObjKind::Room, "Bee").expect("Bee applied");
     let cee = named(&tw, ObjKind::Room, "Cee").expect("Cee applied");
     let hull = tw
@@ -291,4 +297,69 @@ fn ic12_t10_a_one_way_exit_out_of_a_room_aboard_applies() {
         Some(a),
         "it leads out to Ay"
     );
+}
+
+/// The applied version of the Block, from the content latch.
+fn block_version(tw: &TestWorld) -> Option<u32> {
+    let id = mush_core::CanonicalId::new("neighborhood.block").expect("id");
+    tw.world()
+        .module_state::<mush_content::ContentState>()
+        .and_then(|s| s.latches.applied(&id))
+        .map(|a| a.version())
+}
+
+/// **Doc 18 cut IC14 row 24 (the IC9 residual): an exit UPDATE into a hull room
+/// refuses the pack before any retire.** Block v1 carries an exit pair between two
+/// ordinary rooms (Ay and Cee); v2 re-points the row's `to` at Bee, a room aboard a
+/// moving hull. The default update retires before it creates, so the atlas's `check`
+/// refuses first: the apply names the row with `create_exit`'s sentence, the v1 pair
+/// still stands, and the latch stays at v1.
+#[test]
+fn ic14_an_update_row_into_a_hull_room_refuses_the_pack_before_any_retire() {
+    let v1_row = exit_row("room.a", "room.c", &["Cee <C>;c;cee", "Ay <A>;a;ay"]);
+    let v2_row = exit_row("room.a", "room.b", &["Cee <C>;c;cee", "Ay <A>;a;ay"]);
+    let mut tw = world_booting(
+        block(1, &[("exit.a_x", v1_row)]),
+        block(2, &[("exit.a_x", v2_row)]),
+    );
+    assert_eq!(block_version(&tw), Some(1));
+    let a = named(&tw, ObjKind::Room, "Ay").expect("Ay");
+    let c = named(&tw, ObjKind::Room, "Cee").expect("Cee");
+    let forward = named(&tw, ObjKind::Exit, "Cee <C>").expect("the v1 exit");
+    let back = named(&tw, ObjKind::Exit, "Ay <A>").expect("the v1 way back");
+    let before = exits(&tw);
+    let (_, applied) = replan(&mut tw);
+    assert!(
+        applied.contains("exit.a_x: room.b is a room aboard a moving hull; no exit leads into one"),
+        "{applied}"
+    );
+    assert!(!applied.contains("Applied neighborhood.block"), "{applied}");
+    assert_eq!(exits(&tw), before, "nothing retired, nothing created");
+    assert_eq!(named(&tw, ObjKind::Exit, "Cee <C>"), Some(forward));
+    assert_eq!(named(&tw, ObjKind::Exit, "Ay <A>"), Some(back));
+    assert_eq!(tw.world().get(forward).and_then(|o| o.location), Some(a));
+    assert_eq!(tw.world().get(forward).and_then(|o| o.destination), Some(c));
+    assert_eq!(block_version(&tw), Some(1), "the latch is still at v1");
+}
+
+/// **An exit UPDATE between two ordinary rooms still updates** (doc 18 cut IC14
+/// row 24): the v2 row renames the pair between Ay and Cee; the check finds no end
+/// aboard a hull and the apply remakes it at v2.
+#[test]
+fn ic14_an_update_row_between_ordinary_rooms_still_updates() {
+    let v1_row = exit_row("room.a", "room.c", &["Cee <C>;c;cee", "Ay <A>;a;ay"]);
+    let v2_row = exit_row("room.a", "room.c", &["Cee Gate <G>;g;gate", "Ay <A>;a;ay"]);
+    let mut tw = world_booting(
+        block(1, &[("exit.a_x", v1_row)]),
+        block(2, &[("exit.a_x", v2_row)]),
+    );
+    let before = exits(&tw);
+    let (_, applied) = replan(&mut tw);
+    assert!(applied.contains("Applied neighborhood.block"), "{applied}");
+    assert_eq!(exits(&tw), before, "the pair was remade");
+    assert!(named(&tw, ObjKind::Exit, "Cee <C>").is_none());
+    let a = named(&tw, ObjKind::Room, "Ay").expect("Ay");
+    let gate = named(&tw, ObjKind::Exit, "Cee Gate <G>").expect("the v2 exit");
+    assert_eq!(tw.world().get(gate).and_then(|o| o.location), Some(a));
+    assert_eq!(block_version(&tw), Some(2));
 }
