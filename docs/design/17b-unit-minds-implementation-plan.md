@@ -465,3 +465,46 @@ changed ledger/hash fields have been reviewed, but the final candidate must
 rerun before their pins change. No timing baseline was relaxed. A fresh fetch
 still finds IC11 `26e3b1fa` at origin/main. Subsequent Windows Cargo gates use one
 build job because concurrent MSVC linkers exhaust host memory.
+
+**IC12 reconciliation and proving-start correction, still unaccepted:** merge
+`cad11cfc5fd831f6ef8aaff4b8799f8f144e7fc9` incorporates IC12
+`715151c41c437dc77c789fdfef09c254995185dc`, including the production-root story in
+`mush-server`. The IC11 observations above describe their earlier checkpoints;
+this merge is not a final acceptance candidate or an M7 stability verdict.
+
+The Linux correction run at `f734fcce` exposed a real preparation failure:
+`Standard/Line VS Standard/Line 100 MUSTER 6v6` exceeded the 16 MiB frozen-start
+artifact cap. Its integration run also failed the AF2 snapshot fixture, three
+match-lifecycle fixtures and three native/Rhai/twin card-overlay variants. Those
+failed runs remain failed evidence; their corrections still require fresh gates.
+
+Frozen-start format 2 retains shared ground/source data and compresses each
+complete game's exact JSON bytes separately. The artifact and raw-game ceilings
+both remain 16 MiB, with at most 100 games and 12 seals/source references per game.
+Bounded decoding checks stream completion, no trailing data, checksum, exact raw
+length/SHA and summary/body agreement. The canonical snapshot state string stays
+opaque, preserving the reconstructed TapeHeader bytes and opening tape identity.
+Old private frozen-start format 1 is explicitly refused without migration; tape
+format 1 and proving-result format 2 are unchanged. Independent evidence readers
+use the same bounds and retain their complete source/card/outcome checks.
+
+The first Windows format-2 run passed the three codec tests but still failed the
+full capacity fixture with fast compression. A bounded diagnostic rerun refused
+game 37 at a 16,948,324-byte estimate: shared ground was 3,178,504 bytes and that
+game compressed to 185,605 bytes at fast versus 47,314 at default. The implementation
+now selects default compression with the same wire format and bounds.
+
+The subsequent Windows development gate passes all four `m6_frozen_v2` tests,
+including the real 100-game 6v6 production-factory fixture, exact header/tape-root
+round-trip, malformed-stream refusal and late-capacity rollback. Its artifact is
+12,662,880 bytes under the 16,777,216-byte cap; raw game bodies total 110,664,078
+bytes and the largest reconstructed header is 4,285,203 bytes. The test run took
+81.13 seconds after a 59.89-second incremental compile; these are host measurements,
+not timing gates. The independent validator passes 29 Python tests. The fresh
+IC12 bot normal/build dependency graph contains no RustMUSH package except
+`mush-bot`; the evidence decoder's decompression library is a development dependency.
+
+This is measured development proof, not final merged-source acceptance. Linux
+codec/capacity and integration checks, the committed-source author story,
+same-server isolation and fresh external interval remain pending. The final
+acceptance revision has not yet been designated.

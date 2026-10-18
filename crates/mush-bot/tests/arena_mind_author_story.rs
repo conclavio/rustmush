@@ -222,6 +222,144 @@ fn selected_profile<'a>(seal: &'a Value, expected: &str) -> &'a Value {
     );
     profile
 }
+const MAX_FROZEN_GAME_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FrozenGameSummary<'a> {
+    seed: u64,
+    swapped: bool,
+    match_id: u64,
+    unit_count: u16,
+    raw_bytes: u32,
+    raw_sha256: &'a str,
+    zlib: &'a str,
+}
+fn frozen_hex(value: &str, maximum: usize) -> Result<Vec<u8>, &'static str> {
+    if value.is_empty()
+        || value.len() > maximum * 2
+        || !value.len().is_multiple_of(2)
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("frozen game canonical hex or byte bound");
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            std::str::from_utf8(pair)
+                .ok()
+                .and_then(|word| u8::from_str_radix(word, 16).ok())
+                .ok_or("frozen game hex")
+        })
+        .collect()
+}
+// This is an independent evidence decoder, not a call into the game owner.
+// Only one body is expanded at a time; the opaque snapshot string is untouched.
+fn frozen_game(row: &Value) -> Result<Value, &'static str> {
+    use serde::Deserialize as _;
+    let summary = FrozenGameSummary::deserialize(row).map_err(|_| "frozen game summary shape")?;
+    let size = usize::try_from(summary.raw_bytes).map_err(|_| "frozen game byte bound")?;
+    if !(1..=MAX_FROZEN_GAME_BYTES).contains(&size)
+        || summary.match_id == 0
+        || !(2..=12).contains(&summary.unit_count)
+    {
+        return Err("frozen game summary bounds");
+    }
+    let digest = frozen_hex(summary.raw_sha256, 32)?;
+    if digest.len() != 32 {
+        return Err("frozen game digest shape");
+    }
+    let compressed = frozen_hex(summary.zlib, MAX_FROZEN_GAME_BYTES)?;
+    // One extra byte detects an inflated body larger than its declared bound.
+    // No unbounded read_to_end/flush or allocation from unchecked metadata.
+    let mut raw = vec![0; size + 1];
+    let mut decoder = flate2::Decompress::new(true);
+    let status = decoder
+        .decompress(&compressed, &mut raw, flate2::FlushDecompress::Finish)
+        .map_err(|_| "frozen game invalid zlib stream")?;
+    if status != flate2::Status::StreamEnd
+        || decoder.total_in() != compressed.len() as u64
+        || decoder.total_out() != u64::from(summary.raw_bytes)
+    {
+        return Err("frozen game length, truncated stream or trailing bytes");
+    }
+    raw.truncate(size);
+    let actual_digest: [u8; 32] = Sha256::digest(&raw).into();
+    if actual_digest.as_slice() != digest.as_slice() {
+        return Err("frozen game raw digest differs");
+    }
+    let body: Value = serde_json::from_slice(&raw).map_err(|_| "frozen game JSON")?;
+    const KEYS: [&str; 10] = [
+        "seed", "swapped", "format", "match_id", "limit", "engine", "opening", "clock", "seals",
+        "sources",
+    ];
+    // GameBody has precisely the ten original GameStart fields. Checking this
+    // independently also prevents silently accepting a different wire version.
+    if !body.as_object().is_some_and(|object| {
+        object.len() == 10 && object.keys().all(|key| KEYS.contains(&key.as_str()))
+    }) {
+        return Err("frozen game body shape");
+    }
+    if body["seed"].as_u64() != Some(summary.seed)
+        || body["swapped"].as_bool() != Some(summary.swapped)
+        || body["match_id"].as_u64() != Some(summary.match_id)
+        || body["format"].as_u64() != Some(1)
+        || body["seals"].as_array().map(Vec::len) != Some(usize::from(summary.unit_count))
+    {
+        return Err("frozen game body differs from summary");
+    }
+    Ok(body)
+}
+
+#[test]
+fn retained_frozen_game_decoder_preserves_exact_state_and_rejects_stream_tail() {
+    use std::io::Write as _;
+    let body = json!({"seed":u64::MAX,"swapped":true,"format":1,"match_id":17,
+        "limit":MAX_FROZEN_GAME_BYTES,"engine":{},"opening":{"state":"{\"z\":1,\"a\":2}"},
+        "clock":{},"seals":[{"unit":100},{"unit":200}],"sources":[]});
+    let raw = serde_json::to_vec(&body).unwrap();
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&raw).unwrap();
+    let compressed = encoder.finish().unwrap();
+    let hex = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let row = json!({"seed":u64::MAX,"swapped":true,"match_id":17,"unit_count":2,
+        "raw_bytes":raw.len(),"raw_sha256":hex(&Sha256::digest(&raw)),"zlib":hex(&compressed)});
+    assert_eq!(frozen_game(&row).unwrap(), body);
+    let mut trailing = compressed.clone();
+    trailing.extend_from_slice(&compressed);
+    for bytes in [
+        b"bad".as_slice(),
+        &compressed[..compressed.len() - 1],
+        &trailing,
+    ] {
+        let mut bad = row.clone();
+        bad["zlib"] = hex(bytes).into();
+        assert!(frozen_game(&bad).is_err());
+    }
+    for (key, value) in [
+        ("raw_bytes", json!(raw.len() - 1)),
+        ("raw_bytes", json!(MAX_FROZEN_GAME_BYTES + 1)),
+        ("raw_sha256", json!("00".repeat(32))),
+        ("unit_count", json!(3)),
+        ("match_id", json!(18)),
+        ("seed", json!(0)),
+        ("swapped", json!(false)),
+        ("swapped", json!(1)),
+        ("zlib", json!(hex(&compressed).to_uppercase())),
+    ] {
+        let mut bad = row.clone();
+        bad[key] = value;
+        assert!(frozen_game(&bad).is_err(), "{key} must be validated");
+    }
+}
 fn state(doc: &Value) -> Value {
     serde_json::from_str(doc["state"].as_str().expect("canonical state string")).unwrap()
 }
@@ -529,10 +667,12 @@ async fn field_pilot_complete_production_author_story() {
         .unwrap();
     }
     let frozen: Value = serde_json::from_slice(&start_bytes).unwrap();
+    assert_eq!(frozen["format"], 2, "current frozen proving wire format");
     assert_eq!(frozen["context"], manifest["context"]);
     let games = frozen["games"].as_array().unwrap();
     assert_eq!(games.len(), 30);
-    for (index, game) in games.iter().enumerate() {
+    for (index, encoded_game) in games.iter().enumerate() {
+        let game = frozen_game(encoded_game).expect("exact bounded format-2 game body");
         assert_eq!(game["swapped"], index % 2 == 1);
         assert_eq!(game["seed"], frozen["context"]["pair_seeds"][index / 2]);
         let seals = game["seals"].as_array().unwrap();

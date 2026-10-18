@@ -2114,6 +2114,7 @@ dependencies = [
  "async-trait",
  "crossterm",
  "dotenvy",
+ "flate2",
  "mush-ansi",
  "mush-core",
  "mush-llm",
@@ -4600,6 +4601,7 @@ dependencies = [
 name = "tacsim"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "memory-stats",
  "mush-atlas",
  "mush-campaign",

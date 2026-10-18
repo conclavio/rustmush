@@ -692,8 +692,11 @@ default in doc 17; the M7 design must enforce the same rule at checkout and fili
 ## 8. Implementation record: M6 acceptance in progress
 
 M5rules and M5r are accepted on the published branch. The M5r implementation is
-`5993ba20`; merge `f37ff334` incorporates IC11 (`26e3b1fa`) while preserving the
-published branch history. A fresh fetch on 2026-10-17 still resolves main to IC11.
+`5993ba20`; merge `f37ff334` incorporated IC11 (`26e3b1fa`) while preserving the
+published branch history. That checkpoint's fetch resolved main to IC11. The later
+merge `cad11cfc5fd831f6ef8aaff4b8799f8f144e7fc9` incorporates IC12
+(`715151c41c437dc77c789fdfef09c254995185dc`), including the production-root story
+under `mush-server`. This is a merged baseline, not the final M6 acceptance revision.
 
 The M6 candidate implements character-owned drafts and immutable revisions,
 generic schema cards and sealed rules, metered stock helpers, private trace
@@ -741,3 +744,27 @@ workspace/all-target Clippy gate passes after invalidating the temporary
 assembly's shared Cargo artifacts. Full tests, documentation and the committed
 revision's long acceptance runs are still in progress; earlier assembly runs
 are development evidence rather than final acceptance.
+
+The Linux correction run at `f734fcce` refused the advertised 100-game 6v6
+Standard/Line proving request at the 16 MiB frozen-start bound. The correction
+uses frozen-start format 2: shared ground/source maps plus separately compressed
+exact game bodies, each decoded under the unchanged 16 MiB raw-game bound; the
+complete encoded artifact also remains capped at 16 MiB. At most 100 games and
+12 seals/source references per game are admitted. Stream/checksum/length/SHA and
+summary checks precede use; the opaque canonical snapshot string is preserved,
+so reconstruction retains exact TapeHeader bytes and opening tape identity.
+Format 1 is explicitly refused without migration. Tape format 1 and proving-result
+format 2 do not change. Encoded bounds do not claim an equal transient heap bound.
+
+The initial fast-compression variant still hit the cap at game 37. Its failing
+body measured 185,605 compressed bytes at fast versus 47,314 at default; default
+compression is now selected, without changing the wire or either cap. The next
+Windows development run passes all four codec/capacity tests: all 100 production
+6v6 starts fit in 12,662,880 bytes, with 110,664,078 raw game bytes and a largest
+reconstructed header of 4,285,203 bytes. The independent validator passes 29 Python
+tests, and the IC12 bot normal/build graph contains no other RustMUSH package.
+
+The earlier correction failures remain recorded in 17b §6. Final merged-source
+Linux codec/capacity, integration and long public acceptance evidence is still
+required; these development passes neither accept M6 nor start M7. No final
+acceptance revision is claimed here.

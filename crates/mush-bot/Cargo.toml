@@ -28,6 +28,8 @@ ratatui = { workspace = true, features = ["crossterm"] }
 crossterm = "0.28.1"
 
 [dev-dependencies]
+# Independent decoding of bounded retained proving-start evidence in server tests.
+flate2.workspace = true
 # Server-under-test fixtures only. These do not participate in bot decisions
 # and are not linked into the standalone executable.
 wiremock.workspace = true

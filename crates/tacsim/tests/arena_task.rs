@@ -2481,7 +2481,8 @@ fn assert_snapshots_follow_their_chunks(messages: &[ArenaOut]) {
 ///    read for five seconds while a five-millisecond summary cadence closes
 ///    several chunks: when it reads, the chunks closed before the five-second
 ///    snapshot come first, in order, and the snapshot straight after them —
-///    `Ledger`, `Ledger`, …, `Snapshot` — and the opening pulse's snapshot,
+///    `Ledger`, `Ledger`, …, `Snapshot`, with only input-tape writes interleaved
+///    since M6 — and the opening pulse's snapshot,
 ///    replaced while it waited, never arrives.
 /// 3. **Off.** `snapshot_ms = 0`: no `Snapshot` in sixty seconds.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -2581,12 +2582,20 @@ async fn af2_a_snapshot_rides_the_egress_on_the_first_pulse_and_every_five_secon
         (1..=snapshot.chunk_seq).collect::<Vec<u64>>(),
         "every chunk closed before the snapshot, in order, and nothing after it"
     );
+    // M6 input-tape writes share the durable backlog. They may interleave
+    // with ledger chunks, but no frame or other message may split the final
+    // ledger pair from this snapshot. The exact ledger sequence and snapshot
+    // hash/cadence checks above still cover every chunk and snapshot.
+    let before_without_tape = messages[..at]
+        .iter()
+        .filter(|message| !matches!(message, ArenaOut::Tape { .. }))
+        .collect::<Vec<_>>();
     assert!(
         matches!(
-            &messages[at.saturating_sub(2)..at],
+            &before_without_tape[before_without_tape.len().saturating_sub(2)..],
             [ArenaOut::Ledger { .. }, ArenaOut::Ledger { .. }]
         ),
-        "Ledger, Ledger, Snapshot"
+        "Ledger, Ledger, Snapshot with only input-tape writes interleaved"
     );
     assert_snapshots_follow_their_chunks(&messages);
 

@@ -10503,15 +10503,13 @@ async fn m5_an_unarmed_hull_takes_any_preset_under_any_floor() {
 /// **The sealed class caps the profile count** (17b cut M5.1; the owner's
 /// OQ-3: N from the mind's sealed class, Class I → 2): on a `line_tank`
 /// Standard Doctrine seals at Class I — not the core's II — so three profiles
-/// are refused; a coreless `target_mk1` flies the ROM, Class 0, whose row
-/// keeps one, and its refusal and `Fits` line say so (17b cut M5.1's review:
-/// `Standard Doctrine thinks at Class 0 on this core, …` and `Fits target_mk1
-/// (0): …` before it, naming a core the chassis does not have). And the other
-/// profile refusals: a profile the mind does not carry (the presets listed),
-/// one named twice, a revision pin, and the two usage lines.
+/// are refused. Under M6 a coreless `target_mk1` may retain a requested profile
+/// set, but actual checkout substitutes the complete singleton Class 0 ROM;
+/// the selected Sniper/Line set never becomes its executable card set. Also
+/// cover an unknown profile, a duplicate, a revision pin and the usage lines.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn m5_the_sealed_class_caps_the_profile_count() {
-    let mut rig = Rig::boot(1);
+    let mut rig = fill_rig(1);
     rig.say(0, "sim team red");
     assert_eq!(
         rig.say(0, "sim mind Standard PROFILE Sniper, Line, Hunter"),
@@ -10542,22 +10540,36 @@ async fn m5_the_sealed_class_caps_the_profile_count() {
         "Your slot will carry Standard Doctrine (Sniper, Line)."
     );
     rig.say(0, "sim mind none");
-    rig.say(0, "sim unit target_mk1");
+    let said = rig.say(0, "sim unit target_mk1");
+    assert!(said.contains("will field target_mk1."), "{said}");
     assert_eq!(
         rig.say(0, "sim mind Standard PROFILE Sniper, Line"),
-        "This target_mk1 has no core and flies the ROM, which seals one profile at most."
-    );
-    assert_eq!(
-        rig.say(0, "sim mind Standard PROFILE Sniper"),
-        "Your slot will carry Standard Doctrine (Sniper)."
+        "Your slot will carry Standard Doctrine (Sniper, Line)."
     );
     let said = rig.say(0, "sim mind");
     assert!(
-        said.contains(&format!(
-            "Fits target_mk1 (ROM): Standard Doctrine, up to one of {SIX}."
-        )),
+        said.contains("Yours: Standard Doctrine (Sniper, Line).")
+            && said.contains("Your mind will seal at Class 0."),
         "{said}"
     );
+    // One armed fill beside the coreless pilot keeps both sides fieldable.
+    rig.say(0, "sim ai 2");
+    let said = rig.say(0, "sim start");
+    assert!(said.contains("boarding"), "{said}");
+    let unit = match_::tank_of(rig.tw.world(), rig.pod(0).expect("the pilot's pod"))
+        .expect("the coreless tank");
+    assert!(rig.seat(0));
+    assert_eq!(rig.state(), MatchState::Running);
+    let seal = sealed_of(&rig, unit);
+    assert_eq!(seal.core, None);
+    assert_eq!(seal.class, tacsim::arena::core::CoreClass::Zero);
+    assert_eq!(seal.engine, tacsim::arena::SealEngine::Native);
+    assert_eq!(seal.fallback.as_deref(), Some(match_::NO_CORE_FALLBACK));
+    assert_eq!(
+        seal.cards, seal.rom,
+        "actual execution uses the captured ROM"
+    );
+    assert_eq!(seal.cards.selected.names().collect::<Vec<_>>(), ["Line"]);
 }
 
 /// **`SIM AI MIND` is the lead's, and reads to the lead alone** (17b cut
@@ -10768,8 +10780,8 @@ async fn m5_the_bare_reads_follow_the_state() {
 /// for blue stays; and the check-out's `Side::minds` holds no red fill
 /// choice: read through `lobby::ready`'s test hook once the new lead is
 /// seated and blue's pilot is not, every red hull — the lead's and the fill's
-/// — is `SealChoice::unchosen()`, with the unclaimed fill's exact Class I
-/// preview (the claimed pilot is resolved at checkout), and blue's fill hull
+/// — is `SealChoice::unchosen()`, with every fielded hull's exact Class I
+/// preview (including the seated pilot's default), and blue's fill hull
 /// carries the staff's Standard Doctrine (Sentry), chosen, at Class I (17b
 /// cut M5.1's review: the test read `Centre::fill_minds` after `Running`
 /// before it, the input and not the check-out's sides).
@@ -10826,8 +10838,8 @@ async fn m5_a_change_of_lead_clears_the_sides_fill_choice() {
     for fielded in &red.units {
         assert_eq!(
             fielded.mind_class,
-            (fielded.slot != 2).then_some(CoreClass::I),
-            "the claimed pilot's cap is resolved at checkout; unclaimed fill has its exact class"
+            Some(CoreClass::I),
+            "every fielded hull previews the actual sealed class, including an unchosen pilot"
         );
         assert_eq!(
             red.minds.get(&fielded.unit),
@@ -10842,7 +10854,7 @@ async fn m5_a_change_of_lead_clears_the_sides_fill_choice() {
         .expect("the pod's tank");
     for fielded in &blue.units {
         if fielded.unit == pilot_tank {
-            assert_eq!(fielded.mind_class, None);
+            assert_eq!(fielded.mind_class, Some(CoreClass::I));
             assert_eq!(blue.minds.get(&fielded.unit), Some(&SealChoice::unchosen()));
         } else {
             assert_eq!(fielded.mind_class, Some(CoreClass::I), "the staff's fill");
@@ -11016,20 +11028,29 @@ async fn m5_the_check_out_admits_a_chosen_hull_at_the_class_its_mind_seals_at() 
                 .iter()
                 .map(|fielded| (fielded.slot, fielded.mind_class))
                 .collect::<Vec<_>>(),
-            [
-                (1, ada_chooses.then_some(CoreClass::Zero)),
-                (2, Some(CoreClass::I))
-            ],
-            "a chosen pilot exposes its exact preview; default pilot custody resolves at checkout"
+            [(1, Some(CoreClass::Zero)), (2, Some(CoreClass::I))],
+            "chosen and default pilots expose the same exact sealed class"
         );
         assert!(
             rig.seat(cy),
             "both chosen and unchosen ROM rosters check out"
         );
         assert_eq!(rig.state(), MatchState::Running);
+        // Before Cy seated, the prospective blue side filled other unclaimed
+        // pods. Compare custody against the final fully seated roster instead.
+        let final_sides = rig.ready_sides().expect("the fully seated roster fits");
         let id = rig.centre().match_id.expect("running match");
         let record = rig.book().get(id).expect("the immutable match record");
-        for side in &sides {
+        assert_eq!(record.minds.len(), 4, "one seal for every actual hull");
+        for side in &final_sides {
+            assert_eq!(
+                side.units
+                    .iter()
+                    .map(|fielded| (fielded.slot, fielded.mind_class))
+                    .collect::<Vec<_>>(),
+                [(1, Some(CoreClass::Zero)), (2, Some(CoreClass::I))],
+                "each final side has its coreless pilot and one Class I fill"
+            );
             let mut load = 0;
             for fielded in &side.units {
                 let seal = &record

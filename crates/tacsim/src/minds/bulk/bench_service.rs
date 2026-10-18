@@ -1158,6 +1158,8 @@ mod tests {
             &mut self,
             reg: &mut mush_core::Registrar<'_>,
         ) -> Result<(), mush_core::ModError> {
+            // Use the production module's persistence lane for these handlers.
+            reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
             reg.state(self.owner.clone());
             reg.state(Artifacts::default());
             reg.state(self.service.clone());

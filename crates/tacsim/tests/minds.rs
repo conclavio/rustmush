@@ -4231,11 +4231,20 @@ fn the_j_field(controller: Controller) -> Arena {
 /// M2.6**: inside `support::under_the_twin` its minds fly an asserting twin
 /// (`support::twin_if_asked`) until a fixture hands the arena another runner.
 fn the_j_field_on(controller: Controller, reflex: ReflexConfig) -> Arena {
+    // Cards and ROM are captured at custody. Changing ArenaConfig alone must
+    // not replace the immutable Line profile admitted by the M6 runtime.
+    let terms = tacsim::match_::SealTerms {
+        card: tacsim::arena::line(&reflex),
+        rom_cfg: reflex.clone(),
+        ..tacsim::match_::SealTerms::fixture()
+    };
     let seeing = |mut unit: CustodyUnit| {
         unit.sensor = Some(SensorProfile {
             max_range_cells: 10,
             ..sight()
         });
+        unit.reseal(&terms)
+            .expect("the fixture's selected doctrine and ROM seal");
         unit
     };
     let mut arena = arena_on(

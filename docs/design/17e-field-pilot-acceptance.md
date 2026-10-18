@@ -89,6 +89,14 @@ and the complete original Hold card and rules; every opponent must actually sele
 Line. The comparison script verifies those bytes and identities again, and
 reconciles all thirty retained game outcomes and summed faults with the summary.
 
+Frozen proving starts use format 2, with shared ground/source maps and one zlib
+stream per exact game body. Both the complete artifact and each raw body remain
+bounded at 16 MiB. The story and Python comparison independently enforce exact
+stream completion, no trailing bytes, length/SHA and summary/body agreement before
+reading seals. They preserve the canonical snapshot state string and all existing
+identity/card/outcome assertions. Old private format 1 is explicitly refused;
+there is no migration, and tape format 1/proving-result format 2 are unchanged.
+
 `crates/mush-bot/tests/arena_mind_isolation.rs` exercises one live sortie and two
 proving jobs on the same production server through separate SSH accounts. It
 checks bounded worker/queue admission, duplicate and overflow refusal, settled
@@ -159,3 +167,16 @@ replay additions are not accepted until their actual runs produce the evidence.
 The M6 source/API addition needs the normal API 4 inventory/ABI and compatibility
 record. It changes no physics or live source by itself. The M7 economic-stability
 checkpoint remains a separate required gate after M6 acceptance.
+
+The later IC12 merge is `cad11cfc5fd831f6ef8aaff4b8799f8f144e7fc9`; final acceptance
+must identify the committed tree containing its subsequent corrections. The Linux
+correction run at `f734fcce` failed the same-server isolation setup because the
+100-game 6v6 stock request exceeded the old frozen-start representation's 16 MiB
+cap. That failed run is not passing acceptance evidence. After the initial fast
+compression also exceeded the cap, default compression passes all four Windows
+development codec/capacity tests: the real 100-game 6v6 artifact is 12,662,880 bytes
+under the unchanged 16,777,216-byte cap. The independent validator now passes 29
+Python tests, and the IC12 normal/build dependency graph confirms that `mush-bot`
+still depends on no other RustMUSH package. The complete measurements are in 17b §6.
+Final merged-source Linux verification, the complete author story, isolation and
+external comparison remain pending; no final acceptance revision is claimed.

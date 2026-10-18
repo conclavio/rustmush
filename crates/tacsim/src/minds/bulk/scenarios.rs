@@ -517,3 +517,117 @@ impl ScenarioFactory {
 fn id(word: &str) -> Result<CanonicalId, BulkError> {
     CanonicalId::new(word).map_err(|e| invalid(e.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_atlas::{AtlasModule, AtlasState};
+    use mush_content::{Appliers, ContentModule};
+    use mush_testkit::TestWorld;
+
+    #[test]
+    fn m6_frozen_v2_prepares_all_one_hundred_stock_muster_6v6_games_under_existing_cap() {
+        // Real production content, atlas appliers, custody and ScenarioFactory;
+        // this is exactly the public live-isolation request, without simulation.
+        let mut appliers = Appliers::new();
+        mush_atlas::register_appliers(&mut appliers).unwrap();
+        let atlas = mush_content::parse_pack(content::PROVING_GROUND_ATLAS_JSON).unwrap();
+        let world = TestWorld::with_modules(vec![
+            Box::new(AtlasModule::new()),
+            Box::new(
+                ContentModule::new()
+                    .with_appliers(appliers)
+                    .with_boot_packs(vec![atlas]),
+            ),
+        ]);
+        let records = world
+            .world()
+            .module_state::<AtlasState>()
+            .unwrap()
+            .records
+            .clone();
+        let factory = ScenarioFactory::new(
+            Arc::new(Catalog::build_game(&[], crate::NS).unwrap()),
+            Arc::new(records),
+            TacsimConfig::default(),
+        );
+        let recipe = Recipe::owned(
+            &RollStore::default(),
+            &crate::store::TacsimStore::default(),
+            ObjId(99),
+            "Standard/Line",
+            "Standard/Line",
+            Scenario::Muster,
+            6,
+            100,
+            1,
+        )
+        .unwrap();
+        let mut prepared = factory
+            .prepare(&recipe)
+            .expect("advertised stock100 6v6 must prepare");
+        assert_eq!(prepared.plan().games, 100);
+        assert_eq!(prepared.plan().unit_count, 12);
+        let bytes = prepared.bytes_mut().bytes();
+        assert!(bytes.len() as u64 <= MAX_ARTIFACT_BYTES);
+        let starts = FrozenStarts::decode(bytes).expect("stored body collection reopens");
+        assert_eq!(starts.games.len(), 100);
+        let packed = serde_json::to_value(&starts).unwrap();
+        let mut raw_total = 0_u64;
+        let mut largest_header = 0;
+        for index in 0..100 {
+            let header = starts.header(index).unwrap();
+            assert_eq!(header.match_id, index as u64 + 1);
+            assert_eq!(header.seals.len(), 12);
+            assert!(
+                header
+                    .seals
+                    .iter()
+                    .all(|seal| seal.class == crate::arena::core::CoreClass::I
+                        && seal.cards.selected.len() == 1
+                        && seal.cards.selected.name(0) == Some("Line"))
+            );
+            raw_total += packed
+                .get("games")
+                .unwrap()
+                .get(index)
+                .unwrap()
+                .get("raw_bytes")
+                .unwrap()
+                .as_u64()
+                .unwrap();
+            largest_header = largest_header.max(serde_json::to_vec(&header).unwrap().len());
+            if matches!(index, 0 | 49 | 99) {
+                let arena = crate::minds::resimulation::open_frozen_header(&header).unwrap();
+                assert_eq!(arena.seed, index as u64 / 2 + 1);
+                assert_eq!(arena.units.len(), 12);
+                assert_eq!(
+                    arena.units.iter().filter(|u| u.team == Team::Red).count(),
+                    6
+                );
+                assert_eq!(
+                    arena.units.iter().filter(|u| u.team == Team::Blue).count(),
+                    6
+                );
+            }
+        }
+        let repeated_format1_bytes = raw_total
+            + serde_json::to_vec(packed.get("ground").unwrap())
+                .unwrap()
+                .len() as u64
+            + serde_json::to_vec(packed.get("sources").unwrap())
+                .unwrap()
+                .len() as u64;
+        assert!(
+            repeated_format1_bytes > MAX_ARTIFACT_BYTES,
+            "this fixture must exercise the formerly oversized raw collection"
+        );
+        eprintln!(
+            "frozen_v2 stock100 muster6v6 artifact_bytes={} raw_game_bytes={} max_header_bytes={} cap={}",
+            bytes.len(),
+            raw_total,
+            largest_header,
+            MAX_ARTIFACT_BYTES
+        );
+    }
+}

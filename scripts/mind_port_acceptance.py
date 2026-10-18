@@ -14,11 +14,13 @@ import re
 import subprocess
 import time
 import uuid
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "crates/tacsim/content/minds/acceptance/field_pilot.rhai"
 MANIFEST = SOURCE.with_suffix(".manifest.json")
 ENVELOPE = SOURCE.with_suffix(".envelope.json")
+MAX_FROZEN_GAME_BYTES = 16 * 1024 * 1024
 
 
 def read(path):
@@ -80,6 +82,46 @@ def selected_profile(seal, expected):
     return profiles[index]
 
 
+def frozen_game(row):
+    """Independently decode one exact retained format-2 game, under a fixed cap."""
+    require(type(row) is dict and set(row) == {
+        "seed", "swapped", "match_id", "unit_count", "raw_bytes", "raw_sha256", "zlib"},
+        "frozen game summary shape")
+    require(type(row["seed"]) is int and 0 <= row["seed"] <= 0xffffffffffffffff
+            and type(row["swapped"]) is bool
+            and type(row["match_id"]) is int and 0 < row["match_id"] <= 0xffffffffffffffff
+            and type(row["unit_count"]) is int and 2 <= row["unit_count"] <= 12
+            and type(row["raw_bytes"]) is int and 0 < row["raw_bytes"] <= MAX_FROZEN_GAME_BYTES,
+            "frozen game summary bounds")
+    encoded, digest = row["zlib"], row["raw_sha256"]
+    require(type(encoded) is str and 0 < len(encoded) <= 2 * MAX_FROZEN_GAME_BYTES
+            and len(encoded) % 2 == 0 and re.fullmatch(r"[0-9a-f]+", encoded) is not None
+            and type(digest) is str and re.fullmatch(r"[0-9a-f]{64}", digest) is not None,
+            "frozen game canonical hex or byte bound")
+    decoder = zlib.decompressobj()
+    try:
+        # Never flush an unbounded remainder. One excess byte proves a forged
+        # declared length without allowing a compressed bomb to grow in memory.
+        raw = decoder.decompress(bytes.fromhex(encoded), row["raw_bytes"] + 1)
+    except zlib.error as error:
+        raise ValueError("frozen game invalid zlib stream") from error
+    require(len(raw) == row["raw_bytes"] and decoder.eof
+            and not decoder.unused_data and not decoder.unconsumed_tail,
+            "frozen game length, truncated stream or trailing bytes")
+    require(hashlib.sha256(raw).hexdigest() == digest, "frozen game raw digest differs")
+    game = json.loads(raw)
+    require(type(game) is dict and set(game) == {
+        "seed", "swapped", "format", "match_id", "limit", "engine", "opening", "clock",
+        "seals", "sources"}, "frozen game body shape")
+    require(type(game["seed"]) is int and game["seed"] == row["seed"]
+            and type(game["swapped"]) is bool and game["swapped"] is row["swapped"]
+            and type(game["match_id"]) is int and game["match_id"] == row["match_id"]
+            and type(game["format"]) is int and game["format"] == 1
+            and type(game["seals"]) is list and len(game["seals"]) == row["unit_count"],
+            "frozen game body differs from summary")
+    return game
+
+
 def verify_proving_artifacts(directory, story, proving):
     start = read(directory / "author/proving-start-manifest.json")
     require(start["key"]["account"] == proving["key"]["account"]
@@ -107,8 +149,11 @@ def verify_proving_artifacts(directory, story, proving):
             and hold["values"] == envelope["profiles"]["Hold"]
             and hold["rules"] == envelope["rules"].get("Hold", []),
             "live seal does not carry the exact accepted Hold card/rules")
+    require(type(frozen.get("format")) is int and frozen["format"] == 2,
+            "current frozen proving format is required")
     require(len(frozen["games"]) == 30, "thirty actual frozen starts are required")
-    for index, game in enumerate(frozen["games"]):
+    for index, encoded_game in enumerate(frozen["games"]):
+        game = frozen_game(encoded_game)
         require(game["swapped"] is (index % 2 == 1)
                 and game["seed"] == frozen["context"]["pair_seeds"][index // 2],
                 "actual frozen seed/side pairing differs")

@@ -4421,7 +4421,13 @@ mod tests {
                 arena.unit(RED).expect("own").weapon_ammo("cannon"),
                 ammo - 1
             );
-            assert_eq!(arena.minds.get(&RED).expect("mind").memory, b"prior");
+            // A completed answer still lands memory when a station epoch only
+            // invalidates its sample; a missing completion retains prior memory.
+            let expected_memory: &[u8] = if missing { b"prior" } else { b"fresh" };
+            assert_eq!(
+                arena.minds.get(&RED).expect("mind").memory.as_slice(),
+                expected_memory
+            );
             assert!(!arena.rule_evaluation_deferred(RED, boundary));
             assert!(
                 arena

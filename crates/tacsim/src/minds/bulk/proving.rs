@@ -57,7 +57,7 @@ impl FrozenProving {
                 .ok_or_else(|| invalid("frozen paired seed count"))?;
             if game.seed != *seed
                 || game.swapped != (i % 2 == 1)
-                || game.seals.len() != usize::from(plan.unit_count)
+                || game.unit_count != plan.unit_count
             {
                 return Err(invalid("frozen paired seed, side or roster"));
             }

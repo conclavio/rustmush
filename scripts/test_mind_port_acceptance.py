@@ -8,8 +8,16 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+import zlib
 
 import mind_port_acceptance as acceptance
+
+
+def compressed_game(game):
+    raw = json.dumps(game, separators=(",", ":")).encode("utf-8")
+    return {"seed":game["seed"], "swapped":game["swapped"], "match_id":game["match_id"],
+            "unit_count":len(game["seals"]), "raw_bytes":len(raw),
+            "raw_sha256":hashlib.sha256(raw).hexdigest(), "zlib":zlib.compress(raw).hex()}
 
 
 class ComparisonTests(unittest.TestCase):
@@ -51,8 +59,10 @@ class ComparisonTests(unittest.TestCase):
                     "requested":{"mind":"Standard"}, "cards":{
                         "selected":[{"name":"Line", "key":{"index":0}}],
                         "definition":{"profiles":[{"name":"Line"}]}}}
-        self.frozen = {"context":context, "games":[{
+        self.frozen = {"format":2, "context":context, "games":[{
             "seed":index // 2, "swapped":index % 2 == 1,
+            "format":1, "match_id":index + 1, "limit":16 * 1024 * 1024,
+            "engine":{}, "opening":{}, "clock":{}, "sources":[],
             "seals":[copy.deepcopy(seal), copy.deepcopy(opponent)]} for index in range(30)]}
         self.proving["key"] = {"account":"test-account", "run":1, "part":"result"}
         self.result = {"context":context, "report":{"games":[{
@@ -93,7 +103,8 @@ class ComparisonTests(unittest.TestCase):
         return {"bytes":len(encoded), "sha256":list(hashlib.sha256(encoded).digest())}
 
     def update_frozen(self):
-        encoded = self.write("author/proving-start.json", self.frozen)
+        encoded = self.write("author/proving-start.json", {
+            **self.frozen, "games":[compressed_game(game) for game in self.frozen["games"]]})
         self.start["artifact"] = self.descriptor(encoded)
         self.write("author/proving-start-manifest.json", self.start)
         self.story["proving_start_artifact"] = self.start["artifact"]
@@ -275,6 +286,71 @@ class ComparisonTests(unittest.TestCase):
         self.update_frozen()
         with self.assertRaisesRegex(ValueError, "actual sealed selection is not Line"):
             self.compare()
+
+
+class FrozenGameTests(unittest.TestCase):
+    def setUp(self):
+        self.body = {"seed":2**64 - 1, "swapped":True, "format":1, "match_id":17,
+                     "limit":16 * 1024 * 1024, "engine":{}, "clock":{}, "sources":[],
+                     "opening":{"state":'{"z":1,"a":"exact \\r\\n bytes"}'},
+                     "seals":[{"unit":100}, {"unit":200}]}
+        self.row = compressed_game(self.body)
+
+    def test_preserves_opaque_state_bytes_and_full_unsigned_seed(self):
+        self.assertEqual(acceptance.frozen_game(self.row), self.body)
+
+    def test_rejects_invalid_truncated_and_trailing_zlib_streams(self):
+        compressed = bytes.fromhex(self.row["zlib"])
+        for bad in [b"bad", compressed[:-1], compressed + b"trailing",
+                    compressed + zlib.compress(b"second stream")]:
+            with self.subTest(bad=bad):
+                self.row["zlib"] = bad.hex()
+                with self.assertRaisesRegex(ValueError, "zlib stream|truncated stream|trailing bytes"):
+                    acceptance.frozen_game(self.row)
+
+    def test_rejects_inflation_past_declared_limit_without_unbounded_flush(self):
+        self.row["raw_bytes"] = 64
+        self.row["zlib"] = zlib.compress(b"x" * (2 * 1024 * 1024)).hex()
+        with self.assertRaisesRegex(ValueError, "length, truncated stream"):
+            acceptance.frozen_game(self.row)
+
+    def test_rejects_declared_size_and_digest_mismatch(self):
+        for key, value in [("raw_bytes", self.row["raw_bytes"] + 1), ("raw_sha256", "0" * 64)]:
+            with self.subTest(key=key):
+                bad = {**self.row, key:value}
+                with self.assertRaisesRegex(ValueError, "length, truncated stream|raw digest differs"):
+                    acceptance.frozen_game(bad)
+
+    def test_rejects_summary_mismatch_and_noninteger_identity(self):
+        for key, value in [("seed", 0), ("swapped", False), ("match_id", 18), ("unit_count", 3),
+                           ("seed", True), ("swapped", 1), ("match_id", True), ("unit_count", True)]:
+            with self.subTest(key=key, value=value):
+                with self.assertRaisesRegex(ValueError, "summary bounds|body differs from summary"):
+                    acceptance.frozen_game({**self.row, key:value})
+
+    def test_rejects_oversized_metadata_before_decompressing(self):
+        with patch.object(acceptance.zlib, "decompressobj") as decoder:
+            for size in [0, acceptance.MAX_FROZEN_GAME_BYTES + 1, True]:
+                with self.assertRaisesRegex(ValueError, "summary bounds"):
+                    acceptance.frozen_game({**self.row, "raw_bytes":size})
+            decoder.assert_not_called()
+
+    def test_rejects_noncanonical_hex_and_unknown_summary_fields(self):
+        for value in [self.row["zlib"].upper(), self.row["zlib"] + " ", "0", "gg"]:
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "canonical hex"):
+                    acceptance.frozen_game({**self.row, "zlib":value})
+        with self.assertRaisesRegex(ValueError, "summary shape"):
+            acceptance.frozen_game({**self.row, "extra":True})
+
+    def test_rejects_changed_body_summary_even_with_correct_hash(self):
+        for key, value in [("format", 2), ("seed", True), ("swapped", 1), ("match_id", True)]:
+            with self.subTest(key=key):
+                altered = compressed_game({**self.body, key:value})
+                for summary in ["seed", "swapped", "match_id"]:
+                    altered[summary] = self.row[summary]
+                with self.assertRaisesRegex(ValueError, "body differs from summary"):
+                    acceptance.frozen_game(altered)
 
 
 class RevisionTests(unittest.TestCase):

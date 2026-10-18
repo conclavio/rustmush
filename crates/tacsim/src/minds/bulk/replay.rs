@@ -91,7 +91,7 @@ impl ReferenceLease {
             if usize::from(tape.game) != index
                 || report.seed != opening.seed
                 || report.swapped != opening.swapped
-                || usize::from(report.units) != opening.seals.len()
+                || u16::from(report.units) != opening.unit_count
             {
                 return Err(invalid("proving report differs from recorded outcome"));
             }
