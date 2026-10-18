@@ -62,7 +62,10 @@ pub const COOP_HELP: &str = "+coop  --  The Belt Carriers' Cooperative's First C
      Freeport: Ceres Clearing opens your credit account, the Co-op charters you its next free \
      Dray under the name you give it (its registry mark stays), stakes you, and opens the ship's \
      hold in your name.\n+coop/statement  your charter's terms, its sales and the Co-op's share \
-     so far, and your cash against the buyout, anywhere.";
+     so far, and your cash against the buyout, anywhere.\n+coop/buyout  at the Registry & Co-op \
+     desk with your Dray docked at Ceres: pay the buyout on your papers and the Registry enters \
+     the hull in your name.\n+coop/release  at the desk with your Dray docked at Ceres and her \
+     cargo hold empty: hand the charter back; the stake stays yours.";
 
 /// The prefix of every enrolment document (`tacsim:coop:{account}`).
 pub const COOP_PREFIX: &str = "tacsim:coop:";
@@ -145,6 +148,12 @@ pub const CHARTER_BOOKS_DARK: &str = "Your charter: the {name} ({mark}); the Co-
 /// enrolment's.
 pub const CHARTER_NOT_IN_FORCE: &str = "Your charter of the {name} ({mark}) is not in force.";
 
+/// `+coop`'s charter line for a graduate (doc 18 cut IC13): `{name}`, `{mark}`.
+pub const GRADUATED_LINE: &str =
+    "Your hull: the {name} ({mark}), graduated: bought out, and the Co-op's lay has ended.";
+/// `+coop`'s charter line while a buyout is entered (doc 18 cut IC13).
+pub const BUYOUT_PENDING_LINE: &str = "Your buyout of the {name} ({mark}) is being entered.";
+
 /// **`tacsim:coop:{account}`** — the one key of one gateway account's
 /// enrolment (lead ruling L5; the `tacsim:tutorial:` precedent). Never logged:
 /// its tail is the account's canonical hash.
@@ -175,6 +184,33 @@ pub enum EnrolmentStatus {
     /// The charter ended without a buyout (staff cancel, cut IC13's recall).
     Revoked,
 }
+
+/// **Why an enrolment ended** (doc 18 cut IC13, lead ruling L6): one cause carries
+/// graduation, release, dormancy, revocation (with its staff attribution) and a
+/// lease ended elsewhere.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum EndCause {
+    /// The buyout settled (status Graduated).
+    BoughtOut,
+    /// `+coop/release`.
+    Released,
+    /// The tick's dormancy recall.
+    Dormant,
+    /// `@coop/revoke`: the staff member and their words.
+    Revoked {
+        /// The staff member.
+        by: ObjId,
+        /// Their reason, 1..=[`MAX_REVOKE_WHY_BYTES`] bytes.
+        why: String,
+    },
+    /// The lease ended outside the programme's verbs (staff `@contract/cancel`, an
+    /// attestation, a re-lease that could not be made): the IC6 observer's fold.
+    LeaseEnded,
+}
+
+/// The longest reason `@coop/revoke` records (doc 18 cut IC13).
+pub const MAX_REVOKE_WHY_BYTES: usize = 200;
 
 /// **One gateway account's enrolment** (doc 18 §4.1; D-18-24, D-18-25): the
 /// account ledger and the frozen terms. Bounded and whole-document; strict on
@@ -218,6 +254,15 @@ pub struct Enrolment {
     pub enrolled_at: i64,
     /// Where it stands.
     pub status: EnrolmentStatus,
+    /// The real second the current lease came into force: `enrolled_at` at signing;
+    /// a re-lease after a refunded buyout moves it (cut IC13). The dormancy clock starts here.
+    pub leased_at: i64,
+    /// The buyout contract (`ContractId.0`) from `+coop/buyout` on; kept after graduation.
+    pub buyout: Option<u64>,
+    /// The real second the enrolment became `Graduated` or `Revoked`.
+    pub ended_at: Option<i64>,
+    /// Why it ended.
+    pub ended: Option<EndCause>,
     /// Sales folded so far (cut IC10).
     #[serde(default)]
     pub sales: u32,
@@ -262,6 +307,44 @@ impl Enrolment {
         }
         if self.margin_minor < 0 || self.shares_minor < 0 {
             return Err("the sale counters must not be negative".to_owned());
+        }
+        // Cut IC13: the lease stamp, the buyout and the end.
+        if self.leased_at < self.enrolled_at {
+            return Err("leased_at must not be before enrolled_at".to_owned());
+        }
+        if self.ended_at.is_some() != self.ended.is_some() {
+            return Err("ended_at and ended are set together".to_owned());
+        }
+        let over = matches!(
+            self.status,
+            EnrolmentStatus::Graduated | EnrolmentStatus::Revoked
+        );
+        if self.ended.is_some() != over {
+            return Err("an enrolment carries an end iff it is graduated or revoked".to_owned());
+        }
+        match (&self.status, &self.ended) {
+            (EnrolmentStatus::Graduated, Some(EndCause::BoughtOut)) => {}
+            (EnrolmentStatus::Graduated, _) => {
+                return Err("a graduated enrolment ended bought out".to_owned());
+            }
+            (_, Some(EndCause::BoughtOut)) => {
+                return Err("only a graduated enrolment ended bought out".to_owned());
+            }
+            _ => {}
+        }
+        if matches!(
+            self.status,
+            EnrolmentStatus::Graduated | EnrolmentStatus::BuyoutPending
+        ) && self.buyout.is_none()
+        {
+            return Err("a buyout pending or graduated names its buyout contract".to_owned());
+        }
+        if let Some(EndCause::Revoked { why, .. }) = &self.ended
+            && (why.is_empty() || why.len() > MAX_REVOKE_WHY_BYTES)
+        {
+            return Err(format!(
+                "a revocation's reason must be 1..={MAX_REVOKE_WHY_BYTES} bytes"
+            ));
         }
         Ok(())
     }
@@ -456,11 +539,97 @@ pub fn live_charter(w: &World, pilot: ObjId) -> Option<Charter> {
         .min_by_key(|charter| charter.contract)
 }
 
+/// How a pilot holds a programme hull (cut IC13).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Standing {
+    /// A live Trust lease: the charter.
+    Charter(ContractId),
+    /// The pilot holds the hull's title: a graduate.
+    Title,
+}
+
+/// **Who may operate** (D-18-23, cut IC13): the hull a pilot commands and on what standing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Helm {
+    /// The hull.
+    pub hull: ObjId,
+    /// The charter or the title.
+    pub standing: Standing,
+}
+
+/// Whether `hull`'s asset is `Active` and titled to `owner`.
+pub(crate) fn titled_to(w: &World, hull: ObjId, owner: &PrincipalId) -> bool {
+    w.module_state::<EconomyStore>()
+        .and_then(|economy| economy.snapshot().asset(hull))
+        .is_some_and(|asset| {
+            asset.lifecycle == mush_economy::AssetLifecycle::Active && asset.title_owner == *owner
+        })
+}
+
+/// **The operate gate after graduation** (D-18-23 read with cut IC13's lead ruling 2b):
+/// the live charter when there is one (never the document), else the lowest-id hull of
+/// the programme port's map whose asset is `Active` and titled to `Object(pilot)`.
+#[must_use]
+pub fn helm_of(w: &World, pilot: ObjId) -> Option<Helm> {
+    if let Some(charter) = live_charter(w, pilot) {
+        return Some(Helm {
+            hull: charter.hull,
+            standing: Standing::Charter(charter.contract),
+        });
+    }
+    let port = programme_port(w)?;
+    let owner = PrincipalId::Object(pilot);
+    port.map
+        .hulls
+        .iter()
+        .map(|row| ObjId(row.hull))
+        .filter(|hull| titled_to(w, *hull, &owner))
+        .min()
+        .map(|hull| Helm {
+            hull,
+            standing: Standing::Title,
+        })
+}
+
+/// **Who commands a programme hull**: its live charter's tenant, else the `Object`
+/// title holder of a programme-map hull. `None` for a laid-up Trust hull.
+#[must_use]
+pub fn helm_holder(w: &World, hull: ObjId) -> Option<ObjId> {
+    if let Some(tenant) = charter_tenant(w, hull) {
+        return Some(tenant);
+    }
+    let port = programme_port(w)?;
+    if !port.map.hulls.iter().any(|row| row.hull == hull.0) {
+        return None;
+    }
+    let asset = w.module_state::<EconomyStore>()?.snapshot().asset(hull)?;
+    match &asset.title_owner {
+        PrincipalId::Object(owner) if asset.lifecycle == mush_economy::AssetLifecycle::Active => {
+            Some(*owner)
+        }
+        _ => None,
+    }
+}
+
+/// **Whether a stowage's hold is still someone's** (doc 18 cut IC13; reviewer F1): a
+/// vault on the stowage that is **not** an `Active` vault owned by the Trust. No vault
+/// at all, or the Trust's own Active vault (a recalled hull's re-homed hold, L5), is
+/// not held; a vault owned by anyone else, or a Trust vault in any other status, is.
+/// [`hull_is_free`] and the readiness hulls line read this one predicate.
+#[must_use]
+pub(crate) fn stowage_held(economy: &EconomyStore, trust: &PrincipalId, stowage: ObjId) -> bool {
+    economy
+        .snapshot()
+        .vault_by_backing(&CustodyRef::SpatialInterior(stowage))
+        .is_some_and(|vault| !(vault.owner == *trust && vault.status == VaultStatus::Active))
+}
+
 /// **Whether a hull may be chartered** (`next_loaner`'s rule made concrete,
 /// lead ruling L9): live; its asset `Active` and titled to the Trust; no live
 /// Trust lease on it; `Direct` on the programme port's own domain and not under
-/// way; its airlock and stowage recorded; and no vault on its stowage (a revoked
-/// hull's hold stands until cut IC13's recall).
+/// way; its airlock and stowage recorded; and its stowage not [`stowage_held`] —
+/// no vault, or the Trust's own Active vault, which cut IC13's recall leaves
+/// behind (the next enrolment re-owns it).
 #[must_use]
 pub fn hull_is_free(w: &World, port: &ProgrammePort<'_>, row: &HullRow) -> bool {
     let hull = ObjId(row.hull);
@@ -492,10 +661,7 @@ pub fn hull_is_free(w: &World, port: &ProgrammePort<'_>, row: &HullRow) -> bool 
     let Some(stowage) = row.rooms.get(&interior.store) else {
         return false;
     };
-    let backed = economy
-        .snapshot()
-        .vault_by_backing(&CustodyRef::SpatialInterior(ObjId(*stowage)))
-        .is_some();
+    let backed = stowage_held(economy, &trust, ObjId(*stowage));
     live(w, hull)
         && titled
         && trust_lease_on(w, &trust, hull).is_none()
@@ -628,7 +794,7 @@ fn credit() -> Option<InstrumentId> {
 }
 
 /// An amount in minor units through the economy's one render (`25000.00cr`).
-fn money_minor(ctx: &Ctx<'_>, minor: i64) -> String {
+pub(crate) fn money_minor(ctx: &Ctx<'_>, minor: i64) -> String {
     match credit() {
         Some(instrument) => mush_economy::money(ctx, &instrument, Amount::from_minor(minor)),
         None => format!("{minor}"),
@@ -644,13 +810,13 @@ fn money_major(ctx: &Ctx<'_>, major: u64) -> String {
 }
 
 /// Say one line to the actor under the `tacsim` tag.
-fn say(ctx: &mut Ctx<'_>, line: impl Into<String>) {
+pub(crate) fn say(ctx: &mut Ctx<'_>, line: impl Into<String>) {
     let actor = ctx.actor;
     ctx.out.sys_to_actor(actor, "tacsim", line.into());
 }
 
 /// The office room and its name, and the port's name.
-fn office_of(w: &World, port: &ProgrammePort<'_>) -> (Option<ObjId>, String, String) {
+pub(crate) fn office_of(w: &World, port: &ProgrammePort<'_>) -> (Option<ObjId>, String, String) {
     let office = room_key(&port.def.area, &port.programme.office)
         .ok()
         .and_then(|key| room_by_key(w, &key));
@@ -659,14 +825,14 @@ fn office_of(w: &World, port: &ProgrammePort<'_>) -> (Option<ObjId>, String, Str
 }
 
 /// The actor's own enrolment, as the store holds it.
-fn own_enrolment(w: &World, actor: ObjId) -> Option<Enrolment> {
+pub(crate) fn own_enrolment(w: &World, actor: ObjId) -> Option<Enrolment> {
     w.module_state::<TacsimStore>()?
         .enrolment_of(actor)
         .cloned()
 }
 
 /// What the Co-op's books hold for the asker, read by gateway account.
-enum Books<'a> {
+pub(crate) enum Books<'a> {
     /// No enrolment for the account (or the character, when the account does
     /// not resolve).
     Absent,
@@ -680,7 +846,11 @@ enum Books<'a> {
 /// account, so the document is the account's, not the character's). An
 /// unresolved account falls back to `own` — the character's own enrolment —
 /// as does an account with no document of its own.
-fn account_books<'a>(w: &'a World, actor: ObjId, own: Option<&'a Enrolment>) -> Books<'a> {
+pub(crate) fn account_books<'a>(
+    w: &'a World,
+    actor: ObjId,
+    own: Option<&'a Enrolment>,
+) -> Books<'a> {
     let state = w
         .module_state::<mush_sim::AccountOracle>()
         .and_then(|oracle| oracle.account_of(actor))
@@ -701,11 +871,12 @@ fn account_books<'a>(w: &'a World, actor: ObjId, own: Option<&'a Enrolment>) -> 
 }
 
 /// The row of `hull` in the port's map.
-fn row_of<'a>(port: &ProgrammePort<'a>, hull: ObjId) -> Option<&'a HullRow> {
+pub(crate) fn row_of<'a>(port: &ProgrammePort<'a>, hull: ObjId) -> Option<&'a HullRow> {
     port.map.hulls.iter().find(|row| row.hull == hull.0)
 }
 
-/// **`+coop`, `+coop/enrol`, `+coop/statement`** (doc 18 §4.1).
+/// **`+coop`, `+coop/enrol`, `+coop/statement`** (doc 18 §4.1), and cut IC13's
+/// `+coop/buyout` and `+coop/release`.
 ///
 /// # Errors
 ///
@@ -725,6 +896,10 @@ pub(crate) fn coop_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         enrol(ctx)
     } else if ctx.switches.has("statement") {
         statement(ctx)
+    } else if ctx.switches.has("buyout") {
+        crate::port::buyout::buyout_cmd(ctx)
+    } else if ctx.switches.has("release") {
+        crate::port::recall::release_cmd(ctx)
     } else {
         terms(ctx)
     }
@@ -778,6 +953,15 @@ fn terms(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             // never invited to an enrolment the desk would refuse.
             None => match account_books(ctx.w, actor, enrolment.as_ref()) {
                 Books::Present(e) if e.pilot != actor => ENROLLED_ONCE.to_owned(),
+                // Cut IC13: a graduate, and a buyout being entered.
+                Books::Present(e) if e.status == EnrolmentStatus::Graduated => GRADUATED_LINE
+                    .replace("{name}", &e.name)
+                    .replace("{mark}", &e.mark),
+                Books::Present(e) if e.status == EnrolmentStatus::BuyoutPending => {
+                    BUYOUT_PENDING_LINE
+                        .replace("{name}", &e.name)
+                        .replace("{mark}", &e.mark)
+                }
                 Books::Present(e) if e.status == EnrolmentStatus::Revoked => {
                     format!("Your charter of the {} ({}) has ended.", e.name, e.mark)
                 }
@@ -844,6 +1028,11 @@ fn statement(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let in_force = live_charter(ctx.w, actor).is_some_and(|c| c.contract.0 == e.lease);
     let charter = if in_force {
         "Charter: in force."
+    } else if e.status == EnrolmentStatus::Graduated {
+        // Cut IC13.
+        "Charter: bought out; the hull is yours."
+    } else if e.status == EnrolmentStatus::BuyoutPending {
+        "Charter: buyout being entered."
     } else if e.status == EnrolmentStatus::Revoked {
         "Charter: ended."
     } else {
@@ -883,6 +1072,10 @@ struct EnrolPlan {
     mark: String,
     laid_up_name: String,
     stowage: ObjId,
+    /// Cut IC13 (reviewer F1): the Trust's Active vault already on the stowage (a
+    /// recalled hull's re-homed hold), proved in step 9 and re-owned after the post;
+    /// `None` creates one.
+    existing: Option<mush_economy::VaultId>,
     gallery_name: String,
     name: String,
     stake_minor: i64,
@@ -1013,6 +1206,23 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
     if mush_sim::InteriorCustodyProvider.backing_valid(w, &backing) != Some(true) {
         return Err(failed("the stowage backing"));
     }
+    // Cut IC13 (reviewer F1; IC6 L6 holds): a vault already on the stowage is proved
+    // here, before any write — it must be the Trust's own Active vault on exactly this
+    // backing (a recalled hull's hold, L5) — and re-owned in 10f, after the post.
+    let existing = match economy.snapshot().vault_by_backing(&backing) {
+        None => None,
+        Some(v) if v.owner == trust && v.status == VaultStatus::Active && v.backing == backing => {
+            Some(v.id)
+        }
+        Some(v) => {
+            tracing::error!(
+                vault = v.id.0,
+                owner = ?v.owner,
+                "tacsim: +coop/enrol: the stowage holds a vault that is not the Trust's own"
+            );
+            return Err(failed("the stowage vault"));
+        }
+    };
     let hull = ObjId(row.hull);
     let hull_owner = w
         .get(hull)
@@ -1037,6 +1247,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
         // never strand the lowest free hull.
         laid_up_name: clamp_label(name_of(w, hull)),
         stowage,
+        existing,
         gallery_name,
         name,
         stake_minor,
@@ -1095,6 +1306,10 @@ fn enrolment_of(
         buyout_minor: plan.buyout_minor,
         enrolled_at,
         status: EnrolmentStatus::Active,
+        leased_at: enrolled_at,
+        buyout: None,
+        ended_at: None,
+        ended: None,
         sales: 0,
         margin_minor: 0,
         shares_minor: 0,
@@ -1174,14 +1389,21 @@ fn enrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             (id, true)
         }
     };
-    // 10b. The vault id (nothing persisted until 10f).
-    let Some(vault_id) = ctx
-        .w
-        .module_state_mut::<EconomyStore>()
-        .and_then(EconomyStore::alloc_vault)
-    else {
-        tracing::error!("tacsim: +coop/enrol: the vault allocator is spent");
-        return Err(failed_after_writes(ctx));
+    // 10b. The vault id (nothing persisted until 10f): a recalled hull's re-homed
+    // hold keeps its id (cut IC13); otherwise one is allocated.
+    let vault_id = match plan.existing {
+        Some(id) => id,
+        None => {
+            let Some(id) = ctx
+                .w
+                .module_state_mut::<EconomyStore>()
+                .and_then(EconomyStore::alloc_vault)
+            else {
+                tracing::error!("tacsim: +coop/enrol: the vault allocator is spent");
+                return Err(failed_after_writes(ctx));
+            };
+            id
+        }
     };
     // 10c. The lease (D-18-21; L3: 1 minor on the Manual clock, never due).
     let lease = match mush_economy::offer_lease(
@@ -1268,19 +1490,38 @@ fn enrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
     }
     // ---- past the post nothing is fallible (L6) ----
-    // 10f. The hold vault on the hull's stowage (backing proved in step 9).
-    mush_economy::create_vault(
-        ctx,
-        Vault {
-            id: vault_id,
-            owner: PrincipalId::Object(actor),
-            scope: None,
-            name: SmolStr::new(format!("{} hold", plan.mark)),
-            backing: CustodyRef::SpatialInterior(plan.stowage),
-            status: VaultStatus::Active,
-            revision: 1,
-        },
-    );
+    // 10f. The hold vault on the hull's stowage (backing proved in step 9). Cut
+    // IC13: a recalled hull's re-homed hold is re-owned to the pilot instead, with
+    // the fuel and stores the last captain left in it (owner item O1).
+    let hold_name = SmolStr::new(format!("{} hold", plan.mark));
+    match plan.existing {
+        None => mush_economy::create_vault(
+            ctx,
+            Vault {
+                id: vault_id,
+                owner: PrincipalId::Object(actor),
+                scope: None,
+                name: hold_name,
+                backing: CustodyRef::SpatialInterior(plan.stowage),
+                status: VaultStatus::Active,
+                revision: 1,
+            },
+        ),
+        Some(id) => {
+            // Step 9 proved the vault exists and the owner is no System principal, so
+            // this cannot answer `false`; past the post nothing is fallible (L6), so
+            // a breach is logged and the enrolment stands.
+            if !mush_economy::rehome_vault(ctx, id, PrincipalId::Object(actor), None, hold_name) {
+                tracing::error!(
+                    vault = id.0,
+                    hull = plan.hull.0,
+                    pilot = actor.0,
+                    "tacsim: +coop/enrol: invariant breach: the re-homed hold vault was not \
+                     re-owned; the enrolment stands; re-own the hold vault by hand"
+                );
+            }
+        }
+    }
     // 10g. The hull takes the pilot's name; the mark (its alias) stays. The
     // description is written under the hull's own owner, never the pilot's
     // (D-18-22).
@@ -1341,8 +1582,14 @@ fn enrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 /// **A staff-ended charter is seen** (doc 18 §4.1; lead ruling L17): on a
 /// contract reaching `Settled`, `Cancelled` or `Expired`, the `Active`
-/// enrolment for that lease is written back `Revoked` and its pilot told.
-/// `BuyoutPending`, `Graduated` and `Revoked` enrolments and every other event:
+/// enrolment for that lease is written back `Revoked` (cause `LeaseEnded`) and
+/// its pilot told.
+///
+/// **Cut IC13 (lead ruling L7)**: a `BuyoutPending` enrolment whose lease or whose
+/// buyout contract reaches a terminal state goes to
+/// [`crate::port::buyout::settle_buyout`], which reads both contracts from the
+/// economy (never the event alone) and graduates, re-charters, or waits.
+/// `Graduated` and `Revoked` enrolments, `Disputed` and every non-terminal state:
 /// nothing. Never panics, no `?`; a no-op on a roster without the TacSim layer.
 #[derive(Debug, Default)]
 pub struct CoopObserver;
@@ -1353,7 +1600,7 @@ impl EconomyObserver for CoopObserver {
             EconomicEvent::ContractChanged { id, state, .. } => match state {
                 ContractStateKind::Settled
                 | ContractStateKind::Cancelled
-                | ContractStateKind::Expired => revoke(ctx, *id),
+                | ContractStateKind::Expired => on_terminal(ctx, *id),
                 ContractStateKind::Draft
                 | ContractStateKind::Offered
                 | ContractStateKind::Active
@@ -1369,6 +1616,37 @@ impl EconomyObserver for CoopObserver {
     }
 }
 
+/// A contract reached a terminal state (cut IC13, item 5): the enrolment whose lease
+/// it is (`Active` → the IC6 fold; `BuyoutPending` → the buyout's verdict), then the
+/// enrolment whose buyout it is (`BuyoutPending` → the verdict).
+fn on_terminal(ctx: &mut Ctx<'_>, id: ContractId) {
+    let (by_lease, by_buyout) = match ctx.w.module_state::<TacsimStore>() {
+        Some(store) => (
+            store.enrolment_for_lease(id.0).cloned(),
+            store.enrolment_for_buyout(id.0).cloned(),
+        ),
+        None => return,
+    };
+    if let Some(e) = by_lease {
+        match e.status {
+            EnrolmentStatus::Active => revoke(ctx, id),
+            EnrolmentStatus::BuyoutPending => crate::port::buyout::settle_buyout(ctx, &e),
+            EnrolmentStatus::Graduated | EnrolmentStatus::Revoked => {}
+        }
+    }
+    // Re-read: the lease arm above may have moved the enrolment on.
+    let by_buyout = by_buyout.and_then(|e| {
+        ctx.w
+            .module_state::<TacsimStore>()
+            .and_then(|store| store.enrolment_for_buyout(id.0))
+            .filter(|now| now.account == e.account)
+            .cloned()
+    });
+    if let Some(e) = by_buyout.filter(|e| e.status == EnrolmentStatus::BuyoutPending) {
+        crate::port::buyout::settle_buyout(ctx, &e);
+    }
+}
+
 /// Fold a terminal lease into its `Active` enrolment.
 fn revoke(ctx: &mut Ctx<'_>, lease: ContractId) {
     let Some(enrolment) = ctx
@@ -1380,8 +1658,12 @@ fn revoke(ctx: &mut Ctx<'_>, lease: ContractId) {
     else {
         return;
     };
+    // Cut IC13 (item 2): the end is stamped with its cause; the tick's Return arm
+    // takes the hull back into the pool once she is docked empty at Ceres (L4).
     let revoked = Enrolment {
         status: EnrolmentStatus::Revoked,
+        ended_at: Some(ctx.w.now()),
+        ended: Some(EndCause::LeaseEnded),
         ..enrolment
     };
     put_enrolment(ctx, &revoked);
@@ -1419,6 +1701,10 @@ mod tests {
             buyout_minor: 9_000_000,
             enrolled_at: 1_000,
             status: EnrolmentStatus::Active,
+            leased_at: 1_000,
+            buyout: None,
+            ended_at: None,
+            ended: None,
             sales: 0,
             margin_minor: 0,
             shares_minor: 0,
@@ -1476,6 +1762,137 @@ mod tests {
                 margin_minor: -1,
                 ..sample()
             },
+        ] {
+            assert!(broken.check().is_err(), "{broken:?} passed its check");
+        }
+    }
+
+    /// Doc 18 cut IC13 item 2 (lead ruling L6): the buyout, the end stamp and its
+    /// cause ride the strict schema-1 wire, and `check()` holds them together.
+    #[test]
+    fn ic13_the_enrolment_carries_its_buyout_and_its_end() {
+        let ended = |status, cause: EndCause| Enrolment {
+            status,
+            buyout: Some(9),
+            ended_at: Some(2_000),
+            ended: Some(cause),
+            ..sample()
+        };
+        let revoked = EndCause::Revoked {
+            by: ObjId(1),
+            why: "rules breach".to_owned(),
+        };
+        let every = [
+            ended(EnrolmentStatus::Graduated, EndCause::BoughtOut),
+            ended(EnrolmentStatus::Revoked, EndCause::Released),
+            ended(EnrolmentStatus::Revoked, EndCause::Dormant),
+            ended(EnrolmentStatus::Revoked, revoked.clone()),
+            ended(EnrolmentStatus::Revoked, EndCause::LeaseEnded),
+            Enrolment {
+                status: EnrolmentStatus::BuyoutPending,
+                buyout: Some(9),
+                ..sample()
+            },
+            Enrolment {
+                leased_at: 5_000,
+                ..sample()
+            },
+        ];
+        for e in every {
+            assert!(e.check().is_ok(), "{e:?} failed its check");
+            let value = serde_json::to_value(&e).expect("serializes");
+            let back: Enrolment = serde_json::from_value(value).expect("round-trips");
+            assert_eq!(back, e);
+        }
+        // The wire spelling.
+        let value = serde_json::to_value(ended(EnrolmentStatus::Revoked, revoked)).expect("json");
+        assert_eq!(
+            value["ended"],
+            serde_json::json!({"revoked": {"by": 1, "why": "rules breach"}})
+        );
+        assert_eq!(value["status"], "revoked");
+        assert_eq!(value["buyout"], 9);
+        assert_eq!(value["ended_at"], 2_000);
+        let value =
+            serde_json::to_value(ended(EnrolmentStatus::Revoked, EndCause::Dormant)).expect("json");
+        assert_eq!(value["ended"], "dormant");
+        let value = serde_json::to_value(sample()).expect("json");
+        assert_eq!(value["leased_at"], 1_000);
+        assert!(value["buyout"].is_null() && value["ended"].is_null());
+        // Strict: an unknown field, and an unknown field inside a cause, refuse; the new
+        // fields carry no default.
+        let mut extra = value.clone();
+        extra["graduated_at"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<Enrolment>(extra).is_err());
+        let mut inner = serde_json::to_value(ended(
+            EnrolmentStatus::Revoked,
+            EndCause::Revoked {
+                by: ObjId(1),
+                why: "x".to_owned(),
+            },
+        ))
+        .expect("json");
+        inner["ended"]["revoked"]["surprise"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<Enrolment>(inner).is_err());
+        let mut bare = value;
+        if let Some(map) = bare.as_object_mut() {
+            map.remove("leased_at");
+        }
+        assert!(serde_json::from_value::<Enrolment>(bare).is_err());
+        // Each new `check()` rule refuses its broken case.
+        for broken in [
+            // leased_at before enrolled_at.
+            Enrolment {
+                leased_at: 999,
+                ..sample()
+            },
+            // ended_at without ended, and the reverse.
+            Enrolment {
+                ended_at: Some(2_000),
+                ..sample()
+            },
+            Enrolment {
+                status: EnrolmentStatus::Revoked,
+                ended: Some(EndCause::Dormant),
+                ..sample()
+            },
+            // An end on a live enrolment; no end on an ended one.
+            Enrolment {
+                ended_at: Some(2_000),
+                ended: Some(EndCause::Dormant),
+                ..sample()
+            },
+            Enrolment {
+                status: EnrolmentStatus::Revoked,
+                ..sample()
+            },
+            // Graduated ⇒ bought out, with its buyout; BuyoutPending ⇒ its buyout.
+            ended(EnrolmentStatus::Graduated, EndCause::Dormant),
+            Enrolment {
+                buyout: None,
+                ..ended(EnrolmentStatus::Graduated, EndCause::BoughtOut)
+            },
+            Enrolment {
+                status: EnrolmentStatus::BuyoutPending,
+                ..sample()
+            },
+            // Bought out is a graduate's cause only.
+            ended(EnrolmentStatus::Revoked, EndCause::BoughtOut),
+            // A revocation's reason is 1..=200 bytes.
+            ended(
+                EnrolmentStatus::Revoked,
+                EndCause::Revoked {
+                    by: ObjId(1),
+                    why: String::new(),
+                },
+            ),
+            ended(
+                EnrolmentStatus::Revoked,
+                EndCause::Revoked {
+                    by: ObjId(1),
+                    why: "x".repeat(MAX_REVOKE_WHY_BYTES + 1),
+                },
+            ),
         ] {
             assert!(broken.check().is_err(), "{broken:?} passed its check");
         }

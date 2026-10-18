@@ -31,10 +31,47 @@ Co-op is not enrolling yet; try again later.
 
 ## The charter
 
-The ship stays the Co-op's until you buy it out. You fly it, load it, sell from
-it and file its sailing plan; nobody else can board it on your charter.
+The ship stays the Co-op's while you hold the charter. You fly it, load it, sell
+from it and file its sailing plan; nobody else can board it on your charter.
 `+coop/statement` shows your charter's terms, its sales so far, the Co-op's
 share of them, and your cash against the buyout.
+
+A charter ends in one of three ways: you buy the hull out, you hand it back, or
+you go a week without a departure and the Co-op takes it back. Whichever way it
+ends, the Co-op enrols each pilot once, ever: you cannot enrol again.
+
+## Buying the hull out
+
+`+coop/buyout` at the Registry & Co-op desk, with your Dray docked at Ceres
+Freeport. The price is the buyout on your papers, fixed when you signed; you need
+that much available in your account. Nothing may be in motion: no clearance
+filed, no step of your sailing plan at the counter, and no goods still moving in
+or out of the hold. The Registry holds the price against the transfer and closes
+the Co-op's charter; the title passes to you at the next settlement, a few moments
+later, and the Registry tells you when it does. Until then a step of your sailing
+plan that comes due waits, and runs once the title is yours.
+
+From then on the Dray is yours. You fly her on your own title, and the Co-op's
+share stops: your sales pay the Co-op nothing. `+coop` and `+ship` say so.
+
+## Handing the hull back
+
+`+coop/release` at the desk, with your Dray docked at Ceres Freeport and her cargo
+hold empty, and nothing filed or at the counter. You hand her papers back and the
+charter ends. The stake stays yours. The reaction mass and stores aboard stay with
+her, and anyone aboard is seen ashore to the berth gallery.
+
+## A week without a departure
+
+A charter is for working the lane. If your Dray goes a week of real time without a
+departure, the Co-op takes her back: when she is docked at Ceres Freeport with an
+empty cargo hold, her charter ends, anyone aboard is seen ashore, and her
+reaction mass and stores stay with her. If she is anywhere else, or still carries
+cargo, the Co-op stops her sailing plan instead, and it stays stopped until you
+restart it with `+ship/order resume`; she is taken back once she lies docked at
+Ceres with an empty cargo hold while the week is still unbroken. Any departure,
+by hand or from your plan, resets the week. The stake stays yours, and you are
+told the next time you are on watch.
 
 ## What the share is, and is not
 

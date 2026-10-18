@@ -6,7 +6,10 @@
 //!   what its hold vault's pools hold against both limits, the tank and the
 //!   locker — anywhere. The hull is the **live lease's** (D-18-23,
 //!   [`crate::port::coop::live_charter`]), never the enrolment document's: an
-//!   unreadable document darkens only the programme line (L21).
+//!   unreadable document darkens only the programme line (L21). Since cut IC13 the
+//!   gate is [`crate::port::coop::helm_of`]: the live charter, else the hull the
+//!   pilot holds title to (a graduate), whose programme line reads
+//!   [`SHIP_GRADUATED`].
 //! - `+ship/board` (in the berth gallery where the tenant's hull is docked)
 //!   places the tenant `Interior` in the hull's airlock space through
 //!   `mush_sim::place_interior` (the berths cap refuses a third), and
@@ -46,7 +49,8 @@ use crate::definitions::content::LANE_PACK;
 use crate::definitions::{GoodsTable, InteriorDef, LogisticsDef};
 use crate::port::capacity::Compartment;
 use crate::port::coop::{
-    EnrolmentStatus, NO_CHARTER, ProgrammePort, live_charter, name_of, port_name, programme_port,
+    EnrolmentStatus, NO_CHARTER, ProgrammePort, Standing, helm_of, name_of, port_name,
+    programme_port,
 };
 use crate::port::def::PortDef;
 use crate::port::gauges::{self, DARK, Reading};
@@ -117,6 +121,8 @@ pub const SHIP_DOCKED_DEPARTS: &str =
 pub const SHIP_ELSEWHERE: &str = "{name} ({class}): not at a berth.";
 /// `+ship`'s programme line when the enrolment document does not read (L21).
 pub const SHIP_BOOKS_DARK: &str = "Programme: the Co-op's books cannot be read.";
+/// `+ship`'s programme line for a graduate (doc 18 cut IC13); `{name}` the hull's.
+pub const SHIP_GRADUATED: &str = "Programme: graduated; the {name} is yours.";
 /// `+ship`'s hold line when a pool or the goods table does not read.
 pub const HOLD_DARK: &str = "Hold: the gauges are dark.";
 
@@ -473,7 +479,7 @@ pub(crate) fn readings_of(ctx: &Ctx<'_>, view: &HullView<'_>) -> Result<Vec<Read
 /// `+ship`: three lines (doc 18 §2 step 5's form; L19, L21).
 fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
-    let Some(charter) = live_charter(ctx.w, actor) else {
+    let Some(charter) = helm_of(ctx.w, actor) else {
         return Err(no_charter(ctx.w, actor));
     };
     let lines = {
@@ -490,30 +496,45 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 HOLD_DARK.to_owned()
             }
         };
-        let enrolment = ctx
-            .w
-            .module_state::<TacsimStore>()
-            .and_then(|store| store.enrolment_for_lease(charter.contract.0))
-            .cloned();
-        let programme = match enrolment {
-            Some(e) => {
-                let plural = if e.sales == 1 { "" } else { "s" };
-                let buyout = match mush_economy::InstrumentId::new(crate::economy::CREDIT) {
-                    Some(instrument) => mush_economy::money(
-                        ctx,
-                        &instrument,
-                        mush_economy::Amount::from_minor(e.buyout_minor),
-                    ),
-                    None => e.buyout_minor.to_string(),
-                };
-                format!("Programme: {} sale{plural}; buyout {buyout}.", e.sales)
+        let programme = match charter.standing {
+            // Cut IC13: a graduate's line names the hull (the graduated enrolment's
+            // name, else the hull's own).
+            Standing::Title => {
+                let name = ctx
+                    .w
+                    .module_state::<TacsimStore>()
+                    .and_then(|store| store.enrolment_of(actor))
+                    .filter(|e| e.status == EnrolmentStatus::Graduated && e.hull == charter.hull)
+                    .map_or_else(|| name_of(ctx.w, charter.hull), |e| e.name.clone());
+                SHIP_GRADUATED.replace("{name}", &name)
             }
-            None => {
-                tracing::warn!(
-                    lease = charter.contract.0,
-                    "tacsim: +ship found a live charter with no readable enrolment"
-                );
-                SHIP_BOOKS_DARK.to_owned()
+            Standing::Charter(contract) => {
+                let enrolment = ctx
+                    .w
+                    .module_state::<TacsimStore>()
+                    .and_then(|store| store.enrolment_for_lease(contract.0))
+                    .cloned();
+                match enrolment {
+                    Some(e) => {
+                        let plural = if e.sales == 1 { "" } else { "s" };
+                        let buyout = match mush_economy::InstrumentId::new(crate::economy::CREDIT) {
+                            Some(instrument) => mush_economy::money(
+                                ctx,
+                                &instrument,
+                                mush_economy::Amount::from_minor(e.buyout_minor),
+                            ),
+                            None => e.buyout_minor.to_string(),
+                        };
+                        format!("Programme: {} sale{plural}; buyout {buyout}.", e.sales)
+                    }
+                    None => {
+                        tracing::warn!(
+                            lease = contract.0,
+                            "tacsim: +ship found a live charter with no readable enrolment"
+                        );
+                        SHIP_BOOKS_DARK.to_owned()
+                    }
+                }
             }
         };
         [first, hold, programme]
@@ -527,7 +548,7 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// `+ship/hold`: the hold, good by good.
 fn hold(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
-    let Some(charter) = live_charter(ctx.w, actor) else {
+    let Some(charter) = helm_of(ctx.w, actor) else {
         return Err(no_charter(ctx.w, actor));
     };
     let lines = {
@@ -575,8 +596,9 @@ fn board(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg(BOARD_WHERE));
     };
     // The lease gate (D-18-34): no live charter is the plain refusal, an ended
-    // one included (lens 5: "You hold no charter.").
-    let Some(charter) = live_charter(ctx.w, actor) else {
+    // one included (lens 5: "You hold no charter."). Cut IC13: a graduate boards
+    // on the title (`helm_of`).
+    let Some(charter) = helm_of(ctx.w, actor) else {
         return Err(CmdError::msg(NO_CHARTER));
     };
     let name = name_of(ctx.w, charter.hull);
@@ -687,41 +709,82 @@ fn leave(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         );
         return Err(CmdError::msg(LOCK_STUCK));
     };
-    if let Err(error) = mush_sim::unplace(ctx, actor, "left the ship by the lock") {
-        tracing::error!(%error, "tacsim: +ship/leave: the unplace refused");
-        return Err(CmdError::msg(LOCK_STUCK));
-    }
-    if let Err(error) = ctx.w.move_to(actor, gallery) {
-        tracing::error!(%error, "tacsim: +ship/leave: the move to the gallery refused");
-        return Err(CmdError::msg(LOCK_STUCK));
-    }
-    let gallery_name = name_of(ctx.w, gallery);
-    ctx.out.info(
+    let ashore = put_ashore(
+        ctx,
         actor,
-        format!("You cycle the lock out into the {gallery_name}."),
+        hull,
+        gallery,
+        "left the ship by the lock",
+        |ctx: &mut Ctx<'_>| {
+            let gallery_name = name_of(ctx.w, gallery);
+            ctx.out.info(
+                actor,
+                format!("You cycle the lock out into the {gallery_name}."),
+            );
+            let text = RichText::new()
+                .span(name_span(ctx.w, actor))
+                .text(" cycles out through the outer door.");
+            ctx.out
+                .to_room_from(airlock, vec![actor], actor, narrative(text));
+            gallery_line(ctx, actor, gallery, &name);
+        },
     );
+    if let Err(error) = ashore {
+        tracing::error!(%error, "tacsim: +ship/leave: the lock would not cycle");
+        return Err(CmdError::msg(LOCK_STUCK));
+    }
+    Ok(())
+}
+
+/// `"{who} comes ashore from the {name}."` to the gallery (`+ship/leave`'s line, and
+/// the recall's, cut IC13).
+pub(crate) fn gallery_line(ctx: &mut Ctx<'_>, who: ObjId, gallery: ObjId, name: &str) {
     let text = RichText::new()
-        .span(name_span(ctx.w, actor))
-        .text(" cycles out through the outer door.");
-    ctx.out
-        .to_room_from(airlock, vec![actor], actor, narrative(text));
-    let text = RichText::new()
-        .span(name_span(ctx.w, actor))
+        .span(name_span(ctx.w, who))
         .text(format!(" comes ashore from the {name}."));
     ctx.out
-        .to_room_from(gallery, vec![actor], actor, narrative(text));
-    ctx.show_room(actor, gallery);
+        .to_room_from(gallery, vec![who], who, narrative(text));
+}
+
+/// **Put one person ashore from a docked hull** (doc 18 cut IC13, factored out of
+/// `+ship/leave`): `mush_sim::unplace` (keeping the room) with `reason`, the move to
+/// the gallery, then `narrate` (the caller's lines, said before the room is shown),
+/// `show_room`, `Moved { from: the person's room, to: gallery }` and IC1's last-port
+/// stamp (L15: no `Moved` out of a port room happened, so the stamp is this step's
+/// own). `Err` (nothing narrated) when the unplace or the move refused.
+///
+/// # Errors
+///
+/// The refusal, as a sentence for the log.
+pub(crate) fn put_ashore(
+    ctx: &mut Ctx<'_>,
+    person: ObjId,
+    hull: ObjId,
+    gallery: ObjId,
+    reason: &str,
+    narrate: impl FnOnce(&mut Ctx<'_>),
+) -> Result<(), String> {
+    let from = ctx.w.get(person).and_then(|o| o.location);
+    mush_sim::unplace(ctx, person, reason).map_err(|error| {
+        format!(
+            "the unplace of #{} from #{} refused: {error}",
+            person.0, hull.0
+        )
+    })?;
+    ctx.w
+        .move_to(person, gallery)
+        .map_err(|error| format!("the move of #{} to the gallery refused: {error}", person.0))?;
+    narrate(ctx);
+    ctx.show_room(person, gallery);
     ctx.emit_world_event(&WorldEvent::Moved {
-        who: actor,
-        from: Some(airlock),
+        who: person,
+        from,
         to: gallery,
     });
-    // L15 (IC1's carry-forward): no `Moved` out of a port room happened here
-    // (the `from` is the hull's airlock), so the stamp is this verb's own.
     if let Some(port) = crate::ic_return::port_of_room(ctx.w, gallery)
-        && let Err(error) = crate::ic_return::stamp(ctx.w, actor, port)
+        && let Err(error) = crate::ic_return::stamp(ctx.w, person, port)
     {
-        tracing::warn!(who = actor.0, port = port.id, %error, "tacsim: +ship/leave: the last-port stamp did not write");
+        tracing::warn!(who = person.0, port = port.id, %error, "tacsim: the last-port stamp did not write");
     }
     Ok(())
 }

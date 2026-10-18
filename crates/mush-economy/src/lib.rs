@@ -263,9 +263,10 @@ pub use api::{
     create_system_obligation, create_vault, hold_key, idempotency_resolved, instrument_key,
     is_engine_owned_reservation, issue_title, mark_canon_published,
     obligation_key as obligation_doc_key, open_account, open_escalation, post, post_capability,
-    register_instrument, reinstate_obligation, resume_obligation, reverse, set_account_approval,
-    set_account_status, set_asset_frozen, set_economy_frozen, set_system_obligation,
-    set_vault_status, settle_engine_reservation, suspend_obligation, vault_key,
+    register_instrument, rehome_vault, reinstate_obligation, resume_obligation, reverse,
+    set_account_approval, set_account_status, set_asset_frozen, set_economy_frozen,
+    set_system_obligation, set_vault_status, settle_engine_reservation, suspend_obligation,
+    vault_key,
 };
 pub use commands::{
     ASSET_PAGE_VISIT, may_view_account, may_view_asset, may_view_hold, may_view_obligation,

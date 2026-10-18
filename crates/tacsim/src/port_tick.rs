@@ -397,6 +397,13 @@ pub struct PortTickState {
     /// hull id — the window of [`crate::port::executor::MAX_ORDER_VERIFY_PER_FIRE`]
     /// starts here, so no hull is starved.
     pub(crate) order_verify_after: u32,
+    /// Doc 18 cut IC13: hulls the recall arm has paged this boot (a dormant hull that
+    /// cannot be recalled where it is, a revoked hull not back in the pool, or an
+    /// unreadable dormancy read) — once each.
+    pub(crate) recall_warned: BTreeSet<u32>,
+    /// Doc 18 cut IC13: blocked recalls, by hull -> the fire it was blocked on; the
+    /// recall agent passes over each for `crate::port::recall::RECALL_RECHECK_FIRES`.
+    pub(crate) recall_backoff: BTreeMap<u32, u64>,
 }
 
 impl PortTickState {
@@ -452,6 +459,15 @@ pub fn drift_pages(w: &World) -> Vec<(u64, CanonicalId)> {
 pub fn sky_paged(w: &World) -> bool {
     w.module_state::<PortTickState>()
         .is_some_and(|state| state.sky_paged)
+}
+
+/// **The hulls the recall arm has paged this boot** (doc 18 cut IC13), in order — a
+/// status read for tests beside [`sky_paged`].
+#[must_use]
+pub fn recall_pages(w: &World) -> Vec<u32> {
+    w.module_state::<PortTickState>()
+        .map(|state| state.recall_warned.iter().copied().collect())
+        .unwrap_or_default()
 }
 
 /// Doc 18 cut IC12 (§4.8; lead ruling L13): the moving-sky page, once a boot. The
@@ -519,6 +535,13 @@ enum Arm {
     /// Doc 18 cut IC9: one hull's filed passage — find its burned ticket and
     /// launch it, lapse it, or hold it ([`crate::port::voyage::launch_step`]).
     Launch {
+        /// The hull, `ObjId.0`.
+        hull: u32,
+    },
+    /// Doc 18 cut IC13: one chartered hull gone a week without a departure, or one
+    /// whose charter ended while she is not back in the pool — recall or return it,
+    /// or hold its plan and page ([`crate::port::recall::recall_step`]).
+    Recall {
         /// The hull, `ObjId.0`.
         hull: u32,
     },
@@ -595,7 +618,13 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
         .unwrap_or_default();
     let release = crate::port::stock::release_agent(ctx.w, state);
     let launches = crate::port::voyage::launch_agents(ctx.w, state);
-    let orders = crate::port::executor::order_agents(ctx.w, state);
+    // Doc 18 cut IC13 (lead ruling L12): the recall agents read tickets (`&Ctx`), and
+    // their hulls are dropped from the order agents before either is offered, so a
+    // dormant hull with a waiting plan is recalled rather than offered to the order
+    // arm every fire, and the duplicate rule never logs.
+    let recalls = crate::port::recall::recall_agents(ctx, state);
+    let mut orders = crate::port::executor::order_agents(ctx.w, state);
+    orders.retain(|(hull, _)| !recalls.iter().any(|(recalled, _)| recalled == hull));
     // The agents: the union over the arms, agent -> (principal, arm). An agent
     // id belongs to one arm (hull ids and clerk ids are disjoint objects); a
     // duplicate offered by a later arm is refused and logged.
@@ -624,6 +653,12 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     // hull, principal = the filing pilot), hulls in their backoff skipped.
     for (hull, pilot) in launches {
         offer(hull, pilot, Arm::Launch { hull: hull.0 });
+    }
+    // Doc 18 cut IC13: one recall agent per dormant or not-yet-returned hull (agent =
+    // the hull, principal = the enrolment's pilot), after the launches and before the
+    // orders.
+    for (hull, pilot) in recalls {
+        offer(hull, pilot, Arm::Recall { hull: hull.0 });
     }
     // Doc 18 cut IC11: one order agent per hull whose queued plan is due and has no
     // filed passage (agent = the hull, principal = the plan's author, L15).
@@ -706,7 +741,7 @@ fn next_cursor(last_visited: Option<ObjId>, current: u32) -> u32 {
 
 /// One agent's step: the arms in a fixed order, exhaustively (D-18-32: one step
 /// per agent per fire) — cut IC8's stock and release arms, cut IC9's launch arm, cut
-/// IC11's order arm, then the probe. The probe arm runs only when
+/// IC13's recall arm, cut IC11's order arm, then the probe. The probe arm runs only when
 /// `PortTickState.probe_action` is `Some`.
 fn step(
     ctx: &mut Ctx<'_>,
@@ -722,6 +757,7 @@ fn step(
             crate::port::stock::release_step(ctx, state, fire, principal, listing)
         }
         Arm::Launch { hull } => crate::port::voyage::launch_step(ctx, state, hull),
+        Arm::Recall { hull } => crate::port::recall::recall_step(ctx, state, ObjId(hull)),
         Arm::Order { hull } => {
             crate::port::executor::order_step(ctx, state, fire, ObjId(hull), principal)
         }

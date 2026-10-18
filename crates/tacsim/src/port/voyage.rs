@@ -53,7 +53,7 @@ use crate::definitions::goods::Consumable;
 use crate::definitions::logistics::{MASS_KG, VOLUME_L};
 use crate::port::burn::{BURN_KEY_PREFIX, HullSpec, consumable_good, hull_spec_of};
 use crate::port::capacity::{self, Compartment, format_m3, format_tonnes};
-use crate::port::coop::{live_charter, name_of, port_name};
+use crate::port::coop::{helm_of, name_of, port_name};
 use crate::port::def::PortDef;
 use crate::port::families::{MAX_TICKET_OCCUPANTS, PassagePlan, PortHandles, Ticket, TicketId};
 use crate::port::gauges;
@@ -661,9 +661,10 @@ pub(crate) fn utc_prefix(w: &World) -> String {
 }
 
 /// Queue `line` for the hull's tenant when they are not connected (lead ruling
-/// L24: a connected pilot is aboard and hears the narration).
+/// L24: a connected pilot is aboard and hears the narration). Cut IC13: the tenant
+/// is whoever commands her, a graduate title holder included (`helm_holder`).
 pub(crate) fn tell_absent_tenant(ctx: &mut Ctx<'_>, hull: ObjId, line: &str) {
-    let Some(tenant) = crate::port::coop::charter_tenant(ctx.w, hull) else {
+    let Some(tenant) = crate::port::coop::helm_holder(ctx.w, hull) else {
         return;
     };
     if !ctx.w.is_connected(tenant) {
@@ -1087,7 +1088,7 @@ fn no_charter(w: &World, actor: ObjId) -> CmdError {
 pub(crate) fn plan_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
     let word = parse_args(ctx.args.raw())?;
-    let Some(charter) = live_charter(ctx.w, actor) else {
+    let Some(charter) = helm_of(ctx.w, actor) else {
         return Err(no_charter(ctx.w, actor));
     };
     let lines = {
@@ -1603,7 +1604,7 @@ pub(crate) fn undock_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(word) = parse_args(&raw)? else {
         return Err(CmdError::msg(UNDOCK_USAGE));
     };
-    let Some(charter) = live_charter(ctx.w, actor) else {
+    let Some(charter) = helm_of(ctx.w, actor) else {
         return Err(no_charter(ctx.w, actor));
     };
     let filing = prepare_departure(ctx, actor, charter.hull, &word, Queued::Live)?;
@@ -1810,14 +1811,14 @@ pub(crate) fn launch_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: u3
         return Step::Worked;
     }
     // D-18-23 "at every executed step" (L31): a lease ended since the burn holds
-    // the launch; it never flies.
-    if live_charter(ctx.w, pending.pilot).is_none_or(|charter| charter.hull != hull) {
+    // the launch; it never flies. Cut IC13: the title counts as the charter does.
+    if helm_of(ctx.w, pending.pilot).is_none_or(|helm| helm.hull != hull) {
         return launch_hold(
             ctx,
             state,
             hull,
             &pending,
-            "the pilot's charter of this hull is no longer in force",
+            "the pilot neither holds this hull's title nor a charter of it",
         );
     }
     // L14 at the executed step: `+ship/leave`/`+ship/board` refuse while filed, but

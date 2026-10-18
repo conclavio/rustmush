@@ -36,7 +36,7 @@ use smol_str::SmolStr;
 use crate::definitions::GoodsTable;
 use crate::port::apply::{credit_scale, minor_of};
 use crate::port::board::{label_of, money, unit_of};
-use crate::port::coop::{live_charter, name_of, port_name};
+use crate::port::coop::{helm_of, name_of, port_name};
 use crate::port::def::PortDef;
 use crate::port::executor::MAX_ORDER_REFUSALS;
 use crate::port::families::{TicketId, strict_decimal_u32};
@@ -991,7 +991,7 @@ pub(crate) fn departs_at(w: &World, hull: ObjId) -> Option<i64> {
     }
     // Only a plan its author still runs: a lapsed tenant's plan (left for IC13 to
     // prune) is never offered by the arm, so its hour is no departure hour.
-    if !live_charter(w, orders.author).is_some_and(|charter| charter.hull == hull) {
+    if !helm_of(w, orders.author).is_some_and(|helm| helm.hull == hull) {
         return None;
     }
     let order = orders.order(orders.cursor?)?;
@@ -1013,7 +1013,7 @@ pub(crate) fn departs_at(w: &World, hull: ObjId) -> Option<i64> {
 /// [`NO_PLAN`], [`ORDERS_DARK`], or the no-charter refusal.
 pub(crate) fn orders_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
-    let Some(charter) = live_charter(ctx.w, actor) else {
+    let Some(charter) = helm_of(ctx.w, actor) else {
         return Err(crate::port::ship::no_charter(ctx.w, actor));
     };
     let hull = charter.hull;
@@ -1403,8 +1403,8 @@ fn inflight_refusal(n: u32) -> CmdError {
 pub(crate) fn order_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
     let raw = ctx.args.raw().to_owned();
-    // 2. The charter.
-    let Some(charter) = live_charter(ctx.w, actor) else {
+    // 2. The charter or the title (cut IC13's `helm_of`).
+    let Some(charter) = helm_of(ctx.w, actor) else {
         return Err(crate::port::ship::no_charter(ctx.w, actor));
     };
     let hull = charter.hull;
