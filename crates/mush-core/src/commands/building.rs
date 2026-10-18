@@ -47,8 +47,31 @@ fn perm_denied() -> CmdError {
     CmdError::msg("Permission denied.")
 }
 
+/// **An exit may not take a word the kernel or the host owns** (16c `B-75`, cut AQ;
+/// the owner's ruling of 2026-10-18). Dispatch matches exits before the command
+/// table, so an exit named or aliased `l`, `home` or `inv` takes that word from
+/// every player in its room. Pack apply has refused such a segment since 16b cut
+/// D.5 (`mush-atlas`'s `check_exit_names`); `@dig`, `@open` and `@name` refuse it
+/// here, in the same words, through the same seam — [`Registry::kernel_command_named`],
+/// which answers for the core command set and the host's own verbs and never for a
+/// module's (a module's verb is contextual and an exit may take it, as cut F.4
+/// decided for `board`). Every `;`-separated segment of `spec` is checked, the
+/// primary name included; blank segments are skipped, as [`open_exit`] skips them.
+fn check_exit_words(reg: &Registry, spec: &str) -> Result<(), CmdError> {
+    for segment in spec.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(command) = reg.kernel_command_named(segment) {
+            return Err(CmdError::msg(format!(
+                "An exit may not be called '{segment}': that is the command '{command}', \
+                 which works in every room, and the exit would swallow it."
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Create an exit named by `spec` (`"north;n;nor"`) from `src`, owned by
-/// `owner`, optionally linked to `dest`. Returns the new exit.
+/// `owner`, optionally linked to `dest`. Returns the new exit. The caller has
+/// run [`check_exit_words`] over `spec` first.
 fn open_exit(
     w: &mut World,
     owner: ObjId,
@@ -110,6 +133,11 @@ fn dig_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .any(|segment| !segment.is_empty())
         }) {
             return Err(CmdError::msg("Open which exit?"));
+        }
+        // 16c B-75 (cut AQ): neither exit may take a kernel or host word, and the
+        // room is not made for one that would.
+        for spec in &exit_specs {
+            check_exit_words(ctx.reg, spec)?;
         }
         let here = ctx
             .w
@@ -192,6 +220,8 @@ fn open_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !perm::controls(ctx.w, ctx.actor, here) {
         return Err(perm_denied());
     }
+    // 16c B-75 (cut AQ): the exit may not take a kernel or host word.
+    check_exit_words(ctx.reg, &spec)?;
     let dest = match ctx.args.rhs().map(str::to_string).filter(|s| !s.is_empty()) {
         Some(d) => {
             let dest = match_object(ctx.w, ctx.actor, &d)?;
@@ -293,6 +323,13 @@ fn name_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let target = match_object(ctx.w, ctx.actor, &lhs)?;
     if !perm::can_modify(ctx.w, ctx.actor, target) {
         return Err(perm_denied());
+    }
+    // 16c B-75 (cut AQ): an exit's new name and every new alias may not be a
+    // kernel or host word; refused before anything is renamed.
+    if ctx.w.get(target).is_some_and(|o| o.kind == ObjKind::Exit) {
+        for part in &parts {
+            check_exit_words(ctx.reg, part)?;
+        }
     }
     // Validate every new alias BEFORE mutating anything, so a collision
     // cannot leave the object half-renamed (the new name itself is checked

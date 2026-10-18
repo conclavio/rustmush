@@ -201,7 +201,7 @@ its places twice — the migration is by hand).
 |---|---|---|---|
 | Cells of ruleset classes (an open terrain enum through the rasterizer, compositor, frame, TUI and web legends) | S5 → S7 → S9 | No — but no driver needs it yet | Medium |
 | The carrier journey fold onto `JourneyRec` (D-P-4's promise) | S2 → S7 → S9 | **Yes** (D-14-35: the plan recommends leaving two records) | Large |
-| **As built (doc 18 IC1, IC9):** the trade-run slice keeps two records with a hard boundary (Q-18-6): a passage is a `CarrierJourney`, and the drawn `spacecraft` connection is a projection no player verb traverses | | | |
+| **As built (doc 18 IC1, IC9):** the trade-run slice keeps two records with a hard boundary (Q-18-6): a passage is a `CarrierJourney`, and the drawn `spacecraft` connection is a projection of the ephemeris at the epoch that no player verb traverses and no slice code reads as a travel path (doc 18 D-18-49) | | | |
 | A line down a stair (a portal with `dz`) between floors | S5 | No | Small |
 | Elevation digits on the map; room- and neighborhood-scale views on the feed | S4 | No | Small |
 | `[atlas].path_max_cells` read by a command (NPC walks) | S5 | No | Small |

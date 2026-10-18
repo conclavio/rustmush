@@ -271,7 +271,11 @@ fn alias_stage_runs_before_exits() {
 fn home_keyword_beats_exits() {
     let mut g = Game::new();
     let ann = g.ann;
-    g.run(GOD, "@dig Trap=home"); // an exit cheekily named "home"
+    // An exit cheekily named "home" — made through the world API, since cut AQ
+    // (16c B-75) refuses `@dig Trap=home` at the verb.
+    let trap = g.w.create(ObjKind::Room, "Trap", GOD, None).unwrap();
+    let cheeky = g.w.create(ObjKind::Exit, "home", GOD, Some(LIMBO)).unwrap();
+    g.w.link_exit(cheeky, Some(trap)).unwrap();
     let hall = g.w.create(ObjKind::Room, "Annhome", GOD, None).unwrap();
     g.w.set_home(ann, Some(hall)).unwrap();
     let out = g.run(ann, "home");
@@ -363,6 +367,77 @@ fn open_and_link() {
     assert_error_contains(&out, GOD, "Linked.");
     g.run(ann, "w");
     assert_eq!(g.loc(ann), Some(den));
+}
+
+/// **16c `B-75` (cut AQ): the building verbs refuse a kernel command word for an
+/// exit**, in pack apply's words, before anything is made or renamed. `@dig` with
+/// a `;l` alias makes no room and no exit; `@open look` and `@open door;inv` open
+/// nothing; `@name` on an exit refuses a command word as the name or as an alias
+/// and leaves the exit as it was, while a thing may still be called `look`; a
+/// plain alias on the same exit is taken; and `l` still looks in the room.
+#[test]
+fn building_verbs_refuse_a_kernel_command_word_for_an_exit() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    let refusal = |word: &str, command: &str| {
+        format!(
+            "An exit may not be called '{word}': that is the command '{command}', which works \
+             in every room, and the exit would swallow it."
+        )
+    };
+    let objects = g.w.iter().count();
+    // @dig: the alias is refused and the room is not dug.
+    let out = g.run(GOD, "@dig Lounge=library;l, out;o");
+    assert_error_contains(&out, GOD, &refusal("l", "look"));
+    assert_eq!(g.w.iter().count(), objects, "nothing made");
+    assert!(
+        !g.w.iter().any(|o| o.name == "Lounge"),
+        "the room is not dug when an exit would swallow a word"
+    );
+    // The return exit is checked too.
+    let out = g.run(GOD, "@dig Lounge=library;lib, home");
+    assert_error_contains(&out, GOD, &refusal("home", "home"));
+    assert_eq!(g.w.iter().count(), objects, "nothing made");
+    // @open: the primary name and an alias alike.
+    let out = g.run(GOD, "@open look");
+    assert_error_contains(&out, GOD, &refusal("look", "look"));
+    let out = g.run(GOD, "@open door;inv");
+    assert_error_contains(&out, GOD, &refusal("inv", "inventory"));
+    assert_eq!(g.w.iter().count(), objects, "nothing opened");
+    // @name on an exit: the name and the aliases; the exit keeps its words.
+    g.run(GOD, "@dig Den");
+    let out = g.run(GOD, "@open west;w");
+    assert_error_contains(&out, GOD, "Opened.");
+    let west = g.find("west");
+    let out = g.run(GOD, "@name west=look");
+    assert_error_contains(&out, GOD, &refusal("look", "look"));
+    let out = g.run(GOD, "@name west=west;i");
+    assert_error_contains(&out, GOD, &refusal("i", "inventory"));
+    let exit = g.w.get(west).unwrap();
+    assert_eq!(exit.name, "west");
+    assert_eq!(
+        exit.aliases
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        vec!["w".to_owned()],
+        "the refused rename left the exit as it was"
+    );
+    let out = g.run(GOD, "@name west=door;d");
+    assert_error_contains(&out, GOD, "Name set.");
+    // A thing is not an exit: it may be called anything.
+    g.run(GOD, "@create rock");
+    let out = g.run(GOD, "@name rock=look");
+    assert_error_contains(&out, GOD, "Name set.");
+    // And `l` looks.
+    let out = g.run(ann, "l");
+    assert!(
+        out.events()
+            .iter()
+            .any(|(_, e)| matches!(e, OutputEvent::Room(rv) if rv.name == "Limbo")),
+        "l is still look"
+    );
+    assert_eq!(g.loc(ann), Some(LIMBO));
 }
 
 #[test]

@@ -1914,6 +1914,10 @@ async fn destroy_sweeps_and_deletes_from_store() {
 /// A transiently failed mutation leaves tentative RAM behind an exact pending
 /// receipt. Exit aliases, reads, and typed creation must all receive Busy until
 /// that predecessor commits; none may inspect or extend the tentative image.
+///
+/// 16c `B-75` (cut AQ): the exit this test once aliased `l` is refused at the
+/// verb now, in pack apply's words, and the room is not dug — pinned here first
+/// — so the exit-alias case runs on `lib`, a word nobody's command owns.
 #[tokio::test(flavor = "multi_thread")]
 async fn read_only_refuses_exit_aliases_and_creation() {
     let flaky = Arc::new(FlakyStore::new());
@@ -1923,8 +1927,17 @@ async fn read_only_refuses_exit_aliases_and_creation() {
     let world = handles.handle.clone();
     let mut god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
 
-    // While healthy: dig a room whose exit is aliased "l".
+    // While healthy: an exit aliased "l" is refused — `l` is `look` in every
+    // room — and nothing is made.
     god_cmd(&world, "@dig Lounge = library;l, out;o").await;
+    expect_text(
+        &mut god_rx,
+        "An exit may not be called 'l': that is the command 'look', which works in every room, \
+         and the exit would swallow it.",
+    )
+    .await;
+    // Dig it with an alias nobody's command owns.
+    god_cmd(&world, "@dig Lounge = library;lib, out;o").await;
     expect_text(&mut god_rx, "Lounge created").await;
 
     // Break the store; a mutation trips the writer health signal while its
@@ -1933,10 +1946,10 @@ async fn read_only_refuses_exit_aliases_and_creation() {
     god_cmd(&world, "@create tripwire").await;
     expect_text(&mut god_rx, "store write failure").await;
 
-    // "l" resolves to the exit, not to `look` — refused behind the pending
-    // commit. 16b cut B.5: it waits in the defer queue first and the failing
-    // write outlives the 250 ms bound, so it is refused in the timed-out words.
-    god_cmd(&world, "l").await;
+    // "lib" resolves to the exit — refused behind the pending commit. 16b cut
+    // B.5: it waits in the defer queue first and the failing write outlives the
+    // 250 ms bound, so it is refused in the timed-out words.
+    god_cmd(&world, "lib").await;
     expect_text(&mut god_rx, "busy too long for that line").await;
     // Plain `look` is also refused: it may not observe tentative RAM.
     god_cmd(&world, "look").await;
@@ -1950,7 +1963,7 @@ async fn read_only_refuses_exit_aliases_and_creation() {
         "CreatePlayer must be refused while the predecessor receipt is pending"
     );
 
-    // Recovery lifts the gate: the same "l" now traverses the exit.
+    // Recovery lifts the gate: the same "lib" now traverses the exit.
     flaky.set_mode(MODE_NORMAL);
     expect_text(&mut god_rx, "store writes recovered").await;
     // StoreStatus(true) and the exact receipt use separate control lanes; the
@@ -1960,7 +1973,7 @@ async fn read_only_refuses_exit_aliases_and_creation() {
         world.barrier().await,
         "recovery notice must be followed by the exact commit receipt"
     );
-    god_cmd(&world, "l").await;
+    god_cmd(&world, "lib").await;
     expect_text(&mut god_rx, "Lounge(#").await;
 }
 

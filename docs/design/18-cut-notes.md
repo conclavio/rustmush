@@ -6803,3 +6803,119 @@ Public items later cuts (the P-cuts) build on:
 - **Doc conventions**: this cut's owner items O4/O8/O9/O7 take the proposed numbers Q-18-71..Q-18-74
   in doc 18 §9 risk 20 and this note only; §8 does not yet list them, and the next docs pass adds
   them with doc 18 §5's IC14 row marked landed (the next cut-raised question is Q-18-75).
+
+## P-B
+
+**The Bids line gates on Missing alone** (doc 18 §5's post-loop list; §8 Q-18-60, the owner's
+third-round ruling R10 of 2026-10-18), built 2026-10-18 on the playtest branch over `29230ff5`
+(IC14 landed; dev1 redeployed from main without this cut, as ruled: a playtest cannot reach the
+fifty round trips that drain Kasei). One commit, `e682a7ec`, not pushed by its builder; cut AQ (16c
+`B-75`) is the next commit on the same branch and wrote this hash here and in §8.
+
+### What landed
+
+1. **The gate reads the `Bids` line on Missing alone** (`tacsim/src/port/coop.rs` `shuts`, beside
+   `gated`; `enrol_gate` now finds the first line that `shuts`). `gated` is untouched — every
+   binding but the sky and the markers still gates, the exhaustive match still has no catch-all —
+   and `shuts` adds the state rule IC12 left implicit: a gated line in any state but Ready closes
+   the desk, except a `Bids` line, which closes it only when Missing (a bid withdrawn by hand before
+   its deadline, "no bid is posted"; or lapsed with its intake changed, "it waits for the next
+   apply"). A `Bids` line that reads Pending — a house whose available balance is under one unit's
+   price, "not buying until its capital settles"; or a lapsed bid the clerk re-posts, "the clerk
+   posts it again" — is reported, counted by `Readiness::summary` ("Not ready: …" on
+   `@tacsim/port status`), and leaves `+coop/enrol` open. Before this cut a funds-Pending house
+   closed the Registry desk world-wide, every new pilot hearing `NOT_OPEN` and the gate logging at
+   `info` (IC12 O2's reach, the review's F6). `shuts` is exported from `tacsim::port` beside
+   `gated` and `enrol_gate`.
+2. **The sales against such a house skip as they did before IC12** — no change was needed:
+   `executor::sale_none_reason` still answers `HOUSE_CANNOT_PAY_SKIP` ("{house} cannot pay for
+   {label} right now.") for a bid with `house_units == 0`, through `clamp_sell`'s house bound, and
+   `ic11_an_unfunded_bid_skips` still pins the skipped order, no quote, no contract and the
+   pilot's notice. The board's "not buying ({house})" line and P07's funded-balance line are
+   likewise untouched.
+3. **The port tick pages once a boot while a house cannot fund a tonne**
+   (`tacsim/src/port_tick.rs` `page_unfunded_houses`, in `page_moving_sky`'s manner, called on
+   every fire after the marker-headroom page; `PortTickState.funds_pages: u32`, RAM; `pub fn
+   funds_pages(w) -> u32` the status read for tests beside `sky_pages` and `marker_pages`). The
+   condition is one pure read in the readiness module, `readiness::unfunded_bids(w) ->
+   Vec<(port entry, org, good)>`: every lane port with a present map, every vendor bid recorded
+   there whose listing stands Wanted with intake left, **whose house's capital has settled**
+   (every tranche Satisfied, the port's `Org` line Ready) and which still fails
+   `board::funds_one` — the bids the report reads Pending for play's reasons. The settled-capital
+   clause is the builder's one addition to the ruling, found by the tick test's first run: a
+   fresh world posts its bids at apply, before the first economy sweep settles the houses'
+   capital, so without it every fresh boot paged once on its first fire ("not buying until its
+   capital settles" was written for exactly that window, beside an `Org` line that says why).
+   The page is
+   `tracing::error!` with a `runbook` field ("pay the house (`@econ/pay #<treasury
+   account>=#<house account> <amount>`) or let players buy from it; enrolment stays open and the
+   sales against it skip meanwhile"), the port, house, good and the count of unfunded bids; once a
+   boot, however many fires and however many houses (the first names the page, `bids` counts the
+   rest). Never a gate.
+4. **Docs**: doc 18 §4.7's gate paragraph gains an "As built (P-B)" sentence, §5's post-loop list
+   marks P-B landed, §8's Q-18-60 bullet is flipped to built (its hash named by cut AQ's commit);
+   `docs/ops.md`'s "`@tacsim/port status` and the enrolment gate" says which bids line closes the
+   desk, what a pending one means and the runbook for it.
+
+### Deferred, and why
+
+- **A `Flagged` Bids line** does not exist (the line reads Ready, Pending or Missing only), and
+  `shuts` follows the ruling's words — Missing alone — rather than guess at one; the IC12 state
+  walk pins Pending open and Flagged open for `Bids`, so a cut that adds a Flagged reading must
+  decide here.
+- **The page names one house per boot.** A second house drained later in the same boot is counted
+  only if it was unfunded at the first page (the `bids` field); it does not page again. The
+  readiness report still reads every pending line, and the per-house wording is the operator's
+  to read there. A per-house once-a-boot set (as `paged` is per pool for stock drift) is the
+  obvious widening if a lane ever carries more than one buying house.
+- **The `info` log at the gate** (`+coop/enrol is closed by the readiness gate`) is unchanged for
+  the lines that still close the desk; the review's "page at `error` when a funds-Pending bid
+  closes enrolment" alternative is moot, since it no longer does.
+- **The stocking helpers** in `tacsim/tests/{orders,commerce,coop}.rs` still wait for every line
+  but the sky to read `[ready]` — a stricter condition than the gate, on purpose: a stocked fixture
+  is one whose houses can pay. `ic11_an_unfunded_bid_skips` keeps draining Kasei after stocking
+  for the same reason, now through the shared `leave_kasei_under_a_tonne`.
+- **Doc 18's header** still reads "as built through IC12"; the docs pass that writes §10's flips
+  owns it (the sibling note of 2026-10-18 says the same).
+
+### Pins re-blessed
+
+None. No content digest, no lane or station pack, no help topic and no player-facing sentence moved;
+`NOT_OPEN`, `HOUSE_CANNOT_PAY_SKIP`, the board lines and every readiness sentence are byte for byte
+IC14's. The one test that pinned the old reading, `coop.rs`'s
+`ic12_the_gate_refuses_on_every_gated_line_and_never_on_the_sky`, now walks `shuts` state by state
+and expects `Bids` open on Pending and Flagged and shut on Missing; `orders.rs`'s
+`ic11_an_unfunded_bid_skips` keeps its assertions and shares its drain.
+
+### How it was verified
+
+On Windows over `29230ff5` with the cut uncommitted, while another session's full-workspace test
+build held the machine (one rustc of this crate died of `LLVM ERROR: out of memory` on the first
+attempt and was rerun at `CARGO_BUILD_JOBS=2`; the clippy pass alone took 53 minutes of wall time):
+
+```
+cargo fmt -p tacsim --check                                       (no output; exit 0)
+cargo clippy -p tacsim --all-targets -- -D warnings               exit 0, no warnings
+cargo test -p tacsim --lib                                        1227 passed, 1 ignored
+cargo test -p tacsim --test coop --test orders --test ports       23; 33; 21 passed
+```
+
+`cargo fmt --all --check` cannot run on this box (os error 206, command line too long; the sibling
+docs session of 2026-10-18 hit the same), so the crate-scoped check stands in. The tick test was
+shown failing first: on its first run the page had already fired inside `stocked()`, which is how
+the settled-capital clause of `unfunded_bids` was found (item 3 above); with it, the funded world
+never pages, the drained one pages on its first fire and not again. New tests: `readiness.rs`
+`pb_a_funds_pending_bid_leaves_enrolment_open_and_a_missing_one_closes_it` (the two Pending texts
+open, the two Missing texts shut, the gate naming the line) and `orders.rs`
+`pb_the_tick_pages_once_a_boot_while_a_house_cannot_fund_a_tonne` (both Kasei bids `[pending]`
+with "not buying until its capital settles", "Not ready" on the report, a second pilot chartered
+through the open desk, `funds_pages` 0 → 1 on the first fire → 1 after three more). No hand-played
+smoke: no Redis on this box, and the cut is post-deploy by the ruling.
+
+### Surface for the next cuts
+
+- **tacsim, readiness and the tick**: `pub fn port::coop::shuts(&ReadinessLine) -> bool`
+  (re-exported from `tacsim::port` beside `gated` and `enrol_gate`; `gated` unchanged), `pub(crate)
+  fn port::readiness::unfunded_bids(&World) -> Vec<(CanonicalId, CanonicalId, CanonicalId)>`,
+  `PortTickState.funds_pages: u32` (RAM), `pub fn port_tick::funds_pages(&World) -> u32`.
+- **Test rigs**: `tacsim/tests/orders.rs` `leave_kasei_under_a_tonne(&mut Rig) -> i64`.

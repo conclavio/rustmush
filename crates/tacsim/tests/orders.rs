@@ -2636,18 +2636,52 @@ fn ic11_a_sold_out_buy_goes_partial() {
 /// skipped and logged"): Kasei's available funds below one tonne's price — the order is
 /// passed over, no quote and no contract, the pilot told.
 ///
-/// Doc 18 cut IC12: the stocking helper waits for the whole enrolment gate (every
-/// readiness line but the sky), and a bid whose house cannot fund a tonne reads
-/// pending ("not buying until its capital settles"), so a world authored with Kasei
-/// unfunded can never read ready. The house is drained after stocking instead — staff
-/// move all but 100.00cr of its available balance to the treasury — which leaves it
-/// exactly as the lane variant did: funded, but below one tonne's price (the house's
-/// units are floored, so 100.00cr against the bid is 0 units, never 1).
+/// Doc 18 cut IC12: the stocking helper waits for every readiness line but the sky to
+/// read ready, and a bid whose house cannot fund a tonne reads pending ("not buying
+/// until its capital settles"), so a world authored with Kasei unfunded can never be
+/// stocked by it. The house is drained after stocking instead
+/// ([`leave_kasei_under_a_tonne`]) — staff move all but 100.00cr of its available
+/// balance to the treasury — which leaves it exactly as the lane variant did: funded,
+/// but below one tonne's price (the house's units are floored, so 100.00cr against the
+/// bid is 0 units, never 1). Since cut P-B (Q-18-60, R10) that pending line no longer
+/// closes `+coop/enrol`; `pb_the_tick_pages_once_a_boot_while_a_house_cannot_fund_a_tonne`
+/// pins the open desk and the once-a-boot page, this test the skip.
 #[test]
 fn ic11_an_unfunded_bid_skips() {
     let mut rig = stocked();
     let (pilot, row) = docked_at_stickney(&mut rig, &[("metals", 20)]);
     let hull = ObjId(row.hull);
+    let _ = leave_kasei_under_a_tonne(&mut rig);
+    let contracts = economy(&rig.tw).snapshot().contracts().count();
+    let _ = order(&mut rig, pilot, "sell metals all");
+    disconnect(&mut rig.tw, pilot);
+    let _ = drive(&mut rig, 3);
+    assert_eq!(order_state(&rig.tw, hull, 1), Some(OrderState::Skipped));
+    assert_eq!(
+        market(&rig.tw)
+            .quotes_of_seller(&PrincipalId::Object(pilot))
+            .count(),
+        0,
+        "no quote"
+    );
+    assert_eq!(
+        economy(&rig.tw).snapshot().contracts().count(),
+        contracts,
+        "no contract"
+    );
+    let skipped = SKIP_LINE.replace("{n}", "1").replace(
+        "{reason}",
+        &HOUSE_CANNOT_PAY_SKIP
+            .replace("{house}", "Kasei Metals")
+            .replace("{label}", "metal concentrate"),
+    );
+    assert_eq!(log_texts(&rig.tw, hull), vec![skipped.clone()]);
+    assert_eq!(pending_notices(rig.tw.world(), pilot), vec![skipped]);
+}
+
+/// **Drain Kasei to 100.00cr** — under one tonne's price at its metals bid, but not
+/// nothing — by a staff payment to the treasury; the minor units left.
+fn leave_kasei_under_a_tonne(rig: &mut Rig) -> i64 {
     let kasei = port_map(&rig.tw, "stickney_port").orgs[&cid("kasei")]
         .account
         .expect("Kasei's account");
@@ -2682,31 +2716,61 @@ fn ic11_an_unfunded_bid_skips() {
         Some(left),
         "the house is left under one tonne"
     );
-    let contracts = economy(&rig.tw).snapshot().contracts().count();
-    let _ = order(&mut rig, pilot, "sell metals all");
-    disconnect(&mut rig.tw, pilot);
-    let _ = drive(&mut rig, 3);
-    assert_eq!(order_state(&rig.tw, hull, 1), Some(OrderState::Skipped));
+    left
+}
+
+/// **The tick pages once a boot while a house cannot fund a tonne, and the desk stays
+/// open** (doc 18 Q-18-60, the owner's R10 of 2026-10-18; cut P-B): Kasei drained to
+/// 100.00cr, under one tonne at either of its bids — both Bids lines read `[pending]`
+/// "not buying until its capital settles" and the report reads "Not ready", yet
+/// `+coop/enrol` still charters a new pilot; the first fire after the drain pages once
+/// and the fires after it do not. The skip itself (`HOUSE_CANNOT_PAY_SKIP`) is
+/// `ic11_an_unfunded_bid_skips`'s; the funded world never pages.
+#[test]
+fn pb_the_tick_pages_once_a_boot_while_a_house_cannot_fund_a_tonne() {
+    let mut rig = stocked();
     assert_eq!(
-        market(&rig.tw)
-            .quotes_of_seller(&PrincipalId::Object(pilot))
-            .count(),
+        tacsim::port_tick::funds_pages(rig.tw.world()),
         0,
-        "no quote"
+        "a funded house never pages"
     );
+    let _ = leave_kasei_under_a_tonne(&mut rig);
+    let out = status(&mut rig.tw);
+    let bids: Vec<&str> = out
+        .lines()
+        .filter(|line| line.contains(" bid kasei "))
+        .collect();
+    assert_eq!(bids.len(), 2, "{out}");
+    assert!(
+        bids.iter()
+            .all(|line| line.ends_with("; not buying until its capital settles. [pending]")),
+        "{out}"
+    );
+    assert!(
+        out.contains("Not ready: "),
+        "the report still counts them:\n{out}"
+    );
+    // The desk stays open: a pilot charters while Kasei cannot pay.
+    let (second, _) = chartered(&mut rig, "Second", 2, "Second Wind");
+    assert!(tacsim::port::live_charter(rig.tw.world(), second).is_some());
+    // The page: raised on the first fire after the drain, once for the boot.
     assert_eq!(
-        economy(&rig.tw).snapshot().contracts().count(),
-        contracts,
-        "no contract"
+        tacsim::port_tick::funds_pages(rig.tw.world()),
+        0,
+        "no fire since the drain pages"
     );
-    let skipped = SKIP_LINE.replace("{n}", "1").replace(
-        "{reason}",
-        &HOUSE_CANNOT_PAY_SKIP
-            .replace("{house}", "Kasei Metals")
-            .replace("{label}", "metal concentrate"),
+    let _ = drive(&mut rig, 1);
+    assert_eq!(
+        tacsim::port_tick::funds_pages(rig.tw.world()),
+        1,
+        "the first fire pages"
     );
-    assert_eq!(log_texts(&rig.tw, hull), vec![skipped.clone()]);
-    assert_eq!(pending_notices(rig.tw.world(), pilot), vec![skipped]);
+    let _ = drive(&mut rig, 3);
+    assert_eq!(
+        tacsim::port_tick::funds_pages(rig.tw.world()),
+        1,
+        "and pages once a boot, however many fires"
+    );
 }
 
 /// **A house that cannot pay is skipped, never retried** (reviewer F13): Kasei's

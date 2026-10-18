@@ -1544,8 +1544,8 @@ chandlery's board, signed by the chandler). Stickney (venue `stickney`): **Kasei
 metals and volatiles bids at P07; alloys and propellant asks at P08), **Stickney Yards**
 (`stickney_yards`, a vendor now, not only a lore org: the crated-fittings ask from the `item.yard_spares`
 cage in P15, read at the service counter P11, signed by the Yard's service clerk), **Yard Commissary**
-(`yard_commissary`: provisions). **The Freeport Exchange is not in doc 11
-§4** and is added by this slice (§10's doc 11 amendment): the Port Council's commodity floor, a
+(`yard_commissary`: provisions). **The Freeport Exchange was not in doc 11
+§4** and is added by this slice as 11 §4.12 (§10's doc 11 amendment): the Port Council's commodity floor, a
 Freeport institution (11 §3.3's Council seats registered claim-holders), consigning the Belt claims'
 metal concentrate (Occator's extractor drones and the smaller claim-holders, 11 §4.1; doc 10 §11's
 Ceres export) under the Exchange's mark and taking the corridor's alloy intake under the Freeport Works
@@ -2196,8 +2196,11 @@ server loads it, else the shipped (IC3); `@org/list` shows the orgs only and cap
 an exhaustive match, and `enrol_gate`, `:567`): §4.7's "the gate over all of it" is read with D-18-50,
 which keeps the sky reported and never gated. Treasury and Bids gate since IC12 (IC8 L8 had reported
 Bids without gating them): a missing treasury account, or a hand-withdrawn or apply-waiting bid, closes
-enrolment; a lapsed bid the clerk re-posts closes it for the fire or two the clerk takes; an exhausted
-bid reads ready. The player never sees the failing line: `+coop/enrol` logs it and answers `NOT_OPEN`,
+enrolment; an exhausted bid reads ready. **As built (P-B, Q-18-60 R10):** the Bids line gates on Missing
+alone (`shuts`, beside `gated`): a lapsed bid the clerk re-posts, or a bid whose house cannot fund one
+unit ("not buying until its capital settles"), reads pending on the report, leaves the desk open, and is
+paged once a boot by the port tick (`page_unfunded_houses`, `PortTickState.funds_pages`); the sales
+against such a house skip with `HOUSE_CANNOT_PAY_SKIP`, as they did before IC12. The player never sees the failing line: `+coop/enrol` logs it and answers `NOT_OPEN`,
 "The Co-op is not enrolling yet: the programme is still being set up." (`coop.rs:119`). A moving sky
 over a lane body without `epoch_ic` is also paged once per boot by the port tick (`page_moving_sky`,
 `tacsim/src/port_tick.rs:461`; `PortTickState.sky_paged`). **"At rate 3600 in a test world the gate
@@ -2498,7 +2501,9 @@ runnable.**
   C14 and P05 departure boards and the C01/P01 berth boards as `LookRendered` lines (IC9, IC11); P07's
   funded-balance board figure (IC8, IC10); the accept line naming the listing's signatory (IC8 L17).
 
-Post-loop cuts, named and ordered: **P-G** real gangway exits (outer door relinked at dock, a station
+Post-loop cuts, named and ordered: **P-B** the Bids readiness line gates `+coop/enrol` on a Missing bid
+only, a funds-Pending house paged once a boot (Q-18-60, R10; S; **landed 2026-10-18 at `e682a7ec`**, the cut note in
+[18-cut-notes.md](18-cut-notes.md) "P-B"); **P-G** real gangway exits (outer door relinked at dock, a station
 exit named by berth and hull, `BerthLink`, the Moved observer, atlas `on_moved` ordering tests, boot
 reconcile; M); **P-F** berth slots, berth-holder markers, the six freight-deck rooms, `ExitDef`
 fail/succ, the `+move` restricted fix (M); **P-H** locality and the under-way seal on every inventory
@@ -3291,6 +3296,41 @@ items are merged; the cut notes carry each default's full reasoning.
   ever; the slice buys no replacements, so the desk answers `NO_HULL` once all eight are chartered or
   graduated (IC13 O7).
 
+**Answered on 2026-10-18, third round (R10), before the first dev1 playtest** (the owner, taken through
+every open ruling in this document and in 16c §5; recorded here, binding):
+
+- **Q-18-60 — gate on Missing only.** A hand-withdrawn or apply-waiting bid closes `+coop/enrol`; a
+  funds-Pending or re-posting bid does not: the sales skip with `HOUSE_CANNOT_PAY_SKIP` as before IC12,
+  and the port tick pages once a boot while a house cannot fund a tonne. **Built as the post-loop cut
+  P-B, landed 2026-10-18 at `e682a7ec`** (on top of `29230ff5`; the hash written by cut AQ's commit, the
+  next on the same branch, since a commit cannot carry its own) — after the deploy, as ruled: a playtest
+  cannot reach the fifty round trips that drain Kasei. The record is
+  [18-cut-notes.md](18-cut-notes.md) "P-B".
+- **Q-18-71 A failed relet.** Six retries under a doubling backoff (2 min to 1 h), then the revoke IC13
+  built; the pilot told `RELET_PENDING` once, the plan waiting under `HELD_RELET`; no `@coop/unload`.
+  **Ratified as built (IC14 O4).**
+- **Q-18-72 The `Markers` line never gates** `+coop/enrol`; only an actually incomplete mirror (the
+  `InventoryFacts` line) closes it. **Ratified as built (IC14 O8)** — the same reading as Q-18-60's.
+- **Q-18-73 An unreadable sailing plan** keeps that hull out of the pool and pages; it never closes
+  enrolment world-wide. **Ratified as built (IC14 O9).**
+- **Q-18-74 Marker retention past E7c2's D1.** The applied marker stays the reboot-surviving replay
+  guard for at least one real day and at least the newest 32 per endpoint; a request replayed after
+  both is no longer refused by it; a ring of 128 young markers refuses the next move from that endpoint.
+  **Ratified as built (IC14 O7)**; the un-pruned rings of endpoints that stop writing (IC14 O10) stay
+  the remaining bound of §9 risk 19.
+- **Q-18-42 to Q-18-70 — every default as the tree took it is ratified**, including the three IC14
+  changed: a seller cannot dispute their own sale into a bid (Q-18-64, O2); an explicit consumable buy
+  holds under `HELD_SHORT_FOR_DEPART` only when the later consumable orders before the next depart would
+  still leave it short (Q-18-51, O3); the accept-line signatory, P07's funded balance and the
+  Engineering/Bridge burn line built, the C14/P05 departure boards and the C01/P01 berth boards to a
+  content P-cut (Q-18-47, O5).
+- **Q-18-35 to Q-18-41 stay open for cut P-A**; the slice flies the constant sky and states no bound
+  outside it. Kirkwood's placeholder period stands in prose only (Q-18-36).
+- **The playtest deploy (Q-18-16's "next owner-approved redeploy"):** dev1 on a **fresh store** at
+  `IC_RATIO=24` (no pack applies by hand, no `@tacsim/time` flip, the staff account bootstrapped again),
+  with the unit-minds programme through M6 merged first (main fast-forwarded onto
+  `codex/unit-minds-through-m6` at `6fafaa11`).
+
 ---
 
 ## 9. Risks, and what this slice refuses
@@ -3473,16 +3513,17 @@ items are merged; the cut notes carry each default's full reasoning.
   `deploy/instance/mushd.toml.tmpl:218-220`.** The sky's epoch moves from server config to the pack's
   bodies (`BodyDef.epoch_ic`, D-18-48), as doc 10 T17 originally said; the knob is documented as "sky
   motion" and collapses to `constant | real` at P-A.
-  **As built:** the code and config comments read "the constant sky" and the epoch is the bodies' (IC2);
-  doc 14 §3.8 itself is still owed.
+  **As built:** done — the code and config comments read "the constant sky" and the epoch is the
+  bodies' (IC2, `484647bc`); doc 14 §3.8's paragraph is in at `2f268ee3` (IC14).
 - **14b §3 / 14-spatial-implementation-plan.md:1321.** D-14-35 decided as two records with a hard
   boundary (Q-18-6, binding), with the wording that the drawn `spacecraft` connection is a **projection**
   of the ephemeris at the epoch that no verb traverses and no code reads as a travel path.
-  **As built:** still owed (docs outside this cut's files).
+  **As built:** done — the rows under D-14-35 in `14-spatial-implementation-plan.md` §6 and 14b §3
+  (`2f268ee3`), the projection wording completed in the 2026-10-18 docs pass.
 - **Doc 15.** §3.5's lag table is already written in moving-sky ranges; a note that at P-A R5 reads
   `Sky` positions and a ship's frozen plan legs, and D-15-11 is honoured with the route's light distance
   taken from the plan.
-  **As built:** still owed.
+  **As built:** done — the notes under §3.4 and §3.5 (`2f268ee3`).
 - **Doc 11.** §2 (the 2320s row) and §5 (§1 never mentions Kirkwood): Kirkwood Depot's orbit is
   Q-18-36's — on Ceres's orbit a few degrees astern under the recommended default ("at the inner edge
   of the Belt" becomes "Ceres's outer harbour"), or an independent ~2.06 AU orbit that is on the lane
@@ -3490,17 +3531,22 @@ items are merged; the cut notes carry each default's full reasoning.
   and its drive is a tagged coast law whose season-dependence is Q-18-35 and whose laden law is
   doctrine (Q-18-41); §4.5 the Co-op buys crated yard fittings for its fleet and the Kirkwood tank farm;
   §4 Stickney Yards sells them.
-  **As built:** still owed (waits on Q-18-36 for Kirkwood's wording).
+  **As built:** still owed — the §2 and §5 wording waits on Q-18-36; the placeholder notes are in at
+  `2f268ee3` (the 2320s row and §5 say the lane pack places Kirkwood on the Ceres–Mars chord at the
+  epoch with a placeholder period), and §7, §4.5 and §4 are done under the doc 11 bullet below.
 - **18a.** The hold, slate and Bridge readouts in tonnes and cubic metres; the departures board (C14)
   and the Dray lore line (§1.5) say "in a good season"; P08/P11, P15 and C08 carry the fittings; a sixth
   signatory (revised with this draft).
   **As built:** done (IC12; 18a revised with Draft 0.4 against the shipped packs).
 - **Doc 06 §7.5.** A note that the boundary rule is built in IC4 as written (member rooms; staff not
   exempt), and that `InteriorSpaceRecord.rooms` has a writer.
-  **As built:** still owed (the boundary rule is built as written, IC4).
+  **As built:** done — the note under §7.5 (`2f268ee3`; the rule's code IC4, `3c9cded5`): built as
+  written, staff not exempt; `InteriorSpaceRecord.rooms` has two writers, `Transition::Members` and
+  boot's `drop_destroyed_member`.
 - **10b §3.11.** The Draft 0.1 note on issue/retire is **withdrawn**; port listings draw from seeded,
   receipted pools (D-18-26). 10b:1753's declared-price lease buyout is built as `+coop/buyout` (IC13).
-  **As built:** still owed; the buyout itself is IC13, open.
+  **As built:** done — the issue/retire note withdrawn and the buyout row under §3.11 (`2f268ee3`);
+  the buyout landed in IC13 (`94679739`).
 - **08a.** Ledger rows for: Lot in `deliver()`'s short-circuit and the listing-TTL cap (IC0, landed);
   `with_party_cap_source`; `with_venue_gate` with `Presence::{Here, Ship}`; `Supply::Wanted`;
   `LotOp::Draw` and `LotOp::Deliver`; the `CapacityProvider` hook; `with_proceeds_policy`; the
@@ -3508,20 +3554,25 @@ items are merged; the cut notes carry each default's full reasoning.
   Q-18-31); `transfer_marked`; the `page_stale_contracts`
   lease exemption; and the options a keyed `create_system_obligation` variant and an optional
   `LeaseSpec.rent` (Q-18-27, Q-18-29).
-  **As built:** still owed (every seam named is built: IC0, IC7, IC8, IC10; the stale-page exemption as
-  narrowed in IC7).
+  **As built:** done — the "As built (doc 18 IC0–IC14)" ledger under 08a's live seams and a Shipped
+  row (`2f268ee3`; the Shipped row added in the 2026-10-18 docs pass), citing IC0
+  `c87d78f7`, IC6 `3bf2bc90`, IC7 `d8427081`, IC8 `ee1d831f`, IC10 `7435f954`, IC13 `94679739`, IC14
+  `2f268ee3`; the stale-page exemption as narrowed in IC7; the two options were not needed
+  (`offer_lease` admits a zero rent; plain treasury tranches).
 - **Doc 10 7A.** Nothing; finite capitalization stands (P-A's emergency bids draw on it too).
   **As built:** nothing, as written.
 - **Doc 10 T1.** Applied in IC9 through the planner; its freeze is load-bearing again (the ticket
   freezes the whole passage plan); the "deferred, not denied" note of Draft 0.1 is closed.
-  **As built:** applied in IC9 as written; the doc 10 note is still owed.
+  **As built:** done — applied in IC9 (`1137c373`) as written; the note under T1 at `2f268ee3`.
 - **Doc 10 C2A–C4A / §18.1; doc 17 F3 row.** The note that `+ship/undock` bypasses the station-channel
   gate until P2 now cites R3 (an offline departure cannot wait on a live seat).
-  **As built:** still owed.
+  **As built:** done — doc 10's C4 row and §18.1 note (`2f268ee3`); doc 17 §2's F3 row gains its
+  note in the 2026-10-18 docs pass (code: IC9 `1137c373`; the title-or-charter gate IC13 `94679739`).
 - **16c.** The hauler class filter and the custody-seam refusal test; the `@journey` "(staff)" help.
-  **As built:** the in-code `@journey` help is done (IC12: it names the true gate — staff, or the
-  carrier's crew or controller — and that a lane route and a Co-op hull are flown only by `+ship/undock`
-  or the sailing plan); the 16c ledger row is still owed.
+  **As built:** done — the in-code `@journey` help (IC12, `715151c4`: it names the true gate — staff, or
+  the carrier's crew or controller — and that a lane route and a Co-op hull are flown only by
+  `+ship/undock` or the sailing plan); the 16c ledger row is T-111 under §2.4 (IC14's paragraph at
+  `2f268ee3`, made a row in the 2026-10-18 docs pass; code IC2 `484647bc`).
 - **Doc 11.** §4.5 gains the First Captain programme and the Trust; §4.7's starter-charter line (Draft
   0.1) is not added; §4 gains a **Freeport Exchange** entry (the Port Council's commodity floor:
   consigns the Belt claims' metal concentrate and takes alloy intake as Freeport Works; its own factor
@@ -3532,13 +3583,17 @@ items are merged; the cut notes carry each default's full reasoning.
   propellant line; §5 a note that
   Kirkwood is a seeded body whose orbit is Q-18-36's; §4.10 that Pallas has a body entry; §7 the
   Dray's scale (240 t dry, 100 t and 120 m³ hold) and the Class 0 ROM.
-  **As built:** still owed.
+  **As built:** done — §4.5's programme and Trust, §4.8's note, §4.3, §5, §4.10 and §7 (`2f268ee3`);
+  §4.7's line not added; the Freeport Exchange is §4.12, written in the 2026-10-18 docs pass (its org
+  and capital IC3 `ea52634d`, its ask and the Works' bid IC8 `ee1d831f`).
 - **Doc 14 §2.6.** Three starter packs and seventeen rooms; §3.3's mode filter true once `spacecraft`
   leaves `SELF_MODES`. **D-14-5 / 14a 5A** (carrier interiors get local frames) is not foreclosed by the
   interior template: the six rooms can take a local atlas frame later.
-  **As built:** still owed.
+  **As built:** done — §2.6's and §3.3's notes (`2f268ee3`; the mode filter true since IC1 `07232d09`).
 - **`mushd.toml.example` [onboarding]** and `mush-config/src/config.rs:394-401`: drop the WoD text.
-  **As built:** still owed.
+  **As built:** done — `config.rs`'s onboarding comment lost its WoD job name at `38c47149` (16b cut
+  R-b.3; it reads `pilot-chargen`); `mushd.toml.example`'s and `deploy/instance/mushd.toml.tmpl`'s
+  `[onboarding]` text at `2f268ee3` (IC14). No code string changed.
 - **In-code doc comments:** as Draft 0.1, plus `mush-market/tests/e7r2.rs:327-328` ("exactly
   extraction's": work-order delivery also mints), `mush-sim/src/custody.rs:212-220` (withdrawal leaves
   location at "the space object itself" is false under the member projection), `mush-sim/src/data.rs:832-835`
@@ -3566,11 +3621,12 @@ items are merged; the cut notes carry each default's full reasoning.
   **As built (IC12):** done — the five new topics and every amendment listed (`getting-started`,
   `chargen`, `travel`, `atlas`, `spatial`, `cockpit`, `npc`, `intel` checked with nothing stale,
   `faction`, `chronicle`, `clocks`); in-code `@journey` (above), `@agent` (its field list and the
-  one-sheet `/sheet` sentence; the code default `mortal` is left for IC14), `+market` (`/accept`'s
+  one-sheet `/sheet` sentence; the code default `mortal` is dispositioned to the single-game cleanup, IC14's note), `+market` (`/accept`'s
   re-stage promise made true and `/depth`'s `<ruleset>:<code>` re-worded `<catalogue>:<code>`), and
   `SHIP_HELP`/`ORDER_USAGE` naming `+Nm`; `mush-market/tests/ic0.rs` re-pointed;
-  `mush-server/tests/e7r2_proving_loop.rs` was already true; **`18-cut-notes.md:109-110` is still owed**
-  (the committer's file).
+  `mush-server/tests/e7r2_proving_loop.rs` was already true; `18-cut-notes.md:109-110` is re-pointed by
+  IC12's note at the end of its section (`18-cut-notes.md:5848-5857`, `715151c4`), IC0's lines left
+  as written (the committer's file).
 - **`docs/ops.md`.** The asker-authority bridge; the actor-swap executor posture (closed typed calls, one
   step per hull per fire, verify by pull) beside the typed-action posture at `:976-979`; the rate-24
   deploy line.

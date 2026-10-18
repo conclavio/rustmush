@@ -690,7 +690,9 @@ pub fn free_hulls<'a>(w: &World, port: &ProgrammePort<'a>) -> Vec<&'a HullRow> {
 /// §4.7 "IC12 lands the full report and the gate over all of it", read with
 /// D-18-50). Every binding gates but the sky. The match is exhaustive and has no
 /// catch-all arm on purpose: a binding a later cut adds must be placed here by
-/// hand, so no new line is ever silently ungated.
+/// hand, so no new line is ever silently ungated. Which **states** of a gated
+/// line shut the desk is [`shuts`]'s question: since cut P-B the `Bids` line
+/// gates on Missing alone (Q-18-60, R10).
 #[must_use]
 pub const fn gated(binding: Binding) -> bool {
     match binding {
@@ -718,19 +720,43 @@ pub const fn gated(binding: Binding) -> bool {
     }
 }
 
+/// **Whether one readiness line shuts `+coop/enrol`** (doc 18 Q-18-60, the owner's
+/// third-round ruling R10 of 2026-10-18; cut P-B): a line whose binding is
+/// [`gated`] and whose state is not Ready — except the `Bids` line, which shuts the
+/// desk on **Missing alone**. A hand-withdrawn or apply-waiting bid ("no bid is
+/// posted", "lapsed; it waits for the next apply") is a programme that is not set
+/// up, and closes enrolment; a bid whose house cannot fund one unit ("not buying
+/// until its capital settles") or that the clerk is re-posting ("lapsed; the clerk
+/// posts it again") is ordinary play, reads Pending on the report and never closes
+/// the desk world-wide. The sales against such a house skip with the executor's
+/// `HOUSE_CANNOT_PAY_SKIP`, as they did before IC12, and the port tick pages staff
+/// once a boot while a house cannot fund a tonne (`port_tick::funds_pages`).
+#[must_use]
+pub fn shuts(line: &ReadinessLine) -> bool {
+    if !gated(line.binding) {
+        return false;
+    }
+    match line.binding {
+        Binding::Bids => line.state == LineState::Missing,
+        _ => line.state != LineState::Ready,
+    }
+}
+
 /// **The enrolment gate** (lead ruling L1; doc 18 §4.7 "IC12 lands the full report
 /// and the gate over all of it", read with D-18-50; cut IC12 lead ruling L5): the
-/// first line whose binding is [`gated`] and whose state is not Ready — every line
-/// of the report but the sky, which D-18-50 keeps reported and never gated.
+/// first line that [`shuts`] the desk — every line of the report but the sky, which
+/// D-18-50 keeps reported and never gated, in every state but Ready; the `Bids`
+/// line on Missing alone (cut P-B, Q-18-60).
 ///
 /// Since cut IC12 Treasury and Bids gate too (IC8's lead ruling L8 reported Bids
 /// without gating them, a deferral to this cut): a missing treasury account, or a
 /// hand-withdrawn or apply-waiting bid, closes enrolment; a lapsed bid the clerk
-/// re-posts closes it for the fire or two the clerk takes, as a Pending Listings
-/// line does (seeded stock the arm has not listed yet); an exhausted bid (quantity
-/// 0, "not buying") reads Ready. The draw mirror's lag is inside Ready
-/// (`q ≤ p ≤ q + undrawn`). [`Readiness::summary`] still reports every line, so a
-/// flagged sky reads "Not ready" on `@tacsim/port status` while enrolment is open.
+/// re-posts, or a bid whose house cannot fund a tonne, reads Pending and (since cut
+/// P-B) leaves the desk open, unlike a Pending Listings line (seeded stock the arm
+/// has not listed yet), which closes it; an exhausted bid (quantity 0, "not
+/// buying") reads Ready. The draw mirror's lag is inside Ready (`q ≤ p ≤ q +
+/// undrawn`). [`Readiness::summary`] still reports every line, so a flagged sky or a
+/// pending bid reads "Not ready" on `@tacsim/port status` while enrolment is open.
 /// A player never sees the failing line: `+coop/enrol` logs it and answers
 /// [`NOT_OPEN`].
 ///
@@ -738,11 +764,7 @@ pub const fn gated(binding: Binding) -> bool {
 ///
 /// The first failing line.
 pub fn enrol_gate(r: &Readiness) -> Result<(), &ReadinessLine> {
-    match r
-        .lines
-        .iter()
-        .find(|line| gated(line.binding) && line.state != LineState::Ready)
-    {
+    match r.lines.iter().find(|line| shuts(line)) {
         Some(line) => Err(line),
         None => Ok(()),
     }
@@ -1944,7 +1966,10 @@ mod tests {
     /// Doc 18 cut IC12 (closes IC6's "the `enrol_gate` unit test shuts on 3 of 8
     /// bindings"): for every binding, a report whose only non-Ready line is that
     /// binding's — in each non-Ready state — shuts the gate on that line iff the
-    /// binding is [`gated`]; the sky never shuts it (D-18-50).
+    /// binding is [`gated`]; the sky never shuts it (D-18-50). Since cut P-B
+    /// (Q-18-60, R10) the `Bids` line is the one gated binding whose Pending state
+    /// leaves the desk open: it shuts on Missing alone, which [`shuts`] says and
+    /// this walk pins state by state.
     #[test]
     fn ic12_the_gate_refuses_on_every_gated_line_and_never_on_the_sky() {
         const EVERY: [Binding; 16] = [
@@ -1989,7 +2014,24 @@ mod tests {
                         row.state = state;
                     }
                 }
-                if gated(binding) {
+                // Cut P-B (Q-18-60): the Bids line gates on Missing alone.
+                let expected_shut =
+                    gated(binding) && (binding != Binding::Bids || state == LineState::Missing);
+                assert_eq!(
+                    shuts(&line(binding, state)),
+                    expected_shut,
+                    "{binding:?} {state:?}"
+                );
+                if binding == Binding::Bids && state != LineState::Missing {
+                    assert!(
+                        enrol_gate(&report).is_ok(),
+                        "a funds-pending or re-posting bid leaves the desk open ({state:?})"
+                    );
+                    assert!(
+                        !report.is_ready(),
+                        "the summary still counts the pending bid"
+                    );
+                } else if gated(binding) {
                     let refused = enrol_gate(&report).expect_err("the gate shuts");
                     assert_eq!((refused.binding, refused.state), (binding, state));
                 } else {

@@ -127,7 +127,7 @@ Each is a `mush-org` organization with real accounts (doc 10 S7A: **funded, neve
 
 *Institutional-financial.* The Belt's bank and the Freeport's fiscal agent; the corridor's NPC market-maker with explicit cash, inventory, spread, volume and loss budgets (S7A). Holds Kasei's and the Republic's Belt debt; owes Luna. **Principal:** **Governor Eskil Varga**. **Economic** control at Ceres, Phobos (shared) and Isidis.
 
-**As built (doc 18):** the trade-run slice does not use Clearing's market-maker role; its ports trade through their vendors' finite, receipted stock. As built: the slice's Freeport Exchange is authored in 18a and the lane pack; its §4 entry is owed (doc 18 §10).
+**As built (doc 18):** the trade-run slice does not use Clearing's market-maker role; its ports trade through their vendors' finite, receipted stock. The slice's Freeport Exchange is §4.12 (authored in 18a and the lane pack).
 
 ### 4.9 Lantern Haulage & Salvage — the seeded player corporation
 
@@ -142,6 +142,12 @@ One line each, so the map has edges to grow into: **the Pallas Syndicate** (Vest
 ### 4.11 The Malapert Exchange — "Malapert"
 
 *Institutional; extraterritorial; the one concern everyone pays.* Operates every quantum relay half in the system from **Malapert**, the Luna hub next door to Shackleton, under a Concord charter and the 2312 Settlement's extraterritoriality clause — Concord-era paper the Republic inherited and resents for the same reason it resents the Concession. Its own staff run the compounds at Phobos, Ceres and Kirkwood; nobody else touches a half. Sells **relay time** in four classes (Sovereign, Priority, Standard, Deferred — doc 15 §5.2), publishes a congestion board that overstates load, and can **throttle or suspend** any principal (doc 15 §5.3): arrears is the usual reason, Luna's displeasure the unusual one. **Principal:** **Postmaster Solveig Adebayo-Krishnan**, Malapert — chartered to be neutral, paid to be fast, answerable to Shackleton on the days it matters; the one person in the corridor who can make a government twenty minutes late. **Wants:** the monopoly intact (no private pairs), every account current, and never to be *seen* choosing a side. `SubordinateTo` the Concord via the charter; **de facto** control of every relay compound; **economic** control wherever a bill is due (doc 15 §4).
+
+### 4.12 The Freeport Exchange — "the Exchange"
+
+*Institutional; the Council's own window.* The Port Council's commodity floor, in the Exchange Hall at Ceres Freeport (18a C07): consigns the Belt claims' metal concentrate — Occator's drones and the smaller registered claim-holders who sit on the Council (§3.3, §4.1; doc 10 §11's Ceres export) — under the Exchange's mark, and takes the corridor's alloy intake under the name **Freeport Works**, the same house buying. Not a market-maker (that is Clearing's role, §4.8, which the trade run leaves unused): standing offers from finite, receipted stock, every line signed. **Provides:** the concentrate a new captain loads at Ceres and the alloy bid that pays for the return. **Principal:** **Factor Margit Søndergaard-Achebe** — a Council appointee who treats the Exchange's book as the Freeport's public ledger and the claim-holders' consignments as a trust; the officer of record and Warrant signatory for the Exchange's ask and the Works' bid, and for nothing of Occator's (one house, one signatory — the trade run's rule in the spirit of §2's principle). A Freeport institution: funded, never infinite (S7A).
+
+**As built (doc 18 IC3, IC8; this entry added 2026-10-18 under doc 18 §10):** `freeport_exchange`, faction `freeport`, capitalized at 4,000,000 cr by one-shot treasury tranches — the slice's largest capital, a season's budget, because it is the return leg's buyer (IC3, `ea52634d`); its metals ask and Freeport Works' alloy bid are standing offers of the Ceres port pack signed by `npc.sondergaard` (IC8, `ee1d831f`; 18a C07).
 
 ## 5. Places, and who holds what
 
