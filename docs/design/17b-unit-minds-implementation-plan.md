@@ -67,7 +67,7 @@ wording in the historical M4/M5 rows, without changing their recorded results.
 The separate [economy-stability checkpoint](17d-unit-minds-through-m6-plan.md#7-trade-run-coordination-and-the-m7-checkpoint)
 passes on the exact IC14 merge recorded in §6. Together with M6 acceptance, this
 satisfies the owner's prerequisites for continuing ordinary M7 implementation
-under its own design note, review and acceptance gates.
+under [17f](17f-mind-commerce-implementation-plan.md), review and acceptance gates.
 The cut-map rows below keep
 the original milestone scope; 17d supplies the current execution sequence and
 explicit compatibility departures from 17c's post-M5 assumptions.

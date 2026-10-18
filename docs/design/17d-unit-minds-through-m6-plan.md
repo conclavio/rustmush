@@ -48,8 +48,9 @@ bench re-simulation do not. The current `MIND TRACE` refusal is deliberate.
 | M7 checkpoint and implementation | Review stabilized economy seams, prepare M7's design note, then implement its lifecycle | M6 accepted and checkpoint passed |
 
 M7 filing, titles, licences, paid services, royalties, market listings and core
-installation follow this plan's detailed M6 cuts and the checkpoint; their design
-note will specify the stabilized economic interfaces before that work starts.
+installation follow this plan's completed M6 cuts and checkpoint;
+[17f](17f-mind-commerce-implementation-plan.md) specifies the economic interfaces,
+ordered implementation cuts and independent activation/acceptance gates.
 M8 contraband and procurement still require
 IC mind sorties. Doc 18's carrier journey and captain's order queue do not supply
 that lifecycle. ASSIST, per-channel mind leases, new non-combat stations and the
