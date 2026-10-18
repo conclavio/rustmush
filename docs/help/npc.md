@@ -2,7 +2,8 @@
 
 LLM-driven non-player characters. An NPC agent is a first-class object
 (`ObjKind::Npc`) carrying a staff-authored **profile** (persona, goals,
-knowledge, tier) and, optionally, a real ruleset character sheet. When a
+knowledge, tier) and, optionally, the game's character sheet (the pilot sheet,
+`help chargen`). When a
 connected player shares its room and speaks (or arrives/leaves), the agent
 takes a turn: it reads the recent scene, decides in character, and acts through
 a small fixed set of tools — say, pose, move, look, remember, use an ability,
@@ -184,10 +185,21 @@ rendered through the normal say/pose formatter under the NPC's true name, so it
 can neither forge another speaker nor spoof a system line. Every NPC LLM call is
 audited (`@llm/log`).
 
+## The port cast
+
+At Ceres Freeport and Stickney Yards the clerks, agents and officers are NPCs
+of this kind. They answer questions about their port, their house and the
+trade in character, and their names sign their houses' business: each line on a
+board names the clerk who signs for it, and a sale line names who countersigns.
+They never move money or goods themselves — every purchase, sale and enrolment
+is a command you type, and with the model off their fallback lines name those
+commands. The principals behind the houses are on record and never wake. See
+"help ports".
+
 ## See also
 
   @agent, @lore, @llm, @sheet, +roll, +intel, help intel, help perception,
-  help worldgen
+  help worldgen, help ports
 
 ## Interface NPCs
 

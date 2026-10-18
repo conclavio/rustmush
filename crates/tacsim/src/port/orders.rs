@@ -712,7 +712,7 @@ pub fn orders_state(w: &World, hull: ObjId) -> OrdersState<'_> {
 // ---- the texts (the planner's wording, owner item O1) ------------------------------
 
 /// `+ship/order`'s grammar.
-pub const ORDER_USAGE: &str = "Usage: +ship/order sell <good> <qty|all> [min=<cr>] [short=partial|skip|hold] | buy <good> <qty|fill> [max=<cr>] [short=partial|skip|hold] | depart <port> [at=now|HH:MM|daily HH:MM|+Nh] [until=+Nh] | stop | del <n> | move <n>=<pos> | clear | pause | resume | skip <n>";
+pub const ORDER_USAGE: &str = "Usage: +ship/order sell <good> <qty|all> [min=<cr>] [short=partial|skip|hold] | buy <good> <qty|fill> [max=<cr>] [short=partial|skip|hold] | depart <port> [at=now|HH:MM|daily HH:MM|+Nh|+Nm] [until=+Nh|+Nm] | stop | del <n> | move <n>=<pos> | clear | pause | resume | skip <n>";
 /// Anything the vocabulary does not take (lead note 2g).
 pub const NOT_ORDERABLE: &str = "The sailing plan takes sell, buy, depart and stop. Boarding, leaving, enrolling and buying out are done in person.";
 /// Away from the hull and its port (Q-18-28): `{name}`.

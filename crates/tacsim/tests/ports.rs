@@ -2260,3 +2260,123 @@ fn with_stations(shelf: &[mush_content::Pack]) -> Vec<mush_content::Pack> {
     full.extend(shelf.iter().cloned());
     full
 }
+
+// ---------------------------------------------------------------------------
+// Doc 18 cut IC12: the moving sky's promise (§4.8; D-18-50)
+// ---------------------------------------------------------------------------
+
+/// **A moving sky over a lane body without `epoch_ic` flags the Sky line and pages
+/// once a boot** (doc 18 cut IC12 item 2.2; §4.8 "pages if the sky rate is non-zero
+/// while any lane body lacks `epoch_ic`"; D-18-50: reported, never gated).
+///
+/// Lane v4 (test-only data, `lane_v4`'s two port touches) with `pallas`'s `epoch_ic`
+/// removed is shelved for the atlas AND handed to the layer as an operator seed, so
+/// the store loads it and the report reads the latched v4 ("the latched version when
+/// loaded"); the sky rate is 1000 through the roster's `TacsimConfig`
+/// (`time.ephemeris.rate`), the config the layer reads at every pack load. The Lane
+/// line then reads Flagged too (v4 is past the shipped v3) — expected; the gate names
+/// the Lane line, never the sky.
+#[test]
+fn ic12_a_moving_sky_with_a_body_lacking_epoch_ic_flags_and_pages_once() {
+    let json = lane_variant(4, |doc| {
+        doc["entries"]["ceres_port"]["def"]["programme"]["dormancy_real_days"] =
+            serde_json::json!(8);
+        doc["entries"]["stickney_port"]["def"]["orgs"][2]["faction"] =
+            serde_json::json!("freeport");
+        doc["entries"]["pallas"]["def"]
+            .as_object_mut()
+            .expect("pallas is a body")
+            .remove("epoch_ic");
+    });
+    let roster = Roster::production().with_shelf(vec![content_pack(&json)]);
+    let mut cfg = config();
+    cfg.time.ephemeris.rate = 1_000;
+    cfg.seeds.push(PackSource {
+        name: "ops/lane_v4.json".to_owned(),
+        bytes: json.clone(),
+    });
+    let mut tw = TestWorld::with_modules(roster.modules_with(cfg, true));
+    no_refused_writes(&tw);
+    sweep(&mut tw, 3_600);
+    let (_plan, apply) = plan_and_apply(&mut tw);
+    assert!(
+        apply.contains(&format!("Applied {LANE_PACK}@4: ")),
+        "{apply}"
+    );
+    assert_eq!(lane_latch(&tw), Some(4));
+    set_rate(&mut tw, 24);
+    let out = report(&mut tw);
+    let sky = out
+        .lines()
+        .find(|line| line.starts_with("sky: "))
+        .expect("a sky line");
+    assert!(
+        sky.starts_with("sky: moving (rate 1000), epoch ")
+            && sky.ends_with(
+                "; pallas has no epoch_ic, so it moves from the server's epoch. [flagged]"
+            ),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!(
+            "lane: {LANE_PACK}@4 applied; this server ships @{LANE_VERSION}. [flagged]"
+        )),
+        "{out}"
+    );
+    // The gate never names the sky (D-18-50): here it names the Lane line.
+    let report = tacsim::port::readiness(tw.world());
+    let refused = tacsim::port::enrol_gate(&report).expect_err("the lane is past the shipped");
+    assert_eq!(refused.binding, tacsim::port::Binding::Lane);
+    // The page: raised on the first fire, latched for the boot.
+    assert!(
+        !tacsim::port_tick::sky_paged(tw.world()),
+        "no fire yet pages"
+    );
+    sweep(&mut tw, 6);
+    assert!(
+        tacsim::port_tick::sky_paged(tw.world()),
+        "the first fire pages"
+    );
+    sweep(&mut tw, 6);
+    assert!(
+        tacsim::port_tick::sky_paged(tw.world()),
+        "and stays latched"
+    );
+}
+
+/// **At rate 0 a body without `epoch_ic` moves nothing**: the same v4 under the
+/// constant sky reads the Sky line exactly as the shipped lane's form (no flag) and
+/// never pages (doc 18 cut IC12 item 2.2: "Rate 0 is unchanged byte for byte").
+#[test]
+fn ic12_a_constant_sky_never_flags_a_body_lacking_epoch_ic() {
+    let json = lane_variant(4, |doc| {
+        doc["entries"]["pallas"]["def"]
+            .as_object_mut()
+            .expect("pallas is a body")
+            .remove("epoch_ic");
+    });
+    let roster = Roster::production().with_shelf(vec![content_pack(&json)]);
+    let mut cfg = config();
+    cfg.seeds.push(PackSource {
+        name: "ops/lane_v4.json".to_owned(),
+        bytes: json.clone(),
+    });
+    let mut tw = TestWorld::with_modules(roster.modules_with(cfg, true));
+    no_refused_writes(&tw);
+    sweep(&mut tw, 3_600);
+    let _ = plan_and_apply(&mut tw);
+    assert_eq!(lane_latch(&tw), Some(4));
+    let out = report(&mut tw);
+    let sky = out
+        .lines()
+        .find(|line| line.starts_with("sky: "))
+        .expect("a sky line");
+    assert!(
+        sky.starts_with("sky: constant (rate 0), epoch ") && sky.ends_with(" [ready]"),
+        "{out}"
+    );
+    assert!(!sky.contains("epoch_ic"), "{out}");
+    sweep(&mut tw, 6);
+    sweep(&mut tw, 6);
+    assert!(!tacsim::port_tick::sky_paged(tw.world()));
+}

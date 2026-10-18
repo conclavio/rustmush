@@ -39,9 +39,9 @@ discovers it.
 ## How canon is made
 
 Domain systems record canon events themselves, as a deliberate act — not every
-line spoken becomes canon. "Alice said the Prince is dead" is part of a scene's
-transcript (see `+recap`); "the Prince is dead" becomes canon only when it is
-actually established. Today the scene system records a scene's conclusion; the
+line spoken becomes canon. "Alice said the harbourmaster was sacked" is part of a
+scene's transcript (see `+recap`); "the harbourmaster was sacked" becomes canon
+only when it is actually established. Today the scene system records a scene's conclusion; the
 faction, combat, and obligation systems will record their consequences as they
 come online.
 

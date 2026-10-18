@@ -430,12 +430,8 @@ fn stock(rig: &mut Rig) {
         let out = status(&mut rig.tw);
         let gated: Vec<&str> = out
             .lines()
-            .filter(|line| {
-                line.contains(" vendor ")
-                    || line.contains(" ask ")
-                    || line.starts_with("market facts")
-                    || line.starts_with("inventory facts")
-            })
+            // Doc 18 cut IC12: the gate is every report line but the sky (D-18-50).
+            .filter(|line| line.ends_with(']') && !line.starts_with("sky: "))
             .collect();
         if gated.len() > 1 && gated.iter().all(|line| line.ends_with("[ready]")) {
             return;
@@ -1559,6 +1555,132 @@ fn ic9_goods_not_yet_aboard_hold_the_hull() {
         "{out}"
     );
     assert!(queued.is_empty());
+}
+
+/// **IC9 T8 (doc 18 cut IC12 item 1.9): the goods-not-yet-aboard rule releases a
+/// terminal contract and holds for a lapsed listing.** `goods_pending_aboard` reads
+/// only a quote whose contract stands non-terminal in the economy's book: a Draw
+/// accepted into the hold and never landed, once its contract has expired (the
+/// one-hour Draw window, `Expiry::Refund`), no longer holds the hull, and
+/// `+ship/undock` files. A hold-backed listing out of the hold holds the hull live
+/// or lapsed — the matter still sits on the hold's reservation until the hold is
+/// gone — so one past its listing window still refuses with `LISTING_HOLDS`.
+#[test]
+fn ic12_t8_goods_pending_aboard_releases_a_terminal_contract_and_holds_for_a_lapsed_listing() {
+    // ---- a Draw whose contract went terminal ----
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    seed_pool(&mut rig, vault, "propellant", 42, LotId(903));
+    seed_pool(&mut rig, vault, "provisions", 21, LotId(904));
+    let metals = market(&rig.tw)
+        .lot_listing_of(
+            EndpointRef(VaultId(
+                port_map(&rig.tw, "ceres_port").vendors[&cid("freeport_exchange")].vault,
+            )),
+            &cid("metals"),
+        )
+        .expect("the metals listing");
+    let quoted = run(&mut rig.tw, pilot, &format!("+market/quote {metals}=1"));
+    assert!(quoted.contains("Quote #"), "{quoted}");
+    let quote = market(&rig.tw)
+        .quotes_of_buyer(&mush_org::PrincipalId::Object(pilot))
+        .map(|q| q.id)
+        .max()
+        .expect("a quote");
+    let accepted = run(&mut rig.tw, pilot, &format!("+market/accept {quote}"));
+    let dropped = drain(&mut rig.tw);
+    assert_eq!(dropped.len(), 1, "the Draw leg, never landed: {accepted}");
+    let contract = market(&rig.tw)
+        .quote(quote)
+        .and_then(|q| q.contract)
+        .expect("a contract in force");
+    board(&mut rig, pilot);
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(
+        out.contains(
+            &GOODS_COMING
+                .replace("{quote}", &quote.to_string())
+                .replace("{name}", "Salt Moth")
+        ),
+        "a standing contract holds the hull: {out}"
+    );
+    assert!(queued.is_empty());
+    // Past the Draw window the contract expires with its refund; the port tick's
+    // queued submissions in that hour are dropped (nothing here lands).
+    let terminal = |tw: &TestWorld| {
+        economy(tw)
+            .snapshot()
+            .contract(contract)
+            .is_some_and(|c| c.state.is_terminal())
+    };
+    for _ in 0..40 {
+        if terminal(&rig.tw) {
+            break;
+        }
+        sweep(&mut rig.tw, 300);
+        let _ = drain(&mut rig.tw);
+    }
+    assert!(terminal(&rig.tw), "the Draw's contract expired");
+    assert_eq!(
+        pool(&mut rig.tw, vault, "metals"),
+        0,
+        "the goods never moved"
+    );
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(out.contains("Clearance filed for Stickney Yards"), "{out}");
+    assert_eq!(queued.len(), 1, "the burn is queued");
+    assert!(voyage(&rig.tw, hull).and_then(|v| v.pending).is_some());
+
+    // ---- a hold-backed listing whose window lapsed, its hold standing ----
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let vault = hold_vault(&rig.tw, &row);
+    seed_pool(&mut rig, vault, "metals", 10, LotId(908));
+    seed_pool(&mut rig, vault, "propellant", 42, LotId(903));
+    seed_pool(&mut rig, vault, "provisions", 21, LotId(904));
+    let vendor = port_map(&rig.tw, "ceres_port").vendors[&cid("freeport_exchange")]
+        .vendor
+        .expect("a vendor");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{vendor}=tacsim:metals price=1 qty=5 days=1 endpoint={}",
+            vault.0
+        ),
+    );
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    let listing: ListingId = market(&rig.tw)
+        .lot_listing_of(EndpointRef(vault), &cid("metals"))
+        .unwrap_or_else(|| panic!("the hold-backed listing: {out}"));
+    // Past the listing's one-day window, with no fire in between: lapsed, its hold
+    // (and so its matter in the hold) standing.
+    let expires = market(&rig.tw)
+        .listing(listing)
+        .map(|l| l.expires.at)
+        .expect("the listing");
+    let lapsed_at = expires.saturating_add(60);
+    rig.tw.set_now(lapsed_at);
+    assert!(
+        market(&rig.tw)
+            .listing(listing)
+            .is_some_and(|l| l.expires.at < rig.tw.world().now()),
+        "the listing has lapsed"
+    );
+    board(&mut rig, pilot);
+    let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(
+        out.contains(
+            &LISTING_HOLDS
+                .replace("{listing}", &listing.to_string())
+                .replace("{name}", "Salt Moth")
+        ),
+        "{out}"
+    );
+    assert!(queued.is_empty(), "nothing filed");
 }
 
 // ---------------------------------------------------------------------------

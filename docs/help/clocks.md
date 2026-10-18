@@ -7,8 +7,8 @@ territory changes hands, a threat lands, and the world's chronicle records it.
 
 The point is that clocks advance from *play*. A clock can be set to watch for a
 kind of outcome and tick forward whenever one happens involving the faction's
-people — so a scene your coterie fights through actually moves the Camarilla's
-grip on the waterfront, without a storyteller updating a spreadsheet by hand.
+people — so a scene your crew fights through actually moves a rival house's
+grip on a port, without staff updating a spreadsheet by hand.
 That connection — player action to territorial consequence — is the whole
 engine.
 

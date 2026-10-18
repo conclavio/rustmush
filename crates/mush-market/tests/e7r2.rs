@@ -325,8 +325,10 @@ fn e7r2_p1_no_path_in_the_market_mints() {
             "{file} calls mint_origin: the market moves matter and creates none"
         );
     }
-    // The workspace's mint callers are exactly extraction's, plus the one seam
-    // `mush-inventory` defines it on.
+    // The workspace's mint callers are extraction's, a work order's delivery
+    // (`mush-industry/src/provider.rs`), the TacSim port's stock clerk
+    // (`tacsim/src/port/stock.rs`, doc 18 cut IC8: the seeded Origin receipts) and
+    // the one seam `mush-inventory` defines it on — none of them the market's.
     assert!(
         production("mush-industry/src/families.rs").contains(".mint_origin("),
         "extraction is still a minting path — the probe is looking in the right place"

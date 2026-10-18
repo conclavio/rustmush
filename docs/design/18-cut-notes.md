@@ -5485,3 +5485,373 @@ stopped `HELD_STOOD_DOWN` hold and bumps `attempt` when the plan names the pendi
 **For IC13:** a buyout, release or recall must refuse while `Orders.inflight` is `Some`, and the
 lapsed-author plan (waiting `HELD_CHARTER`, visited every fire) is what pruning removes;
 `departs_at` already hides a lapsed author's hour.
+
+## IC12
+
+**The story test, help, readiness and the docs pass** (doc 18 §5, the IC12 row and paragraph; §6;
+§4.7; §10), built 2026-10-17 on main at 26e3b1fa. The story test moves onto the production root,
+`+coop/enrol` is gated on every readiness line but the sky, the five help topics and the amendments
+are written, the station packs are re-published as Ceres v2 and Stickney v3, and doc 18 becomes
+Draft 0.4 "as built" through IC12. The hand-played two-session smoke is owed to the owner (no Redis
+on the build machine). One commit, pushed to origin/main.
+
+### What landed
+
+1. **The story test on the production root** (`crates/mush-server/tests/ic_slice_loop.rs`, new,
+   3,969 lines; `crates/tacsim/tests/ic_slice_loop.rs` deleted; the vertex included by
+   `#[path = "../../tacsim/tests/support/vertex.rs"]`). Five `#[tokio::test]`s, each booting
+   `mush_server::boot::build_engine` over a fresh `InMemoryStore` with `[game].ic_ratio = 24` and
+   `[tacsim.time.ephemeris].rate = 0` set explicitly, asserting the timeline's generation at 24 and
+   `!TacsimStore::test_world()`. `land` (`:342-409`) is the world task's path — `flush`
+   (`persist::batch_from_dirty` + `ObjectStore::write`), `ActionCoordinator::command_ingress` in the
+   rig's epoch, `preflight` (Retired raises the epoch and retries ≤ 3; Pending/Finalized is a
+   counted `Landing::Replay`; Quarantined/Conflict panics), the actor's own `legal_action_query` →
+   `project_legal_actions` → `projected_for_action` → `resolve_legal_action` →
+   `prepare_and_stage_resolved`, then take, reserve, reconcile (`matches_bundle`),
+   `install_prepared_action_announcing`, checkpoint, and `assert_holds_within_limits` after every
+   landing. `restart` (`:230-255`) flushes, drops the engine with whatever it still queued, re-boots
+   `build_engine` over the kept store and spool, bumps the epoch, restores the clock, and asserts
+   every pilot's account through `engine.account_of` and a typed probe read back through the store.
+   No `module_state_mut`, no `reboot_into`, no hand-hydrate.
+2. **Part 1** (`ic12_part_one_a_leg_by_hand`): the sky line in §6's form with no duration;
+   `help ports|ships|coop|orders|trade` answered by the booted registry; every §2 word walked and
+   asserted against the room re-derived from the port map; the vertex buys and the planner's own
+   fuel and stores; the `+ship/hold` render; enrolment at 24, then `@tacsim/time rate=3600` as the
+   one staff act; the Bridge `STATUS_DOCKED` line; IC9 T7 as `PortFireStats.deferred ≥ 1` with the
+   burn left in the engine across the fire, the queue then exactly `tacsim.port.burn/<hull>/undock/1`,
+   no journey, no `CLEARANCE_LAPSED` (the constant), `STATUS_CLEARED`; the same-boot HIT (one
+   ticket, one debit); the Kirkwood line absent one fire before the frozen boundary and present at
+   it, the docking likewise at the ticket's total; the two `SALE_LINE`s exactly; journals (pilot +
+   Trust = Kasei's payment), the statement, seeded − sold on every listing and pool, lineage to a
+   seeded receipt, no pages.
+3. **Part 2** (`ic12_part_two_the_queue_runs_the_return`): §2 step 10's queue with `at=+10m`, the
+   pilot disconnected. **Restart (a)** after the depart's burn lands and before its launch: the kept
+   burn landed again in the new epoch before any fire is `Landing::Refused` with "that passage is
+   already burned" (the ticket's `seq`), one ticket, the tank unchanged, then one launch and no burn
+   key on four fires. **Restart (b)** with the first sale's deliver leg lost: re-staged once under
+   `market.lot.deliver.<contract>`, every other market key proven to be order 3's sale, one settled
+   contract, one bid decrement, Kasei +20 once, `sales` 1 then 2. The Stickney buys are asserted
+   line by line from `stickney_buys` (`:2330-2517`: `project_cargo` + `fill_targets` over the hold as
+   it docked, with `choose_route` over the world's sky; the fittings at 49 t unclamped; the alloys'
+   affordable tonnage computed and shown to be below 55; the room and the stock) —
+   `BOUGHT_FILL_TANK`, `BOUGHT_FILL_LOCKER`, `BOUGHT`, `BOUGHT_SHORT` "short of 55 t: funds"
+   exactly; orders 4–7 Done. The return docked at its frozen instant; the reconnect heading once and
+   every notice once in queue order; `, signed Wren:`; conservation over Wren, the Trust and every
+   port org and over every touched listing, pool and both legs' burns. **Restart (c)** on the kept
+   world: four fires with every queued submission landed and the queue asserted empty, no receipt
+   minted, no listing moved, no stake re-posted, no obligation added, no object made; `boots == 4`.
+4. **The rate change** (`ic12_a_rate_change_mid_passage_relabels_the_arrival`): at 1800 mid-passage
+   `leg_times()` equals the ticket's frozen legs before and after, `arrival_at()` unchanged, the
+   status-line and `+ship` ETA re-derived with the time left doubled (±1 s), the daily depart's IC
+   label re-derived through `plan_instant` and the old label gone, the hull docked at the frozen
+   instant.
+5. **The negative checks** (`ic12_negative_checks_refuse_in_fiction_and_move_nothing`): fifteen
+   checks, each against a shipped constant and a `Still` snapshot (posted and available, pools,
+   location, every listing quantity, quote and contract counts, tickets) — `ENROLLED_ONCE`;
+   `NOT_OPEN` after the rate switch, with the flagged Rate line on the staff view and `enrol_gate`
+   naming `Binding::Rate`; `NO_CHARTER`; "compartment `berths` is full (2 max)"; `NOT_IN_PORT` and
+   `HOLD_ELSEWHERE`; `capacity_line` for 86 t, 19 + 81, 101 t and ice into a full hold with an empty
+   tank; `NOT_ABOARD`, `TANK_SHORT` at 39 against 40, `UNDOCK_UNDER_WAY` twice; `HELD_ASHORE` with
+   nothing burned; `HOUSE_CANNOT_PAY_SKIP` (never `UNFUNDED`) with the house drained to 100.00cr,
+   then `UNFUNDED` typed; the boundary line for `o`/`s`/`home` and "Permission denied." for
+   `@teleport`; `left_at_line` after `o` → `x` → `c`; `SELL_SHORT`; the pilot's `@journey/depart`
+   "Permission denied" with staff reading `LANE_UNPLANNED`; IC9 T6 (non-staff clear refused, staff
+   clear stands a held launch down, `+ship/leave` lands in the gallery); `@inv/move` out of the hold
+   refused identically docked and under way — the endpoint rule, named as such.
+6. **The sailing plan's skips and holds** (`ic12_the_sailing_plan_skips_and_holds`): on the
+   production root `NO_BID`, `HELD_SHORT_FOR_DEPART` (the need cross-checked against the fill within
+   one tonne), `HELD_NO_DEPART`, `FILL_ENOUGH`, three dropped burns → `HELD_UNCONFIRMED` with ≥ 3
+   `NOT_ADMITTED` and no ticket, `UNDER_MIN`, `AWAITING_REFUND` after `DELIVER_TOO_LATE` and after
+   `DRAW_TOO_LATE` (the cutoff from `DRAW_WINDOW_SECS − DRAW_SETTLE_MARGIN_SECS`; the escrow shown as
+   a hold on available funds, the contract `Expired`, posted and available restored exactly),
+   `NOTHING_ABOARD`.
+7. **`TestWorld::from_engine`** (`crates/mush-testkit/src/lib.rs:151-161`): wraps a booted engine
+   and connects GOD as `with_modules` does; unit test
+   `ic12_from_engine_wraps_a_booted_engine_and_connects_god`.
+8. **The gate over every line but the sky** (`crates/tacsim/src/port/coop.rs:526-576`):
+   `pub const fn gated(Binding) -> bool`, an exhaustive match with `Binding::Sky => false` citing
+   D-18-50; `enrol_gate` refuses on the first gated non-Ready line; both re-exported from
+   `tacsim::port` (`port/mod.rs:115`). Treasury and Bids now gate. Unit test
+   `ic12_the_gate_refuses_on_every_gated_line_and_never_on_the_sky` (15 bindings ×
+   Pending/Missing/Flagged; the summary still counts the sky).
+9. **The moving-sky promise** (`crates/tacsim/src/port/readiness.rs:316-329, 816-827`;
+   `crates/tacsim/src/port_tick.rs:361-363, 452-481, 554`): `body_without_epoch(pack, ephemeris)`
+   (None at rate 0, else the first lane body without `epoch_ic`); the Sky line Flagged with
+   "; {body} has no epoch_ic, so it moves from the server's epoch."; `PortTickState.sky_paged`,
+   `pub fn sky_paged(w)`, and `page_moving_sky` raising one `tracing::error!` with a runbook field
+   per boot. Tests `ic12_a_moving_sky_with_a_body_lacking_epoch_ic_flags_and_pages_once` and
+   `ic12_a_constant_sky_never_flags_a_body_lacking_epoch_ic` (`crates/tacsim/tests/ports.rs`).
+10. **`sale_none_reason`** (`crates/tacsim/src/port/executor.rs:2855-2887`), a behaviour-preserving
+    extraction of the sale's four skip reasons, with unit tests
+    `ic12_a_sale_that_takes_nothing_names_its_reason`, `ic12_fill_reason_renders_each_hold`,
+    `ic12_fill_refuses_a_locker_too_small` and `ic12_a_refused_call_logs_once_and_holds_at_three`;
+    the resume reset in `crates/tacsim/tests/orders.rs::ic12_resume_clears_the_refusal_count`.
+11. **IC9 T8 and T10**:
+    `crates/tacsim/tests/voyage.rs::ic12_t8_goods_pending_aboard_releases_a_terminal_contract_and_holds_for_a_lapsed_listing`;
+    `crates/mush-atlas/tests/anchored_exits.rs::ic12_t10_a_one_way_exit_out_of_a_room_aboard_applies`.
+12. **`+ic`'s refusals** (`crates/tacsim/tests/stations.rs`): `ic12_ic_refuses_a_non_character` (a
+    Thing run as the actor; there is no puppet `@force`), `ic12_ic_refuses_a_world_without_a_corridor`
+    (the starter and game packs only), `ic12_the_ic_door_has_no_staff_exemption` (a WIZARD stamped at
+    Stickney refused at `c`).
+13. **The station packs re-published**: `neighborhood.ceres_freeport` v1 → **v2** (digest
+    `641e1a39…4d8538`; adds C09 `hull registry board` and C14 `sailing plan forms`; strikes the verb
+    meta-text from C04 `map`, C07 `price board`, C08 `loading schedules` and C08 `chit board`) and
+    `neighborhood.stickney_yards` v2 → **v3** (`df2e5af1…b2eb`; adds P05 `sailing plan pad`, P11
+    `yard time board` and `insurers mark`); pins in `stations.rs` `PINNED`/`station_version` and
+    `boot_parity.rs`'s closure; tests `ic12_the_five_details_ship_under_plain_keys` (no painted price
+    but the Dray's 120,000cr, no `LookRendered`, no `+` before a letter in any Ceres detail) and
+    `ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_and_apply` (v1 and
+    v2 rebuilt to their old pinned digests, a kept world never upgraded at boot, taken through
+    `@atlas/pack plan` then `apply`, no object made).
+14. **The validator bounds** (`crates/mush-atlas/src/validate.rs:2065-2066, 2240-2294`):
+    `budget.text` errors for `short_desc` over 256 bytes ("one line"), ambience over 24 lines, a
+    blank ambience line, a line over 512 bytes; `topology.unreachable`'s hint names `port.dock`. Five
+    tests in `crates/mush-atlas/tests/validate.rs` with boundary passes; the starter digests unmoved.
+15. **Help and in-code help**: new `docs/help/{ports,ships,coop,orders,trade}.md`; amended
+    `getting-started`, `chargen`, `travel`, `spatial`, `cockpit`, `npc`, `atlas`, `faction`,
+    `chronicle`, `clocks` (`intel` checked, nothing stale); `SHIP_HELP` (`port/ship.rs:75-76`) and
+    `ORDER_USAGE` (`port/orders.rs:715`) name `+Nh|+Nm`; `@journey`
+    (`mush-sim/src/commands.rs:3591-3596`) states the real gate and that a lane route or Co-op hull
+    is flown only by `+ship/undock` or the sailing plan; `@agent` (`mush-npc/src/module.rs:211-220`)
+    lists `interfaces` and the one-sheet `/sheet` sentence; `+market/depth <catalogue>:<code>` and
+    `/accept`'s re-stage promise made true (`mush-market/src/commands.rs:67-71, 83-87`).
+    `docs/ops.md` gains "The trade run (doc 18): the port tick, readiness and the play rate"
+    (executor posture, asker-authority bridge, the status report and gate, the moving-sky page,
+    `@tacsim/port clear`, the rate-24 deploy line, kept-world pack upgrade, the pre-deploy blocker).
+    The §10 stale comments fixed in `mush-market/tests/ic0.rs`, `e7r2.rs`, `mush-sim/src/custody.rs`,
+    `tacsim/src/ephemeris.rs`; the rest found already true.
+16. **Doc 18 Draft 0.4** ("as built" through IC12; +850/−0 words: zero word-level deletions, the P-A
+    brief byte-identical): the status paragraph, the §1–§4.8 "As built (ICn)" notes, §3's banner and
+    beat list, §4.8's calendar corrected to `mush_core::CivilDate`, §5's rows marked landed with
+    their hashes and the by-row list with the unowned presentation residuals, §6's as-built record of
+    every test and restart, §7's annotations (D-18-3, 11/46, 12, 18, 23, 24, 25, 26, 27, 29, 30, 31,
+    32, 34, 36, 41, 47, 50), §8's Q-18-32..41 status and Q-18-42..65, §9 risk 3/11/14 notes and the
+    new risk 19, §10's done/owed marks. 18a revised with 19 "As built" notes; the README rows
+    rewritten. The builder left this file untouched; the committer appended this section.
+17. **Readiness helpers made stricter** in `tacsim/tests/{commerce,coop,voyage,orders,sale}.rs`
+    (every bracketed line but `sky:` must read `[ready]`); the state-slot row for the deleted file
+    removed from `crates/mush-contract-tests/state-slot-owners.toml`.
+
+### Deferred, and why
+
+- **The hand-played two-session smoke** (the §5 IC12 row's lens). Not done and not claimed: the
+  build machine has no Redis (`Test-NetConnection 127.0.0.1 -Port 6379` → `TcpTestSucceeded
+  False`, 2026-10-17). The story test's rate-24 set-up half stands in for the smoke's set-up half;
+  the real smoke — two sessions at rate 24 on local `mushd`, or a dev1 session after an
+  owner-approved redeploy — is owed to the owner (O5).
+- **Lead ruling L1 / owner item O6 — the story test's rate.** §6's "rate 3600 the only staff act,
+  none after boot" cannot hold on the production composition: the Rate line refuses enrolment at
+  any rate but 24 on a non-test world, and threading `test_world` into `build_engine` is forbidden
+  (IC3 L15). The test boots at `[game].ic_ratio = 24`, enrols at 24 and sets 3600 as its one staff
+  act after the enrolments; §4.7's "at rate 3600 in a test world the gate passes" is noted
+  superseded for the story test; IC3's deferral of the threading is closed as not needed. Recorded
+  as Q-18-61.
+- **Lead ruling L2 — landing and restarts as production does them.** Through the coordinator
+  exactly as `CommandSubmitDriver::drive_one`, restarts as plain `build_engine` re-boots over the
+  kept store with the epoch bumped (production draws it at random per process, so the cross-restart
+  replay guard is the ticket's `seq`, not the coordinator's HIT). The named fallback (request-keyed
+  landing + hand-hydrate) was not needed.
+- **Lead ruling L5 / owner item O2 — the gate is every line but the sky.** Treasury and Bids join
+  the gate (IC8 L8's "reported, not gated" was a lead deferral to this cut); the sky stays reported
+  and paged, never gated (D-18-50). **Owner-critical, Q-18-60:** the Bids line also reads Pending
+  while a house cannot fund one unit of its bid, so ordinary play can close enrolment world-wide —
+  on lane v3 Kasei's 600,000cr against 3,040,000cr of intakes drains by about 11,000cr per
+  story-shaped round trip, so on the order of fifty trips, sooner while sale escrows are held; from
+  then every new player hears `NOT_OPEN` and the gate logs at `info`, never paged. Before IC12
+  enrolment stayed open and sales skipped with `HOUSE_CANNOT_PAY_SKIP`. Alternatives recorded (gate
+  Bids only when Missing; or page at `error` once a boot when a funds-Pending bid closes it). Not
+  built either way: it changes O2, the owner's.
+- **Lead ruling L13 — the sky page lives on the tick**, latched in `PortTickState.sky_paged`;
+  `readiness` stays a pure read. The test asserts the latch, not a page count (the brief accepted
+  "the log itself is not asserted").
+- **Lead rulings L3/L4 — one file, several tests, each its own engine**; the old tacsim test
+  deleted, not kept beside; T8 in `voyage.rs`, T10 in `anchored_exits.rs`, the `+ic` refusals in
+  `stations.rs`. `ALREADY_IN` has no test (doc 18 §4.5's as-built note overstates this by one
+  clause).
+- **Lead rulings L7/L8 / owner item O3 — detail keys and painted prices.** Seven detail keys ship
+  respelled under `[A-Za-z0-9_ ]` (five at the stations, two aboard in IC8); the validator was not
+  widened. Live market figures and verb meta-text are struck from the Ceres details; the Dray's
+  `120,000cr`, insured values and the C14 departures board's "two to three weeks in a good season"
+  stay as fiction (Q-18-59). Stickney's P04 `shift boards` (`+atlas`), P07 `intake board` and P08
+  `price board` (`+market/list`) still name verbs — an unowned residual, named in 18a §0.2.
+- **Lead ruling L9 — help-only for `@agent`**: the code default `"mortal"` is left for IC14.
+- **Lead ruling L10 / owner item O4 — the presentation residuals** (the Engineering/Bridge
+  burn-and-reserve gauge lines, the C14/P05 departure boards and C01/P01 berth boards as
+  `LookRendered` lines, P07's funded-balance figure, the accept line naming the signatory) are not
+  built; the §5 IC12 row does not name them; recorded as unowned in doc 18 §5 and Q-18-47 for the
+  owner to place (IC14 or a content cut).
+- **Lead ruling L12 — `+600s` → `+10m`**: the shipped grammar has no seconds form; §6 is noted as
+  built, not changed.
+- **Lead rulings L11/L14 — the docs pass split in four, history never rewritten, the cut notes read
+  by grep; comment-only edits in `mush-market`, `mush-sim` and `tacsim`.** The `+market` price lines
+  resolved as `/depth <catalogue>:<code>` (a port good reads `tacsim:<good>`).
+- **Owner item O1 — every player-facing text** (the five help topics, the amendments, the `+Nm`
+  grammar, the `@journey`/`@agent`/`+market` lines, the Sky flag text, the ops section) is the
+  builder's wording in the house voice; the owner may revise. `ships.md`'s "nothing crosses the hull
+  under way" is player-side true only (below).
+- **Q-18-62 (new, owner):** a staff `@inv/move` out of a hold under way lands — the under-way
+  quantity seal on every inventory path is D-18-37's deferral to P-H; the pilot's own move is
+  refused by the endpoint rule (one endpoint), docked and under way alike, which is what the test
+  now pins. §6's check 10 as written stays open there.
+- **IC11 paths covered only at the unit level**: `REFUSED_RETRY`, `INTAKE_TAKEN`,
+  `HELD_FILL`/`HELD_FILL_PLAN` (no step on the shipped packs reaches `refused_call` or exhausts a
+  4,000 t intake; the brief forbids fixtures that fake a refusal); the resume reset through
+  `orders.rs`'s `reboot_editing` idiom.
+- **Declared deviations kept as built**: the plan burn at the test's load is 40 t (the doc's 41 is
+  the burn of a 42 t tank); the timings are asserted from the frozen ticket, never literals; the
+  pilot's raw `@journey/depart` and a non-staff `@tacsim/port clear` hear "Permission denied." (the
+  permission gate runs first); the Draw cutoff is `DRAW_WINDOW_SECS − DRAW_SETTLE_MARGIN_SECS` =
+  3,000 s; `HELD_SHORT_FOR_DEPART`'s need projects the order's own tonne (Q-18-51, IC14).
+- **Pre-deploy blocker** (doc 18 §9 risk 19): `MAX_APPLIED_MARKERS` (4,096) has no retention;
+  selling must not be enabled on a long-lived world before IC14's first item lands.
+- **Still owed outside this cut's files**: the §10 amendments to docs 06, 08a, 10 (T1, C2A–C4A),
+  10b, 11, 14/14b, 15, 16c and `mushd.toml.example`. The `18-cut-notes.md:109-110` re-point owed to
+  the committer is made by the note at the end of this section; IC0's lines stay as written.
+- **Two small inaccuracies left standing**: `crates/tacsim/src/ephemeris.rs:9` is still a
+  148-character `//!` line (the fixer reported it rewrapped; fmt and clippy are green); doc 18
+  §4.5's "`ALREADY_IN` … tested since IC12" (it is not).
+
+### Pins re-blessed
+
+- **`crates/tacsim/tests/stations.rs` `PINNED`**: `neighborhood.ceres_freeport` `383e0b13…1dc1cf` →
+  `641e1a3983447cca1a05bed6a839f98fe68c2afa683e0deee0c5e4e2904d8538` and
+  `neighborhood.stickney_yards` `39aab74e…42d42` →
+  `df2e5af11f18c4a5c71bea9e0b5b187b7cdb97c037aecc6b433b9ee3a0d1b2eb`; `station_version` Ceres 2,
+  Stickney 3. Reason: the packs are new published versions (the five 18a details under plain keys;
+  Ceres' verb meta-text struck, including the C08 chit board after the fixer). Both digests
+  re-derived by the signing helper, never hand-edited; the old versions are rebuilt to their old
+  pinned digests by `old_station_json`, which pins that a kept world latched at v1/v2 holds exactly
+  those bytes.
+- **`crates/mush-server/tests/boot_parity.rs`**, the `station_version` closure and comment: Ceres 2,
+  Stickney 3, the regions 1. Same reason.
+- **`crates/mush-contract-tests/state-slot-owners.toml`**: the `crates/tacsim/tests/ic_slice_loop.rs`
+  row removed. Reason: the file is gone and the new story test mutates no foreign slot (the account
+  oracle is linked through `Engine::link_account_character`, as the world task does).
+  `state_slot_owners` passes (4 tests).
+- **`tacsim` lib**: `ic6_the_gate_reads_only_its_bindings` replaced by
+  `ic12_the_gate_refuses_on_every_gated_line_and_never_on_the_sky`. Reason: the gate's rule changed
+  (every line but the sky); the new test is a superset (15 bindings × 3 states).
+- **The readiness helpers in `tacsim/tests/{commerce,coop,voyage,orders,sale}.rs`**: wait on every
+  bracketed line but `sky:` instead of the vendor/ask/facts subset. Reason: the gate as now defined;
+  strictly stronger. `ic6_the_desk_closes_at_a_play_world_rate_other_than_24` sets the rate to 24
+  before stocking (a real world reads Ready only at 24); its assertion is unchanged.
+  `ic11_an_unfunded_bid_skips` drains Kasei after stocking to 100.00cr (under one tonne, not zero)
+  instead of authoring a 100-major lane variant; its assertions are unchanged.
+- **Not moved** (checked): the panic budgets, the restriction-lints census, `legacy-handlers.toml`
+  (no new verb or switch), `module-ns-owners.toml`, the composition-edge pin, the lane v3 / Dray v2 /
+  goods v1 / region digests, the starter digests, the `StockIssueId` golden,
+  `help-commands-allowlist.toml` (no new row; T-45 green), the CI gated-test inventory (nothing
+  `#[ignore]`d).
+
+### How it was verified
+
+On Windows at the working tree over `26e3b1fa`, the final gate (gate1, 21 steps, logs under the
+run's `scratchpad/cuts/IC12/gate1/`) — every step a first-run pass, no rerun, no LNK1104, no hung
+binary:
+
+```
+cargo fmt --all -- --check                                        (no output; rc=0)
+cargo clippy --workspace --all-targets -- -D warnings             Finished `dev` profile … in 0.78s; rc=0
+cargo test -p mush-testkit                                        lib 14; acceptance 9; ledger_boundary 3; vehicle_console 7; doc-tests 2 passed, 1 ignored (pre-existing)
+cargo test -p mush-server --test ic_slice_loop                    test result: ok. 5 passed; 0 failed; finished in 2.96s
+cargo test -p mush-server --test boot_parity                      test result: ok. 18 passed; finished in 2.35s
+cargo test -p tacsim --lib                                        test result: ok. 920 passed; finished in 4.37s
+cargo test -p tacsim --test ports --test coop --test commerce --test voyage --test sale --test orders
+    commerce 20; coop 18; orders 27; ports 19; sale 15; voyage 15; all ok
+cargo test -p tacsim --test stations --test content --test lane --test hulls --test port_tick --test capacity --test passage
+    capacity 17; content 29; hulls 15; lane 8; passage 4; port_tick 16; stations 18; all ok
+cargo test -p mush-atlas --lib                                    test result: ok. 51 passed
+cargo test -p mush-atlas --test validate --test anchored_exits --test starter
+    validate 14; anchored_exits 3; starter 5; all ok
+cargo test -p mush-market --lib                                   test result: ok. 27 passed
+cargo test -p mush-market --test ic0 --test e7r2                  ic0 5; e7r2 21; all ok
+cargo test -p mush-npc --lib                                      test result: ok. 73 passed
+cargo test -p mush-sim --lib                                      test result: ok. 37 passed
+cargo test -p mush-contract-tests   (twice)                       29 result sets all ok, 0 failed (lib 31, ci_gated_test_inventory 6, help_commands 4 (T-45), legacy_handler_allowlist 4, module_ns_owners 3, panic_budget 7, restriction_lints 11, scale_harness 6 passed 8 ignored (pre-existing), state_slot_owners 4, hex_vocabulary 2)
+cargo test -p mushd --test boot_composition                       test result: ok. 6 passed; finished in 25.22s
+CARGO_BUILD_JOBS=8 cargo test --workspace --exclude mush-bot --no-fail-fast
+    rc=0; 42 min; 399 'test result:' lines, all ok; passed=7505 failed=0 ignored=92
+cargo test -p mush-bot                                            rc=0; 22 result sets all ok; 704 passed, 0 failed, 5 ignored (arena_e2e 9 in 203 s, playtesting 9 in 129 s: long, not hung)
+```
+
+The load-sensitive suites passed inside the saturated sweep (ipc_authoritative_action 8,
+two_process_e2e 4, scripting_e2e 1, world_fault 2, module_api 77, arena_story 1 in 90.56 s,
+arena_story_split 1 in 53.61 s). The `process_fault.rs:197` panic in the log is the gate5 fault
+matrix's deliberate injection (its binary ok).
+
+Fixer re-checks after the fix pass: `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim --test stations
+ic1_the_station_packs_load_and_their_digests_are_pinned` → ok (Ceres v2 re-signed, only its digest
+moved); stations 18 ok; `ic_slice_loop` 5 ok in 3.03 s with boot_parity 18 ok.
+
+The three lenses: correctness (8 findings: F1–F5 fixed, F6 deferred to the owner as Q-18-60, F7/F8
+notes — F7's stale `readiness.rs:71/735` comments and the `executor.rs` doc placement were
+addressed by the fixer's F5 fix for the doc line; the Bids comments stand as a note), conformance
+(9: F1–F5 fixed, F6–F9 notes), tests (14: T1 and T2 must-fix fixed, T3–T8 fixed, T9–T14 notes).
+The judge read the whole diff and every new file; confirmed the `Step::Deferred` path at
+`voyage.rs:1761` → `port_tick.rs:671`; confirmed `sale_none_reason` byte-equivalent to the base arm;
+found doc 18's word-level deletions zero (`git diff --word-diff=porcelain`) and the P-A brief region
+byte-identical to base lines 1876–1960; `help-commands-allowlist.toml` untouched; `ALREADY_IN`
+found untested; `ephemeris.rs:9` found unwrapped. No flakes identified. The Redis check verbatim:
+`ComputerName 127.0.0.1, RemotePort 6379, TcpTestSucceeded False` — the smoke owed, not claimed.
+
+### Surface for the next cuts
+
+Public items later cuts (IC13, IC14, P-A) build on, verified against the diff:
+
+- **`mush_testkit::TestWorld::from_engine(engine: Engine) -> TestWorld`**
+  (`crates/mush-testkit/src/lib.rs:151`): the way a test wraps the production root booted by
+  `mush_server::boot::build_engine`.
+- **The story-test rig** in `crates/mush-server/tests/ic_slice_loop.rs` (file-local, the pattern
+  IC13's buyout test extends): `boot(tag)`, `config(tag)` (memory store, scratch data dir,
+  `help_dir` = `docs/help`, `tacsim.enabled`, `ic_ratio = 24`, `ephemeris.rate = 0`), `flush`,
+  `land -> Landing::{Landed, Replay, Refused(String)}` (the coordinator path),
+  `drain`/`land_all`/`land_quietly`/`fire`/`fire_quietly`/`sweep`/`to_ic`/`to_ic_queued`,
+  `restart(rig, probe)`, `pilot`/`alt` (store accounts + `link_account_character`),
+  `enrol`/`outfit`/`board_from_chandlery`/`set_rate`, `assert_holds_within_limits`,
+  `assert_no_pages`, `assert_sky_line`, `assert_help`, `still`/`refused`/`accept_refused`/
+  `inv_move_out`, `stickney_buys`, `fire_until`, `disconnect`. The vertex helper is shared by
+  `#[path = "../../tacsim/tests/support/vertex.rs"]`.
+- **`tacsim::port::gated(Binding) -> bool`** (const, exhaustive; `Binding::Sky => false`) and
+  **`tacsim::port::enrol_gate(&Readiness) -> Result<(), &ReadinessLine>`**, both re-exported from
+  `crates/tacsim/src/port/mod.rs:115`; a new `Binding` variant must be placed in `gated` by hand.
+  `Readiness::summary`/`is_ready` unchanged (the sky still counts there).
+- **`tacsim::port_tick::sky_paged(&World) -> bool`** beside `drift_pages`; `PortTickState.sky_paged`
+  (crate-private); `readiness::body_without_epoch(&RulesPack, &EphemerisConfig) ->
+  Option<CanonicalId>` (crate-private) — the Sky line's flagged text is `"{base}; {body} has no
+  epoch_ic, so it moves from the server's epoch."`.
+- **`tacsim::port::executor::sale_none_reason(w, &Bid, label, unit, floor, want, &[Bound]) ->
+  String`** (crate-private), the single place a queued sale's skip reason is worded.
+- **The pure planning functions the story test proved usable from outside the crate** (already
+  `pub`, now load-bearing for tests): `tacsim::port::{project_cargo, fill_targets, choose_route,
+  HullDrive}`, `tacsim::port::capacity::{max_more, admits, load, compartment_for, format_m3,
+  format_tonnes}`, `tacsim::port::capacity_line`, `tacsim::Sky::from_pack`,
+  `tacsim::EphemerisConfig`, `tacsim::definitions::Catalog::build_fielded`,
+  `mush_market::{DRAW_WINDOW_SECS, DRAW_SETTLE_MARGIN_SECS}`,
+  `mush_sim::CarrierJourney::{leg_times, arrival_at}`, `tacsim::port_tick::{last_fire,
+  PortFireStats.deferred, pending_notices, NOTICE_HEADING}`.
+- **The station packs**: `neighborhood.ceres_freeport` v2 (digest
+  `641e1a3983447cca1a05bed6a839f98fe68c2afa683e0deee0c5e4e2904d8538`) and
+  `neighborhood.stickney_yards` v3 (`df2e5af11f18c4a5c71bea9e0b5b187b7cdb97c037aecc6b433b9ee3a0d1b2eb`);
+  the detail keys `hull registry board`, `sailing plan forms`, `sailing plan pad`, `yard time board`,
+  `insurers mark`; the `stations.rs` helpers `old_station_json`, `plan_and_apply`, `names_a_verb`,
+  `paints_a_price`, `IC12_DETAILS`, `FICTION_FIGURE`. A kept world takes a new version only through
+  `@atlas/pack plan` then `apply`; the next re-publication is Ceres v3 / Stickney v4.
+- **The atlas validator's `budget.text` errors** for `short_desc` (> `MAX_SHORT_DESC_BYTES`),
+  ambience lines (> `MAX_AMBIENCE_LINES`, blank, > `MAX_AMBIENCE_LINE_BYTES`) and the
+  `topology.unreachable` hint text "join it to a reachable room with an unlocked exit, mark it
+  `port.dock` if ships reach it, or make it restricted".
+- **Player text**: `SHIP_HELP` and `ORDER_USAGE` carry `at=now|HH:MM|daily HH:MM|+Nh|+Nm` /
+  `until=+Nh|+Nm`; `+market/depth <catalogue>:<code>`; the help topics `ports`, `ships`, `coop`,
+  `orders`, `trade` (T-45 checks every verb token in them); `docs/ops.md` "The trade run (doc 18)".
+- **Doc conventions**: doc 18 is Draft 0.4 "as built" through IC12 with `**As built (ICn):**` notes;
+  §8's cut-raised questions run Q-18-42..Q-18-65 (IC13 numbers from Q-18-66); §5's rows carry
+  "(**landed**, `<hash>`)"; each cut's committer appends its `## ICn` here.
+
+**Re-point of IC0's settle-gate note (`18-cut-notes.md:109-110`).** IC0's "doc 18 cut IC5's
+`with_party_cap_source` is what brings it to `server_modules_with`, and IC5's own verify lens names
+that run" was written against Draft 0.2's cut numbering. Read it as: cut IC7 built
+`with_party_cap_source` (the content-resolved party-cap source), cut IC8 wired the TacSim layer's
+`tacsim::port::PortPartyCaps` through it on the roster that composes the layer, and the port's own
+stock → quote → accept → settle gate is `crates/tacsim/tests/commerce.rs` — as
+`crates/mush-market/tests/ic0.rs:19-25` and `crates/mush-server/tests/e7r2_proving_loop.rs:34-40`
+now word it. IC0's text is left as written (history is not rewritten); this note is the re-point.

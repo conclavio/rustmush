@@ -72,8 +72,8 @@ pub const SHIP_HELP: &str = "+ship  --  Your chartered Dray: where it is, what i
      depart.\n+ship/orders  the sailing plan: each order, its state, the next one due (UTC, IC \
      and real time), any hold, and the last eight lines of its log. It reads anywhere.\n\
      +ship/order sell <good> <qty|all> [min=<cr>] [short=partial|skip|hold] | buy <good> \
-     <qty|fill> [max=<cr>] [short=…] | depart <port> [at=now|HH:MM|daily HH:MM|+Nh] \
-     [until=+Nh] | stop | del <n> | move <n>=<pos> | clear | pause | resume | skip <n>  aboard \
+     <qty|fill> [max=<cr>] [short=…] | depart <port> [at=now|HH:MM|daily HH:MM|+Nh|+Nm] \
+     [until=+Nh|+Nm] | stop | del <n> | move <n>=<pos> | clear | pause | resume | skip <n>  aboard \
      your Dray, or in the port where she is docked: file and amend the sailing plan the port \
      runs under your signature while you are off watch.";
 

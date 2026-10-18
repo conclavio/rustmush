@@ -541,12 +541,8 @@ fn stock(rig: &mut Rig) {
         let out = status(&mut rig.tw);
         let gated: Vec<&str> = out
             .lines()
-            .filter(|line| {
-                line.contains(" vendor ")
-                    || line.contains(" ask ")
-                    || line.starts_with("market facts")
-                    || line.starts_with("inventory facts")
-            })
+            // Doc 18 cut IC12: the gate is every report line but the sky (D-18-50).
+            .filter(|line| line.ends_with(']') && !line.starts_with("sky: "))
             .collect();
         if gated.len() > 1 && gated.iter().all(|line| line.ends_with("[ready]")) {
             return;
@@ -554,7 +550,8 @@ fn stock(rig: &mut Rig) {
         let (_, queued) = fire(rig);
         land_all(rig, &queued);
     }
-    panic!("the ports were not stocked within 40 fires");
+    let out = status(&mut rig.tw);
+    panic!("the ports were not stocked within 40 fires:\n{out}");
 }
 
 /// Read one typed value through an owner-stamped transaction.
@@ -2627,20 +2624,55 @@ fn ic11_a_sold_out_buy_goes_partial() {
 }
 
 /// **An unfunded bid skips** (§1 lens 3; doc 18 §4.4 "an unfunded or exhausted bid is
-/// skipped and logged"): Kasei's capital below one tonne's price — the order is
+/// skipped and logged"): Kasei's available funds below one tonne's price — the order is
 /// passed over, no quote and no contract, the pilot told.
+///
+/// Doc 18 cut IC12: the stocking helper waits for the whole enrolment gate (every
+/// readiness line but the sky), and a bid whose house cannot fund a tonne reads
+/// pending ("not buying until its capital settles"), so a world authored with Kasei
+/// unfunded can never read ready. The house is drained after stocking instead — staff
+/// move all but 100.00cr of its available balance to the treasury — which leaves it
+/// exactly as the lane variant did: funded, but below one tonne's price (the house's
+/// units are floored, so 100.00cr against the bid is 0 units, never 1).
 #[test]
 fn ic11_an_unfunded_bid_skips() {
-    let lane = lane_variant(3, |doc| {
-        let orgs = doc["entries"]["stickney_port"]["def"]["orgs"]
-            .as_array_mut()
-            .expect("orgs");
-        let kasei = orgs.iter_mut().find(|o| o["id"] == "kasei").expect("kasei");
-        kasei["capital_major"] = serde_json::json!(100);
-    });
-    let mut rig = stocked_with(Roster::seeded(lane));
+    let mut rig = stocked();
     let (pilot, row) = docked_at_stickney(&mut rig, &[("metals", 20)]);
     let hull = ObjId(row.hull);
+    let kasei = port_map(&rig.tw, "stickney_port").orgs[&cid("kasei")]
+        .account
+        .expect("Kasei's account");
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let funds = economy(&rig.tw)
+        .snapshot()
+        .account(mush_economy::AccountId(kasei))
+        .and_then(mush_economy::Account::available)
+        .map(mush_economy::Amount::minor)
+        .expect("Kasei's available balance");
+    // 100.00cr stays: under one tonne's price at the bid, but not nothing.
+    let left = 10_000;
+    let bid = price_of(&rig.tw, kasei_bid(&rig.tw, "metals"));
+    assert!(
+        funds > left && left < bid,
+        "{funds} available; the bid {bid}"
+    );
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/pay #{kasei}=#{treasury} {}", funds - left),
+    );
+    assert!(out.contains("Paid: transaction #"), "{out}");
+    assert_eq!(
+        economy(&rig.tw)
+            .snapshot()
+            .account(mush_economy::AccountId(kasei))
+            .and_then(mush_economy::Account::available)
+            .map(mush_economy::Amount::minor),
+        Some(left),
+        "the house is left under one tonne"
+    );
     let contracts = economy(&rig.tw).snapshot().contracts().count();
     let _ = order(&mut rig, pilot, "sell metals all");
     disconnect(&mut rig.tw, pilot);
@@ -3856,4 +3888,55 @@ fn ic11_the_status_line_names_the_departure_hour() {
     assert!(!out.contains("; departs "), "{out}");
     let out = run(&mut rig.tw, other, "+ship");
     assert!(!out.contains("; departs "), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// Doc 18 cut IC12: `+ship/order resume` clears a refused call's count
+// ---------------------------------------------------------------------------
+
+/// **`+ship/order resume` clears the refusal count** (doc 18 cut IC12 item 1.8,
+/// F14): a plan stopped at its third refused closed call — order 1 `Held` with
+/// `refusals` 3 and a `retry_at`, the plan `Held` on a stopped note naming it —
+/// runs again from order 1 after `resume`, the order pending with `refusals` 0 and
+/// no `retry_at`, and the document still checks. The stopped shape is written
+/// through the folded store (`reboot_editing`, this file's corrupt-document idiom),
+/// because no step on the shipped composition reaches `refused_call` reproducibly
+/// (the unit `ic12_a_refused_call_logs_once_and_holds_at_three` covers the count).
+#[test]
+fn ic12_resume_clears_the_refusal_count() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1, "Salt Moth");
+    let hull = ObjId(row.hull);
+    let out = order(&mut rig, pilot, "buy volatiles 5");
+    assert!(out.contains("Order 1 filed"), "{out}");
+    let reason = "That listing is not taking quotes.";
+    let mut rig = reboot_editing(rig, |folded| {
+        edit_orders(folded, hull, |doc| {
+            doc["state"] = serde_json::json!("held");
+            doc["hold"] = serde_json::json!({
+                "order": 1, "reason": reason, "since": 1, "retry": false
+            });
+            for order in doc["orders"].as_array_mut().expect("orders") {
+                if order["id"] == 1 {
+                    order["state"] = serde_json::json!("held");
+                    order["refusals"] = serde_json::json!(3);
+                    order["retry_at"] = serde_json::json!(1_000);
+                }
+            }
+        });
+    });
+    let doc = orders(&rig.tw, hull);
+    assert_eq!(doc.state, PlanState::Held);
+    assert_eq!(doc.order(1).map(|o| o.refusals), Some(3));
+    let _ = rig.tw.connect(pilot);
+    let out = order(&mut rig, pilot, "resume");
+    assert!(out.contains(&RESUMED.replace("{n}", "1")), "{out}");
+    let doc = orders(&rig.tw, hull);
+    assert_eq!(doc.state, PlanState::Running);
+    assert!(doc.hold.is_none());
+    let resumed = doc.order(1).expect("order 1");
+    assert_eq!(resumed.state, OrderState::Pending);
+    assert_eq!(resumed.refusals, 0, "the count is cleared");
+    assert_eq!(resumed.retry_at, None);
+    doc.check().expect("the plan still checks");
 }

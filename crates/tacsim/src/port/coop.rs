@@ -517,37 +517,59 @@ pub fn free_hulls<'a>(w: &World, port: &ProgrammePort<'a>) -> Vec<&'a HullRow> {
     rows
 }
 
-/// **The enrolment gate** (lead ruling L1; doc 18 §4.7): the first line whose
-/// binding is Lane, Rate, Map, Rooms, Domain, Org, Programme or Hulls — and,
-/// since cut IC8 (§4.7 "IC8 adds pools seeded and listings equal to pools"; its
-/// lead ruling L8), Pools, Listings or MarketFacts — and, since cut IC10 (lead
-/// 2g), InventoryFacts, which a sale into a bid settles on — and whose state is not
-/// Ready. Sky, Treasury and Bids are reported, not gated (a bid waits on the
-/// capital sweep the Org lines already gate). A Pending Listings line — seeded
-/// stock the arm has not listed yet — closes enrolment for the fire or two the
-/// arm takes; the draw mirror's lag is inside Ready (`q ≤ p ≤ q + undrawn`).
+/// **Whether a readiness line's binding gates `+coop/enrol`** (doc 18 cut IC12;
+/// §4.7 "IC12 lands the full report and the gate over all of it", read with
+/// D-18-50). Every binding gates but the sky. The match is exhaustive and has no
+/// catch-all arm on purpose: a binding a later cut adds must be placed here by
+/// hand, so no new line is ever silently ungated.
+#[must_use]
+pub const fn gated(binding: Binding) -> bool {
+    match binding {
+        Binding::Lane
+        | Binding::Rate
+        | Binding::Treasury
+        | Binding::Map
+        | Binding::Rooms
+        | Binding::Domain
+        | Binding::Org
+        | Binding::Programme
+        | Binding::Hulls
+        | Binding::Pools
+        | Binding::Listings
+        | Binding::Bids
+        | Binding::MarketFacts
+        | Binding::InventoryFacts => true,
+        // D-18-50: the readiness gate checks the world rate and reports the sky; it
+        // never gates on it.
+        Binding::Sky => false,
+    }
+}
+
+/// **The enrolment gate** (lead ruling L1; doc 18 §4.7 "IC12 lands the full report
+/// and the gate over all of it", read with D-18-50; cut IC12 lead ruling L5): the
+/// first line whose binding is [`gated`] and whose state is not Ready — every line
+/// of the report but the sky, which D-18-50 keeps reported and never gated.
+///
+/// Since cut IC12 Treasury and Bids gate too (IC8's lead ruling L8 reported Bids
+/// without gating them, a deferral to this cut): a missing treasury account, or a
+/// hand-withdrawn or apply-waiting bid, closes enrolment; a lapsed bid the clerk
+/// re-posts closes it for the fire or two the clerk takes, as a Pending Listings
+/// line does (seeded stock the arm has not listed yet); an exhausted bid (quantity
+/// 0, "not buying") reads Ready. The draw mirror's lag is inside Ready
+/// (`q ≤ p ≤ q + undrawn`). [`Readiness::summary`] still reports every line, so a
+/// flagged sky reads "Not ready" on `@tacsim/port status` while enrolment is open.
+/// A player never sees the failing line: `+coop/enrol` logs it and answers
+/// [`NOT_OPEN`].
 ///
 /// # Errors
 ///
 /// The first failing line.
 pub fn enrol_gate(r: &Readiness) -> Result<(), &ReadinessLine> {
-    match r.lines.iter().find(|line| {
-        matches!(
-            line.binding,
-            Binding::Lane
-                | Binding::Rate
-                | Binding::Map
-                | Binding::Rooms
-                | Binding::Domain
-                | Binding::Org
-                | Binding::Programme
-                | Binding::Hulls
-                | Binding::Pools
-                | Binding::Listings
-                | Binding::MarketFacts
-                | Binding::InventoryFacts
-        ) && line.state != LineState::Ready
-    }) {
+    match r
+        .lines
+        .iter()
+        .find(|line| gated(line.binding) && line.state != LineState::Ready)
+    {
         Some(line) => Err(line),
         None => Ok(()),
     }
@@ -1495,8 +1517,29 @@ mod tests {
         assert!(!name_shape_ok("Sält Moth"));
     }
 
+    /// Doc 18 cut IC12 (closes IC6's "the `enrol_gate` unit test shuts on 3 of 8
+    /// bindings"): for every binding, a report whose only non-Ready line is that
+    /// binding's — in each non-Ready state — shuts the gate on that line iff the
+    /// binding is [`gated`]; the sky never shuts it (D-18-50).
     #[test]
-    fn ic6_the_gate_reads_only_its_bindings() {
+    fn ic12_the_gate_refuses_on_every_gated_line_and_never_on_the_sky() {
+        const EVERY: [Binding; 15] = [
+            Binding::Lane,
+            Binding::Sky,
+            Binding::Rate,
+            Binding::Treasury,
+            Binding::Map,
+            Binding::Rooms,
+            Binding::Domain,
+            Binding::Org,
+            Binding::Programme,
+            Binding::Hulls,
+            Binding::Pools,
+            Binding::Listings,
+            Binding::Bids,
+            Binding::MarketFacts,
+            Binding::InventoryFacts,
+        ];
         let port = CanonicalId::new("ceres_port").ok();
         let line = |binding, state| ReadinessLine {
             port: port.clone(),
@@ -1505,25 +1548,32 @@ mod tests {
             text: format!("{binding:?} {state:?}"),
         };
         let open = Readiness {
-            lines: vec![
-                line(Binding::Lane, LineState::Ready),
-                line(Binding::Sky, LineState::Missing),
-                line(Binding::Treasury, LineState::Pending),
-                line(Binding::Org, LineState::Ready),
-                line(Binding::Hulls, LineState::Ready),
-            ],
+            lines: EVERY
+                .iter()
+                .map(|binding| line(*binding, LineState::Ready))
+                .collect(),
         };
         assert!(enrol_gate(&open).is_ok());
-        for (binding, state) in [
-            (Binding::Org, LineState::Pending),
-            (Binding::Hulls, LineState::Missing),
-            (Binding::Rate, LineState::Flagged),
-        ] {
-            let mut shut = open.clone();
-            shut.lines.push(line(binding, state));
-            let refused = enrol_gate(&shut).expect_err("the gate shuts");
-            assert_eq!(refused.binding, binding);
-            assert_eq!(refused.state, state);
+        for binding in EVERY {
+            assert_eq!(gated(binding), binding != Binding::Sky, "{binding:?}");
+            for state in [LineState::Pending, LineState::Missing, LineState::Flagged] {
+                let mut report = open.clone();
+                for row in &mut report.lines {
+                    if row.binding == binding {
+                        row.state = state;
+                    }
+                }
+                if gated(binding) {
+                    let refused = enrol_gate(&report).expect_err("the gate shuts");
+                    assert_eq!((refused.binding, refused.state), (binding, state));
+                } else {
+                    assert!(
+                        enrol_gate(&report).is_ok(),
+                        "the sky is reported, never gated"
+                    );
+                    assert!(!report.is_ready(), "the summary still counts the sky");
+                }
+            }
         }
     }
 }

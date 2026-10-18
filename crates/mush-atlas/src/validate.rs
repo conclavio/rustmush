@@ -41,7 +41,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::def::{
     CheckpointDef, ConnectionDef, ExitDef, FeatureDef, HookDef, ItemDef, LocalityDef,
-    NeighborhoodDef, RegionDef, RoomDef, SecretDef, SiteDef, StructureDef, SurfaceDef,
+    MAX_AMBIENCE_LINE_BYTES, MAX_AMBIENCE_LINES, MAX_SHORT_DESC_BYTES, NeighborhoodDef, RegionDef,
+    RoomDef, SecretDef, SiteDef, StructureDef, SurfaceDef,
 };
 use crate::geom::{Point3, PointCm, Polygon2, PolygonCm, Rect2, Shape};
 use crate::module::AtlasState;
@@ -2061,7 +2062,8 @@ impl Run<'_> {
                     "topology.unreachable",
                     Some(id),
                     "no public way reaches it from Limbo, an access point or the world",
-                    "join it to a reachable room with an unlocked exit, or make it restricted",
+                    "join it to a reachable room with an unlocked exit, mark it `port.dock` if \
+                     ships reach it, or make it restricted",
                 );
             }
         }
@@ -2233,6 +2235,62 @@ impl Run<'_> {
                     format!("{field} is {bytes} bytes; at most {MAX_TEXT_BYTES}"),
                     "shorter prose",
                 );
+            }
+        }
+        // Doc 18 cut IC12 (carry-forward IC1 → IC12): the two text bounds the applier
+        // enforced alone — a room's `short_desc` and a neighborhood's `ambience` — are
+        // reported here too, so a pack fails validation, never the apply.
+        let short: Vec<(CanonicalId, usize)> = self
+            .decoded
+            .rooms
+            .iter()
+            .map(|(id, d)| (id.clone(), d.short_desc.len()))
+            .filter(|(_, bytes)| *bytes > MAX_SHORT_DESC_BYTES)
+            .collect();
+        for (id, bytes) in short {
+            self.error(
+                "budget.text",
+                Some(&id),
+                format!("short_desc is {bytes} bytes; at most {MAX_SHORT_DESC_BYTES}"),
+                "one line",
+            );
+        }
+        let ambience: Option<(CanonicalId, Vec<String>)> = self
+            .decoded
+            .neighborhood
+            .as_ref()
+            .map(|(id, def)| (id.clone(), def.ambience.clone()));
+        if let Some((id, lines)) = ambience {
+            if lines.len() > MAX_AMBIENCE_LINES {
+                self.error(
+                    "budget.text",
+                    Some(&id),
+                    format!(
+                        "ambience has {} lines; at most {MAX_AMBIENCE_LINES}",
+                        lines.len()
+                    ),
+                    "fewer ambient lines",
+                );
+            }
+            for (n, line) in (1_usize..).zip(&lines) {
+                if line.trim().is_empty() {
+                    self.error(
+                        "budget.text",
+                        Some(&id),
+                        format!("ambience line {n} is blank"),
+                        "remove the blank line",
+                    );
+                } else if line.len() > MAX_AMBIENCE_LINE_BYTES {
+                    self.error(
+                        "budget.text",
+                        Some(&id),
+                        format!(
+                            "ambience line {n} is {} bytes; at most {MAX_AMBIENCE_LINE_BYTES}",
+                            line.len()
+                        ),
+                        "a shorter line",
+                    );
+                }
             }
         }
         let secrets: Vec<(CanonicalId, usize)> = self

@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "neighborhood.stickney_yards",
-    "version": 2,
+    "version": 3,
     "kind": "neighborhood",
-    "digest": "39aab74e2f7a56e2b71ee7cffcdd34168ad706fbc1317240d989d2dc95c42d42",
+    "digest": "df2e5af11f18c4a5c71bea9e0b5b187b7cdb97c037aecc6b433b9ee3a0d1b2eb",
     "requires": [
       {
         "id": "region.stickney_yards",
@@ -350,6 +350,7 @@
         "kind": "indoor",
         "details": {
           "berth board": "Cradle, hull, CLEARED or OVERDUE, and the hour of the next filed departure. A hull with no sailing plan is listed as IDLE, in a colour meant to shame.",
+          "sailing plan pad": "Departure at, destination, manifest sealed Y/N, sell at destination, agent of record, SIGNED. A plan can be filed days ahead and amended until the burn; after it, the pad says SAILED and nothing else, and the harbourmaster's office runs its lines under the captain's signature whether the captain is awake or not.",
           "clocks": "Freeport time on the left, Coprates standard on the right. A card between them gives the offset, in case anyone asks why the Belt's day and the Republic's disagree; the clerk has an opinion about which is right.",
           "radio": "Approach control, the Guard's voice, a cutter's callsign, a bearing. Then static, which is most of it."
         }
@@ -520,7 +521,9 @@
           "Dray price card": "DRAY-CLASS BULK HAULER, NEW, STICKNEY BUILD — 120,000cr, delivery subject to yard-time. The card is the figure a charter pilot measures a career against. Under it, in pencil: \"used ones exist, ask Tycho\".",
           "hull cards": "A card per class with a profile drawing and a dry mass. The Dray's reads \"slow, efficient, unarmed\"; the Vigil's reads \"fast, expensive, visible from a long way off\", which is the Yard quoting the Guard's own brochure.",
           "fittings card": "YARD FITTINGS, CRATED — PER TONNE — REMAINING — pressure fittings, ducting and tank sections, Stickney build, crated with dunnage for the Belt run. In pen under it: \"2.3 cubes to the tonne. Your problem, captain.\" The Yard's one line of trade, signed by the clerk; the figures under it are the Yard's own and change when the Yard says so.",
-          "window": "A cradle, a hull with its drive section open, three workers on tethers and one supervisor who is not. The work is slow. It is always slow, and it is always going on."
+          "window": "A cradle, a hull with its drive section open, three workers on tethers and one supervisor who is not. The work is slow. It is always slow, and it is always going on.",
+          "yard time board": "Drydock-days by cradle. RESERVED — GUARD. RESERVED — KASEI. One line reads ENQUIRE and that is the refit queue; no date is promised on it.",
+          "insurers mark": "TYCHO MUTUAL ASSURANCE & SALVAGE — AGENT IN ATTENDANCE. Renewals, claims, the Re-float Program by referral to Kirkwood. The agent shares the counter and the clerk's patience."
         }
       }
     },

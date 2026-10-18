@@ -1,5 +1,13 @@
 # 18a — The trade run's places: two stations and the Dray's interior
 
+**Revised with doc 18 Draft 0.4 (2026-10-17), as built through IC12.** The packs this brief describes have
+shipped: `region.ceres_freeport` and `region.stickney_yards` at v1, `neighborhood.ceres_freeport` at **v2**
+and `neighborhood.stickney_yards` at **v3** (IC1, with Stickney's v2 in IC8 and both re-publications in
+IC12), and the Dray's interior in `tacsim.pack.dray` **v2** (IC8). The brief's prose is kept as written;
+where a shipped pack differs, an **"As built (IC*n*):"** note beside the text says how and where, in doc
+18's style ([18-trade-run-vertical-slice.md](18-trade-run-vertical-slice.md); the per-cut record is
+[18-cut-notes.md](18-cut-notes.md)).
+
 **Content brief, Draft 0.1 — 2026-10-15**, the companion of
 [18-trade-run-vertical-slice.md](18-trade-run-vertical-slice.md) Draft 0.2 (§4.5, §4.6, D-18-35). It
 is the room-by-room text of Ceres Freeport, Stickney Yards and the Dray-class hauler's interior, with
@@ -95,6 +103,26 @@ authors the Dray's interior template from §3.
   of `the_starter_packs_validate_clean` (`tests/validate.rs:136-152`), and a kept-world boot test; boot
   packs bypass the validator and a refused first apply aborts dev1's boot (`module.rs:113-139`).
 
+**As built (IC1, IC8, IC12):** the packs ship as described, at `neighborhood.ceres_freeport` v2 and
+`neighborhood.stickney_yards` v3 (the region packs at v1), each version re-published whole with its digest
+re-pinned (`crates/tacsim/tests/stations.rs`, `PINNED`; `crates/mush-server/tests/boot_parity.rs`'s
+kept-world test). The packs are strict (`deny_unknown_fields`), digest-pinned and applied once under the
+content latch; a kept world takes a new version only through `@atlas/pack plan` then `apply`, never at a
+boot (`crates/tacsim/tests/stations.rs::ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_and_apply`).
+**A detail name admits only `[A-Za-z0-9_ ]`** (`check_details`, `mush-atlas/src/apply.rs:1012`), so a
+hyphen or an apostrophe in a detail key is refused: the five details below that had them ship under plain
+keys — `hull registry board` (C09), `sailing plan forms` (C14), `sailing plan pad` (P05), `yard time board`
+and `insurers mark` (P11) — and the Dray's `builders plate` and `tie points` likewise (IC1's lead ruling:
+rename, never widen the validator). **The validator** (`mush-atlas/src/validate.rs`) now reports a room's
+`short_desc` over 256 bytes and a neighborhood's `ambience` over 24 lines, blank, or over 512 bytes a line
+as `budget.text` errors, so a pack fails validation rather than the apply, and `topology.unreachable`'s hint
+reads "join it to a reachable room with an unlocked exit, mark it `port.dock` if ships reach it, or make it
+restricted" (IC12). No detail in either pack carries a live market figure or an engine word, and no Ceres
+detail names a verb (`crates/tacsim/tests/stations.rs::ic12_the_five_details_ship_under_plain_keys`
+checks for a `+` before a letter anywhere in the text); Stickney's details still name `+atlas` (P04's
+`shift boards`) and `+market/list` (P07's `intake board`, P08's `price board`), an unowned residual;
+fiction figures stay (IC12 O3).
+
 ### 0.3 The room lists, reconciled
 
 The owner's pasted proposal drew fifteen rooms per station. The second review's three judges endorsed
@@ -114,6 +142,8 @@ spines' stencils, so P-F adds doors, not places. Also reconciled: Ceres C09 is t
 agent shares P11 rather than taking a room; the Co-op's programme desk shares C05 with the Registry
 counter (the fiction lens's separate Co-op Hall is folded in, because every room must have a verb or a
 scene).
+
+**As built (IC1):** the lists ship as reconciled here: Ceres 13 rooms, Stickney 12.
 
 ### 0.4 Geometry (metres, neighborhood frame; the pack author's starting points)
 
@@ -325,6 +355,10 @@ the IC-return guard applies to the inbound door).
 
 #### C04 Freeport Concourse — Public Deck
 
+**As built (IC12):** Ceres v2's `map` detail drops the clause naming `+atlas`; it reads "The Public Deck and
+the Freight Deck in cutaway, with a pulsing dot at the pedestal, and in small letters along the bottom:
+ATLAS SERVICE AVAILABLE."
+
 *Purpose.* The principal gathering place and the circulation spine. The public map detail points at
 `+atlas`; the directory names every desk; the Exchange ticker and the departures line make the port's
 business legible from the middle of it.
@@ -420,6 +454,13 @@ yard-time at Phobos. The line has been there a while.
 
 #### C07 Exchange Hall — Public Deck
 
+**As built (IC8, IC12):** Ceres v2's `price board` detail ends at "when a line reads NIL, it means nil." (the
+sentence naming `+market/list` struck); the live board is the `look_rendered` board of
+`tacsim/src/port/board.rs`: each ask "{label}: {price}/{unit}, {n} {unit} left ({house}; signed
+{signatory})." or "{label}: SOLD OUT: seeded {n} {unit}, 0 left ({house})." (or, before its stock is minted,
+"{label}: not yet on the board ({house})."), each bid "wanted, {label}: {price}/{unit}, {n} {unit} more
+({house}; signed {signatory})." or "wanted, {label}: not buying ({house}).".
+
 *Purpose.* The Freeport Exchange: the concentrate ask, Occator's volatiles and reaction-mass asks, the
 alloy bid (Freeport Works), the price board; `+market/list` defaults to this venue. Two houses, two
 signatories: the Exchange's factor (Søndergaard-Achebe) is the Warrant signatory of the Exchange's ask
@@ -455,6 +496,11 @@ AND THE SIGNATORY IS THE HOUSE'S OWN. The port's rule, in the Warrant's spirit.
 *Items.* price board (LookRendered: the asks and bids of venue `ceres`); sample tap (detail only).
 
 #### C08 Co-op Chandlery — Public Deck
+
+**As built (IC8, IC12):** Ceres v2's `loading schedules` detail ends at "The dockmaster keeps the master
+copy." (the clause naming `+ship/plan` struck), and its `chit board` reads "...and a Dray back from
+Stickney sells them here." (the "(`+market/sell`)" struck). The Co-op's provisions ask renders on no board
+(it reads through `+market/list`), and its fittings bid renders on the chandlery's board (IC8 L15).
 
 *Purpose.* Provisions in crew-days (the Co-op's ask) and the reaction-mass counter Occator leases in
 the corner, where a bunkering order is written onto the loading schedule rather than carried; the place
@@ -517,6 +563,10 @@ worth.
 *Items.* hull-registry board (LookRendered later: insured hulls and the list-price comparator); Re-float
 brochure (readable).
 
+**As built (IC12):** the board ships as the detail `hull registry board`, its text as above (Ceres v2); the
+desc and Mbatha's background keep the words "the hull-registry board". The board as a `LookRendered`
+line (insured hulls and the comparator) is not built.
+
 #### C10 The Slack Line (Crew Commons) — Public Deck
 
 *Purpose.* The social room: bar, job board, bunks in the background; where strangers meet and scenes
@@ -575,6 +625,12 @@ thresholds of the service lift to the berth gallery. Beyond it the bonded hall's
 further, the tank gallery's barriers. All of it behind glass. **freight door** — FREIGHT TRANSFER
 JUNCTION, BERTH HOLDERS, with a reader for a berth marker. Shut, and it stays shut for anyone without a
 berth.
+
+**As built (IC1, IC12):** the `departures board` detail ships as written, its "two to three weeks in a good
+season" kept as an IC fiction duration (IC12 O3). The forms ship in Ceres v2 as the detail `sailing plan
+forms`, its text as above without the closing "`+ship/order` is the form." (a verb named as meta-text is
+struck). The departures board as a `LookRendered` line of filed clearances is not built (unowned; doc 18
+§5's IC12 list).
 
 *Exits.* `Up <U>;u;up;stair;arrivals` → C03 (stair, dz +6 m); `Hatch <H>;h;hatch;maintenance` → C15
 (hatch; `lock: staff`; portal hidden).
@@ -1055,7 +1111,17 @@ static, which is most of it.
 *Items.* berth status board (LookRendered: docked hulls and filed departures); sailing-plan pad (detail;
 names `+ship/order`).
 
+**As built (IC12):** the pad ships in Stickney v3 as the detail `sailing plan pad`, its text as above. The
+berth board as a `LookRendered` line of docked hulls and filed departures is not built (unowned; doc 18
+§5's IC12 list).
+
 #### P07 Kasei Receiving Office — Freight Deck
+
+**As built (IC8, IC10):** Kasei's intake board is the `look_rendered` board (`tacsim/src/port/board.rs`):
+"wanted, metal concentrate: {price}/t, {n} t more (Kasei Metals; signed Jonas Achterberg-Nkemelu)." (280 a
+tonne in lane v3) and the water ice line likewise (200), or "wanted, {label}: not buying (Kasei Metals)." when
+exhausted or unfunded; both bids render on P07 and P08. P07's funded-balance
+figure is not built (unowned).
 
 *Purpose.* Kasei's bids for metal concentrate and water ice: the sale beat (`+market/sell
 <listing>=<qty>`), with the receiving clerk NPC as the Warrant signatory of Kasei's bid (doc 18 §4.6).
@@ -1092,6 +1158,11 @@ receiving;out`).
 (detail only).
 
 #### P08 Materials Exchange — Public Deck
+
+**As built (IC8):** P08's board carries Kasei's alloy and propellant asks and the Yard's crated-fittings ask
+(the fittings ask renders on both P08 and P11; IC8 (4)), each line naming its signatory. The `price board` detail
+itself still names `+market/list` (Stickney v3; IC12 struck verb meta-text from the Ceres rooms the story
+test walks only — an unowned residual).
 
 *Purpose.* Kasei's asks (structural alloy stock, drive propellant) for the return run and the bids
 board; `+market/list` defaults to this venue. The public rung stair down to the receiving counter is the
@@ -1219,6 +1290,14 @@ referral to Kirkwood. The agent shares the counter and the clerk's patience.
 *Items.* fittings card (LookRendered: the Stickney Yards ask with its remaining stock — the one place
 the figure is written); Dray price card (the buyout comparator, a programme figure); yard-time board
 (detail only); hull card rack (detail; five readable cards).
+
+**As built (IC8, IC12):** the `fittings card` detail ships as IC8 re-wrote it (Stickney v2): "YARD FITTINGS,
+CRATED — PER TONNE — REMAINING — pressure fittings, ducting and tank sections, Stickney build, crated with
+dunnage for the Belt run. In pen under it: "2.3 cubes to the tonne. Your problem, captain." The Yard's one
+line of trade, signed by the clerk; the figures under it are the Yard's own and change when the Yard says
+so." — no `LookRendered` and no verb, the live figures on the board. Stickney v3 adds the details `yard time
+board` and `insurers mark`, their texts as above. The `Dray price card`'s 120,000cr stays (a fiction figure
+with no live render; IC12 O3).
 
 #### P12 Yard Observation Gallery — Public Deck
 
@@ -1475,6 +1554,19 @@ Theme: the Freeport's base and vocabulary, plus the ship's own: lock, hatch, lad
 manifest slate, load cells, tankage, reaction mass, bunk, still, crew-day, tally, packed volume, cube,
 rated.
 
+**As built (IC4, IC6, IC8, IC9):** the template ships in `tacsim.pack.dray` **v2** (IC8): every room's prose
+is **figure-free** — no load, no limit figure, no engine word (the `load cells` say "a LIMIT line", the `tank
+gauges` "against the tank's rating", the `displays` "the ETA"; IC8 (6), stricter than "strip the
+meta-text") — and every figure is a `look_rendered` gauge line from `logistics` under the room's
+instrument (`Load cells`, `Manifest slate`, `Displays`, `Locker tally`, `Tank gauges`;
+`tacsim/src/port/gauges.rs:67`). The Airlock's alias **`lock` is dropped** (it shadowed the cockpit verb
+LOCK in the Central Passage; exits match before commands), so the passage's way forward is `Airlock
+<A>;airlock;forward`. The template's **`interior.exits` are append-only by position**
+(`tacsim/src/port/hull.rs:22`): an exit's position is its identity across a re-dress. A chartered hull
+Thing with no description takes `HULL_DESC_TEMPLATE` ("A Dray-class bulk hauler, {mark}, cradled with its
+umbilicals slack: blunt, grey and webbed with reaction-mass hoses.", `tacsim/src/port/coop.rs:102`; IC6).
+The status line carries the registry mark in every hull room (IC6 L18; §3.2 as built).
+
 ### 3.1 The rooms
 
 | id | Room | Kind | Exits | What the pilot sees of the compartments |
@@ -1510,6 +1602,9 @@ Station-normal, ship-normal, and a hand-painted line between them that somebody 
 
 *Exits.* `Inner Hatch <I>;inner;in;passage` → Central Passage (return `Airlock <A>;airlock;lock;forward`).
 
+**As built (IC8):** the return is `Airlock <A>;airlock;forward` (`lock` dropped); the detail `builder's plate`
+ships as `builders plate`.
+
 #### Central Passage
 
 *Purpose.* The spine; ladders up to the Bridge and down to the Hold, a hatch aft to the Crew
@@ -1528,6 +1623,9 @@ with the hold's two limits at their feet, and the tank and the locker under a li
 `+ship/hold` reads. **tie-points** — Recessed rings every metre, for
 the day the passage is cargo too. **cable trays** — Power, data, air, in colour-banded runs; a tag on
 each says which deck plate to lift.
+
+**As built (IC8):** `tie-points` ships as `tie points`; the slate's figures are the `Manifest slate` gauge
+lines, not detail text.
 
 *Exits.* `Airlock <A>;airlock;lock;forward` → Airlock; `Bridge <U>;bridge;up;u` → Bridge (ladder well);
 `Crew Compartment <C>;crew;galley;bunks;aft` → Crew Compartment; `Cargo Hold <H>;hold;down;d` → Cargo
@@ -1557,6 +1655,11 @@ under the Warrant so is the liability. **sailing plan** — A paper copy of `+sh
 numbered, the departure hour circled. **checklist** — BEFORE CLEARANCE: tank ≥ burn. Locker ≥ days.
 Payload under the rail. Crew of record aboard. Plan filed. Someone has ticked every box in pen and then
 added "sleep".
+
+**As built (IC8):** the `displays` detail reads "the ETA" (no time base named in room text), and the
+`sailing plan` detail reads "A paper copy of the sailing plan, the orders numbered, the departure hour
+circled." — the brief's "paper copy of `+ship/orders`" (a verb as meta-text) is not shipped. The Bridge's
+burn-and-reserve gauge lines are not built (IC11 L21; unowned).
 
 *Exits.* `Passage <D>;passage;down;d` → Central Passage.
 
@@ -1633,6 +1736,9 @@ connect out here, at the berth, on the schedule. **service panels** — Sealed, 
 STICKNEY YARDS — NO USER-SERVICEABLE PARTS, and under it, smaller, in pen, "ha". **shield bulkhead** —
 Warm to the touch. DO NOT LEAN. Somebody has.
 
+**As built (IC8, IC11):** "against the tank's rating" in place of "against 80 t"; the burn-for-the-plan and
+reserve-after figures as gauge lines are not built (IC11 L21; unowned).
+
 *Exits.* `Hold <H>;hold;up;u` → Cargo Hold.
 
 #### Hold Stowage (store)
@@ -1658,11 +1764,23 @@ WHO shows room names to staff and to co-located players; with eight hulls sharin
 the status line is what tells them apart. At the station the hull Thing appears in the berth gallery's
 contents by projection; its occupants are invisible from outside.
 
+**As built (IC6, IC9, IC11):** the status line shows in every hull room on `look`, with the registry mark,
+in five forms (`tacsim/src/port/ship.rs:85-100`): "Aboard the {name} ({mark}), docked at {port}." · "…,
+under way, leg {n} of {m}{astern}, ETA {hhmm} UTC." · "…, cleared for {port}." · "…, docked at {port};
+departs {hhmm} UTC (in {span})." · "Aboard the {name} ({mark})." Then the room's gauge lines under its
+instrument word, or "{Instrument}: dark." when a pool cannot be read. `+ship`'s first form is three lines:
+"{name} ({class}): docked {port}, {gallery}." with the gallery's full name, the hold, and "Programme: {n}
+sales; buyout {buyout}." (`ship.rs:104,509`; IC6 L19); under way it names the leg and the arrival in IC
+days with the real UTC hour. The sailing-plan forms (C14) and pad (P05) ship as details (above).
+
 ---
 
 ## 4. Names (Q-18-12, accepted 2026-10-15)
 
 Accepted "names ok" under R8 (doc 18 §8); binding.
+
+**As built (IC1–IC12):** every name below shipped as written. Seven detail keys shipped respelled, five in
+the stations and two aboard (§0.2 as built); no person, org or place name changed.
 
 - **Hulls** (the Trust's pool of eight, registry marks FPC-D-0401 to FPC-D-0408; the Freeport Registry's
   Belt mirror), by their **laid-up** names: *Slack Water* (0401, the hull the first pilot on a fresh

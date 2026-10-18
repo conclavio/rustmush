@@ -265,3 +265,30 @@ fn ic9_an_exit_into_an_unanchored_interior_room_applies_as_before() {
     let forward = named(&tw, ObjKind::Exit, "Cee <C>").expect("the exit");
     assert_eq!(tw.world().get(forward).and_then(|o| o.location), Some(a));
 }
+
+/// **IC9 T10 (doc 18 cut IC12 item 1.9): a one-way exit OUT of a room aboard a moving
+/// hull applies.** IC9 refuses only an exit that leads INTO an anchored interior's
+/// room (the destination, or the origin of a named way back); a one-way row whose
+/// source is aboard and whose destination is outside names no way in, so the
+/// applier creates it in the room aboard, as it always did.
+#[test]
+fn ic12_t10_a_one_way_exit_out_of_a_room_aboard_applies() {
+    let mut tw = world(block(
+        2,
+        &[("exit.b_a", exit_row("room.b", "room.a", &["Ay <A>;a;ay"]))],
+    ));
+    let before = exits(&tw);
+    let (_, applied) = replan(&mut tw);
+    assert!(applied.contains("Applied neighborhood.block"), "{applied}");
+    assert!(!applied.contains("aboard a moving hull"), "{applied}");
+    assert_eq!(exits(&tw), before + 1, "the one-way exit was created");
+    let bee = named(&tw, ObjKind::Room, "Bee").expect("Bee");
+    let a = named(&tw, ObjKind::Room, "Ay").expect("Ay");
+    let out = named(&tw, ObjKind::Exit, "Ay <A>").expect("the exit");
+    assert_eq!(tw.world().get(out).and_then(|o| o.location), Some(bee));
+    assert_eq!(
+        tw.world().get(out).and_then(|o| o.destination),
+        Some(a),
+        "it leads out to Ay"
+    );
+}

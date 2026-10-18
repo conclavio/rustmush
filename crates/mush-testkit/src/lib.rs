@@ -144,6 +144,22 @@ impl TestWorld {
         tw
     }
 
+    /// Wrap an **already-booted** engine, for a test that boots the production
+    /// root (`mush_server::boot::build_engine`) and drives it with this harness
+    /// (doc 18 cut IC12: the story test). Nothing is registered or booted here —
+    /// the engine arrives with its modules loaded, its key rings and its account
+    /// oracle set — so this only connects God through the engine, exactly as
+    /// [`TestWorld::with_modules`] does, with the connect-time output discarded.
+    #[must_use]
+    pub fn from_engine(engine: Engine) -> TestWorld {
+        let mut tw = TestWorld {
+            engine,
+            next_conn: 0,
+        };
+        tw.connect(GOD);
+        tw
+    }
+
     /// Read access to the world, for assertions on game state.
     #[must_use]
     pub fn world(&self) -> &World {
@@ -811,6 +827,25 @@ fn dump(events: &[(Audience, OutputEvent)]) -> String {
 mod tests {
     use super::*;
     use mush_proto::{ExitRef, Span};
+
+    // ---- doc 18 cut IC12: wrapping an already-booted engine ---------------------
+
+    /// `from_engine` over an engine taken out of another harness keeps the world
+    /// and connects God again: `look` as God answers with the room's name.
+    #[test]
+    fn ic12_from_engine_wraps_a_booted_engine_and_connects_god() {
+        let engine = TestWorld::new().into_engine();
+        let mut tw = TestWorld::from_engine(engine);
+        assert!(tw.world().is_connected(GOD));
+        let events = tw.run(GOD, "look");
+        let seen = tw.seen_by(&events, GOD).join("\n");
+        let limbo = tw
+            .world()
+            .get(LIMBO)
+            .map(|o| o.name.clone())
+            .expect("Limbo");
+        assert!(seen.contains(&limbo), "{seen}");
+    }
 
     // ---- doc 18 cut IC1: the store-faithful fold and the reboot -----------------
 

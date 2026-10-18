@@ -313,12 +313,20 @@ pub fn readiness(w: &World) -> Readiness {
                 ),
                 Err(_) => (LineState::Flagged, "unavailable".to_owned()),
             };
-            report.push(
-                None,
-                Binding::Sky,
-                state,
-                format!("sky: {motion}, epoch {}, rev {revision}", epoch_date(epoch)),
-            );
+            let text = format!("sky: {motion}, epoch {}, rev {revision}", epoch_date(epoch));
+            // Doc 18 cut IC12 (§4.8 "pages if the sky rate is non-zero while any
+            // lane body lacks `epoch_ic`"): a moving sky moves such a body from the
+            // server's epoch, not the date its numbers were read for — flagged here,
+            // paged once per boot by the port tick (`port_tick`'s `sky_paged`), and
+            // never gated (D-18-50). Rate 0 is untouched byte for byte.
+            let (state, text) = match body_without_epoch(pack, ephemeris) {
+                Some(body) => (
+                    LineState::Flagged,
+                    format!("{text}; {body} has no epoch_ic, so it moves from the server's epoch."),
+                ),
+                None => (state, text),
+            };
+            report.push(None, Binding::Sky, state, text);
         }
     }
 
@@ -796,6 +804,26 @@ fn commerce_lines(
         }
     }
     out
+}
+
+/// **The lane body a moving sky would move from the server's epoch** (doc 18 cut
+/// IC12; §4.8): when the configured sky rate is non-zero, the first `body` entry of
+/// `pack` (canonical-id order, the pack's own entry order) without an `epoch_ic`;
+/// `None` at rate 0 — the constant sky holds every body at its authored phase, so a
+/// missing `epoch_ic` moves nothing — and `None` when every body carries one.
+/// [`readiness`] flags the Sky line on it; the port tick pages it once per boot.
+#[must_use]
+pub(crate) fn body_without_epoch(
+    pack: &RulesPack,
+    ephemeris: &crate::config::EphemerisConfig,
+) -> Option<CanonicalId> {
+    if ephemeris.rate == 0 {
+        return None;
+    }
+    pack.entries().iter().find_map(|(id, entry)| match entry {
+        PackEntry::Body(def) if def.epoch_ic.is_none() => Some(id.clone()),
+        _ => None,
+    })
 }
 
 /// **The report's lane pack and its port entries** (doc 18 §4.7; factored out
