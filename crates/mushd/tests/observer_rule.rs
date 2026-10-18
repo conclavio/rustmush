@@ -8271,6 +8271,104 @@ async fn m5_drain(ws: &mut Ws, quiet: Duration, within: Duration, seen: &mut Str
 ///   drained at the end until it falls quiet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn m5_the_mind_object_names_nothing_but_the_pilots_own_seal() {
+    fn keys(value: &Value, expected: &[&str], what: &str) {
+        let mut actual = value
+            .as_object()
+            .expect("a mind projection object")
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        actual.sort_unstable();
+        let mut expected = expected.to_vec();
+        expected.sort_unstable();
+        assert_eq!(actual, expected, "{what}: {value}");
+    }
+
+    fn own_shape(mind: &Value) {
+        keys(
+            mind,
+            &[
+                "name",
+                "card",
+                "sealed_rules",
+                "profiles",
+                "active",
+                "class",
+                "core",
+                "channels",
+                "next_switch_ms",
+                "off",
+            ],
+            "only the pilot's public mind fields",
+        );
+        keys(&mind["card"], &["schema", "values"], "the full public card");
+        keys(&mind["card"]["schema"], &["sections"], "the card schema");
+        let sections = mind["card"]["schema"]["sections"]
+            .as_array()
+            .expect("ordered station sections");
+        assert_eq!(sections.len(), 4);
+        for section in sections {
+            keys(
+                section,
+                &["id", "label", "station", "fields"],
+                "a public section",
+            );
+            for field in section["fields"].as_array().expect("section fields") {
+                keys(field, &["id", "label", "widget"], "a public field");
+                let widget = &field["widget"];
+                let allowed: &[&str] = match widget["kind"].as_str() {
+                    Some("slider") => &[
+                        "kind", "min", "max", "step", "default", "scale", "unit", "help",
+                    ],
+                    Some("choice") => &["kind", "choices", "default", "help"],
+                    Some("toggle") => &["kind", "default", "help"],
+                    other => panic!("unexpected Standard widget: {other:?}"),
+                };
+                keys(
+                    widget,
+                    allowed,
+                    "only a slider widget may name its display unit",
+                );
+            }
+        }
+        assert_eq!(mind["card"]["values"].as_object().unwrap().len(), 24);
+        assert_eq!(
+            mind["sealed_rules"],
+            json!([]),
+            "these stock profiles have no authored rules"
+        );
+    }
+
+    // Compare the wire payload to the selected immutable card model, without
+    // calling the cockpit projection under test. Ada's schema keeps Sniper's
+    // opening defaults even when its active values switch to Line; Bo's own
+    // one-profile definition has Line defaults throughout.
+    let doctrine = tacsim::config::ReflexConfig::default();
+    let sniper = tacsim::arena::card::preset("Sniper", &doctrine).unwrap();
+    let line = tacsim::arena::card::line(&doctrine);
+    let ada_definition = tacsim::arena::runtime_card::stock_definition(
+        &[("Sniper".into(), sniper), ("Line".into(), line.clone())],
+        tacsim::arena::core::CoreClass::I,
+    )
+    .unwrap();
+    let bo_definition = tacsim::arena::runtime_card::stock_definition(
+        &[("Line".into(), line)],
+        tacsim::arena::core::CoreClass::I,
+    )
+    .unwrap();
+    let ada_cards = ada_definition
+        .profiles
+        .iter()
+        .map(|profile| json!({"schema": ada_definition.schema, "values": profile.values}))
+        .collect::<Vec<_>>();
+    let bo_card = json!({
+        "schema": bo_definition.schema,
+        "values": bo_definition.profiles[0].values,
+    });
+    assert_eq!(ada_cards[0]["values"]["min_odds_permille"], 650);
+    assert_eq!(ada_cards[1]["values"]["min_odds_permille"], 100);
+    assert_eq!(bo_card["values"]["min_odds_permille"], 100);
+
     let server = boot("observer-mind").await;
     let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
@@ -8313,12 +8411,14 @@ async fn m5_the_mind_object_names_nothing_but_the_pilots_own_seal() {
     })
     .await;
     let ada_mind = m5_mind(&ada_frame);
-    // The design note's example object, exactly: Standard Doctrine thinks at
-    // Class I on the line tank's Class II core.
+    // The complete M6 object: Standard Doctrine thinks at Class I on the
+    // line tank's Class II core, carrying the pilot's own full card and rules.
     assert_eq!(
         ada_mind,
         json!({
             "name": "Standard Doctrine",
+            "card": ada_cards[0],
+            "sealed_rules": [],
             "profiles": ["Sniper", "Line"],
             "active": 0,
             "class": "I",
@@ -8329,33 +8429,68 @@ async fn m5_the_mind_object_names_nothing_but_the_pilots_own_seal() {
         }),
         "Ada's own seal: {ada_frame}"
     );
-    // The pilot's own seal and nothing else: no unit, no pilot, no id.
-    let holds = |ada_frame: &Value, bo_frame: &Value, stage: &str| {
-        let object = m5_mind(ada_frame).to_string();
+    // The pilot's own public projection and nothing else. The schema's slider
+    // `unit` and top-level `sealed_rules` are exact structural fields, not unit
+    // identity or a private seal. All other identity/source/memory bans remain.
+    let holds = |ada_frame: &Value, bo_frame: &Value, active: usize, stage: &str| {
+        let own = m5_mind(ada_frame);
+        own_shape(&own);
+        assert_eq!(
+            own["card"], ada_cards[active],
+            "{stage}: Ada's exact active card"
+        );
+        assert_eq!(own["profiles"], json!(["Sniper", "Line"]));
+        assert_eq!(own["active"], json!(active));
+        let object = own.to_string();
         names_nothing(&object, red, blue, "Ada's mind object");
         no_sixteen_digit_word(&object, "Ada's mind object");
-        for leak in ["Ada", "Bo", "RA", "BA", "#", "unit", "seal"] {
+        for leak in [
+            "Ada",
+            "Bo",
+            "RA",
+            "BA",
+            "#",
+            "\"seal\"",
+            "\"source\"",
+            "\"source_sha256\"",
+            "\"memory\"",
+            "\"mem\"",
+            "\"digest\"",
+            "\"principal\"",
+            "\"warrant\"",
+        ] {
             assert!(
                 !object.contains(leak),
                 "{stage}: Ada's mind object said {leak}: {object}"
             );
         }
         let theirs = m5_mind(bo_frame);
+        own_shape(&theirs);
         assert_eq!(
-            theirs.get("profiles"),
-            Some(&json!(["Line"])),
+            theirs,
+            json!({
+                "name": "Standard Doctrine",
+                "card": bo_card,
+                "sealed_rules": [],
+                "profiles": ["Line"],
+                "active": 0,
+                "class": "I",
+                "core": "II",
+                "channels": ["helm", "sensors", "fire"],
+                "next_switch_ms": null,
+                "off": false,
+            }),
             "{stage}: Bo's own default seal: {bo_frame}"
         );
-        assert_eq!(theirs.get("name"), Some(&json!("Standard Doctrine")));
-        assert_eq!(theirs.get("next_switch_ms"), Some(&Value::Null));
         let whole = bo_frame.to_string();
         assert!(
             !whole.contains("Sniper"),
             "{stage}: Bo's frame carries Ada's profile: {whole}"
         );
         names_nothing(&theirs.to_string(), red, blue, "Bo's mind object");
+        no_sixteen_digit_word(&theirs.to_string(), "Bo's mind object");
     };
-    holds(&ada_frame, &bo_frame, "at the start");
+    holds(&ada_frame, &bo_frame, 0, "at the start");
 
     // Ada switches from the seat; she alone is told, and her frame follows.
     let said = ask(
@@ -8383,7 +8518,7 @@ async fn m5_the_mind_object_names_nothing_but_the_pilots_own_seal() {
     );
     query += 1;
     let bo_frame = m5_cockpit_seen(&mut bo_web, query, &mut bo_seen).await;
-    holds(&ada_frame, &bo_frame, "after Ada's switch");
+    holds(&ada_frame, &bo_frame, 1, "after Ada's switch");
     let block = ask_whole(&mut ada, "MIND").await;
     assert!(
         block.contains("Profile: Line, 2 of 2 (also Sniper);"),
@@ -8807,10 +8942,7 @@ async fn m5_a_slots_mind_is_read_by_its_own_character_alone() {
         &ask_whole(&mut bo, "SIM MIND Sentinel").await,
         "SIM MIND Sentinel",
     );
-    assert_eq!(
-        refused,
-        vec!["You hold no mind called Sentinel; SIM MIND lists the minds you hold.".to_owned()]
-    );
+    assert_eq!(refused, vec!["No such owned mind or revision.".to_owned()]);
     m5_fog_pump(&mut bo_web, pump, most, &mut bo_ws).await;
     m5_fog_pump(&mut cy_web, pump, most, &mut cy_ws).await;
 
