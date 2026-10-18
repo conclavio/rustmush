@@ -581,5 +581,14 @@ for exact provenance, artifact hashes and replay coverage. M6 is still unaccepte
 
 The branch now includes IC13 `94679739` through clean merge `bee4a0d0` (tree
 `e0f4314a2bccda3528a11d170d439cb874f57597`). Its isolated 37-stage economy/market,
-Redis recovery and trade checkpoint is running. M7 remains isolated preparation;
-neither the checkpoint nor its implementation is accepted by this record.
+Redis recovery and trade checkpoint now passes all 37 stages / 860 tests across
+two retained invocations. The first passes 33 stages / 791 tests; four Redis
+stages fail because the disposable listener was started without JSON/Search.
+The corrected listener explicitly loads and verifies both modules, then passes
+only those four stages / 69 tests at the same source revision. Both owned
+listeners are stopped. The first record remains `complete-with-failures`.
+All 59 outer-indexed evidence files independently match their hashes; archive
+SHA-256 is `a4d62cbd86ce80b9385b93d3946115c93fd3ddb182924fb57c73277cdffa1792`.
+This establishes the merged economy checkpoint, including real Redis recovery,
+IC13 buyout/dormancy and the existing E3/E4/Market contracts. M7 remains isolated
+preparation while the M6 parity decision is pending.

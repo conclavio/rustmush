@@ -802,5 +802,8 @@ and the proposed exception remains pending. Windows' full 8,599 tests at
 pass. Exact evidence, revisions and bounded replay coverage are recorded in
 [17e](17e-field-pilot-acceptance.md#final-corrected-candidate-evidence--2026-10-18-utc).
 IC13 `94679739` was merged without conflicts as `bee4a0d0`; the required economy
-checkpoint is running against that exact merge with a dedicated disposable
-Redis listener. M6 remains unaccepted and M7 preparation remains inactive.
+checkpoint passes all 37 stages / 860 tests against that exact merge. Four Redis
+stages required a setup-only rerun with explicit JSON/Search modules; all 59
+outer-indexed evidence files verify, and both disposable listeners are stopped.
+The exact consolidated provenance is in 17b §6. M6 remains unaccepted and M7
+preparation remains inactive pending the parity decision.
