@@ -270,3 +270,44 @@ drop. These corrections still require their actual test runs.
 close through their retained participant's public `SIM ABORT`; their terminal
 results and complete tapes remain the reference BENCH inputs. The third sortie
 keeps `SIM CONCEDE` while seated. No production participant authority changes.
+
+### Final corrected candidate evidence — 2026-10-18 UTC
+
+The official invocation at `c58c3d98e7b01fea9ac4c764c8520644db91bdfe`
+completed with one failed comparison. Field Pilot finished **21 wins / 9 losses**;
+the fresh external bot finished **16 wins / 14 losses** (red 10–5, blue 6–9).
+Neither had a draw or timeout, and the proving report records zero faults across
+all minds. The external 95% Wilson interval is
+`[0.36142299619873297, 0.6976761109230025]`. Field Pilot's 70% point rate is
+**0.2323889077 percentage points above its upper bound**. The intervals overlap,
+but that descriptive comparison does not pass the separate written point-rate
+criterion. A one-time exception has been requested and remains pending. The
+timing waiver does not supply that approval, and the validator remains unchanged.
+
+All functional stages passed: 34 validator tests, 13 production picture checks,
+both same-server isolation cases, the public author workflow and the fresh
+30-match external run. The corrected proving openings face the opposite side;
+all 60 actual physical openings, source identities, selected cards/rules and
+scenario/configuration evidence reconcile. The Field Pilot source SHA-256 is
+`97ec5348178e9e9ed48fbe4e0997969bbc76e26e34f0cb0cfc8bbbe9fadb875e`.
+The maximum measured picture cost is 1,389 operations plus host fees out of 3,000.
+The author workflow replays actual proving game 1 to terminal time 207,500 ms,
+1,617 events and final hash `8ddaca6213013118`. All 30 game reports are retained;
+23 have complete replay tapes. Games 24–30 exhausted the bounded recorder, so
+this evidence does not claim 30 complete tapes.
+
+The retained archive is `m6-final-c58c3d98-evidence.tar.gz`, SHA-256
+`afa1654f4cd889748c32e8694026aed1bf246f923ed589000a26081a9b8662eb`.
+All 29 indexed files (287,074,796 bytes) independently match their lengths and
+hashes. Index SHA-256 is
+`b2c5b37a7324c59376e7d45ade97c08a55ea2ea45153c4dd87873158f00d14c3`.
+The wrapper truthfully remains `complete-with-failures`; only `acceptance` failed.
+
+Windows passed 7,883 workspace and 716 bot tests at `99eec0ca`. The final three
+correction commits were then checked at `c58c3d98`: 13 Field Pilot tests, the
+physical-heading regression, the actual-opening evidence regression, strict
+all-target Clippy, private-item Rustdoc, workspace formatting and two TypeScript
+export tests all pass. A separate local Cargo build made the guarded wrapper
+stop after Rustdoc; the subsequent guarded invocation ran only formatting and
+protocol export. Both records are retained. This completes the Windows gates;
+M6 acceptance still awaits the explicit parity decision.

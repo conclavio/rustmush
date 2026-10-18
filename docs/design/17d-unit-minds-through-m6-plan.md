@@ -792,3 +792,15 @@ guard. The runner now creates that fixture character through its existing public
 SSH session, preserving the bot's refusal of account commands. That correction
 still needs execution; the signed author workflow and external interval were not
 reached, and M6 remains unaccepted.
+
+The corrected `c58c3d98` invocation subsequently completed every functional
+acceptance stage, including the real author workflow, both isolation cases and
+the fresh external interval. Field Pilot's 21/30 rate is 0.2324 percentage points
+above the external 16/30 interval's upper endpoint; the written comparison fails
+and the proposed exception remains pending. Windows' full 8,599 tests at
+`99eec0ca` and the final scoped correction/quality/protocol gates at `c58c3d98`
+pass. Exact evidence, revisions and bounded replay coverage are recorded in
+[17e](17e-field-pilot-acceptance.md#final-corrected-candidate-evidence--2026-10-18-utc).
+IC13 `94679739` was merged without conflicts as `bee4a0d0`; the required economy
+checkpoint is running against that exact merge with a dedicated disposable
+Redis listener. M6 remains unaccepted and M7 preparation remains inactive.

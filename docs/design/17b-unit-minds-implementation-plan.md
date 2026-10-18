@@ -567,3 +567,19 @@ existing paid licences remain usable through their own term, while new sales and
 renewals wait for the issuer's parent rights to return. The separate dependent
 owner-use restriction remains. This policy clarification does not start M7;
 M6 acceptance and the fresh economy checkpoint remain required.
+
+**Final corrected candidate, 2026-10-18 UTC:** Linux `c58c3d98` passes every
+functional acceptance stage. Field Pilot finishes 21–9 and the external bot
+16–14, with zero proving mind faults and all 60 actual physical openings matched.
+The written point-rate comparison fails by 0.2324 percentage points above the
+external 95% Wilson interval. The explicit exception remains pending; the
+existing report-only timing ruling does not waive this behavioral criterion.
+Windows passes 7,883 workspace plus 716 bot tests at `99eec0ca`, followed by the
+three correction commits' behavior, strict Clippy/private Rustdoc, formatting
+and protocol checks at `c58c3d98`. See [17e's final evidence record](17e-field-pilot-acceptance.md#final-corrected-candidate-evidence--2026-10-18-utc)
+for exact provenance, artifact hashes and replay coverage. M6 is still unaccepted.
+
+The branch now includes IC13 `94679739` through clean merge `bee4a0d0` (tree
+`e0f4314a2bccda3528a11d170d439cb874f57597`). Its isolated 37-stage economy/market,
+Redis recovery and trade checkpoint is running. M7 remains isolated preparation;
+neither the checkpoint nor its implementation is accepted by this record.
