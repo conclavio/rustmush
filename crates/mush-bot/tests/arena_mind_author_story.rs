@@ -588,9 +588,13 @@ async fn field_pilot_complete_production_author_story() {
     author.say("BOARD", "climb into").await;
     author.expect("Good hunting", rig::STEP_TIMEOUT).await;
     warm_cockpit(&mut author).await;
-    author.say("MIND", "FieldPilot").await;
+    // Author commands accept mixed case; persisted and displayed mind names
+    // use Roll's canonical lowercase identity.
+    author
+        .say("MIND", "Mind: fieldpilot, sealed for this sortie")
+        .await;
     let live = document(&server, "tacsim:live:1").await;
-    let (unit, sealed) = selected_seal(&live, "FieldPilot");
+    let (unit, sealed) = selected_seal(&live, "fieldpilot");
     assert_eq!(sealed["engine"], "scripted");
     assert_eq!(sealed["class"], "II");
     assert_eq!(
@@ -659,7 +663,7 @@ async fn field_pilot_complete_production_author_story() {
     })
     .await;
     assert!(state(&next)["now_ms"].as_i64().unwrap() >= still_running_at);
-    let (_, still_sealed) = selected_seal(&document(&server, "tacsim:live:1").await, "FieldPilot");
+    let (_, still_sealed) = selected_seal(&document(&server, "tacsim:live:1").await, "fieldpilot");
     assert_eq!(
         still_sealed, sealed,
         "editing source/cards cannot rewrite running custody"
@@ -759,7 +763,7 @@ async fn field_pilot_complete_production_author_story() {
         assert_eq!(seals.len(), 2, "actual 1v1 frozen roster");
         let candidate = seals
             .iter()
-            .find(|seal| seal["requested"]["mind"] == "FieldPilot")
+            .find(|seal| seal["requested"]["mind"] == "fieldpilot")
             .expect("actual candidate seal");
         assert_eq!(candidate["engine"], "scripted");
         assert_eq!(candidate["class"], "II");
@@ -938,7 +942,7 @@ async fn field_pilot_complete_production_author_story() {
     author.say("red", "Red Room").await;
     author.say("BOARD", "climb into").await;
     author.expect("Good hunting", rig::STEP_TIMEOUT).await;
-    let (fault_unit, _) = selected_seal(&document(&server, "tacsim:live:2").await, "FaultProbe");
+    let (fault_unit, _) = selected_seal(&document(&server, "tacsim:live:2").await, "faultprobe");
     author.say("EXIT", "You climb out of").await;
     let faulted = wait_snapshot(&server, 2, |state| {
         state["minds"][&fault_unit]["dropped"] == "strikes"

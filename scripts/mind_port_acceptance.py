@@ -167,7 +167,7 @@ def verify_proving_artifacts(directory, story, proving):
         require(type(actual_game.get("faults")) is int and 0 <= actual_game["faults"] <= 0xffffffff,
                 "actual proving game fault count must be a nonnegative integer")
         require(len(game["seals"]) == 2, "actual proving is not 1v1")
-        candidates = [s for s in game["seals"] if s["requested"]["mind"] == "FieldPilot"]
+        candidates = [s for s in game["seals"] if s["requested"]["mind"] == "fieldpilot"]
         require(len(candidates) == 1, "one actual Field Pilot seal is required")
         candidate = candidates[0]
         require(candidate["engine"] == "scripted" and candidate["class"] == "II"

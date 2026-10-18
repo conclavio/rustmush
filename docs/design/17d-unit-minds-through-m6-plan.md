@@ -685,7 +685,7 @@ continuation authorization permits M7 after this checkpoint passes. No calendar 
 substitute for this interface and correctness review.
 
 **Q-UM-17 ruled 2026-10-17:** when a derivative's parent licence is lost, existing
-sealed sorties may finish, but new sorties and filings are blocked until the
+sealed sorties may finish, but new owner-use sorties and filings are blocked until the
 parent licence is restored. This supersedes the earlier "still runs and seals"
 default in doc 17; the M7 design must enforce the same rule at checkout and filing.
 The owner's separate paid-customer ruling on the same date keeps existing paid

@@ -53,7 +53,7 @@ class ComparisonTests(unittest.TestCase):
                 "rules":envelope["rules"].get("Hold", [])}]}}
         seal = {"class":"II", "engine":"scripted", "source_sha256":source,
                 "cards":cards, "card_digest":"7" * 64,
-                "requested":{"mind":"FieldPilot", "source_sha256":source,
+                "requested":{"mind":"fieldpilot", "source_sha256":source,
                              "origin":{"digest":definition}}}
         opponent = {"class":"I", "source_sha256":context["opponent"]["source_sha256"],
                     "requested":{"mind":"Standard"}, "cards":{
