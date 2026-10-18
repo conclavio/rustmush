@@ -60,7 +60,31 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      # The workspace builds 392 test binaries (2026-10-18: 176 MB each at
+      # opt-level 0, plus a PDB or DWARF beside each), which is more than a hosted
+      # runner's default disk: every run since the account could run jobs at
+      # all died in the Build step with 0 MB free on both hosts. Linux gets the
+      # LVM volume easimon's action spans across the root and the temp disk,
+      # mounted at the workspace (so it runs BEFORE checkout), with the
+      # preinstalled toolchains this job never uses removed; Windows moves the
+      # target dir off the 14 GB D: temp disk the workspace lives on, onto C:.
+      - name: Maximize build space (Linux)
+        if: runner.os == 'Linux'
+        uses: easimon/maximize-build-space@v10
+        with:
+          root-reserve-mb: 2048
+          temp-reserve-mb: 1024
+          swap-size-mb: 4096
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
       - uses: actions/checkout@v4
+      - name: Target dir on the large drive (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "CARGO_TARGET_DIR=C:\cargo-target" >> "$GITHUB_ENV"
       # WS01-S11B: rust-toolchain.toml at the repo root is the only place in
       # this repo that names a Rust version. `rustup toolchain install` with no
       # argument installs the toolchain that file pins, with the `clippy` and
@@ -77,8 +101,10 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Build
-        run: cargo build --workspace --all-targets
+      # There is no separate `cargo build --workspace --all-targets` step: it
+      # built every test binary a second time beside the Test step's own build
+      # (the only example target in the workspace, mush-bot's, is built by its
+      # own test step), and the duplicate was what ran the runners out of disk.
       # 17b cut M2.7 (doc 17 D-UM-28): the unit minds' cross-platform pin.
       # The stock corpus flown by the Rhai Standard Doctrine and a float-probe
       # mind, each match's end, final state hash, substep-hash digest and
@@ -128,7 +154,7 @@ jobs:
           cargo test -p mush-proto --features ts --test ts_export
           git diff --exit-code web/src/lib/proto
 
-  # WS24-S4 (fu10-1): `cargo build --workspace --all-targets` above compiles
+  # WS24-S4 (fu10-1): the Test step's `cargo test --workspace` above compiles
   # every crate exactly ONCE, with its default features. Everything that is off
   # by default is therefore code no job compiles — and `mush-gateway --features
   # tls` is not an optional extra, it is the PRODUCTION build of the proxyless
