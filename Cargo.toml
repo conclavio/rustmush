@@ -254,3 +254,14 @@ todo = "warn"
 
 [profile.release]
 lto = "thin"
+
+# Debug and test builds carry line tables only (file and line in every
+# backtrace), not the full type and variable records. Measured 2026-10-18 on
+# the owner's box: with full debuginfo one link.exe of a test binary peaked at
+# 11.3 GB and wrote a 0.9-1.2 GB PDB, so four concurrent links exhausted 40 GB
+# of RAM, the local target dir held 464 GB of PDBs, and GitHub's Windows
+# runner hit the PDB format's own ceiling (LNK1318/LNK1140). Line tables alone:
+# 3 GB a link, PDBs 69 percent smaller, every test unchanged. rust-lld and
+# opt-level 1 for dependencies were measured and add little on top.
+[profile.dev]
+debug = "line-tables-only"
