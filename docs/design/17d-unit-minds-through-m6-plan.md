@@ -10,7 +10,10 @@ and passing Windows/Linux gates are
 recorded in [17b §4](17b-unit-minds-implementation-plan.md#4-m5rules-continuation-gate--2026-10-17);
 M5r is also accepted on 2026-10-17, with behavior, compatibility and final
 verification in [17b §5](17b-unit-minds-implementation-plan.md#5-m5r-continuation-gate--2026-10-17).
-Neither cut has been deployed. M6 scratch preparation is not a landed milestone.
+Neither cut has been deployed. M6 is accepted on 2026-10-18 with the owner's
+explicit one-time parity exception and the final evidence recorded in
+[17e](17e-field-pilot-acceptance.md). The IC14 economy checkpoint also passes;
+ordinary M7 implementation may continue under the existing authorization.
 
 The owner requested this plan through M6 on 2026-10-17 and deferred M7 until a
 separate check that the economy code has stabilized. Later that day the owner
@@ -693,7 +696,7 @@ derivative licences usable through their own term under their own restrictions,
 without ancestor licences. New sales and renewals wait for the issuer's qualifying
 parent rights to return, rechecked before settlement; no existing term is extended.
 
-## 8. Implementation record: M6 acceptance in progress
+## 8. Implementation record: M6 accepted with documented exception
 
 M5rules and M5r are accepted on the published branch. The M5r implementation is
 `5993ba20`; merge `f37ff334` incorporated IC11 (`26e3b1fa`) while preserving the
@@ -816,4 +819,20 @@ tracked merge, without the isolated M7 implementation. The real Redis
 recovery/authoritative-boot cases use an owned JSON/Search listener, now
 stopped. All 59 retained files independently verify; 17b §6 records the archive
 hash and scope. IC14 is now the current merged economy checkpoint. The M6
-parity exception remains pending and M7 remains inactive preparation.
+parity exception was still pending when that checkpoint completed.
+
+**Closeout, 2026-10-18:** the owner explicitly accepted the final `c58c3d98`
+win-rate parity exception: Field Pilot 21/30 (70%) versus external 16/30,
+0.2323889077 percentage points above its 95% Wilson upper endpoint. All other
+required functional, privacy, resource, replay and quality gates are reconciled
+in 17b §6 and 17e. M6 is accepted; raw failed comparisons and earlier failures
+remain evidence, and no validator, source, seed or threshold changed for this
+decision. The passing IC14 checkpoint satisfies the separate economic gate.
+The earlier pending/inactive statements above describe their historical runs;
+ordinary M7 implementation is now authorized, with its own review and acceptance
+still required.
+
+The owner also resolved Coprates Drill's launch standing rule: require current
+Republic membership through the existing standing service. No reputation score
+or officer rank is required. M7 must enforce this at actual admission/commerce
+boundaries, including a membership loss after a successful preview.

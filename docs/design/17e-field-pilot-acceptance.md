@@ -1,5 +1,11 @@
 # Field Pilot acceptance for M6
 
+**M6 accepted, 2026-10-18:** the owner explicitly accepted the documented
+win-rate parity exception for the final `c58c3d98` run. All other required
+correctness gates passed with the provenance below. The original failed
+comparison and validator remain unchanged; this is a one-time acceptance
+exception, not a revised statistical criterion.
+
 This is the independent Picture/Pilot/Doctrine port required by
 [17d M6.10](17d-unit-minds-through-m6-plan.md#m610-acceptance-and-documentation).
 It is acceptance content, not Registry Doctrine and not a replacement for Standard.
@@ -281,8 +287,9 @@ all minds. The external 95% Wilson interval is
 `[0.36142299619873297, 0.6976761109230025]`. Field Pilot's 70% point rate is
 **0.2323889077 percentage points above its upper bound**. The intervals overlap,
 but that descriptive comparison does not pass the separate written point-rate
-criterion. A one-time exception has been requested and remains pending. The
-timing waiver does not supply that approval, and the validator remains unchanged.
+criterion. On 2026-10-18 the owner explicitly accepted this documented one-time
+exception. That decision is separate from the timing waiver; the validator and
+retained failed comparison remain unchanged.
 
 All functional stages passed: 34 validator tests, 13 production picture checks,
 both same-server isolation cases, the public author workflow and the fresh
@@ -309,8 +316,7 @@ physical-heading regression, the actual-opening evidence regression, strict
 all-target Clippy, private-item Rustdoc, workspace formatting and two TypeScript
 export tests all pass. A separate local Cargo build made the guarded wrapper
 stop after Rustdoc; the subsequent guarded invocation ran only formatting and
-protocol export. Both records are retained. This completes the Windows gates;
-M6 acceptance still awaits the explicit parity decision.
+protocol export. Both records are retained. This completes the Windows gates.
 
 A bounded read-only audit of the same retained external run reverified all 29
 indexed artifacts and found no actionable bot execution defect. All 30 matches
@@ -319,4 +325,9 @@ explicit still-cycling refusals. The 14 losses are combat eliminations, without
 an observed lost cockpit, unanswered firing command or midfight busy stall.
 Independent polling and native-intent timing differ, but this evidence does
 not justify retuning the bot or rerunning seeds. No source, tactics, criterion
-or acceptance result changed; the parity decision remains outstanding.
+or measured acceptance result changed. With the owner's subsequent explicit
+exception, M6 is accepted. The current economy checkpoint is the exact IC14
+merge `eafe0064caa86411dadb08d4c24ae17488a2bd69`, with 49 stages and 1,508 tests
+passing; [17b §6](17b-unit-minds-implementation-plan.md#6-m6-candidate-and-acceptance-work--2026-10-17)
+retains its separate evidence. Both prerequisites for ordinary M7 implementation
+are satisfied. M7 itself remains unaccepted and requires its own gates.

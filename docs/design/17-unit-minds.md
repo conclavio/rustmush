@@ -1232,7 +1232,10 @@ Yards Doctrine Library (Standard Doctrine's preset pages, free; role doctrines j
 Meridiani Field Series (Discretion, sealed, the mercenary standard); Tycho Mutual's Safe Conduct
 (convoy defence and the haul under escort; Tycho discounts cover on hulls that run it); the
 Territorial Force's Coprates Drill (Republic-standing buyers only, through an
-`AvailabilityProvider`).
+`AvailabilityProvider`). **Owner ruling, 2026-10-18:** launch standing means
+current Republic membership, checked through the existing standing service;
+no officer rank or new reputation score is required. Recheck membership at the
+actual admission/commerce boundary, including loss after an eligible preview.
 
 **NPC procurement (D-UM-54, Q-UM-8 answered A with R-D's condition).** Later, NPC procurement buys
 from the Roll on a monthly budget by the Registry's trial rating per credit, with a standing filter
