@@ -3,9 +3,10 @@
 //!
 //! The solar system is not a coordinate map. It is a constellation of places,
 //! each body a circular, coplanar orbit — a heliocentric distance and a longitude
-//! at an epoch — and the distance between two of them is the law of cosines over
-//! those numbers. A fixture body is placed at the configured campaign epoch; a
-//! lane body (doc 18 cut IC2) carries its own `epoch_ic`, the real date whose
+//! at an epoch: the e = i = 0 case of a Keplerian orbit, which post-slice cut P-A
+//! generalizes behind the same `crate::sky::Sky` seam (doc 18 §4.8, D-18-43) —
+//! and the distance between two of them is the law of cosines over those
+//! numbers. A fixture body is placed at the configured campaign epoch; a lane body (doc 18 cut IC2) carries its own `epoch_ic`, the real date whose
 //! true longitude and distance it was authored from, and is held there.
 //!
 //! `rate = 0` is the default and holds every body at its authored phase (the

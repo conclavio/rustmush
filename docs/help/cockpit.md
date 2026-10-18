@@ -2,7 +2,9 @@
 
 The seventeen verbs you fly a tank with, in the order a pilot uses them. They work
 while you are at the station of a tank a running match has deployed, and nowhere
-else — `help simulator` is how you get there.
+else — `help simulator` is how you get there. The cockpit is the simulator's: a
+Co-op Dray has no cockpit verbs (its pilot plans and undocks with `+ship`; see
+"help ships").
 
   STARTUP             bring the tank's power up. Idempotent; motion and fire
                       refuse until it is online.

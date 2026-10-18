@@ -230,9 +230,11 @@ impl CustodyProvider for InteriorCustodyProvider {
     ///    every OTHER module's `CarryAttempt` gate. Nothing has mutated yet.
     /// 2. `Unplace { keep: true }` — the object stops being a simulation
     ///    citizen. `keep: true` skips the recovery-room projection, so
-    ///    `Obj.location` stays exactly where the placement put it (the space
-    ///    object itself — `graph::project` maps `Interior { space }` to
-    ///    `space`), and the placement record becomes `Unplaced` **without** the
+    ///    `Obj.location` stays exactly where the placement put it (where
+    ///    `graph::project` resolves `Interior { space }`: the member room the
+    ///    object stands in when the space lists it — doc 18 §4.2, cut IC4's
+    ///    member-room projection — else the space object itself), and the
+    ///    placement record becomes `Unplaced` **without** the
     ///    `quarantined` latch, i.e. a plain object again.
     /// 3. The single `World::move_to(obj, to)`.
     ///

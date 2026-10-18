@@ -621,3 +621,137 @@ fn ic1_an_unknown_room_marker_is_refused() {
         .count();
     assert_eq!(galleries, 0, "the refused room was never written");
 }
+
+// ---- doc 18 cut IC12: the two text bounds the applier enforced alone ----------
+
+/// The `budget.text` findings about `entry`, as `(message, fix_hint)`.
+fn text_budget(findings: &[Finding], entry: &str) -> Vec<(String, String)> {
+    findings
+        .iter()
+        .filter(|f| f.code == "budget.text" && f.entry.as_deref() == Some(entry) && f.blocks())
+        .map(|f| (f.message.clone(), f.fix_hint.clone()))
+        .collect()
+}
+
+/// **A room's `short_desc` over 256 bytes fails validation** (doc 18 cut IC12 item
+/// 4.4; `def::MAX_SHORT_DESC_BYTES`), not only the apply; 256 bytes passes.
+#[test]
+fn ic12_a_long_short_desc_is_a_budget_text_error() {
+    let tw = town();
+    let pack = block_v2(|e| {
+        e["room.green"]["def"]["short_desc"] = json!("x".repeat(257));
+    });
+    let findings = validate(&pack, &context(&tw, &pack));
+    assert_eq!(
+        text_budget(&findings, "room.green"),
+        vec![(
+            "short_desc is 257 bytes; at most 256".to_owned(),
+            "one line".to_owned()
+        )],
+        "{findings:#?}"
+    );
+    let pack = block_v2(|e| {
+        e["room.green"]["def"]["short_desc"] = json!("x".repeat(256));
+    });
+    let findings = validate(&pack, &context(&tw, &pack));
+    assert!(
+        text_budget(&findings, "room.green").is_empty(),
+        "{findings:#?}"
+    );
+}
+
+/// **Too many ambience lines fail validation** (doc 18 cut IC12 item 4.4;
+/// `def::MAX_AMBIENCE_LINES` 24); 24 lines pass.
+#[test]
+fn ic12_too_many_ambience_lines_is_a_budget_text_error() {
+    let tw = town();
+    let lines = |n: usize| -> Vec<String> { (1..=n).map(|i| format!("A bell, {i}.")).collect() };
+    let pack = block_v2(|e| {
+        e["neighborhood"]["def"]["ambience"] = json!(lines(25));
+    });
+    let findings = validate(&pack, &context(&tw, &pack));
+    assert_eq!(
+        text_budget(&findings, "neighborhood"),
+        vec![(
+            "ambience has 25 lines; at most 24".to_owned(),
+            "fewer ambient lines".to_owned()
+        )],
+        "{findings:#?}"
+    );
+    let pack = block_v2(|e| {
+        e["neighborhood"]["def"]["ambience"] = json!(lines(24));
+    });
+    let findings = validate(&pack, &context(&tw, &pack));
+    assert!(
+        text_budget(&findings, "neighborhood").is_empty(),
+        "{findings:#?}"
+    );
+}
+
+/// **A blank ambience line fails validation** (doc 18 cut IC12 item 4.4).
+#[test]
+fn ic12_a_blank_ambience_line_is_a_budget_text_error() {
+    let tw = town();
+    let pack = block_v2(|e| {
+        e["neighborhood"]["def"]["ambience"] = json!(["A bell.", "   "]);
+    });
+    let findings = validate(&pack, &context(&tw, &pack));
+    assert_eq!(
+        text_budget(&findings, "neighborhood"),
+        vec![(
+            "ambience line 2 is blank".to_owned(),
+            "remove the blank line".to_owned()
+        )],
+        "{findings:#?}"
+    );
+}
+
+/// **An ambience line over 512 bytes fails validation** (doc 18 cut IC12 item 4.4;
+/// `def::MAX_AMBIENCE_LINE_BYTES`); 512 bytes passes.
+#[test]
+fn ic12_a_long_ambience_line_is_a_budget_text_error() {
+    let tw = town();
+    let pack = block_v2(|e| {
+        e["neighborhood"]["def"]["ambience"] = json!(["y".repeat(513)]);
+    });
+    let findings = validate(&pack, &context(&tw, &pack));
+    assert_eq!(
+        text_budget(&findings, "neighborhood"),
+        vec![(
+            "ambience line 1 is 513 bytes; at most 512".to_owned(),
+            "a shorter line".to_owned()
+        )],
+        "{findings:#?}"
+    );
+    let pack = block_v2(|e| {
+        e["neighborhood"]["def"]["ambience"] = json!(["y".repeat(512)]);
+    });
+    let findings = validate(&pack, &context(&tw, &pack));
+    assert!(
+        text_budget(&findings, "neighborhood").is_empty(),
+        "{findings:#?}"
+    );
+}
+
+/// **`topology.unreachable`'s hint names the dock marker** (doc 18 cut IC12 item 4.4):
+/// a station reached only by ship validates by marking its gallery `port.dock`, and
+/// the hint now says so.
+#[test]
+fn ic12_the_unreachable_hint_names_the_dock_marker() {
+    let tw = town();
+    let bare = signed(dock_doc(json!([])));
+    let findings = validate(&bare, &context(&tw, &bare));
+    let hints: Vec<&str> = findings
+        .iter()
+        .filter(|f| f.code == "topology.unreachable")
+        .map(|f| f.fix_hint.as_str())
+        .collect();
+    assert!(!hints.is_empty(), "{findings:#?}");
+    for hint in hints {
+        assert_eq!(
+            hint,
+            "join it to a reachable room with an unlocked exit, mark it `port.dock` if ships \
+             reach it, or make it restricted"
+        );
+    }
+}

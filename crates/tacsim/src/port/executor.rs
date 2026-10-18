@@ -2450,21 +2450,7 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
                 .replace("{house}", &bid.house)
                 .replace("{label}", &label);
             if q == 0 {
-                let reason = if under {
-                    UNDER_MIN
-                        .replace("{house}", &bid.house)
-                        .replace("{price}", &money(w, bid.price))
-                        .replace("{unit}", &unit)
-                        .replace("{min}", &money(w, Amount::from_minor(floor.unwrap_or(0))))
-                } else if bid.remaining == 0 {
-                    INTAKE_TAKEN
-                        .replace("{house}", &bid.house)
-                        .replace("{label}", &label)
-                } else if bid.house_units == 0 {
-                    house_line.clone()
-                } else {
-                    short_clause(want, &unit, &bounds)
-                };
+                let reason = sale_none_reason(w, &bid, &label, &unit, floor, want, &bounds);
                 skip_or_hold(w, &mut out, id, on_short, &reason);
                 return Plan::Write(Box::new(out));
             }
@@ -2865,6 +2851,39 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
                 }
             }
         }
+    }
+}
+
+/// **Why a queued sale takes nothing** (doc 18 cut IC11's skip reasons, factored by
+/// cut IC12 so each is pinned without a 4,000 t intake to exhaust): the bid under the
+/// order's floor (`UNDER_MIN`), else an exhausted bid (`INTAKE_TAKEN`), else a house
+/// that cannot pay (`HOUSE_CANNOT_PAY_SKIP`), else the short clause naming every bound
+/// that bit. `floor` is the order's `min=` in minor units, `None` without one.
+pub(crate) fn sale_none_reason(
+    w: &World,
+    bid: &Bid,
+    label: &str,
+    unit: &str,
+    floor: Option<i64>,
+    want: u64,
+    bounds: &[Bound],
+) -> String {
+    if floor.is_some_and(|floor| bid.price.minor() < floor) {
+        UNDER_MIN
+            .replace("{house}", &bid.house)
+            .replace("{price}", &money(w, bid.price))
+            .replace("{unit}", unit)
+            .replace("{min}", &money(w, Amount::from_minor(floor.unwrap_or(0))))
+    } else if bid.remaining == 0 {
+        INTAKE_TAKEN
+            .replace("{house}", &bid.house)
+            .replace("{label}", label)
+    } else if bid.house_units == 0 {
+        HOUSE_CANNOT_PAY_SKIP
+            .replace("{house}", &bid.house)
+            .replace("{label}", label)
+    } else {
+        short_clause(want, unit, bounds)
     }
 }
 
@@ -3401,6 +3420,199 @@ mod tests {
         let economy = mush_economy::SWEEP_PERIOD_SECS;
         let fire = i64::try_from(crate::port_tick::PORT_TICK_PERIOD.as_secs()).unwrap();
         assert!(ORDER_SETTLE_GRACE_SECS >= inventory + market + economy + 2 * fire);
+    }
+
+    /// **Doc 18 cut IC12 (F9): `fill_reason` renders the hold each fill error
+    /// produces** — the two compartment errors as `HELD_FILL` with the compartment, the
+    /// need and the consumable's unit, the planner's as `HELD_FILL_PLAN` — exact strings
+    /// built from the constants (`fill_targets`' own errors are pinned by
+    /// `ic11_fill_refuses_past_six_iterations`).
+    #[test]
+    fn ic12_fill_reason_renders_each_hold() {
+        let goods = goods();
+        let port = "Ceres Freeport";
+        let held = |comp: &str, need: &str, unit: &str| {
+            HELD_FILL
+                .replace("{compartment}", comp)
+                .replace("{need}", need)
+                .replace("{unit}", unit)
+                .replace("{port}", port)
+        };
+        assert_eq!(
+            fill_reason(
+                &goods,
+                &FillError::TankTooSmall { need: 90, room: 80 },
+                port
+            ),
+            held("tank", "90", "t")
+        );
+        assert_eq!(
+            fill_reason(
+                &goods,
+                &FillError::LockerTooSmall {
+                    need: 200,
+                    room: 120
+                },
+                port
+            ),
+            held("locker", "200", "crew-days")
+        );
+        let plan = HELD_FILL_PLAN.replace("{port}", port);
+        assert_eq!(fill_reason(&goods, &FillError::NoFixedPoint, port), plan);
+        assert_eq!(
+            fill_reason(&goods, &FillError::Plan(PlanError::Overflow), port),
+            plan
+        );
+        assert_eq!(
+            held("tank", "90", "t"),
+            "the tank cannot carry the 90 t the passage to Ceres Freeport needs."
+        );
+    }
+
+    /// **Doc 18 cut IC12 (F9): a fill whose crew-days exceed the stores locker refuses
+    /// with `LockerTooSmall`** — the third compartment arm `fill_targets` had no case
+    /// for: a plan of 0 t and 200 crew-days over an empty Dray (the locker holds 120).
+    #[test]
+    fn ic12_fill_refuses_a_locker_too_small() {
+        let goods = goods();
+        let hungry = |_: u64| Ok(plan_with(0, 200));
+        assert_eq!(
+            fill_targets(
+                &goods,
+                &readings(&[]),
+                &BTreeMap::new(),
+                0,
+                0,
+                0,
+                1,
+                100,
+                hungry
+            ),
+            Err(FillError::LockerTooSmall {
+                need: 200,
+                room: 120
+            })
+        );
+    }
+
+    /// **Doc 18 cut IC12 (F14): a refused closed call is logged once and held at the
+    /// third** — `refused_call`, which only a market call refused after the step's
+    /// pre-check reaches (`refused_after_call`; the planner pre-checks the house's
+    /// funds, the stock and the hold, so no step on the shipped composition reaches it
+    /// reproducibly, and this unit covers the counter): `REFUSED_RETRY` logged once at
+    /// the first refusal, `refusals` 1 → 2 → 3 with `retry_at` set each time, and the
+    /// stopped hold (`HELD_LINE`, the plan `Held`, the order `Held`) at
+    /// [`MAX_ORDER_REFUSALS`].
+    #[test]
+    fn ic12_a_refused_call_logs_once_and_holds_at_three() {
+        let w = World::new_minimal();
+        let mut doc = Orders::fresh(ObjId(5011), ObjId(42), 1);
+        doc.orders = vec![pending(
+            1,
+            What::Buy {
+                good: cid("volatiles"),
+                qty: Qty::Units(5),
+                max_major: None,
+                on_short: crate::port::orders::OnShort::Partial,
+            },
+        )];
+        doc.next_id = 2;
+        doc.derive_cursor();
+        let line = "That listing is not taking quotes.";
+        let retry = REFUSED_RETRY.replace("{n}", "1").replace("{line}", line);
+        let mut out = Outcome::new(doc);
+        for n in 1..=MAX_ORDER_REFUSALS {
+            refused_call(&w, &mut out, 1, line);
+            let order = out.doc.order(1).expect("the order");
+            assert_eq!(order.refusals, n);
+            assert_eq!(
+                order.retry_at,
+                Some(w.now().saturating_add(ORDER_RETRY_SECS))
+            );
+            let logged = out.doc.log.iter().filter(|l| l.text == retry).count();
+            assert_eq!(logged, 1, "logged once, at the first refusal");
+            if n < MAX_ORDER_REFUSALS {
+                assert_eq!(out.doc.state, PlanState::Running);
+                assert!(out.doc.hold.is_none());
+            }
+        }
+        assert_eq!(MAX_ORDER_REFUSALS, 3);
+        assert_eq!(out.doc.state, PlanState::Held);
+        assert_eq!(out.doc.order(1).map(|o| o.state), Some(OrderState::Held));
+        let hold = out.doc.hold.as_ref().expect("the stopped hold");
+        assert_eq!(
+            (hold.order, hold.reason.as_str(), hold.retry),
+            (1, line, false)
+        );
+        let held = HELD_LINE.replace("{n}", "1").replace("{reason}", line);
+        assert!(
+            out.doc.log.iter().any(|l| l.text == held),
+            "{:?}",
+            out.doc.log
+        );
+        // A fourth refusal keeps the count at its bound and logs nothing new.
+        refused_call(&w, &mut out, 1, line);
+        assert_eq!(
+            out.doc.order(1).map(|o| o.refusals),
+            Some(MAX_ORDER_REFUSALS)
+        );
+        assert_eq!(out.doc.log.iter().filter(|l| l.text == retry).count(), 1);
+    }
+
+    /// **Doc 18 cut IC12: a queued sale that takes nothing names its reason**, in
+    /// `decide`'s order — the floor first, then an exhausted intake (`INTAKE_TAKEN`,
+    /// which no 100 t hull can produce on the shipped 4,000 t and 9,600 t intakes in a
+    /// test), then a house that cannot pay, then the short clause — exact strings from
+    /// the constants (a world with no economy renders money as bare minor units).
+    #[test]
+    fn ic12_a_sale_that_takes_nothing_names_its_reason() {
+        let w = World::new_minimal();
+        let bid = |remaining: u64, house_units: u64| Bid {
+            listing: mush_market::ListingId(21),
+            price: Amount::from_minor(28_000),
+            remaining,
+            house: "Kasei Metals".to_owned(),
+            house_units,
+        };
+        let label = "metal concentrate";
+        assert_eq!(
+            sale_none_reason(&w, &bid(4_000, 900), label, "t", Some(100_000), 20, &[]),
+            "Kasei Metals bids 28000/t, under your 100000."
+        );
+        assert_eq!(
+            sale_none_reason(&w, &bid(0, 900), label, "t", None, 20, &[Bound::Intake]),
+            INTAKE_TAKEN
+                .replace("{house}", "Kasei Metals")
+                .replace("{label}", label)
+        );
+        assert_eq!(
+            sale_none_reason(&w, &bid(0, 900), label, "t", None, 20, &[Bound::Intake]),
+            "Kasei Metals is not buying metal concentrate; its intake is taken."
+        );
+        assert_eq!(
+            sale_none_reason(
+                &w,
+                &bid(4_000, 0),
+                label,
+                "t",
+                None,
+                20,
+                &[Bound::HouseFunds]
+            ),
+            "Kasei Metals cannot pay for metal concentrate right now."
+        );
+        assert_eq!(
+            sale_none_reason(
+                &w,
+                &bid(4_000, 900),
+                label,
+                "t",
+                Some(1),
+                20,
+                &[Bound::Intake]
+            ),
+            "short of 20 t: intake."
+        );
     }
 
     /// A pending order for the shape tests.

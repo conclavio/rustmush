@@ -16,10 +16,13 @@
 //! `accept_contract_as`, which refuses any principal the composition did not name in
 //! `with_party_caps`; the game's root passes `Vec::new()` today
 //! (`tacsim/src/composition/mod.rs`), so on the real roster the money leg stops at
-//! "that vendor cannot complete the sale". Doc 18 cut IC5's `with_party_cap_source`
-//! is what opens it there, and the stock → quote → accept → settle gate on the
-//! production roster is IC5's own verify lens. What IC0 can and does pin is the
-//! engine: with a vendor that may accept, the loop settles and pages nothing.
+//! "that vendor cannot complete the sale". Since doc 18 cut IC8 the game's root
+//! carries the TacSim layer's party-cap source (`tacsim::port::PortPartyCaps`,
+//! through `with_party_cap_source`, which cut IC7 built) on the roster that composes
+//! the layer, and it answers for the lane's port institutions; the port's own
+//! stock → quote → accept → settle gate is `crates/tacsim/tests/commerce.rs`. What
+//! IC0 can and does pin is the engine: with a vendor that may accept, the loop
+//! settles and pages nothing.
 
 use std::sync::Arc;
 

@@ -64,8 +64,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    bounded page at a time. A filter you may not use simply shows nothing. \
                    With no filter, where you stand in a port, you see that port's board.\n\
                    +market/show <listing>             one listing.\n\
-                   +market/depth <ruleset>:<code> [market=<venue>]\n\
-                   \x20                                 the PUBLIC picture of a good: last trade, \
+                   +market/depth <catalogue>:<code> [market=<venue>]\n\
+                   \x20                                 the PUBLIC picture of a good, named by \
+                   its catalogue and code (a port good reads tacsim:<good>, as tacsim:metals): \
+                   last trade, \
                    a price band, bucketed depth and the window's volume. It names no account, no \
                    listing, no counterparty and no seller's quantity, and it is the same for \
                    everyone who asks.\n\
@@ -80,7 +82,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    to=<vault>. Where the port knows your berthed hold, leave it off and the \
                    goods go there. Taking up a drawn quote whose goods have not moved yet \
                    asks for the hand-over again, and so does naming one of your own sales \
-                   into a bid whose goods have not left yet.\n\
+                   into a bid whose goods have not left yet. A quote on goods another player \
+                   listed from their own stock is not asked for again: taking it up a second \
+                   time answers that it has already been taken up.\n\
                    +market/sell <listing>=<qty> [from=<vault>]\n\
                    \x20                                 sell into a house's standing bid out \
                    of your own endpoint (in a port, your berthed hold). The house's payment is \

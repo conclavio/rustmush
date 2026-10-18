@@ -1001,6 +1001,87 @@ ride `obj:*` write-through and reload with the world. The reboot round trip is
 CI-tested against a live Redis
 (`crates/mushd/tests/persistence.rs::npc_agent_persistence_round_trip`).
 
+## The trade run (doc 18): the port tick, readiness and the play rate
+
+The trade run (two stations, the lane between them, the Co-op's Drays, the
+markets and the sailing plan) is the game layer's, switched on with
+`[tacsim].enabled`. Its background work runs on one tick, `tacsim.port`, every
+few seconds. Player help: `help ports`, `help ships`, `help coop`, `help orders`,
+`help trade`.
+
+### Executor posture: the tick acts as someone, one closed call at a time
+
+The tick runs as GOD and **submits nothing itself**. Each of its arms acts for
+one principal and swaps to it for the step: a port's stock clerk (mint, dissolve
+and list the port's seeded stock; re-post a lapsed bid), a listing holder (release
+a lapsed hold), a pilot (launch a filed passage; run the pilot's sailing plan).
+Each step is **one closed, typed call** — a buy, a sale, a burn, a re-stage —
+never a command string, at most one step per hull and one act per principal per
+fire. A step is verified by pull on later fires (did the leg land, did the ticket
+appear), never by assuming its submission was admitted; a lost leg is re-staged
+under its own contract key, so nothing is done twice. A hold consumes nothing:
+the plan stops or waits, the pilot is told once, and the log says why. Pages
+that need staff (an unreadable sailing plan, a held launch, stock drift on a
+storefront, a step still unconfirmed at its second deadline) are logged at
+`error` with a runbook field, once per boot each.
+
+### The asker-authority bridge
+
+The port's cast are NPCs fronting interfaces (the market, travel, help). An
+NPC's `use_ability` runs the provider **as the player who asked**, with that
+player's authority, and the answer goes to that player alone; an NPC never
+moves money or goods of its own accord.
+
+### `@tacsim/port status` and the enrolment gate
+
+`@tacsim/port status` (staff) prints the readiness report: the lane's latched
+version, the sky, the world rate, the treasury, the market and inventory fact
+providers, and per port its map, rooms, domain, institutions (each with its
+account and capital), programme, hulls, storefront pools, listings and bids, each
+line `[ready]`, `[pending]`, `[missing]` or `[flagged]`. `+coop/enrol` is gated on
+**every line but the sky** (doc 18 D-18-50: the sky is reported, never gated): a
+player only ever hears "The Co-op is not enrolling yet: the programme is still
+being set up."; the reason is the first non-ready line here. A fresh world reads
+Ready once the capital has settled and the clerks have stocked and listed both
+ports — a couple of minutes of ticks.
+
+The sky line reads `sky: constant (rate 0), epoch <date>, rev <digest>` at the
+shipped rate 0. If `[tacsim.time.ephemeris].rate` is set non-zero while a lane
+body has no `epoch_ic`, the line is flagged and the port tick pages once per boot
+("the sky moves but a lane body has no epoch_ic"; runbook: give every lane body
+an `epoch_ic` or set the sky rate to 0).
+
+### Held launches: `@tacsim/port clear #<hull>`
+
+A filed passage whose launch cannot happen (the destination domain paused, the
+charter revoked, the pilot ashore) is **held**: the burn is committed, the pilot
+is told once, staff are paged. When the cause clears it launches the frozen plan
+at its own instant. `@tacsim/port clear #<hull>` stands the clearance down: the
+ticket stays as the record, nothing burned is refunded, and the pilot is told.
+
+### The play rate: the rate-24 deploy line
+
+Play runs at **24 IC seconds per real second**, and the Rate line refuses
+enrolment at any other rate on a production world. The rate is a global knob
+that moves contracts and cooldowns, so it is set **only on an owner-approved
+redeploy**: `@tacsim/time rate=24` on a kept world, or `IC_RATIO=24` (the
+`[game].ic_ratio` the deploy renders) on a fresh store. Never flip dev1's rate
+for a session.
+
+### Kept worlds: the boot never upgrades a latched pack
+
+A world latched at an older station or lane version keeps it across every boot.
+Take a new shipped version by hand: `@atlas/pack plan <pack>`, read the plan,
+then `@atlas/pack apply <fingerprint>`. Doc 18 cut IC12 ships
+`neighborhood.ceres_freeport` at version 2 and `neighborhood.stickney_yards` at
+version 3; a world latched at 1 and 2 takes them that way.
+
+### Pre-deploy blocker: no selling until `inventory_applied` retention lands
+
+A sale settles on the inventory module's applied-marker mirror, which is not yet
+retained or pruned (doc 18 cut IC10's residual, cut IC14's first item). **Do not
+deploy a build that enables selling to a long-lived world before that lands.**
+
 ## Onboarding and chargen gating (M9): `[onboarding]`
 
 New-player creation runs through the same front door on both transports

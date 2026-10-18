@@ -112,8 +112,8 @@ pub mod when;
 
 pub use burn::{BURN_ACTION, BURN_KEY_PREFIX, BURN_OUTCOME};
 pub use coop::{
-    Charter, Enrolment, EnrolmentState, EnrolmentStatus, ProgrammePort, charter_tenant,
-    live_charter, programme_port,
+    Charter, Enrolment, EnrolmentState, EnrolmentStatus, ProgrammePort, charter_tenant, enrol_gate,
+    gated, live_charter, programme_port,
 };
 pub use def::{
     AskDef, BidDef, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES, PortDef, PortOrgDef,

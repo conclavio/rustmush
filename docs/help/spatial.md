@@ -40,10 +40,17 @@ placed in that domain (or not placed).
 
 A placed object — directly on a domain, inside an interior space, or attached to
 a mount — and any quarantined object cannot walk through exits or be picked up /
-dropped / given: it moves only through the simulation (later cuts) or staff
-recovery (`@spatial/unplace`, `@spatial/recover`). Ordinary visitors to an
-interior room, who carry no placement, come and go freely. Player-driven egress
-from a placement arrives in a later cut.
+dropped / given: it moves only through the simulation or staff recovery
+(`@spatial/unplace`, `@spatial/recover`). Ordinary visitors to an interior room,
+who carry no placement, come and go freely.
+
+A multi-room interior — a ship's six rooms — lists its member rooms, and
+someone placed inside it walks freely between them by their exits (no placement
+write per step), but no exit takes them to a room outside it: the boundary
+holds, and the global exits and `home` refuse too. On a Co-op Dray the way in
+and out is the player's own: `+ship/board` in the berth gallery places you in the
+Airlock, and `+ship/leave` in the Airlock, docked, takes you back to the gallery
+(see "help ships").
 
 ## Domains
 

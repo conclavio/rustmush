@@ -71,6 +71,10 @@ driver. See `help atlas` for packs.
 Hulls under way on the placement graph — a TacSim carrier journey along a
 corridor — are listed by `@atlas/journey list` beside the atlas's own
 journeys, and an interface NPC's `travel.status` answers for a crew aboard
-one ("You are aboard the …"). The corridor itself is an atlas connection
-between two orbital sites, drawn between the bodies' positions at the
-campaign epoch, so its length is the sky's pinned distance.
+one ("You are aboard the …"). A ship is not flown with `+travel`: a Dray
+leaves port with `+ship/undock` or its sailing plan (see "help ships" and
+"help orders"), and `+travel/status` aboard says where it has got to. The
+lane's passage time is computed by the planner when the ship departs — from
+the load aboard and the sky at that moment — and frozen on its ticket for the
+whole passage. The corridor the atlas draws between the two ports is a picture
+of the bodies at the campaign epoch, not the passage's length.

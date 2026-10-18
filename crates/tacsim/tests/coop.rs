@@ -568,12 +568,8 @@ fn commerce_ready(tw: &mut TestWorld) -> (bool, String) {
     let out = run(tw, GOD, "@tacsim/port status");
     let gated: Vec<&str> = out
         .lines()
-        .filter(|line| {
-            line.contains(" vendor ")
-                || line.contains(" ask ")
-                || line.starts_with("market facts")
-                || line.starts_with("inventory facts")
-        })
+        // Doc 18 cut IC12: the gate is every report line but the sky (D-18-50).
+        .filter(|line| line.ends_with(']') && !line.starts_with("sky: "))
         .collect();
     let ready = !gated.is_empty() && gated.iter().all(|line| line.ends_with("[ready]"));
     (ready, out)
@@ -1096,6 +1092,10 @@ fn ic6_the_desk_closes_at_a_play_world_rate_other_than_24() {
     sweep(&mut rig.tw, 120);
     // Doc 18 cut IC8: the ports stocked BEFORE the rate moves, so the rate is the one
     // binding that closes the desk (fixer T1: an unstocked port would close it too).
+    // Doc 18 cut IC12: the stocking helper waits for the whole gate (every line but
+    // the sky), which a real world reads only at the play rate — so the world is put
+    // at 24 first, as dev1's deploy step puts it, and then moved off it.
+    set_rate(&mut rig.tw, 24);
     ensure_stocked(&mut rig);
     set_rate(&mut rig.tw, 4);
     let report = run(&mut rig.tw, GOD, "@tacsim/port status");

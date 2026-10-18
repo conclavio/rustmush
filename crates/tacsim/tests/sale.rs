@@ -486,12 +486,8 @@ fn stock(rig: &mut Rig) {
         let out = status(&mut rig.tw);
         let gated: Vec<&str> = out
             .lines()
-            .filter(|line| {
-                line.contains(" vendor ")
-                    || line.contains(" ask ")
-                    || line.starts_with("market facts")
-                    || line.starts_with("inventory facts")
-            })
+            // Doc 18 cut IC12: the gate is every report line but the sky (D-18-50).
+            .filter(|line| line.ends_with(']') && !line.starts_with("sky: "))
             .collect();
         if gated.len() > 1 && gated.iter().all(|line| line.ends_with("[ready]")) {
             return;

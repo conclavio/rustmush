@@ -211,11 +211,14 @@ impl GameModule for NpcModule {
                        principal (who this NPC reports intel to: a character name, or \
                        faction:<name> for a faction's shared pool — empty \
                        clears), loyal (yes|no; the willingness gate), watch (\";\"-separated \
-                       names/topics of interest). \
-                       List fields (goals/fallback/knows/does_not_know/watch) take \
+                       names/topics of interest), interfaces (\";\"-separated ids of the \
+                       interfaces the NPC fronts). \
+                       List fields (goals/fallback/knows/does_not_know/watch/interfaces) take \
                        \";\"-separated values; an empty value clears a field.\n\
-                       @agent/sheet <npc>[=<template>] -- give it a ruleset sheet (default \
-                       mortal) so it can roll; fill it in with @sheet/set afterwards.\n\
+                       @agent/sheet <npc>[=<template>] -- give it the game's character sheet so \
+                       it can roll. The game has one sheet, so no template word is needed; an \
+                       NPC that already has a sheet keeps it. Fill it in with @sheet/set \
+                       afterwards.\n\
                        @agent/lore <npc> -- list this NPC's world knowledge; \
                        @agent/lore <npc>=<public|guarded|secret> [subject:] <fact> adds an \
                        entry; =tags: <t1>; <t2> sets shared-pool tags; =del <n> / =clear \

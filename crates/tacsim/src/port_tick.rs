@@ -358,6 +358,9 @@ pub struct PortTickState {
     /// Doc 18 cut IC8 (lead ruling L19): the drift pages raised this boot, by
     /// `(vault, good)` — each pool pages once per boot.
     pub(crate) paged: BTreeSet<(u64, CanonicalId)>,
+    /// Doc 18 cut IC12: the moving-sky page raised this boot (once) — doc 18 §4.8
+    /// "pages if the sky rate is non-zero while any lane body lacks `epoch_ic`".
+    pub(crate) sky_paged: bool,
     /// Doc 18 cut IC8: listings the release arm has already logged a skip or a
     /// refusal for this boot (each is logged once).
     pub(crate) release_warned: BTreeSet<u64>,
@@ -441,6 +444,42 @@ pub fn drift_pages(w: &World) -> Vec<(u64, CanonicalId)> {
         .unwrap_or_default()
 }
 
+/// **Whether the port tick has paged the moving sky this boot** (doc 18 cut IC12;
+/// §4.8): a status read for tests, beside [`drift_pages`]. `true` once a fire with
+/// the layer on found a non-zero sky rate and a lane body without `epoch_ic`
+/// (`crate::port::readiness::body_without_epoch`); the page is raised once a boot.
+#[must_use]
+pub fn sky_paged(w: &World) -> bool {
+    w.module_state::<PortTickState>()
+        .is_some_and(|state| state.sky_paged)
+}
+
+/// Doc 18 cut IC12 (§4.8; lead ruling L13): the moving-sky page, once a boot. The
+/// readiness report flags the Sky line on the same condition and stays a pure read;
+/// the page lives here, on the fire, latched in [`PortTickState::sky_paged`]. It is
+/// never a gate (D-18-50).
+fn page_moving_sky(w: &World, state: &mut PortTickState) {
+    if state.sky_paged {
+        return;
+    }
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return;
+    };
+    let ephemeris = &store.config().time.ephemeris;
+    let (Some(pack), _) = crate::port::readiness::report_ports(store, w) else {
+        return;
+    };
+    if let Some(body) = crate::port::readiness::body_without_epoch(pack, ephemeris) {
+        tracing::error!(
+            runbook = "doc 18 §4.8: give every lane body an epoch_ic or set the sky rate to 0",
+            body = %body,
+            rate = ephemeris.rate,
+            "tacsim: the sky moves but a lane body has no epoch_ic"
+        );
+        state.sky_paged = true;
+    }
+}
+
 // ---- the fire ----------------------------------------------------------------
 
 /// One agent's turn this fire (D-18-32: one step per agent per fire).
@@ -512,6 +551,7 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     // the fire calls reads it (the probe's offer is projected at landing, after).
     let mut state = std::mem::take(slot);
     state.fires = state.fires.saturating_add(1);
+    page_moving_sky(ctx.w, &mut state);
     let stats = walk(ctx, &mut state);
     state.last_fire = Some(stats);
     if let Some(slot) = ctx.w.module_state_mut::<PortTickState>() {

@@ -1,7 +1,7 @@
 # WS03-S8/S14: the module-state slot ownership baseline.
 #
-# A typed state slot has exactly one owning MODULE â€” the one whose
-# `Registrar::state` declared it â€” and since WS03-S14 the module-facing surface
+# A typed state slot has exactly one owning MODULE — the one whose
+# `Registrar::state` declared it — and since WS03-S14 the module-facing surface
 # REFUSES a foreign write: `Ctx::try_state_mut` returns
 # `Err(StateSlotDenied { requester, owner, .. })`, `Ctx::state_mut` returns
 # `None`, and nothing lands. Refusing is silent at the call site
@@ -10,13 +10,13 @@
 #
 # `tests/state_slot_owners.rs` fails on:
 #
-#   * a `World::module_state_insert` site with no row â€” that accessor seeds a
+#   * a `World::module_state_insert` site with no row — that accessor seeds a
 #     slot with no owner at all, so every one of its sites is declared;
 #   * a `ctx.state_mut::<T>` / `World::module_state_mut::<T>` site whose slot is
 #     owned by a module of a DIFFERENT crate and has no row;
 #   * a row whose `owner` is not the module the composition says owns the slot;
 #   * a row naming a site the scan no longer finds (a stale excuse);
-#   * a row whose `accessor` is `Ctx::state_mut` â€” that spelling is checked now,
+#   * a row whose `accessor` is `Ctx::state_mut` — that spelling is checked now,
 #     so such a row would excuse a write that no longer happens. Only the
 #     unchecked engine accessors can be baselined.
 #
@@ -24,8 +24,8 @@
 # crate writes another module's state. Do not add rows to quiet the scan.
 #
 # WHAT THE CENSUS FOUND. Every cross-owner MUTATION in the tree goes through
-# `World::module_state_mut` â€” the unchecked accessor that carries no module
-# identity â€” and not one goes through `Ctx::state_mut`, which is the surface
+# `World::module_state_mut` — the unchecked accessor that carries no module
+# identity — and not one goes through `Ctx::state_mut`, which is the surface
 # WS03-S14 refuses at. That is why the flip broke nothing. `Ctx::w` is `pub`, so
 # `ctx.w.module_state_mut::<T>()` is one character longer than
 # `ctx.state_mut::<T>()` and skips the refusal; four of the production rows below
@@ -36,7 +36,7 @@
 # monotonic id out of the owning module's store (`alloc_account`, `alloc_org`,
 # `alloc_scope`) before it submits that module's own operation. The obvious fix
 # is an owned seam on the owning module rather than a write into its slot; that
-# is a design change and it is still open â€” WS03-S14 enforced the surface it
+# is a design change and it is still open — WS03-S14 enforced the surface it
 # could without paying for it.
 #
 # `[[site]]` is the static, crate-level half. `[[observed]]` is the runtime,
@@ -81,7 +81,7 @@ slot = "OrgStore"
 owner = "org"
 reason = """
 `@faction/org` allocates an org id and its root scope from `org`'s monotonic
-allocators so both can be created in ONE `CreateOrg` op â€” the write is the
+allocators so both can be created in ONE `CreateOrg` op — the write is the
 allocator bump, and the record itself is still created through `org`'s own
 operation. The site checks the slot exists first and refuses the command when it
 does not.
@@ -105,7 +105,7 @@ slot = "OrgStore"
 owner = "org"
 reason = """
 Doc 18 cut IC3: a port entry's org takes its org id and root-scope id from
-`org`'s monotonic allocators so both are created in ONE `CreateOrg` op â€” the
+`org`'s monotonic allocators so both are created in ONE `CreateOrg` op — the
 write is the allocator bump; the record itself is created through `org`'s own
 operation (`mush_org::submit`). The site refuses when the slot is absent.
 """
@@ -129,7 +129,7 @@ owner = "economy"
 reason = """
 Doc 18 cut IC6: the pilot's account and hold vault take their ids from
 `economy`'s allocators before `mush_economy::open_account` / `create_vault`
-write them through the economy module's own path â€” the `port/apply.rs`
+write them through the economy module's own path — the `port/apply.rs`
 precedent. The site refuses when the slot is absent.
 """
 
@@ -143,8 +143,8 @@ Host wiring, post-composition: the sim registers its account oracle UNWIRED at
 `register` (it has no store yet) and the boot root replaces it with the
 hydrated one, so `+focus` can consult it synchronously inside a world command.
 If the sim did not compose, the slot is absent and every consumer fails closed.
-A module cannot do this itself â€” only the host holds the boot-hydrated identity
-map â€” so this is the host acting as the composer, not a module reaching sideways.
+A module cannot do this itself — only the host holds the boot-hydrated identity
+map — so this is the host acting as the composer, not a module reaching sideways.
 """
 
 [[site]]
@@ -156,7 +156,7 @@ reason = """
 The same post-composition device for `[tacsim].ground_pulse_ms` /
 `space_pulse_ms`: the operator's cadence is host configuration, read where the
 config is read and pushed into the sim's slot. Out-of-band values are clamped,
-not refused â€” a cadence knob must not be able to stop a world booting.
+not refused — a cadence knob must not be able to stop a world booting.
 """
 
 [[site]]
@@ -193,7 +193,7 @@ reason = "World-task `#[cfg(test)]` rig: places objects in the sim's spatial ind
 #
 # Each of these composes some modules and then seeds ANOTHER module's slot
 # directly instead of composing it, which is how a harness keeps a case small.
-# They are listed because a test is where a production reach gets prototyped â€”
+# They are listed because a test is where a production reach gets prototyped —
 # and because a refusal would turn each of them into a silent no-op, which is
 # the failure this census exists to make impossible to ship.
 
@@ -202,7 +202,7 @@ path = "crates/mush-atlas/tests/review_window.rs"
 accessor = "World::module_state_mut"
 slot = "NpcHostState"
 owner = "npc"
-reason = "14a's S1â€“S7 review reproduction (kept unchanged by S8): begins an NPC host turn by hand to complete an interface ability for the asker and watch who hears the reply."
+reason = "14a's S1–S7 review reproduction (kept unchanged by S8): begins an NPC host turn by hand to complete an interface ability for the asker and watch who hears the reply."
 
 [[site]]
 path = "crates/mush-campaign/tests/common/mod.rs"
@@ -269,7 +269,7 @@ reason = """
 16b cut K.1: a simulator slot belongs to an ACCOUNT, not to a character (doc 16
 section 3.8), and an unmapped character is refused fail-closed. The oracle is
 boot-hydrated by the host from the store, which a `TestWorld` has none of, so
-this harness installs the same map `mush_server::boot` installs â€” the one row
+this harness installs the same map `mush_server::boot` installs — the one row
 that makes every claim in the file a claim about accounts.
 """
 
@@ -282,7 +282,7 @@ reason = """
 Doc 18 cut IC6: the First Captain enrolment rule is per gateway account (one
 enrolment per account, ever, D-18-25) and an unmapped character is refused
 fail-closed. The oracle is boot-hydrated by the host from the store, which a
-`TestWorld` has none of, so the rig installs a fixed map â€” the
+`TestWorld` has none of, so the rig installs a fixed map — the
 `match_lifecycle.rs` precedent.
 """
 
@@ -295,7 +295,7 @@ reason = """
 Doc 18 cut IC8, for the coop.rs row's reason: the commerce gates charter pilots
 through `+coop/enrol`, whose rule is per gateway account and fails closed on an
 unmapped character. The oracle is boot-hydrated by the host from the store,
-which a `TestWorld` has none of, so the rig installs the fixed account map â€” the
+which a `TestWorld` has none of, so the rig installs the fixed account map — the
 `match_lifecycle.rs` precedent.
 """
 
@@ -309,7 +309,7 @@ Doc 18 cut IC9, for the coop.rs and commerce.rs rows' reason: every passage test
 charters its pilot through `+coop/enrol`, whose rule is per gateway account and
 fails closed on an unmapped character. The oracle is boot-hydrated by the host
 from the store, which a `TestWorld` has none of, so the rig installs the fixed
-account map â€” the `match_lifecycle.rs` precedent.
+account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
@@ -321,7 +321,7 @@ reason = """
 Doc 18 cut IC10, for the voyage.rs row's reason: every sale test charters its
 pilot through `+coop/enrol`, whose rule is per gateway account and fails closed
 on an unmapped character. The oracle is boot-hydrated by the host from the store,
-which a `TestWorld` has none of, so the rig installs the fixed account map â€” the
+which a `TestWorld` has none of, so the rig installs the fixed account map — the
 `match_lifecycle.rs` precedent.
 """
 
@@ -335,20 +335,7 @@ Doc 18 cut IC11, for the voyage.rs row's reason: every sailing-plan test charter
 its pilot through `+coop/enrol`, whose rule is per gateway account and fails
 closed on an unmapped character. The oracle is boot-hydrated by the host from the
 store, which a `TestWorld` has none of, so the rig installs the fixed account map
-â€” the `match_lifecycle.rs` precedent.
-"""
-
-[[site]]
-path = "crates/tacsim/tests/ic_slice_loop.rs"
-accessor = "World::module_state_mut"
-slot = "AccountOracle"
-owner = "sim"
-reason = """
-Doc 18 cut IC10 (Â§6 "part 1"), for the voyage.rs row's reason: the story's pilot
-enrols through `+coop/enrol`, whose rule is per gateway account and fails closed
-on an unmapped character. The oracle is boot-hydrated by the host from the store,
-which a `TestWorld` has none of, so the rig installs the fixed account map â€” the
-`match_lifecycle.rs` precedent.
+— the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
@@ -375,7 +362,7 @@ reason = """
 composition root, and a simulator slot belongs to an ACCOUNT (doc 16 section
 3.8). The oracle is boot-hydrated by the host from the store, which a
 `TestWorld` has none of, so this harness installs the same map
-`mush_server::boot` installs â€” exactly as `match_lifecycle.rs` does, and for
+`mush_server::boot` installs — exactly as `match_lifecycle.rs` does, and for
 exactly the same reason.
 """
 
@@ -415,7 +402,7 @@ owner = "sim"
 reason = """
 16b cut AF.3: the in-process reboot rig (`Rig::reboot_mid_match`) stands for a
 restart of the server half, and a new process starts with `mush-sim`'s custody
-index empty â€” it is RAM, rebuilt by `mush-tactics`' boot from the markers on
+index empty — it is RAM, rebuilt by `mush-tactics`' boot from the markers on
 the unit records. The rig empties it before the boot so the markers the boot
 keeps are the only ones in it, exactly as a fresh process would hold them.
 """
@@ -443,7 +430,7 @@ definition, and the next reset must refit them to the current one. A
 version-2 line tank cannot be created through `refit_unit` (its definition is
 no longer registered), so the test plants it in the tactics store's RAM index
 (`UnitStore.units`, a pub field) as the boot's hydration would have, then runs
-`match_::reset_stock_tanks` â€” the production path under test â€” which refits it
+`match_::reset_stock_tanks` — the production path under test — which refits it
 through `mush_tactics::module::refit_unit`. Test-only; no production write.
 """
 
@@ -544,9 +531,9 @@ slot = "AccountOracle"
 owner = "sim"
 reason = """
 16b cut N.1's reflex lens, performing the same post-composition wiring the rows
-above perform and for the same reason: the two world-side claims it drives â€” a
+above perform and for the same reason: the two world-side claims it drives — a
 released seat handed to its sealed mind (the reflex controller until 17b cut
-M4.3; re-pointed by 17b cut M5.7), and the lobby's AI fill â€” both
+M4.3; re-pointed by 17b cut M5.7), and the lobby's AI fill — both
 start with two pilots holding slots and boarding, and a slot belongs to an
 ACCOUNT.
 """
@@ -611,7 +598,7 @@ accessor = "World::module_state_mut"
 slot = "AccountOracle"
 owner = "sim"
 reason = """
-16b cut W.3's story test (doc 16 Â§1's A1), performing the same post-composition
+16b cut W.3's story test (doc 16 §1's A1), performing the same post-composition
 wiring the four rows above perform and for the same reason, end to end: two
 pilots and a bystander walk in through the front door, and both a simulator slot
 and the cockpit focus belong to an ACCOUNT. It seeds its accounts in the store
@@ -674,7 +661,7 @@ slot = "ContactLedgerState"
 owner = "tactics"
 reason = """
 E7 cut 11: seeds the tactics contact ledger. `mush-propagation` deliberately
-READS that ledger in production (`Ctx::state` stays a shared read â€” the
+READS that ledger in production (`Ctx::state` stays a shared read — the
 projection is the point); only its harness writes it.
 """
 
@@ -754,7 +741,7 @@ reason = """
 16b cut T.3. The `#[cfg(test)] mod tests` inside the custody index seeds the
 index onto a bare world instead of composing `SimulationModule`, so the one
 shared admission helper can be exercised with nothing else in the world at all
-â€” which is the point of the case: `refuse_if_deployed` must answer from the
+— which is the point of the case: `refuse_if_deployed` must answer from the
 index and from nothing else. Test-only, and the slot is this module's own; the
 composed path is `Registrar::state` in `SimulationModule::register`, and
 `crates/mush-sim/tests/deployed.rs` drives that one.
@@ -792,7 +779,7 @@ owner = ""
 reason = """
 The same `#[cfg(test)]` rig seeds a `mush_faction::FactionState` so a clearance
 gate can be exercised without composing the faction module. That world holds a
-faction slot with NO owner â€” open to all, and named at boot by
+faction slot with NO owner — open to all, and named at boot by
 `Engine::warn_unowned_state_slots` in any composition that does this outside a
 test.
 """
@@ -826,7 +813,7 @@ slot = "AccountOracle"
 owner = "sim"
 reason = """
 16b cut F.4's front-door lens, performing the same post-composition wiring every
-row above performs â€” `mush_server::boot` installs the hydrated map into this slot
+row above performs — `mush_server::boot` installs the hydrated map into this slot
 and into the engine, and a test that composes the roster by hand has to do it
 too. This one is the point of the file rather than a prerequisite of it: the map
 is hydrated from a store with NO accounts in it, and what the lens proves is that
@@ -855,7 +842,7 @@ map mutation or source deletion is exposed across the boundary.
 # `cargo test --workspace --no-fail-fast` plus
 # `cargo test -p mush-sim --features testkit`, with the report teed to a file:
 # 291 test targets, and the ONLY two lines it emitted were `mush-core`'s own
-# `module_api` cases â€” the synthetic two-module engine where `b` writes `a`'s
+# `module_api` cases — the synthetic two-module engine where `b` writes `a`'s
 # slot, and the deliberately seeded unowned slot. Nothing else in the workspace
 # wrote a foreign slot through `Ctx::state_mut`, and no composed world carried an
 # unowned slot at boot.

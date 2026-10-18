@@ -85,10 +85,14 @@ there, or is the destination of an exit from outside the pack. A retired pack
 stays retired across restarts; `plan` it again to bring it back.
 
 The shelf holds the shipped starter packs — `region.limbo`,
-`neighborhood.ooc_area`, `neighborhood.staff_lobby` — and whatever
+`neighborhood.ooc_area`, `neighborhood.staff_lobby` — the game's own boot packs
+when `[tacsim].enabled` is on (the proving ground, the two trade-run stations
+with their regions, and the lane that joins them), and whatever
 `[atlas].pack_paths` names. The starter area applies itself at a world's first
-boot when `[game].starter_area` is on; it is static content and makes no
-model call. Staff only: `SIM_ADMIN` or Royalty.
+boot when `[game].starter_area` is on, and the game's packs at the first boot
+with the game on; each is static content and makes no model call. A boot never
+upgrades a pack a world has already latched: a newer shipped version is taken
+with `plan` and then `apply`. Staff only: `SIM_ADMIN` or Royalty.
 
 ## Maps
 

@@ -1,7 +1,7 @@
 # Factions
 
-Factions are first-class organizations: sects, clans, coteries, gangs, crews,
-corps, houses, and merc units. The engine's registry is the **truth** about
+Factions are first-class organizations: governments, cooperatives, trading
+houses, guilds, crews, corps and merc units. The engine's registry is the **truth** about
 them — who belongs, at what rank, who they answer to, what they hold — and
 that truth drives authorization (intel clearance, channel eligibility). But
 **what you see is a projection**: every membership, structural tie, and
@@ -14,15 +14,15 @@ non-member. A hidden faction looks like no faction at all.
   +factions           The factions you know of, with their publicly known
                       member counts (and your own membership, if any).
   +faction <name>     What you know about one faction: its charter, known
-                      structure ("Chapter of the Camarilla"), known members
+                      structure ("Chapter of the Cooperative"), known members
                       and their titles, known holdings, and your own standing.
                       Officers of a faction also see member levels and the
                       faction's resource pools.
   +territory [name]   The territory map as you know it: each region and who
                       is known to hold it. A region can carry several kinds
-                      of hold at once — a **de jure** claim (the Prince still
-                      claims the waterfront) alongside a **de facto** hold
-                      (the gang actually runs it), with contests marked.
+                      of hold at once — a **de jure** claim (the Republic
+                      still claims the yard) alongside a **de facto** hold
+                      (a house actually runs it), with contests marked.
                       Covert holds show only to the holder's officers.
   +intel              Includes your factions' shared intel pools when your
                       rank clears you to read them — see `help intel`.
@@ -56,7 +56,7 @@ Discovery happens in play.
   @faction/set <f>=<field>:<value>
                               hidden (yes/no), officer (level), intel
                               (level), aliases (a,b), ext (raw JSON for the
-                              ruleset extension).
+                              game's own faction extension).
   @faction/add <f>=<player>[/level:<n>][/vis:<v>][/title:<t>]
   @faction/mod <f>=<player>[/level:<n>][/vis:<v>][/title:<t>]
   @faction/remove <f>=<player>
@@ -69,9 +69,9 @@ Discovery happens in play.
   @faction/unedge <from>=<kind>/<to>
   @faction/principal <f>=<npc>   Toggle an NPC voice of the faction.
   @faction/resource <f>=<kind>/<delta>[/<reason>]
-                              Typed resource pools (influence.police, nuyen,
-                              boon_credit — whatever the game defines), every
-                              change cause-stamped.
+                              Typed resource pools (influence.port,
+                              favours, standing — whatever the game defines),
+                              every change cause-stamped.
   @faction/channel <f>        Show the current binding.
   @faction/channel <f>=<channel>
                               Bind a comsys channel: PUBLIC members are

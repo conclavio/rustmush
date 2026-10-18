@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "neighborhood.ceres_freeport",
-    "version": 1,
+    "version": 2,
     "kind": "neighborhood",
-    "digest": "383e0b135c1723100853df6b2cbe9bd3ee98eb6d752c0d00a825a365301dc1cf",
+    "digest": "641e1a3983447cca1a05bed6a839f98fe68c2afa683e0deee0c5e4e2904d8538",
     "requires": [
       {
         "id": "region.ceres_freeport",
@@ -313,7 +313,7 @@
         },
         "kind": "circulation",
         "details": {
-          "map": "The Public Deck and the Freight Deck in cutaway, with a pulsing dot at the pedestal. It is also what +atlas shows, and the map says so in small letters: ATLAS SERVICE AVAILABLE.",
+          "map": "The Public Deck and the Freight Deck in cutaway, with a pulsing dot at the pedestal, and in small letters along the bottom: ATLAS SERVICE AVAILABLE.",
           "directory": "REGISTRY & CO-OP DESK, north of Arrivals. CERES CLEARING, north of here. EXCHANGE HALL, east. TYCHO MUTUAL, north of the Exchange. CHANDLERY, south of the Exchange. THE SLACK LINE, south. DOCKMASTER, down the Arrivals stair.",
           "ticker": "Occator volatiles and reaction mass by the tonne, the Exchange's concentrate, the alloy bid, and a departures line: hull, destination, clearance time. It updates when the board does.",
           "benches": "Bolted down, scratched with hull names and registry marks. One reads FPC-D-0388, HALF MEASURE, GOT HOME: a Co-op hull from before the programme pool, long since bought out."
@@ -414,7 +414,7 @@
         },
         "kind": "indoor",
         "details": {
-          "price board": "CONCENTRATE, METAL, cr/t. VOLATILES, BULK, cr/t. REACTION MASS, cr/t. BIDS: STRUCTURAL ALLOY, cr/t. Quantities beside each, counting down as lots sell; when a line reads NIL, it means nil. This is what +market/list prints.",
+          "price board": "CONCENTRATE, METAL, cr/t. VOLATILES, BULK, cr/t. REACTION MASS, cr/t. BIDS: STRUCTURAL ALLOY, cr/t. Quantities beside each, counting down as lots sell; when a line reads NIL, it means nil.",
           "sample tap": "Occator water, straight from the manifold two decks down. A cup on a chain. It tastes of nothing, which is the point.",
           "roller door": "FREIGHT STAIR: BONDED HALL, BERTH HOLDERS ONLY. Cargo does not come up this way; it goes from the bonded hall to the hold by the transfer junction. The door is for people with paper.",
           "stamp pads": "Two sets: the Exchange's factor countersigns every lot sold off the Exchange's lines, Occator's factor every lot off Occator's; both pads are worn to the backing. A notice: EVERY OFFER ON THIS BOARD HAS A SIGNATORY, AND THE SIGNATORY IS THE HOUSE'S OWN. The port's rule, in the Warrant's spirit."
@@ -449,9 +449,9 @@
         "kind": "indoor",
         "details": {
           "cases": "Ten crew-days to the case: food, potable stores, scrubber cartridges. Four kilos a crew-day, the stencil says, and a hundredth of a cubic metre, so the captain can do the arithmetic.",
-          "chit board": "WANTED — YARD FITTINGS, CRATED — THE BID THIS CYCLE, PER TONNE, ON THE CHIT — CO-OP FLEET STORES, in the chandler's hand with the Co-op's linked hands under it; the figure is the chit's own and is rewritten when the Co-op rewrites it: the Co-op buys the Yard's pressure fittings, ducting and tank sections for its Drays and the Kirkwood tank farm, and a Dray back from Stickney sells them here (+market/sell). Under it, smaller: CRATED MEANS CRATED. THEY CUBE OUT BEFORE THEY WEIGH OUT.",
+          "chit board": "WANTED — YARD FITTINGS, CRATED — THE BID THIS CYCLE, PER TONNE, ON THE CHIT — CO-OP FLEET STORES, in the chandler's hand with the Co-op's linked hands under it; the figure is the chit's own and is rewritten when the Co-op rewrites it: the Co-op buys the Yard's pressure fittings, ducting and tank sections for its Drays and the Kirkwood tank farm, and a Dray back from Stickney sells them here. Under it, smaller: CRATED MEANS CRATED. THEY CUBE OUT BEFORE THEY WEIGH OUT.",
           "bunkering counter": "Occator's. REACTION MASS BY THE TONNE, LOADED AT THE BERTH ON YOUR SCHEDULE. An order here is a line on the loading schedule; the berth does the loading whether or not the captain is awake.",
-          "loading schedules": "Clipboard sheets, one per hull: what loads, when, from which hall. The dockmaster keeps the master copy; +ship/plan is the version that counts.",
+          "loading schedules": "Clipboard sheets, one per hull: what loads, when, from which hall. The dockmaster keeps the master copy.",
           "cage": "Chain-link, padlocked, the counted stock behind it. The sign reads WHEN IT'S GONE IT'S GONE: the chandlery sells what it has, not what it can print."
         }
       }
@@ -483,6 +483,7 @@
         },
         "kind": "indoor",
         "details": {
+          "hull registry board": "Registry marks, hull names, insured value, title holder. Most say CO-OP or TYCHO MUTUAL; three say a person's name. Those three are the ones everybody in the Slack Line can recite.",
           "brochure": "RE-FLOAT: for members who have lost everything, a Dray or a Cairn on lease, upkeep on the cadence, no sale, no uninsured deployment. The assessor is at Kirkwood. Tycho owns the wrecks it pays out on.",
           "chair": "Better than the other one. It is where a captain sits to hear what the hull is worth."
         }
@@ -550,6 +551,7 @@
         "kind": "indoor",
         "details": {
           "departures board": "HULL / BERTH / FOR / CLEARANCE / ARRIVES. Stickney Yards by Kirkwood is most of the column. A laden Dray makes it in two to three weeks in a good season, and the board's small print says the season is good; it gives the hour of clearance and the day the harbourmaster at the far end expects the hull.",
+          "sailing plan forms": "DEPART AT. LOAD: WHAT, FROM WHERE, WHEN. BUNKER. STORES. SELL AT DESTINATION: WHAT, NOT UNDER. CREW OF RECORD. SIGNED. A filed plan is the captain's signed instrument: the berth loads and bunkers it, the Exchange's and Kasei's clerks settle its sales against the captain's lines, and the dockmaster clears the hull at its hour, whether the captain is at the counter or asleep in a bunk upstairs; the ship's ROM only flies the cleared route.",
           "window": "The transfer junction: lanes, pallets, a crane, the sealed thresholds of the service lift to the berth gallery. Beyond it the bonded hall's roller doors and, further, the tank gallery's barriers. All of it behind glass.",
           "freight door": "FREIGHT TRANSFER JUNCTION, BERTH HOLDERS, with a reader for a berth marker. Shut, and it stays shut for anyone without a berth."
         }

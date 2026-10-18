@@ -3588,8 +3588,12 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 .copied()
                 .map(SmolStr::new)
                 .collect(),
-            help: "@journey  --  (staff) Carrier journeys: a ship and everything aboard it move \
-                   together along a route. No switch, no argument: list.\n\
+            help: "@journey  --  Carrier journeys: a ship and everything aboard it move \
+                   together along a route. No switch, no argument: list. Staff may use every \
+                   switch; a carrier's crew may /plan and /show it; its owner or controller, or \
+                   a crew member at a station that drives it, may /depart it; /divert is staff \
+                   only. A lane route and a Co-op hull are flown only by +ship/undock or the \
+                   sailing plan; this refuses them.\n\
                    @journey/plan <carrier>=<route id> <place>[:secs] …    Dry run — validates \
                    and prints the legs, writes nothing.\n\
                    @journey/depart <carrier>=<route id> <place>[:secs] …  Set out. The carrier \

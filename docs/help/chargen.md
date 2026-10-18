@@ -10,7 +10,9 @@ identity fields and three ratings.
 | Standing | `certifications`, `reputation` — staff set these, not you |
 
 There is no health track, no money and no experience on the sheet. A tank's
-condition lives on the tank, not on you; money is the ledger's.
+condition lives on the tank, not on you; money is your credit account, which
+`+credit` reads (one is opened in your name when you enrol with the Co-op —
+see "help coop").
 
 ## The three commands
 
@@ -40,8 +42,8 @@ them yet, so spend with that in mind.
 ## Submitting
 
 `+chargen/submit` files a job on the `pilot-chargen` queue. While it is pending
-the sheet is **locked** — you cannot re-open it with `+stat` until a storyteller
-approves or bounces it — because an unlocked sheet could be edited past the
+the sheet is **locked** — you cannot re-open it with `+stat` until staff
+approve or bounce it — because an unlocked sheet could be edited past the
 budget and then rubber-stamped by the job already open. On approval the sheet is
 stamped and it is yours.
 
@@ -49,12 +51,13 @@ stamped and it is yours.
 
 Some servers gate play behind an approved sheet. On those, a brand-new character
 is placed in a quiet **chargen area** and greeted with a pointer to `+chargen`.
-Until a storyteller approves you, you are held to a small command set — chargen,
+Until staff approve you, you are held to a small command set — chargen,
 `look`, `say`/`pose`, `help`, `who`, and the channel-management verbs — and
 everything else (walking onto the grid, speaking on a channel, building) waits.
 The moment your `pilot-chargen` job is approved the restriction lifts and you
-are moved to the game's live start room. If your server does not require chargen
-(the default), you play immediately and can build your sheet whenever you like.
+are moved to the game's live start room (Limbo, unless the server names
+another). If your server does not require chargen (the default), you start in
+Limbo, play immediately and can build your sheet whenever you like.
 
 See also: `help simulator` (what the ratings are for), `help jobs` (how approval
 queues work), `help getting-started`.
