@@ -458,7 +458,11 @@ fn compose_server_modules(
             // programme org) accept programmatically. Asked only after the table
             // said no, and conferring no money authority whatever. A roster without
             // the layer composes none.
-            .with_party_cap_source_if(tacsim_delegate),
+            .with_party_cap_source_if(tacsim_delegate)
+            // Doc 18 cut IC14 row 7 (lead ruling L6): the market's dispute veto, on
+            // every roster — game-neutral, it refuses only a seller disputing their
+            // own sale into a bid and answers nothing with no market store.
+            .with_dispute_guard(Arc::new(mush_market::SaleDisputeGuard)),
         ),
         // E7 cut 2 (10b §3.2, Q13A/Q2D, D-E7-3): the neutral quantity authority.
         // It boots **immediately after `mush-economy`** because its own boot

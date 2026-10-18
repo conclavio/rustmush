@@ -168,8 +168,8 @@ pub use checkpoint::{
     CHECKPOINT_FORMAT, CheckpointMeta, DEFAULT_CHECKPOINT_EVERY_ENTRIES, is_checkpoint_key,
 };
 pub use contract::{
-    DepositReturn, MAX_HOME_VAULT_VISIT, PartyCap, PartyCapSource, deposit_returns, owner_home,
-    principal_token,
+    DepositReturn, DisputeGuard, MAX_HOME_VAULT_VISIT, PartyCap, PartyCapSource, deposit_returns,
+    owner_home, principal_token,
 };
 pub use contract_live::accept_contract_as;
 pub use fold::FoldState;

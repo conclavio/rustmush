@@ -6344,6 +6344,191 @@ mod tests {
         assert_eq!(ask(&mut engine), (vec!["pending=false".to_owned()], false));
     }
 
+    /// Doc 18 cut IC14 row 2: a module whose `+full` answers
+    /// `full=<bool>` from [`Ctx::authoritative_queue_full`] and whose
+    /// `+defer` defers one authoritative submission for its own actor (the
+    /// shape of a handler that stages a leg in a `fire_due` slice).
+    struct QueueProbe {
+        action: crate::mechanics::DefinitionRef,
+    }
+
+    impl crate::module::GameModule for QueueProbe {
+        fn name(&self) -> &'static str {
+            "queueprobe"
+        }
+        fn register(
+            &mut self,
+            reg: &mut crate::module::Registrar<'_>,
+        ) -> Result<(), crate::module::ModError> {
+            reg.classify_commands(crate::CommandCompatibility::ReadOnly);
+            reg.command(
+                crate::cmd::CommandSpec {
+                    name: "+full".into(),
+                    shape: crate::cmd::ArgShape::Raw,
+                    ..crate::cmd::CommandSpec::default()
+                },
+                std::sync::Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), crate::cmd::CmdError> {
+                    let full = ctx.authoritative_queue_full();
+                    ctx.out.info(ctx.actor, format!("full={full}"));
+                    Ok(())
+                }),
+            )?;
+            let action = self.action.clone();
+            reg.command(
+                crate::cmd::CommandSpec {
+                    name: "+defer".into(),
+                    shape: crate::cmd::ArgShape::Raw,
+                    ..crate::cmd::CommandSpec::default()
+                },
+                std::sync::Arc::new(
+                    move |ctx: &mut Ctx<'_>| -> Result<(), crate::cmd::CmdError> {
+                        let actor = ctx.actor;
+                        ctx.out
+                            .defer(Deferred::AuthoritativeSubmit(probe_submit(&action, actor)));
+                        Ok(())
+                    },
+                ),
+            )
+        }
+    }
+
+    fn probe_action() -> crate::mechanics::DefinitionRef {
+        let mut definitions = crate::mechanics::DefinitionRegistryBuilder::new();
+        definitions
+            .register(
+                crate::mechanics::OwnerId::new("queueprobe").unwrap(),
+                crate::mechanics::DefinitionDescriptor::new(
+                    crate::mechanics::DefinitionKind::new("action").unwrap(),
+                    crate::mechanics::DefinitionId::new("probe_act").unwrap(),
+                    1,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+    }
+
+    fn probe_submit(
+        action: &crate::mechanics::DefinitionRef,
+        actor: ObjId,
+    ) -> Box<AuthoritativeSubmit> {
+        Box::new(AuthoritativeSubmit {
+            actor,
+            action: action.clone(),
+            subject: crate::action::PerceivedRef::SelfActor,
+            targets: Vec::new(),
+            parameters: serde_json::json!({}),
+            key: crate::action::IdempotencyKeyText::parse_canonical("probe.act").unwrap(),
+        })
+    }
+
+    fn queue_probe_engine() -> (Engine, crate::mechanics::DefinitionRef) {
+        let mut world = World::new_minimal();
+        world.set_now(1_000);
+        let mut registry = Registry::new();
+        register_core_commands(&mut registry).unwrap();
+        let action = probe_action();
+        let engine = Engine::with_modules(
+            world,
+            registry,
+            vec![Box::new(QueueProbe {
+                action: action.clone(),
+            })],
+        )
+        .unwrap();
+        (engine, action)
+    }
+
+    /// Queue `n` submissions for `n` distinct stand-in actors (none of them
+    /// GOD); the queue keys only by actor, so they need not exist.
+    fn fill_queue(engine: &mut Engine, action: &crate::mechanics::DefinitionRef, n: u32) {
+        for i in 0..n {
+            engine
+                .queue_authoritative_submit(probe_submit(action, ObjId(10_000 + i)))
+                .unwrap();
+        }
+    }
+
+    /// **Doc 18 cut IC14 row 2: a command sees a full authoritative queue.**
+    /// With 64 other actors queued, a 65th actor's command reads `true`; with
+    /// 63 it reads `false`; the note is cleared once the step returns.
+    #[test]
+    fn ic14_a_command_sees_a_full_authoritative_queue() {
+        let ask = |engine: &mut Engine| -> (Vec<String>, bool) {
+            let (mut out, mut fx) = (Outbox::new(), Effects::new());
+            engine.step(
+                Inbound::Cmd {
+                    conn: 0,
+                    actor: GOD,
+                    line: "+full".into(),
+                },
+                &mut out,
+                &mut fx,
+            );
+            (plain_lines(&out), out.authoritative_queue_full())
+        };
+        let (mut engine, action) = queue_probe_engine();
+        assert_eq!(ask(&mut engine), (vec!["full=false".to_owned()], false));
+        fill_queue(&mut engine, &action, 63);
+        assert_eq!(ask(&mut engine), (vec!["full=false".to_owned()], false));
+        engine
+            .queue_authoritative_submit(probe_submit(&action, ObjId(20_000)))
+            .unwrap();
+        assert_eq!(
+            ask(&mut engine),
+            (vec!["full=true".to_owned()], false),
+            "64 queued: seen by the command; the note cleared once the step returns"
+        );
+    }
+
+    /// **Doc 18 cut IC14 row 2 (reviewer F2): a fire counts the submissions
+    /// deferred before it.** With 63 queued, a first `@wait` line as actor A
+    /// defers a submission and a second as actor B then asks in the same
+    /// `fire_due` slice: B reads `true` (A's deferred submission takes the
+    /// 64th place at the drain). With 62 queued B reads `false`.
+    #[test]
+    fn ic14_a_fire_counts_the_submissions_deferred_before_it() {
+        for (queued, expected) in [(63_u32, "full=true"), (62, "full=false")] {
+            let (mut engine, action) = queue_probe_engine();
+            let a = engine
+                .world
+                .create(ObjKind::Player, "Ann", GOD, Some(LIMBO))
+                .unwrap();
+            let b = engine
+                .world
+                .create(ObjKind::Player, "Bea", GOD, Some(LIMBO))
+                .unwrap();
+            fill_queue(&mut engine, &action, queued);
+            engine.sched.insert(
+                1_001_000,
+                ScheduledKind::WaitCmd {
+                    actor: a,
+                    line: "+defer".into(),
+                },
+            );
+            engine.sched.insert(
+                1_001_000,
+                ScheduledKind::WaitCmd {
+                    actor: b,
+                    line: "+full".into(),
+                },
+            );
+            engine.pending_waits.insert(a, 1);
+            engine.pending_waits.insert(b, 1);
+            let (mut out, mut fx) = (Outbox::new(), Effects::new());
+            engine.fire_due(1_001_000, &mut out, &mut fx);
+            let lines = plain_lines(&out);
+            assert!(
+                lines.iter().any(|l| l == expected),
+                "{queued} queued: B reads {expected}: {lines:?}"
+            );
+            assert!(
+                engine.has_authoritative_submit_for(a),
+                "A's deferred submission was admitted at the drain"
+            );
+        }
+    }
+
     fn reader_engine() -> Engine {
         let mut world = World::new_minimal();
         world.set_now(1_000);

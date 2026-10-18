@@ -28,6 +28,7 @@ Only the past that explains a present-day record is recorded here. Dates are CE.
 | 2308–2312 | **The Martian Settlement.** A decade of tax refusal and the Phobos yard strike; two years of intermittent shooting in orbit; the Concord discovers that a blockade of Mars costs more propellant than the tariffs it would recover. Negotiated autonomy: the **Republic of Mars** is recognized, inherits Concord-era treaties and a share of Concord-era debt. | The Republic is legally bound to the Concession and financially bound to Luna. Both are resented. |
 | 2312 | As part of the Settlement, the Concord recognizes the **Freeport of Ceres** as licensing authority for Ceres and its associated claims, on condition its Registry stays mirrored with Luna's. | The Freeport's sovereignty is real but *derived*; its Registry is the leash. |
 | 2320s | The Belt Carriers' Cooperative builds **Kirkwood Depot** at the inner edge of the Belt on the Ceres–Mars lane, financed by Tycho Mutual, licensed by the Freeport. | The corridor's transfer node exists, and three parties have paper on it. |
+| | **As built (doc 18 IC2):** Kirkwood's orbit is the owner's open question Q-18-36; the trade run's lane pack only places Kirkwood on the Ceres–Mars chord at the epoch with a placeholder period, and this row's wording waits on the ruling. | |
 | 2340s | The Republic makes Phobos a real yard (**Stickney Yards**), commissions torch-drive patrol cutters for the **Orbital Guard**, and from 2347 stations customs pickets at Kirkwood — "customs assertion". | The interception geometry of the corridor is a policy, not an accident. |
 | late 2349 | The Assembly at Coprates votes to **review** the Isidis Concession. The Freeport's Port Council answers by extending Meridiani Security's contract and stockpiling at Isidis. | World start. The Concession Review clock is at 2 of 6. |
 
@@ -102,6 +103,8 @@ Each is a `mush-org` organization with real accounts (doc 10 S7A: **funded, neve
 
 *Brand-like; Martian; indebted.* The corridor's **one refinery**, at Phobos: metals → structural alloys (`alloy_smelt@1`), volatiles → propellant. Built with Ceres Clearing money; the debt gives the Freeport's bank **economic** control of a Republic strategic asset, and the Republic knows it. **Principal:** **Managing Director Priya Castellanos** — serves two masters and is precise about which one she is serving on any given day.
 
+**As built (doc 18 IC8):** in the trade run (lane pack v3) Kasei posts Stickney's reaction-mass ask and standing bids for metal concentrate and ice; its ice intake serves Phobos's volatiles demand, not the propellant line.
+
 ### 4.4 Meridiani Security Group — "Meridiani", "MSG"
 
 *Martial-corporate; the seed's NPC mercenary command.* Founded on Mars by Territorial Force veterans; holds a Republic operating licence; **currently under retainer to the Freeport, defending the Isidis Concession against the Republic** — a scandal in Coprates, a business decision at Meridiani. Fields second-hand *Anvil-B* mechs and *Cairn* GCVs — the same hardware the Territorial Force will bring, because both were built at Stickney. **Provides:** the Concession's de facto security, baseline escort and facility-defence contracts, and the template every player mercenary command charters against. **Principal:** **Colonel (ret.) Ivo Marchetti-Nakamura** — will fight the Republic on contract and drink with its colonels after; expects the licence revocation and has priced it in. `ContractedTo` the Freeport; **de facto** control at Isidis.
@@ -109,6 +112,8 @@ Each is a `mush-org` organization with real accounts (doc 10 S7A: **funded, neve
 ### 4.5 The Belt Carriers' Cooperative — "the Co-op"
 
 *Cooperative; the corridor's hauling line.* Owns and runs **Kirkwood Depot** and a fleet of *Dray*-class bulk haulers; publishes the baseline hauling contracts that keep the corridor's water moving when no player will. `ChapterOf` the Freeport (a Council seat). **Principal:** **Chair Dagny Holm** — a public face, and knows it. **The Co-op is the public, joinable, entirely real front for the Tether** (§4.6): the `FrontFor` edge is covert.
+
+**As built (doc 18 IC6, IC13):** the Co-op runs the **First Captain programme** through the **Co-op First Captain Trust**, the programme's own institution: a new captain charters a Trust-titled *Dray* (a lease, a 25,000.00cr stake, 25% of trading margin to the Trust) at the Registry desk in Ceres, may buy her out at the programme's declared price (`+coop/buyout`), and a charter left a week without a departure goes back to the Trust's pool.
 
 ### 4.6 The Tether
 
@@ -122,6 +127,8 @@ Each is a `mush-org` organization with real accounts (doc 10 S7A: **funded, neve
 
 *Institutional-financial.* The Belt's bank and the Freeport's fiscal agent; the corridor's NPC market-maker with explicit cash, inventory, spread, volume and loss budgets (S7A). Holds Kasei's and the Republic's Belt debt; owes Luna. **Principal:** **Governor Eskil Varga**. **Economic** control at Ceres, Phobos (shared) and Isidis.
 
+**As built (doc 18):** the trade-run slice does not use Clearing's market-maker role; its ports trade through their vendors' finite, receipted stock. As built: the slice's Freeport Exchange is authored in 18a and the lane pack; its §4 entry is owed (doc 18 §10).
+
 ### 4.9 Lantern Haulage & Salvage — the seeded player corporation
 
 *The one player corporation the seed pack needs (doc 10 §11).* A two-hull independent — one *Dray*, one tender — chartered at the Freeport, berthed at Kirkwood, neutral by necessity, willing to haul for anyone and salvage from everyone. Seeded with a charter, a small account, a Tycho policy, and no members: the first players walk into an existing legal person rather than a chargen screen. If the first players would rather charter their own, Lantern is the worked example of the corporation template (doc 10 §6).
@@ -129,6 +136,8 @@ Each is a `mush-org` organization with real accounts (doc 10 S7A: **funded, neve
 ### 4.10 Off-corridor stubs (strategic map only)
 
 One line each, so the map has edges to grow into: **the Pallas Syndicate** (Vesta/Pallas metals and strategic elements; a mining combine that recognizes the Registry when convenient); **the Venus Aerostat Compact** (atmospheric chemistry, carbon feedstock; neutral, distant); **Mercury Solar Authority** (a Concord-chartered power and metals monopoly); **Titan Concession Company** (hydrocarbons; the outer system's only real settlement; months away).
+
+**As built (doc 18 IC2):** Pallas has a body entry in the trade run's lane pack (the sky's bodies), off the slice's lane.
 
 ### 4.11 The Malapert Exchange — "Malapert"
 
@@ -148,6 +157,8 @@ The corridor's regions as `mush-faction` regions with seeded `ControlRecord`s. K
 | **Ceres station & docks** (freeport region) | core | Freeport | Freeport (Port Watch) | **the Tether** | Occator + Ceres Clearing | The market (E6c), the Registry, the Council, the Squadron's berth. |
 | **Occator claims** (extraction site) | core / frontier at the margins | Freeport (Registry) | Occator | — | Occator | Deposit, extractor drones, survey bands. An outer claim is seeded *contested* (a Pallas Syndicate paper claim) so claim-contest machinery has a live case. |
 | Earth / Luna | core | Concord | Concord | Concord | Concord | Strategic map only in E7. |
+
+**As built (doc 18 IC2):** Kirkwood is a seeded body of the trade run's lane pack, placed on the Ceres–Mars chord at the epoch with a placeholder period; its orbit is the owner's open question Q-18-36.
 
 The five quantum relay halves the Malapert Exchange operates — the Luna hub, Phobos, Ceres, Kirkwood and Mercury — are assets inside these regions, not regions of their own; who holds what over each is tabulated in doc 15 §4.
 
@@ -175,6 +186,7 @@ Types are doc 10 §11's list; class names are fiction for the cut-11 rules pack,
 |---|---|---|---|---|
 | mining drones | *Occator-pattern* extractor drone | Occator (Ceres) | Occator; leased to claim-holders | Extraction at deposit bands; the thing that makes water. |
 | hauler | ***Dray***-class bulk hauler | Stickney Yards | Co-op, Lantern, Tycho's loaner pool | Slow, efficient, unarmed. Cannot outrun a *Vigil*; can choose a burn that makes the intercept cost more propellant than the Guard wants to spend — the "fight or evade" decision is a propellant decision (T1). |
+| | **As built (doc 18 IC2, IC4):** the trade run's *Dray* is 240 t dry with a 100 t, 120 m³ hold and six interior rooms; her drive is a tagged coast law whose season-dependence (Q-18-35) and laden law (Q-18-41) are open owner questions; she fits no core (Class 0, the drive ROM). | | | |
 | patrol craft | ***Vigil***-class cutter | Stickney Yards | Orbital Guard | Torch drive: fast, expensive, **visible from a long way off** (doc 10 §3). The interceptor. |
 | dropship | ***Hod***-class lander | Stickney Yards | Territorial Force; Meridiani; Co-op (civil variant) | Phobos → Isidis. Carries a *Cairn* or an *Anvil* and a platoon. |
 | infantry | Territorial Force **rifle platoon**; Meridiani **security section** | — | as named | Infantry captures facilities (doc 10 §8): the Factor's office and the tank farm are infantry objectives. |

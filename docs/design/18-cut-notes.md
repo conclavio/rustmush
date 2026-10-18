@@ -6266,3 +6266,540 @@ Public items later cuts (IC14, the P-cuts) build on:
 - **Doc conventions**: this cut's owner items O1/O2/O3/O5/O7 take the numbers Q-18-66..Q-18-70 in
   this note only; doc 18 and 18a are not edited by this cut, so §8 does not yet list them and the
   next docs pass adds them (the next cut-raised question is Q-18-71).
+
+## IC14
+
+**The residuals sweep** (doc 18 §5, the IC14 row this cut adds), built 2026-10-17 on main
+at 94679739. The sweep closes the residuals the IC0–IC13 cut notes recorded and no cut
+owned, so the slice can run on a long-lived world: risk 19 is bounded, not abolished; money
+cannot move with no leg behind it on the paths the brief's table names; every closed state
+converges. The hand-played smoke owed since IC12 is still owed (no Redis on the build
+machine). One commit, pushed to origin/main.
+
+### What landed
+
+1. **Risk 19 bounded, not closed: a durable per-endpoint marker ring with a real-clock age floor**
+   (`mush-inventory/src/record.rs:68-98` the four constants `MAX_RETAINED_MARKERS_PER_ENDPOINT` =
+   32, `MARKER_RETENTION_SECS` = 86,400, `MAX_MARKER_RING` = 128, `MAX_RING_EVICTIONS_PER_PUSH` = 8;
+   `:1197-1332` `RingEntry`, `MarkerRing` with its checked `Deserialize`, `push`; `pool.rs:66-73`
+   `InventoryFamilies::marker_ring`, `:571-638` `retain_marker`; `module.rs:317-343` the family
+   `inventory_marker_ring`). A marker is evicted only when its source endpoint's ring holds more
+   than 32 **and** the front entry is a real day old at the push; at most eight per push; a ring of
+   128 young entries refuses the move (`InventoryError::MarkerRingFull`, nothing written). The real
+   stamp rides every marker-writing offer's fixed parameters as `"wall"` beside `"now"`
+   (`provider.rs:611-616`, `salvage.rs:438-443`, `mush-market/src/lot.rs:759-767`) and is read by
+   `prepare_wall` (`provider.rs:343-355`, `lot.rs:348-363`), so a prepare still reads no clock and
+   two replays stamp identically; `write_marker`, salvage and `transfer_marked` (its signature gains
+   `wall: i64`) record the marker in the source's ring in the same bundle. The mirror and `facts.rs`
+   are untouched: E7c2 fold R3's fail-closed rule stands.
+2. **The market reads an absent sale marker as unconfirmed past the horizon**
+   (`mush-market/src/trade.rs` `goods_moved`, `marker_horizon_passed`; review F1): inside
+   `accepted_at + MARKER_RETENTION_SECS` an absent Deliver marker means never written
+   (`GoodsMoved::No`, the bid restored); past it (a sale disputed for days, its hold moving on) it
+   is `Unknown` — paged, never restored over goods that may have arrived (L5).
+3. **The `Markers` headroom line and the incomplete-mirror gate** (`tacsim/src/port/readiness.rs`
+   `Binding::Markers`, `markers_line`, `inventory_facts_line`; `coop.rs` `gated`; `port_tick.rs`
+   `page_marker_headroom`, `marker_pages`): Ready to three quarters of `MAX_APPLIED_MARKERS`,
+   Flagged above it and paged once a boot, never gated (the sky's manner, proposed Q-18-72); the
+   `InventoryFacts` line reads Missing — and gates — when `InventoryStore::is_complete()` is false.
+   `docs/ops.md` "Applied-marker retention (doc 18 cut IC14)" replaces the pre-deploy blocker and is
+   worded as a bound.
+4. **Two mush-core read seams** (`mush-core/src/output.rs:460-488`
+   `Outbox::authoritative_queue_full` — distinct actors in the noted set plus every
+   `Deferred::AuthoritativeSubmit` already in this outbox against `AUTHORITATIVE_SUBMIT_QUEUE_MAX`;
+   `cmd.rs:352-370` `Ctx::authoritative_queue_full`, `Ctx::authoritative_commit_pending`;
+   `action_state.rs:620-631` `ModuleActionState::commit_pending` over `has_prepared()`).
+5. **A sale is refused before the escrow when the engine queue is full** (`trade.rs` step 6b,
+   `SELL_QUEUE_FULL`, before any contract); the typed verb adds `SELL_REMEDY` as a second line
+   (`commands.rs` the lot arm); the executor treats `SELL_QUEUE_FULL` and `SELL_BUSY` as
+   back-pressure — `Step::Deferred`, no log, no count, no write (`tacsim/src/port/executor.rs`
+   `is_back_pressure`, the `Plan::Sell` arm).
+6. **`restage_deliver` reads the marker before the cutoff** (`trade.rs` `restage_deliver`:
+   `DELIVER_LANDED` for a landed leg, `DELIVER_UNCONFIRMED` when it cannot be read, else the
+   cutoff); the executor's `restage_outcome` advances a landed re-stage exactly as `Ok(None)` and
+   lets an unconfirmed one fall into the existing `Err` arms, so it ends in `HELD_UNCONFIRMED` at
+   the second deadline (L32).
+7. **A seller cannot dispute their own sale into a bid** (`mush-economy/src/contract.rs:1056-1075`
+   `DisputeGuard`; `module.rs` `EconomyModule::with_dispute_guard`, `EconomyStore::dispute_guard`;
+   `contract_live.rs` `contract_dispute` asks it for a non-admin party before the state check;
+   `mush-market/src/trade.rs` `SaleDisputeGuard`, `SALE_DISPUTE_REFUSED`; wired unconditionally in
+   `tacsim/src/composition/mod.rs`).
+8. **Money-safety small items**: `settled_sale` folds nothing and logs on an overflowing gross
+   (`trade.rs` `sale_gross`/`gross_of`); a settlement the economy healed at boot is folded on the
+   market's first sweep, once (`boot.rs` `fold_healed_sales`, `MarketStore::healed_sales`, pushed
+   under `reconcile_contracts`' `q.settled.is_none()` arm; L4); `release_quote` pages "could not be
+   confirmed" when it could not (`GoodsMoved::{Yes, No, Unknown}`, `lapsed_page_text`); `owner_home`
+   never answers a `SpatialInterior` vault (`contract.rs:2776-2784`; `snapshot.rs:56-58` reworded);
+   `Listing.draw: Option<bool>` freezes the Draw kind at publication with IC7's derivation kept for
+   a pre-IC14 row until `put_listing` stamps it (`record.rs`, `store.rs` `derived_draw`,
+   `put_listing`; `api.rs` two sites); `release_lapsed_hold` checks custody first (`lot.rs`); the
+   kept-lapsed `hold_standing` read backs off per listing (`boot.rs` `HOLD_RECHECK_SWEEPS` = 10,
+   `MarketStore::{hold_checked, release_staged, sweeps, hold_reads}`); the market's
+   `is_marker_id`/`MAX_MARKER_ID_BYTES` are deleted and inventory's exported
+   (`mush-inventory/src/lib.rs`, `pool.rs:176-185`).
+9. **Every closed state converges** (`tacsim/src/port/recall.rs`): a Revoked enrolment whose own
+   lease is still live is ended by the recall arm under the backoff and the hull returned
+   (`revoked_with_live_lease`, `end_revoked_lease`; L10); `recall_agents` walks the programme map's
+   hull rows, one governing enrolment each (`governing_rows`), and skips an unreadable plan as it
+   skips a filed one; `recall`'s answer to `end_lease` is the pure `recall_outcome`.
+10. **A failed relet retries, bounded** (`buyout.rs` `relet(ctx, e, attempt, give_up)`,
+    `relet_pending`, `MAX_RELET_ATTEMPTS` = 6, `MAX_RELET_BACKOFF_FIRES` = 720, `relet_backoff` 24
+    doubling; `recall.rs` `relet_due`, `relet_step`; `port_tick.rs` `PortTickState.relet_attempts`):
+    the observer's first attempt fails, the pilot is told `RELET_PENDING` once and the enrolment
+    stays BuyoutPending; the recall arm records attempt 1 at first sight, pages once, retries at 2,
+    4, 8, 16 and 32 minutes, and the sixth failure ends exactly as IC13 built it (Revoked,
+    `LeaseEnded`, `BUYOUT_UNLEASED`, its own error line). The plan waits under `HELD_RELET`
+    meanwhile and the silent re-check drops it (`executor.rs` `reletting`, `decide`).
+11. **An unreadable sailing plan fails closed everywhere and pages once** (`voyage.rs`
+    `voyage_blocks`, `voyage_dark`; `ship.rs` board and leave say `VOYAGE_DARK`; `market.rs`
+    `HOLD_PAPERS_DARK`; `hull.rs` counts it departing and keeps the line's state; `coop.rs`
+    `hull_is_free && !voyage_blocks`; `recall.rs`; `store.rs` `voyages_unreadable`; `port_tick.rs`
+    `page_dark_voyages`, `voyage_pages`). `+coop/enrol` stays open on the other hulls (L17, proposed
+    Q-18-73).
+12. **The launch arm's residuals** (`voyage.rs`, `port_tick.rs`): the lapse also waits while a
+    prepared action owns the typed store (`authoritative_commit_pending`; L15); a held launch is
+    `Step::Held`, counted in `PortFireStats.held`, never the walk's generic warning (L16);
+    `Voyage.told: u32` (required on the wire, `<= last_seq`; L8b) is written by `launch_verify`'s
+    `mark_told` and by `launch_retell` on the first fire after a boot, so `CLEARANCE_GRANTED` is
+    told once across reboots (L20); `tonnes_over` rounds an over-rail payload's tenths up at the
+    plan, the refusal and the executor's render (L18); `HOLD_CLEARED` for a docked hull with a filed
+    clearance (L19); `sky_pages: u32` replaces `sky_paged`.
+13. **The executor's and the plan's residuals** (`executor.rs`, `orders.rs`, `def.rs`, `stock.rs`,
+    `vendor.rs`): `ORDER_RESTAGE_SECS` = 90 (`SWEEP_PERIOD_SECS` + 30, asserted; L21); a queued
+    depart resolves its venue word exactly (`match_destination_exact`); `HELD_SHORT_FOR_DEPART`
+    projects the later consumable orders before the next depart (`Cover`, `later_cover`; L22,
+    Q-18-51's default changed); resume from Paused re-arms an inflight re-stage; `PortDef::check`
+    bounds a stock row's `qty` to `1..=MAX_QUANTITY` and a port's stock rows to `MAX_CLERK_ROWS`;
+    the clerk skips an uncarried row and a mint refused `MAX_STOCK_ATTEMPTS` = 3 times
+    (`stock_skipped`, `stock_attempts`, `stock_uncarried`; L24); `vendor::preflight` and `put`
+    refuse a storefront that already backs a vault (`backs_no_vault`); a retired port entry's clerk
+    idles (`stock::entry_latched` per entry from the content latch; the walk's clerk list; L25 — the
+    base run failed as F9 required).
+14. **Atlas, sim and corridor** (`mush-atlas/src/apply.rs` `check_exit_unanchored`, before any
+    retire, with `mush-content/src/apply.rs:263-269`'s `EntryApplier::check` contract amended to
+    allow a read-only world check for exactly this case; `mush-sim/src/transition.rs` `plan_members`
+    refuses Limbo, the recovery room, the in-transit room and a vault-backing room, `data.rs` naming
+    both writers of `rooms`; `tacsim/src/store.rs` `route_in_world_at`, `latched_route_at` and
+    `commands.rs` `corridor_of` honouring `@<version>` on the latch fallback).
+15. **The seed-latch gap, reproduced and fixed** (`tacsim/src/lib.rs` two `persist_delegation`s,
+    tacsim -> `content` and tacsim -> `atlas`, with
+    `crates/mush-contract-tests/module-ns-owners.toml` rows; L28): at base `@tacsim/seed
+    tacsim.corridor@1 commit` left `refused_namespace_writes` = [(tacsim, atlas), (tacsim, content)]
+    and the latch row was `None` after a fold and reboot.
+16. **`world_task`'s race** (`mush-server/src/world_task.rs:18495-18508`, test-side only; L29):
+    sixteen `yield_now`s hand the world its `Wake::Closed` turn before the receipt exists, plus
+    `assert!(!world_join.is_finished())`; 30 of 30 alone, and inside the saturated sweep.
+17. **Stickney v4** (`crates/tacsim/content/atlas/neighborhood.stickney_yards.json`, digest
+    `f1bdc803…16f6`; L26): exactly the three clauses struck — P04 `shift boards` "(+atlas has the
+    same map, in words)", P07 `intake board` "(it is what +market/list prints here)", P08 `price
+    board` "; +market/list has them to the credit" — and nothing else, proven by rebuilding v3 to
+    its pinned digest `df2e5af1…b2eb` (`tests/stations.rs` `stickney_v3_json`).
+18. **The small presentation residuals of Q-18-47** (L27): the accept line's signatory clause
+    (`mush-market/src/module.rs` `VenueGate::signatory`, default `None`; `commands.rs`
+    `ACCEPT_SIGNS`, `accept_signatory`; `tacsim/src/port/market.rs` `PortVenueGate::signatory`);
+    P07's funded balance (`board.rs` `BID_FUNDS_LINE`, `FUNDS_BOARD_ROLE` = "receiving",
+    `house_funds`); the burn-and-reserve gauge in the tank rooms (`ship.rs` `BURN_GAUGE`,
+    `BURN_GAUGE_NONE`, `insert_burn_gauge`, `burn_landed`; `gauges.rs` `single_qty`), the reserve
+    reading the tank itself once the burn's ticket exists.
+19. **Hygiene**: `put_ashore` moves first and moves back on a refused unplace (`ship.rs`; L12);
+    `ephemeris.rs:9` rewrapped; stale words in `tests/lane.rs`, `e7r2.rs` (renamed
+    `…registers_no_seventh_namespace`), `port_tick.rs` `register`'s doc, `def.rs`
+    `PORT_MINT_CAP_MAJOR`, `mush-config/src/config.rs:924`, `tests/content.rs`, `orders.rs:992`,
+    `commands.rs` `+coop`'s writing switches, `coop::row_of` private, `party_cap`'s comment; every
+    rustdoc link warning `cargo doc` printed in the touched crates (the three duplicated outer
+    module docs in `tacsim/src/lib.rs` removed); the two cosmetic literal newlines plus a third
+    (`travel.rs:965`); `fly_to_stickney` walks P01 to P07.
+20. **Docs**: the §10 amendments as "As built" paragraphs in docs 06 §7.5, 08a (the live-seams
+    ledger), 10 (T1, the C4 row, §18.1), 10b (the issue/retire note withdrawn; the buyout row), 11
+    (the 2320s row, §4.3, §4.5, §4.8, §4.10, §5, §7), 14 (§2.6, §3.3),
+    14-spatial-implementation-plan (§3.8, the D-14-35 row), 14b §3, 15 (§3.4, §3.5), 16c §2.4;
+    `mushd.toml.example` and `deploy/instance/mushd.toml.tmpl` drop the WoD words;
+    `docs/help/ships.md:28-30`; `docs/ops.md` (the retention section, the Markers line, the
+    trade-tape and reference-drift sentences, Stickney v4). Doc 18: §5's IC13 row landed at
+    `94679739`, the IC14 row added — unmarked, because a commit cannot carry its own hash; the next
+    docs pass marks it landed at this commit, as this cut marked IC13's — §8 Q-18-66..70 with IC13's
+    defaults, §9 risk 19's as-built note and the new risk 20.
+21. **Tests**: 87 new tests across `mush-core` (3), `mush-inventory` (9, `tests/ic14.rs` new),
+    `mush-market` (16), `mush-economy` (1), `mush-atlas` (2), `mush-sim` (4), `tacsim` lib (17) and
+    integration (29), `mush-server` (7); the rows they prove are cited in the items above. Three
+    failed at base as the brief required (the dropped port entry's clerk, the seed survives a
+    reboot, the anchored exit update).
+
+### Deferred, and why
+
+**Lead rulings taken, each as given** (the brief §4; recorded here, not chosen):
+
+- **L1** — retention is durable, per source endpoint, floored by real-clock age; the mirror's
+  fail-closed rule stands; a read-side horizon not taken.
+- **L2** — the queue-full seam counts the noted set plus this outbox's deferreds; its own text; the
+  executor defers without counting.
+- **L3** — `restage_deliver` reads the marker before the cutoff.
+- **L4** — the healed fold runs on the first sweep; the crash window between boot and that sweep is
+  recorded, not closed.
+- **L5** — an unconfirmed receipt is still treated as moved.
+- **L6** — the seller's dispute refused through a game-neutral `DisputeGuard`.
+- **L7** — an overflowing gross folds nothing.
+- **L8** — `Listing.draw` optional on the wire: the market's boot skips an undecodable listing, so a
+  required field would drop dev1's kept listings.
+- **L8b** — `Voyage.told` required: voyage documents are slice-only and a defaulted 0 would re-tell
+  old grants.
+- **L9** — `owner_home` never answers a hull's hold.
+- **L10** — the Return arm converges a Revoked charter with a live lease; the walk is over the hull
+  rows.
+- **L11** — six relet attempts under a doubling backoff, then IC13's outcome; a still-Offered lease
+  is never reused because `relet` ends the half-made lease on every failure; `@coop/unload` not
+  built.
+- **L12** — `put_ashore` moves, then unplaces, and moves back.
+- **L13** — failure paths by test modules, never a production switch; an unreachable one reported.
+- **L14** — the Option wire claim corrected here, not made strict.
+- **L15** — the lapse waits while any prepared action owns the typed store.
+- **L16** — `Step::Held`.
+- **L17** — an unreadable plan is treated as filed at every gate, counted departing, never lent,
+  paged once — and never turns the Hulls line Missing.
+- **L18** — over the rail the tenths round up.
+- **L19** — `HOLD_CLEARED`.
+- **L20** — `told` makes the grant durable.
+- **L21** — `ORDER_RESTAGE_SECS` = `SWEEP_PERIOD_SECS` + 30: the draw receipt is market-owned typed
+  state that owner scope refuses to the tacsim context, so the read seam cannot be built.
+- **L22** — `HELD_SHORT_FOR_DEPART` follows §4.4's wording.
+- **L23** — `REFUSED_RETRY` reached by a real staff act, `@org/status #kasei=suspended`;
+  `INTAKE_TAKEN` stays unit-only because no staff act on the shipped packs exhausts a 4,000 t bid
+  against a 100 t hold.
+- **L24** — the clerk-row bound at load and the clerk's skip, both.
+- **L25** — the per-entry case tested first; the fix was needed, so the clerk reads the content
+  latch per entry.
+- **L26** — Stickney v4 deletes three clauses and nothing else.
+- **L27** — the small presentation residuals built here; the departure and berth boards to a content
+  P-cut.
+- **L28** — reproduce before delegating; both pairs were refused.
+- **L29** — a race fix test-side or nothing.
+- **L30** — the help reworded; the staff move stays ungated.
+- **L31** — a full young ring refuses the move.
+- **L32** — an unreadable re-stage ends in `HELD_UNCONFIRMED` at the second deadline.
+
+**Builder choices inside them:**
+
+- the holder's staged release lifts the hold-read backoff for ten sweeps (`release_staged`) so IC8's
+  pinned next-sweep deletion still holds;
+- the markers and incomplete-mirror lines are tested over the pure builders;
+- the relet failure is injected by freezing the Trust's account (so no lease is minted; the arm's
+  bound is proven from its own record each fire);
+- the clerk's uncarried-rows warning is once per port;
+- E1's "placed" map is rebuilt from the pack's `roomgeo` records (the latch is out of the slot
+  during an apply);
+- E2 reads both `Container` and `SpatialInterior` backings;
+- the burn gauge's reserve is the tank itself once the burn's ticket exists (otherwise it would read
+  0 between the debit and the launch);
+- E8's "non-port line unchanged" check lives in `ic7.rs` through a gate that names no signatory;
+- A16 asserts 60 lower (the brief's 40 was an arithmetic slip).
+
+**Owner-critical defaults taken and reported** (do not read them as rulings):
+
+- **O7 / proposed Q-18-74 — E7c2 owner decision D1 is weakened past the retention horizon.** The
+  applied marker stays the reboot-surviving replay guard for at least one real day and at least
+  the newest 32 per endpoint; a request replayed after both is no longer refused by it; a ring of
+  128 young markers refuses the next move from that endpoint. The horizon (86,400 s) and the caps
+  (32 / 128) are the planner's; the alternative, no eviction, keeps risk 19's world-wide cliff.
+- **O8 / proposed Q-18-72 — the `Markers` line never gates**, a departure from Q-18-60's shipped
+  default that every line but the sky gates `+coop/enrol`; only an actually incomplete mirror (the
+  `InventoryFacts` line) closes enrolment.
+- **O9 / proposed Q-18-73 — an unreadable sailing plan does not gate enrolment world-wide**; it
+  keeps that hull out of the pool and pages. The stricter reading (the Hulls line Missing) is the
+  owner's.
+- **O4 / proposed Q-18-71 — a failed relet retries six times under a doubling backoff (2 min to 1
+  h), then revokes as IC13 built it**; the pilot is told `RELET_PENDING` once and the plan waits
+  under `HELD_RELET`; `@coop/unload` was not built.
+- **O2 — Q-18-64's default changed**: a seller cannot dispute their own sale into a bid (staff
+  `@contract/resolve` and admin disputes unchanged).
+- **O3 — Q-18-51's default changed**: an explicit consumable buy holds under `HELD_SHORT_FOR_DEPART`
+  only when the later consumable orders before the next depart would still leave it short.
+- **O1 — every new player-facing text is the planner's wording** (Q-18-65): `SELL_QUEUE_FULL`,
+  `SELL_REMEDY`, `DELIVER_LANDED`, `DELIVER_UNCONFIRMED`, `SALE_DISPUTE_REFUSED`, `HOLD_CLEARED`,
+  `HOLD_PAPERS_DARK`, `RELET_PENDING`, `HELD_RELET`, `InventoryError::MarkerRingFull`'s line,
+  `ACCEPT_SIGNS`, `BID_FUNDS_LINE`, `BURN_GAUGE`, `BURN_GAUGE_NONE`, the Markers and InventoryFacts
+  readiness texts, the two Unknown page texts, the ships.md sentence. On that sentence: "your own
+  moves out of the hold refuse until she docks" implies a docked pilot may move goods out of the
+  hold; the story test pins the one-endpoint rule refusing it docked too — the owner's text pass
+  should drop "until she docks".
+- **O5 — Q-18-47 placed**: the accept-line signatory, P07's funded balance and the
+  Engineering/Bridge burn line built here; the C14/P05 departure boards and the C01/P01 berth boards
+  go to a content P-cut.
+- **O6 — Stickney v4** strikes the three clauses only; 18a is untouched, so 18a §0.2 still names
+  them until the owner's next 18a pass.
+- **O10 / row 123 — the marker rings of endpoints that stop writing are never pruned**: the
+  remaining bound of risk 19; no P-cut owns it.
+- Proposed Q-18-71..74 are **not** added to §8 in this cut (the lead note confines §8 to
+  Q-18-66..70); they are numbered in §9 risk 20 and here. The next cut-raised question is Q-18-75.
+
+**Left, with the reason:**
+
+- **Row 32's residues untested**: `RELEASE_RETRYING`, `REVOKED_RETRYING`, `BUYOUT_HELD`, the
+  buyout's `end_lease` `Err` path and the Trust-acceptance residue. The only production-root
+  injection (an `Abandoned` asset-lifecycle document) froze the economy at boot, and L13 forbids a
+  production switch; `recall_outcome`'s unit test pins the Retrying/Err mapping. Likewise `relet`'s
+  half-made-lease end arm is unreachable: `check_offerable` refuses every account and asset staff
+  act at the offer, and the pilot's acceptance has no consideration, so no lease is minted that then
+  fails.
+- **The stock clerk's skip is boot-scoped and consults `authoritative_pending` only**: a healthy row
+  whose third mint is in writer custody at the decision fire is skipped for the boot (its lot
+  minted, not dissolved or listed until a reboot; one warn line). A re-read of the receipt before
+  honouring `stock_skipped`, or an `authoritative_commit_pending` check, is a small later item.
+- **`MAX_RELET_BACKOFF_FIRES`'s doc overstates**: with six attempts the longest gap is
+  `relet_backoff(5)` = 384 fires; the cap is a ceiling the schedule does not reach. `relet_attempts`
+  is RAM, so a reboot resets the count (bounded by reboots).
+- **The staff settle of a sale disputed past the horizon** is untested (the refund and lapse paths
+  are); settling such a sale may need to be done by hand after `@inv/show` on the house's stores.
+- **The `world_task` fix is a fixed yield count**, deterministic on the current-thread runtime
+  today; it observes no close signal.
+- **The mirror test's name** ("stays complete") holds after the rings drain; at its mid-point the
+  mirror is incomplete, which is the documented bound.
+- **Row 67 (L14), correcting IC13's note**: the IC13 note's "strict wire" claim for `Enrolment` is
+  wrong as to the three `Option` fields `buyout`, `ended_at` and `ended`, which deserialize to
+  `None` when absent; `leased_at` is required and `Enrolment::check()` refuses every
+  status-incoherent omission, so no behaviour changes.
+- **Owner rows 89–101, 107 and 123 of the brief's table** left for the owner (the hold-backed path's
+  Fact gate Q-18-42, org renames, `+ic`'s landing room, Q-18-32..41, the Dray v2 pack note, Q-18-60,
+  the two render readings, `7.00cr`, the reference re-read Q-18-50, the hand-played smoke at rate 24
+  — no Redis on the build machine — Q-18-66..70, the origin remote, a bring-her-home verb /
+  `@coop/unload`, the unpruned rings).
+- **Doc 18 §5's IC14 row is unmarked in this commit**: the brief asked the committer to mark it
+  landed with the IC14 hash, which a commit cannot carry in itself, and the committer's edits under
+  docs/design are confined to this note; the next docs pass marks it landed at this commit's hash.
+- **Not in this cut**: doc 17's F3 row (not in this run's allow list); doc 18 §10's two stale
+  sentences (`:3527` the `mortal` default — dispositioned edge, the single-game cleanup; `:3530` the
+  `18-cut-notes.md:109-110` re-point — done in IC12's note), carried by risk 20; the Draw accept's
+  full-queue exposure (row 124, edge: the buyer's escrow waits for the re-stage or the lapse refund;
+  no money is lost); `INTAKE_TAKEN` at the unit level; every row the table marks **edge** or
+  **P-cut** (P-A, P-H, P5, P-G/P-F, P2, the content P-cut).
+
+### Pins re-blessed
+
+- **`neighborhood.stickney_yards` content digest**
+  `df2e5af11f18c4a5c71bea9e0b5b187b7cdb97c037aecc6b433b9ee3a0d1b2eb` (v3) →
+  `f1bdc803c5adca043d576013fb5c94bc2b4b6f0434e91f82fe123fcbab2f16f6` (v4), in the pack's own
+  `digest` field, `tacsim/tests/stations.rs` `PINNED` and `station_version` (3 → 4), and
+  `mush-server/tests/boot_parity.rs:691`. Reason: row 50 / E6, the three verb meta-text clauses
+  struck; `stickney_v3_json` rebuilds v3 to its old pin so the change is proven to be exactly those
+  clauses; `old_station_json` restores them for the kept-world test (Stickney 2 → 4). No other
+  digest moved: lane v3, Dray v2, goods v1, Ceres v2, the starter and region packs are unchanged
+  (`mush-atlas/tests/starter.rs`, `tacsim/tests/content.rs`, `lane.rs` all green unmoved).
+- **`crates/mush-contract-tests/module-ns-owners.toml`**: two new `[[delegation]]` rows, `tacsim` →
+  `content` and `tacsim` → `atlas`, declared by tacsim. Reason: row 48 / E4 (L28): the reproduction
+  `ic14_a_staff_seed_survives_a_fold_and_reboot` showed exactly these pairs refused at base and the
+  corridor's latch row lost across a fold and reboot; `seed::apply` drives
+  `mush_content::apply_pack` and the atlas appliers under tacsim's identity.
+- **Existing assertions changed, each as the brief directs (old → new)**:
+  - `mush-market/tests/ic10.rs` the dropped-leg re-stage after a landing (re-staged and refused at
+    prepare by the marker → `+market/accept` answers `DELIVER_LANDED` with nothing re-staged; A5;
+    the prepare-side replay guard stays pinned at `ic10.rs:1453`) and the disputed-sale test's
+    disputer (`r.pat` → GOD; A6); the ic10 rig gains `.with_dispute_guard(SaleDisputeGuard)` and
+    `Opts.bid_ttl_secs` (default 86,400, every existing test unchanged).
+  - `mush-market/tests/e7r2.rs` the `Listing` literal gains `draw: Some(false)`.
+  - `mush-inventory/tests/ic10.rs` three `transfer_marked` calls gain `T_WALL`.
+  - `mush-economy/tests/e4b1.rs` three stale-page tests ("any escalation" → `SettlementRefused` +
+    the contract subject + the in-force / escrowed-draft sentence; A15, stronger).
+  - `tacsim/src/port/coop.rs` `ic12_the_gate_refuses_on_every_gated_line_and_never_on_the_sky`
+    (`[Binding; 15]` → 16; `gated(b) == (b != Sky)` → `!(Sky | Markers)`; A3).
+  - `tacsim/tests/ports.rs` test 8 gains the `markers:` line and the moving-sky test asserts
+    `sky_pages() == 0/1/1` (was a bool latch; C8, stronger).
+  - `tacsim/tests/sale.rs` and `voyage.rs` `HOLD_UNDER_WAY` → `HOLD_CLEARED` for a docked cleared
+    hull (C5; the under-way case still pinned at `commerce.rs:1342`); `fly_to_stickney` walks
+    instead of teleporting.
+  - `tacsim/src/port/executor.rs` the LFP unit test's step 400 t → 150 t with the `greater` case's
+    aboard figures re-derived (D11, both fixed points over the same 100 t of cargo).
+  - `tacsim/tests/coop.rs` the two IC6 gauge blocks gain `BURN_GAUGE_NONE` under the tank line
+    (E10).
+  - `tacsim/tests/commerce.rs` the two P07 board tests go 2 → 3 lines with the funds line (E9).
+  - `tacsim/tests/orders.rs` the status-line test also renders from the Bridge (D11, stronger).
+  - `tacsim/tests/stations.rs` `names_a_verb` now covers every Stickney detail and the kept-world
+    test takes Stickney 2 → 4 (E6, stronger).
+  - `mush-server/tests/ic_buyout_dormancy.rs` test 1 gains the exact graduated hulls line (B7,
+    stronger).
+  - `mush-server/src/world_task.rs` the race test gains sixteen yields and an assertion (E5; nothing
+    weakened).
+  - `mush-inventory/tests/e7r2.rs` `…registers_no_sixth_namespace` →
+    `…registers_no_seventh_namespace` (D12).
+  - `mush-market/tests/ic8.rs` `ic8_a_lapsed_hold_listing_survives…` was loosened mid-build and
+    restored: no net change. `e7c2.rs`'s truncation test is untouched.
+- **Run and unchanged**: the panic budgets (no new `unwrap`/`expect`/`panic!`/indexing in non-test
+  code; `no_crate_exceeds_its_production_panic_budget` green), `legacy-handlers.toml` (baseline 97;
+  no new verb), `help-commands-allowlist.toml` (T-45), `matcher-call-sites.toml`, the
+  restriction-lints census, the CI gated-test inventory (a renamed test is not a new binary;
+  `ic14.rs` is a new mush-inventory test binary the sweep ran), `state-slot-owners.toml` and
+  `typed-state-lens.toml` (the new `inventory_marker_ring` family needed no re-bless;
+  `production_action_migrations`, `authoritative_boot` and `boot_parity` green), the
+  composition-edge pin (`with_dispute_guard` adds no Cargo edge; not re-blessed, as the brief
+  forbade), every offer-parameter golden (none pinned the fixed parameters byte for byte).
+
+### How it was verified
+
+On Windows at the working tree over `94679739` with the cut uncommitted (98 files changed, plus the
+new `crates/mush-inventory/tests/ic14.rs`), the final gate's 29 steps all exited 0 on the first run
+— no reruns, no LNK1104, no hung binary, the stall watcher never fired:
+
+```
+cargo fmt --all -- --check                                        (no output; exit 0)
+cargo clippy --workspace --all-targets -- -D warnings             Finished `dev` profile … in 45.96s (exit 0, no warnings)
+cargo test -p mush-core --lib                                     400 passed
+cargo test -p mush-inventory                                      1, 65, 16, 4, 8 passed (lib, e7c2, e7r2, ic10, ic14)
+cargo test -p mush-market                                         30, 21, 5, 21, 22, 11, 2, 1 passed (1 ignored)
+cargo test -p mush-economy --lib                                  37 passed
+cargo test -p mush-economy --test e3b --test e4b1 --test e4b2 --test e4c   37; 85; 117; 44 passed
+cargo test -p tacsim --lib                                        943 passed
+cargo test -p tacsim --test ports --test sale --test commerce --test coop --test orders   24; 23; 32; 21; 16 passed
+cargo test -p mush-contract-tests                                 29 binaries, every one ok (31/6/5/6/3/2/3/1/4/2/1/4/2/2/3/1/7/4/1/11/6+8 ignored/3/2/4/5/1/6/1/0 passed)
+cargo test -p mush-server --test ic_slice_loop --test production_action_migrations --test authoritative_boot --test boot_parity   1; 18; 6; 3 passed
+cargo test -p mush-housing --no-fail-fast                         1, 54, 81, 1 passed
+cargo test -p mush-campaign --no-fail-fast                        54, 58, 15, 85, 28, 5 passed
+cargo test -p tacsim --test coop --test stations --test port_tick --test voyage   23; 16; 20; 24 passed
+cargo test -p mush-server --test ic_buyout_dormancy --test ic_slice_loop   13; 6 passed
+cargo test -p tacsim --test voyage --test port_tick --test ports --test coop --test orders   23; 32; 16; 21; 24 passed
+cargo test -p tacsim --test orders --test port_tick --test ports --test commerce --test sale --test lane --test content   24; 29; 10; 32; 16; 21; 16 passed
+cargo test -p mush-inventory --test e7r2                          16 passed
+cargo test -p mush-config --lib                                   112 passed
+cargo doc -p tacsim --no-deps                                     Finished … in 1.72s (no rustdoc warnings)
+cargo test -p mush-content                                        11; 8 passed
+cargo test -p mush-atlas                                          17 binaries, all ok (51/5/5/9/6/5/8/13/4/3/6/2/5/21/14/16/0)
+cargo test -p mush-sim --no-fail-fast                             15 binaries, all ok (37/11/5/18/3/34/68/32/19/2/6/15/31/24/0)
+cargo test -p tacsim --test lane --test s9_corridor --test stations --test commerce --test ports --test coop --test voyage --test content   24; 29; 23; 10; 21; 6; 20; 24 passed
+cargo test -p mush-server --lib world_task::tests::what_still_waits_when_the_loop_ends_is_answered_not_dropped   1 passed (and 30 of 30 alone with --test-threads=1 in the builder's run)
+cargo test -p mush-server --test ic_slice_loop --test ic_buyout_dormancy --test boot_parity   18; 13; 6 passed
+cargo test -p mush-contract-tests                                 (again) every binary ok
+CARGO_BUILD_JOBS=8 cargo test --workspace --exclude mush-bot --no-fail-fast
+    exit 0 in 37 min (build 10m10s); 401 result lines, all ok; 7609 passed, 0 failed, 92 ignored
+cargo test -p mush-bot                                            exit 0 in 10 min; lib 469; arena_e2e 9 (206 s); e2e 49; playtesting 9; every other binary ok
+```
+
+Load-sensitive suites passed inside the saturated sweep: `world_task::tests::what_still_waits…`,
+`arena_story two_pilots_walk_in_fight_and_one_tank_is_destroyed` (over 60 s, then passed), `mush-sim
+journey::tests::e7c6_b2_*`, `ipc_authoritative_action`, `two_process_e2e`, `scripting_e2e`. The one
+panic in the sweep log is the WS01-S8 injected world-turn fault (`process_fault.rs:197`), whose test
+passed; no flake was identified.
+
+Three tests were shown failing at base first, as the brief required:
+`ic14_a_dropped_port_entrys_clerk_idles_while_the_lane_stays_latched`,
+`ic14_a_staff_seed_survives_a_fold_and_reboot` (refused pairs `[(tacsim, atlas), (tacsim,
+content)]`, the latch row `None` after the reboot) and
+`ic14_an_update_row_into_a_hull_room_refuses_the_pack_before_any_retire` ("STOPPED PART WAY … What
+was made is latched"). The fixer's mutation checks, each reverted: `hull_is_free` without
+`voyage_blocks` fails `ic14_a_free_hull_whose_sailing_plan_does_not_read_is_never_lent`;
+`launch_verify` without `mark_told` fails `ic14_a_grant_told_live_is_not_retold_after_a_reboot`;
+`goods_moved` with the horizon guard disabled fails
+`ic14_a_refund_past_the_marker_horizon_never_restores_the_bid`. `cargo doc` is clean for tacsim,
+mush-market, mush-inventory, mush-atlas, mush-economy, mush-core, mush-sim and mush-content. Every
+modified file is LF (the builder's helper had converted 34 to CRLF mid-build; all converted back and
+checked).
+
+Three review lenses on the uncommitted tree (correctness, conformance with a 68-item checklist,
+tests): one must-fix each from correctness (F1, the disputed sale past the horizon) and tests (T1,
+the vacuous `hull_is_free` assertion), twelve should-fix and notes across them. The fixer fixed
+every finding but one and rebutted that one in part (conformance F2 / tests T2: a lease that is
+minted and then fails cannot be reached on the production root — `check_offerable` refuses at the
+offer — so the bound is proven from the arm's own record each fire instead). The judge re-read the
+whole diff and the new file and verified each disposition against the code; the notes left standing
+are recorded under "Deferred, and why". Verdict: ship with notes.
+
+### Surface for the next cuts
+
+Public items later cuts (the P-cuts) build on:
+
+- **mush-core** (`crates/mush-core/src/{output,cmd,action_state}.rs`): `pub fn
+  Outbox::authoritative_queue_full(&self) -> bool` (distinct actors in the noted set ∪ this outbox's
+  `Deferred::AuthoritativeSubmit` actors `>= engine::AUTHORITATIVE_SUBMIT_QUEUE_MAX`; `false`
+  outside a note save for the outbox's own deferreds); `pub fn Ctx::authoritative_queue_full(&self)
+  -> bool`; `pub fn ModuleActionState::commit_pending(&self) -> bool` (the store's `has_prepared()`,
+  `false` when unavailable); `pub fn Ctx::authoritative_commit_pending(&self) -> bool`.
+- **mush-inventory** (re-exported from `lib.rs`): `pub const MAX_RETAINED_MARKERS_PER_ENDPOINT:
+  usize = 32`, `MARKER_RETENTION_SECS: i64 = 86_400`, `MAX_MARKER_RING: usize = 128`,
+  `MAX_RING_EVICTIONS_PER_PUSH: usize = 8`, `MAX_MARKER_ID_BYTES: usize = 96`; `pub struct RingEntry
+  { pub key: SmolStr, pub wall: i64 }`; `pub struct MarkerRing(Vec<RingEntry>)` (`Serialize`,
+  checked `Deserialize`; `new(Vec<RingEntry>) -> Result<Self, InventoryRecordError>`, `const fn
+  empty()`, `entries()`, `len()`, `is_empty()`, `push(&self, RingEntry, now_wall: i64) ->
+  Result<(MarkerRing, Vec<SmolStr>), InventoryRecordError>`); `InventoryRecordError::{MarkerRingFull
+  { max }, MarkerRingKey, MarkerRingDuplicate}`; `InventoryError::MarkerRingFull` (Display: "this
+  endpoint has recorded too many moves in the last day to record another; try again later"); `pub fn
+  is_marker_id(&str) -> bool`; `InventoryFamilies.marker_ring: StateFamilyHandle<EndpointRef,
+  MarkerRing>` (family id `inventory_marker_ring`, descriptors `inventory.marker_ring.v1` /
+  `.decode_json.v1` / `.invariants.v1` / `.json.v1`, keyed `inventory.endpoint_id.v1`); `pub fn
+  InventoryFamilies::retain_marker(&self, &mut ActionTxn, EndpointRef, &SmolStr, wall: i64) ->
+  Result<(), InventoryError>`; `transfer_marked(.., now: &ClockStamp, wall: i64)` (new last
+  argument); every marker-writing offer's `fixed_parameters` carry `"wall": World::now()` beside
+  `"now"`, read by `pub(crate) provider::prepare_wall` (absent → `Unavailable` "the world clock is
+  unavailable").
+- **mush-market** (re-exported from `lib.rs`): texts `SELL_QUEUE_FULL`, `SELL_REMEDY` (`{quote}`),
+  `DELIVER_LANDED`, `DELIVER_UNCONFIRMED`, `SALE_DISPUTE_REFUSED`, `ACCEPT_SIGNS` (" {signatory}
+  signs for {shop}."); `pub struct SaleDisputeGuard` (impl `mush_economy::DisputeGuard`); `pub const
+  HOLD_RECHECK_SWEEPS: u64 = 10`; `pub fn MarketStore::hold_reads(&self) -> u64`; `Listing.draw:
+  Option<bool>` (`#[serde(default)]`; `Some(true)` only on a `Supply::Stock` listing, refused
+  otherwise on the wire; `None` only on a pre-IC14 row, stamped by `put_listing` on its next write);
+  `VenueGate::signatory(&self, &World, &MarketId, &PrincipalId) -> Option<String>` (default `None`);
+  `restage_deliver` answers `Err(DELIVER_LANDED)` for a landed leg and `Err(DELIVER_UNCONFIRMED)`
+  when the marker cannot be read, before the cutoff; `release_quote` reads an absent Deliver marker
+  as unconfirmed (paged, never restored) once `World::now() >= PaidLot.accepted_at +
+  MARKER_RETENTION_SECS`; `trade::settled_sale` is `pub(crate)`; `MarketStore` RAM fields
+  `healed_sales`, `hold_checked`, `release_staged`, `sweeps`, `hold_reads` (`pub(crate)`).
+- **mush-economy** (re-exported from `lib.rs`): `pub trait DisputeGuard: Send + Sync + Debug { fn
+  refusal(&self, w: &World, contract: &EconomicContract, party: &PrincipalId) -> Option<&'static
+  str>; }`; `pub fn EconomyModule::with_dispute_guard(self, Arc<dyn DisputeGuard>) -> EconomyModule`
+  (composition-frozen; asked by `@contract/dispute` for a non-admin party after the party resolves
+  and before the state check); `pub(crate) fn EconomyStore::dispute_guard()`; `owner_home` answers
+  `None` for a `CustodyRef::SpatialInterior` vault.
+- **mush-content / mush-atlas / mush-sim**: `EntryApplier::check`'s contract now allows a read-only
+  world check when the refusal must take the whole pack because the default `update` retires before
+  it creates; the atlas `check` refuses an exit row whose resolved end (`to`, and `from` for a
+  two-way row) is anchored aboard a hull with "{id}: {authored} is a room aboard a moving hull; no
+  exit leads into one"; `Transition::Members` refuses Limbo, the recovery room, the in-transit room
+  ("{r} is Limbo" / "… the recovery room" / "… the in-transit room") and a vault-backing room ("{r}
+  backs vault #{n}"), after the space-of-its-own check and before the domain-host check.
+- **tacsim, readiness and the tick**: `port::readiness::Binding::Markers` (never gated;
+  `gated(Markers) == false`), `pub(crate) fn markers_line(held: Option<usize>, max: usize) ->
+  ReadinessLine`, `pub(crate) fn inventory_facts_line(provider: bool, complete: Option<bool>) ->
+  ReadinessLine` (the `Markers` line is spliced two after the treasury, after `InventoryFacts`);
+  `port_tick`: `Step::Held`, `PortFireStats.held: u32`, `PortTickState.{sky_pages: u32,
+  marker_pages: u32, voyage_warned, voyage_pages: u32, stock_skipped: BTreeSet<String>,
+  stock_attempts: BTreeMap<String, u8>, stock_uncarried: BTreeSet<CanonicalId>, relet_attempts:
+  BTreeMap<ObjId, (u8, u64)>}` (RAM), `pub fn sky_pages(w) -> u32` (replaces `sky_paged`), `pub fn
+  marker_pages(w) -> u32`, `pub fn voyage_pages(w) -> u32`, `pub fn recall_blocked_at(w, hull: u32)
+  -> Option<u64>`, `pub fn relet_attempts(w, hull: ObjId) -> Option<(u8, u64)>`, `pub fn fires(w) ->
+  u64`.
+- **tacsim, voyage and market**: `port::voyage`: `Voyage.told: u32` (required on the wire, `<=
+  last_seq`), `pub fn voyage_blocks(w, hull) -> bool`, `pub fn voyage_dark(w, hull) -> bool`,
+  `pub(crate) fn tonnes_over(kg, ceiling_kg) -> String`, `pub(crate) fn launch_retell(ctx,
+  &PortTickState)` (the first fire after a boot), `launch_hold` returns `Step::Held`;
+  `port::market`: `HOLD_CLEARED`, `HOLD_PAPERS_DARK` (re-exported from `port`),
+  `PortVenueGate::signatory` answers the port map's signatory NPC's name for an org seller.
+- **tacsim, executor, buyout and recall**: `port::executor`: `pub const ORDER_RESTAGE_SECS: i64 =
+  90`, `pub const HELD_RELET`, `pub(crate) enum Cover { Fill, Units(u64) }`, `pub(crate) fn
+  later_cover(&Orders, index, &CanonicalId) -> Cover`; `port::buyout`: `pub const RELET_PENDING`,
+  `MAX_RELET_ATTEMPTS: u8 = 6`, `MAX_RELET_BACKOFF_FIRES: u64 = 720`, `pub fn relet_backoff(n: u8)
+  -> u64` (24, 48, 96, 192, 384, 720), `pub(crate) fn relet_pending(w, &Enrolment) -> bool`,
+  `pub(crate) fn relet(ctx, &Enrolment, attempt: u8, give_up: bool) -> bool`; `port::recall`:
+  `pub(crate) enum RecallOutcome { Return, Retry }`, `pub(crate) fn
+  recall_outcome<E>(&Result<LeaseEnd, E>) -> RecallOutcome`, `recall_agents` walks the programme
+  map's hull rows and offers a Revoked-with-live-lease hull and a relet-due hull.
+- **tacsim, stock, ship, boards and definitions**: `port::stock`: `pub const MAX_STOCK_ATTEMPTS: u8
+  = 3`, `pub(crate) fn entry_latched(w, &CanonicalId) -> bool`; `port::ship`: `pub const BURN_GAUGE`
+  ("Burn for the filed plan: {burn} t; reserve after it: {reserve} t."), `BURN_GAUGE_NONE`,
+  `put_ashore` moves first and moves back on a refused unplace; `port::board`: `pub const
+  BID_FUNDS_LINE`, `FUNDS_BOARD_ROLE = "receiving"`; `port::gauges::single_qty` (`pub(crate)`);
+  `port::def`: a stock row's `qty` in `1..=mush_market::MAX_QUANTITY`, a port's stock rows `<=
+  MAX_CLERK_ROWS`.
+- **tacsim, store, co-op and composition**: `TacsimStore::voyages_unreadable(&self) -> impl
+  Iterator<Item = ObjId>`, `TacsimStore::route_in_world_at(&self, w, &CanonicalId, version: u32) ->
+  Option<RouteDef>`; `coop::row_of` is private; `hull_is_free` also requires `!voyage_blocks`; the
+  composition installs `with_dispute_guard(Arc::new(SaleDisputeGuard))` on every roster;
+  `TacsimRuleset::register` declares `persist_delegation(tacsim, content)` and `(tacsim, atlas)`.
+- **Content and pins**: `neighborhood.stickney_yards` v4, digest
+  `f1bdc803c5adca043d576013fb5c94bc2b4b6f0434e91f82fe123fcbab2f16f6` (v3 was `df2e5af1…d1b2eb`;
+  `tests/stations.rs` `STICKNEY_V3_DIGEST`, `STICKNEY_V3_CLAUSES`, `stickney_v3_json`,
+  `restore_stickney_clauses`); `module-ns-owners.toml` carries the two tacsim delegations.
+- **Test rigs later cuts may lean on**: `mush-inventory/tests/ic14.rs` (`boot`, `apply`, `go`,
+  `ring`, `applied`, `land` through the provider); `mush-market/tests/ic10.rs` `Opts.bid_ttl_secs`,
+  `fill_engine_queue`; `tacsim/tests/ports.rs` `install_markers`, `markers_line`;
+  `tacsim/tests/commerce.rs` `kasei_funds_line`, `fires`; `tacsim/tests/voyage.rs` `grants_heard`,
+  `look_aboard`; `mush-server/tests/ic_buyout_dormancy.rs` `write_docs`, `freeze_account`,
+  `notices_of`, `trust_name`, `refunded_with_the_trust_frozen`; `mush-atlas/tests/anchored_exits.rs`
+  `world_booting`, `block_version`.
+- **Doc conventions**: this cut's owner items O4/O8/O9/O7 take the proposed numbers Q-18-71..Q-18-74
+  in doc 18 §9 risk 20 and this note only; §8 does not yet list them, and the next docs pass adds
+  them with doc 18 §5's IC14 row marked landed (the next cut-raised question is Q-18-75).

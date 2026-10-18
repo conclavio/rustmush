@@ -61,6 +61,13 @@ pub(crate) fn reconcile(ctx: &mut Ctx<'_>) {
     reconcile_contracts(ctx);
 }
 
+/// How many sweeps a kept lapsed hold-backed listing goes between two reads of its
+/// hold's standing (doc 18 cut IC14 row 16): the sweep keeps such a listing until its
+/// hold reads `Gone`, and on a roster without a releaser that read would otherwise run
+/// for every kept listing on every sweep. A hold that goes `Gone` is therefore deleted
+/// within this many sweeps (ten minutes at the 60 s sweep).
+pub const HOLD_RECHECK_SWEEPS: u64 = 10;
+
 /// The most lot listings one sweep fire reconciles (E7r2 P1).
 ///
 /// Bounded on records **visited** (D-LBK-5), with its own budget so it can never
@@ -82,9 +89,46 @@ pub const MAX_DRAWS_MIRRORED_PER_FIRE: usize = 64;
 
 /// The `Coarse` sweep tick — **three arms on one existing tick**, never a second tick.
 pub(crate) fn sweep_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::SceneId>) {
+    fold_healed_sales(ctx);
     sweep(ctx, MAX_SWEPT_PER_FIRE);
     reconcile_lot_holds(ctx, MAX_LOT_RECONCILED_PER_FIRE);
     reconcile_draws(ctx, MAX_DRAWS_MIRRORED_PER_FIRE);
+}
+
+/// ---- doc 18 cut IC14 row 9: a boot-healed settlement folds once ----
+///
+/// A sale into a bid whose settlement the economy healed at boot and never announced is
+/// stamped by [`reconcile_contracts`], which cannot tell the proceeds policy: the game
+/// layer's store boots after the built-ins and is not hydrated yet (lead ruling L4).
+/// The ids wait in `MarketStore::healed_sales` (RAM) and are drained here, at the top of
+/// the first sweep after boot, each told to the policy through the settlement ear's own
+/// `settled_sale` exactly once — the list is taken whole, and a stamped quote is never
+/// pushed again. A crash between the boot and this sweep loses the fold (recorded on the
+/// field).
+fn fold_healed_sales(ctx: &mut Ctx<'_>) {
+    let healed = ctx
+        .w
+        .module_state_mut::<MarketStore>()
+        .map(|s| std::mem::take(&mut s.healed_sales))
+        .unwrap_or_default();
+    for id in healed {
+        let Some(q) = ctx
+            .w
+            .module_state::<MarketStore>()
+            .and_then(|s| s.quote(id).cloned())
+        else {
+            continue;
+        };
+        let (Some(contract), Some(_)) = (q.contract, q.settled.as_ref()) else {
+            continue;
+        };
+        tracing::info!(
+            quote = id.0,
+            contract = contract.0,
+            "market: telling the proceeds policy of a sale the economy healed at boot"
+        );
+        crate::trade::settled_sale(ctx, &q, contract);
+    }
 }
 
 /// ---- doc 18 cut IC7: the draw mirror (item 7) ----
@@ -379,12 +423,42 @@ fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
             })
             .collect()
     };
+    // Doc 18 cut IC14 row 16: a per-listing backoff on the hold read. This sweep's
+    // number, and the kept lapsed hold-backed set the backoff map is retained to.
+    let sweep_no = ctx.w.module_state_mut::<MarketStore>().map_or(0, |s| {
+        s.sweeps = s.sweeps.saturating_add(1);
+        s.sweeps
+    });
+    let held_now: std::collections::BTreeSet<ListingId> = lapsed
+        .iter()
+        .filter(|(_, held)| *held)
+        .map(|(id, _)| *id)
+        .collect();
+    let mut read_now: Vec<ListingId> = Vec::new();
     let listings: Vec<ListingId> = lapsed
         .into_iter()
         .filter(|(id, held)| {
             if !held {
                 return true;
             }
+            // Read within the last `HOLD_RECHECK_SWEEPS` sweeps: kept without a read.
+            let last = ctx
+                .w
+                .module_state::<MarketStore>()
+                .and_then(|s| s.hold_checked.get(id).copied());
+            // A release staged within the window is read every sweep, so its landing
+            // deletes the listing on the next sweep.
+            let releasing = ctx
+                .w
+                .module_state::<MarketStore>()
+                .and_then(|s| s.release_staged.get(id).copied())
+                .is_some_and(|at| sweep_no.saturating_sub(at) <= HOLD_RECHECK_SWEEPS);
+            if !releasing
+                && last.is_some_and(|at| sweep_no.saturating_sub(at) < HOLD_RECHECK_SWEEPS)
+            {
+                return false;
+            }
+            read_now.push(*id);
             let standing = ctx
                 .w
                 .module_state::<MarketStore>()
@@ -403,6 +477,16 @@ fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
         .map(|(id, _)| id)
         .take(budget)
         .collect();
+    if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
+        store.hold_reads = store
+            .hold_reads
+            .saturating_add(u64::try_from(read_now.len()).unwrap_or(u64::MAX));
+        for id in read_now {
+            store.hold_checked.insert(id, sweep_no);
+        }
+        store.hold_checked.retain(|id, _| held_now.contains(id));
+        store.release_staged.retain(|id, _| held_now.contains(id));
+    }
     let quotes: Vec<QuoteId> = {
         let Some(store) = ctx.w.module_state::<MarketStore>() else {
             return 0;
@@ -481,6 +565,15 @@ fn reconcile_contracts(ctx: &mut Ctx<'_>) {
                      the trade row and delivering"
                 );
                 crate::trade::stamp_settlement(ctx, &q, transaction);
+                // Doc 18 cut IC14 row 9: a sale into a bid is folded into the game's
+                // books on the first sweep (`fold_healed_sales`), once.
+                if q.lot
+                    .as_ref()
+                    .is_some_and(|l| l.kind == crate::record::PaidKind::Deliver)
+                    && let Some(store) = ctx.w.module_state_mut::<MarketStore>()
+                {
+                    store.healed_sales.push(q.id);
+                }
                 if paged < MAX_BOOT_DELIVERY_PAGES {
                     paged = paged.saturating_add(1);
                     crate::module::deliver(ctx, &q, contract);

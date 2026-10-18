@@ -65,6 +65,38 @@ pub const MAX_APPLIED_MARKERS: usize = 4_096;
 /// Largest bytes one applied-marker id may occupy.
 pub const MAX_MARKER_ID_BYTES: usize = 96;
 
+// ---- Doc 18 §9 risk 19, cut IC14 row 1: the per-endpoint marker ring ----
+/// The ring's floor (doc 18 cut IC14, row 1): a source endpoint's
+/// [`MarkerRing`] at or under this many entries evicts nothing, however old.
+/// It is what keeps every endpoint's newest moves answerable as facts long
+/// after the horizon, and what bounds the durable `inventory.applied` family
+/// per endpoint once its markers age.
+pub const MAX_RETAINED_MARKERS_PER_ENDPOINT: usize = 32;
+/// The real-clock retention horizon, in **real** seconds (doc 18 cut IC14,
+/// row 1): an entry younger than this is never evicted. It must be at least
+/// the longest real window in which a marker is read or its request replayed
+/// — a sale's draw window (3,600 s) + the executor's first re-stage (90 s) +
+/// its settle grace (160 s) + two market sweeps (120 s) = 3,970 s, and a
+/// re-driven offer after a reboot (E7c2 owner decision D1) at the first fires
+/// after the boot. One real day is that with a wide margin. This crate sits
+/// below the market and TacSim and cannot name their constants, so TacSim
+/// asserts the inequality. Real, not IC: the IC clock runs at up to 3,600×.
+///
+/// A **disputed** sale stays in flight past every one of those windows (the
+/// economy pages a dispute after three days), so its marker can be retired
+/// while the contract still waits on staff. The market therefore reads an
+/// absent sale marker as "not moved" only inside this horizon from the deal's
+/// acceptance, and as unconfirmed past it (paged, the bid never restored; cut
+/// IC14 review F1).
+pub const MARKER_RETENTION_SECS: i64 = 86_400;
+/// The ring's hard cap (doc 18 cut IC14, row 1): a ring of this many entries
+/// none of which may yet be evicted refuses the next marker-writing move out
+/// of that endpoint — fail closed, never evict a young marker.
+pub const MAX_MARKER_RING: usize = 128;
+/// How many aged entries one push may evict (doc 18 cut IC14, row 1), so a
+/// bundle's write set stays small; an aged ring drains over a few moves.
+pub const MAX_RING_EVICTIONS_PER_PUSH: usize = 8;
+
 /// The canonical class of a quantity endpoint inside `ResourceRef.subject`.
 pub const ENDPOINT_CLASS: &str = "inventory.endpoint";
 
@@ -1162,6 +1194,143 @@ impl AppliedMarker {
     }
 }
 
+// ---- Doc 18 §9 risk 19, cut IC14 row 1: the marker ring ----
+
+/// One applied marker a source endpoint wrote (doc 18 cut IC14, row 1): the
+/// marker id and the **real** second its offer was drafted (the offer's
+/// `"wall"` fixed parameter, so two replays of one request stamp it
+/// identically).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RingEntry {
+    /// The applied-marker id (the `inventory.applied` key).
+    pub key: SmolStr,
+    /// The real (OOC) second the writing offer was drafted.
+    pub wall: i64,
+}
+
+/// The applied-marker ids one endpoint wrote as a marker's source, oldest
+/// first (doc 18 §9 risk 19, cut IC14 row 1). The shape is
+/// `mush-industry`'s `MarkerRing`; its count-only replay argument is **not**
+/// borrowed (E7c2 owner decision D1: the inventory marker is the only replay
+/// guard that survives a reboot), so [`MarkerRing::push`] evicts only past
+/// [`MAX_RETAINED_MARKERS_PER_ENDPOINT`] **and** past
+/// [`MARKER_RETENTION_SECS`] of real age, and a ring of
+/// [`MAX_MARKER_RING`] young entries refuses rather than evicts.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct MarkerRing(Vec<RingEntry>);
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct MarkerRingWire(Vec<RingEntry>);
+
+impl<'de> Deserialize<'de> for MarkerRing {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = MarkerRingWire::deserialize(deserializer)?;
+        Self::new(wire.0).map_err(serde::de::Error::custom)
+    }
+}
+
+impl MarkerRing {
+    /// Build a ring from its entries, oldest first.
+    ///
+    /// # Errors
+    /// [`InventoryRecordError::MarkerRingFull`] past [`MAX_MARKER_RING`],
+    /// [`InventoryRecordError::MarkerRingKey`] for a key failing the
+    /// applied-marker key rule, [`InventoryRecordError::MarkerRingDuplicate`]
+    /// for a key listed twice.
+    pub fn new(entries: Vec<RingEntry>) -> Result<Self, InventoryRecordError> {
+        if entries.len() > MAX_MARKER_RING {
+            return Err(InventoryRecordError::MarkerRingFull {
+                max: MAX_MARKER_RING,
+            });
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in &entries {
+            if !crate::pool::is_marker_id(&entry.key) {
+                return Err(InventoryRecordError::MarkerRingKey);
+            }
+            if !seen.insert(entry.key.as_str()) {
+                return Err(InventoryRecordError::MarkerRingDuplicate);
+            }
+        }
+        Ok(Self(entries))
+    }
+
+    /// An empty ring (an endpoint that has written no marker yet).
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(Vec::new())
+    }
+
+    /// The entries, oldest first.
+    #[must_use]
+    pub fn entries(&self) -> &[RingEntry] {
+        &self.0
+    }
+
+    /// How many entries the ring holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the ring holds nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Append `entry`, then evict aged entries from the front: while the ring
+    /// holds more than [`MAX_RETAINED_MARKERS_PER_ENDPOINT`], the front entry
+    /// is at least [`MARKER_RETENTION_SECS`] old at `now_wall`, and fewer than
+    /// [`MAX_RING_EVICTIONS_PER_PUSH`] were removed. Returns the new ring and
+    /// the evicted keys (the caller removes them from `inventory.applied` in
+    /// the same bundle). A `wall` in the future (a clock stepped back) simply
+    /// never ages: safe.
+    ///
+    /// # Errors
+    /// [`InventoryRecordError::MarkerRingFull`] when, after eviction, the ring
+    /// would still hold more than [`MAX_MARKER_RING`] (every entry too young
+    /// to evict); [`InventoryRecordError::MarkerRingKey`] /
+    /// [`InventoryRecordError::MarkerRingDuplicate`] for a bad or repeated key.
+    pub fn push(
+        &self,
+        entry: RingEntry,
+        now_wall: i64,
+    ) -> Result<(Self, Vec<SmolStr>), InventoryRecordError> {
+        if !crate::pool::is_marker_id(&entry.key) {
+            return Err(InventoryRecordError::MarkerRingKey);
+        }
+        if self.0.iter().any(|e| e.key == entry.key) {
+            return Err(InventoryRecordError::MarkerRingDuplicate);
+        }
+        let mut entries: std::collections::VecDeque<RingEntry> = self.0.iter().cloned().collect();
+        entries.push_back(entry);
+        let mut evicted = Vec::new();
+        while entries.len() > MAX_RETAINED_MARKERS_PER_ENDPOINT
+            && evicted.len() < MAX_RING_EVICTIONS_PER_PUSH
+            && entries
+                .front()
+                .is_some_and(|front| front.wall.saturating_add(MARKER_RETENTION_SECS) <= now_wall)
+        {
+            if let Some(front) = entries.pop_front() {
+                evicted.push(front.key);
+            }
+        }
+        if entries.len() > MAX_MARKER_RING {
+            return Err(InventoryRecordError::MarkerRingFull {
+                max: MAX_MARKER_RING,
+            });
+        }
+        Ok((Self(entries.into_iter().collect()), evicted))
+    }
+}
+
 /// A record refused its own invariants.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum InventoryRecordError {
@@ -1265,4 +1434,16 @@ pub enum InventoryRecordError {
     /// A marker named a fact this crate does not own.
     #[error("that is not an inventory fact")]
     UnknownFactKind,
+    /// A marker ring past [`MAX_MARKER_RING`] (doc 18 cut IC14, row 1).
+    #[error("an endpoint's marker ring holds at most {max} entries")]
+    MarkerRingFull {
+        /// The cap.
+        max: usize,
+    },
+    /// A marker ring entry whose key fails the applied-marker key rule.
+    #[error("a marker ring entry names an applied-marker key")]
+    MarkerRingKey,
+    /// A marker ring listing one key twice.
+    #[error("a marker ring lists each key once")]
+    MarkerRingDuplicate,
 }

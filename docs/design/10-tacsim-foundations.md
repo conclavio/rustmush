@@ -290,6 +290,12 @@ route definition, drive and payload, declared departure, propellant plan, and th
 publication; a hauling offer freezes its route assumptions, expected arrival, deadline and
 late-delivery terms.
 
+**As built (doc 18 IC9):** applied through the passage planner (doc 18 §4.8, D-18-43): a departure
+plans its whole passage over the sky at its departure instant, and the burned ticket freezes that
+plan — legs, seconds, burn and crew-days — so a later rate or sky change never alters a passage in
+flight (`crates/tacsim/src/port/passage.rs`, `voyage.rs`; `CarrierJourney.leg_s`). Doc 18 Draft
+0.1's "deferred, not denied" note on this decision is closed.
+
 **T2. Tactical/economic boundary.** **No economic transaction occurs inside a combat pulse.**
 Tactical domains mutate combat state (ammunition, heat, damage, position, control) and emit typed
 facts at boundaries: sortie started/ended; journey arrived/failed; unit disabled, abandoned,
@@ -506,6 +512,7 @@ All recommended answers were accepted, with C6, C7/C29, C8 and C14 sharpened by 
 | C2 | Station assignment | **C2A** many billets, one active station |
 | C3 | Station capability | **C3A** ruleset-bounded channel bundle |
 | C4 | Station reach | **C4A** physical console or valid remote link |
+| | **As built (doc 18 IC9):** C2A–C4A stand; the Dray's `+ship/undock` (and the sailing plan's queued depart) bypasses the station-channel gate until P2, by doc 18 R3: an offline departure cannot wait on a live seat. | |
 | C5 | Station switching | **C5A** traversal plus safe-boundary handoff |
 | C6 | Fleet and task-force representation | **C6A** operation-scoped task-force container over formations/assets |
 | C7 | Command of subordinate units | **C7A** structured mission orders |
@@ -541,6 +548,10 @@ capital command station remains narrower. Remote drone or vehicle operation stil
 single active focus and requires an authorized terminal, compatible equipment and a live
 communications path. A drone-control station issues bounded group commands rather than becoming a
 loophole for manually piloting an armada.
+
+**As built (doc 18 IC9):** the trade-run slice has no stations or billets yet (P2): the Dray's
+`+ship/undock` and a queued depart fly without an active station seat, by doc 18 R3 (an offline
+departure cannot wait on a live seat); the station-channel gate applies again from P2.
 
 Station changes relinquish the former lease, require physical traversal when consoles occupy
 different places, and complete at a safe pulse boundary. NPC or automation fallback maintains the

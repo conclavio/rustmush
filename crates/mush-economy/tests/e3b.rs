@@ -1655,3 +1655,40 @@ fn ic13_rehome_vault_moves_the_owner_and_keeps_the_backing() {
     assert!(snap(&tw).vaults_of(&new).any(|v| v.id == VaultId(0)));
     assert!(snap(&tw).vaults_of(&old).all(|v| v.id != VaultId(0)));
 }
+
+// ======================================================================
+// Doc 18 cut IC14 row 5 — `owner_home` never answers a hull's hold
+// ======================================================================
+
+/// **Doc 18 cut IC14 row 5 (lead ruling L9): `owner_home` skips a re-homed hold.**
+/// A `SpatialInterior` vault is a hull's hold — the Trust owns a laid-up Dray's after a
+/// recall (`rehome_vault`) — so an organization owning one and a `Container` vault goes
+/// home to the container, and one owning only the hold has no home at all. Asked of the
+/// snapshot directly: `owner_home` is a pure read of it.
+#[test]
+fn ic14_owner_home_skips_a_rehomed_hold() {
+    let trust = mush_org::PrincipalId::Organization(mush_org::OrgId(3));
+    let vault = |id: u64, backing: CustodyRef| mush_economy::Vault {
+        id: VaultId(id),
+        owner: trust.clone(),
+        scope: None,
+        name: SmolStr::new_static("v"),
+        backing,
+        status: mush_economy::VaultStatus::Active,
+        revision: 1,
+    };
+    let mut snapshot = mush_economy::EconomySnapshot::default();
+    // The hold sorts first, so a home that did not skip it would answer it.
+    snapshot.put_vault(vault(0, CustodyRef::SpatialInterior(ObjId(500))));
+    assert_eq!(
+        mush_economy::owner_home(&snapshot, &trust),
+        None,
+        "a laid-up hull's hold is nobody's home"
+    );
+    snapshot.put_vault(vault(1, CustodyRef::Container(ObjId(600))));
+    assert_eq!(
+        mush_economy::owner_home(&snapshot, &trust),
+        Some((VaultId(1), ObjId(600))),
+        "the container is"
+    );
+}

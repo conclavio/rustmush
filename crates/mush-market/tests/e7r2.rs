@@ -995,6 +995,7 @@ fn e7r2_p1_a_lot_listing_re_enters_through_its_wire_and_a_bad_grade_refuses_on_l
         price: mush_economy::Amount::from_minor(100),
         quantity: 10,
         visibility: mush_market::MarketVisibility::Public,
+        draw: Some(false),
         expires: mush_economy::EconomicDeadline {
             clock: mush_economy::EconomicClock::RealUtc,
             at: 9_999,

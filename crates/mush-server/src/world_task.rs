@@ -18578,6 +18578,20 @@ mod tests {
             ..
         } = rig;
         drop(handle);
+        // Doc 18 cut IC14 row 49 (lead ruling L29, test-side): let the world see
+        // its inbound close BEFORE the receipt exists. The test runs on tokio's
+        // current-thread runtime, and with the close and the receipt both ready
+        // the loop's `select!` picks either first: about one run in fifteen
+        // (2 of 30 measured) it took the receipt first, completed the commit with
+        // its inbound still open, and ran the queued line as an ordinary drain —
+        // a legitimate path, but not the one this test proves. Yielding hands the
+        // world its turns while only the close is ready, so its `Wake::Closed` arm
+        // marks the pending commit `exit_after_ack` first; what the test asserts is
+        // unchanged.
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!world_join.is_finished(), "the world waits for the receipt");
         receipt
             .send(Ok(serial))
             .expect("world still owns the exact receipt");

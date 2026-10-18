@@ -989,8 +989,9 @@ pub(crate) fn departs_at(w: &World, hull: ObjId) -> Option<i64> {
     if orders.state != PlanState::Running {
         return None;
     }
-    // Only a plan its author still runs: a lapsed tenant's plan (left for IC13 to
-    // prune) is never offered by the arm, so its hour is no departure hour.
+    // Only a plan its author still runs: a lapsed tenant's plan is held by cut IC13's
+    // recall arm (`HELD_RECALLED`) and never offered by the order arm, so its hour is
+    // no departure hour.
     if !helm_of(w, orders.author).is_some_and(|helm| helm.hull == hull) {
         return None;
     }
@@ -1623,7 +1624,17 @@ pub(crate) fn order_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Edit::Resume => {
             match orders.state {
                 PlanState::Running => return Err(CmdError::msg(NOT_HELD)),
-                PlanState::Paused => orders.state = PlanState::Running,
+                PlanState::Paused => {
+                    orders.state = PlanState::Running;
+                    // Doc 18 cut IC14 row 27: a pause over a stopped hold on the step
+                    // in flight took the hold away (`Edit::Pause`) with `restaged`
+                    // left at 2, so the step would never be re-staged again; resuming
+                    // re-arms its re-stage clock exactly as resuming the hold does.
+                    if let Some(inflight) = orders.inflight.as_mut() {
+                        inflight.restaged = 0;
+                        inflight.staged_utc = now;
+                    }
+                }
                 PlanState::Held => {
                     let named = orders.hold.take().map(|note| note.order);
                     orders.state = PlanState::Running;

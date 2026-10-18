@@ -17,9 +17,9 @@
 //! test-world layer with game content: `commerce.rs`'s `Roster`, with an operator
 //! seed for the lane variants this cut needs — no pack version moves). The flight
 //! is `voyage.rs`'s (rate 3600, the burn and the crew-days read off the planner's
-//! own `+ship/plan`, never literals). **The pilot is placed in P07 with the rig's
-//! `teleport`** after `+ship/leave` — this file is not the story test;
-//! `ic_slice_loop.rs` walks.
+//! own `+ship/plan`, never literals). After `+ship/leave` the pilot walks P01 to P07
+//! through the shipped Stickney exits (doc 18 cut IC14 row 65); this file is not the
+//! story test (`ic_slice_loop.rs` is).
 
 mod support;
 
@@ -48,8 +48,8 @@ use tacsim::pack::{PackEntry, load_pack};
 use tacsim::port::apply::room_by_key;
 use tacsim::port::voyage::{GOODS_LEAVING, Voyage, VoyageState};
 use tacsim::port::{
-    CoopProceeds, HOLD_ELSEWHERE, HOLD_UNDER_WAY, HullRow, NOT_IN_PORT, PortDef, PortHandles,
-    PortMap, PortMapState, PortVenueGate, SALE_NOT_PILOT, Ticket, TicketId, room_key,
+    CoopProceeds, HOLD_ELSEWHERE, HullRow, NOT_IN_PORT, PortDef, PortHandles, PortMap,
+    PortMapState, PortVenueGate, SALE_NOT_PILOT, Ticket, TicketId, room_key,
 };
 use tacsim::{TacsimConfig, TacsimStore};
 
@@ -771,7 +771,23 @@ fn fly_to_stickney(rig: &mut Rig, crews: &[(ObjId, HullRow, &str)]) {
         assert_eq!(location(&rig.tw, *pilot), Some(room_of(row, "airlock")));
         let out = run(&mut rig.tw, *pilot, "+ship/leave");
         assert!(out.contains("You cycle the lock out into"), "{out}");
-        teleport(&mut rig.tw, *pilot, receiving);
+        // Doc 18 cut IC14 row 65: walked through the shipped Stickney exits by doc 18
+        // §6's words, P01 to P07, never teleported; each step's room asserted.
+        for (word, local) in [
+            ("lobby", "room.p02_pressure"),
+            ("customs", "room.p03_customs"),
+            ("concourse", "room.p04_concourse"),
+            ("exchange", "room.p08_exchange"),
+            ("down", "room.p07_receiving"),
+        ] {
+            let out = run(&mut rig.tw, *pilot, word);
+            assert_eq!(
+                location(&rig.tw, *pilot),
+                Some(station_room(&rig.tw, "stickney_port", local)),
+                "`{word}`: {out}"
+            );
+        }
+        assert_eq!(location(&rig.tw, *pilot), Some(receiving));
     }
 }
 
@@ -1427,7 +1443,8 @@ fn ic10_refusals_before_any_contract() {
 // 5. A filed clearance
 // ---------------------------------------------------------------------------
 
-/// **A filed clearance refuses the sale** (`HOLD_UNDER_WAY`, nothing moved), and the
+/// **A filed clearance refuses the sale** (`HOLD_CLEARED` since doc 18 cut IC14 row
+/// 23; nothing moved), and the
 /// gate admits `Presence::Ship(hull)` on the hold while docked with the pilot aboard,
 /// out of the port's rooms (lead 2g).
 #[test]
@@ -1474,7 +1491,7 @@ fn ic10_a_filed_clearance_refuses_the_sale() {
         &mut rig,
         pilot,
         &format!("+market/sell {bid}=20"),
-        &HOLD_UNDER_WAY
+        &tacsim::port::HOLD_CLEARED
             .replace("{name}", "Salt Moth")
             .replace("{port}", &port_label("stickney_port")),
     );
@@ -2075,4 +2092,104 @@ fn ic10_an_intake_cut_over_an_exhausted_bid_leaves_it_at_zero() {
         port_map(&rig.tw, "stickney_port").vendors[&cid("kasei")].bids[&cid("metals")].clone();
     assert_eq!(row.intake, 10);
     assert_eq!(row.listing, bid.0);
+}
+
+// ---------------------------------------------------------------------------
+// Doc 18 cut IC14 row 9: a boot-healed settlement folds once
+// ---------------------------------------------------------------------------
+
+/// **A settlement the economy healed at boot folds into the enrolment once** (doc 18
+/// cut IC14 row 9; lead ruling L4). The real state: the economy settled and the market
+/// never heard, so **neither** the quote's `settled` stamp **nor** the enrolment fold
+/// ran. The rig reaches it by route (b): settle normally, then rewrite the folded store
+/// — the quote's `settled` to `null`, the enrolment's `sales`, `margin_minor` and
+/// `shares_minor` back to the pre-sale baseline — and reboot. The market's boot
+/// reconcile stamps the quote; its first sweep tells the proceeds policy, once: the
+/// counters read the baseline plus exactly this sale's figures (read from the
+/// contract's own journal, never typed), and a third sweep and a second reboot fold
+/// nothing more.
+#[test]
+fn ic14_a_settlement_healed_at_boot_folds_once() {
+    let mut rig = stocked();
+    let (pilot, _row) = docked_at_stickney(&mut rig, &[("metals", 20)]);
+    let baseline = enrolment_of(&rig.tw, pilot);
+    let base = (baseline.sales, baseline.margin_minor, baseline.shares_minor);
+    let bid = kasei_bid(&rig.tw, "metals");
+    let _ = run(&mut rig.tw, pilot, &format!("+market/sell {bid}=20"));
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    let sale = last_sale(&rig.tw, pilot);
+    let contract = sale.contract.expect("contract");
+    settle(&mut rig, contract);
+    // The sale's own figures, from the settled contract and the frozen quote.
+    let share: i64 = settlement_lines(&rig.tw, contract)
+        .iter()
+        .filter(|(account, _)| *account == trust_account(&rig.tw))
+        .map(|(_, delta)| *delta)
+        .sum();
+    let margin = sale.basis.minor();
+    let folded = enrolment_of(&rig.tw, pilot);
+    assert_eq!(
+        (folded.sales, folded.margin_minor, folded.shares_minor),
+        (base.0 + 1, base.1 + margin, base.2 + share),
+        "the live settlement folded"
+    );
+
+    // Route (b): the economy's settlement stands; the market's stamp and the fold go.
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    let quote_key = format!("market:quote:{}", sale.id.0);
+    let enrolment_key = tacsim::port::coop::enrolment_key(folded.account);
+    {
+        let market_docs = rig.store.get_mut(mush_market::NS).expect("market docs");
+        let mut found = false;
+        for (key, value) in &mut market_docs.kv {
+            if key.as_str() == quote_key {
+                value["settled"] = serde_json::Value::Null;
+                found = true;
+            }
+        }
+        assert!(found, "the quote document");
+        let tacsim_docs = rig.store.get_mut(tacsim::NS).expect("tacsim docs");
+        let mut found = false;
+        for (key, value) in &mut tacsim_docs.kv {
+            if *key == enrolment_key {
+                value["sales"] = serde_json::json!(base.0);
+                value["margin_minor"] = serde_json::json!(base.1);
+                value["shares_minor"] = serde_json::json!(base.2);
+                found = true;
+            }
+        }
+        assert!(found, "the enrolment document");
+    }
+    let mut rig = reboot(rig);
+    assert!(
+        market(&rig.tw)
+            .quote(sale.id)
+            .is_some_and(|q| q.settled.is_some()),
+        "the boot reconcile stamped the healed settlement"
+    );
+    let at_boot = enrolment_of(&rig.tw, pilot);
+    assert_eq!(
+        (at_boot.sales, at_boot.margin_minor, at_boot.shares_minor),
+        base,
+        "nothing folds inside the market's boot (the game's store is not hydrated yet)"
+    );
+    sweep(&mut rig.tw, 61);
+    sweep(&mut rig.tw, 61);
+    let healed = enrolment_of(&rig.tw, pilot);
+    assert_eq!(
+        (healed.sales, healed.margin_minor, healed.shares_minor),
+        (base.0 + 1, base.1 + margin, base.2 + share),
+        "folded once on the first sweep"
+    );
+    sweep(&mut rig.tw, 61);
+    let mut rig = reboot(rig);
+    sweep(&mut rig.tw, 61);
+    let again = enrolment_of(&rig.tw, pilot);
+    assert_eq!(
+        (again.sales, again.margin_minor, again.shares_minor),
+        (healed.sales, healed.margin_minor, healed.shares_minor),
+        "a third sweep and a second reboot fold nothing more"
+    );
+    assert_eq!(refused_settlements(&rig.tw), 0);
 }

@@ -605,6 +605,13 @@ fn board(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // Doc 18 cut IC9 (lead ruling L14; reviewer F10): while a clearance is filed
     // the hull's people are fixed — a person boarding now would be missing from
     // the burn's occupants and the ticket's manifest.
+    // Doc 18 cut IC14 row 11 (lead ruling L17): papers that do not read are treated
+    // as filed, in their own words.
+    if crate::port::voyage::voyage_dark(ctx.w, charter.hull) {
+        return Err(CmdError::msg(
+            crate::port::voyage::VOYAGE_DARK.replace("{name}", &name),
+        ));
+    }
     if crate::port::voyage::pending_of(ctx.w, charter.hull).is_some() {
         return Err(CmdError::msg(
             crate::port::voyage::LEAVE_CLEARED.replace("{name}", &name),
@@ -687,6 +694,13 @@ fn leave(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let name = name_of(ctx.w, hull);
     // Doc 18 cut IC9 (lead ruling L14): a burned hull never launches with its
     // pilot ashore, so nobody leaves while a clearance is filed.
+    // Doc 18 cut IC14 row 11 (lead ruling L17): papers that do not read are treated
+    // as filed, in their own words.
+    if crate::port::voyage::voyage_dark(ctx.w, hull) {
+        return Err(CmdError::msg(
+            crate::port::voyage::VOYAGE_DARK.replace("{name}", &name),
+        ));
+    }
     if crate::port::voyage::pending_of(ctx.w, hull).is_some() {
         return Err(CmdError::msg(
             crate::port::voyage::LEAVE_CLEARED.replace("{name}", &name),
@@ -747,11 +761,14 @@ pub(crate) fn gallery_line(ctx: &mut Ctx<'_>, who: ObjId, gallery: ObjId, name: 
 }
 
 /// **Put one person ashore from a docked hull** (doc 18 cut IC13, factored out of
-/// `+ship/leave`): `mush_sim::unplace` (keeping the room) with `reason`, the move to
-/// the gallery, then `narrate` (the caller's lines, said before the room is shown),
-/// `show_room`, `Moved { from: the person's room, to: gallery }` and IC1's last-port
-/// stamp (L15: no `Moved` out of a port room happened, so the stamp is this step's
-/// own). `Err` (nothing narrated) when the unplace or the move refused.
+/// `+ship/leave`): the move to the gallery **first**, then `mush_sim::unplace`
+/// (keeping the room) with `reason` — doc 18 cut IC14 row 19 (lead ruling L12): a
+/// refused move leaves the person aboard and still placed, and a refused unplace moves
+/// the person back where they stood (logged) — then `narrate` (the caller's lines,
+/// said before the room is shown), `show_room`, `Moved { from: the person's room, to:
+/// gallery }` and IC1's last-port stamp (L15: no `Moved` out of a port room happened,
+/// so the stamp is this step's own), only once both succeeded. `Err` (nothing
+/// narrated, nothing changed) when the move or the unplace refused.
 ///
 /// # Errors
 ///
@@ -765,15 +782,35 @@ pub(crate) fn put_ashore(
     narrate: impl FnOnce(&mut Ctx<'_>),
 ) -> Result<(), String> {
     let from = ctx.w.get(person).and_then(|o| o.location);
-    mush_sim::unplace(ctx, person, reason).map_err(|error| {
-        format!(
-            "the unplace of #{} from #{} refused: {error}",
-            person.0, hull.0
-        )
-    })?;
     ctx.w
         .move_to(person, gallery)
         .map_err(|error| format!("the move of #{} to the gallery refused: {error}", person.0))?;
+    if let Err(error) = mush_sim::unplace(ctx, person, reason) {
+        match from.map(|back| ctx.w.move_to(person, back)) {
+            Some(Ok(())) => tracing::warn!(
+                who = person.0,
+                hull = hull.0,
+                %error,
+                "tacsim: a put-ashore's unplace refused; the person was moved back aboard"
+            ),
+            Some(Err(undo)) => tracing::error!(
+                who = person.0,
+                hull = hull.0,
+                %undo,
+                "tacsim: a refused put-ashore could not move the person back aboard"
+            ),
+            None => tracing::error!(
+                who = person.0,
+                hull = hull.0,
+                %error,
+                "tacsim: a put-ashore's unplace refused and the person had no room to go back to"
+            ),
+        }
+        return Err(format!(
+            "the unplace of #{} from #{} refused: {error}",
+            person.0, hull.0
+        ));
+    }
     narrate(ctx);
     ctx.show_room(person, gallery);
     ctx.emit_world_event(&WorldEvent::Moved {
@@ -790,6 +827,79 @@ pub(crate) fn put_ashore(
 }
 
 // ---- the look hook ------------------------------------------------------------
+
+/// **The burn-and-reserve gauge** (doc 18 cut IC14 row 54; IC11 L21; Q-18-47), after
+/// the tank line in the rooms whose instruments show the tank (the rooms
+/// `interior.gauges` lists for `propellant`, other than the passage's manifest
+/// slate): `{burn}` the filed passage's burn in tonnes, `{reserve}` what the tank
+/// holds less that burn — or, once the burn has landed (its ticket exists, the tank
+/// already debited), what the tank holds. Nothing is written.
+pub const BURN_GAUGE: &str = "Burn for the filed plan: {burn} t; reserve after it: {reserve} t.";
+
+/// [`BURN_GAUGE`] when no passage is filed.
+pub const BURN_GAUGE_NONE: &str = "Burn for the filed plan: none filed.";
+
+/// The compartment whose rooms carry the burn gauge.
+const BURN_COMPARTMENT: &str = "propellant";
+
+/// The room whose propellant reading is a manifest line, not a tank gauge.
+const MANIFEST_ROOM: &str = "passage";
+
+/// Whether the burn of passage `seq` has landed: its ticket reads (doc 18 cut IC14
+/// row 54). `None` when the ticket cannot be read or names another key.
+fn burn_landed(hook: &HookReadContext<'_>, hull: ObjId, seq: u32) -> Option<bool> {
+    let handles = hook
+        .world()
+        .module_state::<crate::port::families::PortHandles>()?;
+    let id = crate::port::families::TicketId { hull, seq };
+    match hook.action_state(&handles.families.tickets, &id).ok()? {
+        None => Some(false),
+        Some(ticket) => (ticket.ticket_id() == id).then_some(true),
+    }
+}
+
+/// Insert the burn gauge after the tank line of `lines` (doc 18 cut IC14 row 54):
+/// one reading renders the tank as the room's only line; several render a heading
+/// and one indented line per compartment, in `readings` order. `burn` is the filed
+/// passage's burn and whether it has landed; `None` renders [`BURN_GAUGE_NONE`].
+fn insert_burn_gauge(
+    lines: &mut Vec<String>,
+    goods: &GoodsTable,
+    readings: &[Reading],
+    burn: Option<(u64, bool)>,
+) -> Result<(), String> {
+    let Some((at, (_, comp, contents))) = readings
+        .iter()
+        .enumerate()
+        .find(|(_, (id, _, _))| id.as_str() == BURN_COMPARTMENT)
+    else {
+        return Ok(());
+    };
+    let tank = gauges::single_qty(goods, comp, contents)
+        .map_err(|e| e.to_string())?
+        .unwrap_or(0);
+    let line = match burn {
+        Some((burn, landed)) => {
+            let reserve = if landed {
+                tank
+            } else {
+                tank.saturating_sub(burn)
+            };
+            BURN_GAUGE
+                .replace("{burn}", &burn.to_string())
+                .replace("{reserve}", &reserve.to_string())
+        }
+        None => BURN_GAUGE_NONE.to_owned(),
+    };
+    let (index, indent) = if readings.len() == 1 {
+        (1, "")
+    } else {
+        (at.saturating_add(2), "  ")
+    };
+    let index = index.min(lines.len());
+    lines.insert(index, format!("{indent}{line}"));
+    Ok(())
+}
 
 /// **The hull rooms' status line and gauges** (18a §3; D-18-39): on a `look`
 /// in a programme hull room, the status line, then — in a room some
@@ -837,12 +947,36 @@ impl EventHook for ShipLook {
             let read = |endpoint: EndpointRef, good: &CanonicalId| {
                 crate::port_tick::read_pool_in(ctx, endpoint, good)
             };
+            // Doc 18 cut IC14 row 54: the tank's rooms (not the manifest slate) carry
+            // the burn gauge; an unreadable sailing plan shows no burn line at all.
+            let burn_room =
+                tid.as_str() != MANIFEST_ROOM
+                    && view.interior.gauges.iter().any(|(comp, rooms)| {
+                        comp.as_str() == BURN_COMPARTMENT && rooms.contains(&tid)
+                    });
+            let hull = view.hull();
+            let burn = if burn_room && !crate::port::voyage::voyage_dark(w, hull) {
+                match crate::port::voyage::pending_of(w, hull) {
+                    None => Some(None),
+                    // The burn has landed when its ticket exists; an unreadable
+                    // ticket shows no burn line rather than a wrong reserve.
+                    Some(pending) => burn_landed(ctx, hull, pending.seq)
+                        .map(|landed| Some((pending.plan.burn_t, landed))),
+                }
+            } else {
+                None
+            };
             let rendered = store
                 .goods()
                 .ok_or_else(|| "the goods table is not loaded".to_owned())
                 .and_then(|goods| {
                     let readings = readings_with(goods, shown, hold_vault(w, &view), &read)?;
-                    gauges::room_lines(&tid, goods, &readings).map_err(|e| e.to_string())
+                    let mut out =
+                        gauges::room_lines(&tid, goods, &readings).map_err(|e| e.to_string())?;
+                    if let Some(burn) = burn {
+                        insert_burn_gauge(&mut out, goods, &readings, burn)?;
+                    }
+                    Ok(out)
                 });
             match rendered {
                 Ok(gauge_lines) => lines.extend(gauge_lines),

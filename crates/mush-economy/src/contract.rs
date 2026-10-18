@@ -1053,6 +1053,26 @@ pub trait PartyCapSource: Send + Sync + std::fmt::Debug {
     fn has_cap(&self, w: &mush_core::World, principal: &PrincipalId, cap: PartyCap) -> bool;
 }
 
+/// **A composition-frozen veto on a party's `@contract/dispute`** (doc 18 cut IC14 row
+/// 7, lead ruling L6; Q-18-64's default changed): a game-neutral hook a game layer
+/// wires so a party may not dispute a contract whose terms make the dispute a free
+/// freeze of the counterparty's escrow — the market's sale into a bid, which settles on
+/// the goods' own marker. Asked only for a **non-admin** party, after the party
+/// resolves and before the state check; staff's `@contract/resolve` and an admin's
+/// dispute are never asked. Wired by
+/// [`crate::EconomyModule::with_dispute_guard`]; the market's implementation is
+/// `mush_market::SaleDisputeGuard`.
+pub trait DisputeGuard: Send + Sync + std::fmt::Debug {
+    /// The refusal line when `party` may not dispute `contract`, else `None`. Total;
+    /// reads `w` only.
+    fn refusal(
+        &self,
+        w: &mush_core::World,
+        contract: &EconomicContract,
+        party: &PrincipalId,
+    ) -> Option<&'static str>;
+}
+
 /// The owned canonical token of a principal — the key of the wiring-frozen
 /// party-capability table, because `PrincipalId` is `Hash`-but-not-`Ord` (E6b).
 #[must_use]
@@ -2756,8 +2776,12 @@ pub fn owner_home(snapshot: &EconomySnapshot, owner: &PrincipalId) -> Option<(Va
         .filter(|v| v.status == crate::record::VaultStatus::Active)
         .take(MAX_HOME_VAULT_VISIT)
         .find_map(|v| match &v.backing {
-            crate::record::CustodyRef::Container(o)
-            | crate::record::CustodyRef::SpatialInterior(o) => Some((v.id, *o)),
+            crate::record::CustodyRef::Container(o) => Some((v.id, *o)),
+            // Doc 18 cut IC14 row 5 (lead ruling L9): a `SpatialInterior` vault is a
+            // hull's hold, not anyone's home. Between a recall and the next enrolment
+            // the Trust owns it (doc 18 cut IC13 `rehome_vault`), and a Trust object
+            // deposit must never go home into a laid-up Dray's stowage.
+            crate::record::CustodyRef::SpatialInterior(_) => None,
             // A provider-registered backing has no single world object, so there is
             // nothing a `Withdraw` could name as a destination.
             crate::record::CustodyRef::Registered { .. } => None,

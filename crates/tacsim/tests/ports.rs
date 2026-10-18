@@ -1574,6 +1574,15 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
         "market facts: answered, so drawn sales can settle. [ready]".to_owned(),
         // Doc 18 cut IC10: the inventory facts line follows the market facts.
         "inventory facts: answered, so sales into bids can settle. [ready]".to_owned(),
+        // Doc 18 cut IC14 (§9 risk 19): the marker headroom line follows them.
+        format!(
+            "markers: {} of {} applied markers held. [ready]",
+            tw.world()
+                .module_state::<mush_inventory::InventoryStore>()
+                .expect("an inventory store")
+                .markers(),
+            mush_inventory::MAX_APPLIED_MARKERS
+        ),
     ];
     let mut commerce_pending = 0;
     for (entry, def) in ports_of(LANE_JSON) {
@@ -2327,20 +2336,25 @@ fn ic12_a_moving_sky_with_a_body_lacking_epoch_ic_flags_and_pages_once() {
     let report = tacsim::port::readiness(tw.world());
     let refused = tacsim::port::enrol_gate(&report).expect_err("the lane is past the shipped");
     assert_eq!(refused.binding, tacsim::port::Binding::Lane);
-    // The page: raised on the first fire, latched for the boot.
-    assert!(
-        !tacsim::port_tick::sky_paged(tw.world()),
+    // The page: raised on the first fire, once for the boot (cut IC14 row 39: a
+    // count, so this proves one page and not only the latch).
+    assert_eq!(
+        tacsim::port_tick::sky_pages(tw.world()),
+        0,
         "no fire yet pages"
     );
     sweep(&mut tw, 6);
-    assert!(
-        tacsim::port_tick::sky_paged(tw.world()),
+    assert_eq!(
+        tacsim::port_tick::sky_pages(tw.world()),
+        1,
         "the first fire pages"
     );
     sweep(&mut tw, 6);
-    assert!(
-        tacsim::port_tick::sky_paged(tw.world()),
-        "and stays latched"
+    sweep(&mut tw, 6);
+    assert_eq!(
+        tacsim::port_tick::sky_pages(tw.world()),
+        1,
+        "and pages once a boot, however many fires"
     );
 }
 
@@ -2378,5 +2392,234 @@ fn ic12_a_constant_sky_never_flags_a_body_lacking_epoch_ic() {
     assert!(!sky.contains("epoch_ic"), "{out}");
     sweep(&mut tw, 6);
     sweep(&mut tw, 6);
-    assert!(!tacsim::port_tick::sky_paged(tw.world()));
+    assert_eq!(tacsim::port_tick::sky_pages(tw.world()), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Doc 18 cut IC14 row 30: one vault per backing at `vendor::put`
+// ---------------------------------------------------------------------------
+
+/// **A storefront that already backs a vault is refused before any write** (doc 18
+/// cut IC14 row 30). A world on lane v1 (no port entries) where staff have already made
+/// a vault on the Freeport Exchange's storefront item: taking the shipped lane refuses
+/// with the vendor preflight's line — `@vault/create`'s one-vault-per-backing rule —
+/// and nothing is made (no org, account, obligation or domain; the lane stays at v1).
+#[test]
+fn ic14_a_storefront_that_already_backs_a_vault_is_refused_before_any_write() {
+    use tacsim::composition as comp;
+
+    let v1 = lane_v1_json();
+    let mut cfg = config();
+    cfg.seeds.push(PackSource {
+        name: "ops/lane_v1.json".to_owned(),
+        bytes: v1.clone(),
+    });
+    let mut mods = Roster::bare().modules_with(cfg, false);
+    mods.pop();
+    let mut packs = comp::boot_pack_list(true, true).expect("the boot list");
+    packs.retain(|p| p.manifest().id().as_str() != LANE_PACK);
+    packs.push(content_pack(&v1));
+    let mut appliers = mush_content::Appliers::new();
+    mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
+    mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
+    tacsim::register_appliers(&mut appliers).expect("tacsim appliers");
+    mods.push(Box::new(
+        mush_content::ContentModule::new()
+            .with_appliers(appliers)
+            .with_boot_packs(packs),
+    ));
+    let mut tw = TestWorld::with_modules(mods);
+    assert_eq!(lane_latch(&tw), Some(1));
+    let folded = fold_module_ops(tw.take_module_ops());
+    let mut next = reboot(tw, &Roster::production(), folded);
+    // The Freeport Exchange's storefront item, by its authored name in its room.
+    let (_, ceres) = ports_of(LANE_JSON)
+        .into_iter()
+        .find(|(entry, _)| entry.as_str() == "ceres_port")
+        .expect("the Ceres entry");
+    let reference = ceres.vendors[0].storefront.clone();
+    let entry = reference
+        .rsplit_once(".item.")
+        .map(|(_, local)| format!("item.{local}"))
+        .expect("an item reference");
+    let atlas = next
+        .world()
+        .module_state::<mush_atlas::AtlasState>()
+        .expect("the atlas");
+    let def = atlas
+        .shelf
+        .get(&ceres.area)
+        .and_then(|pack| pack.entry(&cid(&entry)))
+        .map(|e| e.def().clone())
+        .expect("the storefront item entry");
+    let name = def["name"].as_str().expect("a name").to_owned();
+    let item = next
+        .world()
+        .iter()
+        .find(|o| o.kind == mush_core::ObjKind::Thing && o.name == name)
+        .map(|o| o.id)
+        .expect("the storefront item is on this world");
+    let out = run(
+        &mut next,
+        GOD,
+        &format!("@vault/create Taken=container:#{}", item.0),
+    );
+    let taken = economy(&next)
+        .snapshot()
+        .vault_by_backing(&mush_economy::CustodyRef::Container(item))
+        .map(|v| v.id.0)
+        .unwrap_or_else(|| panic!("the staff vault: {out}"));
+    let before = counts(&next);
+    let (_plan, apply) = plan_and_apply(&mut next);
+    assert!(
+        apply.contains(&format!(
+            "vendor {}: storefront: that item already backs vault #{taken}",
+            ceres.vendors[0].org
+        )),
+        "{apply}"
+    );
+    assert_eq!(counts(&next), before, "nothing was made");
+    assert_eq!(lane_latch(&next), Some(1), "the lane stays at v1");
+    for entry in ["ceres_port", "stickney_port"] {
+        assert!(matches!(
+            store(&next).port_map(&lane_id(), &cid(entry)),
+            PortMapState::Absent
+        ));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Doc 18 cut IC14 row 1 (§9 risk 19): the marker-headroom page
+// ---------------------------------------------------------------------------
+
+/// Install `count` applied markers straight into inventory's `inventory.applied`
+/// family (the e7c2 truncation test's shape: no ring, ids `{ordinal}{ordinal}` in
+/// hex so canonical order is time order), `first` the first ordinal.
+fn install_markers(tw: &mut TestWorld, first: usize, count: usize) {
+    let families = tw
+        .world()
+        .module_state::<mush_inventory::InventoryHandles>()
+        .expect("inventory publishes its handles")
+        .0
+        .clone();
+    let commodity = CanonicalId::new("metals").expect("a commodity id");
+    let mut done = 0;
+    while done < count {
+        let chunk = (count - done).min(512);
+        let engine = tw.engine_mut();
+        let prepared = {
+            let mut txn = engine
+                .action_transaction(&families.pools)
+                .expect("an inventory transaction");
+            for index in 0..chunk {
+                let ordinal = first + done + index;
+                let id = SmolStr::new(format!("{ordinal:016x}{ordinal:064x}"));
+                let at = i64::try_from(ordinal).expect("a small ordinal");
+                let marker = mush_inventory::AppliedMarker::new(
+                    mush_inventory::FACT_TRANSFERRED,
+                    Some(mush_inventory::EndpointRef(mush_economy::VaultId(1))),
+                    Some(mush_inventory::EndpointRef(mush_economy::VaultId(2))),
+                    commodity.clone(),
+                    1,
+                    GOD,
+                    at,
+                )
+                .expect("a marker");
+                txn.insert(&families.applied, &id, marker)
+                    .expect("the marker inserts");
+            }
+            txn.prepare().expect("the bundle prepares")
+        };
+        let (_, installation) = prepared.into_parts();
+        engine
+            .install_prepared_action(installation)
+            .expect("the markers install");
+        done += chunk;
+    }
+}
+
+/// The `markers:` line of the readiness report.
+fn markers_line(tw: &mut TestWorld) -> String {
+    let out = report(tw);
+    out.lines()
+        .find(|line| line.starts_with("markers: "))
+        .map(str::to_owned)
+        .unwrap_or_else(|| panic!("a markers line: {out}"))
+}
+
+/// **The marker-headroom page fires once a boot, past three quarters of the cap, and
+/// never gates** (doc 18 §9 risk 19, cut IC14 row 1; proposed Q-18-72). Markers are
+/// installed into the durable family and the inventory sweep folds them into the
+/// mirror: at exactly three quarters of `MAX_APPLIED_MARKERS` the `Markers` line reads
+/// Ready and no fire pages; one more and the line reads Flagged and the port tick pages
+/// once, however many fires follow; and `+coop/enrol`'s gate never names the line.
+#[test]
+fn ic14_the_marker_headroom_pages_once_past_three_quarters_and_never_gates() {
+    let max = mush_inventory::MAX_APPLIED_MARKERS;
+    let threshold = max * 3 / 4;
+    let mut tw = boot(&Roster::production());
+    set_rate(&mut tw, 24);
+    sweep(&mut tw, 120);
+    let held = |tw: &TestWorld| {
+        tw.world()
+            .module_state::<mush_inventory::InventoryStore>()
+            .expect("an inventory store")
+            .markers()
+    };
+    let base = held(&tw);
+    assert!(
+        base < threshold,
+        "a fresh world is far from the cap: {base}"
+    );
+    // Exactly three quarters: Ready, never paged.
+    install_markers(&mut tw, 1, threshold - base);
+    for _ in 0..3 {
+        sweep(&mut tw, 60);
+    }
+    assert_eq!(held(&tw), threshold, "the sweep folds them into the mirror");
+    assert_eq!(
+        markers_line(&mut tw),
+        format!("markers: {threshold} of {max} applied markers held. [ready]")
+    );
+    assert_eq!(
+        tacsim::port_tick::marker_pages(tw.world()),
+        0,
+        "at three quarters nothing pages"
+    );
+    // One more: Flagged, paged once a boot.
+    install_markers(&mut tw, 1 + threshold - base, 1);
+    sweep(&mut tw, 60);
+    sweep(&mut tw, 6);
+    let over = threshold + 1;
+    assert_eq!(held(&tw), over);
+    assert_eq!(
+        markers_line(&mut tw),
+        format!(
+            "markers: {over} of {max} applied markers held; past {max} every inventory fact \
+             goes dark. [flagged]"
+        )
+    );
+    assert_eq!(
+        tacsim::port_tick::marker_pages(tw.world()),
+        1,
+        "past three quarters the tick pages"
+    );
+    for _ in 0..3 {
+        sweep(&mut tw, 6);
+    }
+    sweep(&mut tw, 60);
+    assert_eq!(
+        tacsim::port_tick::marker_pages(tw.world()),
+        1,
+        "and pages once a boot, however many fires"
+    );
+    // Never a gate: whatever the gate says, it never names the Markers line.
+    let report = tacsim::port::readiness(tw.world());
+    if let Err(refused) = tacsim::port::enrol_gate(&report) {
+        assert_ne!(
+            refused.binding,
+            tacsim::port::Binding::Markers,
+            "the headroom line never gates"
+        );
+    }
 }

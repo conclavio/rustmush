@@ -62,11 +62,21 @@ const VENDOR_ORG: OrgId = OrgId(0);
 #[derive(Debug)]
 struct TestCatalog;
 
+thread_local! {
+    /// Doc 18 cut IC14 row 14: the iron entry's representation for THIS test's thread
+    /// (each test runs on its own thread, so the switch never leaks between tests).
+    /// `"lot"` is every IC7 test's catalogue; a reload after setting it re-versions the
+    /// entry in place.
+    static IRON_REPRESENTATION: std::cell::Cell<&'static str> =
+        const { std::cell::Cell::new("lot") };
+}
+
 impl CatalogSource for TestCatalog {
     fn pack(&self, pack: &str) -> Option<Result<Vec<CatalogEntry>, String>> {
         if pack != PACK {
             return None;
         }
+        let representation = IRON_REPRESENTATION.with(std::cell::Cell::get);
         let value = json!({
             "catalog": { "ruleset": "ic7", "code": "iron" },
             "pack": PACK,
@@ -74,7 +84,7 @@ impl CatalogSource for TestCatalog {
             "name": "Iron, graded",
             "baseline": 700,
             "legality": "legal",
-            "representation": "lot",
+            "representation": representation,
             "stackable": true,
             "tags": ["test"],
         });
@@ -2188,4 +2198,214 @@ fn ic7_goods_drawn_but_lapsed_are_never_relisted() {
         .collect();
     assert_eq!(pages.len(), 1, "one page names the contract: {pages:?}");
     no_settlement_pages(&r.tw);
+}
+
+// ---- doc 18 cut IC14 -----------------------------------------------------------------
+
+/// **Doc 18 cut IC14 row 14 (lead ruling L8): a catalogue reload does not change a
+/// listing's mechanics.** A Draw listing stays a Draw when its entry is reloaded as an
+/// instrument — `lot_matter` answers Draw from the kind frozen at publication and an
+/// accept still stages a draw leg — and, the reverse, a counter listing published on an
+/// instrument entry stays a counter listing when the entry is reloaded as a lot.
+#[test]
+fn ic14_a_catalogue_reload_does_not_change_a_listings_mechanics() {
+    let mut r = rig();
+    let listing = r.listing.expect("listed");
+    assert_eq!(
+        market_of(&r.tw).listing(listing).and_then(|l| l.draw),
+        Some(true),
+        "frozen at publication"
+    );
+    IRON_REPRESENTATION.with(|rep| rep.set("instrument"));
+    ok(&mut r.tw, GOD, &format!("@market/catalog load {PACK}"));
+    let entry = market_of(&r.tw)
+        .entries()
+        .find(|e| e.catalog.code.as_str() == "iron")
+        .expect("the entry")
+        .representation;
+    assert_eq!(entry, mush_market::Representation::Instrument, "reloaded");
+    let l = market_of(&r.tw).listing(listing).cloned().expect("listed");
+    assert!(
+        matches!(
+            market_of(&r.tw).lot_matter(&l),
+            Some(mush_market::LotMatter::Draw { .. })
+        ),
+        "the reload re-derived nothing"
+    );
+    let q = quote(&mut r.tw, r.pat, listing, 10);
+    ok(
+        &mut r.tw,
+        r.pat,
+        &format!("+market/accept {}={}", q.0, r.pat_hold.vault().0),
+    );
+    let contract = contract_of(&r.tw, q);
+    let staged = take(&mut r.tw);
+    assert_eq!(
+        staged.key.as_str(),
+        format!("market.lot.draw.{:x}", contract.0),
+        "the accept still draws"
+    );
+
+    // The reverse: a counter listing on an instrument entry, the entry reloaded as a lot.
+    let vendor = r.vendor;
+    let shop = r.shop;
+    let counter = with_probe(&mut r.tw, GOD, move |ctx| {
+        mush_market::list_goods(
+            ctx,
+            mush_market::ListingSpec {
+                vendor,
+                catalog: mush_economy::CatalogRef {
+                    ruleset: "ic7".into(),
+                    code: "iron".into(),
+                },
+                price: mush_economy::Amount::from_minor(700),
+                quantity: 5,
+                source: mush_market::Supply::Stock {
+                    vault: shop.vault(),
+                },
+                object: None,
+                visibility: mush_market::MarketVisibility::Public,
+                ttl_secs: 86_400,
+            },
+        )
+    })
+    .expect("a counter listing publishes on an instrument entry");
+    assert_eq!(
+        market_of(&r.tw).listing(counter).and_then(|l| l.draw),
+        Some(false)
+    );
+    IRON_REPRESENTATION.with(|rep| rep.set("lot"));
+    ok(&mut r.tw, GOD, &format!("@market/catalog load {PACK}"));
+    let l = market_of(&r.tw).listing(counter).cloned().expect("listed");
+    assert_eq!(
+        market_of(&r.tw).lot_matter(&l),
+        None,
+        "a counter listing stays one"
+    );
+}
+
+/// **Doc 18 cut IC14 row 14: a pre-IC14 listing still loads, derives as IC7 did, and
+/// is stamped on its first write.** A listing document without `draw`, booted from the
+/// folded store, loads (`draw: None`); `lot_matter` derives Draw from the live entry;
+/// after one write (an accept's activation decrements it) the persisted document
+/// carries `"draw": true`.
+#[test]
+fn ic14_a_pre_ic14_listing_still_loads_and_is_stamped_on_write() {
+    let mut r = rig();
+    let listing = r.listing.expect("listed");
+    let ops = r.tw.take_module_ops();
+    let mut boot = mush_testkit::fold_module_ops(ops);
+    let key = format!("market:listing:{}", listing.0);
+    {
+        let docs = boot.get_mut(mush_market::NS).expect("market documents");
+        let mut found = false;
+        for (k, value) in &mut docs.kv {
+            if k.as_str() == key {
+                value
+                    .as_object_mut()
+                    .expect("a listing object")
+                    .remove("draw");
+                found = true;
+            }
+        }
+        assert!(found, "the listing document was folded");
+    }
+    r.tw.modules_loaded(boot);
+    let l = market_of(&r.tw)
+        .listing(listing)
+        .cloned()
+        .expect("it loads");
+    assert_eq!(l.draw, None, "a document written before IC14");
+    assert!(matches!(
+        market_of(&r.tw).lot_matter(&l),
+        Some(mush_market::LotMatter::Draw { .. })
+    ));
+    let q = quote(&mut r.tw, r.pat, listing, 10);
+    ok(
+        &mut r.tw,
+        r.pat,
+        &format!("+market/accept {}={}", q.0, r.pat_hold.vault().0),
+    );
+    let written = r
+        .tw
+        .take_module_ops()
+        .into_iter()
+        .filter_map(|op| match op.op {
+            mush_core::ModuleWrite::JsonSet { key: k, value } if k.as_str() == key => Some(value),
+            _ => None,
+        })
+        .next_back()
+        .expect("the accept re-wrote the listing");
+    assert_eq!(written["draw"], json!(true), "stamped on its first write");
+    assert_eq!(
+        market_of(&r.tw).listing(listing).and_then(|l| l.draw),
+        Some(true)
+    );
+}
+
+/// **Doc 18 cut IC14 row 45: two quotes on one Draw listing never draw twice.** A Draw
+/// listing of 100; A and B both quote 60 before either accepts; A accepts and draws, the
+/// listing survives at 40; B's accept is refused on the listing's revision before any
+/// escrow (`STALE_QUOTE`); the storefront pool reads exactly A's 60 lower than the
+/// start and B's balance is untouched.
+#[test]
+fn ic14_two_quotes_on_one_draw_listing_never_draw_twice() {
+    let mut r = rig();
+    let listing = r.listing.expect("listed");
+    let start = pool(&mut r.tw, &r.families, r.shop);
+    let qa = quote(&mut r.tw, r.pat, listing, 60);
+    let qb = quote(&mut r.tw, r.quinn, listing, 60);
+    ok(
+        &mut r.tw,
+        r.pat,
+        &format!("+market/accept {}={}", qa.0, r.pat_hold.vault().0),
+    );
+    land(&mut r.tw, 0xa1).expect("A's draw lands");
+    assert_eq!(
+        listing_qty(&r.tw, listing),
+        Some(40),
+        "the listing survives"
+    );
+    let refused = err(
+        &mut r.tw,
+        r.quinn,
+        &format!("+market/accept {}={}", qb.0, r.quinn_hold.vault().0),
+    );
+    assert!(refused.contains(STALE_QUOTE), "{refused}");
+    assert!(
+        market_of(&r.tw)
+            .quote(qb)
+            .is_some_and(|q| q.contract.is_none()),
+        "no contract for B"
+    );
+    assert!(r.tw.engine_mut().take_authoritative_submit().is_none());
+    assert_eq!(posted(&r.tw, r.quinn_account), FUNDS);
+    assert_eq!(held(&r.tw, r.quinn_account), 0, "nothing escrowed for B");
+    let after = pool(&mut r.tw, &r.families, r.shop);
+    assert_eq!(after.0, start.0 - 60, "drawn once, A's 60");
+    assert_eq!(listing_qty(&r.tw, listing), Some(40));
+    no_settlement_pages(&r.tw);
+}
+
+/// **Doc 18 cut IC14 row 52: a gate that names no signatory leaves the accept line
+/// as it was.** The test gate does not implement `VenueGate::signatory`, so its
+/// default answers nobody, and the Draw accept's success line is exactly the
+/// pre-IC14 sentence with no signatory clause.
+#[test]
+fn ic14_a_gate_without_a_signatory_leaves_the_accept_line_unchanged() {
+    let mut r = rig();
+    let listing = r.listing.expect("listed");
+    let q = quote(&mut r.tw, r.pat, listing, 10);
+    let agreed = ok(
+        &mut r.tw,
+        r.pat,
+        &format!("+market/accept {}={}", q.0, r.pat_hold.vault().0),
+    );
+    let contract = contract_of(&r.tw, q);
+    let line = format!(
+        "Agreed. Contract #{contract} carries it; your payment is escrowed and settles \
+         when the terms are met."
+    );
+    assert!(agreed.lines().any(|l| l == line), "{agreed}");
+    assert!(!agreed.contains("signs for"), "{agreed}");
 }

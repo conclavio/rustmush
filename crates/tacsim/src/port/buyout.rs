@@ -5,7 +5,7 @@
 //! title, through the economy's own contracts and nothing else: **the economy's
 //! contracts are the record, and the enrolment document follows them.**
 //!
-//! - **The contract** is the market's asset-purchase shape ([`buyout_spec`], the
+//! - **The contract** is the market's asset-purchase shape (`buyout_spec`, the
 //!   `Representation::Asset` arm of `mush_market`'s `purchase_spec`): issued by the
 //!   pilot (so the Trust's issuer cap is untouched), `TitleHeld{hull, Trust}` and a
 //!   real-clock `Before` window ([`BUYOUT_WINDOW_SECS`], L11), the enrolment's frozen
@@ -16,13 +16,13 @@
 //!   acceptance through the party-cap source. `cancel_contract` refuses an `Active`
 //!   contract with deliverables, so the Trust accepts **last**: at `end_lease` the
 //!   contract is still `Offered` and the verb can still cancel its own offer. Every
-//!   cancel goes through [`cancel_own`], which treats `cancel_contract`'s `Ok(false)`
+//!   cancel goes through `cancel_own`, which treats `cancel_contract`'s `Ok(false)`
 //!   (the refund unwind retrying in the sweep) as not done.
 //! - **The settlement** is the economy sweep's, never this verb's: the observer
 //!   (`CoopObserver`, `coop.rs`) hands every terminal state of the buyout or of the
-//!   lease to [`settle_buyout`], which reads both contracts from the snapshot (L7)
+//!   lease to `settle_buyout`, which reads both contracts from the snapshot (L7)
 //!   and graduates on `Settled`, re-charters the pilot on `Cancelled`/`Expired` once
-//!   the old lease is terminal, and otherwise waits ([`buyout_verdict`]).
+//!   the old lease is terminal, and otherwise waits (`buyout_verdict`).
 //!
 //! Between the command and the settlement (at most one 30 s sweep) the pilot holds
 //! neither charter nor title, so board, undock and the queue refuse (owner item O6).
@@ -98,6 +98,56 @@ pub const BUYOUT_REFUNDED: &str = "Your buyout of the {name} ({mark}) was not co
 /// A refunded buyout whose charter could not be renewed: `{name}`, `{mark}`,
 /// `{buyout}`.
 pub const BUYOUT_UNLEASED: &str = "Your buyout of the {name} ({mark}) was not completed and the {buyout} is yours again, but her charter could not be renewed. Staff have been told.";
+/// A refunded buyout whose first re-charter failed (doc 18 cut IC14 row 12; lead ruling
+/// L11; proposed Q-18-71): told once, at the first failure; the recall arm retries
+/// (owner voice, cut IC14 O1). `{name}`, `{mark}`, `{buyout}`.
+pub const RELET_PENDING: &str = "Your buyout of the {name} ({mark}) was not completed and the {buyout} is yours again. Her charter is being renewed; she waits at her berth until it is, and staff have been told.";
+/// How many re-charters one refunded buyout gets per boot (doc 18 cut IC14 row 12;
+/// lead ruling L11): the observer's first and the recall arm's retries together. After
+/// the last fails the enrolment ends exactly as cut IC13 built it (Revoked,
+/// `EndCause::LeaseEnded`, [`BUYOUT_UNLEASED`]), so at most this many lease contracts
+/// are minted per failure per boot; a reboot resets the count (bounded by reboots).
+pub const MAX_RELET_ATTEMPTS: u8 = 6;
+/// The longest gap between two re-charters, in port-tick fires (one hour at the 5 s
+/// fire; doc 18 cut IC14 row 12).
+pub const MAX_RELET_BACKOFF_FIRES: u64 = 720;
+
+/// **The fires to wait after the `n`-th failed re-charter** (doc 18 cut IC14 row 12;
+/// lead ruling L11): `RECALL_RECHECK_FIRES << (n - 1)`, capped at
+/// [`MAX_RELET_BACKOFF_FIRES`] — about 2, 4, 8, 16 and 32 minutes between the six
+/// attempts. Pure; `n` below 1 reads as 1.
+#[must_use]
+pub fn relet_backoff(n: u8) -> u64 {
+    let shift = u32::from(n.max(1).saturating_sub(1));
+    crate::port::recall::RECALL_RECHECK_FIRES
+        .checked_shl(shift)
+        .unwrap_or(u64::MAX)
+        .min(MAX_RELET_BACKOFF_FIRES)
+}
+
+/// **Whether `e` waits on a re-charter** (doc 18 cut IC14 row 12): `BuyoutPending` with
+/// its buyout refunded (Cancelled or Expired) and its old lease terminal — exactly
+/// [`buyout_verdict`]'s `Relet`, read from the economy. The executor holds the plan
+/// under `HELD_RELET` then, and the recall arm offers the hull for the retry.
+#[must_use]
+pub(crate) fn relet_pending(w: &World, e: &Enrolment) -> bool {
+    if e.status != EnrolmentStatus::BuyoutPending {
+        return false;
+    }
+    let Some(buyout) = e.buyout else {
+        return false;
+    };
+    w.module_state::<EconomyStore>().is_some_and(|economy| {
+        let snapshot = economy.snapshot();
+        let kind = snapshot
+            .contract(ContractId(buyout))
+            .map(|c| c.state.kind());
+        let lease_terminal = snapshot
+            .contract(ContractId(e.lease))
+            .is_none_or(|c| c.state.is_terminal());
+        kind.is_some_and(|kind| buyout_verdict(kind, lease_terminal) == Verdict::Relet)
+    })
+}
 
 /// `{name}` and `{mark}` filled from an enrolment.
 fn named(template: &str, e: &Enrolment) -> String {
@@ -581,7 +631,11 @@ pub(crate) fn settle_buyout(ctx: &mut Ctx<'_>, e: &Enrolment) {
     };
     match buyout_verdict(kind, lease_terminal) {
         Verdict::Graduate => graduate(ctx, e),
-        Verdict::Relet => relet(ctx, e),
+        // Doc 18 cut IC14 row 12: the observer runs the first re-charter; a failure
+        // leaves the enrolment BuyoutPending and the recall arm retries.
+        Verdict::Relet => {
+            let _ = relet(ctx, e, 1, false);
+        }
         Verdict::Wait => {}
     }
 }
@@ -627,8 +681,17 @@ fn accept_as_pilot(ctx: &mut Ctx<'_>, pilot: ObjId, lease: ContractId) -> bool {
 
 /// The buyout was refunded and the old lease is over: the Trust charters the same
 /// hull to the pilot again on exactly the enrolment's terms (no readiness gate: it
-/// restores, it does not enrol).
-fn relet(ctx: &mut Ctx<'_>, e: &Enrolment) {
+/// restores, it does not enrol). `true` when the pilot is chartered again.
+///
+/// Doc 18 cut IC14 row 12 (lead ruling L11; proposed Q-18-71): `attempt` is this
+/// re-charter's number (the observer's is 1, the recall arm's retries 2 and on). A
+/// failure ends the half-made lease (unchanged) and, unless `give_up`, leaves the
+/// enrolment **BuyoutPending** — its buyout refunded, its old lease terminal — for the
+/// recall arm's next try; only the first failure tells the pilot ([`RELET_PENDING`]).
+/// With `give_up` (the last attempt) a failure ends exactly as cut IC13 built it:
+/// Revoked / `EndCause::LeaseEnded`, [`BUYOUT_UNLEASED`] to the pilot, and its own
+/// staff page.
+pub(crate) fn relet(ctx: &mut Ctx<'_>, e: &Enrolment, attempt: u8, give_up: bool) -> bool {
     let buyout = money_minor(ctx, e.buyout_minor);
     let resolved = programme_port(ctx.w)
         .and_then(|port| Some((port.trust()?, port.trust_scope()?, port.trust_account()?)));
@@ -694,6 +757,34 @@ fn relet(ctx: &mut Ctx<'_>, e: &Enrolment) {
                 e.pilot,
                 &named(BUYOUT_REFUNDED, e).replace("{buyout}", &buyout),
             );
+            true
+        }
+        Err(what) if !give_up => {
+            if let Some((lease, trust)) = offered {
+                let key = LeaseKey {
+                    lessor: trust,
+                    premises: e.hull,
+                };
+                if let Err(error) = mush_economy::end_lease(ctx, lease, &key) {
+                    tracing::error!(lease = lease.0, %error, "tacsim: a half-made re-lease did not end");
+                }
+            }
+            tracing::error!(
+                what,
+                attempt,
+                pilot = e.pilot.0,
+                hull = e.hull.0,
+                "tacsim: a refunded buyout's re-lease failed; the enrolment stays buyout-pending \
+                 and the recall arm retries under a backoff"
+            );
+            if attempt <= 1 {
+                crate::port_tick::notify(
+                    ctx,
+                    e.pilot,
+                    &named(RELET_PENDING, e).replace("{buyout}", &buyout),
+                );
+            }
+            false
         }
         Err(what) => {
             if let Some((lease, trust)) = offered {
@@ -709,9 +800,11 @@ fn relet(ctx: &mut Ctx<'_>, e: &Enrolment) {
                 what,
                 pilot = e.pilot.0,
                 hull = e.hull.0,
-                "tacsim: a refunded buyout's re-lease failed; the enrolment is revoked. \
-                 `@coop/revoke` or re-enrolment is barred; the hull returns to the pool through \
-                 the recall arm once docked empty at Ceres"
+                buyout = e.buyout,
+                attempts = attempt,
+                "tacsim: a refunded buyout's re-charter failed {attempt} times; the enrolment is \
+                 revoked and the hull returns through the recall arm once docked empty at Ceres; \
+                 `@contract/show #<buyout>`"
             );
             let revoked = Enrolment {
                 status: EnrolmentStatus::Revoked,
@@ -725,6 +818,7 @@ fn relet(ctx: &mut Ctx<'_>, e: &Enrolment) {
                 e.pilot,
                 &named(BUYOUT_UNLEASED, e).replace("{buyout}", &buyout),
             );
+            false
         }
     }
 }
@@ -832,5 +926,24 @@ mod tests {
             assert_eq!(buyout_verdict(refunded, true), Verdict::Relet);
             assert_eq!(buyout_verdict(refunded, false), Verdict::Wait);
         }
+    }
+
+    /// Doc 18 cut IC14 row 12 (lead ruling L11): the re-charter backoff doubles from
+    /// `RECALL_RECHECK_FIRES` (24 fires, 2 minutes at the 5 s fire) and is capped at an
+    /// hour; six attempts in all, so the gaps after failures 1..=5 are 2, 4, 8, 16 and
+    /// 32 minutes and the cap is reached only past them.
+    #[test]
+    fn ic14_the_relet_backoff_doubles_and_is_capped() {
+        assert_eq!(MAX_RELET_ATTEMPTS, 6);
+        assert_eq!(crate::port::recall::RECALL_RECHECK_FIRES, 24);
+        let schedule: Vec<u64> = (1..=MAX_RELET_ATTEMPTS).map(relet_backoff).collect();
+        assert_eq!(schedule, vec![24, 48, 96, 192, 384, 720]);
+        assert_eq!(relet_backoff(0), 24, "an attempt below 1 reads as 1");
+        assert_eq!(
+            relet_backoff(40),
+            MAX_RELET_BACKOFF_FIRES,
+            "never past the cap"
+        );
+        assert_eq!(relet_backoff(u8::MAX), MAX_RELET_BACKOFF_FIRES);
     }
 }

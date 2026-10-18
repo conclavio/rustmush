@@ -53,8 +53,9 @@ pub struct EconomySnapshot {
     /// Derived: one vault per backing.
     vaults_by_backing: BTreeMap<CustodyRef, VaultId>,
     /// Derived: the vaults each principal owns, in id order (E6b independent verify
-    /// fold, R2). `Vault.owner` is immutable after [`EconomySnapshot::put_vault`]
-    /// (`vault_mut` touches `status`/`revision` only), so this cannot drift. It is
+    /// fold, R2). `Vault.owner` changes only through [`EconomySnapshot::put_vault`]
+    /// (`rehome_vault`, doc 18 cut IC13), which re-indexes, and `vault_mut` touches
+    /// `status`/`revision` only, so this cannot drift. It is
     /// the indexed answer to "where does this principal's property go home to",
     /// which `owner_home` asked by walking every vault.
     vaults_by_owner: HashMap<PrincipalId, BTreeSet<VaultId>>,

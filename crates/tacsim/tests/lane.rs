@@ -48,8 +48,8 @@ use tacsim::{
 
 use support::ground::{UNSIGNED, sign};
 
-/// **The lane's pin**, v2 (doc 18 cut IC3): a new version beside v1's ledger
-/// row, never v1 re-signed in place (lead ruling L0b). IC8's v3 is pinned anew.
+/// **The lane's pin**, v3 (doc 18 cut IC8): a new version beside the v1 and v2
+/// ledger rows, never an earlier version re-signed in place (lead ruling L0b).
 const LANE_DIGEST: &str = "8d20125693884a8c6739d6dd032d858e474c015726eab54b05dccb17164d0ad4";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
@@ -875,4 +875,146 @@ fn ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky() {
         .route_in_world(moving.world(), &cid(LANE_ROUTE_OUT))
         .expect("the lane route materializes");
     assert_eq!(route.distance_km(), Some(chord));
+}
+
+/// **Doc 18 cut IC14 row 47: `@corridor/show <id>@<version>` honours the version on
+/// the latch fallback.** The lane's routes live only in the content latch (no legacy
+/// index entry), so a named version is answered from the latched route of exactly
+/// that version: `@9` (a version this world never applied) is `NO_SUCH_CORRIDOR`,
+/// never the newest-applied route, and `@3` (the applied lane) is the v3 route.
+#[test]
+fn ic14_corridor_show_at_an_unapplied_version_is_no_such_corridor() {
+    let mut tw =
+        TestWorld::with_modules(production_roster(lane_config(EphemerisConfig::default())));
+    let pilot = tw.spawn_player("Pilot");
+    let id = LANE_ROUTE_OUT;
+    assert!(
+        store(&tw)
+            .route_in_world_at(tw.world(), &cid(id), LANE_VERSION + 6)
+            .is_none()
+    );
+    let events = tw.run(pilot, &format!("@corridor/show {id}@{}", LANE_VERSION + 6));
+    let out = tw.seen_by(&events, pilot).join("\n");
+    assert_eq!(out.trim(), tacsim::commands::NO_SUCH_CORRIDOR, "{out}");
+    let events = tw.run(pilot, &format!("@corridor/show {id}@{LANE_VERSION}"));
+    let at = tw.seen_by(&events, pilot).join("\n");
+    let events = tw.run(pilot, &format!("@corridor/show {id}"));
+    let newest = tw.seen_by(&events, pilot).join("\n");
+    assert!(
+        at.contains("2 legs, drive class coast_hauler, propellant 0."),
+        "{at}"
+    );
+    assert_eq!(
+        at, newest,
+        "the applied version is the route shown unversioned"
+    );
+    assert_eq!(
+        store(&tw).route_in_world_at(tw.world(), &cid(id), LANE_VERSION),
+        store(&tw).route_in_world(tw.world(), &cid(id))
+    );
+}
+
+/// The atlas records a pack's entries made, by kind, as `(kind, entry)` pairs.
+fn atlas_rows(tw: &TestWorld, pack: &str) -> Vec<(String, String)> {
+    let atlas = tw
+        .world()
+        .module_state::<mush_atlas::AtlasState>()
+        .expect("atlas");
+    let pack = cid(pack);
+    let r = &atlas.records;
+    let mut rows: Vec<(String, String)> = Vec::new();
+    rows.extend(
+        r.regions
+            .keys()
+            .filter(|k| k.pack == pack)
+            .map(|k| ("region".to_owned(), k.entry.to_string())),
+    );
+    rows.extend(
+        r.localities
+            .keys()
+            .filter(|k| k.pack == pack)
+            .map(|k| ("locality".to_owned(), k.entry.to_string())),
+    );
+    rows.extend(
+        r.neighborhoods
+            .keys()
+            .filter(|k| k.pack == pack)
+            .map(|k| ("neighborhood".to_owned(), k.entry.to_string())),
+    );
+    rows.extend(
+        r.sites
+            .keys()
+            .filter(|k| k.pack == pack)
+            .map(|k| ("site".to_owned(), k.entry.to_string())),
+    );
+    rows.extend(
+        r.connections
+            .keys()
+            .filter(|k| k.pack == pack)
+            .map(|k| ("connection".to_owned(), k.entry.to_string())),
+    );
+    rows.extend(
+        r.roomgeo
+            .values()
+            .filter(|g| g.key.pack == pack)
+            .map(|g| ("room".to_owned(), g.key.entry.to_string())),
+    );
+    rows.sort();
+    rows
+}
+
+/// **Doc 18 cut IC14 row 48 (lead ruling L28): a staff seed survives a fold and a
+/// reboot.** `@tacsim/seed tacsim.corridor@1 commit` on the production composition;
+/// the module ops folded and the world rebooted from them: the content latch's row
+/// for the corridor (version, digest and placed objects) and the atlas records its
+/// entries made are present on the rebooted world exactly as before, the corridor
+/// route still materializes, and no cross-namespace write was refused on either
+/// boot (`World::refused_namespace_writes` is empty).
+#[test]
+fn ic14_a_staff_seed_survives_a_fold_and_reboot() {
+    let mut tw =
+        TestWorld::with_modules(production_roster(lane_config(EphemerisConfig::default())));
+    let events = tw.run(GOD, "@tacsim/seed tacsim.corridor@1 commit");
+    let seeded = tw.seen_by(&events, GOD).join("\n");
+    let corridor = cid(fixture::CORRIDOR_PACK);
+    let row = |tw: &TestWorld| {
+        tw.world()
+            .module_state::<ContentState>()
+            .and_then(|c| c.latches.applied(&corridor))
+            .map(|a| (a.version(), a.digest().to_hex(), a.placed()))
+    };
+    let before = row(&tw).unwrap_or_else(|| panic!("the corridor is latched:\n{seeded}"));
+    assert_eq!(before.0, 1);
+    assert!(!before.2.is_empty(), "the seed placed objects");
+    let atlas_before = atlas_rows(&tw, fixture::CORRIDOR_PACK);
+    assert!(!atlas_before.is_empty(), "the seed made atlas records");
+    assert!(
+        tw.world().refused_namespace_writes().is_empty(),
+        "{:?}",
+        tw.world().refused_namespace_writes()
+    );
+    let folded = fold_module_ops(tw.take_module_ops());
+    let tw = tw
+        .reboot_into(
+            production_roster(lane_config(EphemerisConfig::default())),
+            folded,
+        )
+        .expect("the reboot boots");
+    assert_eq!(row(&tw), Some(before), "the latch row survived the reboot");
+    assert_eq!(
+        atlas_rows(&tw, fixture::CORRIDOR_PACK),
+        atlas_before,
+        "the atlas records survived the reboot"
+    );
+    assert!(
+        store(&tw)
+            .route_in_world(tw.world(), &cid(fixture::ROUTE))
+            .is_some(),
+        "the corridor route materializes after the reboot"
+    );
+    assert!(
+        tw.world().refused_namespace_writes().is_empty(),
+        "{:?}",
+        tw.world().refused_namespace_writes()
+    );
 }

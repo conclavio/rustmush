@@ -117,8 +117,6 @@ pub mod deliberation;
 pub mod economy;
 pub mod ephemeris;
 pub mod fixture;
-/// Doc 18 cut IC1: **the IC-return rule** — the Limbo door's `MoveAttempt` veto,
-/// the last-port stamp and `+ic` (doc 18 §4.5, D-18-3).
 pub mod ic_return;
 /// 16b cut T.3: **the match** — doc 16 §3.8's lifecycle, the persisted match-id
 /// counter, the RAM record of a match while it runs, the two custody transitions
@@ -138,14 +136,7 @@ pub mod match_;
 /// through its [`arena::mind::MindRunner`] seam.
 pub mod minds;
 pub mod pack;
-/// Doc 18 cut IC2: **the trade run's port code** — the pure capacity function a
-/// hull's stowage compartments are checked through (doc 18 §4.2–§4.4, D-18-28 as
-/// replaced by R7); and since cut IC3 the `port` pack entry, its applier and map,
-/// the readiness report and `+credit` (doc 18 §4.1, §4.7).
 pub mod port;
-/// Doc 18 cut IC5: **the port tick** — the `tacsim.port` pull tick every port arm
-/// runs on, its actor swap, and the reconnect notices (doc 18 §4.3, §4.4, D-18-32,
-/// D-18-33).
 pub mod port_tick;
 pub mod record;
 pub mod seed;
@@ -542,6 +533,27 @@ impl GameModule for TacsimRuleset {
         // prefix rule: a module points `look` only at a namespace it owns).
         reg.attr_namespace("tacsim")?;
         reg.detail_prefix(crate::port::hull::HULL_DETAIL_PREFIX)?;
+        // Doc 18 cut IC14 row 48 (lead ruling L28): `@tacsim/seed <pack> commit`
+        // drives mush_content::apply_pack under this module's identity, so the
+        // content latch row and the atlas records the pack's entries make carry
+        // `tacsim` on a namespace that is not ours. The reproduction
+        // (`tests/lane.rs::ic14_a_staff_seed_survives_a_fold_and_reboot`) showed
+        // exactly these two pairs refused; both are declared here, by the writer,
+        // and pinned in `crates/mush-contract-tests/module-ns-owners.toml`.
+        reg.persist_delegation(
+            NS,
+            mush_content::NS,
+            "seed::apply drives mush_content::apply_pack for `@tacsim/seed <pack> commit` \
+             under the tacsim module's identity, so the content latch row it commits carries \
+             this module's identity (doc 18 cut IC14 row 48)",
+        )?;
+        reg.persist_delegation(
+            NS,
+            mush_atlas::NS,
+            "seed::apply drives mush_content::apply_pack for `@tacsim/seed <pack> commit` \
+             under the tacsim module's identity, and the atlas appliers it runs write the \
+             site, connection and room records the pack describes (doc 18 cut IC14 row 48)",
+        )?;
         commands::register(reg)?;
         // 16b cut C.2 (C1): the game's definitions, through the C1 registry.
         // One validator per kind first — `Registrar::definition` admits nothing

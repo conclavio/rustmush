@@ -617,6 +617,20 @@ impl<'a> ModuleActionState<'a> {
         self.lens.store().is_some() && self.owner.is_some()
     }
 
+    /// Whether a prepared action owns the underlying typed store (doc 18 cut
+    /// IC14, row 10): staged, or in the writer's custody, with its post-images
+    /// not yet installed ([`ActionStateStore::has_prepared`]). One action is
+    /// prepared at a time, so `true` means *some* actor's commit is in flight,
+    /// not necessarily the asker's. `false` for an unavailable reader (a
+    /// manually built context sees no store and so no commit; the same honest
+    /// blind spot [`crate::Outbox::authoritative_pending`] has outside a note).
+    #[must_use]
+    pub fn commit_pending(&self) -> bool {
+        self.lens
+            .store()
+            .is_some_and(ActionStateStore::has_prepared)
+    }
+
     /// Read one exact record from a family owned by this context's module.
     pub fn get<K, V>(
         &self,
@@ -3820,5 +3834,23 @@ mod tests {
         store.install(again).expect("the store still commits");
         assert_eq!(store.revision(), 2);
         assert_eq!(store.len(), 2);
+    }
+
+    /// Doc 18 cut IC14 row 10: a module's read-only lens answers whether a
+    /// prepared transaction owns the store — `true` while one is held,
+    /// `false` once it is aborted, and `false` for an unavailable reader.
+    #[test]
+    fn ic14_commit_pending_reads_a_held_prepared_transaction() {
+        let (mut store, handle) = bare_store();
+        let lens = |store: &ActionStateStore| {
+            ModuleActionState::for_module(TypedStateLens::Live(store), Some("state_test"))
+                .commit_pending()
+        };
+        assert!(!lens(&store), "nothing prepared");
+        let held = prepare_counter(&mut store, &handle, 9, 1);
+        assert!(lens(&store), "a prepared transaction owns the store");
+        store.abort(held).expect("the store aborts");
+        assert!(!lens(&store), "released at abort");
+        assert!(!ModuleActionState::unavailable().commit_pending());
     }
 }

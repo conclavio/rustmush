@@ -149,8 +149,9 @@ pub use map::{
     TrancheRow, VendorRow, port_map_key,
 };
 pub use market::{
-    HOLD_ELSEWHERE, HOLD_NOT_HERE, HOLD_UNDER_WAY, HoldPlan, NOT_IN_PORT, NOT_YOUR_CHARTER,
-    PlanCompartment, PortCapacity, PortPartyCaps, PortVenueGate, capacity_line, governed_hold,
+    HOLD_CLEARED, HOLD_ELSEWHERE, HOLD_NOT_HERE, HOLD_PAPERS_DARK, HOLD_UNDER_WAY, HoldPlan,
+    NOT_IN_PORT, NOT_YOUR_CHARTER, PlanCompartment, PortCapacity, PortPartyCaps, PortVenueGate,
+    capacity_line, governed_hold,
 };
 pub use orders::{
     HoldNote, Inflight, InflightRefs, LogLine, MAX_DEPART_CREW, MAX_ORDER_LOG_BYTES,

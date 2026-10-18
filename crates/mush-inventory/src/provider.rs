@@ -331,6 +331,28 @@ fn prepare_now(parameters: &serde_json::Map<String, Value>) -> Result<ClockStamp
         })
 }
 
+/// The **real** (OOC) second the offer was drafted (doc 18 §9 risk 19, cut
+/// IC14 row 1): the offer's `"wall"` fixed parameter, beside `"now"`. It is
+/// the age the applied-marker ring measures against
+/// [`MARKER_RETENTION_SECS`](crate::record::MARKER_RETENTION_SECS) — the IC
+/// clock runs at up to 3,600× real, so an IC age says nothing about a real
+/// window. Absent or not an integer refuses exactly as a missing `"now"`
+/// does: an offer drafted before cut IC14 is refused and re-drafted, never
+/// stamped with a guess.
+pub(crate) fn prepare_wall(
+    parameters: &serde_json::Map<String, Value>,
+) -> Result<i64, ActionError> {
+    parameters
+        .get("wall")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| {
+            error(
+                ActionErrorCode::Unavailable,
+                "the world clock is unavailable",
+            )
+        })
+}
+
 impl InventoryProvider {
     fn parameters<'i>(
         &self,
@@ -377,6 +399,7 @@ impl InventoryProvider {
         commodity: &CanonicalId,
         quantity: u64,
         now: &ClockStamp,
+        wall: i64,
     ) -> Result<(), ActionError> {
         let marker = AppliedMarker::new(
             kind,
@@ -409,7 +432,16 @@ impl InventoryProvider {
             ));
         }
         txn.insert(&self.families.applied, &id, marker)
-            .map_err(|error| state_error(&error))
+            .map_err(|error| state_error(&error))?;
+        // Doc 18 §9 risk 19, cut IC14 row 1: the marker joins its source
+        // endpoint's ring (the destination's when the fact has no source) in
+        // this same bundle; a full young ring refuses the whole move.
+        if let Some(endpoint) = from.or(to) {
+            self.families
+                .retain_marker(txn, endpoint, &id, wall)
+                .map_err(|source| refuse(&source))?;
+        }
+        Ok(())
     }
 }
 
@@ -576,8 +608,12 @@ impl ActionProvider for InventoryProvider {
         Ok(Some(ProviderOfferDraft {
             // The IC stamp rides the offer's FIXED parameters, so preparation
             // never reaches for a clock it does not have and two replays of one
-            // request stamp the identical marker.
-            fixed_parameters: json!({ "now": engine.world.world_ic_now() }),
+            // request stamp the identical marker. Doc 18 cut IC14 row 1: the
+            // real second rides beside it, for the marker ring's age.
+            fixed_parameters: json!({
+                "now": engine.world.world_ic_now(),
+                "wall": engine.world.now(),
+            }),
             parameters: ProjectedParameterSchema::new(parameters).map_err(|_| {
                 error(
                     ActionErrorCode::Integrity,
@@ -655,6 +691,7 @@ impl ActionProvider for InventoryProvider {
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         let parameters = self.parameters(invocation)?.clone();
         let now = prepare_now(&parameters)?;
+        let wall = prepare_wall(&parameters)?;
         let actor = invocation.actor();
         let mut data = BTreeMap::<String, Value>::new();
         data.insert("actor".to_owned(), json!(actor.0));
@@ -686,6 +723,7 @@ impl ActionProvider for InventoryProvider {
                         &commodity,
                         quantity,
                         &now,
+                        wall,
                     )?;
                 }
                 data.insert("from".to_owned(), json!(from.vault().0));
@@ -726,6 +764,7 @@ impl ActionProvider for InventoryProvider {
                     created.commodity(),
                     created.quantity(),
                     &now,
+                    wall,
                 )?;
                 data.insert("lot".to_owned(), json!(created.id().0));
                 data.insert("parent".to_owned(), json!(lot.0));
@@ -750,6 +789,7 @@ impl ActionProvider for InventoryProvider {
                     created.commodity(),
                     created.quantity(),
                     &now,
+                    wall,
                 )?;
                 data.insert("lot".to_owned(), json!(created.id().0));
                 data.insert("quantity".to_owned(), json!(created.quantity()));
@@ -802,6 +842,7 @@ impl ActionProvider for InventoryProvider {
                     &commodity,
                     quantity,
                     &now,
+                    wall,
                 )?;
                 data.insert("lot".to_owned(), json!(created.id().0));
                 data.insert("endpoint".to_owned(), json!(endpoint.vault().0));
@@ -1027,4 +1068,24 @@ pub fn tranche_of(
     generation: u32,
 ) -> Result<TrancheId, InventoryError> {
     crate::pool::tranche_key(endpoint, commodity, generation)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prepare_wall;
+    use serde_json::json;
+
+    /// Doc 18 cut IC14 row 1: an offer drafted before the cut carries no
+    /// `"wall"` stamp and is refused (re-drafted), never stamped with a guess;
+    /// a non-integer stamp refuses the same way.
+    #[test]
+    fn ic14_an_offer_without_a_wall_stamp_is_refused() {
+        let params = |value: serde_json::Value| value.as_object().cloned().unwrap_or_default();
+        assert!(prepare_wall(&params(json!({ "now": 1 }))).is_err());
+        assert!(prepare_wall(&params(json!({ "now": 1, "wall": "soon" }))).is_err());
+        assert!(matches!(
+            prepare_wall(&params(json!({ "now": 1, "wall": 1_700_000_000 }))),
+            Ok(1_700_000_000)
+        ));
+    }
 }

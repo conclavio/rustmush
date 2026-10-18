@@ -417,8 +417,8 @@ max_snapshot_bytes = 7340032       # (16b cut AF.2) bytes of the largest arena s
 # before. When on, a newly created, not-yet-approved character is placed in the
 # chargen area, dropped into the guided wizard on connect ("+chargen/wizard"),
 # and held to a restricted command set (chargen / look / say / help; channel
-# speech and movement are gated) until a storyteller approves its wod-chargen
-# job; approval then moves it to the live start room and grants full access.
+# speech and movement are gated) until staff approve its pilot-chargen job;
+# approval then moves it to the live start room and grants full access.
 # Room ids are object numbers (#N).
 # chargen_required = false          # gate unapproved characters behind approval
 # start_room = 0                    # live start room approved characters land in (#0 = Limbo)

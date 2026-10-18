@@ -5192,6 +5192,11 @@ fn ic6_a_live_lease_is_never_paged_as_stale() {
             .filter(|e| e.subject == EscalationSubject::Contract(id))
             .count();
         assert_eq!(paged, 0, "a live lease was paged as stale at {t}");
+        // Doc 18 cut IC14 row 44: and specifically no stale-contract page.
+        assert!(
+            stale_pages(&tw, id).is_empty(),
+            "a live lease was paged as stale at {t}"
+        );
         assert_eq!(
             snap(&tw).contract(id).expect("the lease").state,
             ContractState::Active,
@@ -5276,11 +5281,22 @@ fn ic7_an_active_lease_shaped_contract_holding_escrow_still_pages() {
     assert!(!c.escrow.is_empty(), "and it holds the tenant's escrow");
 
     sweep_at(&mut tw, now + 3_600 + 1_000);
-    let paged = store(&tw)
-        .escalations()
-        .filter(|e| e.subject == EscalationSubject::Contract(id))
-        .count();
-    assert_eq!(paged, 1, "an escrowed live lease was not paged");
+    // Doc 18 cut IC14 row 44: the page is the stale-contract page — its kind, its
+    // subject and the in-force sentence `page_stale_contracts` writes — not any page.
+    let pages = stale_pages(&tw, id);
+    assert_eq!(
+        pages.len(),
+        1,
+        "an escrowed live lease was not paged: {pages:?}"
+    );
+    assert!(
+        pages[0].contains(&format!("contract #{id} has been in force for "))
+            && pages[0].contains(
+                "with no condition progress at all; its escrow is reserved the whole time and \
+                 nothing is going to change on its own"
+            ),
+        "{pages:?}"
+    );
 }
 
 /// Doc 18 cut IC7: an escrowed `Draft` lease-shaped contract was never exempt, and it
@@ -5316,9 +5332,37 @@ fn ic7_an_escrowed_draft_lease_shaped_contract_still_pages() {
     assert_eq!(held(&tw, r.quinn_acct), 300, "the author's escrow stands");
 
     sweep_at(&mut tw, now + 3_600 + 600);
-    let paged = store(&tw)
+    // Doc 18 cut IC14 row 44: the escrowed-draft sentence, on a SettlementRefused page.
+    let pages = stale_pages(&tw, id);
+    assert_eq!(
+        pages.len(),
+        1,
+        "an escrowed draft lease was not paged: {pages:?}"
+    );
+    assert!(
+        pages[0].contains(&format!("contract #{id} has sat as a draft for "))
+            && pages[0].contains(
+                "still holding escrow — an amendment that was never re-offered; the payer's \
+                 money is reserved the whole time and nothing is going to change on its own"
+            ),
+        "{pages:?}"
+    );
+}
+
+/// The contexts of every `SettlementRefused` escalation whose subject is contract `id`
+/// (doc 18 cut IC14 row 44): the kind and the subject asserted, the sentence returned.
+fn stale_pages(tw: &TestWorld, id: ContractId) -> Vec<String> {
+    let all: Vec<_> = store(tw)
         .escalations()
         .filter(|e| e.subject == EscalationSubject::Contract(id))
-        .count();
-    assert_eq!(paged, 1, "an escrowed draft lease was not paged");
+        .collect();
+    for e in &all {
+        assert_eq!(
+            e.kind,
+            mush_economy::EscalationKind::SettlementRefused,
+            "a page of another kind on #{id}: {}",
+            e.context
+        );
+    }
+    all.into_iter().map(|e| e.context.clone()).collect()
 }

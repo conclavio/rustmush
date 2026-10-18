@@ -314,6 +314,33 @@ impl GameModule for InventoryModule {
             },
             |value: &LotCensus| serde_json::to_value(value).map_err(|e| e.to_string()),
         )?;
+        // ---- Doc 18 §9 risk 19, cut IC14 row 1 — the per-endpoint marker ring ----
+        // Keyed like `census`: one ring per source endpoint, written in the
+        // same bundle as the marker it records, so `inventory.applied` is
+        // bounded per endpoint without retiring a marker any read or replay
+        // could still need (E7c2 owner decision D1; `MarkerRing::push`).
+        let marker_ring = reg.state_family::<EndpointRef, crate::record::MarkerRing, _, _, _, _>(
+            StateFamilyDescriptor::new(
+                family_id("inventory_marker_ring")?,
+                canonical("inventory.endpoint_id.v1")?,
+                canonical("inventory.marker_ring.v1")?,
+                1,
+                canonical("inventory.marker_ring.decode_json.v1")?,
+                canonical("inventory.marker_ring.invariants.v1")?,
+                canonical("inventory.marker_ring.json.v1")?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            endpoint_key,
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |value: &crate::record::MarkerRing| {
+                crate::record::MarkerRing::new(value.entries().to_vec())
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            },
+            |value: &crate::record::MarkerRing| {
+                serde_json::to_value(value).map_err(|e| e.to_string())
+            },
+        )?;
         // ---- E7c2 fold B10 — the reservation → book index the guard reads ----
         let reservations = reg.state_family::<ReservationId, ReservationBookId, _, _, _, _>(
             StateFamilyDescriptor::new(
@@ -341,6 +368,7 @@ impl GameModule for InventoryModule {
             census,
             lot_census,
             reservations: reservations.clone(),
+            marker_ring,
         };
 
         // ---- E7c2: B4 — the first `Reservation` validator on the tree ----

@@ -729,6 +729,12 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
     // `endpoint=` is a **Draw** listing — `Supply::Stock { vault }` on the vendor's own
     // storefront, nothing reserved, the listing's quantity the availability counter,
     // and the matter leg a transfer out of the storefront pool at activation.
+    // Doc 18 cut IC14 row 14: whether the Draw precheck runs for this listing is its
+    // kind, frozen on the listing at publication (`Listing.draw`).
+    let draws = matches!(
+        (entry.representation, spec.source.lot(), &spec.source),
+        (Representation::Lot, None, Supply::Stock { .. })
+    );
     let lot_leg = match (entry.representation, spec.source.lot(), &spec.source) {
         (Representation::Lot, Some((endpoint, commodity, grade)), _) => {
             Some((endpoint, commodity.clone(), grade))
@@ -920,6 +926,7 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
                 at: now.saturating_add(ttl),
             },
             revision: 1,
+            draw: Some(draws),
         },
     );
     persist_meta(ctx);
@@ -1209,6 +1216,8 @@ pub fn post_wanted(ctx: &mut Ctx<'_>, spec: WantedSpec) -> Result<ListingId, Mar
                 at: now.saturating_add(ttl),
             },
             revision: 1,
+            // Doc 18 cut IC14 row 14: a standing bid never draws.
+            draw: Some(false),
         },
     );
     persist_meta(ctx);

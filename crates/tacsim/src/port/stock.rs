@@ -67,6 +67,10 @@ pub const STOCK_ACTION: &str = "tacsim_port_stock";
 pub const STOCK_OUTCOME: &str = "tacsim_port_stock_result";
 /// The most stock rows one clerk's offer carries (every vendor of its port).
 pub const MAX_CLERK_ROWS: usize = 64;
+/// How many times one stock row's mint is submitted with no receipt before the clerk
+/// skips it for the boot (doc 18 cut IC14 row 29; lead ruling L24): a mint the prepare
+/// always refuses (a tampered map row) never stalls the port's arm.
+pub const MAX_STOCK_ATTEMPTS: u8 = 3;
 /// A mint's idempotency-key prefix: `tacsim.port.stock/<issue key text>`.
 pub const STOCK_KEY_PREFIX: &str = "tacsim.port.stock/";
 /// A dissolve's idempotency-key prefix: `tacsim.port.dissolve/<issue key text>`.
@@ -141,13 +145,33 @@ pub(crate) fn receipt_in(
 
 // ---- the clerk's port ------------------------------------------------------------
 
+/// **Whether a lane port entry is latched now** (doc 18 cut IC14 row 31; lead ruling
+/// L25): the lane's content latch is applied, not retired, and its entries hold
+/// `entry`. A port entry a later lane version dropped keeps its port map (retire keeps
+/// the map so a later apply reuses every row), but its clerk idles. Read per entry from
+/// the content latch only — never `TacsimStore::applied_in`'s legacy-seed fallback,
+/// which is for routes, not for a port's clerk.
+#[must_use]
+pub(crate) fn entry_latched(w: &World, entry: &CanonicalId) -> bool {
+    let Ok(lane) = CanonicalId::new(LANE_PACK) else {
+        return false;
+    };
+    w.module_state::<mush_content::ContentState>()
+        .and_then(|content| content.latches.applied(&lane))
+        .is_some_and(|applied| !applied.is_retired() && applied.entries().contains_key(entry))
+}
+
 /// The lane port whose map records `clerk` as its stock clerk, with its entry (cloned,
-/// so the caller may hold `&mut Ctx`). `None` when no present lane map names it.
+/// so the caller may hold `&mut Ctx`). `None` when no present lane map names it, or
+/// (doc 18 cut IC14 row 31) when the map's entry is no longer latched.
 pub(crate) fn clerk_port(w: &World, clerk: ObjId) -> Option<(PortMap, PortDef)> {
     let store = w.module_state::<TacsimStore>()?;
     let map = store.port_maps().find(|map| {
         map.pack.as_str() == LANE_PACK && map.clerk.as_ref().is_some_and(|c| c.thing == clerk.0)
     })?;
+    if !entry_latched(w, &map.entry) {
+        return None;
+    }
     let (_, ports) = report_ports(store, w);
     let def = ports
         .into_iter()
@@ -522,12 +546,24 @@ pub(crate) fn stock_step(
     let Some(inventory) = handles.inventory.clone() else {
         return Step::Refused;
     };
-    // 1–3. Mint, then dissolve, row by row in authored order.
+    // 1–3. Mint, then dissolve, row by row in authored order. Doc 18 cut IC14 row 29
+    // (lead ruling L24): a row the clerk's offer does not carry, or whose mint was
+    // refused `MAX_STOCK_ATTEMPTS` times, is skipped (warned once a boot) and the step
+    // goes on to the next row — it never stalls the port's arm.
+    let carried = clerk_rows(ctx.w, clerk);
+    let mut uncarried = 0_usize;
     for vendor in &def.vendors {
         let Some(row) = map.vendors.get(&vendor.org) else {
             continue;
         };
         for stock in &row.stock {
+            if !carried.contains_key(&stock.id) {
+                uncarried = uncarried.saturating_add(1);
+                continue;
+            }
+            if state.stock_skipped.contains(&stock.id) {
+                continue;
+            }
             let Some(id) = StockIssueId::parse(&stock.id) else {
                 tracing::error!(
                     entry = %map.entry, org = %vendor.org, good = %stock.good,
@@ -538,14 +574,32 @@ pub(crate) fn stock_step(
             let Ok(receipt) = receipt_at(ctx, &handles.families.port_stock, &id) else {
                 return Step::Refused;
             };
+            if receipt.is_some() {
+                state.stock_attempts.remove(&stock.id);
+            }
             match receipt {
                 None => {
+                    let attempts = state.stock_attempts.get(&stock.id).copied().unwrap_or(0);
+                    if attempts >= MAX_STOCK_ATTEMPTS && !ctx.authoritative_pending(clerk) {
+                        if state.stock_skipped.len() < MAX_CLERK_ROWS {
+                            state.stock_skipped.insert(stock.id.clone());
+                        }
+                        state.stock_attempts.remove(&stock.id);
+                        tracing::warn!(
+                            entry = %map.entry, org = %vendor.org, good = %stock.good,
+                            issue = %stock.id,
+                            attempts,
+                            "tacsim: a stock row's mint never lands; the clerk skips it this \
+                             boot and stocks the rest (repair the port map row)"
+                        );
+                        continue;
+                    }
                     let key = format!("{STOCK_KEY_PREFIX}{}", stock.id);
                     let Ok(key) = IdempotencyKeyText::parse_canonical(key) else {
                         return Step::Refused;
                     };
                     let parameters = json!({ "issue": stock.id });
-                    return swapped(fire.as_principal(ctx, clerk, clerk, |ctx| {
+                    let step = swapped(fire.as_principal(ctx, clerk, clerk, |ctx| {
                         ctx.submit_authoritative(
                             action.clone(),
                             PerceivedRef::SelfActor,
@@ -554,6 +608,15 @@ pub(crate) fn stock_step(
                             key,
                         );
                     }));
+                    if step == Step::Submitted
+                        && (state.stock_attempts.contains_key(&stock.id)
+                            || state.stock_attempts.len() < MAX_CLERK_ROWS)
+                    {
+                        state
+                            .stock_attempts
+                            .insert(stock.id.clone(), attempts.saturating_add(1));
+                    }
+                    return step;
                 }
                 Some(receipt) => {
                     let standing = ctx
@@ -590,6 +653,15 @@ pub(crate) fn stock_step(
                 }
             }
         }
+    }
+    if uncarried > 0 && state.stock_uncarried.insert(map.entry.clone()) {
+        tracing::warn!(
+            entry = %map.entry,
+            uncarried,
+            max = MAX_CLERK_ROWS,
+            "tacsim: a port records more stock rows than its clerk carries; the rows past \
+             the clerk's bound are never minted (re-author the port under the bound)"
+        );
     }
     // 4–5. Every row is seeded: the drift check, then the list step.
     let mut due: Option<(mush_market::VendorId, u64, CanonicalId, u64, u64)> = None;

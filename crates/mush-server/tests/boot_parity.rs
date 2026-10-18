@@ -729,10 +729,11 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     }
     // Doc 18 cut IC12: `neighborhood.ceres_freeport` ships at version 2 and
     // `neighborhood.stickney_yards` at 3 (the five 18a details; Stickney was 2 from
-    // cut IC8's P11 fittings card), the two region packs at 1.
+    // cut IC8's P11 fittings card), the two region packs at 1; doc 18 cut IC14
+    // re-published Stickney at 4 (three verb meta-text clauses struck).
     let station_version = |pack: &str| match pack {
         CERES_PACK => 2,
-        STICKNEY_PACK => 3,
+        STICKNEY_PACK => 4,
         _ => 1,
     };
     for (pack, _) in STATION_SOURCES {

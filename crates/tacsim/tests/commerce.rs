@@ -1437,11 +1437,16 @@ fn ic8_the_board_counts_down_to_sold_out() {
             "{local}: {out}"
         );
     }
-    // P07: Kasei's two bids.
+    // P07: Kasei's two bids, then (doc 18 cut IC14 row 53) Kasei's funded balance.
     let p07 = station_room(&rig.tw, "stickney_port", "room.p07_receiving");
     let out = look_in(&mut rig.tw, pilot, p07);
     let lines = board(&out);
-    assert_eq!(lines.len(), 2, "{out}");
+    assert_eq!(lines.len(), 3, "{out}");
+    assert_eq!(
+        lines[2],
+        format!("  {}", kasei_funds_line(&rig.tw)),
+        "{out}"
+    );
     assert!(
         lines[0]
             .starts_with("  wanted, metal concentrate: 280.00cr/t, 4,000 t more (Kasei Metals;"),
@@ -2106,11 +2111,14 @@ fn ic8_wanted_bids_are_posted_and_render_not_buying_when_unfunded() {
     );
     let p07 = station_room(&rig.tw, "stickney_port", "room.p07_receiving");
     let out = look_in(&mut rig.tw, who, p07);
+    // Doc 18 cut IC14 row 53: P07's board closes Kasei's bid lines with what Kasei
+    // has on hand (nothing yet: the capital has not settled).
     assert_eq!(
         board(&out),
         vec![
             "  wanted, metal concentrate: not buying (Kasei Metals).".to_owned(),
             "  wanted, water ice: not buying (Kasei Metals).".to_owned(),
+            format!("  {}", kasei_funds_line(&rig.tw)),
         ],
         "{out}"
     );
@@ -2493,4 +2501,301 @@ fn with_stations(shelf: &[mush_content::Pack]) -> Vec<mush_content::Pack> {
     let mut full = tacsim::definitions::content::station_packs().expect("the station packs");
     full.extend(shelf.iter().cloned());
     full
+}
+
+// ---------------------------------------------------------------------------
+// Doc 18 cut IC14 row 31: a retired port entry's clerk idles
+// ---------------------------------------------------------------------------
+
+/// The four Ceres Draws the clerk lists (`ic8_retire_…`'s set).
+const CERES_DRAWS: [(&str, &str); 4] = [
+    ("freeport_exchange", "metals"),
+    ("occator", "volatiles"),
+    ("occator", "propellant"),
+    ("coop", "provisions"),
+];
+
+/// Fire and land `n` port-tick fires.
+fn fires(rig: &mut Rig, n: usize) {
+    for _ in 0..n {
+        let (_, queued) = fire(rig);
+        land_all(rig, &queued);
+    }
+}
+
+/// **A dropped port entry's clerk idles while the lane stays latched** (doc 18 cut
+/// IC14 row 31; lead ruling L25). A test-only lane revision (v4, built here from the
+/// shipped lane with `ceres_port` removed) retires the Ceres entry while the lane
+/// stays latched: its retire withdraws the Ceres Draws, and over the following fires
+/// Ceres' clerk takes no step and lists nothing — while Stickney's clerk still runs
+/// (a Stickney ask staff withdraw is listed again). A later revision (v5, the shipped
+/// entries) brings the port back and its clerk lists again.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn ic14_a_dropped_port_entrys_clerk_idles_while_the_lane_stays_latched() {
+    let retired = mush_content::load_pack(&lane_variant(4, |doc| {
+        doc["entries"]
+            .as_object_mut()
+            .expect("the entries")
+            .remove("ceres_port");
+    }))
+    .expect("the retiring variant verifies");
+    let mut rig = boot(Roster::bare().with_shelf(vec![retired]));
+    stock(&mut rig);
+    for (org, good) in CERES_DRAWS {
+        assert!(
+            listing_on(&rig.tw, "ceres_port", org, good).is_some(),
+            "{org} {good}"
+        );
+    }
+    let (plan, apply) = plan_and_apply(&mut rig.tw);
+    assert!(
+        apply.contains(&format!("Applied {LANE_PACK}@4")) && apply.contains("1 retired"),
+        "{plan}\n{apply}"
+    );
+    for (org, good) in CERES_DRAWS {
+        assert!(
+            listing_on(&rig.tw, "ceres_port", org, good).is_none(),
+            "withdrawn"
+        );
+    }
+    // Stickney's clerk still runs: an ask staff withdraw comes back.
+    let kasei = listing_on(&rig.tw, "stickney_port", "kasei", "propellant").expect("listed");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@market/vendor withdraw {kasei}"),
+    );
+    assert!(
+        listing_on(&rig.tw, "stickney_port", "kasei", "propellant").is_none(),
+        "{out}"
+    );
+    fires(&mut rig, 8);
+    for (org, good) in CERES_DRAWS {
+        assert!(
+            listing_on(&rig.tw, "ceres_port", org, good).is_none(),
+            "the retired port's clerk listed {org} {good} again"
+        );
+    }
+    assert!(
+        listing_on(&rig.tw, "stickney_port", "kasei", "propellant").is_some(),
+        "Stickney's clerk still lists"
+    );
+    // A later version brings the port back; its clerk lists again.
+    let back = mush_content::load_pack(&lane_variant(5, |_| {})).expect("the variant verifies");
+    rig.roster.shelf = Some(vec![back]);
+    let mut rig = reboot(rig);
+    let (plan, apply) = plan_and_apply(&mut rig.tw);
+    assert!(
+        apply.contains(&format!("Applied {LANE_PACK}@5")),
+        "{plan}\n{apply}"
+    );
+    fires(&mut rig, 12);
+    for (org, good) in CERES_DRAWS {
+        assert!(
+            listing_on(&rig.tw, "ceres_port", org, good).is_some(),
+            "{org} {good} listed again"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Doc 18 cut IC14 row 29: the clerk skips a refused mint, never stalls
+// ---------------------------------------------------------------------------
+
+/// **A refused mint does not stall the clerk** (doc 18 cut IC14 row 29; lead ruling
+/// L24). The Exchange's recorded stock row is tampered in the folded store (its issue
+/// number no longer derives its own id, so the mint's prepare refuses it every time):
+/// the clerk submits it at most `MAX_STOCK_ATTEMPTS` times, then skips it for the boot
+/// and goes on — the rows after it are minted and listed, the tampered one never is.
+#[test]
+fn ic14_a_refused_mint_does_not_stall_the_clerk() {
+    let mut rig = boot(Roster::bare());
+    fold_module_ops_into(&mut rig.store, rig.tw.take_module_ops());
+    let key = tacsim::port::port_map_key(&lane_id(), &cid("ceres_port"));
+    let tampered = {
+        let docs = rig.store.get_mut(tacsim::NS).expect("tacsim docs");
+        let (_, map) = docs
+            .kv
+            .iter_mut()
+            .find(|(k, _)| *k == key)
+            .expect("the Ceres port map");
+        let row = &mut map["vendors"]["freeport_exchange"]["stock"][0];
+        let issue = row["issue"].as_u64().expect("an issue");
+        row["issue"] = serde_json::json!(issue + 100);
+        row["id"].as_str().expect("the row's issue id").to_owned()
+    };
+    let mut rig = reboot(rig);
+    // Every mint the clerk submits, and those naming the tampered row.
+    let mut submitted = 0;
+    let mut tampered_mints = 0;
+    let mut tally = |queued: &[mush_core::AuthoritativeSubmit]| {
+        for submit in queued {
+            if submit.action.key().id.as_str() == tacsim::port::stock::STOCK_ACTION {
+                submitted += 1;
+                if submit.parameters["issue"].as_str() == Some(tampered.as_str()) {
+                    tampered_mints += 1;
+                }
+            }
+        }
+    };
+    let mut listed = false;
+    for _ in 0..40 {
+        let (_, queued) = fire(&mut rig);
+        tally(&queued);
+        for submit in &queued {
+            let _ = land(&mut rig, submit);
+        }
+        if listing_on(&rig.tw, "ceres_port", "occator", "volatiles").is_some()
+            && listing_on(&rig.tw, "ceres_port", "coop", "provisions").is_some()
+        {
+            listed = true;
+            break;
+        }
+    }
+    assert!(listed, "the clerk got past the refused row within 40 fires");
+    // Twenty more fires: the skipped row is never submitted again this boot.
+    for _ in 0..20 {
+        let (_, queued) = fire(&mut rig);
+        tally(&queued);
+        for submit in &queued {
+            let _ = land(&mut rig, submit);
+        }
+    }
+    assert!(
+        listing_on(&rig.tw, "ceres_port", "occator", "volatiles").is_some(),
+        "the rows after the refused one are minted and listed"
+    );
+    assert!(listing_on(&rig.tw, "ceres_port", "coop", "provisions").is_some());
+    assert!(
+        listing_on(&rig.tw, "ceres_port", "freeport_exchange", "metals").is_none(),
+        "the tampered row is never minted"
+    );
+    assert!(submitted > 0, "the clerk minted");
+    assert_eq!(
+        tampered_mints,
+        usize::from(tacsim::port::stock::MAX_STOCK_ATTEMPTS),
+        "the refused row is submitted MAX_STOCK_ATTEMPTS times, then skipped this boot"
+    );
+}
+
+/// **Doc 18 cut IC14 row 52 (§4.3; Q-18-47): the accept line names the signatory.**
+/// A Ceres Draw accept from the Freeport Exchange's metals ask carries "<the
+/// signatory's name> signs for <the vendor's name>." after the escrow sentence: the
+/// signatory's name is read from the shipped Ceres pack through the lane's port entry
+/// (and is the name of the NPC the port map records), the vendor's name from the
+/// market's vendor record, never typed into the test.
+#[test]
+fn ic14_the_accept_line_names_the_signatory() {
+    let mut rig = stocked();
+    let (pilot, _) = chartered(&mut rig, "Pilot", 1);
+    let metals = listing_on(&rig.tw, "ceres_port", "freeport_exchange", "metals").expect("listed");
+    // The signatory, from the shipped packs: the lane's vendor row names an npc of
+    // the Ceres area; the Ceres pack's entry carries its name.
+    let def = port_def(LANE_JSON, "ceres_port");
+    let vendor_def = def
+        .vendors
+        .iter()
+        .find(|v| v.org == cid("freeport_exchange"))
+        .expect("the Exchange vendor");
+    let entry = vendor_def
+        .signatory
+        .strip_prefix(&format!("{}.", def.area))
+        .expect("an npc of the area");
+    let ceres: serde_json::Value =
+        serde_json::from_str(tacsim::definitions::content::CERES_JSON).expect("the Ceres pack");
+    let signatory = ceres["entries"][entry]["def"]["name"]
+        .as_str()
+        .expect("the signatory's name")
+        .to_owned();
+    let row = port_map(&rig.tw, "ceres_port").vendors[&cid("freeport_exchange")].clone();
+    assert_eq!(
+        rig.tw
+            .world()
+            .get(ObjId(row.signatory))
+            .map(|o| o.name.clone()),
+        Some(signatory.clone()),
+        "the port map's signatory is the pack's npc"
+    );
+    let shop = {
+        let m = market(&rig.tw);
+        let listing = m.listing(metals).expect("listed");
+        m.vendor(listing.vendor)
+            .expect("the vendor")
+            .name
+            .to_string()
+    };
+    let (accepted, quote) = buy(&mut rig, pilot, metals, 10);
+    let contract = market(&rig.tw)
+        .quote(quote)
+        .and_then(|q| q.contract)
+        .expect("a contract");
+    let line = format!(
+        "Agreed. Contract #{contract} carries it; your payment is escrowed and settles when the \
+         terms are met. {signatory} signs for {shop}."
+    );
+    assert!(accepted.lines().any(|l| l == line), "{line}\n{accepted}");
+    assert_eq!(
+        mush_market::ACCEPT_SIGNS
+            .replace("{signatory}", &signatory)
+            .replace("{shop}", &shop),
+        format!(" {signatory} signs for {shop}.")
+    );
+}
+
+/// [`tacsim::port::board::BID_FUNDS_LINE`] for Kasei, its figure read from Kasei's
+/// market vendor's account in the credit's render (never typed).
+fn kasei_funds_line(tw: &TestWorld) -> String {
+    let row = port_map(tw, "stickney_port").vendors[&cid("kasei")].clone();
+    let vendor = market(tw)
+        .vendor(mush_market::VendorId(row.vendor.expect("Kasei's vendor")))
+        .expect("the vendor")
+        .clone();
+    let account = economy(tw)
+        .snapshot()
+        .account(vendor.account)
+        .cloned()
+        .expect("Kasei's account");
+    let available = account.posted_balance.minor() - account.held_amount.minor();
+    let instrument = mush_economy::InstrumentId::new(tacsim::economy::CREDIT).expect("credit");
+    let figure = mush_economy::render_amount(
+        economy(tw).snapshot(),
+        &instrument,
+        mush_economy::Amount::from_minor(available),
+    );
+    tacsim::port::board::BID_FUNDS_LINE
+        .replace("{house}", "Kasei Metals")
+        .replace("{available}", &figure)
+}
+
+/// **Doc 18 cut IC14 row 53 (18a P07 Items; Q-18-47): P07 shows Kasei's funded
+/// balance.** On the stocked world (the capital settled), P07's board ends with
+/// "Kasei Metals has <its available balance> on hand to pay for what it buys." after
+/// Kasei's two bid lines, the figure Kasei's account's posted balance less what is
+/// held; P08's board, which carries the same bids, shows no such line.
+#[test]
+fn ic14_p07_shows_kaseis_funded_balance() {
+    let mut rig = stocked();
+    let who = rig.tw.spawn_player("Looker");
+    let p07 = station_room(&rig.tw, "stickney_port", "room.p07_receiving");
+    let out = look_in(&mut rig.tw, who, p07);
+    let lines = board(&out);
+    assert_eq!(lines.len(), 3, "{out}");
+    assert!(
+        lines[0].starts_with("  wanted, metal concentrate: "),
+        "{out}"
+    );
+    assert!(lines[1].starts_with("  wanted, water ice: "), "{out}");
+    let funds = kasei_funds_line(&rig.tw);
+    assert_eq!(lines[2], format!("  {funds}"), "{out}");
+    assert!(!funds.contains(" 0.00cr "), "the capital settled: {funds}");
+    let p08 = station_room(&rig.tw, "stickney_port", "room.p08_exchange");
+    let out = look_in(&mut rig.tw, who, p08);
+    assert!(
+        board(&out)
+            .iter()
+            .any(|l| l.contains("wanted, metal concentrate")),
+        "{out}"
+    );
+    assert!(!out.contains("on hand to pay for what it buys"), "{out}");
 }

@@ -2707,8 +2707,22 @@ pub(crate) fn dispute_with(ctx: &mut Ctx<'_>, id: ContractId, context: String) {
 
 fn contract_dispute(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let c = contract_of(ctx, ctx.args.lhs())?;
-    if acting_party(ctx, &c, "contract.dispute").is_none() && !is_admin(ctx.w, ctx.actor) {
+    let party = acting_party(ctx, &c, "contract.dispute");
+    let admin = is_admin(ctx.w, ctx.actor);
+    if party.is_none() && !admin {
         return Err(CmdError::msg(NO_SUCH));
+    }
+    // Doc 18 cut IC14 row 7 (lead ruling L6): the composition-frozen veto, asked for
+    // a non-admin party only, before the state check — a seller may not dispute their
+    // own sale into a bid. Staff resolve through `@contract/resolve`, never asked.
+    if let (false, Some(party)) = (admin, party.as_ref()) {
+        let guard = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .and_then(EconomyStore::dispute_guard);
+        if let Some(line) = guard.and_then(|guard| guard.refusal(ctx.w, &c, party)) {
+            return Err(CmdError::msg(line));
+        }
     }
     if !matches!(
         c.state,

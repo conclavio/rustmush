@@ -2447,7 +2447,8 @@ runnable.**
 | IC10 | Selling and the Co-op share — the loop closes interactively (**landed**, `7435f954`) | `Supply::Wanted`; inventory `transfer_marked` + the Fact-gated payout; `LotOp::Deliver`; the `+market/sell <listing>=<qty> [from=]` lot arm (gate, synchronous checks, buyer-org escrow by party cap, intake decrement/restore); `MarketModule::with_proceeds_policy` + the tacsim margin-over-reference policy; bids by the applier; the enrolment folds sales and shares; sale lines print gross/share/net | mush-market, mush-inventory, tacsim | L | IC9 | at Stickney, sell 70 t metals: Kasei −21,000 = pilot +19,250 + Trust +1,750 from journals; hold −70 t = Kasei pool +70 t from lineage; money moves only after the marker; a sale at reference pays share 0; over-selling, an unfunded bid and a cross-port sale refused before any contract. From here a tester plays one leg per login by hand |
 | **IC11** | **Captain's orders — the FIRST CUT WITH THE FULL DAILY LOOP** (**landed**, `26e3b1fa`) | `tacsim:orders:<hull>` (fail-closed); the order arm on IC5's tick (rotation, one step per hull, actor swap, closed typed calls, the buy clamp by stock, hold mass, hold volume and funds less the next depart's unmet needs with every bound logged, `fill` as the joint least fixed point over the queued projection and `plan_passage` at the depart's `not_before`, inflight in the same Outbox, pull verification, relabel on a rate generation); `+ship/orders`, `+ship/order …` (`depart … [via=]` parsed and refused "not yet"), `+ship/plan` over the queue (each buy's clamp and bound, the affordable tonnage at this board); the UTC time parse/format helper; the watch-log reconnect notices; the pilot-aboard and passenger rules | tacsim, mush-core | **L** (risks 2, 3, 7, 8 live here and D-18-38 makes it the acceptance; if it must be split, IC11a = the document, the nine verbs, the time parser and `+ship/plan` over the queue, IC11b = the executor arm with its restart and clustering tests, M each) | IC10 | at rate 3600 with the pilot disconnected after queueing: depart → arrive → sell ×2 → buy ×4 → depart executes unattended, the log and notices matching; a reboot mid-step re-runs nothing (one sale, one burn); a sold-out buy goes partial, an unfunded bid skips, a depart short of fuel holds and burns nothing; the Stickney queue buys fuel and stores before cargo; a cash-bound return logs "funds", re-used 49/55 orders with full funds log "hold volume", `buy volatiles 100` logs "short of 100 t: hold volume", a full hold logs both measures joined; `fill` buys 36 t for the 73 t projection; `fill_and_clamp_plan_at_the_depart_instant` (a test sky at rate 1000 makes the crew-days at `not_before` differ from a stored constant); two pilots with the same due time both complete |
 | IC12 | The story test, help and readiness (**landed** with Draft 0.4) | `ic_slice_loop.rs`: two simulated days at rate 3600 on the production composition (§6), its sky built explicitly at rate 0; `docs/help` ports, ships (the hold's two limits; passage time depends on load "and, later, the season", never "always under a day"), coop, orders, trade (the dense good weighs out, the bulky good cubes out, the best full load fills both; when cash is short buy the bulky good first up to the volume the affordable tonnage leaves); amendments to getting-started, travel, spatial, cockpit, npc; `ops.md`; the full readiness report ("sky: constant (rate 0), epoch <date>, rev <digest>"; never a duration) and the gate over all of it on `+coop/enrol` (§4.7); every §2 and §6 path walked against the packs' exit aliases; one hand-played two-session smoke at rate 24 on local `mushd`, logged | mush-server, docs, tacsim | M | IC11 | the story test green with "every hold write leaves both cargo limits met"; a fresh tester completes two legs from help alone; T-45 green; the smoke log shows a sub-day full leg at the constant sky and a docked hull at the next session |
-| IC13 | Buyout, graduation and dormancy | `+coop/buyout` (pilot-issued asset contract, Trust accepts by party cap, `end_lease` before settlement with refuse-on-Retrying, observer graduation and re-lease on refund); dormancy recall on the tick; `+coop/release`; `@coop/revoke` | tacsim, mush-economy | M | IC10 | a pilot with 110,000 cr buys out: title to the pilot once, lease ended, the share silent on the next sale; a refunded buyout re-leases; seven idle real days recall a docked empty hull; a buyout while under way refused |
+| IC13 | Buyout, graduation and dormancy (**landed**, `94679739`) | `+coop/buyout` (pilot-issued asset contract, Trust accepts by party cap, `end_lease` before settlement with refuse-on-Retrying, observer graduation and re-lease on refund); dormancy recall on the tick; `+coop/release`; `@coop/revoke` | tacsim, mush-economy | M | IC10 | a pilot with 110,000 cr buys out: title to the pilot once, lease ended, the share silent on the next sale; a refunded buyout re-leases; seven idle real days recall a docked empty hull; a buyout while under way refused |
+| IC14 | The residuals sweep (**landed**, `2f268ee3`) | the retention of `inventory_applied` (risk 19), the money-safety residuals (the full-queue sale, the re-stage after a landing, the seller's dispute, the boot-healed fold), the recall's convergence, the fail-closed sailing plan, the residual tests, Stickney v4, the small presentation residuals, the §10 amendments | mush-core, mush-inventory, mush-market, mush-economy, mush-sim, mush-atlas, tacsim, mush-server, docs | L (five passes) | IC13 | every residual dispositioned in the cut note with its file:line; the gate green |
 
 **As built, by row** (the deviations each landed cut recorded; the cut notes hold the rest):
 
@@ -3275,6 +3276,20 @@ items are merged; the cut notes carry each default's full reasoning.
   clearance and plan lines (IC9 (5)), IC10's sale line and refusals, which reuse the venue gate's
   load-worded lines (IC10 (1)(2)), IC11's verbs, renders and executor log lines (IC11 O1), and IC12's
   help topics and re-worded in-code helps (IC12 O1).
+- **Q-18-66 Forfeiture of consumables at a recall.** Default: a recall (dormancy, revoke, or a
+  voluntary `+coop/release`) re-homes the hold vault to the Trust with its remaining propellant and
+  provisions and the next charterer inherits them; §4.1's "no confiscation of matter in the slice" is
+  read as covering cargo only (IC13 O1).
+- **Q-18-67 The full recall rule for revoke and release.** Default: both require docked at Ceres,
+  empty cargo, nothing filed, in flight or moving; a charter ended away from Ceres leaves the hull out
+  of the pool with nobody to fly her home; there is no staff "bring her home" verb (IC13 O2).
+- **Q-18-68 The staff reason in the revocation notice.** Default: `@coop/revoke`'s `why` is shown to
+  the pilot in `REVOKED_NOTICE` (IC13 O3).
+- **Q-18-69 The laid-up name restored.** Default: the recall restores the Trust's laid-up name and
+  frees the pilot's chosen one; the registry mark is untouched (IC13 O5).
+- **Q-18-70 The pool shrinks per graduate.** Default: a graduated hull leaves the Trust's pool for
+  ever; the slice buys no replacements, so the desk answers `NO_HULL` once all eight are chartered or
+  graduated (IC13 O7).
 
 ---
 
@@ -3367,6 +3382,33 @@ items are merged; the cut notes carry each default's full reasoning.
     `MAX_APPLIED_MARKERS` = 4,096; beyond it every sale into a bid lapses unpaid with a page each. No
     deploy that enables selling to a long-lived world before IC14's first item lands (`docs/ops.md`, "The
     trade run (doc 18)"). Risks 9 and 17 stand unchanged.
+    **As built (IC14):** bounded, not closed. Each source endpoint's markers sit in a ring
+    (`inventory.marker_ring`) that evicts only past 32 entries **and** past a real day of age, so no
+    marker a sale's Fact, re-stage or a re-driven offer can still read is retired (E7c2 D1 holds inside
+    the horizon; a replay after it is unguarded — an owner item); a ring of 128 young entries refuses the
+    next move. The mirror's 4,096 and its world-wide fail-closed rule stand: the cliff is now roughly 128
+    endpoints holding 32 or more, the `Markers` readiness line flags and pages at three quarters (never
+    gating, proposed Q-18-72), and the rings of endpoints that stop writing are never pruned. Selling is
+    no longer blocked before a deploy; the `Markers` line is the operator's watch. A sale still in
+    flight past the horizon (a dispute held for days) may lose its marker, so the market reads an absent
+    sale marker as "not moved" only within a real day of the deal's acceptance; past it the lapse is
+    unconfirmed (paged, the bid never restored over goods that may have arrived).
+
+20. **(IC14) What the residuals sweep leaves and changes.** It leaves, from IC13, the hand-played
+    two-session smoke at rate 24 (the owner's, on dev1 after an approved redeploy), Q-18-66..70 (§8), and
+    e3b's "writes nothing" checks through `fold_kv` (which drops `StreamAppend`) with the cross-epoch
+    cutoff and the Done-depart arm proven by unit tests only. It changes two defaults: Q-18-51 (an
+    explicit consumable buy holds only when the later consumable orders before the next depart still
+    leave it short, §4.4's wording) and Q-18-64 (a seller cannot dispute their own sale into a bid). It
+    raises four owner questions, numbered here for §8's next docs pass and recorded in the IC14 cut note:
+    **proposed Q-18-71** (a failed relet retries six times, then revokes as IC13 built), **Q-18-72** (the
+    `Markers` line reports and pages but never gates, departing from Q-18-60's "every line but the sky
+    gates"), **Q-18-73** (an unreadable sailing plan keeps its hull out of the pool and pages, but does
+    not close enrolment world-wide) and **Q-18-74** (the marker retention horizon of one real day and the
+    hard cap of 128, against D1). Two §10 sentences stay as written because §10 is outside this cut's
+    doc 18 edits: "the code default `mortal` is left for IC14" is dispositioned edge (the single-game
+    cleanup), and "`18-cut-notes.md:109-110` is still owed" was done in IC12's note
+    (`18-cut-notes.md:5848-5857`).
 
 **Refused, deliberately.**
 

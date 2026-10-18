@@ -3824,6 +3824,22 @@ fn ic11_the_status_line_names_the_departure_hour() {
         )),
         "{out}"
     );
+    // Doc 18 cut IC14 row 42: the same status line from the Bridge (the hull's, from
+    // any of her rooms), walked through her own exits and back.
+    let _ = run(&mut rig.tw, pilot, "in");
+    let _ = run(&mut rig.tw, pilot, "bridge");
+    assert_eq!(location(&rig.tw, pilot), Some(room_of(&row, "bridge")));
+    let out = run(&mut rig.tw, pilot, "look");
+    assert!(
+        out.contains(&format!(
+            "Aboard the Salt Moth ({mark}), docked at Ceres Freeport; departs {} UTC (in 2 h 0 m).",
+            hhmm(at)
+        )),
+        "the Bridge: {out}"
+    );
+    let _ = run(&mut rig.tw, pilot, "down");
+    let _ = run(&mut rig.tw, pilot, "airlock");
+    assert_eq!(location(&rig.tw, pilot), Some(room_of(&row, "airlock")));
     let out = run(&mut rig.tw, pilot, "+ship");
     assert!(
         out.contains(&format!("; departs {} UTC (in 2 h 0 m).", hhmm(at))),
@@ -3948,4 +3964,250 @@ fn ic12_resume_clears_the_refusal_count() {
     assert_eq!(resumed.refusals, 0, "the count is cleared");
     assert_eq!(resumed.retry_at, None);
     doc.check().expect("the plan still checks");
+}
+
+// ---------------------------------------------------------------------------
+// Doc 18 cut IC14 row 2: a full engine queue is back-pressure, not a refusal
+// ---------------------------------------------------------------------------
+
+/// **A full engine queue defers the sell step and counts nothing** (doc 18 cut IC14
+/// row 2; reviewer F3). With 64 other actors' submissions queued, a queued `sell` meets
+/// the market's `SELL_QUEUE_FULL` before any contract: the step waits (`Deferred`), the
+/// order's refusal count stays 0, no `REFUSED_RETRY` line reaches the plan's log and
+/// the stored plan is unchanged across three busy fires. Once the queue drains the
+/// sale proceeds.
+#[test]
+fn ic14_a_full_queue_defers_the_sell_step_and_counts_nothing() {
+    let mut rig = stocked();
+    let (pilot, row) = docked_at_stickney(&mut rig, &[("metals", 20)]);
+    let hull = ObjId(row.hull);
+    let _ = order(&mut rig, pilot, "sell metals all");
+    disconnect(&mut rig.tw, pilot);
+    let action = mush_market::lot_action_ref(&rig.tw.engine().registry).expect("the lot action");
+    for i in 0..64_u32 {
+        rig.tw
+            .engine_mut()
+            .queue_authoritative_submit(Box::new(AuthoritativeSubmit {
+                actor: ObjId(900_000 + i),
+                action: action.clone(),
+                subject: mush_core::PerceivedRef::SelfActor,
+                targets: Vec::new(),
+                parameters: serde_json::json!({}),
+                key: mush_core::IdempotencyKeyText::parse_canonical("ic14.filler").expect("a key"),
+            }))
+            .expect("the queue has room");
+    }
+    let before = orders(&rig.tw, hull);
+    let contracts = economy(&rig.tw).snapshot().contracts().count();
+    for _ in 0..3 {
+        let t = rig.tw.world().now().saturating_add(6);
+        rig.tw.set_now(t);
+        let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+        let stats = tacsim::port_tick::last_fire(rig.tw.world()).expect("a fire");
+        assert!(stats.deferred >= 1, "the sell step waited: {stats:?}");
+        assert_eq!(stats.refused, 0, "{stats:?}");
+    }
+    let after = orders(&rig.tw, hull);
+    assert_eq!(after, before, "the plan was not written");
+    assert_eq!(
+        after.order(1).map(|o| o.refusals),
+        Some(0),
+        "nothing counted"
+    );
+    let retry = tacsim::port::executor::REFUSED_RETRY.replace("{n}", "1");
+    assert!(
+        !log_texts(&rig.tw, hull)
+            .iter()
+            .any(|line| line.starts_with(retry.split("{line}").next().unwrap_or_default())),
+        "{:?}",
+        log_texts(&rig.tw, hull)
+    );
+    assert_eq!(
+        economy(&rig.tw).snapshot().contracts().count(),
+        contracts,
+        "no contract while the queue is full"
+    );
+    // The queue drains (the driver takes the fillers); the sale proceeds.
+    while rig.tw.engine_mut().take_authoritative_submit().is_some() {}
+    let _ = drive_until(&mut rig, 10, |rig| {
+        market(&rig.tw)
+            .quotes_of_seller(&PrincipalId::Object(pilot))
+            .count()
+            > 0
+    });
+    assert_eq!(orders(&rig.tw, hull).order(1).map(|o| o.refusals), Some(0));
+}
+
+// ---------------------------------------------------------------------------
+// Doc 18 cut IC14 (rows 25–27): the executor's and the plan's residuals
+// ---------------------------------------------------------------------------
+
+/// Set every `"to"` string in `value` equal to `from` to `to` (a depart's stored venue
+/// word, wherever the nested wire keeps it).
+fn retarget(value: &mut serde_json::Value, from: &str, to: &str) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, inner) in map.iter_mut() {
+                if key == "to" && inner.as_str() == Some(from) {
+                    *inner = serde_json::json!(to);
+                } else {
+                    retarget(inner, from, to);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for inner in items {
+                retarget(inner, from, to);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// **Doc 18 cut IC14 row 25: a queued depart never resolves by prefix.** A stored
+/// venue word that is only a prefix of a port's name (`stick`, of Stickney Yards) — the
+/// live verb's fallback would fly it there — holds `NO_ROUTE`; the exact key departs.
+#[test]
+fn ic14_a_queued_depart_never_resolves_by_prefix() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1, "Salt Moth");
+    let hull = ObjId(row.hull);
+    board(&mut rig, pilot, "Salt Moth");
+    provision(&mut rig, pilot, &row, "stickney", 960);
+    let _ = order(&mut rig, pilot, "depart stickney");
+    let mut rig = reboot_editing(rig, |folded| {
+        edit_orders(folded, hull, |doc| retarget(doc, "stickney", "stick"));
+    });
+    // The reboot left the pilot offline, which the order arm needs.
+    let _ = drive(&mut rig, 6);
+    let held = HELD_LINE.replace("{n}", "1").replace(
+        "{reason}",
+        &NO_ROUTE
+            .replace("{here}", "Ceres Freeport")
+            .replace("{list}", "Stickney Yards"),
+    );
+    let doc = orders(&rig.tw, hull);
+    assert_eq!(doc.state, PlanState::Held, "{:#?}", doc.log);
+    assert_eq!(log_texts(&rig.tw, hull), vec![held]);
+    assert!(
+        voyage(&rig.tw, hull).and_then(|v| v.pending).is_none(),
+        "nothing filed"
+    );
+    // The exact key departs.
+    let _ = rig.tw.connect(pilot);
+    let _ = order(&mut rig, pilot, "del 1");
+    let _ = order(&mut rig, pilot, "depart stickney");
+    let landed = drive_until(&mut rig, 12, |rig| {
+        order_state(&rig.tw, hull, 2) == Some(OrderState::Done)
+    });
+    assert_eq!(
+        burn_keys(&landed),
+        vec![format!("tacsim.port.burn/{}/2/1", hull.0)]
+    );
+}
+
+/// The empty-tank burn to Stickney, from the planner's own figures, with the locker
+/// stocked (100 crew-days) so only the tank binds.
+fn empty_tank_burn(rig: &mut Rig, pilot: ObjId, row: &HullRow) -> u64 {
+    let hold = hold_vault(&rig.tw, row);
+    seed_pool(rig, hold, "provisions", 100, LotId(971));
+    let plan = run(&mut rig.tw, pilot, "+ship/plan stickney");
+    let (burn, tank) = plan_numbers(&plan, "Burn ", "(tank ").expect(&plan);
+    assert_eq!(tank, 0, "an empty tank");
+    burn
+}
+
+/// The plan's log carries no `HELD_SHORT_FOR_DEPART` hold.
+fn never_short(rig: &Rig, hull: ObjId) {
+    let log = log_texts(&rig.tw, hull);
+    assert!(
+        !log.iter()
+            .any(|line| line.contains("would leave the passage to")),
+        "{log:#?}"
+    );
+}
+
+/// **Doc 18 cut IC14 row 26 (lead ruling L22; Q-18-51's default changed to §4.4's
+/// wording): a short buy with a later `fill` does not hold.** One tonne of reaction mass,
+/// then a `fill` of it, then the depart: the first buy is short of the depart's need on
+/// its own, but the later fill covers it, so nothing holds and she departs.
+#[test]
+fn ic14_a_short_buy_with_a_later_fill_does_not_hold() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1, "Salt Moth");
+    let hull = ObjId(row.hull);
+    board(&mut rig, pilot, "Salt Moth");
+    let _ = empty_tank_burn(&mut rig, pilot, &row);
+    let _ = order(&mut rig, pilot, "buy propellant 1");
+    let _ = order(&mut rig, pilot, "buy propellant fill");
+    let _ = order(&mut rig, pilot, "depart stickney");
+    disconnect(&mut rig.tw, pilot);
+    let _ = drive_until(&mut rig, 60, |rig| {
+        order_state(&rig.tw, hull, 3) == Some(OrderState::Done)
+    });
+    assert_eq!(order_state(&rig.tw, hull, 1), Some(OrderState::Done));
+    assert_eq!(order_state(&rig.tw, hull, 2), Some(OrderState::Done));
+    never_short(&rig, hull);
+}
+
+/// **Doc 18 cut IC14 row 26: a short buy with later units that cover does not hold.**
+/// One tonne, then the empty-tank burn plus five more tonnes, then the depart: the later
+/// units cover the need, so the first buy goes through and she departs.
+#[test]
+fn ic14_a_short_buy_with_later_units_that_cover_does_not_hold() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1, "Salt Moth");
+    let hull = ObjId(row.hull);
+    board(&mut rig, pilot, "Salt Moth");
+    let burn = empty_tank_burn(&mut rig, pilot, &row);
+    let _ = order(&mut rig, pilot, "buy propellant 1");
+    let _ = order(&mut rig, pilot, &format!("buy propellant {}", burn + 5));
+    let _ = order(&mut rig, pilot, "depart stickney");
+    disconnect(&mut rig.tw, pilot);
+    let _ = drive_until(&mut rig, 60, |rig| {
+        order_state(&rig.tw, hull, 3) == Some(OrderState::Done)
+    });
+    assert_eq!(order_state(&rig.tw, hull, 1), Some(OrderState::Done));
+    never_short(&rig, hull);
+}
+
+/// **Doc 18 cut IC14 row 27: pause then resume over an in-flight hold re-arms the
+/// re-stage.** A sale whose leg never lands holds `HELD_UNCONFIRMED` at its second
+/// deadline (`restaged` 2); `+ship/order pause` takes the hold away and leaves the step
+/// in flight; `+ship/order resume` re-arms its re-stage clock — `restaged` 0 and
+/// `staged_utc` now — so the step is re-staged again rather than never.
+#[test]
+fn ic14_pause_then_resume_over_an_inflight_hold_rearms_the_restage() {
+    let mut rig = stocked();
+    let (pilot, row) = docked_at_stickney(&mut rig, &[("metals", 20)]);
+    let hull = ObjId(row.hull);
+    let _ = order(&mut rig, pilot, "sell metals all");
+    disconnect(&mut rig.tw, pilot);
+    for _ in 0..60 {
+        let (_, queued) = fire(&mut rig);
+        let (_market, rest): (Vec<_>, Vec<_>) = queued
+            .into_iter()
+            .partition(|s| s.action.key().owner.as_str() == "market");
+        land_quietly(&mut rig, &rest);
+        if orders(&rig.tw, hull).state == PlanState::Held {
+            break;
+        }
+    }
+    let doc = orders(&rig.tw, hull);
+    assert_eq!(
+        doc.hold.as_ref().map(|h| h.reason.as_str()),
+        Some(HELD_UNCONFIRMED)
+    );
+    assert_eq!(doc.inflight.as_ref().map(|i| i.restaged), Some(2));
+    let _ = order(&mut rig, pilot, "pause");
+    let paused = orders(&rig.tw, hull);
+    assert_eq!(paused.state, PlanState::Paused);
+    assert!(paused.hold.is_none(), "the pause took the hold away");
+    assert_eq!(paused.inflight.as_ref().map(|i| i.restaged), Some(2));
+    let _ = order(&mut rig, pilot, "resume");
+    let resumed = orders(&rig.tw, hull);
+    assert_eq!(resumed.state, PlanState::Running);
+    let inflight = resumed.inflight.expect("still in flight");
+    assert_eq!(inflight.restaged, 0, "the re-stage clock is re-armed");
+    assert_eq!(inflight.staged_utc, rig.tw.world().now());
 }

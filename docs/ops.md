@@ -1025,6 +1025,13 @@ that need staff (an unreadable sailing plan, a held launch, stock drift on a
 storefront, a step still unconfirmed at its second deadline) are logged at
 `error` with a runbook field, once per boot each.
 
+A sale into a bid prices the Co-op's share from the reference ask read when the
+sale's contract is built, so the share can drift from the ask at settlement by at
+most one draw window (re-reading it at settlement is an open owner question,
+Q-18-50). A settled sale stays one of the house's live party contracts while it
+sits on the trade tape (up to an hour), and a house may hold at most 32 live
+contracts, so 32 bounds a house's concurrent sales.
+
 ### The asker-authority bridge
 
 The port's cast are NPCs fronting interfaces (the market, travel, help). An
@@ -1036,10 +1043,11 @@ moves money or goods of its own accord.
 
 `@tacsim/port status` (staff) prints the readiness report: the lane's latched
 version, the sky, the world rate, the treasury, the market and inventory fact
-providers, and per port its map, rooms, domain, institutions (each with its
+providers, the applied-marker headroom (below), and per port its map, rooms, domain, institutions (each with its
 account and capital), programme, hulls, storefront pools, listings and bids, each
 line `[ready]`, `[pending]`, `[missing]` or `[flagged]`. `+coop/enrol` is gated on
-**every line but the sky** (doc 18 D-18-50: the sky is reported, never gated): a
+**every line but the sky and the marker headroom** (doc 18 D-18-50: the sky is
+reported, never gated; cut IC14 treats the `Markers` line the same way): a
 player only ever hears "The Co-op is not enrolling yet: the programme is still
 being set up."; the reason is the first non-ready line here. A fresh world reads
 Ready once the capital has settled and the clerks have stocked and listed both
@@ -1127,15 +1135,35 @@ for a session.
 
 A world latched at an older station or lane version keeps it across every boot.
 Take a new shipped version by hand: `@atlas/pack plan <pack>`, read the plan,
-then `@atlas/pack apply <fingerprint>`. Doc 18 cut IC12 ships
-`neighborhood.ceres_freeport` at version 2 and `neighborhood.stickney_yards` at
-version 3; a world latched at 1 and 2 takes them that way.
+then `@atlas/pack apply <fingerprint>`. Doc 18 cut IC12 shipped
+`neighborhood.ceres_freeport` at version 2, and cut IC14 ships
+`neighborhood.stickney_yards` at version 4 (three meta-text clauses struck from
+its boards); a world latched at an older version of either takes it that way.
 
-### Pre-deploy blocker: no selling until `inventory_applied` retention lands
+### Applied-marker retention (doc 18 cut IC14)
 
-A sale settles on the inventory module's applied-marker mirror, which is not yet
-retained or pruned (doc 18 cut IC10's residual, cut IC14's first item). **Do not
-deploy a build that enables selling to a long-lived world before that lands.**
+A sale settles on the inventory module's applied-marker mirror, and the marker is
+also the move's replay guard across a reboot. Retention is a **bound, not a
+closure**. Each source endpoint (a hold, a storefront) keeps at least its newest 32
+markers and every marker younger than a real day, at most 128; a full ring of
+markers all younger than a day refuses the next move out of that endpoint ("this
+endpoint has recorded too many moves in the last day to record another; try again
+later") rather than drop a guard. The mirror still holds 4,096 markers and still
+goes dark world-wide past that (every inventory fact answers nothing, every sale
+into a bid lapses unpaid); that now takes roughly 128 endpoints each holding 32 or
+more. The rings of endpoints that stop writing (a destroyed vault, an abandoned
+character's) are never pruned, so retained markers still grow slowly over a
+world's lifetime. A sale disputed for longer than a real day may lose its marker
+while it waits; if it is then refunded or lapses, the market pages that the
+hand-over "could not be confirmed" and does not restore the bid, so check the
+house's stores with the page's `@inv/show` before settling the seller.
+
+**Watch the `Markers` line** of `@tacsim/port status`: `markers: <n> of 4096
+applied markers held.` is `[ready]` up to three quarters of the cap and
+`[flagged]` past it, and the port tick pages once per boot when it is flagged.
+A flagged line is the operator's signal; it never closes enrolment. The
+`inventory facts` line goes `[missing]` (and closes enrolment) only once the
+mirror is actually incomplete.
 
 ## Onboarding and chargen gating (M9): `[onboarding]`
 

@@ -837,9 +837,10 @@ pub struct InteriorSpaceRecord {
     /// The walkable member rooms of a multi-room interior (doc 06 §7.5's
     /// boundary rule; doc 18 §4.2, cut IC4): an occupant placed `Interior` in
     /// this space may walk an exit into any of them without a placement
-    /// write, and projects to the one it stands in. Written only by
-    /// `Transition::Members` (and `Transition::Space`'s fresh shell, which is
-    /// `{object}`); when non-empty the space object is always among them.
+    /// write, and projects to the one it stands in. Written by
+    /// `Transition::Members` and by `drop_destroyed_member` (`lib.rs`), and
+    /// `Transition::Space`'s fresh shell is `{object}`; when non-empty the space
+    /// object is always among them.
     /// Empty on a legacy single-room record, which the gate, `backing_valid`
     /// and `egress` treat as single-room (lead ruling L3). At most
     /// [`MAX_SPACE_ROOMS`].

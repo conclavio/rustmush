@@ -233,6 +233,21 @@ fn single_reading<'a>(
     Ok(Some((good, qty, cap)))
 }
 
+/// **What a single-good compartment holds** (doc 18 cut IC14 row 54: the burn gauge
+/// reads the tank's tonnes): the quantity of its one good, `None` for a compartment
+/// that is not single-good.
+///
+/// # Errors
+///
+/// As [`max_more`].
+pub(crate) fn single_qty(
+    goods: &GoodsTable,
+    comp: &Compartment,
+    contents: &BTreeMap<CanonicalId, u64>,
+) -> Result<Option<u64>, CapacityError> {
+    Ok(single_reading(goods, comp, contents)?.map(|(_, qty, _)| qty))
+}
+
 /// **A single-good compartment against its capacity**: `{qty}/{cap} {unit}`
 /// (`42/80 t`, `21/120 crew-days`). A compartment that is not single-good reads
 /// its measures instead ([`measures_line`]).

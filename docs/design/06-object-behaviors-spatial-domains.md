@@ -766,6 +766,15 @@ gate:
 - egress portals invoke a spatial transition rather than raw `World::move_to`;
 - staff recovery uses explicit simulation recovery commands and is audited.
 
+**As built (doc 18 IC4):** the interior boundary rule is built as written above, over an interior
+space's **member rooms** (doc 18 §4.2 "The boundary rule"): an Interior-placed occupant moves only
+through an exit, and only to a room in its own space's `rooms`; `@teleport` and `home` stay refused
+for it, and staff are not exempt from the gate (staff move people with the simulation's own
+placement verbs). `InteriorSpaceRecord.rooms` has two writers: `Transition::Members`, the pure
+membership plan (`crates/mush-sim/src/transition.rs`, `plan_members`), and boot's
+`drop_destroyed_member` (`crates/mush-sim/src/lib.rs`), which removes a member room that no
+longer exists (code at `94679739`).
+
 The first implementation gives each domain and interior a configured MUSH presentation location.
 Placement transitions mirror `Obj.location` when appropriate, but placement remains authoritative.
 

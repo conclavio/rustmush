@@ -884,6 +884,12 @@ at load, every connection between two bodies' places gets its distance computed 
 at the epoch and pinned; `route_duration` gains the drive class's distance law (`torch`: time ∝
 √distance; `coast`: ∝ distance) in place of the unapplied `alignment_band`, which is deleted.
 
+**As built (doc 18 IC2, IC9):** the sky's epoch moved to the pack's bodies — `BodyDef.epoch_ic`,
+the real IC date whose true longitude and distance a lane body is authored at (D-18-48;
+`crates/tacsim/src/config.rs:74-82`, `ephemeris.rs`) — so the config epoch is read only for a body
+that carries none. The `[tacsim.time]` knob reads "the constant sky" at `rate = 0` and collapses to
+`constant | real` at P-A (the moving sky, doc 18 §4.8).
+
 **Tests (~26).** A mech engagement on imported relief composites at 1000 cm from the same tiles
 a street fight used at 100 cm; an indirect shot clears a ridge; the corridor's packs load
 through `mush-content` with unchanged digests; `grep -ri hex crates docs` finds only the
@@ -1319,6 +1325,7 @@ unchanged on the legacy path. Deviations from the text above, each with its reas
 | D-P-10 ★ | Aaron Samuels drives the bus from S2; Norbury (docent) and Duvall (front office) ship in S6 — **decided**: the packs carry ten cast members |
 | D-14-33 ★ | S7: the seed latch's version rule under the content latch and the site record's neighborhood rule for orbital and system regions. **Decided at S9 (owner's go-ahead, 2026-09-10) as recommended:** the content latch is the latch, one row per pack id, a newer version an update in place with the rooms kept, a journey under the old version ending where it stands; `SiteRec.region` anchors a site with no neighborhood in an orbital or system region, positioned from the ephemeris at the epoch. A world seeded before S9 keeps its legacy latch and refuses a re-seed through the content latch | **decided** |
 | D-14-35 ★ | S9.2: the carrier journey (`mush_sim::CarrierJourney`) and the atlas's journey (`JourneyRec`) **stay two records** — placement-graph motion and room-graph travel — with one route source (the atlas's connections through the content latch) and one view (`@atlas/journey`, `travel.status`); D-P-4's "one record absorbs both" is withdrawn by the plan for the reasons in §3.10's ledger. The owner may still call for the fold; its cost is recorded there | **open — the plan's recommendation is to leave it** |
+| | **As built (doc 18 IC1, IC9):** decided in the slice as two records with a hard boundary (Q-18-6): a passage is a `CarrierJourney`; the drawn `spacecraft` connection is a projection that no player verb traverses (`SELF_MODES`, doc 18 §4.8) | |
 | D-14-34 | S8 (from 14a #2): an interface reply is **private by default** — `ReplyAudience::Asker` unless the provider says `Room` — delivered to the asker alone with no `Said` event and no text in the NPC's memory; the room sees one aside. Reason: the provider's read is already the asker's own, and the output step must keep what the read kept | plan's call, 2026-09-10 |
 
 ## 7. Constants

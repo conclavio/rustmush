@@ -66,6 +66,11 @@ pub struct InventoryFamilies {
     /// B10). It turns the guard validator's O(books) walk, and its permanent
     /// budget cliff, into one point lookup.
     pub reservations: StateFamilyHandle<ReservationId, ReservationBookId>,
+    /// `inventory.marker_ring` — the applied-marker ids each endpoint wrote as
+    /// a marker's source, so the durable `inventory.applied` family is bounded
+    /// per endpoint (doc 18 §9 risk 19, cut IC14) without retiring a marker
+    /// any read or replay could still need (E7c2 owner decision D1).
+    pub marker_ring: StateFamilyHandle<EndpointRef, crate::record::MarkerRing>,
 }
 
 /// The `ResourceRef` one `(endpoint, commodity)` pool is keyed by.
@@ -168,7 +173,11 @@ pub fn derived_marker_id(
 }
 
 /// Whether `id` is an applied-marker key: 1..=96 bytes of lowercase hex.
-fn is_marker_id(id: &str) -> bool {
+///
+/// The **one** marker-id rule (doc 18 cut IC14, row 17): the market's sale
+/// path and its contract-side checks call this instead of keeping a copy.
+#[must_use]
+pub fn is_marker_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= crate::record::MAX_MARKER_ID_BYTES
         && id
@@ -511,10 +520,16 @@ impl InventoryFamilies {
     /// * An existing marker under `marker` refuses [`InventoryError::AlreadyExists`]
     ///   — **the replay guard**, `write_marker`'s rule — read before any write.
     ///
+    /// `wall` is the offer's real-clock stamp (doc 18 cut IC14, row 1: the
+    /// `"wall"` fixed parameter the caller's prepare read); the marker is
+    /// recorded in `from`'s [`MarkerRing`](crate::record::MarkerRing) in the
+    /// same bundle ([`Self::retain_marker`]).
+    ///
     /// # Errors
-    /// Those three, plus every refusal of [`Self::transfer`] and of
-    /// [`AppliedMarker::new`](crate::record::AppliedMarker::new); **nothing is
-    /// written on an error** (`ActionTxn` discards).
+    /// Those three, plus every refusal of [`Self::transfer`], of
+    /// [`AppliedMarker::new`](crate::record::AppliedMarker::new) and of
+    /// [`Self::retain_marker`] ([`InventoryError::MarkerRingFull`]); **nothing
+    /// is written on an error** (`ActionTxn` discards).
     #[allow(clippy::too_many_arguments)]
     pub fn transfer_marked(
         &self,
@@ -526,6 +541,7 @@ impl InventoryFamilies {
         marker: &smol_str::SmolStr,
         actor: mush_core::ObjId,
         now: &ClockStamp,
+        wall: i64,
     ) -> Result<Moved, InventoryError> {
         if from == to {
             return Err(InventoryError::SameEndpoint);
@@ -547,7 +563,77 @@ impl InventoryFamilies {
         )?;
         let moved = self.transfer(txn, from, to, commodity, amount)?;
         txn.insert(&self.applied, marker, record)?;
+        self.retain_marker(txn, from, marker, wall)?;
         Ok(moved)
+    }
+
+    /// ---- Doc 18 §9 risk 19, cut IC14 row 1 — record a marker in its ring ----
+    ///
+    /// Record the applied marker `id`, just written in this bundle, in
+    /// `endpoint`'s [`MarkerRing`](crate::record::MarkerRing), and remove from
+    /// `inventory.applied` every marker the push evicts — all in the same
+    /// bundle. `wall` is the offer's real-clock stamp, which is also "now" for
+    /// the prepare (a prepare reads no clock).
+    ///
+    /// **The replay argument.** E7c2 owner decision D1: the applied marker is
+    /// the only replay guard that survives a reboot, and for a sale also the
+    /// Deliver leg's guard, its settlement Fact and the re-stage's read. A
+    /// marker is therefore retired only when its endpoint holds more than
+    /// [`MAX_RETAINED_MARKERS_PER_ENDPOINT`](crate::record::MAX_RETAINED_MARKERS_PER_ENDPOINT)
+    /// and it is older than
+    /// [`MARKER_RETENTION_SECS`](crate::record::MARKER_RETENTION_SECS) of real
+    /// time — past every window in which a Fact, an over-sell guard, a
+    /// re-stage or a re-driven offer reads it. A request replayed after that
+    /// horizon is not guarded: that is the owner's D1 trade, recorded as doc 18
+    /// cut IC14 owner item O7.
+    ///
+    /// # Errors
+    /// [`InventoryError::MarkerRingFull`] when the ring holds
+    /// [`MAX_MARKER_RING`](crate::record::MAX_MARKER_RING) entries none of
+    /// which may yet be evicted (fail closed: the whole bundle is refused and
+    /// nothing is written); [`InventoryError::State`] /
+    /// [`InventoryError::Record`] when the ring cannot be read or written.
+    pub fn retain_marker(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        id: &smol_str::SmolStr,
+        wall: i64,
+    ) -> Result<(), InventoryError> {
+        let current = txn.get(&self.marker_ring, &endpoint)?.cloned();
+        let ring = current
+            .clone()
+            .unwrap_or_else(crate::record::MarkerRing::empty);
+        let pushed = ring.push(
+            crate::record::RingEntry {
+                key: id.clone(),
+                wall,
+            },
+            wall,
+        );
+        let (next, evicted) = match pushed {
+            Ok(pushed) => pushed,
+            Err(InventoryRecordError::MarkerRingFull { .. }) => {
+                tracing::error!(
+                    %endpoint,
+                    "inventory: this endpoint's marker ring is full of markers younger than the \
+                     retention horizon; the move is refused (doc 18 §9 risk 19)"
+                );
+                return Err(InventoryError::MarkerRingFull);
+            }
+            Err(error) => return Err(InventoryError::Record(error)),
+        };
+        for key in &evicted {
+            if txn.get(&self.applied, key)?.is_some() {
+                txn.remove(&self.applied, key)?;
+            }
+        }
+        if current.is_some() {
+            txn.replace(&self.marker_ring, &endpoint, next)?;
+        } else {
+            txn.insert(&self.marker_ring, &endpoint, next)?;
+        }
+        Ok(())
     }
 
     /// Record, on the destination's root, that `amount` arrived from the
@@ -1617,6 +1703,16 @@ pub enum InventoryError {
     /// nothing (E7c2 fold C6).
     #[error("a marked transfer moves between two endpoints")]
     SameEndpoint,
+    /// The source endpoint's marker ring holds [`MAX_MARKER_RING`] entries
+    /// none of which may yet be evicted (doc 18 §9 risk 19, cut IC14 row 1):
+    /// the move is refused rather than retire a marker that may still guard a
+    /// replay. Its text is player-facing (owner voice, cut IC14 O1).
+    ///
+    /// [`MAX_MARKER_RING`]: crate::record::MAX_MARKER_RING
+    #[error(
+        "this endpoint has recorded too many moves in the last day to record another; try again later"
+    )]
+    MarkerRingFull,
 }
 
 impl From<ReservationBookError> for InventoryError {

@@ -2776,7 +2776,7 @@ fn ic2_a_dray_note_past_the_bound_fails_the_load() {
 /// (doc 18 cut IC2; doc 18 §4.2 schema additions (1) and (2), D-18-29): the
 /// fielded catalog carries it, its class is `Hauler` off the spec and off the
 /// bound unit, it fits no core (Class 0, the drive ROM), and every reference the
-/// fielded catalog held before it joined — the ten other unit schemas, every
+/// fielded catalog held before it joined — the eleven other unit schemas, every
 /// weapon, sensor, ammunition and core — is the same `DefinitionRef`, because
 /// `bind()` never reads `logistics` or `interior`.
 #[test]

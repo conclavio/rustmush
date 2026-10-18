@@ -820,7 +820,10 @@ pub(crate) fn hull_line(
         if moving {
             under_way = under_way.saturating_add(1);
         }
-        if crate::port::voyage::pending_of(w, hull).is_some() {
+        // Doc 18 cut IC14 row 11 (lead ruling L17): an unreadable sailing plan counts as
+        // departing and nothing more — the line keeps its state, so one hull's corrupt
+        // document never closes `+coop/enrol` world-wide (proposed Q-18-73).
+        if crate::port::voyage::voyage_blocks(w, hull) {
             departing = departing.saturating_add(1);
         }
         let lease = trust

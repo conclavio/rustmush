@@ -294,6 +294,13 @@ Every row is S unless it says otherwise, and verified unless it says otherwise.
 | T-100 (from cut AP.2's record) | `MatchConfig::validate` floors `max_duration_ms` at 60,000 and sets no ceiling, while `MAX_READY_AT_MS`, `MAX_HOLD_MS`, `MAX_CYCLE_MS` and `REPLAY_MAX_KEYFRAMES` are sized to an hour, so a Hold mode's `hold_ms` authored at or past the 900 s cap can never settle and the match ends `timeout` with no winner, unwarned at pack apply or `SIM START`; three stale cap comments remain (`lobby.rs:213`, `replay.rs:2527`'s test doc, `harness.rs`'s `measure_long_run` doc). | `tacsim:config.rs` (`MatchConfig::validate`); `tacsim:definitions/arena.rs` (`MAX_HOLD_MS`, whose comment names this); `tacsim:match_/replay.rs` (`REPLAY_MAX_KEYFRAMES`) | One sentence at pack apply or match open refusing or warning a `hold_ms` at or past `match.max_duration_ms`, and either a ceiling on the cap or the three ceilings checked against it; the three comments corrected. |
 | T-101 (from cut AP.2's record) | A disarmed loser's record contradicts its end: `UnitOutcome` has no word for a hull that lost every gun and still drives, so the result row reads `intact` and the debrief head `blue lost 0 of 1` beside `red won (blue eliminated)`; `arena_story.rs` and `sim_rematch.rs` pin those words as they stand. | `tacsim:match_/record.rs` (`UnitOutcome`); `arena:damage.rs` (the AP.2 clause); `tacsim:match_/report.rs` | An outcome word for a disarmed hull (doc 16 §4's per-unit outcome list grows by one), the debrief's head counting it, the story and rematch tests moved; the bot's result reader is a declared reader change. |
 
+**As built (doc 18 IC2, IC12):** the trade run's `UnitClass::Hauler` (the Dray) is in the catalog and
+never in a lobby: `fieldable_ids` filters it (`tacsim:match_/lobby.rs:1598-1622`), and the custody
+seam refuses it (`tacsim:arena/state.rs` `ic2_arena_new_refuses_a_hauler`, `config.rs`
+`ic2_arena_config_refuses_a_hauler_cap`, `tests/match_lifecycle.rs` `ic2_sim_unit_never_offers_a_hauler`).
+The in-code `@journey` help names its true gate — staff, or the carrier's crew or controller — and that
+a lane route and a Co-op hull are flown only by `+ship/undock` or the sailing plan (IC12).
+
 ### 2.5 Session, network and clients
 
 | Id | The debt | Where | The payment |

@@ -36,6 +36,10 @@ fn endpoint(id: u64) -> EndpointRef {
     EndpointRef(VaultId(id))
 }
 
+/// The offer's real-clock stamp every marked transfer here carries (doc 18
+/// cut IC14 row 1: `transfer_marked`'s `wall`).
+const T_WALL: i64 = 1_700_000_000;
+
 fn now() -> ClockStamp {
     ClockStamp {
         clock: ClockRef::WorldIc { generation: 1 },
@@ -175,6 +179,7 @@ fn ic10_a_marked_transfer_moves_carries_lineage_and_writes_its_marker() {
             &marker,
             actor,
             &now(),
+            T_WALL,
         )
     })
     .expect("marked transfer");
@@ -227,6 +232,7 @@ fn ic10_a_marked_transfer_refuses_a_replay_a_bad_id_and_one_endpoint() {
                 marker,
                 ObjId(42),
                 &now(),
+                T_WALL,
             )
         })
     };
@@ -279,6 +285,7 @@ fn ic10_the_inventory_fact_answers_a_derived_marker() {
                 &marker,
                 ObjId(42),
                 &now(),
+                T_WALL,
             )
         })
         .expect("marked transfer");

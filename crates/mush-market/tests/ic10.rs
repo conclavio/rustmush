@@ -357,6 +357,8 @@ struct Opts {
     intake: u64,
     /// The bid's grade floor.
     min_grade: u8,
+    /// How long the bid stands, in real seconds.
+    bid_ttl_secs: i64,
 }
 
 impl Default for Opts {
@@ -366,6 +368,7 @@ impl Default for Opts {
             house_funds: HOUSE_FUNDS,
             intake: INTAKE,
             min_grade: 0,
+            bid_ttl_secs: 86_400,
         }
     }
 }
@@ -408,6 +411,8 @@ fn rig_with(opts: Opts) -> Rig {
     let economy = mush_economy::EconomyModule::new()
         .with_party_caps(Vec::new())
         .with_party_cap_source(Arc::new(TestCapSource))
+        // Doc 18 cut IC14 row 7: the production composition's dispute veto.
+        .with_dispute_guard(Arc::new(mush_market::SaleDisputeGuard))
         .with_observers(vec![Arc::new(mush_market::MarketObserver)])
         .with_facts(facts);
     let market = mush_market::MarketModule::new()
@@ -565,7 +570,7 @@ fn rig_with(opts: Opts) -> Rig {
         remaining: opts.intake,
         vault: shop.vault(),
         min_grade: opts.min_grade,
-        ttl_secs: 86_400,
+        ttl_secs: opts.bid_ttl_secs,
     };
     let bid = with_probe(&mut tw, GOD, move |ctx| mush_market::post_wanted(ctx, spec))
         .expect("the bid posts");
@@ -1824,7 +1829,9 @@ fn ic10_a_disputed_sale_keeps_its_tonnes_committed_past_the_cutoff() {
     let q = last_sale(&r.tw, r.pat);
     let contract = q.contract.expect("contract");
     let accepted_at = q.lot.as_ref().map(|l| l.accepted_at).expect("terms");
-    ok(&mut r.tw, r.pat, &format!("@contract/dispute {contract}"));
+    // Doc 18 cut IC14 row 7: the seller may no longer dispute their own sale, so the
+    // freeze this test needs is staff's (an admin's dispute is never vetoed).
+    ok(&mut r.tw, GOD, &format!("@contract/dispute {contract}"));
     assert!(matches!(
         state_of(&r.tw, contract),
         Some(ContractState::Disputed)
@@ -1879,6 +1886,64 @@ fn ic10_a_disputed_sale_keeps_its_tonnes_committed_past_the_cutoff() {
     assert_eq!(bid_qty(&r.tw, bid), Some(INTAKE), "the bid is restored");
     assert_eq!(held(&r.tw, r.vendor_account), 0, "the house is refunded");
     ok(&mut r.tw, r.pat, &format!("+market/sell {bid}=30"));
+}
+
+/// **Doc 18 cut IC14 row 1 (review F1): past the marker horizon an absent marker is
+/// unconfirmed, never "not moved".** A sale disputed for longer than
+/// `MARKER_RETENTION_SECS` of real time: by then inventory may have retired its marker
+/// from the hold's ring (32 newer moves out of the hold and a day gone), so a refund
+/// resolution cannot read absence as "the goods never left". Here the hand-over never
+/// landed at all, which is exactly the case it cannot tell from a retired marker: the
+/// house is refunded and the bid is **not** restored — under-listing is the safe side
+/// (lead ruling L5). (Inside the horizon the same refund restores it:
+/// `ic10_a_disputed_sale_keeps_its_tonnes_committed_past_the_cutoff`.)
+#[test]
+fn ic14_a_refund_past_the_marker_horizon_never_restores_the_bid() {
+    // The bid stands three real days, so it is still there when the refund lands.
+    let mut r = rig_with(Opts {
+        bid_ttl_secs: 3 * 86_400,
+        ..Opts::default()
+    });
+    let bid = r.bid;
+    ok(&mut r.tw, r.pat, &format!("+market/sell {bid}=30"));
+    let _dropped = take(&mut r.tw);
+    let q = last_sale(&r.tw, r.pat);
+    let contract = q.contract.expect("contract");
+    let accepted_at = q.lot.as_ref().map(|l| l.accepted_at).expect("terms");
+    ok(&mut r.tw, GOD, &format!("@contract/dispute {contract}"));
+    assert!(matches!(
+        state_of(&r.tw, contract),
+        Some(ContractState::Disputed)
+    ));
+    assert_eq!(bid_qty(&r.tw, bid), Some(INTAKE - 30));
+    // A day and more on, staff refund it.
+    r.tw.set_now(accepted_at + mush_inventory::MARKER_RETENTION_SECS + 60);
+    ok(
+        &mut r.tw,
+        GOD,
+        &format!("@contract/resolve {contract}=refund"),
+    );
+    assert!(matches!(
+        state_of(&r.tw, contract),
+        Some(ContractState::Cancelled)
+    ));
+    let now = r.tw.world().now();
+    at(&mut r.tw, now + 61);
+    at(&mut r.tw, now + 122);
+    assert_eq!(held(&r.tw, r.vendor_account), 0, "the house is refunded");
+    assert_eq!(
+        bid_qty(&r.tw, bid),
+        Some(INTAKE - 30),
+        "the bid is not restored over goods that may have reached the house"
+    );
+    // The page: the economy pages a contract once, so the lapse's "could not be
+    // confirmed" record folds into the dispute's standing one — one record on this
+    // contract.
+    let pages = economy_of(&r.tw)
+        .escalations()
+        .filter(|e| matches!(e.subject, EscalationSubject::Contract(c) if c == contract))
+        .count();
+    assert_eq!(pages, 1, "one standing record on the contract");
 }
 
 // ---- 11: the grammar -------------------------------------------------------------------------
@@ -2000,13 +2065,15 @@ fn ic10_a_dropped_leg_is_asked_for_again_and_settles_once() {
     );
     land_submit(&mut r.tw, &restaged, 0xd1).expect("it lands");
 
-    // Asked again after the landing, before the settlement: re-staged, and its landing
-    // moves nothing.
-    ok(&mut r.tw, r.pat, &format!("+market/accept {}", q.id));
-    let replay = take(&mut r.tw);
-    assert_eq!(replay, dropped);
-    let refusal = land_submit(&mut r.tw, &replay, 0xd2).expect_err("the marker refuses");
-    assert!(refusal.starts_with("prepare:"), "{refusal}");
+    // Asked again after the landing, before the settlement: doc 18 cut IC14 row 3 —
+    // the re-stage reads the marker first and says the goods are in; nothing is
+    // staged and nothing moves twice.
+    let said = err(&mut r.tw, r.pat, &format!("+market/accept {}", q.id));
+    assert!(said.contains(mush_market::DELIVER_LANDED), "{said}");
+    assert!(
+        r.tw.engine_mut().take_authoritative_submit().is_none(),
+        "nothing re-staged after the landing"
+    );
     assert_eq!(pool(&mut r.tw, &r.families, r.pat_hold), HELD - 20);
     assert_eq!(pool(&mut r.tw, &r.families, r.shop), 20);
     settle(&mut r.tw, contract);
@@ -2031,4 +2098,247 @@ fn ic10_a_dropped_leg_is_asked_for_again_and_settles_once() {
     }
     let _ = r.quinn_account;
     no_settlement_pages(&r.tw);
+}
+
+// ---- doc 18 cut IC14: the money-safety residuals --------------------------------------
+
+/// Queue `n` authoritative submissions for `n` stand-in actors that are none of the
+/// rig's (the engine's queue keys only by actor; these are never driven).
+fn fill_engine_queue(tw: &mut TestWorld, n: u32) {
+    for i in 0..n {
+        let submit = forged(tw, ObjId(900_000 + i), json!({}));
+        tw.engine_mut()
+            .queue_authoritative_submit(Box::new(submit))
+            .expect("the queue has room");
+    }
+}
+
+/// **Doc 18 cut IC14 row 2: a full engine queue refuses the sale before the escrow.**
+/// With 64 other actors' submissions queued the deliver leg could not be staged, so
+/// `+market/sell` answers `SELL_QUEUE_FULL` (not `SELL_BUSY`: the seller has nothing
+/// pending) and writes nothing: no contract, no quote, the house's balance and the
+/// bid's intake untouched, and nothing of the seller's queued.
+#[test]
+fn ic14_a_full_queue_refuses_the_sale_before_the_escrow() {
+    let mut r = rig();
+    fill_engine_queue(&mut r.tw, 64);
+    let before = books(&r);
+    let said = err(&mut r.tw, r.pat, &format!("+market/sell {}=20", r.bid));
+    assert!(said.contains(mush_market::SELL_QUEUE_FULL), "{said}");
+    assert!(!said.contains(mush_market::SELL_BUSY), "{said}");
+    assert_eq!(books(&r), before, "the sale wrote nothing");
+    assert!(!r.tw.engine().has_authoritative_submit_for(r.pat));
+    assert_eq!(r.tw.engine().queued_authoritative_actors().count(), 64);
+    no_settlement_pages(&r.tw);
+}
+
+/// **Doc 18 cut IC14 row 2 (reviewer F2): two sales in one `fire_due` on a nearly
+/// full queue escrow once.** 63 queued; two `@wait` lines fire in the same slice, one
+/// sale each. The first escrows and its leg is admitted at the drain (the 64th place);
+/// the second counts the first's deferred leg, is refused `SELL_QUEUE_FULL` before
+/// any escrow, and no seller ever reads the engine's "Too many actions" line.
+#[test]
+fn ic14_two_same_fire_sells_on_a_nearly_full_queue_escrow_once() {
+    let mut r = rig();
+    fill_engine_queue(&mut r.tw, 63);
+    let before = books(&r);
+    // The engine's `@wait` is not composed in this rig, so the probe schedules the two
+    // lines exactly as `@wait 5=…` would (one `Deferred::ScheduleIn` of a `WaitCmd`
+    // each, the same due second).
+    let line = format!("+market/sell {}=20", r.bid);
+    let (pat, quinn) = (r.pat, r.quinn);
+    with_probe(&mut r.tw, GOD, move |ctx| {
+        for actor in [pat, quinn] {
+            ctx.out.defer(mush_core::Deferred::ScheduleIn {
+                delay_ms: 5_000,
+                kind: mush_core::ScheduledKind::WaitCmd {
+                    actor,
+                    line: line.clone(),
+                },
+            });
+        }
+    });
+    let t = r.tw.world().now() + 5;
+    r.tw.set_now(t);
+    let events = r.tw.fire_due(t * 1000);
+    let said = texts(&events);
+    assert!(
+        !said.contains("Too many actions are committing"),
+        "no seller reads the engine's back-pressure line: {said}"
+    );
+    assert_eq!(
+        said.matches(mush_market::SELL_QUEUE_FULL).count(),
+        1,
+        "exactly one sale refused: {said}"
+    );
+    let after = books(&r);
+    assert_eq!(
+        after.contracts,
+        before.contracts + 1,
+        "one contract: {said}"
+    );
+    assert_eq!(after.quotes, before.quotes + 1);
+    assert_eq!(after.house_held, before.house_held + BID * 20, "one escrow");
+    assert_eq!(after.bid, before.bid.map(|q| q - 20));
+    let queued: Vec<ObjId> = [r.pat, r.quinn]
+        .into_iter()
+        .filter(|who| r.tw.engine().has_authoritative_submit_for(*who))
+        .collect();
+    assert_eq!(
+        queued.len(),
+        1,
+        "the seller who escrowed has their leg queued"
+    );
+    no_settlement_pages(&r.tw);
+}
+
+/// **Doc 18 cut IC14 row 2: the sale names its remedy** — a second line after the
+/// policy's sale line, naming `+market/accept <quote>` with the sale's quote id.
+#[test]
+fn ic14_the_sale_names_its_remedy() {
+    let mut r = rig();
+    let said = ok(&mut r.tw, r.pat, &format!("+market/sell {}=20", r.bid));
+    let q = last_sale(&r.tw, r.pat);
+    let remedy = mush_market::SELL_REMEDY.replace("{quote}", &q.id.0.to_string());
+    assert_eq!(
+        remedy,
+        format!(
+            "If the hand-over stalls, +market/accept {} asks again.",
+            q.id.0
+        )
+    );
+    let lines: Vec<&str> = said.lines().collect();
+    let sold = lines
+        .iter()
+        .position(|l| l.starts_with("sold 20:"))
+        .expect("the policy's sale line");
+    assert_eq!(lines.get(sold + 1), Some(&remedy.as_str()), "{said}");
+}
+
+/// **Doc 18 cut IC14 row 3: a re-stage after the landing says the goods are in.** The
+/// leg lands; past `draw_by` and before the mirror sweeps, `+market/accept <quote>`
+/// answers `DELIVER_LANDED`, never `DELIVER_TOO_LATE` ("…Nothing moved."), stages
+/// nothing, and the contract then settles inside its settle margin.
+#[test]
+fn ic14_a_restage_after_the_landing_says_the_goods_are_in() {
+    let mut r = rig();
+    ok(&mut r.tw, r.pat, &format!("+market/sell {}=20", r.bid));
+    land(&mut r.tw, 0xe1).expect("the deliver lands");
+    let q = last_sale(&r.tw, r.pat);
+    let contract = q.contract.expect("contract");
+    let draw_by = q.lot.as_ref().and_then(|l| l.draw_by).expect("a cutoff");
+    r.tw.set_now(draw_by + 1);
+    let said = err(&mut r.tw, r.pat, &format!("+market/accept {}", q.id));
+    assert!(said.contains(mush_market::DELIVER_LANDED), "{said}");
+    assert!(!said.contains(DELIVER_TOO_LATE), "{said}");
+    assert!(r.tw.engine_mut().take_authoritative_submit().is_none());
+    settle(&mut r.tw, contract);
+    assert_eq!(r.policy.lock().expect("policy").settled.len(), 1);
+    no_settlement_pages(&r.tw);
+}
+
+/// **Doc 18 cut IC14 row 3 (reviewer F1): the D1 guard holds inside the horizon.**
+/// The leg lands, then 40 staff `@inv/move`s leave the same hold (40 more markers in
+/// its ring, past the floor of 32, all younger than a real day), then
+/// `+market/accept <quote>`: still `DELIVER_LANDED`, nothing staged, and the hold
+/// moved exactly the sale's tonnes once plus the staff moves.
+#[test]
+fn ic14_a_restage_after_40_later_moves_from_the_hold_is_still_a_hit() {
+    let mut r = rig();
+    ok(&mut r.tw, r.pat, &format!("+market/sell {}=5", r.bid));
+    land(&mut r.tw, 0xe2).expect("the deliver lands");
+    let q = last_sale(&r.tw, r.pat);
+    for n in 0..40_u8 {
+        let t = r.tw.world().now() + 30;
+        r.tw.set_now(t);
+        ok(
+            &mut r.tw,
+            GOD,
+            &format!(
+                "@inv/move {}/iron:1={}",
+                r.pat_hold.vault().0,
+                r.quinn_hold.vault().0
+            ),
+        );
+        land(&mut r.tw, 0x80 + n).expect("a staff move lands");
+    }
+    let ring = read(&mut r.tw, &r.families, |txn| {
+        txn.get(&r.families.marker_ring, &r.pat_hold)
+            .expect("the ring reads")
+            .map_or(0, mush_inventory::MarkerRing::len)
+    });
+    assert_eq!(ring, 41, "the sale's marker and the 40 moves, none evicted");
+    let said = err(&mut r.tw, r.pat, &format!("+market/accept {}", q.id));
+    assert!(said.contains(mush_market::DELIVER_LANDED), "{said}");
+    assert!(r.tw.engine_mut().take_authoritative_submit().is_none());
+    assert_eq!(pool(&mut r.tw, &r.families, r.pat_hold), HELD - 5 - 40);
+    assert_eq!(pool(&mut r.tw, &r.families, r.shop), 5, "moved once");
+}
+
+/// **Doc 18 cut IC14 row 7 (lead ruling L6): a seller cannot dispute their own sale.**
+/// `@contract/dispute` by the seller answers `SALE_DISPUTE_REFUSED`; the contract
+/// stays Active, the house's escrow is not frozen, no dispute page is opened, and the
+/// sale settles once the marker lands.
+#[test]
+fn ic14_a_seller_cannot_dispute_their_own_sale() {
+    let mut r = rig();
+    ok(&mut r.tw, r.pat, &format!("+market/sell {}=20", r.bid));
+    let q = last_sale(&r.tw, r.pat);
+    let contract = q.contract.expect("contract");
+    let said = err(&mut r.tw, r.pat, &format!("@contract/dispute {contract}"));
+    assert!(said.contains(mush_market::SALE_DISPUTE_REFUSED), "{said}");
+    assert!(matches!(
+        state_of(&r.tw, contract),
+        Some(ContractState::Active)
+    ));
+    assert_eq!(
+        held(&r.tw, r.vendor_account),
+        20 * BID,
+        "escrowed, not frozen"
+    );
+    no_settlement_pages(&r.tw);
+    land(&mut r.tw, 0xe5).expect("the deliver lands");
+    settle(&mut r.tw, contract);
+    assert_eq!(r.policy.lock().expect("policy").settled.len(), 1);
+    no_settlement_pages(&r.tw);
+}
+
+/// **Doc 18 cut IC14 row 7: staff and other contracts dispute as before.** An admin's
+/// dispute of a sale still freezes it (and pages); the veto answers nothing for the
+/// sale's other party (the house) or for a contract that is not a sale into a bid.
+#[test]
+fn ic14_staff_and_other_contracts_dispute_as_before() {
+    use mush_economy::DisputeGuard;
+    let mut r = rig();
+    ok(&mut r.tw, r.pat, &format!("+market/sell {}=20", r.bid));
+    let q = last_sale(&r.tw, r.pat);
+    let contract = q.contract.expect("contract");
+    let record = economy_of(&r.tw)
+        .snapshot()
+        .contract(contract)
+        .cloned()
+        .expect("the contract");
+    let guard = mush_market::SaleDisputeGuard;
+    assert_eq!(
+        guard.refusal(r.tw.world(), &record, &q.seller),
+        Some(mush_market::SALE_DISPUTE_REFUSED)
+    );
+    assert_eq!(guard.refusal(r.tw.world(), &record, &q.buyer), None);
+    let mut other = record.clone();
+    other.id = ContractId(contract.0 + 1_000_000);
+    assert_eq!(
+        guard.refusal(r.tw.world(), &other, &q.seller),
+        None,
+        "not a sale into a bid"
+    );
+    ok(&mut r.tw, GOD, &format!("@contract/dispute {contract}"));
+    assert!(matches!(
+        state_of(&r.tw, contract),
+        Some(ContractState::Disputed)
+    ));
+    assert_eq!(
+        held(&r.tw, r.vendor_account),
+        20 * BID,
+        "the escrow is frozen"
+    );
 }

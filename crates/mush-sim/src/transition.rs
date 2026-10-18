@@ -473,8 +473,10 @@ fn carrier_seal(
 /// Plan [`Transition::Members`] (doc 18 §4.2 (c), cut IC4): refuse, in this
 /// order, a dead or unrecorded space, a set without the space, a set over
 /// [`crate::data::MAX_SPACE_ROOMS`], any other member that is dead, not a Room,
-/// a space of its own, a domain host, a live presentation room or a member of
-/// another space, and the removal of a member an occupant stands in. Pure.
+/// a space of its own, Limbo, the recovery room or the in-transit room, the backing
+/// of a custody vault (doc 18 cut IC14 row 46), a domain host, a live presentation
+/// room or a member of another space, and the removal of a member an occupant
+/// stands in. Pure.
 fn plan_members(
     st: &SpatialState,
     w: &World,
@@ -508,6 +510,37 @@ fn plan_members(
             return Err(SpatialError::Members(format!(
                 "{r} is an interior space of its own"
             )));
+        }
+        // Doc 18 cut IC14 row 46: the engine's own rooms are never a member.
+        let reserved = if r == mush_core::LIMBO {
+            Some("Limbo")
+        } else if r == st.recovery_room {
+            Some("the recovery room")
+        } else if r == st.in_transit_room {
+            Some("the in-transit room")
+        } else {
+            None
+        };
+        if let Some(what) = reserved {
+            return Err(SpatialError::Members(format!("{r} is {what}")));
+        }
+        // Nor a room that backs a custody vault: a member is walkable, and a
+        // walkable room as a vault backing is what doc 18 §9 refuses. The read is
+        // direct over the pre-existing `mush-sim -> mush-economy` edge; `None`
+        // (the economy is not composed) means no vault backs it.
+        if let Some(vault) = w
+            .module_state::<mush_economy::EconomyStore>()
+            .and_then(|store| {
+                let snapshot = store.snapshot();
+                snapshot
+                    .vault_by_backing(&mush_economy::CustodyRef::Container(r))
+                    .or_else(|| {
+                        snapshot.vault_by_backing(&mush_economy::CustodyRef::SpatialInterior(r))
+                    })
+                    .map(|v| v.id.0)
+            })
+        {
+            return Err(SpatialError::Members(format!("{r} backs vault #{vault}")));
         }
         if let Some(d) = st.derived.domain_by_host.get(&r) {
             return Err(SpatialError::Members(format!("{r} hosts domain #{d}")));
