@@ -122,6 +122,42 @@ def frozen_game(row):
     return game
 
 
+def opening_signature(opening):
+    """Read only physical spawn facts from an actual retained snapshot."""
+    require(type(opening) is dict and type(opening.get("state")) is str
+            and 0 < len(opening["state"].encode("utf-8")) <= MAX_FROZEN_GAME_BYTES,
+            "bounded actual opening state is required")
+    state = json.loads(opening["state"])
+    units = state.get("units") if type(state) is dict else None
+    require(type(units) is list and len(units) == 2,
+            "actual opening must contain exactly two units")
+    rows = []
+    for unit in units:
+        require(type(unit) is dict and type(unit.get("pose")) is dict,
+                "actual opening unit pose is required")
+        pose = unit["pose"]
+        rows.append({"team":unit.get("team"), "power":unit.get("power"),
+                     **{key:pose.get(key) for key in ("x_cm", "y_cm", "z_cm", "heading_mdeg")}})
+    return validate_opening_signature(rows)
+
+
+def validate_opening_signature(rows):
+    """Normalize by physical side, never by candidate identity or object ID."""
+    keys = {"team", "x_cm", "y_cm", "z_cm", "heading_mdeg", "power"}
+    require(type(rows) is list and len(rows) == 2
+            and all(type(row) is dict and set(row) == keys for row in rows),
+            "actual opening signature shape")
+    require(all(row["team"] in ("red", "blue") for row in rows)
+            and {row["team"] for row in rows} == {"red", "blue"},
+            "actual opening needs one unit on each side")
+    require(all(all(type(row[key]) is int and -(2**31) <= row[key] < 2**31
+                        for key in ("x_cm", "y_cm", "z_cm"))
+                and type(row["heading_mdeg"]) is int and 0 <= row["heading_mdeg"] < 360_000
+                and row["power"] in ("off", "starting", "online") for row in rows),
+            "actual opening signature bounds")
+    return sorted(rows, key=lambda row: row["team"] == "blue")
+
+
 def verify_proving_artifacts(directory, story, proving):
     start = read(directory / "author/proving-start-manifest.json")
     require(start["key"]["account"] == proving["key"]["account"]
@@ -152,8 +188,13 @@ def verify_proving_artifacts(directory, story, proving):
     require(type(frozen.get("format")) is int and frozen["format"] == 2,
             "current frozen proving format is required")
     require(len(frozen["games"]) == 30, "thirty actual frozen starts are required")
+    common_opening = None
     for index, encoded_game in enumerate(frozen["games"]):
         game = frozen_game(encoded_game)
+        opening = opening_signature(game["opening"])
+        require(common_opening is None or opening == common_opening,
+                "scenario mismatch: actual proving openings differ")
+        common_opening = opening
         require(game["swapped"] is (index % 2 == 1)
                 and game["seed"] == frozen["context"]["pair_seeds"][index // 2],
                 "actual frozen seed/side pairing differs")
@@ -183,7 +224,7 @@ def verify_proving_artifacts(directory, story, proving):
                   "source_sha256":opponent["source_sha256"]}
         require(actual == frozen["context"]["opponent"],
                 "actual proving opponent differs from its reported identity")
-    return games
+    return games, common_opening
 
 
 def compare(directory):
@@ -208,7 +249,7 @@ def compare(directory):
     require(story["first_seal"]["requested"]["source_sha256"] == source["source_sha256"],
             "live story did not seal this exact Field Pilot source")
     require(story["first_seal"]["class"] == "II", "live story did not run Class II")
-    actual_games = verify_proving_artifacts(directory, story, proving)
+    actual_games, opening = verify_proving_artifacts(directory, story, proving)
     checks = story["checks"]
     require(len(checks) == 6 and sum(not r["armed"] for r in checks) == 3,
             "all six production pictures, including three unarmed cases, are required")
@@ -251,6 +292,9 @@ def compare(directory):
                 "external side totals disagree with actual match outcomes")
     require(all(m["ground_sha256"] == context["ground_sha256"] and m["opponent"] == context["opponent"]
                 and m["ledger"]["digest"] for m in external["matches"]), "external match evidence differs")
+    require(all(validate_opening_signature(match.get("opening")) == opening
+                for match in external["matches"]),
+            "scenario mismatch: actual external/proving opening positions, headings or power differ")
     pattern = re.compile(r"Won (\d+); lost (\d+); drew (\d+); timed out (\d+)\.")
     totals = [pattern.fullmatch(line) for line in proving["summary"]]
     totals = [m for m in totals if m]
@@ -289,7 +333,7 @@ def compare(directory):
     if all_mind_faults:
         failures.append(f"actual proving recorded {all_mind_faults} mind faults across both sides")
     result = {"format":1, "run_id":run["run_id"], "revision":run["revision"], "context":context,
-              "source_sha256":source["source_sha256"], "embedded_rhai":embedded,
+              "source_sha256":source["source_sha256"], "opening":opening, "embedded_rhai":embedded,
               "fresh_external_bot":external_counts, "intervals_do_not_overlap":separate,
               "field_pilot_point_win_rate":point_rate,
               "field_pilot_rate_in_external_wilson_95":inside_external_interval,

@@ -59,10 +59,21 @@ class ComparisonTests(unittest.TestCase):
                     "requested":{"mind":"Standard"}, "cards":{
                         "selected":[{"name":"Line", "key":{"index":0}}],
                         "definition":{"profiles":[{"name":"Line"}]}}}
+        # Synthetic physical facts only; these fixtures are not acceptance evidence.
+        self.opening_rows = [
+            {"team":"red", "x_cm":6500, "y_cm":97500, "z_cm":100,
+             "heading_mdeg":90000, "power":"off"},
+            {"team":"blue", "x_cm":249500, "y_cm":97500, "z_cm":-100,
+             "heading_mdeg":270000, "power":"off"}]
+        self.opening_units = [{"id":index + 100, "team":row["team"], "power":row["power"],
+                               "pose":{key:value for key, value in row.items()
+                                       if key not in ("team", "power")}}
+                              for index, row in enumerate(self.opening_rows)]
         self.frozen = {"format":2, "context":context, "games":[{
             "seed":index // 2, "swapped":index % 2 == 1,
             "format":1, "match_id":index + 1, "limit":16 * 1024 * 1024,
-            "engine":{}, "opening":{}, "clock":{}, "sources":[],
+            "engine":{}, "opening":{"state":json.dumps({"units":self.opening_units})},
+            "clock":{}, "sources":[],
             "seals":[copy.deepcopy(seal), copy.deepcopy(opponent)]} for index in range(30)]}
         self.proving["key"] = {"account":"test-account", "run":1, "part":"result"}
         self.result = {"context":context, "report":{"games":[{
@@ -86,7 +97,8 @@ class ComparisonTests(unittest.TestCase):
                           "draws": 2, "timeouts": 2})
             matches.extend({"side": side, "match": index, "outcome": outcome,
                             "ground_sha256": context["ground_sha256"],
-                            "opponent": context["opponent"], "ledger": {"digest": "5" * 64}}
+                            "opponent": context["opponent"], "ledger": {"digest": "5" * 64},
+                            "opening":copy.deepcopy(self.opening_rows)}
                            for index, outcome in enumerate(outcomes, 1))
         self.external = {**copy.deepcopy(context), **metadata, "per_side": 1, "samples": 30,
                          "native_substep_max_ms": 250, "sides": sides, "matches": matches,
@@ -126,6 +138,56 @@ class ComparisonTests(unittest.TestCase):
         self.assertTrue(result["acceptance_passed"])
         self.assertEqual(result["proving_faults"]["all_minds"], 0)
         self.assertIsNone(result["proving_faults"]["candidate"])
+
+    def test_opening_evidence_is_side_normalized_and_source_free(self):
+        for game in self.frozen["games"]:
+            units = copy.deepcopy(self.opening_units[::-1])
+            for unit in units:
+                unit["id"] += 1000
+                unit["controller"] = "irrelevant controller difference"
+            game["opening"]["state"] = json.dumps({"units":units})
+        for match in self.external["matches"]:
+            match["opening"].reverse()
+        self.update_frozen()
+        self.write("external/external-interval.json", self.external)
+        self.assertEqual(self.compare()["opening"], self.opening_rows)
+
+    def test_same_config_cannot_hide_actual_opening_mismatch(self):
+        for key, value in [("heading_mdeg", 0), ("x_cm", 6501),
+                           ("z_cm", 101), ("power", "online")]:
+            with self.subTest(key=key):
+                self.external["matches"][7]["opening"] = copy.deepcopy(self.opening_rows)
+                self.external["matches"][7]["opening"][0][key] = value
+                self.write("external/external-interval.json", self.external)
+                with self.assertRaisesRegex(ValueError, "actual external/proving opening"):
+                    self.compare()
+
+    def test_every_proving_opening_is_checked_not_only_first(self):
+        changed = copy.deepcopy(self.opening_units)
+        changed[0]["pose"]["heading_mdeg"] = 0
+        self.frozen["games"][29]["opening"]["state"] = json.dumps({"units":changed})
+        self.update_frozen()
+        with self.assertRaisesRegex(ValueError, "actual proving openings differ"):
+            self.compare()
+
+    def test_missing_external_opening_is_not_assumed_equal(self):
+        del self.external["matches"][0]["opening"]
+        self.write("external/external-interval.json", self.external)
+        with self.assertRaisesRegex(ValueError, "opening signature shape"):
+            self.compare()
+
+    def test_opening_refuses_invalid_shape_side_and_numeric_types(self):
+        for change in [lambda rows:rows.pop(),
+                       lambda rows:rows[1].update(team="red"),
+                       lambda rows:rows[0].update(heading_mdeg=True),
+                       lambda rows:rows[0].update(heading_mdeg=360_000),
+                       lambda rows:rows[0].update(x_cm=2**31),
+                       lambda rows:rows[0].update(source="not a physical fact")]:
+            with self.subTest(change=change):
+                rows = copy.deepcopy(self.opening_rows)
+                change(rows)
+                with self.assertRaisesRegex(ValueError, "opening"):
+                    acceptance.validate_opening_signature(rows)
 
     def update_proving(self):
         proof = self.write("author/proving-manifest.json", self.proving)

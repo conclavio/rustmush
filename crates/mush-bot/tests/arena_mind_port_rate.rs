@@ -11,6 +11,69 @@ use std::{
 #[path = "support/arena.rs"]
 mod arena_rig;
 
+/// A source-free comparison projection from each actual retained tape opening.
+/// Physical side is stable across paired runs; object IDs and controllers are not.
+fn opening_signature(opening: &serde_json::Value) -> serde_json::Value {
+    let raw = opening["state"].as_str().expect("actual opening state");
+    assert!(raw.len() <= 16 * 1024 * 1024, "bounded opening state");
+    let state: serde_json::Value = serde_json::from_str(raw).unwrap();
+    let units = state["units"].as_array().expect("actual opening units");
+    assert_eq!(units.len(), 2, "actual 1v1 opening");
+    let rows = ["red", "blue"].map(|team| {
+        let matching = units
+            .iter()
+            .filter(|unit| unit["team"] == team)
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1, "one actual opening unit on each side");
+        let unit = matching.first().unwrap();
+        let pose = &unit["pose"];
+        for key in ["x_cm", "y_cm", "z_cm"] {
+            assert!(
+                pose[key]
+                    .as_i64()
+                    .is_some_and(|value| i32::try_from(value).is_ok())
+            );
+        }
+        assert!(
+            pose["heading_mdeg"]
+                .as_u64()
+                .is_some_and(|heading| heading < 360_000)
+        );
+        assert!(matches!(
+            unit["power"].as_str(),
+            Some("off" | "starting" | "online")
+        ));
+        json!({"team":team,"x_cm":pose["x_cm"],"y_cm":pose["y_cm"],"z_cm":pose["z_cm"],
+            "heading_mdeg":pose["heading_mdeg"],"power":unit["power"]})
+    });
+    json!(rows)
+}
+
+#[test]
+fn opening_evidence_uses_actual_physical_sides_and_heading() {
+    let red = json!({"id":100,"team":"red","power":"off","pose":{
+        "x_cm":6500,"y_cm":97500,"z_cm":100,"heading_mdeg":90000}});
+    let blue = json!({"id":200,"team":"blue","power":"off","pose":{
+        "x_cm":249500,"y_cm":97500,"z_cm":-100,"heading_mdeg":270000}});
+    let opening = |units| json!({"state":serde_json::to_string(&json!({"units":units})).unwrap()});
+    let expected = json!([
+        {"team":"red","power":"off","x_cm":6500,"y_cm":97500,"z_cm":100,"heading_mdeg":90000},
+        {"team":"blue","power":"off","x_cm":249500,"y_cm":97500,"z_cm":-100,"heading_mdeg":270000}
+    ]);
+    assert_eq!(
+        opening_signature(&opening(vec![blue.clone(), red.clone()])),
+        expected
+    );
+    let mut changed = red;
+    changed["id"] = json!(999);
+    assert_eq!(
+        opening_signature(&opening(vec![changed.clone(), blue.clone()])),
+        expected
+    );
+    changed["pose"]["heading_mdeg"] = json!(0);
+    assert_ne!(opening_signature(&opening(vec![changed, blue])), expected);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "fresh 30-match real SSH interval; concurrent sides allow 210 minutes, explicit acceptance run only"]
 async fn field_pilot_fresh_external_muster_interval() {
@@ -180,7 +243,8 @@ async fn field_pilot_fresh_external_muster_interval() {
             }
             matches.push(json!({"side":side,"match":match_id,"seed":record["seed"],"ground_sha256":ground_sha,
                 "arena_definition_digest":record["arena_definition_digest"],"outcome":record["outcome"],"reason":record["reason"],
-                "arena_ms":record["arena_ms"],"ledger":record["ledger"],"opponent":opponent}));
+                "arena_ms":record["arena_ms"],"ledger":record["ledger"],"opponent":opponent,
+                "opening":opening_signature(&head["opening"])}));
         }
         assert!(
             flown.early.is_none(),
