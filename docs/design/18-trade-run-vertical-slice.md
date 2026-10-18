@@ -2196,8 +2196,11 @@ server loads it, else the shipped (IC3); `@org/list` shows the orgs only and cap
 an exhaustive match, and `enrol_gate`, `:567`): §4.7's "the gate over all of it" is read with D-18-50,
 which keeps the sky reported and never gated. Treasury and Bids gate since IC12 (IC8 L8 had reported
 Bids without gating them): a missing treasury account, or a hand-withdrawn or apply-waiting bid, closes
-enrolment; a lapsed bid the clerk re-posts closes it for the fire or two the clerk takes; an exhausted
-bid reads ready. The player never sees the failing line: `+coop/enrol` logs it and answers `NOT_OPEN`,
+enrolment; an exhausted bid reads ready. **As built (P-B, Q-18-60 R10):** the Bids line gates on Missing
+alone (`shuts`, beside `gated`): a lapsed bid the clerk re-posts, or a bid whose house cannot fund one
+unit ("not buying until its capital settles"), reads pending on the report, leaves the desk open, and is
+paged once a boot by the port tick (`page_unfunded_houses`, `PortTickState.funds_pages`); the sales
+against such a house skip with `HOUSE_CANNOT_PAY_SKIP`, as they did before IC12. The player never sees the failing line: `+coop/enrol` logs it and answers `NOT_OPEN`,
 "The Co-op is not enrolling yet: the programme is still being set up." (`coop.rs:119`). A moving sky
 over a lane body without `epoch_ic` is also paged once per boot by the port tick (`page_moving_sky`,
 `tacsim/src/port_tick.rs:461`; `PortTickState.sky_paged`). **"At rate 3600 in a test world the gate
@@ -2499,7 +2502,8 @@ runnable.**
   funded-balance board figure (IC8, IC10); the accept line naming the listing's signatory (IC8 L17).
 
 Post-loop cuts, named and ordered: **P-B** the Bids readiness line gates `+coop/enrol` on a Missing bid
-only, a funds-Pending house paged once a boot (Q-18-60, R10; S); **P-G** real gangway exits (outer door relinked at dock, a station
+only, a funds-Pending house paged once a boot (Q-18-60, R10; S; **landed 2026-10-18**, the cut note in
+[18-cut-notes.md](18-cut-notes.md) "P-B"); **P-G** real gangway exits (outer door relinked at dock, a station
 exit named by berth and hull, `BerthLink`, the Moved observer, atlas `on_moved` ordering tests, boot
 reconcile; M); **P-F** berth slots, berth-holder markers, the six freight-deck rooms, `ExitDef`
 fail/succ, the `+move` restricted fix (M); **P-H** locality and the under-way seal on every inventory
@@ -3297,8 +3301,11 @@ every open ruling in this document and in 16c §5; recorded here, binding):
 
 - **Q-18-60 — gate on Missing only.** A hand-withdrawn or apply-waiting bid closes `+coop/enrol`; a
   funds-Pending or re-posting bid does not: the sales skip with `HOUSE_CANNOT_PAY_SKIP` as before IC12,
-  and the port tick pages once a boot while a house cannot fund a tonne. Built as the post-loop cut
-  **P-B** (S; after the deploy — a playtest cannot reach the fifty round trips that drain Kasei).
+  and the port tick pages once a boot while a house cannot fund a tonne. **Built as the post-loop cut
+  P-B, landed 2026-10-18** (the commit on top of `29230ff5`; its hash is named by cut AQ's commit, the
+  next on the same branch, since a commit cannot carry its own) — after the deploy, as ruled: a playtest
+  cannot reach the fifty round trips that drain Kasei. The record is
+  [18-cut-notes.md](18-cut-notes.md) "P-B".
 - **Q-18-71 A failed relet.** Six retries under a doubling backoff (2 min to 1 h), then the revoke IC13
   built; the pilot told `RELET_PENDING` once, the plan waiting under `HELD_RELET`; no `@coop/unload`.
   **Ratified as built (IC14 O4).**

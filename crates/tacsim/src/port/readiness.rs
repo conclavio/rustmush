@@ -68,7 +68,10 @@ pub enum Binding {
     Pools,
     /// Cut IC8: one ask's listing against its storefront pool.
     Listings,
-    /// Cut IC8: one standing bid (reported, not gated: lead ruling L8).
+    /// Cut IC8: one standing bid (reported, not gated: lead ruling L8; gated on
+    /// Missing by cut IC12; since cut P-B on Missing alone — a house that cannot
+    /// fund a tonne, or a bid the clerk re-posts, reads Pending, is paged once a
+    /// boot by the port tick and never closes the desk: Q-18-60, R10).
     Bids,
     /// Cut IC8: whether anything answers the `market` fact namespace, which a
     /// drawn sale's contract settles on.
@@ -799,7 +802,9 @@ fn commerce_lines(
             }
         }
     }
-    // ---- bids, per bid (reported, not gated: lead ruling L8) ----
+    // ---- bids, per bid (lead ruling L8 reported them; IC12 gated them; cut P-B
+    // gates Missing alone, `coop::shuts` — a Pending line here is reported, paged
+    // once a boot by `port_tick` through `unfunded_bids`, and never gated) ----
     for vendor in &def.vendors {
         let org = &vendor.org;
         for bid in &vendor.bids {
@@ -867,6 +872,71 @@ fn commerce_lines(
                     LineState::Missing,
                     format!("{head}: listing #{listing} lapsed; it waits for the next apply."),
                 ),
+            }
+        }
+    }
+    out
+}
+
+/// **The standing bids whose house cannot fund one unit after its capital settled**
+/// (doc 18 Q-18-60, the owner's R10; cut P-B), as `(port entry, org, good)` in
+/// authored order: every lane port with a present map, every vendor bid recorded
+/// there whose listing stands Wanted with intake left, whose house's capital has
+/// settled (every tranche Satisfied — the port's `Org` line Ready) and whose house's
+/// available balance is still under one unit's price (`board::funds_one`). These are
+/// the bids [`readiness_in`] reads Pending, "not buying until its capital settles",
+/// for play's reasons and not the boot's: a fresh world's bids are posted before the
+/// first sweep settles the capital, and that window reads Pending too, beside an
+/// `Org` line that says why. A pure read for the port tick's once-a-boot page
+/// (`port_tick::funds_pages`); never a gate.
+#[must_use]
+pub(crate) fn unfunded_bids(w: &World) -> Vec<(CanonicalId, CanonicalId, CanonicalId)> {
+    let mut out = Vec::new();
+    let (Some(store), Some(market), Ok(lane)) = (
+        w.module_state::<TacsimStore>(),
+        w.module_state::<mush_market::MarketStore>(),
+        CanonicalId::new(LANE_PACK),
+    ) else {
+        return out;
+    };
+    let economy = w.module_state::<EconomyStore>();
+    let (_, ports) = report_ports(store, w);
+    for (entry, def) in &ports {
+        let PortMapState::Present(map) = store.port_map(&lane, entry) else {
+            continue;
+        };
+        for vendor in &def.vendors {
+            let Some(row) = map.vendors.get(&vendor.org) else {
+                continue;
+            };
+            // The capital settled: every tranche the org row was created with is
+            // Satisfied (the `Org` line's Ready reading); a row with none to wait on
+            // counts as settled.
+            let settled = map.orgs.get(&vendor.org).is_some_and(|org| {
+                org.capital.iter().all(|t| {
+                    economy.is_some_and(|e| {
+                        e.snapshot()
+                            .obligation(ObligationId(t.obligation))
+                            .is_some_and(|o| {
+                                matches!(o.status, mush_economy::ObligationStatus::Satisfied)
+                            })
+                    })
+                })
+            });
+            if !settled {
+                continue;
+            }
+            for bid in &vendor.bids {
+                let Some(recorded) = row.bids.get(&bid.good) else {
+                    continue;
+                };
+                let listing = mush_market::ListingId(recorded.listing);
+                let standing = market
+                    .listing(listing)
+                    .is_some_and(|l| l.source.is_wanted() && l.quantity > 0);
+                if standing && !crate::port::board::funds_one(w, market, listing) {
+                    out.push((entry.clone(), vendor.org.clone(), bid.good.clone()));
+                }
             }
         }
     }
@@ -1364,5 +1434,48 @@ mod tests {
             "inventory facts: nothing answers the inventory namespace, so sales into bids \
              refuse."
         );
+    }
+
+    /// Doc 18 Q-18-60 (the owner's R10 of 2026-10-18), cut P-B: a `Bids` line that
+    /// reads Pending — a house that cannot fund a tonne, or a lapsed bid the clerk
+    /// re-posts — leaves `+coop/enrol` open while the report still counts it; one
+    /// that reads Missing — withdrawn by hand, or lapsed and waiting for the next
+    /// apply — closes the desk, and the gate names it.
+    #[test]
+    fn pb_a_funds_pending_bid_leaves_enrolment_open_and_a_missing_one_closes_it() {
+        let port = CanonicalId::new("stickney_port").ok();
+        let bid = |state: LineState, text: &str| ReadinessLine {
+            port: port.clone(),
+            binding: Binding::Bids,
+            state,
+            text: text.to_owned(),
+        };
+        for text in [
+            "stickney_port bid kasei metals: listing #7; not buying until its capital settles.",
+            "stickney_port bid kasei metals: listing #7 lapsed; the clerk posts it again.",
+        ] {
+            let line = bid(LineState::Pending, text);
+            assert!(!crate::port::coop::shuts(&line), "{text}");
+            let report = Readiness { lines: vec![line] };
+            assert!(
+                crate::port::coop::enrol_gate(&report).is_ok(),
+                "a pending bid leaves the desk open: {text}"
+            );
+            assert!(!report.is_ready(), "the report still counts it: {text}");
+        }
+        for text in [
+            "stickney_port bid kasei metals: no bid is posted.",
+            "stickney_port bid kasei metals: listing #7 lapsed; it waits for the next apply.",
+        ] {
+            let line = bid(LineState::Missing, text);
+            assert!(crate::port::coop::shuts(&line), "{text}");
+            let report = Readiness { lines: vec![line] };
+            let refused =
+                crate::port::coop::enrol_gate(&report).expect_err("a missing bid closes the desk");
+            assert_eq!(
+                (refused.binding, refused.state, refused.text.as_str()),
+                (Binding::Bids, LineState::Missing, text)
+            );
+        }
     }
 }

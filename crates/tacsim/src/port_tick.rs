@@ -370,6 +370,10 @@ pub struct PortTickState {
     /// Doc 18 §9 risk 19, cut IC14: the marker-headroom pages raised this boot —
     /// the `Markers` readiness line Flagged; at most one a boot.
     pub(crate) marker_pages: u32,
+    /// Doc 18 Q-18-60 (R10), cut P-B: the unfunded-house pages raised this boot — a
+    /// standing bid whose house cannot fund one unit, which the `Bids` readiness line
+    /// reads Pending and never gates on; at most one a boot.
+    pub(crate) funds_pages: u32,
     /// Doc 18 cut IC14 row 11: the hulls whose unreadable sailing plan has paged this
     /// boot (once each; bounded by the voyage keys, one per hull).
     pub(crate) voyage_warned: BTreeSet<u32>,
@@ -531,6 +535,19 @@ pub fn marker_pages(w: &World) -> u32 {
         .map_or(0, |state| state.marker_pages)
 }
 
+/// **How many times the port tick has paged a house that cannot fund a tonne this
+/// boot** (doc 18 Q-18-60, the owner's R10; cut P-B): one once a fire found a
+/// standing bid whose house's capital has settled and whose available balance is
+/// still under one unit's price (`crate::port::readiness::unfunded_bids`; a fresh
+/// world's unsettled window never pages); at most one a boot. The `Bids` line reads
+/// Pending on it and never closes `+coop/enrol`; the sales against the house skip
+/// with the executor's `HOUSE_CANNOT_PAY_SKIP` until it is paid.
+#[must_use]
+pub fn funds_pages(w: &World) -> u32 {
+    w.module_state::<PortTickState>()
+        .map_or(0, |state| state.funds_pages)
+}
+
 /// **The hulls the recall arm has paged this boot** (doc 18 cut IC13), in order — a
 /// status read for tests beside [`sky_pages`].
 #[must_use]
@@ -622,6 +639,35 @@ fn page_marker_headroom(w: &World, state: &mut PortTickState) {
     }
 }
 
+/// Doc 18 Q-18-60 (the owner's R10 of 2026-10-18), cut P-B: the unfunded-house page,
+/// once a boot, in the [`page_moving_sky`] manner. The readiness report reads the
+/// `Bids` line Pending on the same condition ("not buying until its capital
+/// settles"; `crate::port::readiness::unfunded_bids`, which also asks that the
+/// house's capital has settled, so a fresh world's first fires never page) and,
+/// since this cut, never gates on it; the page lives here, counted in
+/// [`PortTickState::funds_pages`], so staff hear once that a house's sales are
+/// skipping while enrolment stays open.
+fn page_unfunded_houses(w: &World, state: &mut PortTickState) {
+    if state.funds_pages > 0 {
+        return;
+    }
+    let unfunded = crate::port::readiness::unfunded_bids(w);
+    let Some((entry, org, good)) = unfunded.first() else {
+        return;
+    };
+    tracing::error!(
+        runbook = "doc 18 Q-18-60 (cut P-B): pay the house (@econ/pay #<treasury account>=#<house \
+                   account> <amount>) or let players buy from it; enrolment stays open and the \
+                   sales against it skip meanwhile",
+        port = %entry,
+        house = %org,
+        good = %good,
+        bids = unfunded.len(),
+        "tacsim: a house cannot fund a tonne of its bid; sales against it skip until it is paid"
+    );
+    state.funds_pages = state.funds_pages.saturating_add(1);
+}
+
 // ---- the fire ----------------------------------------------------------------
 
 /// One agent's turn this fire (D-18-32: one step per agent per fire).
@@ -706,6 +752,7 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     state.fires = state.fires.saturating_add(1);
     page_moving_sky(ctx.w, &mut state);
     page_marker_headroom(ctx.w, &mut state);
+    page_unfunded_houses(ctx.w, &mut state);
     page_dark_voyages(ctx.w, &mut state);
     // Doc 18 cut IC14 row 21: the first fire after a boot tells the grants the RAM
     // verification lost.

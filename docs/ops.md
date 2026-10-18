@@ -1047,11 +1047,24 @@ providers, the applied-marker headroom (below), and per port its map, rooms, dom
 account and capital), programme, hulls, storefront pools, listings and bids, each
 line `[ready]`, `[pending]`, `[missing]` or `[flagged]`. `+coop/enrol` is gated on
 **every line but the sky and the marker headroom** (doc 18 D-18-50: the sky is
-reported, never gated; cut IC14 treats the `Markers` line the same way): a
-player only ever hears "The Co-op is not enrolling yet: the programme is still
-being set up."; the reason is the first non-ready line here. A fresh world reads
+reported, never gated; cut IC14 treats the `Markers` line the same way), and
+**a bids line closes it only when it reads `[missing]`** (doc 18 Q-18-60, cut
+P-B: a bid withdrawn by hand or waiting for the next apply): a player only ever
+hears "The Co-op is not enrolling yet: the programme is still being set up.";
+the reason is the first line here that shuts the desk. A fresh world reads
 Ready once the capital has settled and the clerks have stocked and listed both
 ports — a couple of minutes of ticks.
+
+A bids line `[pending]` with "not buying until its capital settles" is a house
+whose available balance is under one unit's price at its bid (ordinary play: a
+house that has bought more than it has sold); the desk stays open, the sales
+against that house are passed over with "{house} cannot pay for {label} right
+now." in the pilot's order log, the house's board reads "not buying", and the
+port tick pages once per boot ("a house cannot fund a tonne of its bid";
+runbook: pay the house from the treasury with `@econ/pay #<treasury
+account>=#<house account> <amount>`, or let players buy from it). A bids line
+`[pending]` with "lapsed; the clerk posts it again" clears itself within a fire
+or two.
 
 The sky line reads `sky: constant (rate 0), epoch <date>, rev <digest>` at the
 shipped rate 0. If `[tacsim.time.ephemeris].rate` is set non-zero while a lane
