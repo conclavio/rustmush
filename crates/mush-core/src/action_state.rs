@@ -988,6 +988,29 @@ impl StateFamilyRegistryBuilder {
         Ok(())
     }
 
+    pub(crate) fn mind_renewal_capacity_with_service(
+        &mut self,
+        owner: &OwnerId,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 5],
+        service_close: crate::DefinitionRef,
+    ) -> Result<(), ActionStateError> {
+        if self.mind_renewal.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate renewal protocol",
+            ));
+        }
+        self.mind_renewal = Some(terminal_capacity::RenewalProtocol::with_service(
+            owner,
+            manifest,
+            participants,
+            actions,
+            service_close,
+        )?);
+        Ok(())
+    }
+
     pub(crate) fn freeze_for_owners_with_readiness(
         self,
         module_owners: &BTreeSet<OwnerId>,
@@ -1270,7 +1293,11 @@ fn state_family_fingerprint<'a>(
     };
     let domain = if let Some(protocol) = mind_renewal {
         value.insert("mind_renewal".to_owned(), json!(protocol));
-        "state_family_registry.v6"
+        if protocol.has_service() {
+            "state_family_registry.v7"
+        } else {
+            "state_family_registry.v6"
+        }
     } else {
         domain
     };

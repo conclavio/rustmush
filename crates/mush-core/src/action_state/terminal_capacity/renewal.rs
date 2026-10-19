@@ -14,6 +14,7 @@ const ACTIONS: [&str; 5] = [
     "refund_mind_renewal",
     "close_mind_renewal",
 ];
+const SERVICE_ACTION: &str = "close_mind_renewal_service";
 const TRANSITIONS: [&str; 5] = ["draft", "fund", "grant", "refund", "unfunded_close"];
 const MARKET: &str = "market_mind_renewal_operation";
 const ROLL: &str = "roll_mind_renewal_operation";
@@ -37,6 +38,8 @@ pub(in crate::action_state) struct Protocol {
     manifest: DefinitionRef,
     participants: [DefinitionRef; 2],
     actions: [DefinitionRef; 5],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_close: Option<DefinitionRef>,
 }
 impl Protocol {
     pub(in crate::action_state) fn new(
@@ -63,7 +66,25 @@ impl Protocol {
             manifest,
             participants,
             actions,
+            service_close: None,
         })
+    }
+    pub(in crate::action_state) fn with_service(
+        owner: &OwnerId,
+        manifest: DefinitionRef,
+        participants: [DefinitionRef; 2],
+        actions: [DefinitionRef; 5],
+        service_close: DefinitionRef,
+    ) -> Result<Self, ActionStateError> {
+        let mut protocol = Self::new(owner, manifest, participants, actions)?;
+        if service_close != action_reference(&protocol.manifest, &protocol.participants, 5)? {
+            return Err(refused("renewal complete service action differs"));
+        }
+        protocol.service_close = Some(service_close);
+        Ok(protocol)
+    }
+    pub(in crate::action_state) fn has_service(&self) -> bool {
+        self.service_close.is_some()
     }
     pub(super) fn admission_action(&self) -> &DefinitionRef {
         &self.actions[0]
@@ -74,6 +95,7 @@ impl Protocol {
     fn action_index(&self, identity: &RegisteredTxnIdentity) -> Result<usize, ActionStateError> {
         self.actions
             .iter()
+            .chain(self.service_close.iter())
             .position(|action| action == &identity.action)
             .ok_or_else(|| refused("renewal invocation action differs"))
     }
@@ -136,7 +158,12 @@ impl Protocol {
         definitions
             .get_exact(&self.manifest)
             .map_err(|_| refused("renewal manifest unavailable"))?;
-        for (index, action) in self.actions.iter().enumerate() {
+        for (index, action) in self
+            .actions
+            .iter()
+            .chain(self.service_close.iter())
+            .enumerate()
+        {
             let definition = definitions
                 .get_exact(action)
                 .map_err(|_| refused("renewal action unavailable"))?;
@@ -185,7 +212,18 @@ fn check_participants(refs: &[DefinitionRef; 2]) -> Result<(), ActionStateError>
     }
     Ok(())
 }
+fn action_id(index: usize) -> &'static str {
+    if index == 5 {
+        SERVICE_ACTION
+    } else {
+        ACTIONS[index]
+    }
+}
 fn action_payload(index: usize) -> Value {
+    if index == 5 {
+        return json!({"format":1,"protocol":"personal_mind_renewal_service_v1",
+            "transition":"unfunded_service_close","service_actor":crate::GOD});
+    }
     json!({"format":1,"protocol":"personal_mind_renewal_v1","transition":TRANSITIONS[index]})
 }
 fn action_reference(
@@ -196,7 +234,7 @@ fn action_reference(
     check_participants(participants)?;
     let descriptor = DefinitionDescriptor::new(
         DefinitionKind::new("action").map_err(|_| refused("renewal action kind"))?,
-        DefinitionId::new(ACTIONS[index]).map_err(|_| refused("renewal action id"))?,
+        DefinitionId::new(action_id(index)).map_err(|_| refused("renewal action id"))?,
         1,
         action_payload(index),
     )
@@ -379,7 +417,12 @@ fn pair(view: &View<'_>, operation: CommitToken) -> Result<Pair, ActionStateErro
         || predecessor.checked_add(1) != Some(next)
         || !matches!(
             phase.as_str(),
-            "drafted" | "funded" | "granted" | "refunded" | "unfunded_closed"
+            "drafted"
+                | "funded"
+                | "granted"
+                | "refunded"
+                | "unfunded_closed"
+                | "unfunded_service_closed"
         )
     {
         return Err(refused("renewal paired shape or generation"));
@@ -520,7 +563,7 @@ fn receipt_action(value: &Value, index: usize) -> Result<(), ActionStateError> {
         .map_err(|_| refused("renewal receipt action"))?;
     if action.key().owner.as_str() != "market"
         || action.key().kind.as_str() != "action"
-        || action.key().id.as_str() != ACTIONS[index]
+        || action.key().id.as_str() != action_id(index)
         || action.version() != 1
     {
         return Err(refused("renewal receipt action identity"));
@@ -532,6 +575,35 @@ fn state_receipts(pair: &Pair, operation: CommitToken) -> Result<(), ActionState
     let created = stamp(field(&pair.market, "created_at_ic")?)?;
     let created_utc = signed(&pair.market, "created_at_utc")?;
     if pair.phase == "drafted" {
+        return Ok(());
+    }
+    if pair.phase == "unfunded_service_closed" {
+        let closure = field(state, "closure")?;
+        let closed = stamp(field(closure, "at_ic")?)?;
+        let expires = stamp(field(
+            field(field(&pair.market, "offer")?, "terms")?,
+            "expires_at",
+        )?)?;
+        receipt_action(closure, 5)?;
+        let commit = token(field(closure, "commit")?)?;
+        if !state.as_object().is_some_and(|row| row.len() == 2)
+            || !closure.as_object().is_some_and(|row| row.len() == 7)
+            || number(closure, "format")? != 1
+            || field(closure, "actor")? != &json!(crate::GOD)
+            || commit == operation
+            || commit == token(field(pair.binding()?, "birth_operation")?)?
+            || commit == token(field(pair.binding()?, "predecessor_operation")?)?
+            || signed(closure, "posted_at_utc")? < created_utc
+            || expires.clock != created.clock
+            || expires.at < created.at
+        {
+            return Err(refused("renewal service closure identity"));
+        }
+        match text(closure, "reason")? {
+            "deadline_reached" if closed.clock == created.clock && closed.at >= expires.at => (),
+            "clock_invalidated" if closed.clock != created.clock => (),
+            _ => return Err(refused("renewal service closure cause or clock")),
+        }
         return Ok(());
     }
     if pair.phase == "unfunded_closed" {
@@ -841,7 +913,10 @@ fn attempt_before(
                 || positive_string(field(&head, "current")?)? != after_pair.predecessor
                 || positive_string(field(&head, "attempted_predecessor")?)?
                     != after_pair.predecessor
-                || !matches!(prior.phase.as_str(), "refunded" | "unfunded_closed")
+                || !matches!(
+                    prior.phase.as_str(),
+                    "refunded" | "unfunded_closed" | "unfunded_service_closed"
+                )
             {
                 return Err(refused(
                     "renewal retry lacks exact latest terminal predecessor",
@@ -922,9 +997,14 @@ pub(super) fn validate_changes(
         token(&json!(id.1))?
     };
     let next = pair(&after, operation)?;
-    if identity.principal != (PrincipalId::Object { id: identity.actor })
-        || number(next.binding()?, "holder")? != u64::from(identity.actor.0)
-    {
+    if identity.principal != (PrincipalId::Object { id: identity.actor }) {
+        return Err(refused("renewal actual principal differs"));
+    }
+    if action == 5 {
+        if identity.actor != crate::GOD {
+            return Err(refused("renewal actual service identity differs"));
+        }
+    } else if number(next.binding()?, "holder")? != u64::from(identity.actor.0) {
         return Err(refused("renewal actual buyer identity differs"));
     }
     let mut keys = vec![
@@ -970,11 +1050,12 @@ pub(super) fn validate_changes(
         2 => "granted",
         3 => "refunded",
         4 => "unfunded_closed",
+        5 => "unfunded_service_closed",
         _ => return Err(refused("renewal transition")),
     };
     if next.phase != expected_phase
         || prior.phase
-            != if matches!(action, 1 | 4) {
+            != if matches!(action, 1 | 4 | 5) {
                 "drafted"
             } else {
                 "funded"
@@ -984,7 +1065,7 @@ pub(super) fn validate_changes(
     }
     let receipt = match action {
         1 => field(next.state()?, "funding")?,
-        4 => field(next.state()?, "closure")?,
+        4 | 5 => field(next.state()?, "closure")?,
         _ => field(next.state()?, "terminal")?,
     };
     if token(field(receipt, "commit")?)? != identity.commit
@@ -1241,7 +1322,10 @@ fn audit_attempts(
                     return Err(refused("renewal retry crossed licence or generation"));
                 }
                 if let Some(next) = successors.get(&cursor) {
-                    if !matches!(pair.phase.as_str(), "refunded" | "unfunded_closed") {
+                    if !matches!(
+                        pair.phase.as_str(),
+                        "refunded" | "unfunded_closed" | "unfunded_service_closed"
+                    ) {
                         return Err(refused("renewal retry after pending or granted operation"));
                     }
                     let retry = operations

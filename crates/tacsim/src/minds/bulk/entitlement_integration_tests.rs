@@ -1,6 +1,8 @@
 //! Genuine acquired OpenResale -> authored saved/Registry certificate ->
 //! dependent filing -> new six-target paid commerce. No grant/certificate is
 //! constructed. This models owner/core ACK installation, not server transport.
+#[path = "author_withdrawal_integration_tests.rs"]
+mod withdrawal;
 use super::dependent_owner_integration_tests::apply;
 use super::*;
 use crate::minds::bulk::registry_integration_tests::original_purchase::request as invocation;
@@ -809,6 +811,10 @@ pub(super) async fn exercise(
     original_v3(f, &filed)?;
     lapse_refund(f, &filed, owner)?;
     let (granted, allocation) = transactions(f, &filed, owner)?;
+    story_phase("author.withdrawal", || {
+        withdrawal::exercise(f, &granted, owner, &allocation)
+    })?
+    .await?;
     story_phase("renewal", || {
         renewal::exercise(f, &granted, owner, &allocation)
     })?

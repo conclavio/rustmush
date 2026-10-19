@@ -12,6 +12,8 @@ use super::records::*;
 /// No public constructor, family-name lookup or blanket delegation is added.
 #[derive(Clone)]
 pub struct CommerceFamilies {
+    pub(crate) withdrawals:
+        StateFamilyHandle<String, super::withdrawal::records::WithdrawalOperation>,
     pub(crate) renewal_operations: StateFamilyHandle<String, super::renewal::RenewalOperationV1>,
     pub(crate) renewal_heads: StateFamilyHandle<String, super::renewal::RenewalHeadV1>,
     pub(crate) authored_retirements:
@@ -43,6 +45,7 @@ pub struct CommerceFamilies {
 impl CommerceFamilies {
     pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<Self, ModError> {
         Ok(Self {
+            withdrawals: register(reg)?,
             renewal_operations: register(reg)?,
             renewal_heads: register(reg)?,
             authored_retirements: register(reg)?,
@@ -135,6 +138,7 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
         "roll_mind_initial_filing"
         | "roll_mind_paid_purchase"
         | "roll_mind_authored_retirement"
+        | "roll_mind_author_withdrawal"
         | "roll_mind_entitlement_purchase"
         | "roll_mind_renewal_operation" => hex(head, 32, false) && parts.next().is_none(),
         "roll_mind_filed_identity" => hex(head, 64, false) && parts.next().is_none(),

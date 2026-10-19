@@ -20,7 +20,9 @@ use crate::module::StateInit;
 use crate::{ObjId, World};
 use serde::Serialize;
 
-pub const MAX_OWNER_READ_SERVICES: usize = 16;
+// Declaration capacity for the full composed roster, independent of each
+// invocation's unchanged read, row and encoding budgets below.
+pub const MAX_OWNER_READ_SERVICES: usize = 32;
 pub const MAX_OWNER_READ_GRANTS: usize = 32;
 pub const MAX_OWNER_READ_REQUEST_BYTES: usize = 16 * 1024;
 pub const MAX_OWNER_READ_RESULT_BYTES: usize = 1024 * 1024;

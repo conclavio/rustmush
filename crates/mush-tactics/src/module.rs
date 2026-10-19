@@ -349,6 +349,7 @@ pub struct TacticsModule {
     /// reads. `mush-propagation` supplies it; `mush-tactics` never learns which
     /// crate did, because the trait is `mush-core`'s. Unwired arms nothing.
     sensors: mush_core::SensorPolicyHandle,
+    replacement: Option<Arc<dyn crate::component_replacement::Installer>>,
 }
 
 impl Default for TacticsModule {
@@ -367,6 +368,7 @@ impl TacticsModule {
             current_record_definition: None,
             ground_definition: None,
             sensors: mush_core::SensorPolicyHandle::unwired(),
+            replacement: None,
         }
     }
     /// A module with a frozen catalog (a ruleset / dev wiring supplies it).
@@ -378,7 +380,26 @@ impl TacticsModule {
             legacy_record_definition: None,
             current_record_definition: None,
             sensors: mush_core::SensorPolicyHandle::unwired(),
+            replacement: None,
         }
+    }
+
+    /// Opt in one closed, composition-selected component replacement policy.
+    /// This alone does not install a public action or custody/economic authority.
+    /// Defaults remain unregistered. A second call replaces configuration before
+    /// registration, never an installed runtime policy.
+    #[must_use]
+    pub fn with_component_replacement<P: crate::component_replacement::ReplacementPolicy>(
+        mut self,
+        policy: P,
+        action: DefinitionRef,
+        component: crate::ComponentId,
+        roots: std::collections::BTreeSet<DefinitionRef>,
+    ) -> Self {
+        self.replacement = Some(crate::component_replacement::installer(
+            policy, action, component, roots,
+        ));
+        self
     }
 
     /// **E7 cut 7 B3, OPEN 1 — the composition seam that keeps `mush-tactics`
@@ -1124,6 +1145,9 @@ impl GameModule for TacticsModule {
             record_definition: Some(v2.clone()),
             ..UnitStore::default()
         });
+        if let Some(replacement) = &self.replacement {
+            replacement.register(reg, &v2)?;
+        }
         reg.recovery_reporter(Arc::new(TacticsRecoveryReporter))?;
 
         let mut spec = BehaviorSpec::new(BehaviorId::new(UNIT_BEHAVIOR).unwrap())
@@ -1208,7 +1232,11 @@ impl GameModule for TacticsModule {
             .current_record_definition
             .clone()
             .ok_or_else(|| ModError::msg("tactics current record definition was not registered"))?;
-        boot_units(ctx, data, &self.catalog, &legacy, &current)
+        boot_units(ctx, data, &self.catalog, &legacy, &current)?;
+        if let Some(replacement) = &self.replacement {
+            replacement.loaded(ctx)?;
+        }
+        Ok(())
     }
 
     /// **16b cut AF.3: the end of the claim window.** `boot_units` keeps every
@@ -1269,6 +1297,22 @@ pub(crate) fn encode_unit_document(
     .map_err(|error| format!("unit record exceeds its canonical encoding limit: {error}"))?;
     Ok((value, digest))
 }
+/// The replacement participant accepts only this owner's exact current unit
+/// document and canonical identity, never deletion or an arbitrary prefix.
+pub(crate) fn replacement_write_is_exact(
+    key: &str,
+    value: &serde_json::Value,
+    schema: &DefinitionRef,
+) -> bool {
+    let Ok(document) = UnitDocumentV2::decode(value.clone(), schema) else {
+        return false;
+    };
+    document.deployed.is_none()
+        && document.unit.object().0 != 0
+        && key == format!("unit:{}", document.unit.object().0)
+        && serde_json::to_value(&document).is_ok_and(|encoded| encoded == *value)
+}
+
 fn persist_encoded_unit(out: &mut Outbox, object: ObjId, value: serde_json::Value) {
     out.defer(Deferred::Persist(ModuleOp {
         ns: SmolStr::new_static(NS),

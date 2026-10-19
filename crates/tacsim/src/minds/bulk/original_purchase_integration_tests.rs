@@ -385,6 +385,7 @@ struct PurchaseRoll {
     dependent_owners: bool,
     entitlements: bool,
     renewals: bool,
+    author_withdrawal: bool,
     shared: Shared,
     purchase: PurchaseShared,
     inner: Option<RollModule>,
@@ -460,6 +461,11 @@ impl GameModule for PurchaseRoll {
             )?;
             purchase.renewals = Some(renewal);
             config
+        } else {
+            config
+        };
+        let config = if self.author_withdrawal {
+            config.with_author_withdrawal()?
         } else {
             config
         };
@@ -759,6 +765,7 @@ impl PurchaseFixture {
                     dependent_owners: false,
                     entitlements: false,
                     renewals: false,
+                    author_withdrawal: false,
                     shared: shared.clone(),
                     purchase: purchase.clone(),
                     inner: None,

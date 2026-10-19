@@ -30,6 +30,7 @@ pub(crate) enum RootAnchor {
     PaidOperation(CommitToken),
     RenewalOperation(CommitToken),
     DraftRetirement(CommitToken, mush_core::DefinitionDigest),
+    AuthorWithdrawal(CommitToken, mush_core::DefinitionDigest),
     Rating {
         job: CommitToken,
         id: RatingId,
@@ -51,6 +52,9 @@ impl RootAnchor {
             Self::PaidOperation(token) => format!("v1/paid_operation/{token}"),
             Self::RenewalOperation(token) => format!("v1/renewal_operation/{token}"),
             Self::DraftRetirement(token, digest) => format!("v1/draft_retirement/{token}/{digest}"),
+            Self::AuthorWithdrawal(token, digest) => {
+                format!("v1/author_withdrawal/{token}/{digest}")
+            }
             Self::Rating { job, id } => format!("v1/rating/{job}/{id}"),
             Self::RatingJob(token) => format!("v1/rating_job/{token}"),
             Self::RatingPending(token) => format!("v1/rating_pending/{token}"),
@@ -109,6 +113,13 @@ impl RootAnchor {
             ),
             "renewal_operation" => Self::RenewalOperation(
                 CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
+            ),
+            "author_withdrawal" => Self::AuthorWithdrawal(
+                CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
+                mush_core::DefinitionDigest::from_hex(
+                    parts.next().ok_or(PublicationError::Invalid)?,
+                )
+                .map_err(|_| PublicationError::Invalid)?,
             ),
             "draft_retirement" => Self::DraftRetirement(
                 CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,

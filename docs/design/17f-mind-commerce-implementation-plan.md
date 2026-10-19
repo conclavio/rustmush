@@ -47,6 +47,8 @@ the owner's line-tables-only debug profile, Linux CI changes, AQ command-name
 protection and P-B's Missing-only Co-op admission rule. Accepted main remains
 separate from M7 acceptance. All cumulative preparation through N42 is now
 materialized in this implementation checkout for review and progressive commits.
+N45 tree `54f804536f00e025abbe1519a4c881fe6cd794f5` was committed and pushed
+as `31d19f25` (458 files). This is an implementation checkpoint, not M7 acceptance.
 
 N40 (`e7afe36ab47067da3ec76c08c81c465f6bf9c159`) added the reviewed renewal
 capacity, exact linked retry, Economy recovery/participant bridge, Roll renewal
@@ -62,15 +64,47 @@ These three runs failed compilation, executed no runtime tests, and retained
 their exact unchanged source, logs and verified evidence archives. None is an
 acceptance result.
 
-The remaining M7 work includes actual renewal providers/due processing and
+N43 and N44 also failed compilation; repairs corrected a test-only JSON macro,
+explicit generic lifetime bounds and an old retirement fixture field. N45
+compiles and has passed 554 Core tests, nine Republic-membership tests, two
+future-size tests, 20 protocol unit tests, 32 protocol wire/property tests,
+14 IPC tests, 14 SSH workshop tests, 146 Economy tests, 174 Roll tests and
+eight composition tests. Market has 74 passes and two failures: the public
+numeric licence selector was decoded as a persistent string ID, and a negative
+fixture broke its own strict funding/contract consistency before the intended
+pairing assertion. Workshop has 26 passes and one failure: owned stale retirement
+selection returned `missing` instead of the existing `stale` response. Narrow
+repairs are prepared; the original failed results remain retained. Later N45
+stages then completed: 1,149 tests passed, three failed and one was ignored.
+Both genuine stories remained unstarted because earlier required gates failed.
+The 18-file evidence archive verifies against unchanged source, SHA-256
+`a904086547f38d2f2574bf6342ff0da2fd03e54faf53db4de3d5c94438ce8500`.
+Neither genuine story is claimed passed. All 59 web test files / 625 tests pass
+against the committed N45 tree.
+The first web attempt executed zero tests because Windows sandbox temporary-file
+renames were denied; the authorized unsandboxed rerun passed. Generated bindings,
+typecheck/build and complete final acceptance are still required.
+
+The five real renewal providers and genuine renewal story are integrated, with
+new service cleanup/due/status/control work continuing separately. Reviewed
+prerequisites add the bounded 32-service registration ceiling (per-invocation
+budgets unchanged), a closed Tactics component replacement owner adapter, and
+the separately registered sixth unfunded-renewal cleanup action. Personal-author
+withdrawal adds current title/readiness fences and permanent cause/root audits;
+its genuine child preserves paid Pins and captured sorties. These new source
+packages still require their combined runtime gates and are not default service
+activation. No existing paid term is truncated to start a renewal early.
+
+The remaining M7 work includes renewal due processing, cleanup/control and
 owner attestation; compatible updates, withdrawal and Registry recall;
 production IC claim/close and resale/charter-transfer policy; scoped house
 catalogue and underwriting; and governed core supply, custody and installation.
 These are M7 obligations. Only integration with an unavailable live IC sortie
 or convoy driver is conditional; its production services remain required.
 M8's contraband and NPC procurement programme remains separate. The current
-parallel slices are complete renewal publication/recovery, its genuine buyer
-story, the closed Tactics replacement owner, and author withdrawal. Real
+parallel slices are renewal service cleanup/control, compatible original-line
+updates, and durable IC claim/close with real physical exclusion. The absent
+region caller does not waive its claim, capacity or custody owner services. Real
 generated client bindings, transport checks and final complete acceptance
 still follow their actual implementation. Existing partial passes and source
 review do not substitute for those gates.

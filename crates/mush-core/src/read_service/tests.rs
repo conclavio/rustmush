@@ -550,3 +550,6 @@ mod preparation;
 
 #[path = "batch_tests.rs"]
 mod batch;
+
+#[path = "registration_tests.rs"]
+mod registration;

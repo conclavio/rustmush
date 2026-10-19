@@ -38,7 +38,7 @@ impl AuthoredRetirementSelection {
             return Err(RollError::Missing);
         }
         if expected.is_some_and(|base| base != mind.base()) {
-            return Err(RollError::Missing);
+            return Err(RollError::StaleEdit);
         }
         if mind.provenance.is_none() {
             return Ok(None);

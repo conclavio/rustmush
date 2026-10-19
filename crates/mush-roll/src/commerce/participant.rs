@@ -32,6 +32,7 @@ pub(crate) enum RootRequest {
     Renewal(super::renewal::roots::RenewalRoots),
     AuthoredFork(super::authored_fork::AuthoredFork),
     Retirement(super::authored_retirement::Retirement),
+    Withdrawal(super::withdrawal::Withdrawal),
 }
 
 impl RootRequest {
@@ -45,6 +46,7 @@ impl RootRequest {
             Self::Renewal(request) => request.commit(),
             Self::AuthoredFork(request) => request.commit(),
             Self::Retirement(request) => request.commit(),
+            Self::Withdrawal(request) => request.commit(),
         }
     }
 }
@@ -83,6 +85,7 @@ pub(crate) struct RootPatch {
     dependent: Option<super::dependent_filing::FilingFence>,
     marked: Option<super::marked_rating::AdmissionFence>,
     retirement: Option<super::authored_retirement::RetirementFence>,
+    withdrawal: Option<super::withdrawal::WithdrawalFence>,
     fork: Option<(
         mush_core::DefinitionRef,
         super::parent_grant::CurrentParentGrant,
@@ -181,6 +184,16 @@ impl OwnerParticipant for RootParticipant {
             }
             _ => None,
         };
+        let withdrawal = match &request {
+            RootRequest::Withdrawal(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
         let mut retired = None;
         let (change, selection) = match &request {
             RootRequest::InitialFiling(request) => (
@@ -206,6 +219,10 @@ impl OwnerParticipant for RootParticipant {
             RootRequest::Renewal(request) => {
                 (state.prepare_renewal_roots(request).map_err(refusal)?, None)
             }
+            RootRequest::Withdrawal(request) => (
+                state.prepare_withdrawal_root(request).map_err(refusal)?,
+                None,
+            ),
             RootRequest::Retirement(request) => {
                 let (change, output) = state
                     .prepare_authored_retirement(request)
@@ -261,6 +278,7 @@ impl OwnerParticipant for RootParticipant {
                 dependent,
                 marked,
                 retirement,
+                withdrawal,
                 fork,
             },
             writes,
@@ -300,6 +318,11 @@ impl OwnerParticipant for RootParticipant {
         }
         if let Some((action, grant)) = &patch.fork {
             super::authored_fork::check_action(action, patch.commit, grant, context)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
+        if let Some(fence) = &patch.withdrawal {
+            fence
+                .check(context)
                 .map_err(|_| ParticipantError::Authority)?;
         }
         if let Some(fence) = &patch.retirement {
@@ -414,6 +437,7 @@ impl OwnerParticipant for RootParticipant {
                     | RootAnchor::PaidOperation(_)
                     | RootAnchor::RenewalOperation(_)
                     | RootAnchor::DraftRetirement(_, _)
+                    | RootAnchor::AuthorWithdrawal(_, _)
                     | RootAnchor::RatingJob(_)
                     | RootAnchor::RatingPending(_)
                     | RootAnchor::Rating { .. })

@@ -3313,6 +3313,36 @@ impl<'a> Registrar<'a> {
             .map_err(|e| ModError::msg(e.to_string()))
     }
 
+    /// Add the separately versioned, GOD-only unfunded service closure to the
+    /// five-action renewal protocol. Exact sixth definition/provider and both
+    /// participant grants are mandatory; the existing seven targets are unchanged.
+    pub fn mind_renewal_capacity_with_service(
+        &mut self,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 5],
+        service_close: crate::DefinitionRef,
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "market" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "renewal capacity requires the unfrozen Market registrar",
+            ));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str())
+            .map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .mind_renewal_capacity_with_service(
+                &owner,
+                manifest,
+                participants,
+                actions,
+                service_close,
+            )
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
     /// Declare one engine-owned typed state family and receive its opaque
     /// owner-stamped capability.
     ///

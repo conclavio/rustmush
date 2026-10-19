@@ -97,19 +97,22 @@ impl PlayerWorld {
         Self::boot_forks(f, saved, false)
     }
     fn boot_forks(f: &PurchaseFixture, saved: &Durable, authored_forks: bool) -> TestResult<Self> {
-        Self::boot_options(f, saved, authored_forks, false, false, false, false)
+        Self::boot_options(f, saved, authored_forks, false, false, false, false, false)
     }
     fn boot_marked(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(f, saved, true, true, false, false, false)
+        Self::boot_options(f, saved, true, true, false, false, false, false)
     }
     fn boot_dependent(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(f, saved, true, true, true, false, false)
+        Self::boot_options(f, saved, true, true, true, false, false, false)
     }
     fn boot_entitlements(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(f, saved, true, true, true, true, false)
+        Self::boot_options(f, saved, true, true, true, true, false, false)
     }
     fn boot_renewals(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(f, saved, true, true, true, true, true)
+        Self::boot_options(f, saved, true, true, true, true, true, false)
+    }
+    fn boot_withdrawal(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
+        Self::boot_options(f, saved, true, true, true, true, false, true)
     }
     fn boot_options(
         f: &PurchaseFixture,
@@ -119,6 +122,7 @@ impl PlayerWorld {
         dependent_owners: bool,
         entitlements: bool,
         renewals: bool,
+        author_withdrawal: bool,
     ) -> TestResult<Self> {
         let manifest = f
             .engine
@@ -175,6 +179,7 @@ impl PlayerWorld {
                 dependent_owners,
                 entitlements,
                 renewals,
+                author_withdrawal,
                 shared: shared.clone(),
                 purchase: purchase.clone(),
                 inner: None,

@@ -88,6 +88,7 @@ fn empty_in_txn(
             }
         };
     }
+    empty!(&f.withdrawals);
     empty!(&f.draft_parents);
     empty!(&f.authored_retirements);
     empty!(&f.retired_draft_parents);
@@ -140,6 +141,7 @@ fn validate_setup_boot(
             }
         };
     }
+    empty!(&f.withdrawals);
     empty!(&f.draft_parents);
     empty!(&f.authored_retirements);
     empty!(&f.retired_draft_parents);

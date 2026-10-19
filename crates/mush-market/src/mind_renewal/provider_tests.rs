@@ -45,6 +45,11 @@ fn renewal_requests_accept_only_one_self_selector_and_no_money_or_authority_fiel
         json!({"licence":7,"actor":1}),
         json!({"previous_operation":token(1),"receipt":{}}),
         json!({"licence":"7"}),
+        json!({"licence":u64::MAX}),
+        json!({"licence":-1}),
+        json!({"licence":null}),
+        json!({"licence":7,"previous_operation":null}),
+        json!({"licence":null,"previous_operation":token(1)}),
     ] {
         assert!(
             provider::decode(Transition::Draft, &v).is_err(),
@@ -163,6 +168,7 @@ fn renewal_publication_keeps_exact_offer_and_rejects_crossed_closed_writer_data(
     assert_eq!(next, fund);
     let mut wrong = serde_json::to_value(fund.roll_projection()?)?;
     put(&mut wrong, &["contract"], json!(999))?;
+    put(&mut wrong, &["state", "funding", "contract"], json!(999))?;
     let wrong: RenewalOperationV1 = serde_json::from_value(wrong)?;
     assert!(row.progressed(&wrong).is_err());
     let mut offer = row.offer().clone();

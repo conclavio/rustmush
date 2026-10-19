@@ -53,6 +53,7 @@ use mush_core::{
 use mush_proto::RichText;
 use smol_str::SmolStr;
 
+pub mod component_replacement;
 mod contact;
 /// 16b cut T.3: **handing a unit to a simulation authority, and taking it back**
 /// (doc 16 §3.1 "Custody").

@@ -24,7 +24,11 @@ first: number,
 /**
  * Bounded numbered display lines, escaped by the shared source viewer.
  */
-lines: Array<string>, } | { "status": "removed",
+lines: Array<string>, } | { "status": "removal_requested",
+/**
+ * Actual canonical owned label; no source material is returned.
+ */
+name: string, } | { "status": "removed",
 /**
  * Former library name.
  */

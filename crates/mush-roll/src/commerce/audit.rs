@@ -360,13 +360,9 @@ fn audit(
     })?;
     let status_count = scan(ctx, &f.status, |row| {
         read(ctx, &f.filed, row.filed.key())?;
-        // There is no registered withdrawal/recall producer in this initial
-        // schema. A later implementation must audit its actual cause receipt.
-        if row.withdrawn_by.is_some() || row.recalled_by.is_some() {
-            return Err(PublicationError::Mismatch);
-        }
-        Ok(())
+        super::withdrawal::audit::status(ctx, f, row)
     })?;
+    super::withdrawal::audit::causes(ctx, roll, f)?;
     let identity_count = scan(ctx, &f.identities, |row| {
         let file = read(ctx, &f.filed, row.filed.key())?;
         if file.content.revision() != row.revision || file.duplicate != row.duplicate {
@@ -426,6 +422,13 @@ fn audit(
                 .parent
                 .parent
                 .revision
+            }
+            RootAnchor::AuthorWithdrawal(commit, digest) => {
+                let operation = read(ctx, &f.withdrawals, commit.to_hex())?;
+                if operation.digest()? != *digest {
+                    return Err(PublicationError::Mismatch);
+                }
+                operation.revision
             }
             RootAnchor::DraftRetirement(commit, digest) => {
                 let operation = read(ctx, &f.authored_retirements, commit.to_hex())?;
@@ -498,12 +501,12 @@ fn verify_operation(
         || identity.duplicate != filed.duplicate
         || identity.filed != op.filed
         || position.filed != op.filed
-        || status.withdrawn_by.is_some()
         || status.recalled_by.is_some()
         || term.window.issued_at() != filed.content.filed_at()
     {
         return Err(PublicationError::Mismatch);
     }
+    super::withdrawal::audit::status(ctx, f, status)?;
     let rating = ratings
         .resolve_receipt(ctx, &filed.rating)
         .map_err(|_| PublicationError::Unavailable)?;

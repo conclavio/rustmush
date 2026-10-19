@@ -21,7 +21,7 @@ use serde_json::Value;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Draft {
-    licence: Option<LicenceId>,
+    licence: Option<u64>,
     previous_operation: Option<CommitToken>,
 }
 #[derive(Deserialize)]
@@ -45,9 +45,14 @@ pub(super) fn decode(kind: Transition, value: &Value) -> Result<Request, String>
     let bad = |_| super::records::invalid();
     match kind {
         Transition::Draft => {
+            if !value.as_object().is_some_and(|row| row.len() == 1) {
+                return Err(super::records::invalid());
+            }
             let r: Draft = serde_json::from_value(value.clone()).map_err(bad)?;
             match (r.licence, r.previous_operation) {
-                (Some(id), None) => Ok(Request::Draft(id)),
+                (Some(id), None) if id <= i64::MAX as u64 => {
+                    Ok(Request::Draft(LicenceId::new(id).map_err(invalid)?))
+                }
                 (None, Some(id)) => Ok(Request::Retry(id)),
                 _ => Err(super::records::invalid()),
             }

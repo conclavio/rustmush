@@ -1093,3 +1093,14 @@ real Allow/Deny policies through the normal audited persistence path to test
 current authorization and Deny precedence; it does not construct title, money,
 commercial readiness, source or rating evidence.
 """
+
+[[site]]
+path = "crates/mush-tactics/src/component_replacement/tests.rs"
+accessor = "World::module_state_mut"
+slot = "JourneyBook"
+owner = "sim"
+reason = """
+M7 test-only prepared component replacement inserts an unreadable retained journey
+into the actual registered Sim slot. It proves that missing journey authority
+cannot authorize a replacement; no unit, title, custody or work order is minted.
+"""

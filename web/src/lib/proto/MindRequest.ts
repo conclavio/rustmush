@@ -20,7 +20,11 @@ first: number,
 /**
  * Inclusive last line, at most 200 lines in one response.
  */
-last: number, } | { "op": "lifecycle",
+last: number, } | { "op": "remove",
+/**
+ * Owned working library name, never an actor or revision selector.
+ */
+name: string, } | { "op": "lifecycle",
 /**
  * Current library name.
  */

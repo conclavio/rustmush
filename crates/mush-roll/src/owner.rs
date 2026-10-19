@@ -1395,6 +1395,28 @@ impl RollStore {
         self.prepare(changes)
     }
 
+    /// New permanent metadata cause, retaining the exact immutable filed subject.
+    pub(crate) fn prepare_withdrawal_root(
+        &self,
+        request: &crate::commerce::withdrawal::Withdrawal,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        self.check_required_root(&request.filed_root())?;
+        let required = request
+            .cause_root()
+            .map_err(|_| invalid("withdrawal retention", "invalid cause"))?;
+        self.check_root_subject(&required)?;
+        let record = ReferenceRecord {
+            format: FORMAT,
+            key: required.anchor.key(),
+            revisions: vec![required.target()],
+        };
+        if self.occupied.contains(&record.key.key()) {
+            return Err(invalid("withdrawal retention", "cause already retained"));
+        }
+        self.prepare(vec![Change::Reference(record)])
+    }
+
     pub(crate) fn check_root_subject(&self, required: &RequiredRoot) -> Result<(), RollError> {
         let revision = self.exact(required.target())?;
         if !required

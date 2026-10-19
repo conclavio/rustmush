@@ -35,6 +35,7 @@ pub struct CommerceConfig {
     manifest: DefinitionRef,
     compatibility: RatingCompatibility,
     original_market_quotes: bool,
+    author_withdrawal: bool,
     authored_forks: bool,
     marked_registry: bool,
     house_filings: bool,
@@ -87,6 +88,7 @@ impl CommerceConfig {
             manifest,
             compatibility,
             original_market_quotes: false,
+            author_withdrawal: false,
             authored_forks: false,
             marked_registry: false,
             house_filings: false,
@@ -95,6 +97,18 @@ impl CommerceConfig {
             entitlements: None,
             renewals: None,
         })
+    }
+
+    /// Enable only personal initial-author withdrawal. No source, house,
+    /// transferred-holder, or Registry recall authority is implied.
+    pub fn with_author_withdrawal(mut self) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.author_withdrawal {
+            return Err(ModError::msg(
+                "author withdrawal requires one Active configuration",
+            ));
+        }
+        self.author_withdrawal = true;
+        Ok(self)
     }
 
     /// Explicit composition grants only the source-free original-sale reader
@@ -354,6 +368,10 @@ impl CommerceConfig {
                 json!({"format":1}),
             )?);
         }
+        if self.author_withdrawal {
+            let [action, outcome] = super::withdrawal::definitions()?;
+            definitions.extend([action, outcome]);
+        }
         if self.authored_forks {
             definitions.extend(super::authored_fork::definitions(&self.manifest)?);
             let [action, outcome, _] = super::authored_retirement::definitions()?;
@@ -418,6 +436,7 @@ impl CommerceConfig {
 }
 
 pub(crate) struct CommerceRegistration {
+    withdrawal: Option<super::withdrawal::EconomyReadiness>,
     pub(crate) families: CommerceFamilies,
     pub(crate) ratings: RatingFamilies,
     pub(crate) shells: ShellReservations,
@@ -765,7 +784,19 @@ pub(crate) fn register(
     } else {
         None
     };
+    let withdrawal_registration = if config.author_withdrawal {
+        let [action, outcome] = super::withdrawal::definitions()?;
+        let action = reg.definition(action)?;
+        let outcome = reg.definition(outcome)?;
+        root_actions.insert(action.clone());
+        Some([action, outcome])
+    } else {
+        None
+    };
     reg.owner_participant(root_definition, root_actions, RootParticipant)?;
+    let withdrawal = withdrawal_registration
+        .map(|definitions| super::withdrawal::register(reg, families.clone(), definitions))
+        .transpose()?;
     if let Some(definitions) = retirement_registration {
         super::authored_retirement::register(reg, families.clone(), definitions)?;
     }
@@ -906,6 +937,7 @@ pub(crate) fn register(
         )?;
     }
     Ok(CommerceRegistration {
+        withdrawal,
         families,
         ratings,
         shells,
@@ -927,6 +959,9 @@ impl CommerceRegistration {
         ctx: &mut ModuleCtx<'_>,
         registry: Option<&dyn super::rating::registration::Installer>,
     ) -> Result<(), ModError> {
+        if let Some(readiness) = &self.withdrawal {
+            readiness.capture(ctx)?;
+        }
         match self.mode {
             CommerceMode::Active => super::audit::audit_and_open_renewal_configured(
                 ctx,

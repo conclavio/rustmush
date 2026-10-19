@@ -416,6 +416,7 @@ pub mod authored_access;
 pub(crate) mod authored_fork;
 pub mod authored_history;
 pub(crate) mod authored_retirement;
+pub(crate) mod withdrawal;
 pub use authored_retirement::entry::AuthoredRetirementSelection;
 pub(crate) mod bootstrap;
 mod dependent_filing;

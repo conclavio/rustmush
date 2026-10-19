@@ -18,6 +18,7 @@ struct Fixture {
     disk: Disk,
     providers: ActionProviderRegistry,
     actions: [DefinitionRef; 5],
+    service: Option<DefinitionRef>,
     manifest: DefinitionRef,
     participants: [DefinitionRef; 2],
     invocation: ActionInvocation,
@@ -36,6 +37,13 @@ fn fixture() -> TestResult<Fixture> {
     fixture_with_manifest(1)
 }
 fn fixture_with_manifest(manifest_generation: u64) -> TestResult<Fixture> {
+    fixture_config(manifest_generation, false, false)
+}
+fn fixture_config(
+    manifest_generation: u64,
+    service_provider: bool,
+    service_protocol: bool,
+) -> TestResult<Fixture> {
     let (birth, mut handles, disk) = entitlement::tests::renewal_birth_seed()?;
     let market = OwnerId::new("market")?;
     let roll = OwnerId::new("roll")?;
@@ -96,10 +104,30 @@ fn fixture_with_manifest(manifest_generation: u64) -> TestResult<Fixture> {
         );
     }
     let actions: [DefinitionRef; 5] = refs.try_into().map_err(|_| "action count")?;
+    let service = if service_provider {
+        Some(
+            definitions.register(
+                market.clone(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("action")?,
+                    DefinitionId::new(SERVICE_ACTION)?,
+                    1,
+                    action_payload(5),
+                )?
+                .with_references(vec![
+                    manifest.clone(),
+                    participants[0].clone(),
+                    participants[1].clone(),
+                ]),
+            )?,
+        )
+    } else {
+        None
+    };
     let mut definitions = definitions.freeze()?;
     definitions.bind_owner_readiness(readiness.clone());
     let mut providers = ActionProviderRegistryBuilder::new();
-    for action in &actions {
+    for action in actions.iter().chain(service.iter()) {
         providers.register(market.clone(), action.clone(), Arc::new(Provider))?;
     }
     let providers =
@@ -149,12 +177,22 @@ fn fixture_with_manifest(manifest_generation: u64) -> TestResult<Fixture> {
         }
         handles.insert(family.to_owned(), h);
     }
-    builder.mind_renewal_capacity(
-        &market,
-        manifest.clone(),
-        participants.clone(),
-        actions.clone(),
-    )?;
+    if service_protocol {
+        builder.mind_renewal_capacity_with_service(
+            &market,
+            manifest.clone(),
+            participants.clone(),
+            actions.clone(),
+            service.clone().ok_or("service ref")?,
+        )?;
+    } else {
+        builder.mind_renewal_capacity(
+            &market,
+            manifest.clone(),
+            participants.clone(),
+            actions.clone(),
+        )?;
+    }
     let mut store =
         ActionStateStore::new(builder.freeze_for_owners_with_readiness(&owners, readiness)?);
     store.hydrate(disk.iter().map(|((ns, key), row)| {
@@ -186,6 +224,7 @@ fn fixture_with_manifest(manifest_generation: u64) -> TestResult<Fixture> {
         disk,
         providers,
         actions,
+        service,
         manifest,
         participants,
         invocation,
@@ -301,6 +340,15 @@ fn advance(
     index: usize,
     byte: u8,
 ) -> TestResult<PreparedTxn> {
+    advance_with_service(f, operation, index, byte, None)
+}
+fn advance_with_service(
+    f: &mut Fixture,
+    operation: CommitToken,
+    index: usize,
+    byte: u8,
+    service_state: Option<Value>,
+) -> TestResult<PreparedTxn> {
     let commit = CommitToken::from_bytes([byte; 16]);
     let mut pair = pair(&view(f), operation)?;
     let at = 1000 + i64::from(byte);
@@ -318,6 +366,7 @@ fn advance(
         }
         4 => json!({"kind":"unfunded_closed","closure":{"commit":commit,"action":f.actions[index],
             "at_ic":{"clock":{"kind":"world_ic","generation":1},"at":at},"posted_at_utc":at,"reason":"declined"}}),
+        5 => service_state.ok_or("service closure state")?,
         _ => return Err("advance action".into()),
     };
     pair.phase = text(&state, "kind")?.into();
@@ -333,7 +382,12 @@ fn advance(
         "product_digest":field(binding,"product_digest")?,"grant":field(binding,"grant")?});
     let mut licence = current_licence(&view(f), &pair)?;
     licence["term"] = json!(pair.next.to_string());
-    let provider = f.providers.get_exact(&f.actions[index])?;
+    let action = if index == 5 {
+        f.service.as_ref().ok_or("service provider")?
+    } else {
+        &f.actions[index]
+    };
+    let provider = f.providers.get_exact(action)?;
     let mut txn = f
         .store
         .transaction_for_provider(provider.registration_ordinal())?;
@@ -604,3 +658,5 @@ fn retry_links_and_current_head_are_required_in_cold_history() -> TestResult {
     assert!(hydrate(&f, &disk).is_err());
     Ok(())
 }
+
+mod service_tests;
