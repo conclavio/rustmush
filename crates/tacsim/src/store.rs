@@ -13,6 +13,7 @@
 //! | `tacsim:coop:{account}` | per-gateway-account enrolment (doc 18 cut IC6: `crate::port::coop`) | **skipped loudly, and the key still bars re-enrolment**: that account's `+coop/enrol` refuses, and staff repair the document; the operate gate never reads it (it reads the live lease) |
 //! | `tacsim:voyage:{hull}` | per-hull sailing plan (doc 18 cut IC9: `crate::port::voyage`) — the filed passage and the hull's burn sequence | **skipped loudly, and the key stays claimed**: that hull's `+ship/undock` refuses (its papers cannot be read) and the launch arm skips it, logged once; staff repair the document |
 //! | `tacsim:orders:{hull}` | per-hull sailing plan (doc 18 cut IC11: `crate::port::orders`) — the queued orders, their log and the step in flight | **skipped loudly, and the key stays claimed**: that hull's `+ship/orders` and `+ship/order` refuse (its plan cannot be read), the order arm skips it and pages once a boot; staff repair the document by editing it (a deleted one restarts its order ids only past the hull's recent tickets) |
+//! | `tacsim:geology` | world pin (doc 20 cut SM.1; Q-20-12) — the geology key's fingerprint | **skipped loudly, and the key still bars a rewrite**: the geology layer reads disabled ("tacsim:geology cannot be read") on the readiness line; staff repair the document, after restoring the key directory |
 //! | `tacsim:meta` | allocators | tolerated field by field, floors re-derived from every **parsed key**, loaded or not (E6b's R8 finding). Losing it costs nothing |
 //!
 //! Nothing **in this loader** fails the boot, and the direction of each loss is
@@ -306,6 +307,11 @@ pub struct TacsimStore {
     /// [`crate::port::orders::OrdersState::Unreadable`], which refuses that hull's
     /// `+ship/orders` and `+ship/order` and is skipped (and paged) by the order arm.
     pub(crate) orders_keys: BTreeSet<SmolStr>,
+    /// **Doc 20 cut SM.1** (Q-20-12) — `tacsim:geology`: the geology key's
+    /// pinned fingerprint ([`crate::surface::key`]). Absent until the first
+    /// keyed boot pins it; an unreadable body is still a claimed key (the R8
+    /// rule): the boot never rewrites it and the layer reads disabled.
+    pub(crate) geology_pin: crate::surface::key::GeologyPinState,
 }
 
 impl TacsimStore {
@@ -1499,6 +1505,32 @@ pub(crate) fn put_port_map(ctx: &mut Ctx<'_>, map: &crate::port::PortMap) {
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
+/// **Install the geology pin into RAM and queue its document** (doc 20 cut SM.1;
+/// Q-20-12) — [`put_port_map`]'s pattern: the RAM install, then one whole-document
+/// `JsonSet`. Written only by the boot pass at the first keyed boot (a module
+/// document, on [`put_mind_source`]'s precedent; never an authoritative submission).
+/// The record is two plain fields, so its serialization cannot fail; if it ever
+/// did, the same two fields are written by hand so the key still exists.
+pub(crate) fn put_geology_pin(ctx: &mut Ctx<'_>, record: &crate::surface::GeologyPinRecord) {
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.geology_pin = crate::surface::key::GeologyPinState::Present(record.clone());
+    }
+    let value = serde_json::to_value(record).unwrap_or_else(|error| {
+        tracing::error!(%error, "tacsim: the geology pin did not serialize; written by hand");
+        serde_json::json!({
+            "fingerprint": record.fingerprint,
+            "key_version": record.key_version,
+        })
+    });
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: SmolStr::new_static(crate::surface::GEOLOGY_PIN_KEY),
+            value,
+        },
+    );
+}
+
 /// **Install an enrolment into RAM and queue its document** (doc 18 cut IC6) —
 /// the single write path, [`put_port_map`]'s exact pattern: the RAM install
 /// (the record and its key), then one whole-document `JsonSet`. The serialize
@@ -1817,6 +1849,11 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                 continue;
             };
             load_notice_queue(&mut store, key, who, value);
+        } else if key == crate::surface::GEOLOGY_PIN_KEY {
+            // Doc 20 cut SM.1 (Q-20-12). The claim is the KEY's (the R8 rule): a pin
+            // that will not read is `Unreadable`, which disables the geology layer and
+            // is never rewritten by the boot.
+            store.geology_pin = crate::surface::key::load_geology_pin(key, value);
         } else if key == META_KEY {
             load_meta(&mut store, value);
         }

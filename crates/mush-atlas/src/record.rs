@@ -341,6 +341,19 @@ impl RegionRec {
                 source,
             })?;
         self.background.validate()?;
+        // Doc 20 cut SM.1 (§3.2): a composite cell's elevation is an i16 of centimetres, and a
+        // background cell is datum ± relief, so the region must keep both inside it — else the
+        // cast in the window would have to invent a height.
+        let datum = i64::from(self.datum_cm);
+        let relief = i64::from(self.background.relief_cm);
+        if datum - relief < i64::from(i16::MIN) || datum + relief > i64::from(i16::MAX) {
+            return Err(RecordError::Value(format!(
+                "region datum_cm {datum} ± relief_cm {relief} leaves the cell elevation range \
+                 of {} to {} cm",
+                i16::MIN,
+                i16::MAX
+            )));
+        }
         check_count(
             "region.ground",
             self.ground.len(),
@@ -1810,5 +1823,46 @@ mod tests {
             seed: 1,
         };
         assert!(recipe.validate().is_err());
+    }
+
+    /// Doc 20 cut SM.1 (§3.2): a region whose datum ± relief leaves the composite cell's `i16`
+    /// range is refused at validation, exactly at the bound.
+    #[test]
+    fn a_region_datum_past_the_cell_range_is_refused() {
+        let region = |datum_cm: i32, relief_cm: u16| RegionRec {
+            key: key("p", "region"),
+            name: "R".to_string(),
+            kind: RegionKind::Surface {
+                body: "ceres".to_string(),
+            },
+            frame: None,
+            parent: None,
+            extent: Rect2(Point2(0.0, 0.0), Point2(100.0, 100.0)),
+            datum_cm,
+            background: BackgroundRecipe {
+                surface: TerrainClass::Regolith,
+                mix: Vec::new(),
+                relief_cm,
+                relief_period_cm: 800,
+                water_cm: None,
+                seed: 1,
+            },
+            ground: Vec::new(),
+            ground_resolution_cm: 1000,
+            theme: None,
+            revision: 1,
+        };
+        let err = region(32_700, 150).validate().unwrap_err();
+        assert!(
+            err.to_string().contains("leaves the cell elevation range"),
+            "{err}"
+        );
+        assert!(region(32_617, 150).validate().is_ok(), "32,767 is the top");
+        assert!(region(-32_700, 150).validate().is_err());
+        assert!(
+            region(-32_618, 150).validate().is_ok(),
+            "-32,768 is the floor"
+        );
+        assert!(region(0, 150).validate().is_ok());
     }
 }

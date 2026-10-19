@@ -542,7 +542,10 @@ fn stock(rig: &mut Rig) {
         let gated: Vec<&str> = out
             .lines()
             // Doc 18 cut IC12: the gate is every report line but the sky (D-18-50).
-            .filter(|line| line.ends_with(']') && !line.starts_with("sky: "))
+            // doc 20 SM.1: the geology line is reported and never gated
+            .filter(|line| {
+                line.ends_with(']') && !line.starts_with("sky: ") && !line.starts_with("geology: ")
+            })
             .collect();
         if gated.len() > 1 && gated.iter().all(|line| line.ends_with("[ready]")) {
             return;
@@ -2754,6 +2757,15 @@ fn pb_the_tick_pages_once_a_boot_while_a_house_cannot_fund_a_tonne() {
         0,
         "a funded house never pages"
     );
+    // The report's lines that are not `[ready]`. Doc 20 SM.1: a keyless world's geology line is
+    // always flagged, so "Not ready" alone no longer proves the two bid lines are counted; the
+    // count before and after the drain does.
+    let not_ready = |out: &str| {
+        out.lines()
+            .filter(|line| line.ends_with(']') && !line.ends_with("[ready]"))
+            .count()
+    };
+    let before = not_ready(&status(&mut rig.tw));
     let _ = leave_kasei_under_a_tonne(&mut rig);
     let out = status(&mut rig.tw);
     let bids: Vec<&str> = out
@@ -2766,8 +2778,13 @@ fn pb_the_tick_pages_once_a_boot_while_a_house_cannot_fund_a_tonne() {
             .all(|line| line.ends_with("; not buying until its capital settles. [pending]")),
         "{out}"
     );
+    assert_eq!(
+        not_ready(&out),
+        before + 2,
+        "the two bid lines join:\n{out}"
+    );
     assert!(
-        out.contains("Not ready: "),
+        out.contains(&format!("Not ready: {} of ", before + 2)),
         "the report still counts them:\n{out}"
     );
     // The desk stays open: a pilot charters while Kasei cannot pay.

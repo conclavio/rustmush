@@ -47,11 +47,12 @@ fi
 #                         MONEY; back it up with the store, not instead of it
 #   data/offer-keys/      [offers].key_dir   — K5 offer signing, mode 0700
 #   data/resolution-keys/ [resolution].key_dir — K4 resolution RNG, mode 0700
+#   data/geology-keys/    [tacsim.geology].key_dir — doc 20 geology, mode 0700
 # All of them are under $ROOT, which is the unit's one `ReadWritePaths=` entry;
 # the IPC socket's /run/rustmush comes from the unit's `RuntimeDirectory=`.
 # /var/log/redis stays redis-owned.
 install -d -o mush -g mush -m 0750 "$ROOT" "$ROOT/data" "$ROOT/data/logs" "$ROOT/data/archive" "$ROOT/tls"
-install -d -o mush -g mush -m 0700 "$ROOT/data/offer-keys" "$ROOT/data/resolution-keys"
+install -d -o mush -g mush -m 0700 "$ROOT/data/offer-keys" "$ROOT/data/resolution-keys" "$ROOT/data/geology-keys"
 mkdir -p /var/lib/redis-dev1mush /var/log/redis /run/redis-dev1mush
 chown redis:redis /var/lib/redis-dev1mush /run/redis-dev1mush /var/log/redis
 

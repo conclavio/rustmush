@@ -84,6 +84,9 @@ pub enum Binding {
     /// Doc 18 §9 risk 19, cut IC14: the inventory mirror's headroom; reported and
     /// paged, never gated, as the sky is (proposed Q-18-72).
     Markers,
+    /// Doc 20 cut SM.1: the geology key's state; reported, never gated, in
+    /// D-18-50's sky manner (`crate::surface::key::geology_line`).
+    Geology,
 }
 
 /// **A line's state.** Only [`LineState::Ready`] counts as ready.
@@ -343,6 +346,9 @@ pub fn readiness(w: &World) -> Readiness {
             report.push(None, Binding::Sky, state, text);
         }
     }
+
+    // ---- doc 20 cut SM.1: the geology key, right after the sky ----
+    report.lines.push(crate::surface::key::geology_line(w));
 
     // ---- the world rate ----
     match w.world_timeline().epochs().last().map(|epoch| epoch.rate) {

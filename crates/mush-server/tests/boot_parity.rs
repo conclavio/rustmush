@@ -67,6 +67,7 @@
 //! | `[offers].key_dir`, `[server].data_dir` (decision keys) | `build_engine` key rings | `the_engine_knobs_reach_the_booted_world` |
 //! | `[tacsim.economy].housing` / `.market` / `.reserved_rooms` | `game_modules` -> `server_modules_with` | `modules.rs`'s `lb_e5cc231_…`, `tests/market_issuer.rs` |
 //! | `[llm]` (the service handle) | `build_engine` -> `ServerDeps::production` (both roots) | `the_production_deps_carry_the_booted_mind_and_one_registry` |
+//! | `[tacsim.geology].key_dir` | `build_engine` key load + post-composition `install_geology` | `sm1_the_geology_key_is_pinned_and_a_wrong_one_disables_the_layer` |
 //!
 //! A knob added to `mush-config` and never wired into `boot.rs` leaves a row
 //! missing from this table — a documented, greppable gap rather than a silent
@@ -540,6 +541,127 @@ async fn the_roster_and_hello_manifest_are_golden_across_the_matrix() {
              the only thing it decides ({case})"
         );
     }
+}
+
+// ---- doc 20 cut SM.1: the geology key ----------------------------------------
+
+/// The readiness report's geology line on a booted engine.
+fn geology_line(engine: &mush_core::Engine) -> tacsim::port::ReadinessLine {
+    tacsim::port::readiness(&engine.world)
+        .lines
+        .into_iter()
+        .find(|line| line.binding == tacsim::port::Binding::Geology)
+        .expect("a geology line")
+}
+
+/// **Doc 20 cut SM.1 (Q-20-12, §16)**: the production root loads the geology key from
+/// `[tacsim.geology].key_dir`, hands it to the layer after composition, and the first boot pins
+/// its fingerprint; a second boot over the same store and directory compares it and reads Ready;
+/// a boot with a fresh key directory reads Flagged with the mismatch reason and still boots (a
+/// lost key is a disabled layer, not a corrupted one); a key directory that will not load reads
+/// Flagged with the store's error and still boots (decision 15: never `?`); a config with no key
+/// directory reads Flagged, not configured.
+#[tokio::test]
+async fn sm1_the_geology_key_is_pinned_and_a_wrong_one_disables_the_layer() {
+    let mut cfg = stock_config("geology");
+    cfg.tacsim.enabled = true;
+    let key_dir = cfg.server.data_dir.join("geology-keys");
+    cfg.tacsim.geology.key_dir = Some(key_dir.clone());
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let quarantine = spool(&cfg);
+
+    let booted = boot::build_engine(&cfg, &store, &quarantine)
+        .await
+        .expect("a keyed world boots");
+    let line = geology_line(&booted.engine);
+    assert_eq!(line.state, tacsim::port::LineState::Ready, "{}", line.text);
+    assert!(
+        line.text.starts_with("geology: key v1, fingerprint "),
+        "{}",
+        line.text
+    );
+    assert!(
+        key_dir.join("geology-key-0000000001.hex").is_file(),
+        "the first boot provisions the key"
+    );
+    drop(booted);
+
+    let again = boot::build_engine(&cfg, &store, &quarantine)
+        .await
+        .expect("the same store and key boot again");
+    let line = geology_line(&again.engine);
+    assert_eq!(line.state, tacsim::port::LineState::Ready, "{}", line.text);
+    drop(again);
+
+    // A fresh key directory: a new key, not the pinned one. The boot is never refused.
+    std::fs::remove_dir_all(&key_dir).expect("the key directory is removed");
+    let wrong = boot::build_engine(&cfg, &store, &quarantine)
+        .await
+        .expect("a wrong key disables the layer and never refuses the boot");
+    let line = geology_line(&wrong.engine);
+    assert_eq!(
+        line.state,
+        tacsim::port::LineState::Flagged,
+        "{}",
+        line.text
+    );
+    assert!(
+        line.text
+            .starts_with("geology: disabled: the key's fingerprint ")
+            && line
+                .text
+                .ends_with("; restore the key directory this world first booted with."),
+        "{}",
+        line.text
+    );
+    drop(wrong);
+
+    // A key directory that will not load (its manifest is garbage): the load errs inside
+    // `build_engine`, which must never `?` it (decision 15) — the boot succeeds and the layer
+    // reads disabled with the store's own error text.
+    std::fs::write(
+        key_dir.join("geology-ring-0000000001.json"),
+        b"not a manifest",
+    )
+    .expect("the manifest is overwritten");
+    let unreadable = boot::build_engine(&cfg, &store, &quarantine)
+        .await
+        .expect("an unreadable key directory disables the layer and never refuses the boot");
+    let line = geology_line(&unreadable.engine);
+    assert_eq!(
+        line.state,
+        tacsim::port::LineState::Flagged,
+        "{}",
+        line.text
+    );
+    assert!(
+        line.text
+            .starts_with("geology: disabled: the key directory did not load (")
+            && line.text.ends_with(")."),
+        "{}",
+        line.text
+    );
+    drop(unreadable);
+    let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
+
+    // No key directory at all: the layer reads disabled, not configured.
+    let mut keyless = stock_config("geology-keyless");
+    keyless.tacsim.enabled = true;
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let quarantine = spool(&keyless);
+    let booted = boot::build_engine(&keyless, &store, &quarantine)
+        .await
+        .expect("a keyless world boots");
+    let line = geology_line(&booted.engine);
+    assert_eq!(
+        (line.state, line.text.as_str()),
+        (
+            tacsim::port::LineState::Flagged,
+            "geology: disabled: no [tacsim.geology].key_dir is configured."
+        )
+    );
+    drop(booted);
+    let _ = std::fs::remove_dir_all(&keyless.server.data_dir);
 }
 
 // ---- S1: the starter area ---------------------------------------------------

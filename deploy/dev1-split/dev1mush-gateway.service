@@ -58,7 +58,8 @@ RuntimeDirectoryMode=0750
 #
 # Every path the RENDERED mushd.toml writes to is inside the one ReadWritePaths
 # tree: the data dir and, under it, logs/ (gateway.log + server.log), archive/
-# (the J5 ledger tier), offer-keys/, resolution-keys/ and quarantine/ — all
+# (the J5 ledger tier), offer-keys/, resolution-keys/, geology-keys/ and
+# quarantine/ — all
 # provisioned by deploy.sh. The only write OUTSIDE it is the boundary socket,
 # and that is what RuntimeDirectory above is for.
 NoNewPrivileges=true

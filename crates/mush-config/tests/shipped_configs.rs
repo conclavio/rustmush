@@ -352,7 +352,24 @@ fn the_template_declares_every_section_the_deployed_boxes_lack() {
             offers, resolution,
             "{env_file}: the key families must not share a directory"
         );
-        for dir in [offers, resolution] {
+        // Doc 20 cut SM.1: the geology key family is a third private directory the template
+        // names (it has no default — absent, the mining layer reads disabled), distinct from
+        // both protocol families and under the same data root.
+        let geology = cfg
+            .tacsim
+            .geology
+            .key_dir
+            .as_ref()
+            .expect("[tacsim.geology].key_dir");
+        assert_ne!(
+            offers, geology,
+            "{env_file}: the geology family must not share the offers directory"
+        );
+        assert_ne!(
+            resolution, geology,
+            "{env_file}: the geology family must not share the resolution directory"
+        );
+        for dir in [offers, resolution, geology] {
             assert!(
                 dir.starts_with(&cfg.server.data_dir),
                 "{env_file}: {} must live under [server].data_dir {}",

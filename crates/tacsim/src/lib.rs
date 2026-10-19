@@ -158,6 +158,9 @@ pub mod sheet;
 /// (doc 18 §4.8, D-18-43, D-18-48).
 pub mod sky;
 pub mod store;
+/// **Doc 20 cut SM.1** — surface mining's ground: the keyed geology function, the reading
+/// rule, the geology key's boot and pin, the site ground cache and `@geology`.
+pub mod surface;
 
 use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registrar};
 
@@ -522,6 +525,10 @@ impl GameModule for TacsimRuleset {
         };
         slot.install_packs(packs);
         reg.state(slot);
+        // Doc 20 cut SM.1 (§3.2, Q-20-12): the geology layer's RAM slot — the key the host hands
+        // in after composition (`surface::install_geology`), the status the boot pass decides
+        // once, the bodies' tables and the site ground cache. Never persisted.
+        reg.state(surface::GeologyState::default());
         reg.state(
             match_::mind_tape::TapeStore::new(self.cfg.arena.tape_retained_max_bytes)
                 .map_err(|e| ModError::msg(e.to_string()))?,
@@ -561,6 +568,8 @@ impl GameModule for TacsimRuleset {
         commands::register(reg)?;
         // Doc 19 cut A.3b: the `sky.chart` panel feed and its query, with the port verbs.
         port::chart_panel::register(reg)?;
+        // Doc 20 cut SM.1 (§3.2, D-20-4): `@geology`, staff truth, in its own ReadOnly bracket.
+        surface::commands::register(reg)?;
         // 16b cut C.2 (C1): the game's definitions, through the C1 registry.
         // One validator per kind first — `Registrar::definition` admits nothing
         // whose kind has none — then the descriptors in dependency order.
@@ -684,6 +693,10 @@ impl GameModule for TacsimRuleset {
             return Err(ModError::msg("tacsim: no module state"));
         };
         *slot = loaded;
+        // Doc 20 cut SM.1 (Q-20-12): the geology key's boot pass — pin the fingerprint at the
+        // first keyed boot (a module document, never a submission), compare it at every later
+        // one, and leave the RAM-only status every consumer reads.
+        surface::key::boot(ctx);
         // **17b cut M3.3** (doc 17 §13): the stock mind's source, stored
         // immutably under its digest (`tacsim:mindsrc:<sha256>`) — written by
         // the first boot that finds no document under that key and never

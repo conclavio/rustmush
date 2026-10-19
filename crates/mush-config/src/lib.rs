@@ -26,6 +26,8 @@
 //! - [`resolution_keys`] — an independent durable key family for K4
 //!   authoritative resolution RNG.
 //! - [`decision_keys`] — durable HMAC keys for K7 delayed-decision prompts.
+//! - [`geology_keys`] — the geology key family (doc 20 cut SM.1): one key, never rotated,
+//!   behind surface mining's keyed ground.
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
 // held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
@@ -45,6 +47,7 @@ pub mod decision_keys;
 pub mod discord;
 mod durable_keys;
 pub mod exit;
+pub mod geology_keys;
 pub mod ipguard;
 pub mod logging;
 pub mod metrics;

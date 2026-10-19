@@ -636,6 +636,20 @@ applies the shipped pack through `mush_content::apply` and asserts the refusal.
 """
 
 [[site]]
+path = "crates/tacsim/tests/geology.rs"
+accessor = "World::module_state_mut"
+slot = "AtlasState"
+owner = "atlas"
+reason = """
+Doc 20 cut SM.1 (lead ruling 4): `tacsim::surface::ground::site_ground_sync`
+captures a site's terrain from the composed atlas's records, and SM.1 ships no
+site region (SM.2's lane packs author them). The test inserts its own 256 by 256
+test region into this world's atlas records (RAM only; nothing is persisted) so
+the synchronous door's capture, cache key, hit and refusals run on a composed
+world rather than on a hand-made `Records`.
+"""
+
+[[site]]
 path = "crates/mushd/tests/sim_rematch.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

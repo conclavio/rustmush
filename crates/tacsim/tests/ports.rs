@@ -623,7 +623,11 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
     // and listings line is pending — made, waiting on the tick, never missing or
     // flagged — and every other line is ready.
     let stock_line = |l: &str| l.contains(" vendor ") || l.contains(" ask ");
-    let bracketed: Vec<&str> = after.lines().filter(|l| l.ends_with(']')).collect();
+    let bracketed: Vec<&str> = after
+        .lines()
+        // doc 20 SM.1: the geology line is reported and never gated
+        .filter(|l| l.ends_with(']') && !l.starts_with("geology: "))
+        .collect();
     assert!(
         bracketed.iter().any(|l| stock_line(l)),
         "the stock lines are reported: {after}"
@@ -1630,6 +1634,8 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
             "lane: {LANE_PACK}@{LANE_VERSION} applied; this server ships @{LANE_VERSION}. [ready]"
         ),
         format!("sky: constant (rate 0), kepler, epoch 2351-05-13, rev {rev} [ready]"),
+        // Doc 20 cut SM.1: the geology line follows the sky; this world has no key.
+        "geology: disabled: no [tacsim.geology].key_dir is configured. [flagged]".to_owned(),
         "world rate: 24 IC seconds per real second. [ready]".to_owned(),
         format!("treasury: system:tacsim.treasury, account #{treasury}. [ready]"),
         // Doc 18 cut IC8: the market facts line follows the treasury.

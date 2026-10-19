@@ -30,11 +30,12 @@ fi
 #                         MONEY; back it up with the store, not instead of it
 #   data/offer-keys/      [offers].key_dir   — K5 offer signing, mode 0700
 #   data/resolution-keys/ [resolution].key_dir — K4 resolution RNG, mode 0700
-# The two key directories are DIFFERENT private key families and are never
+#   data/geology-keys/    [tacsim.geology].key_dir — doc 20 geology, mode 0700
+# The three key directories are DIFFERENT private key families and are never
 # pointed at one directory. /var/log/redis is the SHARED redis log dir — it must
 # stay owned by redis (the dev instance logs there too); never chown it to mush.
 install -d -o mush -g mush -m 0750 "$ROOT" "$ROOT/data" "$ROOT/data/logs" "$ROOT/data/archive" "$ROOT/tls"
-install -d -o mush -g mush -m 0700 "$ROOT/data/offer-keys" "$ROOT/data/resolution-keys"
+install -d -o mush -g mush -m 0700 "$ROOT/data/offer-keys" "$ROOT/data/resolution-keys" "$ROOT/data/geology-keys"
 mkdir -p /var/lib/redis-dev1mush /var/log/redis /run/redis-dev1mush
 chown redis:redis /var/lib/redis-dev1mush /run/redis-dev1mush /var/log/redis
 

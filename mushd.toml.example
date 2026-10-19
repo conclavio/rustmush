@@ -412,6 +412,9 @@ max_output_events_per_pulse = 512  # (16b cut U.2) output events one arena pulse
 # it rounded up to the next MiB. The lane's own bound, reported outside the compared block.
 max_snapshot_bytes = 7340032       # (16b cut AF.2) bytes of the largest arena snapshot the 30-second lane may encode
 
+[tacsim.geology]                   # (doc 20 cut SM.1) the geology key family: one key, never rotated
+# key_dir = "./data/geology-keys"   # absent: the mining layer is disabled (doc 20 SM.1)
+
 [onboarding]                       # (M9) the chargen_required gate + start rooms
 # When off (the default), a fresh character plays immediately, exactly as
 # before. When on, a newly created, not-yet-approved character is placed in the

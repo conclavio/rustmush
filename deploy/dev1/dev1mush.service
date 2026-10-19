@@ -20,7 +20,7 @@ RestartSec=5
 # Hardening: the service needs only its own tree + the loopback Redis. Every
 # path the RENDERED mushd.toml writes to is inside that one tree — the data dir
 # and, under it, logs/, archive/ (the J5 ledger tier), offer-keys/,
-# resolution-keys/ and quarantine/ — all provisioned by deploy.sh, so
+# resolution-keys/, geology-keys/ and quarantine/ — all provisioned by deploy.sh, so
 # ProtectSystem=strict has nothing else to let through.
 NoNewPrivileges=true
 ProtectSystem=strict

@@ -458,6 +458,12 @@ max_output_events_per_pulse = 512
 # (16b cut AF.2) bytes of the largest arena snapshot the 30-second lane may encode; measured: the authored lane's 4,198,651 bytes, three halves of it rounded up to the next MiB
 max_snapshot_bytes = 7340032
 
+# (doc 20 cut SM.1) The geology key family: one private key behind surface mining's ground,
+# provisioned once and NEVER rotated. Back it up with its directory, beside the store: losing it
+# disables mining (the readiness report says so), it corrupts nothing.
+[tacsim.geology]
+key_dir = "__DATA_DIR__/geology-keys"
+
 # Onboarding. The start rooms are REAL SEEDED ROOMS, not #0. Limbo is the
 # bootstrap room the store seeds with God — it is reserved from housing, it is
 # where a world with nothing else in it puts you, and it is not a place to open

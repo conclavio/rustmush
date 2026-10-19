@@ -445,6 +445,19 @@ report only the directory and current version, never key bytes. Include both
 directories in protected backups; restoring Redis without the matching key
 directories invalidates outstanding offers and can prevent future deterministic
 resolution of an accepted window.
+
+`[tacsim.geology].key_dir` names a third private directory, `geology-keys/` in
+the shipped template, holding the geology key family (doc 20 SM.1): one key,
+never rotated, behind surface mining's ground. It has **no default**: absent,
+the mining layer reads disabled. A key that will not load, or whose fingerprint
+differs from the one the world pinned at its first keyed boot, disables the
+mining layer (the readiness report's `geology:` line says why) and never
+refuses the boot. Include it in the same protected backups as the store:
+restoring the store without the matching geology key leaves mining disabled
+until the directory is restored. The same mode rules apply (`0700` directory,
+`0600` files), and it is never the same directory as `[offers]` or
+`[resolution]`.
+
 - let boot archive an active record only after the authoritative target has
   been read back and its exact expected bytes/hash are proven. Merely deleting
   the file is not recovery;

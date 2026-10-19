@@ -125,6 +125,7 @@
 //! | `[tacsim.harness].max_snapshot_bytes` | `7340032` | **16b cut AF.2** (16c N16): the largest arena snapshot state the harness's 30-second lane may encode, bytes, asserted on both cohorts' `harness_arena_snapshot` line; measured before it was set — the authored lane's 4,198,651 bytes, three halves of it rounded up to the next MiB; the lane's own bound, kept out of the compared block |
 //! | `[tacsim.harness].max_path_cells_per_pulse` | `48128` | **16b cut AI.1** (16c `B-84`): A star cells one wake's path searches expand, found or failed; sized on the four-seed measurement with the harness's 16 per cent spread |
 //! | `[tacsim.harness].max_output_events_per_pulse` | `512` | **16b cut U.2**: the most output events one arena pulse may produce through the world's output path; sized against the fan-out lane's measured acquisition burst (24 panels + 11 contact-notice lines per pilot = 288), 512 so a 24-pilot burst has headroom — whoever moves it next must say why; that burst is teammates only, so an engaged pulse is unmeasured |
+//! | `[tacsim.geology].key_dir` | absent | doc 20 SM.1: the geology key family's directory; absent, the mining layer reads disabled |
 //! | `[game].starter_area` | `true` | S1: apply the shipped starter area (the lot, the OOC Area, the Staff Lobby) at a world's first boot; static content, no LLM call; never re-applied |
 //! | `[atlas].tile_max_cells` | `65536` | S1: the most cells one map tile holds; a larger footprint rasterizes coarser |
 //! | `[atlas].nearest_room_cells` | `8` | S4: cells a pose may stand off every footprint and still resolve to the nearest room |
@@ -667,6 +668,24 @@ pub struct TacsimCfg {
     /// `[tacsim.harness]` — **16b cut G**: the scale harness's shape and its
     /// thresholds (doc 16 §1, acceptance A2).
     pub harness: TacsimHarnessCfg,
+    /// `[tacsim.geology]` — **doc 20 cut SM.1**: where surface mining's geology
+    /// key lives (§3.2, Q-20-12). Absent, the mining layer reads disabled.
+    pub geology: TacsimGeologyCfg,
+}
+
+/// `[tacsim.geology]` — doc 20 cut SM.1 (§3.2, Q-20-12): the geology key family's directory.
+///
+/// ABSENT means the mining layer is disabled (lead ruling 3), unlike the three protocol families,
+/// which default under `[server].data_dir`: a world that never chose a geology key never
+/// provisions one, so a deployment cannot quietly mint a second key beside a restored store. The
+/// shipped template names one (`__DATA_DIR__/geology-keys`). A key that will not load, or whose
+/// fingerprint differs from the one the world pinned at its first keyed boot, disables the layer
+/// and never refuses the boot (§16: "a lost key is a disabled layer, not a corrupted one").
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimGeologyCfg {
+    /// The geology key family's private directory (one key, never rotated).
+    pub key_dir: Option<PathBuf>,
 }
 
 /// `[tacsim.economy]` — what the composition root turns on for the one game's
@@ -793,6 +812,7 @@ impl Default for TacsimCfg {
             sensors: TacsimSensorsCfg::default(),
             resolution: TacsimResolutionCfg::default(),
             harness: TacsimHarnessCfg::default(),
+            geology: TacsimGeologyCfg::default(),
         }
     }
 }
@@ -2305,6 +2325,14 @@ impl Config {
     pub fn decision_key_dir(&self) -> PathBuf {
         self.server.data_dir.join("decision-keys")
     }
+
+    /// Directory of the geology key family (doc 20 cut SM.1; Q-20-12), or `None` when
+    /// `[tacsim.geology].key_dir` is absent — which leaves the mining layer disabled. There is
+    /// deliberately no default under `[server].data_dir`.
+    #[must_use]
+    pub fn geology_key_dir(&self) -> Option<PathBuf> {
+        self.tacsim.geology.key_dir.clone()
+    }
 }
 
 #[cfg(test)]
@@ -2504,6 +2532,28 @@ scene_turn_dedline_secs = 30
         assert_eq!(
             defaulted.offer_key_dir(),
             PathBuf::from("./world/offer-keys")
+        );
+    }
+
+    #[test]
+    fn geology_key_directory_has_no_default_and_refuses_a_misspelt_key() {
+        // Doc 20 cut SM.1: `[tacsim.geology].key_dir` names the directory; absent is `None`
+        // (the mining layer reads disabled), and a near-miss key is refused, never defaulted.
+        let cfg: Config = toml::from_str(
+            "[server]\ndata_dir = \"./world\"\n[tacsim.geology]\nkey_dir = \"./secrets/geology\"",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.geology_key_dir(),
+            Some(PathBuf::from("./secrets/geology"))
+        );
+
+        let defaulted: Config = toml::from_str("[server]\ndata_dir = \"./world\"").unwrap();
+        assert_eq!(defaulted.geology_key_dir(), None);
+
+        assert!(
+            toml::from_str::<Config>("[tacsim.geology]\nkey_dirr = \"x\"").is_err(),
+            "deny_unknown_fields refuses a misspelt geology key"
         );
     }
 

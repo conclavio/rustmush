@@ -48,6 +48,7 @@ use std::sync::Arc;
 use mush_config::accounts::import_accounts_json;
 use mush_config::config::{Config, StoreBackend, StoreReceiptPolicy};
 use mush_config::decision_keys::DurableDecisionKeyStore;
+use mush_config::geology_keys::DurableGeologyKeyStore;
 use mush_config::metrics::Metrics;
 use mush_config::offer_keys::DurableOfferKeyStore;
 use mush_config::resolution_keys::DurableResolutionKeyStore;
@@ -434,6 +435,36 @@ pub async fn build_engine(
         key_dir = %config.decision_key_dir().display(),
         "durable delayed-decision keys loaded"
     );
+    // Doc 20 cut SM.1 (§3.2, Q-20-12, §16 "a lost key is a disabled layer, not a corrupted
+    // one"): the geology key family — loaded only when the layer is on, and NEVER with `?`: a key
+    // that will not load disables the mining layer, it does not refuse the boot. The three
+    // protocol rings above keep refusing it. The key reaches the game crate after composition,
+    // through `tacsim::surface::install_geology`, before the module boot pass pins or compares
+    // its fingerprint.
+    let geology = config
+        .tacsim
+        .enabled
+        .then(|| match config.geology_key_dir() {
+            None => tacsim::surface::GeologyBoot::NotConfigured,
+            Some(dir) => match DurableGeologyKeyStore::new(&dir).load_or_create() {
+                Ok(secret) => {
+                    tracing::info!(
+                        version = secret.version(),
+                        key_dir = %dir.display(),
+                        "durable geology key loaded"
+                    );
+                    tacsim::surface::GeologyBoot::Key(secret)
+                }
+                Err(error) => {
+                    tracing::error!(
+                        %error,
+                        key_dir = %dir.display(),
+                        "geology key did not load; the mining layer is disabled"
+                    );
+                    tacsim::surface::GeologyBoot::Unreadable(error.to_string())
+                }
+            },
+        });
     let authoritative = store.authoritative_store().ok_or_else(|| {
         "configured store does not implement K3 exact-token durability; refusing writable boot"
             .to_owned()
@@ -547,6 +578,15 @@ pub async fn build_engine(
         mush_tactics::ground::configure(&mut engine.world, config.tacsim.ground_cell_cm)
     {
         tracing::warn!(%error, "boot: the ground driver's cell size did not apply");
+    }
+    // Doc 20 cut SM.1 (Q-20-12): the geology key, on the same post-composition device — a
+    // tacsim function writing tacsim's own slot, before the boot pass that pins or compares the
+    // key's fingerprint. With `[tacsim].enabled = false` nothing was loaded and the boot pass
+    // reports the layer off from the store's own flag.
+    if let Some(boot) = geology
+        && !tacsim::surface::install_geology(&mut engine.world, boot)
+    {
+        tracing::warn!("boot: no tacsim slot took the geology key");
     }
     modules::boot_modules(&mut engine, &**store).await?;
     // **16b cut F.4**: the simulator's readiness, once — and here, because this
