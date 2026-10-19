@@ -52,7 +52,7 @@ use support::ground::{UNSIGNED, sign};
 /// the legs re-timed to the three-dimensional chords): a new version beside the
 /// v1, v2 and v3 ledger rows, never an earlier version re-signed in place (lead
 /// ruling L0b).
-const LANE_DIGEST: &str = "7cd35e6fa0d7bbd629c9bcb3d1b1acb4d1b24aa099c5573dbd824be93fbb4d82";
+const LANE_DIGEST: &str = "319aa8a0d273dc6980937d7b8ec7682eab25c37be964ceaaef687bff3562744e";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -135,11 +135,17 @@ fn derived_legs(pack: &RulesPack, route: &RouteEntry, kms: u32) -> Result<Vec<u6
     Ok(out)
 }
 
-/// The coast rate the fielded catalog's drive table gives a route's class.
+/// **The documentary cruise a lane leg's `base_s` is timed at**, km/s (doc 19 cut
+/// A.2): the slice's coast Dray cruised at 226 km/s (lane v3/v4's legs); since the
+/// Dray flies the flip law, `base_s` is a pin of the chord at that cruise and
+/// nothing reads it for a cross-body leg — the planner derives every leg from the
+/// sky and the law. The fielded drive table is checked to fly the class under a
+/// law (whichever it is).
 fn coast_kms(class: &CanonicalId) -> u32 {
     let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     match catalog.drive_for_class(class) {
         Some(DriveLaw::Coast { kms, .. }) => *kms,
+        Some(DriveLaw::Flip { .. }) => 226,
         None => panic!("no drive flies {class}"),
     }
 }
@@ -149,7 +155,7 @@ fn coast_kms(class: &CanonicalId) -> u32 {
 // ---------------------------------------------------------------------------
 
 /// **The lane is pinned** (doc 18 cut IC2; R4; cut IC3, L0a/L0b; doc 19 cut A.1):
-/// a campaign seed at version 4 requiring nothing, exactly the twenty entries —
+/// a campaign seed at version 5 requiring nothing, exactly the twenty entries —
 /// the `sol` region, twelve bodies on element tables, three places, two routes
 /// timed to the Kepler sky's three-dimensional chords at the epoch for 226 km/s
 /// and the two ports; every body carries the same `epoch_ic`, which is
@@ -179,7 +185,11 @@ fn ic2_the_lane_pack_is_pinned() {
     let manifest = pack.manifest();
     assert_eq!(manifest.id().as_str(), LANE_PACK);
     assert_eq!(manifest.version(), LANE_VERSION);
-    assert_eq!(manifest.version(), 4, "lane v4 since doc 19 cut A.1");
+    assert_eq!(
+        manifest.version(),
+        5,
+        "lane v5 since doc 19 cut A.4 (v4 at A.1)"
+    );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
     assert!(manifest.requires().is_empty(), "the lane requires nothing");
     assert_eq!(
@@ -548,9 +558,10 @@ fn fixture_digests_unmoved_by_optional_sky_fields() {
 // The drive table and the game-packs list
 // ---------------------------------------------------------------------------
 
-/// The Dray's JSON as another operator pack: its id, its entry and its coast
-/// rate changed, re-signed so the digest is not what refuses it.
-fn dray_copy(kms: u32) -> LoadedPack {
+/// The Dray's JSON as another operator pack: its id, its entry and its rated
+/// acceleration changed (the flip law since doc 19 cut A.2), re-signed so the
+/// digest is not what refuses it.
+fn dray_copy(accel_mg: u32) -> LoadedPack {
     let mut doc: serde_json::Value = serde_json::from_str(DRAY_JSON).expect("the Dray is JSON");
     let manifest = doc.get_mut("manifest").expect("a manifest");
     manifest["id"] = serde_json::json!("test.pack.dray_b");
@@ -562,7 +573,7 @@ fn dray_copy(kms: u32) -> LoadedPack {
     let mut def = entries
         .remove("tacsim.unit.dray")
         .expect("the Dray's entry");
-    def["def"]["logistics"]["drive"]["law"]["coast"]["kms"] = serde_json::json!(kms);
+    def["def"]["logistics"]["drive"]["law"]["flip"]["accel_mg"] = serde_json::json!(accel_mg);
     entries.insert("test.unit.dray_b".to_owned(), def);
     let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
     LoadedPack {
@@ -572,7 +583,7 @@ fn dray_copy(kms: u32) -> LoadedPack {
 }
 
 /// **One drive class, one law** (Q-18-5, D-18-45): the fielded catalog answers
-/// the Dray's coast law for `coast_hauler` and nothing for a class no hull
+/// the Dray's flip law (doc 19 cut A.2) for `coast_hauler` and nothing for a class no hull
 /// declares; a second hull flying `coast_hauler` at another speed is refused
 /// naming the class and both units; at the same law it is accepted and the
 /// table is unchanged.
@@ -581,14 +592,14 @@ fn one_drive_class_one_law() {
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     assert_eq!(
         fielded.drive_for_class(&cid("coast_hauler")),
-        Some(&DriveLaw::Coast {
-            kms: 226,
-            burn_permille: 105
+        Some(&DriveLaw::Flip {
+            accel_mg: 50,
+            exhaust_kms: 6_000
         })
     );
     assert_eq!(fielded.drive_for_class(&cid("fusion_torch")), None);
 
-    let refused = Catalog::build_fielded(&[dray_copy(300)], tacsim::NS)
+    let refused = Catalog::build_fielded(&[dray_copy(70)], tacsim::NS)
         .err()
         .map(|error| error.to_string())
         .expect("a second law for one class is refused");
@@ -597,7 +608,7 @@ fn one_drive_class_one_law() {
     }
     assert!(refused.contains("one class, one law"), "{refused}");
 
-    let same = Catalog::build_fielded(&[dray_copy(226)], tacsim::NS)
+    let same = Catalog::build_fielded(&[dray_copy(50)], tacsim::NS)
         .expect("the same law twice is one law");
     assert_eq!(same.drives, fielded.drives);
 }
@@ -853,11 +864,9 @@ fn ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky() {
     // The pack list, as staff.
     let events = tw.run(GOD, "@tacsim/pack list");
     let out = tw.seen_by(&events, GOD).join("\n");
+    let lane_line = format!("tacsim.lane.ceres_phobos@{LANE_VERSION} [seed]");
     for (line, digest) in [
-        (
-            "tacsim.lane.ceres_phobos@4 [seed]",
-            lane().manifest().digest().to_hex(),
-        ),
+        (lane_line.as_str(), lane().manifest().digest().to_hex()),
         ("tacsim.core@1 [rules]", CORE_DIGEST.to_owned()),
         ("tacsim.corridor@1 [seed]", CORRIDOR_DIGEST.to_owned()),
         ("tacsim.corridor@2 [seed]", CORRIDOR_V2_DIGEST.to_owned()),

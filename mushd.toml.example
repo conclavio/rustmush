@@ -189,9 +189,9 @@ catch_up_production = ""           # cut 4
 catch_up_fronts = ""               # cut 9
 catch_up_domains = ""              # cut 8
 
-[tacsim.time.ephemeris]            # boot-read body phases and sky motion
-epoch = 0                         # campaign epoch, IC seconds on the game calendar (mush_core::CivilDate: 365-day years, year 0 at IC 0), for body phases without their own epoch_ic
-rate = 0                          # permille of real sky motion per IC second; 0 holds every body at its authored phase (the constant sky)
+[tacsim.time.ephemeris]            # the sky's motion (doc 19, the astronomy engine)
+epoch = 0                         # campaign epoch, IC seconds on the game calendar (mush_core::CivilDate: 365-day years, year 0 at IC 0), for a fixture body without its own epoch_ic; every lane body carries one
+rate = 1000                       # permille of real sky motion per IC second: 1000 is REAL MOTION (the sky's date is the IC date; the lane's element tables from JPL Horizons cover 2340-2400), 0 holds every body at its epoch position (the constant sky of the first slice; tests)
 
 [tacsim.recovery]                  # (E7r1 R4) the recovery provider: a lost-everything loaner
 # Off by default; @recovery still registers and answers "not enabled on this

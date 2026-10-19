@@ -51,9 +51,33 @@ before anything is charged.
   +ship/undock <port>     from aboard, docked: file the passage and take her
                           out now
 
-The burn is reaction mass, and every tonne aboard — cargo, the tank itself, the
-stores — adds to it; the stores are crew-days for the souls aboard. Passage time
-depends on the load and, later, the season: plan it, do not assume it.
+The burn is reaction mass. A Dray flips and burns: it accelerates to the
+midpoint, turns, and decelerates, so a leg takes twice the square root of its
+distance over the ship's acceleration, and the burn is what the rocket equation
+charges for the speed it reaches — a farther port costs more time **and** more
+reaction mass, a heavier hull accelerates less, and the sky moves, so the same
+port is cheap one month and dear another. Every tonne aboard — cargo, the tank
+itself, the stores — counts; the stores are crew-days for the souls aboard.
+`+ship/plan` reads it all: plan it, do not assume it.
+
+  +ship/plan <port> throttle=<permille>   fly slower and cheaper: 500 is half
+                                          thrust, 41 % longer, 29 % less burn
+                                          (250 to 1000)
+  +ship/plan <port> policy=cheapest       keep the listed route that burns least
+                                          rather than the fastest
+  +ship/plan <port> via=<place>           a route that calls at that place
+                                          (Kirkwood Depot, for one)
+
+`+ship/undock` takes the same three. `+ship/plan` ends with a window line when the
+sky moves: the best departure in the next thirty IC days against today's.
+
+  +chart                  the sky now from the port you stand at: every body's
+                          distance, longitude and latitude, the light lag, and
+                          each port's passage now (this load, empty, and the
+                          direct chord beside the listed route)
+  +chart <port>           the window: that passage planned on every IC day of
+                          the next year — the fastest, the cheapest, the worst
+  +chart/body <body>      one body and the elements it moves on
 
 `+ship/undock` files a clearance: the port checks the plan, the tank and the
 locker, and on its next tick the burn is committed and the ship launches. If the

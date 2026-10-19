@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.dray",
-    "version": 2,
+    "version": 3,
     "kind": "rules_definition",
-    "digest": "2f11e37f4de1f02df1f5d19aba599c4235c74307c55a6a13201e74184741cabb",
+    "digest": "b40cfff4943616ec798534fee10a7a995433477ef248a5875a87b69b53b9e372",
     "requires": []
   },
   "entries": {
@@ -89,7 +89,7 @@
           "berths": 2,
           "occupant_allowance_kg": 100,
           "payload_ceiling_kg": 181000,
-          "drive": { "class": "coast_hauler", "law": { "coast": { "kms": 226, "burn_permille": 105 } } }
+          "drive": { "class": "coast_hauler", "law": { "flip": { "accel_mg": 50, "exhaust_kms": 6000 } } }
         },
         "interior": {
           "space": "airlock",
@@ -195,7 +195,7 @@
             "provisions": ["crew", "passage", "bridge"]
           }
         },
-        "note": "Stickney-built hauler (doc 11 section 7): slow, efficient, unarmed, Class 0 (no core: the drive ROM of doc 17 section 9; nothing separately titled). The port verbs read logistics and interior only; the combat anatomy is authored for later and never fielded (class hauler is kept out of SIM UNIT; tracked max_speed 0 is the immobile stand-in). Room descs are 18a section 3's; the airlock is FORWARD of the passage and the crew compartment AFT, and this JSON is the authority 18a section 3.1 matches alias for alias. The hold binds on 100 t AND 120 m3 (R7); stowage limits are doc 06 D3's measure map (a later measure is a data key). drive.law is an externally tagged enum, coast {kms, burn_permille} in the slice: kms is the UNLADEN cruise and burn_t = ceil((dry_mass_t + payload_t) * burn_permille / 1000) per departure is doctrine, distance-free; durations come from plan_passage, never from an authored number. payload_ceiling_kg is route_duration's rail and laden denominator, >= 180,680."
+        "note": "Stickney-built hauler (doc 11 section 7): slow, efficient, unarmed, Class 0 (no core: the drive ROM of doc 17 section 9; nothing separately titled). The port verbs read logistics and interior only; the combat anatomy is authored for later and never fielded (class hauler is kept out of SIM UNIT; tracked max_speed 0 is the immobile stand-in). Room descs are 18a section 3's; the airlock is FORWARD of the passage and the crew compartment AFT, and this JSON is the authority 18a section 3.1 matches alias for alias. The hold binds on 100 t AND 120 m3 (R7); stowage limits are doc 06 D3's measure map (a later measure is a data key). drive.law is a tagged enum; since doc 19 cut A.2 the Dray flies flip {accel_mg, exhaust_kms}: accel_mg is the acceleration at the RATED mass (dry + payload_ceiling_kg), thrust-limited, so lighter is faster; a leg is 2*sqrt(d/a), the burn the rocket equation over the dv, both from plan_passage (coast {226, 105} was v3's). payload_ceiling_kg is the rail and rated payload, >= 180,680."
       }
     }
   }

@@ -1059,7 +1059,7 @@ fn assert_sky_line(report: &str) {
         .find(|l| l.starts_with("sky: "))
         .unwrap_or_else(|| panic!("a sky line:\n{report}"));
     let rev = sky
-        .strip_prefix("sky: constant (rate 0), epoch 2351-05-13, rev ")
+        .strip_prefix("sky: constant (rate 0), kepler, epoch 2351-05-13, rev ")
         .and_then(|rest| rest.strip_suffix(" [ready]"))
         .unwrap_or_else(|| panic!("the sky line's form: {sky}"));
     assert_eq!(rev.len(), 12, "{sky}");
@@ -1304,10 +1304,10 @@ async fn ic12_part_one_a_leg_by_hand() {
         "{look}\nwanted: {status}"
     );
 
-    // Step 9: the plan, as the planner prints it on lane v3. The tank was bunkered to
-    // the planner's own burn, so the burn is that fixed point with nothing left (doc 18
-    // §2 step 9's 41 t is the burn of a 42 t tank: every tonne aboard costs 105 kg of
-    // burn), and the stores are 21 crew-days.
+    // Step 9: the plan, as the planner prints it. The tank was bunkered to the
+    // planner's own burn, so the burn is that fixed point with nothing left (doc 18 §2
+    // step 9's 41 t was the burn of a 42 t tank under the coast law; since doc 19 cut
+    // A.2 the flip law's fixed point is about 52 t), and the stores are 19 crew-days.
     let plan = run(&mut rig, pilot, "+ship/plan stickney").await;
     assert!(plan.starts_with("Plan for Stickney Yards"), "{plan}");
     let (burn, tank) = plan_numbers(&plan, "Burn ", "(tank ").expect(&plan);
@@ -1317,7 +1317,11 @@ async fn ic12_part_one_a_leg_by_hand() {
         (fuel, fuel),
         "the burn is the bunkered fixed point: {plan}"
     );
-    assert_eq!((days, locker), (22, food), "lane v4's 22 crew-days: {plan}");
+    assert_eq!(
+        (days, locker),
+        (19, food),
+        "the flip law's 19 crew-days (doc 19 cut A.2; 22 under the coast law on lane v4): {plan}"
+    );
 
     // The undock, and IC9 T7: a fire while the burn is still queued in the engine
     // (the world task's deferred submit: legacy work owns the next commit) defers the
@@ -2401,6 +2405,7 @@ fn stickney_buys(
             .drive_for_class(&logistics.drive.class)
             .expect("the Dray's class flies a law"),
         payload_ceiling_kg: logistics.payload_ceiling_kg,
+        throttle_permille: tacsim::port::DEFAULT_THROTTLE_PERMILLE,
     };
     let dry_kg = u64::from(logistics.dry_mass_t) * 1_000;
     let routes = port_def("stickney_port").routes[&cid("ceres")].clone();
@@ -2416,7 +2421,16 @@ fn stickney_buys(
         logistics.occupant_allowance_kg,
         |payload| {
             tacsim::port::choose_route(
-                &sky, &lane, &routes, &drive, dry_kg, payload, 1, depart_ic, None,
+                &sky,
+                &lane,
+                &routes,
+                &drive,
+                dry_kg,
+                payload,
+                1,
+                depart_ic,
+                tacsim::port::RoutePolicy::default(),
+                None,
             )
         },
     )
@@ -3016,13 +3030,15 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
         ],
     )
     .await;
-    let _ = buy(&mut rig, vex, fuel, 39).await;
+    // One tonne short: 51 t aboard against the flip law's 52 t burn at that load (doc
+    // 19 cut A.2; the coast law's case was 39 t against 40).
+    let _ = buy(&mut rig, vex, fuel, 51).await;
     let plan = run(&mut rig, vex, "+ship/plan stickney").await;
     let (days, _) = plan_numbers(&plan, "Stores ", "(locker ").expect(&plan);
     let _ = buy(&mut rig, vex, food, days).await;
     let plan = run(&mut rig, vex, "+ship/plan stickney").await;
     let (burn, tank) = plan_numbers(&plan, "Burn ", "(tank ").expect(&plan);
-    assert_eq!((burn, tank), (40, 39), "one tonne short: {plan}");
+    assert_eq!((burn, tank), (52, 51), "one tonne short: {plan}");
     let _ = sweep(&mut rig, 61).await;
     let _ = sweep(&mut rig, 61).await;
     walk_path(

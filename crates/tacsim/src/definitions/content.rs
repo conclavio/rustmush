@@ -564,7 +564,8 @@ pub const EXTENSIONS_HAULER: [(&str, &str); 1] = [("tacsim/content/units/dray.js
 /// each port's `vendors` array), and doc 19 cut A.1 publishes v4 (the astronomy
 /// engine's sky: eleven real bodies and Kirkwood with semi-annual element tables
 /// from JPL Horizons, 2340–2400; the two routes re-timed to the three-dimensional
-/// chords at the epoch). A world that latched v1, v2 or v3 keeps that ledger
+/// chords at the epoch), and doc 19 cut A.4 publishes v5 (the two ports' `premium`
+/// blocks). A world that latched v1, v2, v3 or v4 keeps that ledger
 /// row and takes the shipped version by
 /// `@atlas/pack plan tacsim.lane.ceres_phobos` / `@atlas/pack apply` — the boot
 /// pass applies only never-latched packs (`mush-content/src/module.rs`). Address
@@ -574,12 +575,13 @@ pub const EXTENSIONS_HAULER: [(&str, &str); 1] = [("tacsim/content/units/dray.js
 /// fixtures. Only [`LANE_VERSION`] is a game source; v1's and v2's bytes are no longer
 /// compiled in.
 pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
-/// **The lane version this server ships** (doc 18 cut IC3; v3 since cut IC8; **v4
-/// since doc 19 cut A.1**: the twelve bodies with element tables, the sky in three
-/// dimensions, the routes re-timed to the epoch's 3D chords). The port readiness
-/// report (`crate::port::readiness`) reads the latched version against it, and
-/// every test that names the lane's version reads it here.
-pub const LANE_VERSION: u32 = 4;
+/// **The lane version this server ships** (doc 18 cut IC3; v3 since cut IC8; v4
+/// since doc 19 cut A.1: the twelve bodies with element tables, the sky in three
+/// dimensions, the routes re-timed to the epoch's 3D chords; **v5 since doc 19 cut
+/// A.4**: both ports' `premium` blocks, the reach premium on demand-side bids).
+/// The port readiness report (`crate::port::readiness`) reads the latched version
+/// against it, and every test that names the lane's version reads it here.
+pub const LANE_VERSION: u32 = 5;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.

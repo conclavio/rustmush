@@ -105,6 +105,9 @@ pub mod board;
 pub mod burn;
 pub mod buyout;
 pub mod capacity;
+/// Doc 19 cut A.3: `+chart` — the sky from where you stand, the passages now and
+/// the window over the next IC year (doc 19 §5).
+pub mod chart;
 pub mod coop;
 pub mod credit;
 pub mod def;
@@ -116,6 +119,8 @@ pub mod map;
 pub mod market;
 pub mod orders;
 pub mod passage;
+/// Doc 19 cut A.4: the reach premium on a port's demand-side bids (doc 19 §6).
+pub mod price;
 pub mod proceeds;
 pub mod readiness;
 pub mod recall;
@@ -126,13 +131,18 @@ pub mod voyage;
 pub mod when;
 
 pub use burn::{BURN_ACTION, BURN_KEY_PREFIX, BURN_OUTCOME};
+pub use chart::{
+    CHART_HELP, CHART_NO_BODY, CHART_NO_LANE, CHART_NO_ROUTE, CHART_NOWHERE, CHART_VERB,
+    PLAN_WINDOW_DAYS, WINDOW_DAYS,
+};
 pub use coop::{
     Charter, EndCause, Enrolment, EnrolmentState, EnrolmentStatus, Helm, ProgrammePort, Standing,
     charter_tenant, enrol_gate, gated, helm_holder, helm_of, live_charter, programme_port, shuts,
 };
 pub use def::{
-    AskDef, BidDef, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES, PortDef, PortOrgDef,
-    ProgrammeDef, StockRowDef, VendorDef, check_ports, room_key, tranches,
+    AskDef, BidDef, MAX_PREMIUM_PERMILLE, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES,
+    PortDef, PortOrgDef, ProgrammeDef, ReachPremiumDef, StockRowDef, VendorDef, check_ports,
+    room_key, tranches,
 };
 pub use executor::{
     Ask, Bid, Bound, FILL_ITERATIONS, FillError, FillTargets, MAX_ORDER_ATTEMPTS,
@@ -160,8 +170,14 @@ pub use orders::{
     What, orders_key, orders_key_owner, orders_state,
 };
 pub use passage::{
-    DAY_SECS, DriveLaw, HullDrive, INTERCEPT_PASSES, PlanError, choose_route, crew_days,
-    intercept_passes, passage_burn, payload_kg, plan_passage,
+    DAY_SECS, DEFAULT_THROTTLE_PERMILLE, DriveLaw, FlipProfile, G0_MPS2, HullDrive,
+    INTERCEPT_PASSES, KEEP_OUT_AU, MAX_THROTTLE_PERMILLE, MIN_THROTTLE_PERMILLE, PlanError,
+    RoutePolicy, choose_route, crew_days, detour_km, flip_accel_mps2, flip_profile,
+    intercept_passes, leg_distance_km, leg_seconds, passage_burn, payload_kg, plan_passage,
+};
+pub use price::{
+    DAY_S, MAX_SCAN_DAYS, MAX_SCAN_SAMPLES, Reach, bid_price_major, median_of, premium_permille,
+    priced, reach_for, scan_days, synodic_days,
 };
 pub use proceeds::{
     BASELINE_MEMO, CoopProceeds, REFERENCE_DARK, SALE_BOOKS_DARK, SALE_LINE, SALE_LINE_NO_SHARE,
@@ -173,7 +189,8 @@ pub use stock::{
     STOCK_SOURCE_KIND,
 };
 pub use voyage::{
-    LAUNCH_GRACE_FIRES, LAUNCH_WATCH_FIRES, PendingVoyage, VOYAGE_PREFIX, VOYAGE_SCHEMA, Voyage,
-    VoyageState, voyage_key, voyage_key_owner,
+    LAUNCH_GRACE_FIRES, LAUNCH_WATCH_FIRES, POLICY_USAGE, PassageOptions, PendingVoyage,
+    THROTTLE_USAGE, VIA_UNKNOWN, VOYAGE_PREFIX, VOYAGE_SCHEMA, Voyage, VoyageState, voyage_key,
+    voyage_key_owner,
 };
 pub use when::{MAX_AHEAD_SECS, MAX_WINDOW_SECS, NotBefore};

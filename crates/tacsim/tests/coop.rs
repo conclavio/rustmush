@@ -695,7 +695,8 @@ fn cargo_and_goods() -> (
 
 /// The outbound load of lens 7 (doc 18 cut IC8 re-derived it, D-18-39): the
 /// metals/ice load at both of the hold's limits, solved from the goods table, never
-/// typed — and 42 t propellant, 22 crew-days of provisions (lane v4; 21 at v3).
+/// typed — and 53 t propellant, 19 crew-days of provisions (the flip law since doc 19
+/// cut A.2; 42 t and 21 crew-days in the slice).
 fn outbound() -> (u64, u64) {
     let (cargo, goods) = cargo_and_goods();
     vertex::both_limits_vertex(&goods, &cargo, &cid("metals"), &cid("volatiles"))
@@ -707,8 +708,8 @@ fn seed_outbound(rig: &mut Rig, row: &HullRow) {
     let (metals, ice) = outbound();
     seed_pool(rig, vault, "metals", metals, LotId(1));
     seed_pool(rig, vault, "volatiles", ice, LotId(2));
-    seed_pool(rig, vault, "propellant", 42, LotId(3));
-    seed_pool(rig, vault, "provisions", 22, LotId(4));
+    seed_pool(rig, vault, "propellant", 53, LotId(3));
+    seed_pool(rig, vault, "provisions", 19, LotId(4));
 }
 
 /// `{t} t · {m³} m³` for `qty` tonnes of `good`.
@@ -753,8 +754,8 @@ fn summary_body() -> Vec<String> {
             "  HOLD {metals} t metal concentrate, {ice} t water ice; 100/100 t · 120.0/120 m³ · \
              FULL: mass and packed volume"
         ),
-        "  TANKAGE 42/80 t".to_owned(),
-        "  STORES 22/120 crew-days".to_owned(),
+        "  TANKAGE 53/80 t".to_owned(),
+        "  STORES 19/120 crew-days".to_owned(),
     ]
 }
 
@@ -1901,7 +1902,7 @@ fn ic6_the_gauges_read_the_hold_pools() {
             "crew",
             vec![
                 status,
-                "Locker tally: voyage provisions, 22 of 120 crew-days.",
+                "Locker tally: voyage provisions, 19 of 120 crew-days.",
             ],
         ),
         ("passage", "passage", Vec::new()),
@@ -1911,7 +1912,7 @@ fn ic6_the_gauges_read_the_hold_pools() {
             "engineering",
             vec![
                 status,
-                "Tank gauges: reaction mass, 42 of 80 t.",
+                "Tank gauges: reaction mass, 53 of 80 t.",
                 tacsim::port::ship::BURN_GAUGE_NONE,
             ],
         ),
@@ -1931,7 +1932,7 @@ fn ic6_the_gauges_read_the_hold_pools() {
             &out,
             &[
                 "Salt Moth (Dray): docked Ceres Freeport, Visiting Berth Gallery.",
-                "Hold: cargo 100/100 t · 120.0/120 m³ · tank 42/80 t · locker 22/120 crew-days.",
+                "Hold: cargo 100/100 t · 120.0/120 m³ · tank 53/80 t · locker 19/120 crew-days.",
                 "Programme: 0 sales; buyout 90000.00cr.",
             ]
         ),
@@ -1943,8 +1944,8 @@ fn ic6_the_gauges_read_the_hold_pools() {
         "  HOLD".to_owned(),
     ];
     want.extend(load_cells("    "));
-    want.push("  TANKAGE reaction mass, 42 of 80 t".to_owned());
-    want.push("  STORES voyage provisions, 22 of 120 crew-days".to_owned());
+    want.push("  TANKAGE reaction mass, 53 of 80 t".to_owned());
+    want.push("  STORES voyage provisions, 19 of 120 crew-days".to_owned());
     let want: Vec<&str> = want.iter().map(String::as_str).collect();
     assert!(has_block(&out, &want), "{out}");
 }
@@ -2016,7 +2017,7 @@ fn ic6_the_charter_survives_a_reboot() {
             &out,
             &[
                 "Salt Moth (Dray): docked Ceres Freeport, Visiting Berth Gallery.",
-                "Hold: cargo 100/100 t · 120.0/120 m³ · tank 42/80 t · locker 22/120 crew-days.",
+                "Hold: cargo 100/100 t · 120.0/120 m³ · tank 53/80 t · locker 19/120 crew-days.",
                 "Programme: the Co-op's books cannot be read.",
             ]
         ),

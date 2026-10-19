@@ -7049,3 +7049,323 @@ crew-days). The readiness Sky line and its pins are untouched.
 - Moons (Phobos, Luna, Titan) as bodies (Q-19-9); the window past 2400 (Q-19-8).
 - The `Ephemeris` type's doc comment still describes itself as the sky; it is the circular model
   under the seam (one sentence in A.6's docs pass).
+
+## A.2
+
+**The laws** ([doc 19](19-astronomy-engine.md) §4, cut A.2; D-19-8 … D-19-13; doc 18 Q-18-35,
+Q-18-40 and Q-18-41 ruled by doc 19 §2's defaults), built 2026-10-18 on main over `41e7259d` (cut
+A.1). One commit with the Fable trailer, pushed when green. This is the cut where the moving sky
+reaches the captain's wallet: under the slice's coast law the burn was a flat fraction of mass and
+only time moved with the season; under the flip law both move, and a bad season costs reaction mass
+the tank may not hold.
+
+### What landed
+
+1. **`DriveLaw::Flip { accel_mg, exhaust_kms }`** (`definitions/logistics.rs`; D-19-8): constant
+   thrust, accelerate to the midpoint, flip, decelerate. `accel_mg` is the acceleration at the
+   **rated maximum departure mass** (`dry_mass_t + payload_ceiling_kg`), so it is the acceleration
+   every legal load is guaranteed and the drive is thrust-limited — a lighter hull is faster.
+   Bounds `1..=MAX_ACCEL_MG` (10,000 mg) and `1..=MAX_EXHAUST_KMS` (light) in the validator; the
+   law's word is `flip`; `Display` prints its two numbers. The Coast law is untouched.
+2. **The planner** (`port/passage.rs`, rewritten around the law): `leg_seconds(drive, dry, payload,
+   dist)` — Coast lades `ceil(dist / kms)` through mush-sim's step as before; Flip is
+   `ceil(2√(d / a))` at `flip_accel_mps2` = `accel_mg · g₀ · (dry + ceiling) / (dry + payload) ·
+   throttle / 1000`. `passage_burn(drive, dry, payload, legs)` — Coast the doctrine fraction; Flip
+   the rocket equation over the passage's `Δv = Σ a·t`, whole tonnes up (`flip_profile` gives the
+   acceleration, `Δv` and the longest leg's peak velocity for the verbs). **The throttle**
+   (`HullDrive::throttle_permille`, `MIN_THROTTLE_PERMILLE` 250 ..= `MAX_THROTTLE_PERMILLE` 1000,
+   `DEFAULT` 1000; D-19-9): half thrust is 41 % longer and 29 % cheaper; outside the band
+   `PlanError::Throttle`. **The solar keep-out** (`KEEP_OUT_AU` 0.3; D-19-12; Q-18-40): `detour_km`
+   takes a leg's chord when it clears the disc about the Sun (or when either end is inside it) and
+   otherwise the shortest path around it — tangent, arc, tangent, in the plane of the two
+   positions — and `leg_distance_km` is what the intercept flies; a cost, never a refusal.
+   **`INTERCEPT_PASSES` 5** (D-19-11; the test shows each pass moving the leg no more than the
+   one before and the sixth within a minute or 2 %). **`RoutePolicy::{Fastest, Cheapest}`**
+   (D-19-13) with `word`/`parse`; `choose_route(…, policy, via)` keeps the best under the policy
+   (cheapest = least `burn_t`, ties to the faster) over the listed routes that **call at `via`**
+   before their destination (`PlanError::NoRouteVia`; `ViaReserved` retired). `PassagePlan` gains
+   `throttle_permille` (`#[serde(default)]` = 1000, so every ticket from before the cut reads
+   back), and the burn's prepare recomputes the plan's burn at the plan's own throttle.
+3. **The verbs** (`port/voyage.rs`): `PassageOptions { throttle_permille, policy, via }` with
+   `PassageOptions::for_order`; `+ship/plan` and `+ship/undock` take `throttle=<permille>`,
+   `policy=fastest|cheapest` and `via=<place>` (a lane place by id or a prefix of its label,
+   `match_waypoint`; `VIA_UNKNOWN`, `THROTTLE_USAGE`, `POLICY_USAGE`); `prepare_departure` takes
+   the options, so a live undock and a queued depart fly the same way. The plan's burn line says
+   the law's own sentence: the coast law's "Every tonne aboard … costs N kg of burn", or "Flip and
+   burn at 0.54 m/s² (50 milli-g rated, throttle 1000‰): Δv 852 km/s, peak 437 km/s, exhaust 6000
+   km/s; a farther port costs more."
+4. **The orders** (`port/orders.rs`): `What::Depart` gains `throttle_permille: Option<u32>` and
+   `via: Option<CanonicalId>` (serde defaults, so every filed sailing plan reads back);
+   `+ship/order depart <port> … [via=<place>] [throttle=<permille>]`; the document's check bounds
+   the throttle; `+ship/orders` prints `, via Kirkwood Depot, throttle 500‰`; the executor's
+   planning core (`Planner::plan(…, &PassageOptions)`) flies the order's options for the fill
+   fixed point, the dry run and the departure itself.
+5. **The Dray v3** (`content/units/dray.json`; D-19-10): `"law": { "flip": { "accel_mg": 50,
+   "exhaust_kms": 6000 } }`, the note rewritten within its 1,024 bytes, digest re-signed and
+   pinned (`tests/content.rs`); lane v4 is untouched (its `base_s` are documentary since this cut:
+   the planner reads them for no cross-body leg, and `tests/lane.rs` keeps them as the chord at the
+   slice's 226 km/s).
+
+### The figures (the flip law over lane v4 at the epoch sky; `tests/passage.rs`)
+
+| Load | Coast (A.1) | **Flip (A.2)** |
+|---|---|---|
+| Outbound, 100 t cargo + 42 t fuel + 22 crew-days, 142,188 kg | 110,305 + 1,683,834 s (20.8 h at rate 24), 41 t, 22 crew-days | 321,547 + 1,256,313 s (18.3 h), **51 t**, 19 crew-days |
+| Return, 106,176 kg | 1,496,209 + 98,014 s (18.5 h), 37 t, 20 crew-days | 1,195,660 + 306,023 s (17.4 h), **48 t**, 18 crew-days |
+
+The 2° hop to Kirkwood takes 3.7 days under the flip law (a brachistochrone's short legs are slow)
+and the Kirkwood–Mars chord 14.5; the burn is thirteen percent of departure mass at the epoch. The
+slice's 42 t tank no longer covers an outbound, so **the story bunkers 53 t and 19 crew-days**: the
+voyage rig's ticket at 153,176 kg flies 326,136 + 1,274,245 s (1,600,381; 18.5 IC days) for 52 t
+with a tonne left, the queue's return fill is 50 t and 19 crew-days (49 t bought at Stickney, the
+alloys cut to 17 t by funds where the slice bought 20), and IC14's short-buy scenario needs ten
+tonnes of margin over the empty-tank burn where the coast law's 105 kg per tonne needed five — the
+flip law charges about fifteen percent of the fuel's own mass. The plan line at that load reads
+"Burn 52 t (tank 53 t; 1 t left). Flip and burn at 0.53 m/s² (50 milli-g rated, throttle 1000‰):
+Δv 840 km/s, peak 335 km/s, exhaust 6000 km/s; a farther port costs more." Seasonality, the point of the
+engine: at the best season (Ceres–Mars ≈ 1.24 AU) a brimmed hull runs about 14 h and 40 t, at the
+worst (≈ 4.3 AU, the chord inside the keep-out) about 30 h and over 70 t against an 80 t tank
+(doc 19 §4.3); `tests/passage.rs`'s half-synodic plan burns more than the epoch's.
+
+### Lead rulings taken (owner may override, each by data)
+
+- **The Dray's numbers** 50 mg / 6,000 km/s (Q-19-1): "slow, efficient" — a twentieth of a gravity,
+  two percent of c; 70 mg or 10,000 km/s are a `dray.json` edit.
+- **The throttle band** 250–1000 ‰ (Q-19-4); the policy on `+ship/plan`/`+ship/undock`, not on a
+  queued depart (the queue flies the fastest route; a captain who wants the thrifty route plans it
+  and files the throttle).
+- **Direct routes stay out of the lane** this cut (the brief's lane v5 moves to A.3 with `+chart`,
+  which is what compares them; the ports' lists are unchanged, Q-19-3's default).
+- **Same-body legs** keep mush-sim's laden step under either law (an authored `base_s`).
+
+### Verified
+
+`cargo fmt --all -- --check`; `cargo clippy -p tacsim --all-targets -- -D warnings` clean (two
+findings fixed: a negated float comparison and an `unwrap_err`); the whole tacsim suite green
+(2,673 passed after the cascade re-pins), then the touched lib, passage and voyage suites again
+with mush-server's `ic_slice_loop` (the story test now bunkers 53 t and 19 crew-days, its
+one-tonne-short case 51 t against a 52 t burn) and `boot_parity`: 1,296 passed, 0 failed at -j 8.
+Pins re-blessed: `passage.rs` (the flip figures), `voyage.rs` (the 53/19 story load, the ticket's
+326,136 + 1,274,245 s and 153,176 kg, the rail overload at 192.6 t, the burn gauge), `orders.rs`
+(the day's 53 t and 19 crew-days, the return's 50 t fill and 49 t bought, 17 t of alloys, the
+short-buy margin), `coop.rs` (the gauges), `lane.rs` (the flip law in the drive table; the Dray
+copy edits `accel_mg`), `content.rs` (Dray v3's digest and law), the executor's fill fixed point
+(50 t, 19). A.1's readiness Sky line is still untouched.
+
+### Deferred
+
+- **A.3** `+chart`, `+chart <port>` (the best departure in the next IC year), `+chart/body`, the
+  `+ship/plan` window line, lane v5's direct routes; **A.4** prices; **A.5** doc 15 R5 on
+  `light_lag_s`; **A.6** the flip (templates at rate 1000, the readiness model word, the migration
+  tests, the help's "later, the season" → now).
+- The Engineering gauge and the help still describe the burn in the coast law's words where they
+  do; A.6's docs pass.
+
+## A.3
+
+**`+chart` and the plan's window line** ([doc 19](19-astronomy-engine.md) §5, cut A.3; D-19-16),
+built 2026-10-18 on main over `153a267a` (cut A.2). One commit with the Fable trailer, pushed when
+green. This is the surface the owner asked for in words — "there are optimal times to trade there
+and times when it's prohibitively expensive" — read as text at the 120-column floor; the web and
+TUI panel is A.3b.
+
+### What landed
+
+1. **`port/chart.rs`** (new): the `+chart` verb, a pure read in `+credit`'s ReadOnly bracket
+   (`commands.rs`), on the one sky seam and the one planner.
+   - **`+chart`**: the header names the date, the sky's model and motion, and the vantage — the
+     port the actor's charter is docked at, else the port whose domain host or gallery the actor
+     stands in (the port map's rooms), else the lane's first port; without a charter the port's
+     programme hull (the Dray) is planned **empty**, so a walker on the concourse reads the same
+     sky a captain does. Then every lane body by heliocentric distance — `r` in AU, ecliptic
+     longitude and latitude, the distance from here in AU and the one-way light lag — and, for
+     each port this one clears for, the passage **now** at this load and empty (hours at the world
+     rate, burn, crew-days) and **the direct chord beside the listed route** (its AU, hours and
+     tonnes: the depot's detour priced, computed from the sky — no direct route entry is needed,
+     so lane v5 is not cut).
+   - **`+chart <port>`**: the **window** — `plan_passage` once per IC day over the next year
+     (`WINDOW_DAYS` 365 evaluations, a few milliseconds): now, then the fastest day, the cheapest
+     day (when it differs) and the worst, each dated, "in N IC days", with its hours and burn and
+     the difference against now. Under the constant sky the line says every day is today.
+   - **`+chart/body <body>`**: the body's row, its distance and light lag from here, and the
+     osculating element row it moves on now (`a`, `e`, `i`, Ω, ω, `M`, the period; the table's
+     row count and span); a circular body says so.
+   - Refusals: `CHART_NO_LANE`, `CHART_NOWHERE`, `CHART_NO_ROUTE` (with the list),
+     `CHART_NO_BODY` (with the list); TacSim off answers `NOT_ENABLED`.
+2. **`+ship/plan`'s window line** (`voyage.rs` `plan_block`, after the Passage line; D-19-16):
+   when the sky moves, the best departure in the next `PLAN_WINDOW_DAYS` (30) IC days against
+   today's — "Window: the best departure in the next 30 IC days is 2351-06-02 (in 20 IC days):
+   17 h 40 m and 48 t, 1 h 10 m and 4 t less than today." — or "today is the best departure";
+   under the constant sky no line (every day is today, and the slice's pinned plan output is
+   unchanged). The scan's core, `chart::best_day`, is pure and unit-tested; the basis is cloned
+   per day with its `depart_ic` moved.
+3. **Seams opened** (`voyage.rs`): `Basis` and its fields, `basis`, `plan_on`, `Destination`,
+   `destinations`, `match_destination` and `occupants` are `pub(crate)` for the chart; nothing
+   else moved. `docs/help/ships.md` carries the three `+chart` lines and the window line.
+4. **Tests**: `tests/chart.rs` (four, on the production composition with the lane, as a walker):
+   the sky table (twelve rows, Ceres "here", Pallas's light lag, the Stickney line with the empty
+   figure and the direct chord); the constant sky's window and the refused port; the moving sky's
+   fastest and worst days (the worst no shorter than the fastest); `+chart/body pallas` (latitude
+   +14.07°, the 122-row table, `i 35.`) and the refused body. Unit tests for `best_day` and the
+   formatters.
+
+### Lead rulings taken
+
+- **The direct comparison is computed, not authored**: the chord from the vantage's body to the
+  destination's, through `leg_distance_km`, `leg_seconds` and `passage_burn`; lane v5's direct
+  route entries are not needed for the chart and stay out (Q-19-3's default).
+- **The window is one IC day at a time** (365 and 30 evaluations); a finer scan is a knob for
+  later, not a need now.
+- **The vantage falls back to the lane's first port** for a player standing nowhere the lane
+  knows, so `+chart` always answers something on a lane server.
+
+### Deferred
+
+- **A.3b** the web cockpit panel and the TUI screen (top-down XY, z-exaggeration, ships under way
+  along their tickets' frozen legs); **A.4** prices; **A.5** doc 15 R5 on `light_lag_s`; **A.6**
+  the flip (templates at rate 1000, the readiness model word, the migration tests).
+- Lane v5 (direct routes as routes a captain can fly) when the fiction wants them.
+
+## A.6
+
+**The flip** ([doc 19](19-astronomy-engine.md) §8, cut A.6; D-19-16; doc 18 Q-18-37 ruled by doc
+19 §2's default), built 2026-10-18 on main. One commit with the Fable trailer, pushed when green.
+The sky moves on the next deploy — and only then: nothing here touches a running world, and **no
+deploy without the owner**.
+
+### What landed
+
+1. **The shipped templates say real motion** (`mushd.toml.example`,
+   `deploy/instance/mushd.toml.tmpl`): `[tacsim.time.ephemeris] rate = 1000` with the stanza's
+   comment rewritten — the sky's date is the IC date, which the lane's Horizons element tables
+   (2340–2400) require; `0` is the first slice's constant sky and stays the Rust default, so
+   every pinned figure in the tree is still the epoch's; the knob stays a permille (a slower sky
+   is one line of config, Q-18-37's alternative). `shipped_configs.rs` parity held.
+2. **The readiness Sky line names the model and the motion** (`port/readiness.rs`): `sky: moving
+   (rate 1000, real motion), kepler, epoch 2351-05-13, rev {12 hex}` / `sky: constant (rate 0),
+   kepler, epoch …`; a fixture lane says `circular`. Its pins in `tests/ports.rs` and the
+   mush-server story test moved once, as A.1 and A.2 promised. The flagged form (a moving sky
+   over a body without `epoch_ic`) and the once-per-boot page are unchanged.
+3. **The migration tests stand as written** (`tests/voyage.rs`, since IC9/IC14):
+   `journey_arrives_at_its_frozen_instant_across_a_reboot_with_a_new_sky` (a mid-passage journey
+   keeps its frozen `leg_s` across a reboot into rate 1000) and
+   `ticket_freezes_the_plan_across_a_sky_change` (a burned ticket's plan and `sky_rev` read back
+   identical; a fresh plan under the new sky differs) — nothing to rewrite (D-19-16: in-flight
+   journeys, burned tickets, orders and quotes all carry what they froze).
+4. **Docs**: doc 10 §22 already superseded (A.1); doc 18 §4.8's readiness sentence and the
+   `+ship/plan` help; doc 19 §9's A.6 row.
+5. **A drive-by**: `mush-config`'s `shipped_configs.rs` pinned dev1's clock at rate 4 from the
+   September epoch, while `deploy/dev1/instance.env` has run at rate 24 from `0987-04-20 06:00`
+   since the 2026-10-18 deploy (commit `29230ff5`) — the test had been red since; its pin now reads
+   the box as it is. The same test's "every shipped config says the sky rate explicitly" now
+   expects 1000.
+
+### Verified
+
+`cargo fmt --all -- --check`; `cargo clippy -p tacsim --all-targets -- -D warnings` clean;
+`tests/ports.rs` (21) and `tests/chart.rs` (4) green on the new line; `mush-config`'s
+`shipped_configs.rs` 12 of 12 (both drive-bys); mush-server's `ic_slice_loop` and `boot_parity`
+green with the moved prefix. The voyage migration tests ran green in A.2's and A.3's full sweeps
+and are untouched here.
+
+### What the owner decides
+
+- **When to redeploy dev1.** The playtest world sits at the lane's epoch date (2351-05-13 on
+  2026-10-19); the next deploy turns the sky on from there, so the trade run's season starts at
+  the chord minimum and worsens over the following real weeks (Ceres–Mars opens about 0.05 AU a
+  real day at rate 24; the full cycle is about 48 real days). A redeploy also takes lane v4 and
+  the Dray v3 (the flip law: 53 t bunkered where the slice bunkered 42) — the figures in doc 18
+  §2's story change under the pilot's feet, and `+ship/plan` says so.
+
+### Deferred
+
+- **A.3b** the chart panel; **A.4** prices; **A.5** doc 15 R5 on `light_lag_s`.
+
+## A.4
+
+**Prices — the reach premium** ([doc 19](19-astronomy-engine.md) §6, cut A.4; D-19-14; doc 18
+Q-18-39 ruled by doc 19 §2's default; Q-19-5's caps), built 2026-10-18 on main. One commit with the
+Fable trailer, pushed when green. Nothing here touches a running world until the next deploy, and **no
+deploy without the owner**.
+
+### What landed
+
+1. **`crates/tacsim/src/port/price.rs`** — the pure arithmetic and the one read. `Reach { now_s,
+   median_s }`; `premium_permille(k, cap, reach)` = `min(cap, k · (now / median − 1))`, never below
+   zero, i128 arithmetic with the ratio in permille first; `priced(authored, premium)` =
+   `authored × (1000 + premium) / 1000` in whole major units, floor, saturating. **Reach** for a good
+   is `choose_route` (`Fastest`, no `via`) for the lane's Dray **empty with one soul at full
+   throttle** over each supplier's listed routes to this venue, the least over the suppliers — a
+   supplier is another lane port whose vendors **ask** the good and that lists a route here; both
+   must have a body. The **synodic median** is the lower median of that reach sampled from now over
+   the synodic period of the port's body and the supplier's (the longest over the suppliers):
+   `Sky::period_days` (new; the table row nearest now, `360 / n`; the circular `period_mdays`
+   otherwise), `synodic_days` (`1 / |1/P₁ − 1/P₂|`; `None` for the same orbit), `scan_days` (rounded
+   up, `1..=MAX_SCAN_DAYS` 2,000 — Ceres–Kirkwood never closes and takes the cap, so does an unknown
+   body), at most `MAX_SCAN_SAMPLES` 400 samples (Ceres–Mars's 1,162-day season every three days);
+   **one sample under the constant sky** (rate 0), so every bid posts at its authored price and the
+   pinned worlds are untouched. `bid_price_major(w, def, bid)` is the authored price when the port
+   has no `premium` block or no reach.
+2. **Read at posting** (the as-built deviation from §6's once-per-IC-day re-write, recorded there):
+   the applier's bid loop (`vendor.rs`, "(e).8 The standing bids") and the stock clerk's re-post of a
+   lapsed bid (`stock.rs` `bid_step`) both price the bid through `bid_price_major` — the posting path
+   already carries the officer's signature (11 §2), and a bid's TTL is the cadence the board
+   re-prices on; the season turns over years. `MarketStore` holds the posted price; the port map's
+   `BidRow.price_major` stays the authored figure (the map is the authored record, as before). The
+   median is computed at each posting, not cached per boot: at most 400 plans per bid.
+3. **The port entry's block** (`def.rs`): `PortDef.premium: Option<ReachPremiumDef { k_permille,
+   cap_permille }>`, serde default + skipped when absent, `deny_unknown_fields`, each
+   `0..=MAX_PREMIUM_PERMILLE` (10,000) in `PortDef::check`; exported with the def types.
+4. **Lane v5** (`content/lane/ceres_phobos.json`, `LANE_VERSION` 5): both ports gain
+   `"premium": { "k_permille": 300, "cap_permille": 500 }` (Q-19-5's defaults) and nothing else moves;
+   signed, digest `319aa8a0d273dc6980937d7b8ec7682eab25c37be964ceaaef687bff3562744e` pinned in
+   `tests/lane.rs`. The suites' remaining lane-version literals (`@4`, `@5`, `Some(5)`,
+   `lane_variant(5, …)` in `ports.rs`, `commerce.rs`, `lane.rs`) now read `LANE_VERSION` /
+   `LANE_VERSION + 1`, so the next bump moves one constant and one digest; the commerce suite's v2
+   rebuild drops `premium` as it drops `vendors`.
+5. **Docs and help**: doc 19 §6 "As built", §9's A.4 row landed and an **A.4b** row (the emergency
+   Wanted bids and `emergency_ratio`, `+chart <port>` naming the premium), §10 Q-19-5; README; the
+   trade help's new paragraph ("A port's bids follow its season …", pointing at `+chart <port>`).
+
+### Verified
+
+- **`tests/price.rs`** (new, 4): both ports carry the block at 300 / 500; at rate 0 Kasei's metals
+  bid posts 280 and the Exchange's alloys bid 520 with reach now = median; at rate 1000 every bid
+  of the four (metals, volatiles, alloys, parts) posts exactly `priced(authored, premium(reach))` for
+  the reach `reach_for` reports — at the test world's instant Stickney's reach 1,758,164 s against a
+  median of 1,730,327 s (+4 ‰: 280 → 281, 200 → 200) and Ceres's 1,903,004 s against 1,796,755 s
+  (+17 ‰: 520 → 528, 560 → 569) — never below the authored price, never above the cap; a port without
+  the block posts authored prices; `k_permille 10001` is refused by `check`; Ceres's and Mars's
+  periods from the tables (1,681.6 / 687 days within the asserted bands), their synodic period about
+  1,162 days = the scan, Ceres–Kirkwood and an unknown body at the cap, the lower median.
+- Unit tests in `price.rs` (3): the premium's cases (equal, better season, +80 % → 240 ‰, the cap,
+  k 0, a zero median), `priced` (280 → 347 at 240 ‰; saturation), `synodic_days` and `median_of`.
+- The suites that pin the lane: lib 1,248 passed / 0 failed (1 ignored); `chart` 4; `commerce` 24;
+  `content` 29; `lane` 10; `ports` 21; `price` 4; `sale` 16 — all green.
+- **The hull suite** (`tests/hulls.rs`, 15) had built its update variant at the literal version 4 ("one
+  past the shipped v3" when IC8 wrote it; equal to the shipped v4 since A.1), which the bump to v5 made
+  an older pack — three tests red; its `lane_v4` helper and the two "Applied @4" pins now read
+  `LANE_VERSION`, and the suite is green.
+- `cargo fmt --check` clean; `cargo clippy -p tacsim --all-targets -- -D warnings` clean; the whole
+  tacsim suite green across two runs at this source state (the first stopped at the hull suite's three
+  reds after 1,955 passed over the 24 suites before it; the second, `--no-fail-fast` after the fix,
+  ran every suite from `content` on and the hull suite with 0 failed); mush-server `boot_parity` 19 and
+  the story `ic_slice_loop` 6 green (the story's figures unchanged: the premium reads at posting under a
+  constant sky, so every pinned world posts its authored prices); mush-config `shipped_configs` 12
+  green.
+
+### What the owner decides
+
+- **The caps** (Q-19-5): 300 ‰ per unit of reach ratio, capped at 500 ‰ — a lane data edit on each
+  port. At Ceres–Mars's season (reach about 15–27 h empty, median near 21 h) the worst day carries
+  roughly +90 ‰ at k 300; a Pallas-like port's swing is the point and would run to the cap.
+- **The baseline**: the synodic median as designed (the authored price is the mid-season price;
+  good seasons pay no less). The alternative — the lane's epoch reach, the chord minimum, as the
+  baseline, making the authored price the best-season floor and the swing about 2.5× larger — is a
+  one-line change in `reach_for` and was not taken without the owner.
+
+### Deferred
+
+- **A.4b** the emergency Wanted bids (life-support goods at the cap when reach crosses
+  `emergency_ratio`, funded from finite capital) and `+chart <port>` naming the premium; **A.3b**
+  the chart panel.

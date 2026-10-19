@@ -116,9 +116,8 @@ pub struct DriveDef {
     pub law: DriveLaw,
 }
 
-/// **A drive law** — externally tagged on the wire, `{"coast": {…}}`
-/// (D-18-45). The astronomy engine (post-slice cut P-A) adds
-/// `Flip { accel_mg, exhaust_kms }`.
+/// **A drive law** — externally tagged on the wire, `{"coast": {…}}` or
+/// `{"flip": {…}}` (D-18-45; doc 19 cut A.2, D-19-8).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum DriveLaw {
@@ -131,16 +130,34 @@ pub enum DriveLaw {
         /// `1..=1_000`.
         burn_permille: u32,
     },
+    /// **Flip and burn** (doc 19 §4.1): constant thrust, accelerate to the
+    /// midpoint, flip, decelerate — `t = 2√(d / a)` per leg — with the burn by
+    /// the rocket equation over the passage's `Δv = Σ a·t`. Thrust-limited, so a
+    /// lighter hull is faster: `accel_mg` is the acceleration at the rated
+    /// maximum departure mass (`dry_mass_t + payload_ceiling_kg`).
+    Flip {
+        /// The acceleration at the rated maximum departure mass, milli-g;
+        /// `1..=MAX_ACCEL_MG`.
+        accel_mg: u32,
+        /// The exhaust velocity, km/s; `1..=MAX_EXHAUST_KMS`.
+        exhaust_kms: u32,
+    },
 }
+
+/// The hardest a drive may push at its rated mass, milli-g (ten gravities).
+pub const MAX_ACCEL_MG: u32 = 10_000;
+/// The fastest exhaust a drive may author, km/s (light).
+pub const MAX_EXHAUST_KMS: u32 = 299_792;
 
 impl DriveLaw {
     /// **The law's word** (doc 18 cut IC9, lead ruling L20): what a passage plan
-    /// records as `PassagePlan.law` (`coast`); the drive class itself is pinned by
-    /// the ticket's `unit_definition`.
+    /// records as `PassagePlan.law` (`coast`, `flip`); the drive class itself is
+    /// pinned by the ticket's `unit_definition`.
     #[must_use]
     pub fn word(&self) -> &'static str {
         match self {
             DriveLaw::Coast { .. } => "coast",
+            DriveLaw::Flip { .. } => "flip",
         }
     }
 }
@@ -151,6 +168,10 @@ impl fmt::Display for DriveLaw {
             DriveLaw::Coast { kms, burn_permille } => {
                 write!(f, "coast {{kms {kms}, burn_permille {burn_permille}}}")
             }
+            DriveLaw::Flip {
+                accel_mg,
+                exhaust_kms,
+            } => write!(f, "flip {{accel_mg {accel_mg}, exhaust_kms {exhaust_kms}}}"),
         }
     }
 }
@@ -267,6 +288,29 @@ impl LogisticsDef {
                         format!(
                             "drive `{}` burns 1 to {MAX_BURN_PERMILLE} permille of its departure \
                              mass; {burn_permille} is not",
+                            self.drive.class
+                        ),
+                    ));
+                }
+            }
+            DriveLaw::Flip {
+                accel_mg,
+                exhaust_kms,
+            } => {
+                if accel_mg == 0 || accel_mg > MAX_ACCEL_MG {
+                    return Err(DefinitionError::value(
+                        entry,
+                        format!(
+                            "drive `{}` flips at 1 to {MAX_ACCEL_MG} milli-g; {accel_mg} is not",
+                            self.drive.class
+                        ),
+                    ));
+                }
+                if exhaust_kms == 0 || exhaust_kms > MAX_EXHAUST_KMS {
+                    return Err(DefinitionError::value(
+                        entry,
+                        format!(
+                            "drive `{}` exhausts at 1 to {MAX_EXHAUST_KMS} km/s; {exhaust_kms} is not",
                             self.drive.class
                         ),
                     ));

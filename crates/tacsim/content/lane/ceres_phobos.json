@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 4,
+    "version": 5,
     "kind": "campaign_seed",
-    "digest": "7cd35e6fa0d7bbd629c9bcb3d1b1acb4d1b24aa099c5573dbd824be93fbb4d82",
+    "digest": "319aa8a0d273dc6980937d7b8ec7682eab25c37be964ceaaef687bff3562744e",
     "requires": []
   },
   "entries": {
@@ -1756,7 +1756,8 @@
             "asks":  [ { "good": "provisions", "price_major": 10 } ],
             "bids":  [ { "good": "industrial_parts", "price_major": 560, "intake": 5400, "boards": ["chandlery"] } ] }
         ],
-        "routes": { "stickney": [ "ceres_stickney" ] }
+        "routes": { "stickney": [ "ceres_stickney" ] },
+        "premium": { "k_permille": 300, "cap_permille": 500 }
       }
     },
     "stickney_port": {
@@ -1799,7 +1800,8 @@
             "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],
             "asks":  [ { "good": "provisions", "price_major": 10, "boards": ["commissary"] } ] }
         ],
-        "routes": { "ceres": [ "stickney_ceres" ] }
+        "routes": { "ceres": [ "stickney_ceres" ] },
+        "premium": { "k_permille": 300, "cap_permille": 500 }
       }
     }
   }

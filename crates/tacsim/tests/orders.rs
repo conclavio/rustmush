@@ -54,7 +54,7 @@ use tacsim::port::orders::{
 };
 use tacsim::port::voyage::{
     CLEARANCE_GRANTED, CLEARANCE_LAPSED, CLEARANCE_STOOD_DOWN, NO_ROUTE, NOTHING_WRITTEN,
-    TANK_SHORT, VIA_NOT_YET, Voyage, VoyageState,
+    TANK_SHORT, VIA_UNKNOWN, Voyage, VoyageState,
 };
 use tacsim::port::when::BAD_TIME;
 use tacsim::port::{
@@ -1178,7 +1178,18 @@ fn ic11_the_verbs_edit_the_plan() {
 
     // Refusals write nothing.
     for (line, want) in [
-        ("depart stickney via=kirkwood_depot", VIA_NOT_YET.to_owned()),
+        (
+            "depart stickney via=nowhere",
+            VIA_UNKNOWN
+                .replace("{via}", "nowhere")
+                .replace("{list}", "Ceres Freeport, Kirkwood Depot, Stickney Yards"),
+        ),
+        (
+            "depart stickney throttle=100",
+            tacsim::port::THROTTLE_USAGE
+                .replace("{min}", "250")
+                .replace("{max}", "1000"),
+        ),
         ("depart stickney at=+169h", BAD_TIME.to_owned()),
         ("buy metals fill", FILL_ONLY_CONSUMABLE.to_owned()),
         ("board", NOT_ORDERABLE.to_owned()),
@@ -1591,10 +1602,11 @@ fn ic11_the_queue_runs_the_day_unattended() {
         metals,
     );
     ceres += buy_from(&mut rig, pilot, "ceres_port", "occator", "volatiles", ice);
-    // Doc 18 §2 step 7's 42 t and 21 crew-days — 22 since doc 19 cut A.1 (the 2°
-    // hop to Kirkwood is a second whole day, lane v4).
-    ceres += buy_from(&mut rig, pilot, "ceres_port", "occator", "propellant", 42);
-    ceres += buy_from(&mut rig, pilot, "ceres_port", "coop", "provisions", 22);
+    // Doc 18 §2 step 7's 42 t and 21 crew-days — 53 t and 19 crew-days under the
+    // flip law since doc 19 cut A.2 (the burn is 52 t at this load; the 2° hop to
+    // Kirkwood is 3.7 days and the chord 14.5).
+    ceres += buy_from(&mut rig, pilot, "ceres_port", "occator", "propellant", 53);
+    ceres += buy_from(&mut rig, pilot, "ceres_port", "coop", "provisions", 19);
     swept_drawn(&mut rig, pilot);
     let hand_quotes = market(&rig.tw)
         .quotes_of_buyer(&PrincipalId::Object(pilot))
@@ -1635,8 +1647,8 @@ fn ic11_the_queue_runs_the_day_unattended() {
     let out_ticket = ticket(&mut rig.tw, hull, 1).expect("the outbound ticket");
     assert_eq!((out_ticket.order, out_ticket.attempt), (Some(1), 1));
     // §2 step 7: the tank and the locker cover the outbound with a tonne to spare.
-    assert_eq!(42 - out_ticket.plan.burn_t, 1, "tank 1 after the outbound");
-    assert_eq!(22 - u64::from(out_ticket.plan.crew_days), 0);
+    assert_eq!(53 - out_ticket.plan.burn_t, 1, "tank 1 after the outbound");
+    assert_eq!(19 - u64::from(out_ticket.plan.crew_days), 0);
     let arrival = out_ticket.plan.depart_ic + out_ticket.plan.total_s;
     landed.extend(to_ic(&mut rig, arrival - 3_600));
     landed.extend(to_ic(&mut rig, arrival + 60));
@@ -1679,10 +1691,11 @@ fn ic11_the_queue_runs_the_day_unattended() {
     // The hold after the Stickney buys.
     assert_eq!(pool(&mut rig.tw, hold, "metals"), 0);
     assert_eq!(pool(&mut rig.tw, hold, "volatiles"), 0);
-    assert_eq!(pool(&mut rig.tw, hold, "propellant"), 37);
-    assert_eq!(pool(&mut rig.tw, hold, "provisions"), 20);
+    assert_eq!(pool(&mut rig.tw, hold, "propellant"), 50);
+    assert_eq!(pool(&mut rig.tw, hold, "provisions"), 19);
     assert_eq!(pool(&mut rig.tw, hold, "industrial_parts"), 49);
-    assert_eq!(pool(&mut rig.tw, hold, "structural_alloys"), 20);
+    // 17 t since doc 19 cut A.2: the costlier bunkering leaves less for the alloys.
+    assert_eq!(pool(&mut rig.tw, hold, "structural_alloys"), 17);
     // The funds path, from journals: the stake less Ceres, plus the two nets, less
     // the four Stickney costs.
     let net = |q: &mush_market::Quote| {
@@ -1720,11 +1733,13 @@ fn ic11_the_queue_runs_the_day_unattended() {
         &rig.tw,
         listing_of(&rig.tw, "stickney_port", "kasei", "structural_alloys"),
     );
-    let before_alloys = start - ceres + nets - 36 * fuel - 19 * food - 49 * parts;
+    // 49 t of fuel and 17 t of alloys since doc 19 cut A.2 (the return's fill is 50 t
+    // under the flip law, one aboard; the slice's were 36 and 20).
+    let before_alloys = start - ceres + nets - 49 * fuel - 19 * food - 49 * parts;
     assert_eq!(
         before_alloys / alloys,
-        20,
-        "the alloys are cut to 20 t by funds"
+        17,
+        "the alloys are cut to 17 t by funds"
     );
 
     // Hold the second departure's hour: walk the clock to it.
@@ -1795,19 +1810,19 @@ fn ic11_the_queue_runs_the_day_unattended() {
     assert_eq!(
         log[3],
         BOUGHT_FILL_TANK
-            .replace("{qty}", "36")
+            .replace("{qty}", "49")
             .replace("{label}", "reaction mass")
             .replace("{price}", &cr(fuel))
-            .replace("{total}", &cr(36 * fuel))
-            .replace("{after}", "37")
+            .replace("{total}", &cr(49 * fuel))
+            .replace("{after}", "50")
             .replace("{limit}", "80")
             .replace("{cargo}", "73")
     );
     assert_eq!(
         log[4],
         BOUGHT_FILL_LOCKER
-            .replace("{qty}", "20")
-            .replace("{total}", &cr(20 * food))
+            .replace("{qty}", "19")
+            .replace("{total}", &cr(19 * food))
     );
     assert_eq!(
         log[5],
@@ -1821,11 +1836,11 @@ fn ic11_the_queue_runs_the_day_unattended() {
     assert_eq!(
         log[6],
         BOUGHT_SHORT
-            .replace("{qty}", "20")
+            .replace("{qty}", "17")
             .replace("{unit}", "t")
             .replace("{label}", "structural alloy stock")
             .replace("{price}", &cr(alloys))
-            .replace("{total}", &cr(20 * alloys))
+            .replace("{total}", &cr(17 * alloys))
             .replace("{want}", "55")
             .replace("{bounds}", "funds")
     );
@@ -2983,12 +2998,22 @@ fn lane_planner(
             .drive_for_class(&logistics.drive.class)
             .expect("a law"),
         payload_ceiling_kg: logistics.payload_ceiling_kg,
+        throttle_permille: tacsim::port::DEFAULT_THROTTLE_PERMILLE,
     };
     let dry = u64::from(logistics.dry_mass_t) * 1_000;
     let routes = port_def(from).routes[&cid(to)].clone();
     move |payload, occupants, depart_ic| {
         tacsim::port::choose_route(
-            &sky, &pack, &routes, &drive, dry, payload, occupants, depart_ic, None,
+            &sky,
+            &pack,
+            &routes,
+            &drive,
+            dry,
+            payload,
+            occupants,
+            depart_ic,
+            tacsim::port::RoutePolicy::default(),
+            None,
         )
     }
 }
@@ -3770,8 +3795,8 @@ fn ic11_the_plan_dry_runs_the_queue() {
         listing_of(&rig.tw, "stickney_port", "kasei", "structural_alloys"),
     );
     let a0 = pilot_available(&rig.tw, pilot);
-    let fill_t = 37 - tank;
-    let fill_d = 20 - locker;
+    let fill_t = 50 - tank;
+    let fill_d = 19 - locker;
     let k = (a0
         - i64::try_from(fill_t).expect("t") * fuel
         - i64::try_from(fill_d).expect("d") * food
@@ -3783,10 +3808,10 @@ fn ic11_the_plan_dry_runs_the_queue() {
     for want in [
         "The sailing plan from order 1, as it stands now:".to_owned(),
         format!(
-            "  Order 1, buy reaction mass, fill: {fill_t} t, tank 37/80, for the 73 t your orders can load."
+            "  Order 1, buy reaction mass, fill: {fill_t} t, tank 50/80, for the 73 t your orders can load."
         ),
         format!(
-            "  Order 2, buy voyage provisions, fill: {fill_d} crew-days, locker 20/120, for the 73 t your orders can load."
+            "  Order 2, buy voyage provisions, fill: {fill_d} crew-days, locker 19/120, for the 73 t your orders can load."
         ),
         format!(
             "  Order 3, buy yard fittings, crated: 49 t at {}/t.",
@@ -3825,13 +3850,13 @@ fn ic11_the_plan_dry_runs_the_queue() {
     let k_t = u64::try_from(k).expect("tonnes");
     let payload = 49 * mass("industrial_parts")
         + k_t * mass("structural_alloys")
-        + 37 * mass("propellant")
+        + 50 * mass("propellant")
         + 19 * mass("provisions")
         + allowance;
     let planner = lane_planner(0, "stickney_port", "ceres");
     let plan = planner(payload, 1, ic_now(&rig.tw)).expect("the return plans");
     assert!(
-        plan.burn_t <= 37 && u64::from(plan.crew_days) <= 20,
+        plan.burn_t <= 50 && u64::from(plan.crew_days) <= 19,
         "{plan:?}"
     );
     let tenths = (payload + 50) / 100;
@@ -4216,8 +4241,11 @@ fn ic14_a_short_buy_with_a_later_fill_does_not_hold() {
 }
 
 /// **Doc 18 cut IC14 row 26: a short buy with later units that cover does not hold.**
-/// One tonne, then the empty-tank burn plus five more tonnes, then the depart: the later
-/// units cover the need, so the first buy goes through and she departs.
+/// One tonne, then the empty-tank burn plus ten more tonnes, then the depart: the later
+/// units cover the need, so the first buy goes through and she departs. (Ten, since doc
+/// 19 cut A.2: the flip law charges about fifteen percent of the fuel's own mass, so an
+/// empty-tank burn of 40 t needs 48 t once 46 are aboard; the coast law's 105 kg per
+/// tonne made five enough.)
 #[test]
 fn ic14_a_short_buy_with_later_units_that_cover_does_not_hold() {
     let mut rig = stocked();
@@ -4226,7 +4254,7 @@ fn ic14_a_short_buy_with_later_units_that_cover_does_not_hold() {
     board(&mut rig, pilot, "Salt Moth");
     let burn = empty_tank_burn(&mut rig, pilot, &row);
     let _ = order(&mut rig, pilot, "buy propellant 1");
-    let _ = order(&mut rig, pilot, &format!("buy propellant {}", burn + 5));
+    let _ = order(&mut rig, pilot, &format!("buy propellant {}", burn + 10));
     let _ = order(&mut rig, pilot, "depart stickney");
     disconnect(&mut rig.tw, pilot);
     let _ = drive_until(&mut rig, 60, |rig| {

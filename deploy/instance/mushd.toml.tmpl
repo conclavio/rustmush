@@ -219,13 +219,17 @@ catch_up_production = ""
 catch_up_fronts = ""
 catch_up_domains = ""
 
-# Body phases without their own epoch_ic are authored at this campaign epoch, IC
-# seconds on the game calendar (mush_core::CivilDate: 365-day years, year 0 at
-# IC 0). A rate of zero holds every body at its authored phase (the constant
-# sky); nonzero rates are permille of real motion per IC second.
+# The sky's motion (doc 19, the astronomy engine). A fixture body without its
+# own epoch_ic is authored at this campaign epoch, IC seconds on the game
+# calendar (mush_core::CivilDate: 365-day years, year 0 at IC 0); every lane
+# body carries one. The rate is permille of real motion per IC second: 1000 is
+# REAL MOTION — the sky's date is the IC date, which the lane's JPL Horizons
+# element tables (2340-2400) require, so a route's time and fuel move with the
+# season; 0 holds every body at its epoch position (the first slice's constant
+# sky). A passage already burned keeps its frozen plan under any rate.
 [tacsim.time.ephemeris]
 epoch = 0
-rate = 0
+rate = 1000
 
 # The recovery provider (a player who has lost everything getting a hull back).
 # Off on a fresh instance: it grants against a FUNDED pool account that does not

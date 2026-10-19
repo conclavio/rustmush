@@ -151,6 +151,7 @@ pub(crate) fn hull_spec_of(
                 class: logistics.drive.class.clone(),
                 law,
                 payload_ceiling_kg: logistics.payload_ceiling_kg,
+                throttle_permille: crate::port::passage::DEFAULT_THROTTLE_PERMILLE,
             },
             dry_kg,
             allowance_kg: logistics.occupant_allowance_kg,
@@ -438,7 +439,13 @@ impl ActionProvider for BurnProvider {
         // drive table this provider holds (D-18-11).
         let adds_up = plan.check().is_ok()
             && plan.law.as_str() == spec.drive.law.word()
-            && passage_burn(&spec.drive.law, spec.dry_kg, payload, &plan.legs).ok()
+            && passage_burn(
+                &spec.drive.clone().at_throttle(plan.throttle_permille),
+                spec.dry_kg,
+                payload,
+                &plan.legs,
+            )
+            .ok()
                 == Some(plan.burn_t)
             && crew_days(pending.occupants, &plan.legs).ok() == Some(plan.crew_days);
         if !adds_up {
@@ -564,10 +571,14 @@ mod tests {
         let spec = table.hulls.get(&digest).expect("the Dray is in the table");
         assert_eq!(
             spec.drive.law,
-            crate::definitions::logistics::DriveLaw::Coast {
-                kms: 226,
-                burn_permille: 105
+            crate::definitions::logistics::DriveLaw::Flip {
+                accel_mg: 50,
+                exhaust_kms: 6_000
             }
+        );
+        assert_eq!(
+            spec.drive.throttle_permille,
+            crate::port::passage::DEFAULT_THROTTLE_PERMILLE
         );
         assert_eq!(spec.drive.class.as_str(), "coast_hauler");
         assert_eq!(spec.drive.payload_ceiling_kg, 181_000);

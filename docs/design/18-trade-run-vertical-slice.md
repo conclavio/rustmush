@@ -1721,6 +1721,21 @@ hold (out 45 t at a brimmed tank, back 37–40 t), so Stickney's price matters.
 "40 t against a 41 t burn" cannot be built: the tank case is **39 t aboard against a 40 t burn** (the
 vertex with 39 t), as the story test's negative check builds it from the planner.
 
+**As built (doc 19 cut A.2, 2026-10-18):** Q-18-41 is ruled the engine's way — the Dray flies
+`DriveLaw::Flip { accel_mg: 50, exhaust_kms: 6000 }` (`dray.json` v3): a leg is `2√(d / a)` at the
+hull's thrust-limited acceleration for its load (50 milli-g at the rated 421 t, more when lighter),
+the burn the rocket equation over the passage's `Δv = Σ a·t`, so **both time and fuel move with the
+sky**; the laden law stays mush-sim's for the coast law and same-body legs only. `passage_burn` takes
+the `HullDrive` (law, rail and the passage's throttle, 250–1000 ‰). At the epoch sky the story's
+outbound (100 t cargo, 53 t bunkered, 19 crew-days) takes 321,547 + 1,256,313 s (18.3 h at rate 24)
+and burns 51–52 t; the return 1,195,660 + 306,023 s (17.4 h), 48 t, 18 crew-days — the slice's 42 t
+tank no longer covers an outbound, so the story bunkers 53. The solar keep-out (0.3 AU) is a detour
+cost in the leg's distance, never a closure (Q-18-40); `choose_route` keeps the fastest or the
+cheapest listed route and honours `via=` as a waypoint filter; the throttle rides `+ship/plan`,
+`+ship/undock` and the depart order. The figures above this note are the coast law's history
+(D-18-50: none was an invariant); the cut note in [18-cut-notes.md](18-cut-notes.md) "A.2" has the
+table.
+
 **The queued-orders model (D-18-31).** Rejected carriers: `@wait` re-dispatch (it can act as the pilot,
 `engine.rs:3213-3232`, but is RAM-only, invisible, capped at 100 shared slots, not atomic with any record,
 voided by fan-out) and `schedule_source` (acts as the pilot, writes typed families only, cannot post money
@@ -2303,7 +2318,10 @@ body changes together (`ephemeris.rs:11-15`) — is preserved by having one quer
 The readiness sky line and its promise are built (IC12): "sky: constant (rate 0), epoch 2351-05-13, rev
 {12 hex}" at rate 0; at a non-zero sky rate with a lane body lacking `epoch_ic` the line is **flagged**
 and the port tick **pages once per boot** (`tacsim/src/port/readiness.rs:816`,
-`tacsim/src/port_tick.rs:461`) — never a gate (D-18-50).
+`tacsim/src/port_tick.rs:461`) — never a gate (D-18-50). **Since doc 19 cut A.6** the line names the
+sky's model and motion — "sky: moving (rate 1000, real motion), kepler, epoch 2351-05-13, rev {12 hex}"
+on a shipped server, "sky: constant (rate 0), kepler, …" at rate 0 — and the shipped templates set
+`rate = 1000` (Q-18-37's default; the Rust default stays 0 for the pins).
 
 **The calendar, in one place.** The IC clock is Unix seconds, continuous across rate generations
 (`clock.rs:214-218,335`), so JD = ic_s / 86,400 + 2,440,587.5 and `2350-01-01T00:00Z` = 11,991,628,800.
@@ -2516,10 +2534,13 @@ refinery work orders, Ceres deposits, a construction sink) before a second cohor
 **P7** Pallas as a port (data); **P8** delete the legacy seed latch (M); **P9** the net share with a run
 book and carried deficit (M); **P-A** the astronomy engine (§4.8; L in six sub-cuts: data and model M,
 laws M, chart S+M, price policy M, comms S, flip S; after IC12, with P5 for its prices and P7 for its
-showcase) — **designed as [doc 19](19-astronomy-engine.md) (2026-10-18) and built as its cuts A.1–A.6;
-A.1 (the element tables, `Sky::Kepler`, lane v4) landed 2026-10-18**, the cut note in
-[18-cut-notes.md](18-cut-notes.md) "A.1"; Q-18-35..41 are ruled by doc 19 §2's defaults, the owner
-overriding by data.
+showcase) — **designed as [doc 19](19-astronomy-engine.md) (2026-10-18) and built as its cuts A.1–A.6,
+all landed 2026-10-18: A.1 (the element tables, `Sky::Kepler`, lane v4), A.2 (the flip law, the
+throttle, the keep-out, route policies, Dray v3), A.3 (`+chart`, the plan's window line), A.4 (the
+reach premium on demand-side bids against the synodic median, lane v5), A.6 (the shipped sky at real
+motion); A.5 closed as a seam**, the cut notes in [18-cut-notes.md](18-cut-notes.md) "A.1"–"A.6";
+A.3b (the chart panel) and A.4b (the emergency bids) open; Q-18-35..41 are ruled by doc 19 §2's
+defaults, the owner overriding by data.
 
 **IC0.** As recorded in [18-cut-notes.md](18-cut-notes.md). `spacecraft` out of `SELF_MODES`
 (`travel.rs:90`) and `options_from_corridor_room` is IC1's, with its test (Q-18-6, binding).
@@ -3123,6 +3144,11 @@ recommended" builds §5 as written):
   clamp and bound; the captain strikes the balance. Alternatives: `+ship/plan best` as printed advice;
   a `buy <a>,<b> balance` order the clamp solves. Why: the owner calls the balance "part of the trick";
   a solver turns it into a button; an advisor fits a later NPC or unit-mind product.
+**Q-18-35 to Q-18-41 below are ruled by [doc 19](19-astronomy-engine.md) §2's defaults** (2026-10-18;
+built as its cuts A.1–A.6 — the flip law, Kirkwood trailing 2°, rate 1000 in the templates, element
+tables, the reach premium against the synodic median with the emergency bids left to A.4b, the keep-out
+as a cost), the owner overriding each by data; the text below is the question as it was put.
+
 - **Q-18-35 R3 against R9: how does the daily passage survive a moving sky?** At nominal cruise a coast
   Dray makes the full Ceres–Stickney outbound in under 24 h only while Ceres–Mars ≤ ~1.6 AU, about 16 %
   of the 3.18-yr synodic cycle; at the worst season ~65 h. Default (at P-A, a data change behind the

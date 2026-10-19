@@ -119,6 +119,28 @@ pub struct PortDef {
     /// Destination venue → a non-empty list of route ids of this pack
     /// (D-18-47).
     pub routes: BTreeMap<CanonicalId, Vec<CanonicalId>>,
+    /// **The reach premium** (doc 19 §6, cut A.4; D-19-14): how this port's
+    /// demand-side bids rise with its reach — the least passage from a supplying
+    /// port, now against the lane's epoch. Absent, the port posts its authored
+    /// prices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub premium: Option<ReachPremiumDef>,
+}
+
+/// The most a premium's slope or cap may be, permille (ten times the price).
+pub const MAX_PREMIUM_PERMILLE: u32 = 10_000;
+
+/// **A port's reach premium** (doc 19 §6; D-19-14; Q-19-5's defaults 300 / 500):
+/// `premium‰ = min(cap, k · (reach_now / reach_epoch − 1))`, never below zero,
+/// applied to a bid's authored price when the bid is posted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReachPremiumDef {
+    /// The slope, permille of price per unit of excess reach ratio;
+    /// `0..=MAX_PREMIUM_PERMILLE`.
+    pub k_permille: u32,
+    /// The ceiling, permille of price; `0..=MAX_PREMIUM_PERMILLE`.
+    pub cap_permille: u32,
 }
 
 /// **One institution of a port** (doc 18 §4.1, D-18-27): a real `mush-org`
@@ -308,6 +330,16 @@ impl PortDef {
     ///
     /// The first rule broken, as its detail.
     pub fn check(&self) -> Result<(), String> {
+        // Doc 19 cut A.4: the premium's bounds.
+        if let Some(premium) = &self.premium
+            && (premium.k_permille > MAX_PREMIUM_PERMILLE
+                || premium.cap_permille > MAX_PREMIUM_PERMILLE)
+        {
+            return Err(format!(
+                "premium: k_permille and cap_permille are 0..={MAX_PREMIUM_PERMILLE}, not {} / {}",
+                premium.k_permille, premium.cap_permille
+            ));
+        }
         // The institutions.
         if self.orgs.is_empty() || self.orgs.len() > MAX_PORT_ORGS {
             return Err(format!(
@@ -862,6 +894,7 @@ mod tests {
             }),
             vendors: Vec::new(),
             routes: BTreeMap::from([(cid("stickney"), vec![cid("out")])]),
+            premium: None,
         }
     }
 

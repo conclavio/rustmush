@@ -61,6 +61,13 @@ Every figure below is one you read off the game, not one to remember.
   the gross, the Co-op's share and what you receive "when the goods are in"; the
   money lands once the tonnes have moved into Kasei's stores.
 
+  A port's bids follow its season. When the sky has carried a port far from the
+  ports that supply a good — the passage is long against the port's usual — its
+  standing bid for that good is posted above its list price, up to half again;
+  when the passage is short, the bid is the list price. The price is set when the
+  bid is posted and holds until it lapses and is posted anew, so `+market/list`
+  is the word; `+chart <port>` shows how the passage runs over the coming year.
+
   On the materials exchange: buy the fittings and the alloy for Ceres the same
   way — bulky first if money is tight — then bunker for the return and fly home.
   At Ceres, the Co-op's chit and Freeport Works' alloy bid buy them.

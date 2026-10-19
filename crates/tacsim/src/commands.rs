@@ -150,6 +150,20 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(crate::port::credit::credit_cmd),
     )?;
+    // ---- Doc 19 cut A.3 (§5): `+chart`, a pure read of the sky and the planner ----
+    //
+    // In the same ReadOnly bracket as `+credit`: no document, no post, no
+    // submission; a scan of `plan_passage` over the next IC year at most.
+    reg.command(
+        CommandSpec {
+            name: crate::port::chart::CHART_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: ["body"].iter().copied().map(SmolStr::new).collect(),
+            help: crate::port::chart::CHART_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::chart::chart_cmd),
+    )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     // ---- Doc 18 cut IC6 (§4.1, §4.2; D-18-23, D-18-34): `+coop` and `+ship` ----
     //

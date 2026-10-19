@@ -58,7 +58,10 @@ use crate::port::def::PortDef;
 use crate::port::families::{MAX_TICKET_OCCUPANTS, PassagePlan, PortHandles, Ticket, TicketId};
 use crate::port::gauges;
 use crate::port::map::PortMap;
-use crate::port::passage::{PlanError, choose_route, payload_kg};
+use crate::port::passage::{
+    DEFAULT_THROTTLE_PERMILLE, MAX_THROTTLE_PERMILLE, MIN_THROTTLE_PERMILLE, PlanError,
+    RoutePolicy, choose_route, flip_profile, payload_kg,
+};
 use crate::port::readiness::report_ports;
 use crate::port::ship::{
     self, Berth, HullView, SHIP_CLEARED, SHIP_UNDER_WAY, STATUS_CLEARED, STATUS_UNDER_WAY,
@@ -267,9 +270,13 @@ pub const NOT_ABOARD: &str = "You undock from aboard the {name}.";
 pub const NOT_DOCKED: &str = "The {name} is not at a berth.";
 /// No such destination: `{here}`, `{list}`.
 pub const NO_ROUTE: &str = "No passage leaves {here} for that port; {here} clears for {list}.";
-/// `via=` (reserved for the astronomy engine).
-pub const VIA_NOT_YET: &str =
-    "A passage by a chosen waypoint is not yet offered; the planner takes the fastest route.";
+/// `via=` named no lane place (doc 19 cut A.2): `{via}`, `{list}`.
+pub const VIA_UNKNOWN: &str = "No lane place is called {via}; the waypoints are {list}.";
+/// `throttle=` outside its band (doc 19 cut A.2): `{min}`, `{max}`.
+pub const THROTTLE_USAGE: &str =
+    "throttle= is {min} to {max} permille of thrust (1000 is full thrust).";
+/// `policy=` other than the two words (doc 19 cut A.2).
+pub const POLICY_USAGE: &str = "policy= is fastest or cheapest.";
 /// `at=` other than `now` (doc 18 cut IC11, lead ruling L8: a later hour is a queued
 /// depart).
 pub const AT_NOT_YET: &str =
@@ -810,15 +817,167 @@ pub(crate) fn goods_pending_aboard(w: &World, hold: EndpointRef) -> Option<Pendi
 
 // ---- planning --------------------------------------------------------------------
 
+/// **How a passage is to be flown** (doc 19 cut A.2, D-19-9, D-19-13): the
+/// throttle, the route policy and a waypoint the route must call at. The
+/// defaults are full thrust, the fastest listed route and no waypoint — the
+/// slice's passage exactly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PassageOptions {
+    /// Permille of the hull's thrust (`MIN_THROTTLE_PERMILLE..=MAX_THROTTLE_PERMILLE`).
+    pub throttle_permille: u32,
+    /// Which listed route to keep.
+    pub policy: RoutePolicy,
+    /// The lane place the route must call at before its destination.
+    pub via: Option<CanonicalId>,
+}
+
+impl Default for PassageOptions {
+    fn default() -> PassageOptions {
+        PassageOptions {
+            throttle_permille: DEFAULT_THROTTLE_PERMILLE,
+            policy: RoutePolicy::default(),
+            via: None,
+        }
+    }
+}
+
+impl PassageOptions {
+    /// A queued depart's options: its throttle when it names one, its waypoint,
+    /// the fastest route (the queue's policy).
+    #[must_use]
+    pub fn for_order(throttle_permille: Option<u32>, via: Option<CanonicalId>) -> PassageOptions {
+        PassageOptions {
+            throttle_permille: throttle_permille.unwrap_or(DEFAULT_THROTTLE_PERMILLE),
+            policy: RoutePolicy::default(),
+            via,
+        }
+    }
+}
+
+/// [`THROTTLE_USAGE`] with the band filled in.
+pub(crate) fn throttle_usage() -> String {
+    THROTTLE_USAGE
+        .replace("{min}", &MIN_THROTTLE_PERMILLE.to_string())
+        .replace("{max}", &MAX_THROTTLE_PERMILLE.to_string())
+}
+
+/// `throttle=`'s value: a whole permille in the band.
+///
+/// # Errors
+///
+/// [`throttle_usage`].
+pub(crate) fn parse_throttle(text: &str) -> Result<u32, String> {
+    let permille: u32 = text.trim().parse().map_err(|_| throttle_usage())?;
+    if !(MIN_THROTTLE_PERMILLE..=MAX_THROTTLE_PERMILLE).contains(&permille) {
+        return Err(throttle_usage());
+    }
+    Ok(permille)
+}
+
+/// **A lane place by its id or a prefix of its label** (doc 19 cut A.2's `via=`),
+/// over the latched lane's `location` entries.
+///
+/// # Errors
+///
+/// [`VIA_UNKNOWN`] naming the places, or the layer's own absence.
+pub(crate) fn match_waypoint(w: &World, text: &str) -> Result<CanonicalId, String> {
+    let store = w
+        .module_state::<TacsimStore>()
+        .ok_or_else(|| "the layer's state is absent".to_owned())?;
+    let (pack, _) = report_ports(store, w);
+    let pack = pack.ok_or_else(|| "no lane pack is loaded".to_owned())?;
+    let places: Vec<(&CanonicalId, &crate::pack::LocationDef)> = pack
+        .entries()
+        .iter()
+        .filter_map(|(id, entry)| match entry {
+            crate::pack::PackEntry::Location(def) => Some((id, def)),
+            _ => None,
+        })
+        .collect();
+    let lower = text.trim().to_lowercase();
+    let found = (!lower.is_empty())
+        .then(|| {
+            places
+                .iter()
+                .find(|(id, _)| id.as_str().eq_ignore_ascii_case(&lower))
+                .or_else(|| {
+                    places
+                        .iter()
+                        .find(|(_, def)| def.label.to_lowercase().starts_with(&lower))
+                })
+        })
+        .flatten();
+    match found {
+        Some((id, _)) => Ok((*id).clone()),
+        None => {
+            let list: Vec<String> = places.iter().map(|(_, def)| def.label.clone()).collect();
+            Err(VIA_UNKNOWN
+                .replace("{via}", text.trim())
+                .replace("{list}", &list.join(", ")))
+        }
+    }
+}
+
+/// A lane place's label, for a line that names a waypoint; the id when the
+/// lane does not know it.
+pub(crate) fn waypoint_label(w: &World, place: &CanonicalId) -> String {
+    let label = w
+        .module_state::<TacsimStore>()
+        .and_then(|store| report_ports(store, w).0)
+        .and_then(|pack| match pack.entry(place) {
+            Some(crate::pack::PackEntry::Location(def)) => Some(def.label.clone()),
+            _ => None,
+        });
+    label.unwrap_or_else(|| place.to_string())
+}
+
+/// The parsed arguments of `+ship/plan` and `+ship/undock`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PlanArgs {
+    /// The destination word (a routes key, or a prefix of the port's name).
+    word: Option<String>,
+    /// `throttle=<permille>`.
+    throttle: Option<u32>,
+    /// `policy=fastest|cheapest`.
+    policy: Option<RoutePolicy>,
+    /// `via=<place>`, unresolved.
+    via: Option<String>,
+}
+
 /// The arguments `+ship/plan` and `+ship/undock` take: a destination word (a
-/// routes key, or a prefix of the destination port's name), `at=now`, and the
-/// reserved `via=`.
-fn parse_args(raw: &str) -> Result<Option<String>, CmdError> {
+/// routes key, or a prefix of the destination port's name), `at=now`, and since
+/// doc 19 cut A.2 `throttle=<permille>`, `policy=fastest|cheapest` and
+/// `via=<place>`.
+fn parse_args(raw: &str) -> Result<PlanArgs, CmdError> {
+    let mut args = PlanArgs::default();
     let mut words: Vec<&str> = Vec::new();
     for token in raw.split_whitespace() {
         let lower = token.to_ascii_lowercase();
-        if lower.starts_with("via=") {
-            return Err(CmdError::msg(VIA_NOT_YET));
+        if let Some(via) = token.get(4..).filter(|_| lower.starts_with("via=")) {
+            if args.via.is_some() || via.is_empty() {
+                return Err(CmdError::msg(
+                    VIA_UNKNOWN
+                        .replace("{via}", via)
+                        .replace("{list}", "the lane's places"),
+                ));
+            }
+            args.via = Some(via.to_owned());
+            continue;
+        }
+        if let Some(value) = lower.strip_prefix("throttle=") {
+            if args.throttle.is_some() {
+                return Err(CmdError::msg(throttle_usage()));
+            }
+            args.throttle = Some(parse_throttle(value).map_err(CmdError::msg)?);
+            continue;
+        }
+        if let Some(value) = lower.strip_prefix("policy=") {
+            let policy = RoutePolicy::parse(value).ok_or_else(|| CmdError::msg(POLICY_USAGE))?;
+            if args.policy.is_some() {
+                return Err(CmdError::msg(POLICY_USAGE));
+            }
+            args.policy = Some(policy);
+            continue;
         }
         if let Some(at) = lower.strip_prefix("at=") {
             if at != "now" {
@@ -828,20 +987,43 @@ fn parse_args(raw: &str) -> Result<Option<String>, CmdError> {
         }
         words.push(token);
     }
-    Ok((!words.is_empty()).then(|| words.join(" ")))
+    args.word = (!words.is_empty()).then(|| words.join(" "));
+    Ok(args)
+}
+
+/// The options the parsed arguments ask for, the waypoint resolved against the
+/// lane.
+fn options_of(w: &World, args: &PlanArgs) -> Result<PassageOptions, CmdError> {
+    let via = match &args.via {
+        Some(text) => Some(match_waypoint(w, text).map_err(CmdError::msg)?),
+        None => None,
+    };
+    Ok(PassageOptions {
+        throttle_permille: args.throttle.unwrap_or(DEFAULT_THROTTLE_PERMILLE),
+        policy: args.policy.unwrap_or_default(),
+        via,
+    })
+}
+
+/// The basis flown under `options`.
+fn apply_options(mut basis: Basis, options: &PassageOptions) -> Basis {
+    basis.spec.drive.throttle_permille = options.throttle_permille;
+    basis.policy = options.policy;
+    basis.via = options.via.clone();
+    basis
 }
 
 /// One destination a berth clears for: its venue word, its port name and its
 /// route list (D-18-47).
 #[derive(Clone, Debug)]
-struct Destination {
-    venue: CanonicalId,
-    port: String,
-    routes: Vec<CanonicalId>,
+pub(crate) struct Destination {
+    pub(crate) venue: CanonicalId,
+    pub(crate) port: String,
+    pub(crate) routes: Vec<CanonicalId>,
 }
 
 /// The destinations `def` clears for, in its `routes` map order.
-fn destinations(w: &World, def: &PortDef) -> Vec<Destination> {
+pub(crate) fn destinations(w: &World, def: &PortDef) -> Vec<Destination> {
     def.routes
         .iter()
         .map(|(venue, routes)| Destination {
@@ -854,7 +1036,10 @@ fn destinations(w: &World, def: &PortDef) -> Vec<Destination> {
 
 /// The destination `word` names: a routes key, case-insensitively, or a
 /// case-insensitive prefix of its port's name.
-fn match_destination<'d>(dests: &'d [Destination], word: &str) -> Option<&'d Destination> {
+pub(crate) fn match_destination<'d>(
+    dests: &'d [Destination],
+    word: &str,
+) -> Option<&'d Destination> {
     let word = word.trim().to_lowercase();
     if word.is_empty() {
         return None;
@@ -887,7 +1072,7 @@ fn no_route(here: &str, dests: &[Destination]) -> String {
 }
 
 /// The persons `Interior`-placed in `airlock` (lead ruling L12).
-fn occupants(w: &World, airlock: ObjId) -> u32 {
+pub(crate) fn occupants(w: &World, airlock: ObjId) -> u32 {
     u32::try_from(souls_aboard(w, airlock).len()).unwrap_or(u32::MAX)
 }
 
@@ -926,29 +1111,33 @@ pub(crate) fn aboard(w: &World, hull: ObjId, person: ObjId) -> bool {
 
 /// What a passage is planned on: everything read from the world at the berth.
 #[derive(Clone, Debug)]
-struct Basis {
+pub(crate) struct Basis {
     /// The latched lane version.
-    version: u32,
+    pub(crate) version: u32,
     /// The hull's unit definition digest (L34).
-    digest: DefinitionDigest,
+    pub(crate) digest: DefinitionDigest,
     /// The hull spec (drive, dry mass, allowance, accepted goods).
-    spec: HullSpec,
+    pub(crate) spec: HullSpec,
     /// The hold vault.
-    vault: VaultId,
+    pub(crate) vault: VaultId,
     /// Souls aboard.
-    occupants: u32,
+    pub(crate) occupants: u32,
     /// The payload, kilograms.
-    payload: u64,
+    pub(crate) payload: u64,
     /// The propellant pool, tonnes.
-    tank: u64,
+    pub(crate) tank: u64,
     /// The provisions pool, crew-days.
-    locker: u64,
+    pub(crate) locker: u64,
     /// The IC second the plan departs at.
-    depart_ic: i64,
+    pub(crate) depart_ic: i64,
+    /// Which listed route to keep (doc 19 cut A.2, D-19-13).
+    pub(crate) policy: RoutePolicy,
+    /// A waypoint the route must call at, when the captain named one.
+    pub(crate) via: Option<CanonicalId>,
 }
 
 /// Read the basis of a passage for `view`'s hull, `occupants` souls aboard.
-fn basis(ctx: &Ctx<'_>, view: &HullView<'_>, occupants: u32) -> Result<Basis, String> {
+pub(crate) fn basis(ctx: &Ctx<'_>, view: &HullView<'_>, occupants: u32) -> Result<Basis, String> {
     let w: &World = ctx.w;
     let store = w
         .module_state::<TacsimStore>()
@@ -985,13 +1174,19 @@ fn basis(ctx: &Ctx<'_>, view: &HullView<'_>, occupants: u32) -> Result<Basis, St
         tank: pool_of(Consumable::Propellant)?,
         locker: pool_of(Consumable::Provisions)?,
         depart_ic: w.world_ic_now().at,
+        policy: RoutePolicy::default(),
+        via: None,
     })
 }
 
 /// Plan the fastest listed route on `basis` over the latched lane's sky (§4.4:
 /// one planner over the sky at departure; lead ruling L23: the lane addressed by
 /// its latched `(pack, version)`).
-fn plan_on(w: &World, basis: &Basis, routes: &[CanonicalId]) -> Result<PassagePlan, PlanError> {
+pub(crate) fn plan_on(
+    w: &World,
+    basis: &Basis,
+    routes: &[CanonicalId],
+) -> Result<PassagePlan, PlanError> {
     let store = w
         .module_state::<TacsimStore>()
         .ok_or_else(|| PlanError::Unreadable {
@@ -1013,7 +1208,8 @@ fn plan_on(w: &World, basis: &Basis, routes: &[CanonicalId]) -> Result<PassagePl
         basis.payload,
         basis.occupants,
         basis.depart_ic,
-        None,
+        basis.policy,
+        basis.via.as_ref(),
     )
 }
 
@@ -1136,7 +1332,9 @@ fn no_charter(w: &World, actor: ObjId) -> CmdError {
 /// Every refusal is a [`CmdError`] line.
 pub(crate) fn plan_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
-    let word = parse_args(ctx.args.raw())?;
+    let args = parse_args(ctx.args.raw())?;
+    let word = args.word.clone();
+    let options = options_of(ctx.w, &args)?;
     let Some(charter) = helm_of(ctx.w, actor) else {
         return Err(no_charter(ctx.w, actor));
     };
@@ -1170,7 +1368,7 @@ pub(crate) fn plan_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .map_or(0, |airlock| occupants(w, airlock))
             .max(1);
         let basis = match basis(ctx, &view, souls) {
-            Ok(basis) => basis,
+            Ok(basis) => apply_options(basis, &options),
             Err(error) => {
                 tracing::warn!(hull = charter.hull.0, %error, "tacsim: +ship/plan could not read the passage's basis");
                 return Err(CmdError::msg(plan_dark(&name)));
@@ -1276,8 +1474,31 @@ fn plan_block(
         tonnes_one_decimal(basis.payload),
         ceiling / 1_000
     ));
-    let permille = match basis.spec.drive.law {
-        crate::definitions::logistics::DriveLaw::Coast { burn_permille, .. } => burn_permille,
+    // Doc 19 cut A.2 (D-19-8): the law's own sentence — the coast law's doctrine
+    // fraction, or the flip law's acceleration, Δv and peak at this load.
+    let law_line = match basis.spec.drive.law {
+        crate::definitions::logistics::DriveLaw::Coast { burn_permille, .. } => {
+            format!("Every tonne aboard, reserve included, costs {burn_permille} kg of burn.")
+        }
+        crate::definitions::logistics::DriveLaw::Flip {
+            accel_mg,
+            exhaust_kms,
+        } => match flip_profile(
+            &basis.spec.drive,
+            basis.spec.dry_kg,
+            basis.payload,
+            &plan.legs,
+        ) {
+            Some(profile) => format!(
+                "Flip and burn at {:.2} m/s² ({accel_mg} milli-g rated, throttle {}‰): Δv {} km/s, \
+                 peak {} km/s, exhaust {exhaust_kms} km/s; a farther port costs more.",
+                profile.accel_mps2,
+                basis.spec.drive.throttle_permille,
+                (profile.dv_mps / 1_000.0).round(),
+                (profile.peak_mps / 1_000.0).round()
+            ),
+            None => "Flip and burn.".to_owned(),
+        },
     };
     let tank = if basis.tank >= plan.burn_t {
         format!("{} t left", basis.tank - plan.burn_t)
@@ -1285,8 +1506,7 @@ fn plan_block(
         format!("{} t short", plan.burn_t - basis.tank)
     };
     lines.push(format!(
-        "Burn {} t (tank {} t; {tank}). Every tonne aboard, reserve included, costs {permille} kg \
-         of burn.",
+        "Burn {} t (tank {} t; {tank}). {law_line}",
         plan.burn_t, basis.tank
     ));
     let crew = u64::from(plan.crew_days);
@@ -1308,6 +1528,11 @@ fn plan_block(
         ),
         _ => format!("Passage {icdays} IC days; the clock is stopped."),
     });
+    // Doc 19 cut A.3 (§5): the window — the best departure in the next thirty IC
+    // days against today's, when the sky moves.
+    if let Some(window) = crate::port::chart::plan_window_line(w, basis, &dest.routes, &plan) {
+        lines.push(window);
+    }
     Ok(lines)
 }
 
@@ -1420,6 +1645,7 @@ pub(crate) fn prepare_departure(
     pilot: ObjId,
     hull: ObjId,
     dest_word: &str,
+    options: &PassageOptions,
     queued: Queued,
 ) -> Result<DepartFiling, DepartRefusal> {
     use DepartRefusalKind as K;
@@ -1518,6 +1744,7 @@ pub(crate) fn prepare_departure(
         tracing::warn!(hull = hull.0, %error, "tacsim: a departure could not read the passage's basis");
         dark()
     })?;
+    let basis = apply_options(basis, options);
     let plan = match plan_on(w, &basis, &dest.routes) {
         Ok(plan) => plan,
         Err(PlanError::Overloaded {
@@ -1657,13 +1884,15 @@ pub(crate) fn undock_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if raw.split_whitespace().all(|token| token.contains('=')) {
         return Err(CmdError::msg(UNDOCK_USAGE));
     }
-    let Some(word) = parse_args(&raw)? else {
+    let args = parse_args(&raw)?;
+    let Some(word) = args.word.clone() else {
         return Err(CmdError::msg(UNDOCK_USAGE));
     };
+    let options = options_of(ctx.w, &args)?;
     let Some(charter) = helm_of(ctx.w, actor) else {
         return Err(no_charter(ctx.w, actor));
     };
-    let filing = prepare_departure(ctx, actor, charter.hull, &word, Queued::Live)?;
+    let filing = prepare_departure(ctx, actor, charter.hull, &word, &options, Queued::Live)?;
     let Some(pending) = filing.voyage.pending.clone() else {
         return Err(CmdError::msg(
             PLAN_DARK.replace("{name}", &name_of(ctx.w, charter.hull)),
@@ -2258,6 +2487,7 @@ mod tests {
                 total_s: total,
                 burn_t: 41,
                 crew_days: 21,
+                throttle_permille: 1_000,
             },
             order: None,
             attempt: 1,
@@ -2318,19 +2548,49 @@ mod tests {
     }
 
     #[test]
-    fn ic9_args_take_a_word_at_now_and_refuse_via_and_later() {
-        assert_eq!(parse_args("stickney").unwrap(), Some("stickney".to_owned()));
+    fn ic9_args_take_a_word_at_now_and_refuse_later() {
         assert_eq!(
-            parse_args("Stickney Yards").unwrap(),
+            parse_args("stickney").unwrap().word,
+            Some("stickney".to_owned())
+        );
+        assert_eq!(
+            parse_args("Stickney Yards").unwrap().word,
             Some("Stickney Yards".to_owned())
         );
         assert_eq!(
-            parse_args("stickney at=now").unwrap(),
+            parse_args("stickney at=now").unwrap().word,
             Some("stickney".to_owned())
         );
-        assert_eq!(parse_args("").unwrap(), None);
-        assert!(parse_args("stickney via=kirkwood_depot").is_err());
+        assert_eq!(parse_args("").unwrap().word, None);
         assert!(parse_args("stickney at=+2h").is_err());
+    }
+
+    /// Doc 19 cut A.2: `via=`, `throttle=` and `policy=` are read, bounded and
+    /// taken once each.
+    #[test]
+    fn a2_args_take_a_waypoint_a_throttle_and_a_policy() {
+        let args = parse_args("stickney via=kirkwood_depot throttle=500 policy=cheapest").unwrap();
+        assert_eq!(args.word, Some("stickney".to_owned()));
+        assert_eq!(args.via, Some("kirkwood_depot".to_owned()));
+        assert_eq!(args.throttle, Some(500));
+        assert_eq!(args.policy, Some(RoutePolicy::Cheapest));
+        assert!(
+            parse_args("stickney throttle=100").is_err(),
+            "below the band"
+        );
+        assert!(
+            parse_args("stickney throttle=1001").is_err(),
+            "above the band"
+        );
+        assert!(
+            parse_args("stickney throttle=full").is_err(),
+            "not a number"
+        );
+        assert!(parse_args("stickney policy=slow").is_err());
+        assert!(parse_args("stickney via=").is_err());
+        assert_eq!(parse_throttle("250"), Ok(250));
+        assert_eq!(parse_throttle("1000"), Ok(1_000));
+        assert!(parse_throttle("249").is_err());
     }
 
     /// Doc 18 cut IC14 row 21 (lead ruling L8b): `told` is required on the wire and

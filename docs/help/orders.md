@@ -41,8 +41,9 @@ gets a number that never changes; the plan's revision goes up with every edit.
   stop            the plan stops there, as filed, until you resume it
 
 A departure plans its passage at its hour, over the load the plan will make, and
-burns nothing until it is cleared. A waypoint (`via=`) is not offered yet: the
-planner takes the fastest route.
+burns nothing until it is cleared. It takes the fastest listed route, by way of a
+place you name (`via=kirkwood`), at the throttle you set (`throttle=500` is half
+thrust: longer and thriftier; 250 to 1000); `+ship/orders` shows both.
 
 Put the fuel and the stores **before** the cargo buys of a leg: the port keeps
 back enough of your money for the next departure's reaction mass and stores, and

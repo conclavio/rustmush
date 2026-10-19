@@ -55,6 +55,7 @@ use crate::port::orders::{
 };
 use crate::port::passage::{PlanError, choose_route};
 use crate::port::ship::{Berth, HullView, berth_of, hull_view};
+use crate::port::voyage::PassageOptions;
 use crate::port::voyage::{
     NO_ROUTE, OVERLOADED, STORES_SHORT, TANK_SHORT, narrate_hull, tonnes_one_decimal,
 };
@@ -729,24 +730,33 @@ pub(crate) struct Planner<'w> {
 }
 
 impl Planner<'_> {
-    /// The fastest listed route for `payload_kg` and `occupants` at `depart_ic`.
+    /// The best listed route under `options` for `payload_kg` and `occupants` at
+    /// `depart_ic` (doc 19 cut A.2: the order's throttle and waypoint, the
+    /// queue's fastest policy).
     pub(crate) fn plan(
         &self,
         routes: &[CanonicalId],
         payload_kg: u64,
         occupants: u32,
         depart_ic: i64,
+        options: &PassageOptions,
     ) -> Result<PassagePlan, PlanError> {
+        let drive = self
+            .spec
+            .drive
+            .clone()
+            .at_throttle(options.throttle_permille);
         choose_route(
             &self.sky,
             self.pack,
             routes,
-            &self.spec.drive,
+            &drive,
             self.spec.dry_kg,
             payload_kg,
             occupants,
             depart_ic,
-            None,
+            options.policy,
+            options.via.as_ref(),
         )
     }
 }
@@ -890,11 +900,14 @@ pub(crate) fn next_depart_targets(
         to,
         not_before,
         not_after_s,
+        throttle_permille,
+        via,
         ..
     } = &depart.what
     else {
         return Ok(None);
     };
+    let options = PassageOptions::for_order(*throttle_permille, via.clone());
     let reached = depart
         .reached
         .as_ref()
@@ -938,7 +951,7 @@ pub(crate) fn next_depart_targets(
         locker,
         occupants.max(1),
         planner.spec.allowance_kg,
-        |payload| planner.plan(&routes, payload, occupants.max(1), depart_ic),
+        |payload| planner.plan(&routes, payload, occupants.max(1), depart_ic, &options),
     )
     .map_err(|e| TargetError::Fill(e, port.clone()))?;
     Ok(Some(DepartTargets {
@@ -1285,10 +1298,13 @@ pub(crate) fn plan_queue(
                 to,
                 not_before,
                 not_after_s,
+                throttle_permille,
+                via,
                 ..
             } => {
                 let port = crate::port::voyage::venue_name(w, to);
                 depart_port = Some(port.clone());
+                let options = PassageOptions::for_order(*throttle_permille, via.clone());
                 let reached = order
                     .reached
                     .as_ref()
@@ -1309,7 +1325,7 @@ pub(crate) fn plan_queue(
                 };
                 let tank = aboard_of(goods, &readings, Consumable::Propellant);
                 let locker = aboard_of(goods, &readings, Consumable::Provisions);
-                match planner.plan(routes, payload, occupants, plan_instant(w, due)) {
+                match planner.plan(routes, payload, occupants, plan_instant(w, due), &options) {
                     Ok(plan) => {
                         // The refusal's sentence inside the line: a dry run burns
                         // nothing, so "Nothing was burned." goes (`plan_dark`'s rule),
@@ -2870,10 +2886,13 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
             not_before,
             not_after_s,
             on_fail,
+            throttle_permille,
+            via,
             ..
         } => {
             let port = crate::port::voyage::venue_name(w, &to);
             let here = port_name(def);
+            let options = PassageOptions::for_order(throttle_permille, via);
             // The reach (L9; reviewer F8): the first fire the depart is runnable here.
             let mut reach_doc = doc.clone();
             let mut dirty = false;
@@ -2926,6 +2945,7 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
                 pilot,
                 hull,
                 to.as_str(),
+                &options,
                 crate::port::voyage::Queued::Order { order: id, attempt },
             );
             use crate::port::voyage::DepartRefusalKind as K;
@@ -3284,6 +3304,7 @@ mod tests {
             total_s: 0,
             burn_t,
             crew_days,
+            throttle_permille: 1_000,
         }
     }
 
@@ -3400,6 +3421,7 @@ mod tests {
                     payload,
                     1,
                     0,
+                    crate::port::passage::RoutePolicy::default(),
                     None,
                 )
             },
@@ -3407,8 +3429,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             (real.tank, real.locker),
-            (37, 20),
-            "doc 18 §4.4's 37 t and 19 crew-days — 20 since doc 19 cut A.1 (lane v4)"
+            (50, 19),
+            "the return's fill under the flip law (doc 19 cut A.2): 50 t and 19 crew-days (doc 18 §4.4's coast figures were 37 t and 19, then 20 on lane v4)"
         );
         assert_eq!(real.cargo_t, 73);
     }
@@ -3602,6 +3624,8 @@ mod tests {
                     not_after_s: None,
                     on_fail: OnShort::Hold,
                     crew: Vec::new(),
+                    throttle_permille: None,
+                    via: None,
                 },
             )
         };

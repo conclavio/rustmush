@@ -130,10 +130,11 @@ const SHIPPED: &[ShippedInstance] = &[
         env: "deploy/dev1/instance.env",
         log_format: "pretty",
         onboarding: Onboarding::Open,
-        // The owner's clock of 2026-09-26 (16c T-88): at rate 4 from this epoch
-        // at unix 0, the world wiped on 2026-09-26 opened on 2350-01-01.
-        ic_ratio: 4,
-        ic_epoch: "2123-01-19 11:15",
+        // The owner's clock of 2026-10-18 (doc 18 R10, commit 29230ff5): at rate 24 from
+        // this epoch the fresh store read 2351-05-13 06:00 at 2026-10-19T03:00Z — the lane's
+        // epoch, one IC day per real hour. (Before: rate 4 from 2123-01-19 11:15, 16c T-88.)
+        ic_ratio: 24,
+        ic_epoch: "0987-04-20 06:00",
     },
 ];
 
@@ -406,7 +407,9 @@ fn live_ground_sky_and_path_keys_are_explicit_in_every_shipped_config() {
         for (path, expected) in [
             ("tacsim.ground_cell_cm", 1000),
             ("tacsim.time.ephemeris.epoch", 0),
-            ("tacsim.time.ephemeris.rate", 0),
+            // Doc 19 cut A.6 (§8; doc 18 Q-18-37): the shipped sky moves at real
+            // motion; the Rust default stays 0 for the tree's pinned figures.
+            ("tacsim.time.ephemeris.rate", 1000),
             ("atlas.path_max_cells", 4096),
             ("tacsim.arena.squad_size", 4),
             // 16b cut AF.1: the snapshot cadence, and its kill switch at `0`.
