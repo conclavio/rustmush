@@ -243,6 +243,7 @@ fn rejected_execution_requires_new_admission_and_the_exact_artifact() -> TestRes
         cases: 3,
         maximum_pages: 1,
         measured_rejection: true,
+        reconformance: None,
     };
     let execution: RatingExecution = serde_json::from_value(
         json!({"format":1,"job":queued.job(),"admission":admission,

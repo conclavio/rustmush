@@ -23,7 +23,7 @@ use mush_core::{
 use mush_economy::{
     AccountId,
     core_integration::{CoreCancellationRequest, CoreCompletionRequest, CoreFundingRequest},
-    registry_filing::{EconomyParticipant, EconomyRequest},
+    registry_filing::{EconomyRequest, InitialFilingParticipant as EconomyParticipant},
 };
 use mush_inventory::{Lineage, Lot, LotId};
 use serde::{Deserialize, Serialize};
@@ -504,10 +504,8 @@ impl Provider {
                     .map_err(bad)?;
                 let after = self.owner(ctx, owner::Request::Terminal { before, payment })?;
                 let row = after.order.ok_or(Error::Integrity)?;
-                let input = r
-                    .inputs
-                    .publish(txn, ctx, &after.input.ok_or(Error::Integrity)?)
-                    .map_err(bad)?;
+                let witness = after.input.ok_or(Error::Integrity)?;
+                let input = r.inputs.publish(txn, ctx, witness.as_ref()).map_err(bad)?;
                 row.verify_input(&input)?;
                 r.industry
                     .release_slot(txn, row.intent.policy.factory, row.capacity, 1)

@@ -34,6 +34,7 @@ fn refuse(_: impl std::fmt::Display) -> ParticipantError {
 #[derive(Clone)]
 pub(crate) struct Policy {
     actions: [DefinitionRef; 5],
+    reconformance: Option<[DefinitionRef; 5]>,
 }
 impl Policy {
     pub(crate) fn new(actions: [DefinitionRef; 5]) -> Result<Self, ParticipantError> {
@@ -52,21 +53,65 @@ impl Policy {
                 return Err(ParticipantError::Registration);
             }
         }
-        Ok(Self { actions })
+        Ok(Self {
+            actions,
+            reconformance: None,
+        })
+    }
+    pub(crate) fn with_reconformance(
+        mut self,
+        actions: [DefinitionRef; 5],
+    ) -> Result<Self, ParticipantError> {
+        for (reference, transition) in actions.iter().zip([
+            Transition::Admit,
+            Transition::Grant,
+            Transition::Settle,
+            Transition::Cancel,
+            Transition::Recover,
+        ]) {
+            if reference.key().owner.as_str() != "roll"
+                || reference.key().kind.as_str() != "action"
+                || reference.key().id.as_str() != transition.reconformance_action_id()
+                || reference.version() != 1
+            {
+                return Err(ParticipantError::Registration);
+            }
+        }
+        self.reconformance = Some(actions);
+        Ok(self)
     }
     fn check(
         &self,
         context: &OwnerPrepareContext<'_>,
         transition: Transition,
         character: ObjId,
+        reconformance: bool,
     ) -> Result<(), ParticipantError> {
+        let actions = if reconformance {
+            self.reconformance
+                .as_ref()
+                .ok_or(ParticipantError::Authority)?
+        } else {
+            &self.actions
+        };
+        let id = if reconformance {
+            transition.reconformance_action_id()
+        } else {
+            transition.action_id()
+        };
         let inv = context.invocation();
         if inv.actor() != character
             || inv.principal() != &(PrincipalId::Object { id: character })
             || inv.subject() != &PerceivedRef::SelfActor
             || !inv.targets().is_empty()
-            || context.action().key().id.as_str() != transition.action_id()
-            || !self.actions.iter().any(|action| action == context.action())
+            || context.action().key().id.as_str() != id
+            || !actions.iter().any(|action| action == context.action())
+            || (reconformance
+                && (character != mush_core::GOD
+                    || context.world().get(character).is_none_or(|o| {
+                        o.kind != mush_core::ObjKind::Player
+                            || o.flags.contains(mush_core::Flags::GOING)
+                    })))
         {
             return Err(ParticipantError::Authority);
         }
@@ -183,8 +228,12 @@ impl OwnerParticipant for QuotaParticipant {
                 account: proof,
             } => {
                 let ticket = ticket(context, id)?;
-                self.policy
-                    .check(context, Transition::Admit, ticket.character())?;
+                self.policy.check(
+                    context,
+                    Transition::Admit,
+                    ticket.character(),
+                    ticket.reconformance(state).map_err(refuse)?,
+                )?;
                 let TicketKind::Admit(data) = &ticket.kind else {
                     return Err(ParticipantError::Type);
                 };
@@ -207,8 +256,12 @@ impl OwnerParticipant for QuotaParticipant {
             }
             QuotaOperation::Grant { ticket: id, before } => {
                 let ticket = ticket(context, id)?;
-                self.policy
-                    .check(context, Transition::Grant, ticket.character())?;
+                self.policy.check(
+                    context,
+                    Transition::Grant,
+                    ticket.character(),
+                    ticket.reconformance(state).map_err(refuse)?,
+                )?;
                 check_before(state, &ticket, &before)?;
                 let TicketKind::Grant {
                     binding,
@@ -225,8 +278,12 @@ impl OwnerParticipant for QuotaParticipant {
             }
             QuotaOperation::Settle { ticket: id, before } => {
                 let ticket = ticket(context, id)?;
-                self.policy
-                    .check(context, Transition::Settle, ticket.character())?;
+                self.policy.check(
+                    context,
+                    Transition::Settle,
+                    ticket.character(),
+                    ticket.reconformance(state).map_err(refuse)?,
+                )?;
                 check_before(state, &ticket, &before)?;
                 let TicketKind::Settle { receipt, .. } = &ticket.kind else {
                     return Err(ParticipantError::Type);
@@ -241,8 +298,12 @@ impl OwnerParticipant for QuotaParticipant {
                 account: proof,
             } => {
                 let ticket = ticket(context, id)?;
-                self.policy
-                    .check(context, Transition::Cancel, ticket.character())?;
+                self.policy.check(
+                    context,
+                    Transition::Cancel,
+                    ticket.character(),
+                    ticket.reconformance(state).map_err(refuse)?,
+                )?;
                 check_before(state, &ticket, &before)?;
                 let TicketKind::Cancel(binding) = &ticket.kind else {
                     return Err(ParticipantError::Type);
@@ -256,8 +317,12 @@ impl OwnerParticipant for QuotaParticipant {
             }
             QuotaOperation::Recover { ticket: id, before } => {
                 let ticket = ticket(context, id)?;
-                self.policy
-                    .check(context, Transition::Recover, ticket.character())?;
+                self.policy.check(
+                    context,
+                    Transition::Recover,
+                    ticket.character(),
+                    ticket.reconformance(state).map_err(refuse)?,
+                )?;
                 check_before(state, &ticket, &before)?;
                 let TicketKind::Recover(binding) = &ticket.kind else {
                     return Err(ParticipantError::Type);
@@ -312,8 +377,12 @@ impl OwnerParticipant for QuotaParticipant {
         context: &OwnerPrepareContext<'_>,
         patch: &QuotaPatch,
     ) -> Result<(), ParticipantError> {
-        self.policy
-            .check(context, patch.output.transition(), patch.ticket.character())?;
+        self.policy.check(
+            context,
+            patch.output.transition(),
+            patch.ticket.character(),
+            patch.output.admission().reconformance.is_some(),
+        )?;
         if context.commit_token() != patch.output.operation() {
             return Err(ParticipantError::Authority);
         }
@@ -422,8 +491,12 @@ impl OwnerParticipant for ArtifactParticipant {
     ) -> Result<OwnerPreparation<ArtifactOutput, ArtifactPatch>, ParticipantError> {
         let quota = request.into_quota();
         let ticket = state.registry.get(quota.ticket()).map_err(refuse)?;
-        self.policy
-            .check(context, quota.transition(), ticket.character())?;
+        self.policy.check(
+            context,
+            quota.transition(),
+            ticket.character(),
+            quota.admission().reconformance.is_some(),
+        )?;
         if context.commit_token() != quota.operation()
             || ticket.transition() != quota.transition()
             || quota.admission().character != ticket.character()
@@ -439,6 +512,13 @@ impl OwnerParticipant for ArtifactParticipant {
             (TicketKind::Admit(data), Transition::Admit) => {
                 if quota.job() != context.commit_token()
                     || quota.admission().nonce != data.nonce
+                    || quota.admission().reconformance
+                        != data
+                            .plan
+                            .registry
+                            .as_ref()
+                            .ok_or(ParticipantError::Type)?
+                            .reconformance
                     || quota.subject() != Some((&data.subject, &data.compatibility))
                 {
                     return Err(ParticipantError::Authority);
@@ -540,8 +620,12 @@ impl OwnerParticipant for ArtifactParticipant {
         context: &OwnerPrepareContext<'_>,
         patch: &ArtifactPatch,
     ) -> Result<(), ParticipantError> {
-        self.policy
-            .check(context, patch.quota.transition(), patch.ticket.character())?;
+        self.policy.check(
+            context,
+            patch.quota.transition(),
+            patch.ticket.character(),
+            patch.quota.admission().reconformance.is_some(),
+        )?;
         if context.commit_token() != patch.quota.operation() {
             return Err(ParticipantError::Authority);
         }
@@ -609,32 +693,62 @@ impl mush_roll::commerce::rating::protocol::RegistryQuotaParticipant for QuotaPa
         Option<mush_roll::commerce::rating::protocol::RegistrySelector>,
         mush_roll::commerce::rating::RatingError,
     > {
-        use mush_roll::commerce::rating::RatingError;
-        if query.principal() != &(mush_core::PrincipalId::Object { id: query.actor() })
-            || query.truth_subject() != &(mush_core::SubjectKey::Object { id: query.actor() })
-            || query.projected_subject() != &PerceivedRef::SelfActor
-            || engine.world.get(query.actor()).is_none_or(|o| {
-                o.kind != mush_core::ObjKind::Player || o.flags.contains(mush_core::Flags::GOING)
-            })
-        {
-            return Ok(None);
-        }
-        let owner = OwnerId::new(crate::NS).map_err(|_| RatingError::Invalid)?;
-        engine
-            .registry
-            .require_mechanics_owner_ready(&owner)
-            .map_err(|_| RatingError::Unavailable)?;
-        let result = engine
-            .world
-            .module_state::<Artifacts>()
-            .ok_or(RatingError::Unavailable)?
-            .registry
-            .selector(query.actor(), transition)
-            .map_err(|_| RatingError::Unavailable)?;
-        engine
-            .registry
-            .require_mechanics_owner_ready(&owner)
-            .map_err(|_| RatingError::Unavailable)?;
-        Ok(result)
+        project_profile(engine, query, transition, false)
     }
+    fn project_reconformance_selector(
+        engine: &mush_core::Engine,
+        query: &mush_core::LegalActionQuery,
+        transition: Transition,
+    ) -> Result<
+        Option<mush_roll::commerce::rating::protocol::RegistrySelector>,
+        mush_roll::commerce::rating::RatingError,
+    > {
+        project_profile(engine, query, transition, true)
+    }
+}
+fn project_profile(
+    engine: &mush_core::Engine,
+    query: &mush_core::LegalActionQuery,
+    transition: Transition,
+    reconformance: bool,
+) -> Result<
+    Option<mush_roll::commerce::rating::protocol::RegistrySelector>,
+    mush_roll::commerce::rating::RatingError,
+> {
+    use mush_roll::commerce::rating::RatingError;
+    if (reconformance && query.actor() != mush_core::GOD)
+        || query.principal() != &(mush_core::PrincipalId::Object { id: query.actor() })
+        || query.truth_subject() != &(mush_core::SubjectKey::Object { id: query.actor() })
+        || query.projected_subject() != &PerceivedRef::SelfActor
+        || engine.world.get(query.actor()).is_none_or(|o| {
+            o.kind != mush_core::ObjKind::Player || o.flags.contains(mush_core::Flags::GOING)
+        })
+    {
+        return Ok(None);
+    }
+    let owner = OwnerId::new(crate::NS).map_err(|_| RatingError::Invalid)?;
+    engine
+        .registry
+        .require_mechanics_owner_ready(&owner)
+        .map_err(|_| RatingError::Unavailable)?;
+    let result = engine
+        .world
+        .module_state::<Artifacts>()
+        .ok_or(RatingError::Unavailable)?
+        .registry
+        .selector(
+            query.actor(),
+            transition,
+            reconformance,
+            engine
+                .world
+                .module_state::<BulkStore>()
+                .ok_or(RatingError::Unavailable)?,
+        )
+        .map_err(|_| RatingError::Unavailable)?;
+    engine
+        .registry
+        .require_mechanics_owner_ready(&owner)
+        .map_err(|_| RatingError::Unavailable)?;
+    Ok(result)
 }

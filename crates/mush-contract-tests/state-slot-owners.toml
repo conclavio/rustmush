@@ -1137,3 +1137,14 @@ R4 test-only actual fresh production reboot restores the same real fixture
 character-to-account wiring after all module slots are newly registered and
 hydrated. This is host identity wiring, not source, seal or recall authority.
 """
+
+[[site]]
+path = "crates/tacsim/src/minds/bulk/house_filing_integration_tests/catalogue.rs"
+accessor = "World::module_state_mut"
+slot = "OrgStore"
+owner = "org"
+reason = """
+The cfg(test) house catalogue admin adapter uses the actual policy allocator and
+Org submit service to revoke a curator grant and install an explicit scoped Deny.
+No filing, title, rating, balance or catalogue authority is manufactured.
+"""

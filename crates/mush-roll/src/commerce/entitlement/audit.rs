@@ -84,7 +84,6 @@ pub(crate) fn audit(
         let filed = read(ctx, &f.filed, row.filed.key())?;
         let original = filed.content.parent().is_none();
         if filed.content.revision() != row.revision
-            || filed.rating != row.rating
             || filed.content.position().charter != row.charter
             || filed.content.position().line != row.line
             || original != (row.protocol == EntitlementProtocol::OriginalV3)
@@ -97,9 +96,13 @@ pub(crate) fn audit(
         {
             return Err(PublicationError::Mismatch);
         }
-        let rated = ratings
-            .resolve_receipt(ctx, &row.rating)
-            .map_err(|_| PublicationError::Unavailable)?;
+        let rated = super::super::rating::reconformance::history::certificate(
+            ctx,
+            ratings,
+            filed,
+            &row.rating,
+        )
+        .map_err(|_| PublicationError::Unavailable)?;
         if rated.subject().revision() != row.revision || row.terms.class() < rated.minimum() {
             return Err(PublicationError::Mismatch);
         }

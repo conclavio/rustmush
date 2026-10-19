@@ -6,6 +6,7 @@ use super::*;
 
 mod core_integration;
 mod entitlement;
+mod house;
 mod ic_claim;
 mod paid;
 mod registry;
@@ -13,6 +14,7 @@ mod renewal;
 use crate::{CommitToken, DefinitionRef};
 pub(super) use core_integration::{Protocol as CoreIntegrationProtocol, core_integration_change};
 pub(super) use entitlement::{Protocol as EntitlementProtocol, entitlement_change};
+pub(super) use house::{Protocol as HouseProtocol, house_change};
 pub(super) use ic_claim::{Protocol as IcClaimProtocol, ic_claim_change};
 pub(super) use paid::{Protocol as PurchaseProtocol, purchase_change};
 pub(super) use registry::registry_change;
@@ -197,6 +199,14 @@ impl Verifiers {
                 });
             }
         }
+        if let Some(protocol) = &registry.house_purchase {
+            for action in protocol.admission_actions() {
+                rows.push(Verifier {
+                    effect: action.clone(),
+                    verify: house::verify,
+                });
+            }
+        }
         if let Some(protocol) = &registry.mind_renewal {
             rows.push(Verifier {
                 effect: protocol.admission_action().clone(),
@@ -244,6 +254,11 @@ impl Verifiers {
                             && protocol.recognizes_historical(&reservation.effect)
                     })
                     || registry.entitlement_purchase.as_ref().is_some_and(|protocol| {
+                        protocol.admission_actions().contains(&&v.effect)
+                            && v.effect.key() == reservation.effect.key()
+                            && protocol.recognizes_historical(&reservation.effect)
+                    })
+                    || registry.house_purchase.as_ref().is_some_and(|protocol| {
                         protocol.admission_actions().contains(&&v.effect)
                             && v.effect.key() == reservation.effect.key()
                             && protocol.recognizes_historical(&reservation.effect)
@@ -461,6 +476,7 @@ pub(super) fn hydrate(
     registry::audit_boot(&view, &records)?;
     paid::audit_boot(&view, &records)?;
     entitlement::audit_boot(&view, &records)?;
+    house::audit_boot(&view, &records)?;
     renewal::audit_boot(&view, &records)?;
     ic_claim::audit_boot(&view, &records)?;
     core_integration::audit_boot(&view, &records)?;
@@ -481,6 +497,8 @@ pub(super) struct Changes {
     funding: Option<Reservation>,
     terminal: Option<ReservationId>,
     progress: Option<ReservationId>,
+    // Only the fixed Industry Complete path can retain its admitted delivery subset.
+    industry_delivery: Option<Reservation>,
 }
 
 pub(super) struct MetadataWrite {
@@ -507,6 +525,7 @@ pub(super) fn prepare(
     if usize::from(changes.funding.is_some())
         + usize::from(changes.terminal.is_some())
         + usize::from(changes.progress.is_some())
+        + usize::from(changes.industry_delivery.is_some())
         > 1
     {
         return Err(refused("one closed effect per action"));
@@ -519,6 +538,7 @@ pub(super) fn prepare(
     registry::validate_changes(store, mutations, &changes, identity)?;
     paid::validate_changes(store, mutations, &changes, identity)?;
     entitlement::validate_changes(store, mutations, &changes, identity)?;
+    house::validate_changes(store, mutations, &changes, identity)?;
     renewal::validate_changes(store, mutations, &changes, identity)?;
     ic_claim::validate_changes(store, mutations, &changes, identity)?;
     core_integration::validate_changes(store, mutations, &changes, identity)?;
@@ -558,6 +578,67 @@ pub(super) fn prepare(
         store
             .capacity_verifiers
             .verify(&store.registry, Phase::Retained, &stored.record, &view)?;
+    }
+    if let Some(record) = &changes.industry_delivery {
+        let id = ReservationId(record.sponsor.owner.clone(), record.funding.to_hex());
+        let old = store
+            .capacity
+            .records
+            .get(&id)
+            .ok_or_else(|| refused("delivery handoff reservation absent"))?;
+        if metadata_owner(record) != owner {
+            return Err(refused("delivery handoff owner"));
+        }
+        core_integration::require_delivery_handoff(&old.record, record)?;
+        let before = View {
+            registry: &store.registry,
+            records: &store.records,
+            mutations: None,
+        };
+        store
+            .capacity_verifiers
+            .verify(&store.registry, Phase::Retained, &old.record, &before)?;
+        let admitted = old
+            .record
+            .targets
+            .iter()
+            .map(|t| Ok((t.key.resolve(&store.registry)?, t)))
+            .collect::<Result<BTreeMap<_, _>, ActionStateError>>()?;
+        for (key, mutation) in mutations {
+            let target = admitted
+                .get(key)
+                .ok_or_else(|| refused("unreserved delivery handoff key"))?;
+            if let TxnMutation::Put { canonical, .. } = mutation {
+                if canonical.len() > target.ceiling {
+                    return Err(refused("delivery handoff ceiling"));
+                }
+            }
+        }
+        store
+            .capacity_verifiers
+            .verify(&store.registry, Phase::Retained, record, &view)?;
+        let next = Arc::new(encode(record.clone())?);
+        if next.id() != old.id() || next.len() > old.len() {
+            return Err(refused("delivery handoff metadata must fit admission"));
+        }
+        let mut records = store.capacity.records.clone();
+        records.insert(id, Arc::clone(&next));
+        write_bytes = next.len();
+        writes.push(MetadataWrite {
+            module_op: ModuleOp {
+                ns: SmolStr::new(owner.as_str()),
+                op: ModuleWrite::JsonSet {
+                    key: SmolStr::new(next.path.as_str()),
+                    value: next.document.clone(),
+                },
+            },
+            replay: ReplayWrite::ModuleJsonSet {
+                namespace: owner.clone(),
+                key: next.path.clone(),
+                value: next.document.clone(),
+            },
+        });
+        replacement = Some(records);
     }
     if let Some(id) = &changes.terminal {
         let stored = store
@@ -661,6 +742,10 @@ pub(super) fn prepare(
             .and_then(|c| c.create.as_ref())
             .is_some_and(|id| {
                 changes.terminal.as_ref() != Some(id)
+                    && !changes
+                        .industry_delivery
+                        .as_ref()
+                        .is_some_and(|r| r.funding.to_hex() == id.1 && &r.sponsor.owner == &id.0)
                     && !(changes.progress.as_ref() == Some(id)
                         && store.capacity.records.get(id).is_some_and(|record| {
                             core_integration::prospective_output(
@@ -682,7 +767,12 @@ pub(super) fn prepare(
             return Err(refused("required existing key deletion"));
         }
         if let Some(id) = store.capacity.sponsors.get(key) {
-            if changes.terminal.as_ref() != Some(id) {
+            if changes.terminal.as_ref() != Some(id)
+                && !changes
+                    .industry_delivery
+                    .as_ref()
+                    .is_some_and(|r| r.funding.to_hex() == id.1 && &r.sponsor.owner == &id.0)
+            {
                 let record = store
                     .capacity
                     .records

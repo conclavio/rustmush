@@ -32,6 +32,8 @@ use super::{
 };
 use crate::minds::registry::factory::{Factory, PreparedRegistry};
 
+#[path = "registry_service/reconformance.rs"]
+mod reconformance;
 const COMMAND: &str = "@registry";
 const RETRY_MS: i64 = 1_000;
 #[cfg(test)]
@@ -43,6 +45,7 @@ struct Configuration {
     reader: OwnerReadHandle<RegistryReader>,
     actions: [mush_core::DefinitionRef; 5],
     continuation: ContinuationHandle,
+    reconformance: Option<reconformance::Configuration>,
 }
 pub(super) fn configured(world: &mush_core::World) -> bool {
     world.module_state::<Configuration>().is_some()
@@ -54,13 +57,30 @@ pub(in crate::minds) fn register(
     factory: Arc<Factory>,
     manifest: &mush_core::DefinitionRef,
 ) -> Result<(), ModError> {
+    register_profiles(reg, factory, manifest, false)
+}
+pub(in crate::minds) fn register_profiles(
+    reg: &mut Registrar<'_>,
+    factory: Arc<Factory>,
+    manifest: &mush_core::DefinitionRef,
+    reconformance: bool,
+) -> Result<(), ModError> {
     let definitions = RegistryDefinitions::new(manifest.clone())?;
     let reader = RegistryReader::request(reg, manifest)?;
     reg.classify_commands(CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
             name: COMMAND.into(),
-            switches: vec!["rate".into(), "cancel".into(), "continue".into()],
+            switches: if reconformance {
+                vec![
+                    "rate".into(),
+                    "cancel".into(),
+                    "continue".into(),
+                    "reconform".into(),
+                ]
+            } else {
+                vec!["rate".into(), "cancel".into(), "continue".into()]
+            },
             shape: ArgShape::Raw,
             help: "@registry/rate <owned mind number>/<saved revision>; @registry/cancel".into(),
             ..CommandSpec::default()
@@ -68,11 +88,17 @@ pub(in crate::minds) fn register(
         Arc::new(command),
     )?;
     let continuation = reg.command_continuation(COMMAND, &["continue"])?;
+    let reconformance = if reconformance {
+        Some(reconformance::Configuration::register(reg, manifest)?)
+    } else {
+        None
+    };
     reg.state(Configuration {
         factory,
         reader,
         actions: definitions.actions().clone(),
         continuation,
+        reconformance,
     });
     Ok(())
 }
@@ -138,6 +164,7 @@ enum Phase {
     Finished,
 }
 struct Entry {
+    reconformance: bool,
     id: u64,
     account: AccountId,
     actor: ObjId,
@@ -149,6 +176,7 @@ struct Entry {
 }
 #[derive(Default)]
 pub(super) struct Lane {
+    reconformance: reconformance::Queue,
     entries: BTreeMap<ObjId, Entry>,
     // The shared FairQueue has lent this turn to one signed publication. Keep
     // every later account in that queue until this grant/cancel is acknowledged.
@@ -268,7 +296,9 @@ fn consume_attempt(
 }
 
 fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let result = if ctx.switches.has("rate") {
+    let result = if ctx.switches.has("reconform") {
+        reconformance::continue_scan(ctx)
+    } else if ctx.switches.has("rate") {
         start(ctx)
     } else if ctx.switches.has("cancel") {
         cancel(ctx)
@@ -280,7 +310,7 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // Internal continuation retries do not publish failure/success guesses or
     // expose private ticket/phase details to a player. A missing acknowledgement
     // is not evidence that the writer refused, including after a timeout.
-    if ctx.switches.has("continue") {
+    if ctx.switches.has("continue") || ctx.switches.has("reconform") {
         if let Err(error) = result {
             tracing::debug!(%error, "Registry continuation retained");
         }
@@ -411,6 +441,10 @@ pub(super) fn prepared(
     preparing: Preparing,
     result: Result<PreparedRegistry, BulkError>,
 ) {
+    let automatic = preparing.actor == mush_core::GOD && runtime.registry.reconformance.preparing;
+    if automatic {
+        runtime.registry.reconformance.preparing = false;
+    }
     let result = (|| {
         if world::account(ctx.w, preparing.actor)? != preparing.account
             || runtime.registry.entries.contains_key(&preparing.actor)
@@ -423,6 +457,14 @@ pub(super) fn prepared(
             || data.nonce != preparing.nonce
         {
             return Err(BulkError::Missing);
+        }
+        let reconformance = data
+            .plan
+            .registry
+            .as_ref()
+            .is_some_and(|b| b.reconformance.is_some());
+        if reconformance != automatic {
+            return Err(BulkError::Stale);
         }
         let start = data.plan.start.sha256;
         let tickets = &mut ctx
@@ -437,6 +479,7 @@ pub(super) fn prepared(
         runtime.registry.entries.insert(
             preparing.actor,
             Entry {
+                reconformance,
                 id: ticket.get(),
                 account: preparing.account,
                 actor: preparing.actor,
@@ -458,6 +501,11 @@ pub(super) fn prepared(
         Ok(())
     })();
     if let Err(error) = result {
+        if automatic {
+            runtime.registry.reconformance.next_ms = world::now_ms().saturating_add(60_000);
+            tracing::debug!(%error,"Registry re-conformance preparation retained for later scan");
+            return;
+        }
         ctx.out.info(
             preparing.actor,
             format!("Registry preparation refused: {error}"),
@@ -516,13 +564,11 @@ fn advance(
         return Err(BulkError::Missing);
     }
     if let Some(ack) = entry.pending.as_ref().and_then(|p| p.ack) {
-        let row = ctx
-            .read_owner(&config.reader, RegistryReadRequest::new(ack.job))
-            .map_err(|_| BulkError::Stale)?;
-        let execution = row.execution();
+        let execution = reconformance::execution(ctx, config, ack.job, entry.reconformance)?;
         if execution.updated_by() != ack.operation
             || execution.job() != ack.job
             || execution.admission().character != entry.actor
+            || execution.admission().reconformance.is_some() != entry.reconformance
         {
             return Err(BulkError::Stale);
         }
@@ -562,8 +608,10 @@ fn advance(
                 let machine = machine.take().ok_or(BulkError::Missing)?;
                 entry.phase = Phase::Ready(Some(Ready::registry(binding, *start, machine)));
                 runtime.external_preparing.remove(&entry.account);
-                ctx.out
-                    .info(entry.actor, "Registry work retained and queued.");
+                if !entry.reconformance {
+                    ctx.out
+                        .info(entry.actor, "Registry work retained and queued.");
+                }
             }
             (Phase::Grant(ready), Transition::Grant) => {
                 if ready.is_none() || runtime.registry.pending_turn != Some(entry.actor) {
@@ -591,7 +639,9 @@ fn advance(
                 }
                 if execution.observation().phase.terminal() {
                     entry.phase = Phase::Finished;
-                    ctx.out.info(entry.actor, "Registry work finished.");
+                    if !entry.reconformance {
+                        ctx.out.info(entry.actor, "Registry work finished.");
+                    }
                 } else {
                     entry.phase = Phase::Ready(ready.take());
                 }
@@ -619,8 +669,10 @@ fn advance(
             .registry,
         &mut runtime.external_preparing,
     )? {
-        ctx.out
-            .info(entry.actor, "Registry preparation was not admitted.");
+        if !entry.reconformance {
+            ctx.out
+                .info(entry.actor, "Registry preparation was not admitted.");
+        }
         return Ok(());
     }
     if entry.pending.is_none() {
@@ -639,10 +691,8 @@ fn advance(
                 // owner readiness are checked by this actual actor-stamped
                 // reader before any recovery ticket can exist. Preserve old
                 // compatibility; the closed Recover provider fences history.
-                let row = ctx
-                    .read_owner(&config.reader, RegistryReadRequest::new(binding.job))
-                    .map_err(|_| BulkError::Stale)?;
-                let execution = row.execution();
+                let execution =
+                    reconformance::execution(ctx, config, binding.job, entry.reconformance)?;
                 if execution.observation().phase.terminal() {
                     return Err(BulkError::Stale);
                 }
@@ -739,10 +789,23 @@ fn advance(
         {
             return Ok(());
         }
-        let action = config
-            .actions
+        let actions = if entry.reconformance {
+            &config
+                .reconformance
+                .as_ref()
+                .ok_or(BulkError::Missing)?
+                .actions
+        } else {
+            &config.actions
+        };
+        let action_id = if entry.reconformance {
+            pending.transition.reconformance_action_id()
+        } else {
+            pending.transition.action_id()
+        };
+        let action = actions
             .iter()
-            .find(|a| a.key().id.as_str() == pending.transition.action_id())
+            .find(|a| a.key().id.as_str() == action_id)
             .ok_or(BulkError::Missing)?
             .clone();
         let key = IdempotencyKeyText::parse_canonical(format!(
@@ -824,9 +887,16 @@ pub(super) fn dispatch(ctx: &mut Ctx<'_>, runtime: &mut Runtime) {
             } else {
                 Phase::Recover(Some(stopped))
             };
+            let reconformance = ctx
+                .w
+                .module_state::<BulkStore>()
+                .and_then(|s| s.run(binding.account, binding.character, binding.run).ok())
+                .and_then(|r| r.plan.registry.as_ref())
+                .is_some_and(|b| b.reconformance.is_some());
             runtime.registry.entries.insert(
                 binding.character,
                 Entry {
+                    reconformance,
                     id,
                     account: binding.account,
                     actor: binding.character,
@@ -884,4 +954,19 @@ pub(super) fn dispatch(ctx: &mut Ctx<'_>, runtime: &mut Runtime) {
             }
         }
     }
+    reconformance::schedule(ctx, runtime);
+}
+
+/// Read-only fixture delivery hint. The fixture still invokes the real registered
+/// command as GOD and resolves every private offer through actual Core ingress.
+/// No worker result, ticket, permit, timer state or owner image is synthesized.
+#[cfg(test)]
+pub(in crate::minds) fn fixture_entry(world: &mush_core::World) -> Option<u64> {
+    let service = world::service(world).ok()?;
+    let runtime = service.0.lock().ok()?;
+    runtime
+        .registry
+        .entries
+        .get(&mush_core::GOD)
+        .map(|entry| entry.id)
 }

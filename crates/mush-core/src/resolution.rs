@@ -178,6 +178,7 @@ pub struct PrepareCtx<'a> {
     resolution_opened: bool,
     participants: Option<crate::participant::ParticipantPreparation<'a>>,
     owner_error: Option<crate::participant::ParticipantError>,
+    carry_hooks: Option<&'a [crate::module::HookReg]>,
     owner_reads: Option<crate::read_service::PrepareReadContext<'a>>,
     accounts: Option<crate::account::observation::AccountPrepareContext<'a>>,
     registered_transaction: Option<(
@@ -214,6 +215,7 @@ impl<'a> PrepareCtx<'a> {
             resolution_opened: false,
             participants: None,
             owner_error: None,
+            carry_hooks: None,
             owner_reads: None,
             accounts: None,
             registered_transaction: None,
@@ -469,6 +471,53 @@ impl<'a> PrepareCtx<'a> {
         result
     }
 
+    /// Reserve the closed house purchase's exact future completion keys. The job
+    /// and validated post-images must belong to this invocation and transaction.
+    pub fn reserve_house_mind_purchase_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.house_mind_purchase_completion(txn, None)
+    }
+
+    /// Retire this house purchase's reservation with its exact terminal images in
+    /// the same acknowledgement. This does not accept caller-defined targets.
+    pub fn finish_house_mind_purchase_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        operation: CommitToken,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.house_mind_purchase_completion(txn, Some(operation))
+    }
+
+    fn house_mind_purchase_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        terminal: Option<CommitToken>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        let result = match (self.owner_error.is_none(), self.registered_transaction) {
+            (true, Some((base, provider))) => {
+                txn.house_mind_purchase_completion(base, provider, self.commit_token, terminal)
+            }
+            _ => Err(crate::action_state::ActionStateError::TerminalCapacity(
+                "house purchase preparation unavailable",
+            )),
+        };
+        if result.is_err() {
+            txn.poison_owner_read();
+            self.owner_error
+                .get_or_insert(crate::participant::ParticipantError::Authority);
+        }
+        result
+    }
+
+    // Only the Engine-owned composed preparation supplies the actual frozen
+    // hook registrations. Providers cannot substitute a hook list.
+    pub(crate) fn with_carry_hooks(mut self, hooks: &'a [crate::module::HookReg]) -> Self {
+        self.carry_hooks = Some(hooks);
+        self
+    }
+
     pub(crate) fn with_participants(
         mut self,
         participants: crate::participant::ParticipantPreparation<'a>,
@@ -685,6 +734,49 @@ impl<'a> PrepareCtx<'a> {
             )
             .map_err(|_| crate::participant::ParticipantError::Authority)?;
         self.with_shell(|p, c| p.consume_core_output(service, txn, c, order, facts))
+    }
+
+    /// Deliver the actual completed output to this invocation's requester.
+    /// Core evaluates the real carry hooks against committed pre-images, then
+    /// retains the same hooks and exact physical/owner fences through custody.
+    /// No provider-supplied World postimage or detached typed lens is accepted.
+    pub fn deliver_core_output<
+        P: crate::core_output::CoreOutputPolicy,
+        D: crate::core_delivery::CoreDeliveryPolicy,
+    >(
+        &mut self,
+        service: &crate::core_delivery::CoreOutputDeliveries<P, D>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        order: u64,
+    ) -> Result<crate::core_delivery::DeliveredCoreOutput, crate::participant::ParticipantError>
+    {
+        let result = (|| {
+            if let Some(error) = &self.owner_error {
+                return Err(error.clone());
+            }
+            let (base, provider) = self
+                .registered_transaction
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            let hooks = std::sync::Arc::from(
+                self.carry_hooks
+                    .ok_or(crate::participant::ParticipantError::Unavailable)?,
+            );
+            let facts = self
+                .read_owner_preimage(
+                    txn,
+                    service.reader(),
+                    crate::core_delivery::DeliveryRequest { order },
+                )
+                .map_err(|_| crate::participant::ParticipantError::Authority)?;
+            self.with_shell(|p, c| {
+                p.deliver_core_output(service, txn, c, order, facts, hooks, base, provider)
+            })
+        })();
+        if let Err(error) = &result {
+            txn.poison_owner_read();
+            self.owner_error.get_or_insert_with(|| error.clone());
+        }
+        result
     }
 
     /// Reserve one inert charter object using this invocation's actual actor.

@@ -205,7 +205,6 @@ fn project_paid_for(
         || filed.content.position().charter != charter.id
         || filed.content.position().line != line.id
         || filed.content.revision() != identity
-        || filed.rating != allocation.rating()
     {
         return Err(OwnerProjectionError::Integrity);
     }
@@ -231,20 +230,25 @@ fn project_paid_for(
         }
         _ => return Err(OwnerProjectionError::Integrity),
     }
+    super::rating::reconformance::history::certificate(ctx, ratings, filed, &allocation.rating())
+        .map_err(|_| OwnerProjectionError::Integrity)?;
     // Existing Pin remains valid after withdrawal. Recall applies to this exact
     // selected filed revision; no live issuer/ancestor grant is consulted.
     if status.recalled_by.is_some() {
         return Err(OwnerProjectionError::NotHeld);
     }
-    let rating = ratings
-        .complete_active_receipt(ctx, &filed.rating, expected)
-        .map_err(|_| OwnerProjectionError::NotHeld)?;
+    let rating =
+        super::rating::reconformance::current::receipt(ctx, families, ratings, filed, expected)
+            .map_err(|_| OwnerProjectionError::NotHeld)?;
     if rating.subject().revision() != identity
         || rating.subject().definition() != filed.definition
         || rating.subject().schema() != line.schema_digest
-        || term.terms().class() < rating.minimum()
     {
         return Err(OwnerProjectionError::Integrity);
+    }
+    // The newly measured minimum cannot enlarge an already accepted paid class.
+    if term.terms().class() < rating.minimum() {
+        return Err(OwnerProjectionError::NotHeld);
     }
     for required in [
         RequiredRoot {
@@ -307,7 +311,9 @@ fn project_paid_for(
         revision: revision.clone(),
         identity,
         definition: filed.definition,
-        rating: filed.rating,
+        rating: rating
+            .reference()
+            .map_err(|_| OwnerProjectionError::Integrity)?,
         compatibility: rating.compatibility().clone(),
         declared: rating.subject().declared(),
         minimum: rating.minimum(),

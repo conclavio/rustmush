@@ -3328,6 +3328,28 @@ impl<'a> Registrar<'a> {
             .map_err(|e| ModError::msg(e.to_string()))
     }
 
+    /// Reserve the closed house purchase's six future rows. References are
+    /// the exact manifest, Economy/retention participants, then Fund/Grant/Refund.
+    pub fn house_mind_purchase_capacity(
+        &mut self,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 3],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "market" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "house purchase capacity requires the unfrozen Market registrar",
+            ));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str())
+            .map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .house_mind_purchase_capacity(&owner, manifest, participants, actions)
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
     /// Declare the closed OriginalV3/DerivedV1 purchase protocols. Only Market may
     /// register it; action order is funding, grant and refund. Core derives all
     /// six future targets from actual acknowledged purchase/allocation rows.
@@ -3377,6 +3399,27 @@ impl<'a> Registrar<'a> {
         self.reg
             .state_family_builder
             .core_integration_capacity(&owner, participants, actions)
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
+    /// Paid core delivery profile: Accept, Reserve, Advance, Complete, Cancel, Deliver.
+    /// Exact future targets and the completion-to-delivery handoff are Core-owned.
+    pub fn core_integration_delivery_capacity(
+        &mut self,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 6],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "industry" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "core delivery capacity requires unfrozen Industry registrar",
+            ));
+        }
+        let owner =
+            crate::OwnerId::new(self.module.as_str()).map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .core_integration_delivery_capacity(&owner, participants, actions)
             .map_err(|e| ModError::msg(e.to_string()))
     }
 

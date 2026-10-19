@@ -608,6 +608,33 @@ impl EconomyStore {
     }
 
     /// Complete native charter transfer history; this accessor grants no authority.
+    pub fn pending_charter_history(
+        &self,
+        operation: mush_core::CommitToken,
+    ) -> Result<
+        &crate::managed_charter_transfer::CharterPendingHistory,
+        mush_core::participant::ParticipantError,
+    > {
+        if self.frozen {
+            return Err(mush_core::participant::ParticipantError::refused(
+                "pending charter owner unavailable",
+            ));
+        }
+        self.fold.charter_pending_receipts.get(operation)
+    }
+    pub fn pending_charter_histories(
+        &self,
+    ) -> Result<
+        impl ExactSizeIterator<Item = &crate::managed_charter_transfer::CharterPendingHistory>,
+        mush_core::participant::ParticipantError,
+    > {
+        if self.frozen {
+            return Err(mush_core::participant::ParticipantError::refused(
+                "pending charter owner unavailable",
+            ));
+        }
+        self.fold.charter_pending_receipts.histories()
+    }
     pub fn charter_transfer_receipt_audit(
         &self,
     ) -> &crate::registry_filing::charter_transfer::CharterTransferReceiptAudit {
@@ -1556,6 +1583,7 @@ pub(crate) fn note_window_debits(
 /// module — economy authorizes through it).
 #[derive(Debug, Default)]
 pub struct EconomyModule {
+    charter_pending: Option<crate::managed_charter_transfer::CharterPendingConfig>,
     core_integration: Option<crate::core_integration::CoreIntegrationConfig>,
     initial_filing: Option<(
         crate::registry_filing::InitialFilingPolicy,
@@ -1588,6 +1616,15 @@ pub struct EconomyModule {
 }
 
 impl EconomyModule {
+    /// Explicit native escrow half only. Roll's exact pending/ownership/claim
+    /// audit and fixed future-capacity protocol must accompany this composition.
+    pub fn with_mind_charter_pending(
+        mut self,
+        config: crate::managed_charter_transfer::CharterPendingConfig,
+    ) -> Self {
+        self.charter_pending = Some(config);
+        self
+    }
     /// Configure the closed Industry payment/title leg on the existing owner slot.
     /// Industry's independent exact input/order/slot audit must also be installed.
     pub fn with_core_integration(
@@ -1958,7 +1995,7 @@ impl GameModule for EconomyModule {
                     "initial filing issuer is not in the composition title-issuer table",
                 ));
             }
-            crate::registry_filing::register_with_core(
+            crate::registry_filing::register_with_pending(
                 reg,
                 policy.clone(),
                 action.clone(),
@@ -1970,6 +2007,7 @@ impl GameModule for EconomyModule {
                 self.compatible_update.as_ref(),
                 self.charter_transfer.as_ref(),
                 self.core_integration.as_ref(),
+                self.charter_pending.as_ref(),
             )?;
         }
         if (self.original_purchases.is_some()
@@ -1978,7 +2016,8 @@ impl GameModule for EconomyModule {
             || self.dependent_initial_filing.is_some()
             || self.compatible_update.is_some()
             || self.charter_transfer.is_some()
-            || self.core_integration.is_some())
+            || self.core_integration.is_some()
+            || self.charter_pending.is_some())
             && self.initial_filing.is_none()
         {
             return Err(ModError::msg(
@@ -2074,7 +2113,7 @@ impl GameModule for EconomyModule {
         } else {
             self.config.tx_tail_max
         };
-        let mut store = boot::load_boot_with_core_integration(
+        let mut store = boot::load_boot_with_charter_pending(
             ctx,
             data,
             &self.providers,
@@ -2087,6 +2126,7 @@ impl GameModule for EconomyModule {
             self.compatible_update.is_some(),
             self.charter_transfer.is_some(),
             self.core_integration.is_some(),
+            self.charter_pending.is_some(),
         )?;
         // C17 (08g §12.1 item 5): the cold replay is the whole boot cost until a
         // durability checkpoint exists. Say what it cost, every boot, and say loudly

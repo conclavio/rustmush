@@ -38,6 +38,7 @@ pub(crate) enum RootRequest {
     Withdrawal(super::withdrawal::Withdrawal),
     CharterTransfer(super::charter_transfer::TransferRoots),
     RegistryRecall(super::registry_recall::Recall),
+    MeasuredRecall(super::rating::reconformance::recall::publication::Recall),
     RegistryRevocation(super::registry_revocation::Revocation),
     OwnerQualification(super::owner_qualification::Qualification),
     OwnerAttestation(super::owner_attestation::Attestation),
@@ -60,6 +61,7 @@ impl RootRequest {
             Self::Withdrawal(request) => request.commit(),
             Self::CharterTransfer(request) => request.commit(),
             Self::RegistryRecall(request) => request.commit(),
+            Self::MeasuredRecall(request) => request.commit(),
             Self::RegistryRevocation(request) => request.commit(),
             Self::OwnerQualification(request) => request.commit(),
             Self::OwnerAttestation(request) => request.commit(),
@@ -103,10 +105,12 @@ pub(crate) struct RootPatch {
     dependent: Option<super::dependent_filing::FilingFence>,
     update: Option<super::line_update::publication::UpdateFence>,
     marked: Option<super::marked_rating::AdmissionFence>,
+    reconformance: Option<super::rating::reconformance::fence::ServiceFence>,
     retirement: Option<super::authored_retirement::RetirementFence>,
     withdrawal: Option<super::withdrawal::WithdrawalFence>,
     charter_transfer: Option<super::charter_transfer::TransferFence>,
     registry_recall: Option<super::registry_recall::RecallFence>,
+    measured_recall: Option<super::rating::reconformance::recall::publication::RecallFence>,
     registry_revocation: Option<super::registry_revocation::RevocationFence>,
     qualification: Option<super::owner_qualification::QualificationFence>,
     attestation: Option<super::owner_attestation::AttestationFence>,
@@ -181,6 +185,15 @@ impl OwnerParticipant for RootParticipant {
         };
         super::paid_roots::check_fresh(fresh_paid.as_ref(), context)
             .map_err(|_| ParticipantError::Authority)?;
+        let reconformance = match &request {
+            RootRequest::Rating(request) => request.reconformance().cloned(),
+            _ => None,
+        };
+        if let Some(fence) = &reconformance {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
         let marked = match &request {
             RootRequest::Rating(request) => request.marked().cloned(),
             _ => None,
@@ -230,6 +243,16 @@ impl OwnerParticipant for RootParticipant {
         };
         let registry_recall = match &request {
             RootRequest::RegistryRecall(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
+        let measured_recall = match &request {
+            RootRequest::MeasuredRecall(request) => {
                 request
                     .fence()
                     .check(context)
@@ -353,6 +376,12 @@ impl OwnerParticipant for RootParticipant {
                     .map_err(refusal)?,
                 None,
             ),
+            RootRequest::MeasuredRecall(request) => (
+                state
+                    .prepare_measured_recall_root(request)
+                    .map_err(refusal)?,
+                None,
+            ),
             RootRequest::RegistryRevocation(request) => (
                 state
                     .prepare_registry_revocation_root(request)
@@ -426,10 +455,12 @@ impl OwnerParticipant for RootParticipant {
                 dependent,
                 update,
                 marked,
+                reconformance,
                 retirement,
                 withdrawal,
                 charter_transfer,
                 registry_recall,
+                measured_recall,
                 registry_revocation,
                 qualification,
                 attestation,
@@ -490,6 +521,11 @@ impl OwnerParticipant for RootParticipant {
         }
         super::paid_roots::check_fresh(patch.fresh_paid.as_ref(), context)
             .map_err(|_| ParticipantError::Authority)?;
+        if let Some(fence) = &patch.reconformance {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
         if let Some(marked) = &patch.marked {
             marked
                 .check(context)
@@ -500,6 +536,11 @@ impl OwnerParticipant for RootParticipant {
                 .map_err(|_| ParticipantError::Authority)?;
         }
         if let Some(fence) = &patch.registry_recall {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
+        if let Some(fence) = &patch.measured_recall {
             fence
                 .check(context)
                 .map_err(|_| ParticipantError::Authority)?;

@@ -52,13 +52,46 @@ impl Factory {
         if character.0 == 0 || nonce == 0 || revision.reference().key.character != character {
             return Err(RatingError::Identity);
         }
-        let subject = Arc::new(PreparedSubject::prepare(
-            &revision,
-            &source,
-            &self.policy.cfg.arena,
-        )?);
+        self.prepare_inner(account, character, nonce, revision, source, None)
+    }
+    pub(in crate::minds) fn prepare_reconformance(
+        &self,
+        account: AccountId,
+        nonce: u64,
+        candidate: mush_roll::commerce::rating::reconformance::reader::ReconformanceCandidate,
+        source: Arc<str>,
+    ) -> Result<PreparedRegistry, RatingError> {
+        let (revision, binding) = candidate.into_parts();
+        self.prepare_inner(
+            account,
+            mush_core::GOD,
+            nonce,
+            revision,
+            source,
+            Some(binding),
+        )
+    }
+    fn prepare_inner(
+        &self,
+        account: AccountId,
+        character: ObjId,
+        nonce: u64,
+        revision: Revision,
+        source: Arc<str>,
+        reconformance: Option<mush_roll::commerce::rating::reconformance::ReconformanceAdmission>,
+    ) -> Result<PreparedRegistry, RatingError> {
+        if nonce == 0 || (reconformance.is_some() && character != mush_core::GOD) {
+            return Err(RatingError::Identity);
+        }
+        let subject = Arc::new(if reconformance.is_some() {
+            PreparedSubject::prepare_reconformance(&revision, &source, &self.policy.cfg.arena)?
+        } else {
+            PreparedSubject::prepare(&revision, &source, &self.policy.cfg.arena)?
+        });
         let schedule = Schedule::capture(&subject, &self.policy)?;
-        let budget = schedule.budget(&subject, self.registered.compatibility().digest())?;
+        let mut budget = schedule.budget(&subject, self.registered.compatibility().digest())?;
+        budget.reconformance = reconformance.clone();
+        budget.validate().map_err(|_| RatingError::Invalid)?;
         // The recipe records all variants/programs and every admitted case.
         // Sources stay with their existing immutable owner under the actual job
         // root. Boot interrupts a private computation; it never replays a prefix
@@ -75,6 +108,9 @@ impl Factory {
             pairs: &'a [super::subject::Pair],
             aliases: &'a [mush_roll::commerce::rating::VariantAlias],
             schedule: &'a Schedule,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            reconformance:
+                Option<&'a mush_roll::commerce::rating::reconformance::ReconformanceAdmission>,
             configuration: (
                 &'a crate::config::ArenaConfig,
                 &'a crate::config::MatchConfig,
@@ -93,6 +129,7 @@ impl Factory {
             pairs: subject.pairs(),
             aliases: subject.aliases(),
             schedule: &schedule,
+            reconformance: reconformance.as_ref(),
             configuration: (&cfg.arena, &cfg.match_, &cfg.sensors, &cfg.minds),
             ground: &ground,
         })

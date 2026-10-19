@@ -844,6 +844,7 @@ pub(super) fn require_disjoint_operation(
     entitlement: bool,
 ) -> Result<(), ActionStateError> {
     renewal::reject_other_operation(view, operation)?;
+    house::reject_house_operation(view, operation)?;
     let other = if entitlement {
         "roll_mind_paid_purchase"
     } else {
@@ -911,6 +912,9 @@ pub(super) fn audit_boot(
     }
     let mut operations = BTreeSet::new();
     for key in view.records.keys().filter(|key| protected(key)) {
+        if house::shared_output_is_house(view, key)? {
+            continue;
+        }
         if renewal::shared_output_is_renewal(view, key)? {
             continue;
         }
@@ -956,6 +960,9 @@ pub(super) fn validate_changes(
     };
     let mut operations = BTreeSet::new();
     for key in mutations.keys().filter(|key| protected(key)) {
+        if house::shared_output_is_house(&after, key)? {
+            continue;
+        }
         if renewal::shared_output_is_renewal(&after, key)?
             || renewal::owns_licence_change(&after, key, identity, changes)?
         {

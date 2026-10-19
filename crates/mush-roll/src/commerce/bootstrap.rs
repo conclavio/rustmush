@@ -103,6 +103,8 @@ fn empty_in_txn(
     empty!(&f.lapse_occurrences);
     empty!(&f.ic_claims);
     empty!(&f.registry_recalls);
+    empty!(&f.measured_recalls);
+    empty!(&f.reconformance_heads);
     empty!(&f.registry_revocations);
     empty!(&f.revoked_terms);
     empty!(&f.withdrawals);
@@ -169,6 +171,8 @@ fn validate_setup_boot(
     empty!(&f.lapse_occurrences);
     empty!(&f.ic_claims);
     empty!(&f.registry_recalls);
+    empty!(&f.measured_recalls);
+    empty!(&f.reconformance_heads);
     empty!(&f.registry_revocations);
     empty!(&f.revoked_terms);
     empty!(&f.withdrawals);

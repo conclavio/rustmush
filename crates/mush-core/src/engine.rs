@@ -2811,6 +2811,7 @@ impl Engine {
                     .as_ref()
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
             )),
             |_| Ok(()),
         )
@@ -2852,6 +2853,7 @@ impl Engine {
                     .as_ref()
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
             ),
         )
     }
@@ -2898,6 +2900,7 @@ impl Engine {
                     .as_ref()
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
             )),
             |txn| {
                 schedules.seed_advance(candidate, txn).map_err(|source| {
@@ -2952,6 +2955,7 @@ impl Engine {
                     .as_ref()
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
             )),
             |txn| {
                 worker = Some(decisions.seed_lease(candidate, transition, txn).map_err(
@@ -3010,6 +3014,7 @@ impl Engine {
                     .as_ref()
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
             )),
             |txn| {
                 decisions
@@ -3064,6 +3069,7 @@ impl Engine {
                     .as_ref()
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
             )),
             |txn| {
                 decisions
@@ -3118,6 +3124,7 @@ impl Engine {
                     .as_ref()
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
             )),
             |txn| {
                 decisions
@@ -3174,6 +3181,7 @@ impl Engine {
                     .as_ref()
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
             )),
             |txn| {
                 fallback_fence = decisions
@@ -3230,6 +3238,7 @@ impl Engine {
                     .as_ref()
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
             )),
             |txn| {
                 fallback_fence = Some(
@@ -3292,6 +3301,7 @@ impl Engine {
                     .as_ref()
                     .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?,
                 &self.account_identity,
+                self.registry.hooks(crate::HookPoint::CarryAttempt),
             )),
             |txn| {
                 decisions
@@ -3355,7 +3365,13 @@ impl Engine {
         let prepared = prepared.into();
         let refusal = if self.staged_action.is_some() {
             Some(StagePreparedActionError::AlreadyStaged)
-        } else if prepared.recheck(&self.world).is_err() {
+        } else if prepared
+            .recheck_with_lens(
+                &self.world,
+                crate::action_state::TypedStateLens::Live(&self.action_state),
+            )
+            .is_err()
+        {
             Some(StagePreparedActionError::ParticipantInputsChanged)
         } else if prepared.owner() != bundle.provider() {
             Some(StagePreparedActionError::AuthoritativeProviderMismatch)
@@ -3408,7 +3424,10 @@ impl Engine {
         let Some(staged) = self.staged_action.as_ref() else {
             return Ok(None);
         };
-        if let Err(error) = staged.installation.recheck(&self.world) {
+        if let Err(error) = staged.installation.recheck_with_lens(
+            &self.world,
+            crate::action_state::TypedStateLens::Live(&self.action_state),
+        ) {
             self.abort_staged_action();
             return Err(StagedActionAdmissionError::Participant(error));
         }

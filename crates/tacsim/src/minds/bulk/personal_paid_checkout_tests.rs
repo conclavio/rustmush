@@ -3,6 +3,12 @@
 //! certificate, seat, seal or arena is used here. Like the parent, persistence
 //! is an in-process installation boundary, not server writer/Unknown evidence.
 use super::*;
+#[path = "reconformance_lifecycle_integration_tests.rs"]
+mod reconformance_lifecycle;
+pub(super) fn exercise_reconformance(f: &PurchaseFixture, saved: &Durable) -> TestResult {
+    reconformance_lifecycle::exercise(f, saved)
+}
+
 #[path = "compatible_update_integration_tests.rs"]
 mod compatible_updates;
 pub(super) fn exercise_updates(f: &PurchaseFixture, saved: &Durable) -> TestResult {
@@ -49,7 +55,22 @@ impl GameModule for PlayerTacsim {
         if self.marked_registry {
             crate::minds::bulk::registry_service::register_marked(reg, &manifest)?;
         }
+        if self.resources.reconformance() {
+            reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
+            reg.command(
+                mush_core::CommandSpec {
+                    name: "@reconformance-pulse".into(),
+                    shape: mush_core::ArgShape::Raw,
+                    ..Default::default()
+                },
+                Arc::new(|ctx: &mut mush_core::Ctx<'_>| {
+                    crate::minds::bulk::world::drain(ctx);
+                    Ok(())
+                }),
+            )?;
+        }
         let mut shared = self.shared.lock().map_err(module_error)?;
+        shared.reconformance = self.resources.reconformance();
         shared.manifest = Some(manifest);
         shared.compatibility = Some(compatibility);
         shared.factory = factory;
@@ -418,6 +439,11 @@ impl PlayerWorld {
             })
             .cloned()
             .ok_or("actual registered combat manifest")?;
+        let manifest = if f.resources.reconformance() {
+            f.resources.reference()?
+        } else {
+            manifest
+        };
         let shared: Shared = Arc::new(Mutex::new(Registered::default()));
         let purchase: PurchaseShared = Arc::new(Mutex::new(None));
         let mut cfg = f.resources.config();

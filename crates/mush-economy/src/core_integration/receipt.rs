@@ -5,7 +5,7 @@ use super::{CoreIntegrationError as Error, HISTORY_BYTES, MAX_ORDERS, NAMESPACE}
 use crate::plan::EconomyPlan;
 use crate::record::{
     AcquisitionRecord, AssetEffectKind, AssetLifecycle, EconomicAsset, EconomicCause,
-    EconomicTransaction, Hold, HoldEffectKind, HoldPurpose, HoldStatus, IdempotencyKey,
+    EconomicTransaction, Hold, HoldEffectKind, HoldPurpose, HoldStatus,
 };
 use crate::{EconomySnapshot, HoldId, TransactionId};
 use mush_core::{ClockStamp, CommitToken, DefinitionRef};
@@ -92,7 +92,7 @@ impl CoreTerminalReceipt {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CorePaymentHistory {
-    pub(crate) intent: FundingIntent,
+    pub(super) intent: FundingIntent,
     pub(crate) funding: CoreFundingReceipt,
     #[serde(deserialize_with = "required_option")]
     pub(crate) terminal: Option<CoreTerminalReceipt>,
@@ -362,7 +362,7 @@ fn require_transaction(
         .map(|l| (l.account, l.delta.minor(), l.memo.as_str()))
         .collect();
     let mut expected: Vec<_> = plan
-        .lines
+        .requested_lines
         .iter()
         .map(|l| (l.account, l.delta.minor(), l.memo.as_str()))
         .collect();

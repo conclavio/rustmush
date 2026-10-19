@@ -39,21 +39,21 @@ impl Families {
         let offers = reg.state_family(
             descriptor("industry_core_offers", OFFER_BYTES + 1024)?,
             |k: &CommitToken| Ok(k.to_hex()),
-            |v| decode::<FactoryOffer>(v, OFFER_BYTES),
+            |v: &serde_json::Value| decode::<FactoryOffer>(v, OFFER_BYTES),
             |r: &FactoryOffer| r.validate().map_err(|e| e.to_string()),
             |r: &FactoryOffer| encode(r, OFFER_BYTES),
         )?;
         let orders = reg.state_family(
             descriptor("industry_core_orders", ORDER_BYTES + 1024)?,
             |k: &WorkOrderId| Ok(format!("{:016x}", k.0)),
-            |v| decode::<CoreIntegrationOrder>(v, ORDER_BYTES),
+            |v: &serde_json::Value| decode::<CoreIntegrationOrder>(v, ORDER_BYTES),
             |r: &CoreIntegrationOrder| r.validate().map_err(|e| e.to_string()),
             |r: &CoreIntegrationOrder| encode(r, ORDER_BYTES),
         )?;
         let deployment = reg.state_family(
             descriptor("industry_core_integration_deployment", INDEX_BYTES + 1024)?,
             |_: &()| Ok("registry".into()),
-            |v| decode::<IntegrationIndex>(v, INDEX_BYTES),
+            |v: &serde_json::Value| decode::<IntegrationIndex>(v, INDEX_BYTES),
             |r: &IntegrationIndex| r.validate().map_err(|e| e.to_string()),
             |r: &IntegrationIndex| encode(r, INDEX_BYTES),
         )?;
@@ -71,7 +71,7 @@ impl Families {
         let jobs = reg.state_family(
             descriptor("industry_core_schedule_order", 2048)?,
             |k: &ScheduleId| Ok(k.canonical_hash().to_hex()),
-            |v| decode::<WorkOrderId>(v, 128),
+            |v: &serde_json::Value| decode::<WorkOrderId>(v, 128),
             |_: &WorkOrderId| Ok(()),
             |r: &WorkOrderId| encode(r, 128),
         )?;

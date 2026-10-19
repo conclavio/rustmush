@@ -3,6 +3,8 @@
 //! Receipt resolution also requires complete pages, completion, current game
 //! compatibility and the ordered all-loaded source/root audit.
 
+pub mod reconformance;
+
 use std::{fmt, marker::PhantomData};
 
 use mush_core::{ClockStamp, CommitToken, mechanics::DefinitionDigest};

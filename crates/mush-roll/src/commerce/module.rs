@@ -45,6 +45,7 @@ pub struct CommerceConfig {
     compatible_updates: bool,
     authored_forks: bool,
     marked_registry: bool,
+    reconformance: bool,
     house_filings: bool,
     dependent_owners: bool,
     original_purchases: Option<PurchaseRegistration>,
@@ -107,6 +108,7 @@ impl CommerceConfig {
             compatible_updates: false,
             authored_forks: false,
             marked_registry: false,
+            reconformance: false,
             house_filings: false,
             dependent_owners: false,
             original_purchases: None,
@@ -114,6 +116,18 @@ impl CommerceConfig {
             renewals: None,
             ic: None,
         })
+    }
+
+    /// Explicit Registry-service re-conformance of retained filed revisions.
+    /// The actual Registry owners, worker quota and final audit remain required.
+    pub fn with_registry_reconformance(mut self) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.reconformance {
+            return Err(ModError::msg(
+                "reconformance requires one Active composition",
+            ));
+        }
+        self.reconformance = true;
+        Ok(self)
     }
 
     /// Explicit historical facts and automatic personal term-lapse observation.
@@ -599,6 +613,15 @@ impl CommerceConfig {
         if let Some(registry) = registry {
             definitions.extend(registry.definitions());
         }
+        if self.reconformance {
+            definitions.extend(super::rating::reconformance::recall::protocol::definitions(
+                &self.manifest,
+            )?);
+            definitions.extend(
+                super::rating::registration::ReconformanceDefinitions::new(self.manifest.clone())?
+                    .definitions(),
+            );
+        }
         for kind in [
             "action",
             "outcome",
@@ -633,6 +656,8 @@ impl CommerceConfig {
 }
 
 pub(crate) struct CommerceRegistration {
+    reconformance: bool,
+    measured_recall: Option<super::rating::reconformance::recall::Readiness>,
     ic: Option<std::sync::Arc<dyn super::ic_claims::registration::Installer>>,
     withdrawal: Option<super::withdrawal::EconomyReadiness>,
     charter_transfer: Option<super::charter_transfer::Readiness>,
@@ -724,6 +749,17 @@ pub(crate) fn register(
             "marked Registry requires actual Registry and fork owners",
         ));
     }
+    if config.reconformance && installer.is_none() {
+        return Err(ModError::msg(
+            "reconformance requires actual Registry owners",
+        ));
+    }
+    let reconformance = config
+        .reconformance
+        .then(|| {
+            super::rating::registration::ReconformanceDefinitions::new(config.manifest.clone())
+        })
+        .transpose()?;
     let registry = installer
         .map(|_| RegistryDefinitions::new(config.manifest.clone()))
         .transpose()?;
@@ -732,6 +768,9 @@ pub(crate) fn register(
     let ratings = RatingFamilies::register(reg)?;
     if config.mode == CommerceMode::Active {
         let mut declarations = vec![super::holding_reader::descriptor(&config.manifest)?];
+        if config.house_filings {
+            declarations.push(super::house_catalogue::descriptor(&config.manifest)?);
+        }
         if config.minds_facts.is_some() {
             declarations.push(super::facts::reader::descriptor()?);
         }
@@ -751,6 +790,11 @@ pub(crate) fn register(
         }
         if config.marked_registry {
             declarations.push(super::marked_rating::descriptor(&config.manifest)?);
+        }
+        if config.reconformance {
+            declarations.push(super::rating::reconformance::reader::descriptor(
+                &config.manifest,
+            )?);
         }
         if installer.is_some() {
             declarations.push(super::rating::service_read::descriptor(&config.manifest)?);
@@ -804,8 +848,26 @@ pub(crate) fn register(
                 config.compatibility.clone(),
             )?;
         }
+        if config.reconformance {
+            super::rating::reconformance::reader::register(
+                reg,
+                families.clone(),
+                ratings.clone(),
+                &config.manifest,
+                config.compatibility.clone(),
+            )?;
+        }
         if installer.is_some() {
             super::rating::service_read::register(reg, ratings.clone(), &config.manifest)?;
+        }
+        if config.house_filings {
+            super::house_catalogue::register(
+                reg,
+                families.clone(),
+                ratings.clone(),
+                &config.manifest,
+                config.compatibility.clone(),
+            )?;
         }
         super::holding_reader::register(
             reg,
@@ -963,6 +1025,9 @@ pub(crate) fn register(
     if let Some(registry) = &registry {
         root_actions.extend(registry.actions().iter().cloned());
     }
+    if let Some(reconformance) = &reconformance {
+        root_actions.extend(reconformance.actions().iter().cloned());
+    }
     if let Some(purchase) = &config.original_purchases {
         if purchase.participants.retention() != &root_definition {
             return Err(ModError::msg("paid retention definition differs"));
@@ -1055,6 +1120,16 @@ pub(crate) fn register(
     };
     let facts_registration = if config.minds_facts.is_some() {
         let [action, outcome] = super::facts::protocol::definitions()?;
+        let action = reg.definition(action)?;
+        let outcome = reg.definition(outcome)?;
+        root_actions.insert(action.clone());
+        Some([action, outcome])
+    } else {
+        None
+    };
+    let measured_recall_registration = if config.reconformance {
+        let [action, outcome] =
+            super::rating::reconformance::recall::protocol::definitions(&config.manifest)?;
         let action = reg.definition(action)?;
         let outcome = reg.definition(outcome)?;
         root_actions.insert(action.clone());
@@ -1293,7 +1368,8 @@ pub(crate) fn register(
             },
         )?;
     }
-    if let (Some(installer), Some(registry)) = (installer, registry.as_ref()) {
+    let measured_recall = if let (Some(installer), Some(registry)) = (installer, registry.as_ref())
+    {
         installer.register(
             reg,
             registry,
@@ -1301,8 +1377,12 @@ pub(crate) fn register(
             families.clone(),
             ratings.clone(),
             config.marked_registry,
-        )?;
-    }
+            reconformance.as_ref(),
+            measured_recall_registration,
+        )?
+    } else {
+        None
+    };
     if config.mode == CommerceMode::Initialize {
         let action = reg.definition(descriptor(
             "action",
@@ -1332,6 +1412,8 @@ pub(crate) fn register(
         })
         .transpose()?;
     Ok(CommerceRegistration {
+        reconformance: config.reconformance,
+        measured_recall,
         ic: config.ic.clone(),
         withdrawal,
         charter_transfer,
@@ -1380,6 +1462,17 @@ impl CommerceRegistration {
         if let Some(readiness) = &self.attestation_readiness {
             readiness.capture(ctx)?;
         }
+        ctx.state_mut::<crate::RollStore>()
+            .ok_or_else(|| error("Roll audit state"))?
+            .close_commerce_for_audit()
+            .map_err(error)?;
+        super::rating::reconformance::audit::audit(
+            ctx,
+            &self.families,
+            &self.ratings,
+            self.reconformance,
+        )
+        .map_err(error)?;
         if self.mode == CommerceMode::Active {
             super::charter_transfer::audit::audit(
                 ctx,
@@ -1415,6 +1508,9 @@ impl CommerceRegistration {
                 &self.shells,
             ),
         }?;
+        if let Some(readiness) = &self.measured_recall {
+            readiness.capture(ctx)?;
+        }
         if let Some(readiness) = &self.facts_readiness {
             readiness.capture(ctx)?;
         }

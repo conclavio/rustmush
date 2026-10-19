@@ -31,6 +31,12 @@ use crate::record::{AssetEffectKind, EconomicAsset, EconomicTransaction, Hold, H
 /// The journal-derived accumulators at [`FoldState::covered_seq`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FoldState {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_charter_transfer::history::CharterPendingAudit::uninitialized"
+    )]
+    pub(crate) charter_pending_receipts:
+        crate::managed_charter_transfer::history::CharterPendingAudit,
     /// Exact charter transfer journal inventory, including its inverse key index.
     #[serde(
         default,
@@ -118,7 +124,9 @@ impl FoldState {
         self.core_receipts.observe(tx);
         self.filing_receipts.observe(tx);
         self.update_receipts.observe(tx);
-        self.charter_transfer_receipts.observe(tx);
+        self.charter_pending_receipts.observe(tx);
+        self.charter_transfer_receipts
+            .observe_with_pending(tx, &self.charter_pending_receipts);
         self.purchase_receipts.observe(tx);
         self.renewal_receipts.observe(tx);
         let mut touched: BTreeSet<AccountId> = BTreeSet::new();

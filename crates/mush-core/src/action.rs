@@ -4982,6 +4982,7 @@ impl ActionProviderRegistry {
             &crate::World,
             &crate::read_service::OwnerReadRegistry,
             &crate::account::observation::AccountOracleBinding,
+            &[crate::module::HookReg],
         ),
     ) -> Result<
         (
@@ -5038,6 +5039,7 @@ impl ActionProviderRegistry {
             &crate::World,
             &crate::read_service::OwnerReadRegistry,
             &crate::account::observation::AccountOracleBinding,
+            &[crate::module::HookReg],
         )>,
         seed: F,
     ) -> Result<
@@ -5076,6 +5078,7 @@ impl ActionProviderRegistry {
             &crate::World,
             &crate::read_service::OwnerReadRegistry,
             &crate::account::observation::AccountOracleBinding,
+            &[crate::module::HookReg],
         )>,
         seed: F,
     ) -> Result<
@@ -5107,7 +5110,8 @@ impl ActionProviderRegistry {
         );
         prepare_context =
             prepare_context.with_registered_transaction(&read_base, entry.registration_ordinal());
-        if let Some((registry, world, _, _)) = owners {
+        if let Some((registry, world, _, _, hooks)) = owners {
+            prepare_context = prepare_context.with_carry_hooks(hooks);
             prepare_context =
                 prepare_context.with_participants(crate::participant::ParticipantPreparation::new(
                     registry,
@@ -5118,7 +5122,7 @@ impl ActionProviderRegistry {
                     invocation,
                 ));
         }
-        if let Some((_, world, reads, _)) = owners {
+        if let Some((_, world, reads, _, _)) = owners {
             prepare_context =
                 prepare_context.with_owner_reads(crate::read_service::PrepareReadContext::new(
                     reads,
@@ -5129,7 +5133,7 @@ impl ActionProviderRegistry {
                     &mut read_observations,
                 ));
         }
-        if let Some((_, world, _, accounts)) = owners {
+        if let Some((_, world, _, accounts, _)) = owners {
             prepare_context = prepare_context.with_account_observations(
                 crate::account::observation::AccountPrepareContext::new(
                     accounts,
@@ -5219,7 +5223,8 @@ impl ActionProviderRegistry {
             );
             trigger_context = trigger_context
                 .with_registered_transaction(&read_base, entry.registration_ordinal());
-            if let Some((registry, world, _, _)) = owners {
+            if let Some((registry, world, _, _, hooks)) = owners {
+                trigger_context = trigger_context.with_carry_hooks(hooks);
                 trigger_context = trigger_context.with_participants(
                     crate::participant::ParticipantPreparation::new(
                         registry,
@@ -5231,7 +5236,7 @@ impl ActionProviderRegistry {
                     ),
                 );
             }
-            if let Some((_, world, reads, _)) = owners {
+            if let Some((_, world, reads, _, _)) = owners {
                 trigger_context =
                     trigger_context.with_owner_reads(crate::read_service::PrepareReadContext::new(
                         reads,
@@ -5242,7 +5247,7 @@ impl ActionProviderRegistry {
                         &mut read_observations,
                     ));
             }
-            if let Some((_, world, _, accounts)) = owners {
+            if let Some((_, world, _, accounts, _)) = owners {
                 trigger_context = trigger_context.with_account_observations(
                     crate::account::observation::AccountPrepareContext::new(
                         accounts,
@@ -5307,7 +5312,7 @@ impl ActionProviderRegistry {
             queue.complete_trigger(work)?;
         }
         queue.finish()?;
-        if let Some((_, world, _, _)) = owners {
+        if let Some((_, world, _, _, _)) = owners {
             read_observations.recheck(world)?;
             account_observations.recheck(world)?;
         }

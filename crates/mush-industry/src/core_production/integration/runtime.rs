@@ -1,6 +1,5 @@
 use super::{
-    IntegrationError as Error, config::CoreFactoryConfig, families::Families,
-    output_policy::Policy, records::*,
+    IntegrationError as Error, config::CoreFactoryConfig, families::Families, output_policy::Policy,
 };
 use crate::core_production::{authority::Definitions, provider::Families as Origins};
 use mush_core::core_output::{CoreOutputBinding, CoreOutputReservations};

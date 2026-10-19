@@ -81,15 +81,29 @@ impl PreparedComposedTxn {
         self.writes.clone()
     }
 
-    pub(crate) fn recheck(&self, world: &World) -> Result<(), ParticipantError> {
+    pub(crate) fn recheck_with_lens(
+        &self,
+        world: &World,
+        lens: crate::action_state::TypedStateLens<'_>,
+    ) -> Result<(), ParticipantError> {
         self.reads.recheck(world)?;
         self.accounts.recheck(world)?;
         self.owners.recheck(world)?;
         if let Some(shell) = &self.shell {
-            shell.recheck(world)?;
+            shell.recheck(world, lens)?;
         }
         self.reads.recheck(world)?;
         self.accounts.recheck(world)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recheck(&self, world: &World) -> Result<(), ParticipantError> {
+        self.recheck_with_lens(
+            world,
+            crate::action_state::TypedStateLens::Detached(
+                crate::action_state::DetachedTypedState::Test,
+            ),
+        )
     }
 
     /// Only the old typed-only registry wrappers may unwrap this. A provider
@@ -177,12 +191,16 @@ impl ComposedInstallation {
         self.typed.touched_families()
     }
 
-    pub(crate) fn recheck(&self, world: &World) -> Result<(), ParticipantError> {
+    pub(crate) fn recheck_with_lens(
+        &self,
+        world: &World,
+        lens: crate::action_state::TypedStateLens<'_>,
+    ) -> Result<(), ParticipantError> {
         self.reads.recheck(world)?;
         self.accounts.recheck(world)?;
         self.owners.recheck(world)?;
         if let Some(shell) = &self.shell {
-            shell.recheck(world)?;
+            shell.recheck(world, lens)?;
         }
         self.reads.recheck(world)?;
         self.accounts.recheck(world)

@@ -2,6 +2,9 @@
 //! trusted composition. A descriptor/reference is data, never a certificate or
 //! a participant handle; the real registry checks exact owners, types and grants.
 
+pub mod reconformance;
+pub use reconformance::ReconformanceDefinitions;
+
 use std::marker::PhantomData;
 
 use mush_core::action::{ActionError, ActionErrorCode};
@@ -179,7 +182,9 @@ pub(crate) trait Installer: Send {
         commerce: CommerceFamilies,
         ratings: RatingFamilies,
         marked: bool,
-    ) -> Result<(), ModError>;
+        reconformance: Option<&ReconformanceDefinitions>,
+        measured_recall: Option<[DefinitionRef; 2]>,
+    ) -> Result<Option<super::reconformance::recall::Readiness>, ModError>;
 }
 struct Owners<Q, A>(PhantomData<fn() -> (Q, A)>);
 pub(crate) fn owners<Q, A>() -> Box<dyn Installer>
@@ -210,7 +215,9 @@ where
         commerce: CommerceFamilies,
         ratings: RatingFamilies,
         marked: bool,
-    ) -> Result<(), ModError> {
+        reconformance: Option<&ReconformanceDefinitions>,
+        measured_recall: Option<[DefinitionRef; 2]>,
+    ) -> Result<Option<super::reconformance::recall::Readiness>, ModError> {
         if reg.module() != crate::NS || definitions.manifest.digest() != compatibility.digest() {
             return Err(ModError::msg("Registry producer composition identity"));
         }
@@ -254,6 +261,7 @@ where
                     } else {
                         None
                     },
+                    reconformance: None,
                     refusal: ActionError::new(
                         ActionErrorCode::ProviderRejected,
                         false,
@@ -263,6 +271,68 @@ where
                 },
             )?;
         }
-        reg.registry_rating_capacity(definitions.manifest.clone(), definitions.references.clone())
+        reg.registry_rating_capacity(definitions.manifest.clone(), definitions.references.clone())?;
+        if let Some(reconformance) = reconformance {
+            if reconformance.manifest() != &definitions.manifest {
+                return Err(error("Registry service manifest differs"));
+            }
+            let reader = super::reconformance::reader::ReconformanceReader::request(
+                reg,
+                &definitions.manifest,
+            )?;
+            let outcome = reg.definition(reconformance.outcome.clone())?;
+            for ((descriptor, expected), transition) in reconformance
+                .descriptors
+                .iter()
+                .zip(reconformance.actions())
+                .zip(TRANSITIONS)
+            {
+                let action = reg.definition(descriptor.clone())?;
+                if action != *expected {
+                    return Err(error("Registry service action differs"));
+                }
+                let quota = reg.request_owner_participant::<Q>(action.clone())?;
+                let artifacts = reg.request_owner_participant::<A>(action.clone())?;
+                let roots = reg.request_owner_participant::<RootParticipant>(action.clone())?;
+                reg.action_provider(
+                    action.clone(),
+                    RegistryBuilder {
+                        action,
+                        outcome: outcome.clone(),
+                        manifest: definitions.manifest.clone(),
+                        compatibility: compatibility.clone(),
+                        transition,
+                        commerce: commerce.clone(),
+                        ratings: ratings.clone(),
+                        quota,
+                        artifacts,
+                        roots,
+                        marked: None,
+                        reconformance: Some(reader.clone()),
+                        refusal: ActionError::new(
+                            ActionErrorCode::ProviderRejected,
+                            false,
+                            "The current Registry service work is unavailable or changed.",
+                        )
+                        .map_err(error)?,
+                    },
+                )?;
+            }
+            reg.registry_reconformance_capacity(reconformance.actions().clone())?;
+            let ready = super::reconformance::recall::register(
+                reg,
+                commerce,
+                ratings,
+                compatibility.clone(),
+                definitions.manifest.clone(),
+                measured_recall.ok_or_else(|| error("measured recall actions absent"))?,
+                reader,
+            )?;
+            return Ok(Some(ready));
+        }
+        if measured_recall.is_some() {
+            return Err(error("measured recall without service profile"));
+        }
+        Ok(None)
     }
 }

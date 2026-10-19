@@ -640,3 +640,48 @@ fn minds_facts_are_explicit_active_and_register_exact_service_and_action() -> Te
     );
     Ok(())
 }
+
+#[test]
+fn reconformance_requires_active_opt_in_and_exact_real_services() -> TestResult {
+    assert!(
+        prepare(CommerceMode::Initialize)?
+            .with_registry_reconformance()
+            .is_err()
+    );
+    let absent = engine(&prepare(CommerceMode::Active)?)?;
+    assert!(!has(&absent, "roll", "action", "reconformance_admit"));
+    assert!(!has(&absent, "roll", "action", "recall_nonconforming_mind"));
+    let configured = prepare(CommerceMode::Active)?.with_registry_reconformance()?;
+    assert!(
+        prepare(CommerceMode::Active)?
+            .with_registry_reconformance()?
+            .with_registry_reconformance()
+            .is_err()
+    );
+    let active = engine(&configured)?;
+    for id in [
+        "reconformance_admit",
+        "reconformance_grant",
+        "reconformance_settle",
+        "reconformance_cancel",
+        "reconformance_recover",
+        "recall_nonconforming_mind",
+    ] {
+        assert!(has(&active, "roll", "action", id));
+    }
+    assert!(has(&active, "roll", "owner_read", "registry_reconformance"));
+    assert!(has(&active, "roll", "action", "rating_admit"));
+    for id in ["registry_quota", "registry_artifacts"] {
+        let definitions = active.registry.definitions().ok_or("actual definitions")?;
+        assert_eq!(
+            definitions
+                .iter()
+                .filter(|d| d.reference().key().owner.as_str() == "tacsim"
+                    && d.reference().key().kind.as_str() == "owner_participant"
+                    && d.reference().key().id.as_str() == id)
+                .count(),
+            1
+        );
+    }
+    Ok(())
+}

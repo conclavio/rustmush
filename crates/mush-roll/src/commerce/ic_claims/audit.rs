@@ -145,13 +145,18 @@ pub(super) fn local(
         let filed = super::super::audit::read(ctx, &f.filed, open.filed.key())?;
         let position = filed.content.position();
         if filed.content.revision() != open.revision
-            || filed.rating != open.rating
             || position.charter != open.charter
             || position.line != open.line
         {
             return Err(PublicationError::Mismatch);
         }
-        let rating = ratings.resolve_receipt(ctx, &open.rating).map_err(bad)?;
+        let rating = super::super::rating::reconformance::history::certificate(
+            ctx,
+            ratings,
+            filed,
+            &open.rating,
+        )
+        .map_err(bad)?;
         if rating.subject().revision() != open.revision {
             return Err(PublicationError::Mismatch);
         }
@@ -168,7 +173,7 @@ pub(super) fn local(
                 if grant.holder() != open.dispatcher
                     || grant.filed() != open.filed
                     || grant.revision() != open.revision
-                    || grant.rating() != open.rating
+                    || term.terms().class() < rating.minimum()
                     || grant.charter() != open.charter
                     || grant.line() != open.line
                     || term.window() != open.window

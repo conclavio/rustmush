@@ -65,6 +65,22 @@ pub(super) struct Ticket {
     bytes: u64,
 }
 impl Ticket {
+    pub(super) fn reconformance(&self, store: &super::owner::BulkStore) -> Result<bool, BulkError> {
+        let budget = match &self.kind {
+            TicketKind::Admit(data) => data.plan.registry.as_ref(),
+            _ => {
+                let binding = self.binding().ok_or(BulkError::Missing)?;
+                store
+                    .run(binding.account, binding.character, binding.run)?
+                    .plan
+                    .registry
+                    .as_ref()
+            }
+        }
+        .ok_or(BulkError::Missing)?;
+        Ok(budget.reconformance.is_some())
+    }
+
     pub(super) fn transition(&self) -> Transition {
         match &self.kind {
             TicketKind::Admit(_) => Transition::Admit,
@@ -148,7 +164,10 @@ impl Tickets {
         if data.plan.kind != WorkKind::Registry
             || data.character.0 == 0
             || data.nonce == 0
-            || data.subject.revision().revision().key.character != data.character
+            || match &budget.reconformance {
+                None => data.subject.revision().revision().key.character != data.character,
+                Some(_) => data.character != mush_core::GOD || !budget.measured_rejection,
+            }
             || data
                 .subject
                 .digest()
@@ -251,17 +270,34 @@ impl Tickets {
         &self,
         actor: ObjId,
         transition: Transition,
+        reconformance: bool,
+        store: &super::owner::BulkStore,
     ) -> Result<Option<mush_roll::commerce::rating::protocol::RegistrySelector>, BulkError> {
         use mush_roll::commerce::rating::protocol::RegistrySelector;
-        let Some((id, ticket)) = self
-            .rows
-            .iter()
-            .find(|(_, t)| t.character() == actor && t.transition() == transition)
-        else {
+        let mut selected = None;
+        for (id, ticket) in &self.rows {
+            if ticket.character() == actor
+                && ticket.transition() == transition
+                && ticket.reconformance(store)? == reconformance
+            {
+                selected = Some((id, ticket));
+                break;
+            }
+        }
+        let Some((id, ticket)) = selected else {
             return Ok(None);
         };
         let id = TicketId::new(*id).map_err(|_| invalid("Registry ticket identity"))?;
         Ok(Some(match &ticket.kind {
+            TicketKind::Admit(data) if reconformance => RegistrySelector::reconformance(
+                id,
+                data.plan
+                    .registry
+                    .as_ref()
+                    .and_then(|b| b.reconformance.as_ref())
+                    .ok_or(BulkError::Missing)?
+                    .filed(),
+            ),
             TicketKind::Admit(data) => {
                 RegistrySelector::admission(id, data.subject.revision().revision())
                     .map_err(|_| invalid("Registry selector"))?

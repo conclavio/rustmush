@@ -19,8 +19,8 @@ pub use receipt::{
 };
 pub use subject::{CoreClass, CoreFundingSubject, CorePaymentPolicy, ScopedCoreAccount};
 
+use mush_core::CommitToken;
 use mush_core::participant::ParticipantError;
-use mush_core::{CommitToken, DefinitionRef};
 
 pub const ACCEPT_ACTION: &str = "accept_core_integration";
 pub const COMPLETE_ACTION: &str = "complete_core_integration";
@@ -47,17 +47,6 @@ pub struct CoreCompletionRequest {
 /// Cleanup names the immutable admission, not a current configuration or price.
 pub struct CoreCancellationRequest {
     pub acceptance: CommitToken,
-}
-
-pub(crate) fn require_action_ref(action: &DefinitionRef, id: &str) -> Result<(), ParticipantError> {
-    if action.key().owner.as_str() != "industry"
-        || action.key().kind.as_str() != "action"
-        || action.key().id.as_str() != id
-        || action.version() != 1
-    {
-        return Err(refused());
-    }
-    Ok(())
 }
 
 pub(crate) fn refused() -> ParticipantError {

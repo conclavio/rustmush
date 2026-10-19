@@ -4,6 +4,8 @@ use super::*;
 use mush_core::authoritative::{AuthoritativeBundle, AuthoritativeBundleDraft};
 use mush_org::{OrgModule, OrgStore};
 
+#[path = "house_filing_integration_tests/catalogue.rs"]
+mod catalogue;
 type HouseAction = Arc<Mutex<Option<DefinitionRef>>>;
 struct HouseRoll {
     shared: Shared,
@@ -101,11 +103,13 @@ struct HouseFixture {
     engine: Engine,
     disk: Disk,
     action: DefinitionRef,
+    catalogue: catalogue::Answers,
 }
 impl HouseFixture {
     fn boot(registry: &Fixture, saved: &Durable) -> TestResult<Self> {
         let shared: Shared = Arc::new(Mutex::new(Registered::default()));
         let house: HouseAction = Arc::new(Mutex::new(None));
+        let catalogue = Arc::new(Mutex::new(None));
         let mut engine = Engine::with_modules(
             saved.world()?,
             Registry::new(),
@@ -124,9 +128,13 @@ impl HouseFixture {
                     inner: None,
                 }),
                 Box::new(HouseEconomy {
-                    shared,
+                    shared: shared.clone(),
                     house: house.clone(),
                     inner: None,
+                }),
+                Box::new(catalogue::Market {
+                    shared,
+                    answers: catalogue.clone(),
                 }),
             ],
         )?;
@@ -153,6 +161,7 @@ impl HouseFixture {
             engine,
             disk,
             action,
+            catalogue,
         })
     }
     fn command(&mut self, line: &str) -> TestResult {
@@ -390,6 +399,7 @@ pub(super) fn exercise(registry: &Fixture, rating: &RatingRef) -> TestResult {
     );
     assert_eq!(operation.pointer("/rating/job"), Some(&json!(rating.job())));
     let committed = f.snapshot();
+    catalogue::exercise(registry, &committed, organization, scope, other)?;
     let restarted = HouseFixture::boot(registry, &committed)?;
     assert_eq!(restarted.economy()?.snapshot().asset(shell), Some(title));
     assert_eq!(

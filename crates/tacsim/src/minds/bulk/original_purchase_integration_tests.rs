@@ -446,6 +446,11 @@ impl GameModule for PurchaseRoll {
             purchase.participants.clone(),
             purchase.purchases.actions()?,
         )?;
+        let config = if shared.reconformance {
+            config.with_registry_reconformance()?
+        } else {
+            config
+        };
         let config = if self.authored_forks {
             config.with_authored_forks()?
         } else {
@@ -1538,6 +1543,7 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
     source_forms::historical_v1(&granted, &funded, &committed)?;
     eprintln!("M7_STORY phase=compatible_update event=begin");
     paid_checkout::exercise_updates(&granted, &committed)?;
+    paid_checkout::exercise_reconformance(&granted, &committed)?;
     eprintln!("M7_STORY phase=compatible_update event=complete");
     let refund_boot = refunded.reboot(&refunded.snapshot())?;
     assert_eq!(refund_boot.balances()?, before_money);

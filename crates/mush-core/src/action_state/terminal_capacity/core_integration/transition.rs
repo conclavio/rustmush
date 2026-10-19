@@ -22,6 +22,7 @@ pub(in crate::action_state) fn core_integration_change(
         || txn.capacity_changes.funding.is_some()
         || txn.capacity_changes.progress.is_some()
         || txn.capacity_changes.terminal.is_some()
+        || txn.capacity_changes.industry_delivery.is_some()
     {
         return Err(refused("core integration preparation differs"));
     }
@@ -53,6 +54,17 @@ pub(in crate::action_state) fn core_integration_change(
         let id = ReservationId(owner_id("industry")?, r.accepted.to_hex());
         if matches!(index, 1 | 2) {
             txn.capacity_changes.progress = Some(id)
+        } else if index == 3 && delivery::promised(&r.policy)? {
+            let mut replacement = txn
+                .store
+                .capacity
+                .records
+                .get(&id)
+                .ok_or_else(|| refused("core delivery admitted reservation absent"))?
+                .record
+                .clone();
+            replacement.targets = targets(&r)?;
+            txn.capacity_changes.industry_delivery = Some(replacement);
         } else {
             txn.capacity_changes.terminal = Some(id)
         }
@@ -183,7 +195,7 @@ pub(in crate::action_state::terminal_capacity) fn validate_changes(
 ) -> Result<(), ActionStateError> {
     let touches = mutations.keys().any(|k| {
         k.owner.as_str() == "industry"
-            && (k.family.as_str() == ORDER
+            && ([ORDER, delivery::CORE, delivery::INDUSTRY].contains(&k.family.as_str())
                 || (k.family.as_str() == OUTPUT && store.registry.core_integration.is_some()))
     });
     if !touches {
@@ -286,7 +298,29 @@ pub(in crate::action_state::terminal_capacity) fn validate_changes(
     if next.fingerprint != prior.fingerprint || identity.commit == prior.accepted {
         return Err(refused("core integration immutable admission changed"));
     }
-    if matches!(index, 1 | 2) {
+    if index == 5 {
+        if !delivery::promised(&prior.policy)?
+            || !delivery::completed(&prior)?
+            || prior.raw != next.raw
+            || delivery::receipts(&before, &prior)?
+            || !delivery::receipts(&after, &next)?
+            || changes.terminal.as_ref() != Some(&id)
+        {
+            return Err(refused("core delivery exact pending obligation"));
+        }
+        let receipt = required(&after, &required_key(&keys, delivery::CORE)?)?;
+        if field(&receipt, "operation")? != &json!(identity.commit)
+            || field(&receipt, "action")? != &json!(identity.action)
+        {
+            return Err(refused("core delivery current operation/action"));
+        }
+        verify(Phase::Terminal, &retained.record, &after)?;
+        exact(
+            mutations,
+            &after,
+            expected(&keys, &[ORDER, delivery::CORE, delivery::INDUSTRY], &[])?,
+        )?;
+    } else if matches!(index, 1 | 2) {
         if changes.progress.as_ref() != Some(&id) {
             return Err(refused("core integration progress marker absent"));
         }
@@ -327,7 +361,9 @@ pub(in crate::action_state::terminal_capacity) fn validate_changes(
             exact(mutations, &after, expected(&keys, &[ORDER, SCHEDULE], &[])?)?;
         }
     } else {
-        if changes.terminal.as_ref() != Some(&id)
+        let handoff = index == 3 && delivery::promised(&prior.policy)?;
+        if (!handoff && changes.terminal.as_ref() != Some(&id))
+            || (handoff && changes.industry_delivery.is_none())
             || without(&prior.raw, &["terminal"])? != without(&next.raw, &["terminal"])?
         {
             return Err(refused(
@@ -344,7 +380,16 @@ pub(in crate::action_state::terminal_capacity) fn validate_changes(
         {
             return Err(refused("core integration current terminal action/commit"));
         }
-        verify(Phase::Terminal, &retained.record, &after)?;
+        if handoff {
+            let replacement = changes
+                .industry_delivery
+                .as_ref()
+                .ok_or_else(|| refused("core delivery retained subset absent"))?;
+            delivery::require_handoff(&retained.record, replacement)?;
+            verify(Phase::Retained, replacement, &after)?;
+        } else {
+            verify(Phase::Terminal, &retained.record, &after)?;
+        }
         capacity_release(&before, &after, &prior)?;
         if index == 3 {
             exact(
@@ -417,17 +462,24 @@ pub(in crate::action_state::terminal_capacity) fn audit_boot(
         }
         paired(view, &r, true)?;
         let id = ReservationId(owner_id("industry")?, r.accepted.to_hex());
+        let delivery_pending = delivery::promised(&r.policy)?
+            && delivery::completed(&r)?
+            && !delivery::receipts(view, &r)?;
         match (r.terminal()?, reservations.get(&id)) {
             (None, Some(stored)) => verify(Phase::Retained, &stored.record, view)?,
-            (Some(_), None) => {}
+            (Some(_), Some(stored)) if delivery_pending => {
+                verify(Phase::Retained, &stored.record, view)?
+            }
+            (Some(_), None) if !delivery_pending => {}
             _ => return Err(refused("core integration missing/extra future reservation")),
         }
     }
     for k in view.records.keys().filter(|k| {
-        (k.owner.as_str() == "industry" && k.family.as_str() == OUTPUT)
+        (k.owner.as_str() == "industry"
+            && [OUTPUT, delivery::CORE, delivery::INDUSTRY].contains(&k.family.as_str()))
             || (k.owner.as_str() == "inventory" && k.family.as_str() == INPUT)
     }) {
-        let order = if k.family.as_str() == OUTPUT {
+        let order = if [OUTPUT, delivery::CORE].contains(&k.family.as_str()) {
             k.encoded.parse::<u64>().map_err(bad)?
         } else {
             u64::from_str_radix(&k.encoded, 16).map_err(bad)?

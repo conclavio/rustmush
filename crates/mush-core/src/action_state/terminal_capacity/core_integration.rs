@@ -6,6 +6,7 @@ use crate::{
     BoundedScalar, ClockStamp, ObjId, ReservationBook, ReservationBookId, ResourceRef, ScheduleId,
     SubjectKey,
 };
+mod delivery;
 mod protocol;
 mod transition;
 pub(in crate::action_state) use protocol::Protocol;
@@ -79,6 +80,7 @@ fn digest(domain: &str, v: &Value) -> Result<DefinitionDigest, ActionStateError>
 fn key(family: &str, encoded: String) -> Result<Key, ActionStateError> {
     let (owner, _, _) = FAMILIES
         .iter()
+        .chain(delivery::FAMILIES.iter())
         .find(|(_, f, _)| *f == family)
         .ok_or_else(|| refused("core integration unknown target"))?;
     Ok(Key {
@@ -226,7 +228,7 @@ impl Row {
         .map_err(bad)?
         .canonical_hash()
         .to_hex();
-        Ok(BTreeMap::from([
+        let mut keys = BTreeMap::from([
             (ORDER, order_key(self.order)?),
             (OUTPUT, key(OUTPUT, self.order.to_string())?),
             (DEPLOYMENT, key(DEPLOYMENT, "registry".into())?),
@@ -240,7 +242,15 @@ impl Row {
             (BOOK, key(BOOK, capacity)?),
             (SCHEDULE, key(SCHEDULE, schedule.clone())?),
             (JOB, key(JOB, schedule)?),
-        ]))
+        ]);
+        if delivery::promised(&self.policy)? {
+            keys.insert(delivery::CORE, key(delivery::CORE, self.order.to_string())?);
+            keys.insert(
+                delivery::INDUSTRY,
+                key(delivery::INDUSTRY, format!("{:016x}", self.order))?,
+            );
+        }
+        Ok(keys)
     }
 }
 fn row(view: &View<'_>, order: u64) -> Result<Row, ActionStateError> {
@@ -249,7 +259,15 @@ fn row(view: &View<'_>, order: u64) -> Result<Row, ActionStateError> {
 fn targets(r: &Row) -> Result<Vec<Target>, ActionStateError> {
     let mut out = Vec::new();
     let keys = r.keys()?;
-    for (_, family, ceiling) in FAMILIES {
+    let promise = delivery::promised(&r.policy)?;
+    let completed = promise && delivery::completed(r)?;
+    for (_, family, ceiling) in FAMILIES
+        .into_iter()
+        .chain(promise.then_some(delivery::FAMILIES).into_iter().flatten())
+    {
+        if completed && ![ORDER, delivery::CORE, delivery::INDUSTRY].contains(&family) {
+            continue;
+        }
         let descriptor = descriptor(family)?;
         out.push(Target {
             key: keys
@@ -259,7 +277,9 @@ fn targets(r: &Row) -> Result<Vec<Target>, ActionStateError> {
             schema: descriptor.value_schema().clone(),
             schema_version: descriptor.schema_version(),
             ceiling,
-            mode: if family == OUTPUT {
+            mode: if [delivery::CORE, delivery::INDUSTRY].contains(&family) {
+                SlotMode::Create
+            } else if family == OUTPUT {
                 SlotMode::IndustryOutput
             } else {
                 SlotMode::UpdateExisting
@@ -362,6 +382,7 @@ fn paired(view: &View<'_>, r: &Row, historical: bool) -> Result<(), ActionStateE
             }
         }
     }
+    delivery::receipts(view, r)?;
     let output = value(view, keys.get(OUTPUT).ok_or_else(|| refused("output key"))?)?;
     match (r.output()?, output) {
         (None, None) => {}
@@ -453,6 +474,7 @@ fn require_future_room(view: &View<'_>, r: &Row) -> Result<(), ActionStateError>
         .ok_or_else(|| refused("core integration complete digest"))? =
         json!(DefinitionDigest::from_bytes([255; 32]));
     let output = json!({"format":1,"birth":u64::MAX,"purpose":"industry.core_integration","order":order,"object":u32::MAX,"created_at":i64::MIN,"object_digest":DefinitionDigest::from_bytes([255;32]),"reservation":CommitToken::from_bytes([255;16]),"action":field(&pointer,"action")?,"state":{"kind":"consumed","completion":CommitToken::from_bytes([255;16]),"action":complete}});
+    delivery::require_future_room(r, &output)?;
     canonical_json_bytes_with_limit(&envelope(OUTPUT, &r.order.to_string(), output)?, 9216)
         .map_err(|_| refused("core integration complete future output ceiling"))?;
     let mut deployment = required(view, &key(DEPLOYMENT, "registry".into())?)?;
@@ -479,6 +501,9 @@ pub(super) fn verify(
         .ok_or_else(|| refused("core integration protocol absent"))?;
     let order = u64::from_str_radix(&reservation.sponsor.encoded, 16).map_err(bad)?;
     let r = row(view, order)?;
+    if delivery::promised(&r.policy)? && protocol.delivery.is_none() {
+        return Err(refused("core delivery history requires its exact profile"));
+    }
     if reservation.funding != r.accepted
         || reservation.effect != r.action
         || reservation.sponsor != order_key(order)?
@@ -497,13 +522,23 @@ pub(super) fn verify(
             }
         }
         Phase::Retained => {
-            if r.terminal()?.is_some() {
+            if r.terminal()?.is_some()
+                && !(delivery::promised(&r.policy)?
+                    && delivery::completed(&r)?
+                    && !delivery::receipts(view, &r)?)
+            {
                 return Err(refused("core integration retained terminal"));
             }
         }
         Phase::Terminal => {
-            if r.terminal()?.is_none() {
-                return Err(refused("core integration missing terminal"));
+            if r.terminal()?.is_none()
+                || (delivery::promised(&r.policy)?
+                    && delivery::completed(&r)?
+                    && !delivery::receipts(view, &r)?)
+            {
+                return Err(refused(
+                    "core integration missing terminal or promised delivery",
+                ));
             }
         }
     }
@@ -531,6 +566,7 @@ pub(super) fn prospective_output(record: &Reservation, key: &Key) -> bool {
             .iter()
             .any(|t| &t.key == key && t.mode == SlotMode::IndustryOutput)
 }
+pub(super) use delivery::require_handoff as require_delivery_handoff;
 pub(super) use transition::{audit_boot, validate_changes};
 
 #[cfg(test)]

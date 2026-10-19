@@ -10,6 +10,11 @@ pub(crate) struct Lineage {
     birth: InitialFilingAuditSubject,
     title: EconomicAsset,
     sales: u64,
+    #[serde(default, skip_serializing_if = "zero")]
+    pending_sales: u64,
+}
+fn zero(value: &u64) -> bool {
+    *value == 0
 }
 impl Lineage {
     pub(crate) fn born(tx: &EconomicTransaction) -> Result<Self, ReceiptAuditError> {
@@ -21,6 +26,7 @@ impl Lineage {
             birth,
             title: effect.post.clone(),
             sales: 0,
+            pending_sales: 0,
         })
     }
     pub(crate) fn object(&self) -> ObjId {
@@ -34,6 +40,53 @@ impl Lineage {
     }
     pub(crate) fn sales(&self) -> u64 {
         self.sales
+    }
+    pub(crate) fn pending_sales(&self) -> u64 {
+        self.pending_sales
+    }
+    pub(crate) fn advance_pending(
+        &self,
+        tx: &EconomicTransaction,
+        effect: &AssetEffect,
+        history: &crate::managed_charter_transfer::CharterPendingHistory,
+    ) -> Result<Self, ReceiptAuditError> {
+        self.check()?;
+        history.validate().map_err(|_| ReceiptAuditError::Refused)?;
+        let c = history.consent();
+        let terminal = history.terminal().ok_or(ReceiptAuditError::Refused)?;
+        if !terminal.decision().reason.settles()
+            || terminal.transaction() != tx.id
+            || terminal.journal_seq() != tx.journal_seq
+            || terminal.decision().posted_at_utc != tx.posted_at
+            || tx.actor != PrincipalId::System(history.issuer().clone())
+            || terminal.title() != Some(&effect.post)
+            || effect.kind != AssetEffectKind::TitleTransferred
+            || effect.object != self.object()
+            || effect.post.object != self.object()
+            || c.terms.charter != self.object()
+            || c.terms.birth != self.birth.commit()
+            || c.terms.title_revision != self.title.revision
+            || self.title.revision.checked_add(1) != Some(effect.post.revision)
+            || self.title.last_journal_seq > tx.journal_seq
+            || effect.post.last_journal_seq != tx.journal_seq
+            || self.title.title_owner != PrincipalId::Object(c.terms.seller)
+            || self.title.scope.is_some()
+            || self.title.stolen.is_some()
+            || !self.title.encumbrances.is_empty()
+            || self.title.catalog != effect.post.catalog
+            || effect.post.frozen
+            || effect.post.frozen_reason.is_some()
+        {
+            return Err(ReceiptAuditError::Refused);
+        }
+        let mut after = self.clone();
+        after.pending_sales = after
+            .pending_sales
+            .checked_add(1)
+            .ok_or(ReceiptAuditError::Refused)?;
+        after.title = effect.post.clone();
+        after.check()?;
+        Ok(after)
     }
     pub(crate) fn check(&self) -> Result<(), ReceiptAuditError> {
         let (object, _) = self.birth.managed_title_birth();

@@ -48,6 +48,17 @@ pub(crate) struct RegistryBudget {
     maximum_unit_ms: u64,
     #[serde(default, skip_serializing_if = "is_false")]
     pub measured_rejection: bool,
+    #[serde(
+        default,
+        deserialize_with = "present_reconformance",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reconformance: Option<mush_roll::commerce::rating::reconformance::ReconformanceAdmission>,
+}
+fn present_reconformance<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<mush_roll::commerce::rating::reconformance::ReconformanceAdmission>, D::Error> {
+    mush_roll::commerce::rating::reconformance::ReconformanceAdmission::deserialize(d).map(Some)
 }
 fn is_false(value: &bool) -> bool {
     !value
@@ -70,11 +81,17 @@ impl RegistryBudget {
             cases,
             maximum_unit_ms,
             measured_rejection: true,
+            reconformance: None,
         };
         value.validate()?;
         Ok(value)
     }
     pub fn validate(&self) -> Result<(), BulkError> {
+        if self.reconformance.is_some() && !self.measured_rejection {
+            return Err(invalid(
+                "reconformance requires measured rejection reservation",
+            ));
+        }
         if self.cases.is_empty()
             || self.cases.len() > MAX_CASES
             || self

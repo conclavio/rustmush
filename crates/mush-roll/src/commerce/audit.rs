@@ -638,11 +638,11 @@ fn audit(
                 operation.selected_parent.revision
             }
             RootAnchor::RegistryRecall(commit, digest) => {
-                let operation = read(ctx, &f.registry_recalls, commit.to_hex())?;
-                if operation.digest()? != *digest {
+                let required = super::registry_recall::audit::cause_root(ctx, f, ratings, *commit)?;
+                if required.anchor != RootAnchor::RegistryRecall(*commit, *digest) {
                     return Err(PublicationError::Mismatch);
                 }
-                operation.revision
+                required.identity
             }
             RootAnchor::RegistryRevocation(commit, digest) => {
                 let operation = read(ctx, &f.registry_revocations, commit.to_hex())?;

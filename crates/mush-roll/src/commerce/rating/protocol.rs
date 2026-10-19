@@ -114,6 +114,15 @@ pub enum Transition {
     Recover,
 }
 impl Transition {
+    pub const fn reconformance_action_id(self) -> &'static str {
+        match self {
+            Self::Admit => "reconformance_admit",
+            Self::Grant => "reconformance_grant",
+            Self::Settle => "reconformance_settle",
+            Self::Cancel => "reconformance_cancel",
+            Self::Recover => "reconformance_recover",
+        }
+    }
     pub const fn action_id(self) -> &'static str {
         match self {
             Self::Admit => "rating_admit",
@@ -305,6 +314,14 @@ pub trait RegistryQuotaParticipant:
         executions: &[super::execution::RatingExecution],
     ) -> Result<(), RatingError>;
 
+    fn project_reconformance_selector(
+        _engine: &mush_core::Engine,
+        _query: &mush_core::LegalActionQuery,
+        _transition: Transition,
+    ) -> Result<Option<RegistrySelector>, RatingError> {
+        Ok(None)
+    }
+
     fn project_selector(
         engine: &mush_core::Engine,
         query: &mush_core::LegalActionQuery,
@@ -319,6 +336,7 @@ pub struct RegistrySelector {
     subject: SelectorSubject,
 }
 enum SelectorSubject {
+    Reconform(crate::commerce::FiledRevisionId),
     Admit(crate::RevisionRef),
     Existing(CommitToken),
 }
@@ -332,6 +350,12 @@ impl RegistrySelector {
             subject: SelectorSubject::Admit(revision),
         })
     }
+    pub const fn reconformance(ticket: TicketId, filed: crate::commerce::FiledRevisionId) -> Self {
+        Self {
+            ticket,
+            subject: SelectorSubject::Reconform(filed),
+        }
+    }
     pub const fn existing(ticket: TicketId, job: CommitToken) -> Self {
         Self {
             ticket,
@@ -340,6 +364,9 @@ impl RegistrySelector {
     }
     pub(crate) fn parameters(self) -> serde_json::Value {
         match self.subject {
+            SelectorSubject::Reconform(filed) => {
+                serde_json::json!({"ticket":self.ticket.get(),"filed":filed})
+            }
             SelectorSubject::Admit(revision) => {
                 serde_json::json!({"ticket":self.ticket.get(),"mind":revision.key.mind,"revision":revision.key.number,"revision_digest":revision.digest})
             }

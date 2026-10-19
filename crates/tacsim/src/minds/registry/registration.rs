@@ -27,6 +27,14 @@ pub(super) fn register_with_ic(
     policy: Arc<FrozenPolicy>,
     ic: bool,
 ) -> Result<(RegisteredManifest, Arc<Factory>), ModError> {
+    register_profiles(reg, policy, ic, false)
+}
+pub(super) fn register_profiles(
+    reg: &mut Registrar<'_>,
+    policy: Arc<FrozenPolicy>,
+    ic: bool,
+    reconformance: bool,
+) -> Result<(RegisteredManifest, Arc<Factory>), ModError> {
     if reg.module() != crate::NS {
         return Err(ModError::msg("Registry owner"));
     }
@@ -57,8 +65,17 @@ pub(super) fn register_with_ic(
             }
         },
     )?;
-    let actions = BTreeSet::from(definitions.actions().clone());
-    let participant_policy = Policy::new(definitions.actions().clone()).map_err(error)?;
+    let mut actions = BTreeSet::from(definitions.actions().clone());
+    let mut participant_policy = Policy::new(definitions.actions().clone()).map_err(error)?;
+    if reconformance {
+        let service = mush_roll::commerce::rating::registration::ReconformanceDefinitions::new(
+            manifest.definition().clone(),
+        )?;
+        actions.extend(service.actions().iter().cloned());
+        participant_policy = participant_policy
+            .with_reconformance(service.actions().clone())
+            .map_err(error)?;
+    }
     let quota = reg.definition(definitions.quota().clone())?;
     reg.owner_participant(
         quota,
@@ -73,10 +90,11 @@ pub(super) fn register_with_ic(
     )?;
     let factory = Factory::registered(policy, manifest.clone()).map_err(error)?;
     let factory = Arc::new(factory);
-    crate::minds::bulk::registry_service::register(
+    crate::minds::bulk::registry_service::register_profiles(
         reg,
         Arc::clone(&factory),
         manifest.definition(),
+        reconformance,
     )?;
     Ok((manifest, factory))
 }

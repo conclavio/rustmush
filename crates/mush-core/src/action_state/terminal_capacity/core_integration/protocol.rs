@@ -17,6 +17,8 @@ pub(super) const ACTIONS: [&str; 5] = [
 pub(in crate::action_state) struct Protocol {
     pub(super) participants: [DefinitionRef; 2],
     pub(super) actions: [DefinitionRef; 5],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) delivery: Option<DefinitionRef>,
 }
 impl Protocol {
     pub(in crate::action_state) fn new(
@@ -54,7 +56,25 @@ impl Protocol {
         Ok(Self {
             participants,
             actions,
+            delivery: None,
         })
+    }
+    pub(in crate::action_state) fn with_delivery(
+        owner: &OwnerId,
+        participants: [DefinitionRef; 2],
+        actions: [DefinitionRef; 6],
+    ) -> Result<Self, ActionStateError> {
+        let [accept, reserve, advance, complete, cancel, delivery] = actions;
+        let mut protocol = Self::new(
+            owner,
+            participants,
+            [accept, reserve, advance, complete, cancel],
+        )?;
+        if delivery != super::delivery::action_reference()? {
+            return Err(refused("core delivery exact action"));
+        }
+        protocol.delivery = Some(delivery);
+        Ok(protocol)
     }
     pub(in crate::action_state::terminal_capacity) fn admission_action(&self) -> &DefinitionRef {
         &self.actions[0]
@@ -71,6 +91,7 @@ impl Protocol {
     ) -> Result<usize, ActionStateError> {
         self.actions
             .iter()
+            .chain(self.delivery.iter())
             .position(|a| a == &identity.action)
             .ok_or_else(|| refused("core integration actual action differs"))
     }
@@ -78,7 +99,10 @@ impl Protocol {
         &self,
         registry: &StateFamilyRegistry,
     ) -> Result<(), ActionStateError> {
-        for (owner, name, _) in FAMILIES {
+        for (owner, name, _) in FAMILIES
+            .into_iter()
+            .chain(self.delivery.iter().flat_map(|_| super::delivery::FAMILIES))
+        {
             let expected = descriptor(name)?;
             let owner = owner_id(owner)?;
             let id = StateFamilyId::new(name).map_err(bad)?;
@@ -105,6 +129,9 @@ impl Protocol {
     ) -> Result<(), ActionStateError> {
         let admission = definitions.get_exact(&self.actions[0]).map_err(bad)?;
         let policy = field(admission.payload(), "policy")?;
+        if super::delivery::promised(policy)? != self.delivery.is_some() {
+            return Err(refused("core delivery declaration/promise differs"));
+        }
         for (index, action) in self.actions.iter().enumerate() {
             if *action != action_reference(policy, index)? {
                 return Err(refused("core integration complete registered action"));
@@ -125,6 +152,18 @@ impl Protocol {
                 && !participants.grants_exact(&self.participants[1], provider.owner(), action)
             {
                 return Err(refused("core integration Economy grant absent"));
+            }
+        }
+        if let Some(action) = &self.delivery {
+            if action != &super::delivery::action_reference()? {
+                return Err(refused("core delivery action differs"));
+            }
+            definitions.get_exact(action).map_err(bad)?;
+            let provider = providers.get_exact(action).map_err(bad)?;
+            if provider.owner().as_str() != "industry"
+                || !participants.grants_exact(&self.participants[0], provider.owner(), action)
+            {
+                return Err(refused("core delivery Industry grant absent"));
             }
         }
         for p in &self.participants {
@@ -156,7 +195,7 @@ pub(super) fn action_descriptor(
             return Err(refused("core integration recipe identity"));
         }
         (
-            json!({"format":1,"protocol":"certified_core_integration_v1","policy":policy,"reservation_ic_seconds":604800,"supplier_consent":"acknowledged_exact_offer_v1","input":"certified_origin_qty1","title_recipient":"authenticated_personal_requester"}),
+            json!({"format":1,"protocol":if super::delivery::promised(policy)? { "certified_core_integration_delivery_v2" } else { "certified_core_integration_v1" },"policy":policy,"reservation_ic_seconds":604800,"supplier_consent":"acknowledged_exact_offer_v1","input":"certified_origin_qty1","title_recipient":"authenticated_personal_requester"}),
             vec![recipe],
         )
     };
@@ -270,6 +309,7 @@ pub(super) fn descriptor(name: &str) -> Result<StateFamilyDescriptor, ActionStat
             crate::durable_schedule_state_family_descriptor(StateFamilyId::new(name).map_err(bad)?)
                 .map_err(bad)
         }
+        super::delivery::CORE | super::delivery::INDUSTRY => super::delivery::descriptor(name),
         _ => Err(refused("core integration unknown family")),
     }
 }

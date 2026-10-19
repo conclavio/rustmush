@@ -40,6 +40,9 @@ enum ManagedWire {
     MindRenewalOfferV1 {
         renewal: RenewalMarkerV1,
     },
+    MindCharterTransferV1 {
+        pending: crate::managed_charter_transfer::CharterPendingMarkerV1,
+    },
 }
 impl TryFrom<ManagedWire> for ManagedConsent {
     type Error = &'static str;
@@ -70,6 +73,11 @@ impl TryFrom<ManagedWire> for ManagedConsent {
                 if !protocol.matches_action(effect, "fund") || operation == quote {
                     return Err("invalid mind entitlement managed consent");
                 }
+            }
+            ManagedWire::MindCharterTransferV1 { pending } => {
+                pending
+                    .validate()
+                    .map_err(|_| "invalid pending charter consent")?;
             }
             ManagedWire::MindRenewalOfferV1 { renewal } => {
                 renewal
@@ -128,6 +136,20 @@ impl ManagedConsent {
         Self::try_from(ManagedWire::MindRenewalOfferV1 { renewal })
             .map_err(mush_core::participant::ParticipantError::refused)
     }
+    pub(crate) fn charter_pending(
+        pending: crate::managed_charter_transfer::CharterPendingMarkerV1,
+    ) -> Result<Self, mush_core::participant::ParticipantError> {
+        Self::try_from(ManagedWire::MindCharterTransferV1 { pending })
+            .map_err(mush_core::participant::ParticipantError::refused)
+    }
+    pub fn charter_pending_marker(
+        &self,
+    ) -> Option<&crate::managed_charter_transfer::CharterPendingMarkerV1> {
+        match &self.wire {
+            ManagedWire::MindCharterTransferV1 { pending } => Some(pending),
+            _ => None,
+        }
+    }
     pub fn renewal_offer_marker(&self) -> Option<&RenewalMarkerV1> {
         match &self.wire {
             ManagedWire::MindRenewalOfferV1 { renewal } => Some(renewal),
@@ -154,6 +176,7 @@ impl ManagedConsent {
             ManagedWire::OriginalPersonal { operation, .. }
             | ManagedWire::MindEntitlement { operation, .. } => *operation,
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.operation(),
+            ManagedWire::MindCharterTransferV1 { pending } => pending.operation(),
         }
     }
     #[must_use]
@@ -162,6 +185,7 @@ impl ManagedConsent {
             ManagedWire::OriginalPersonal { effect, .. }
             | ManagedWire::MindEntitlement { effect, .. } => effect,
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.effect(),
+            ManagedWire::MindCharterTransferV1 { pending } => pending.effect(),
         }
     }
     /// Actual retained quote basis. Renewal returns its accepted prior quote;
@@ -172,6 +196,7 @@ impl ManagedConsent {
             ManagedWire::OriginalPersonal { quote, .. }
             | ManagedWire::MindEntitlement { quote, .. } => *quote,
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.basis().prior_quote,
+            ManagedWire::MindCharterTransferV1 { pending } => pending.offer(),
         }
     }
     #[must_use]
@@ -180,6 +205,7 @@ impl ManagedConsent {
             ManagedWire::OriginalPersonal { quote_digest, .. }
             | ManagedWire::MindEntitlement { quote_digest, .. } => *quote_digest,
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.basis().prior_quote_digest,
+            ManagedWire::MindCharterTransferV1 { pending } => pending.offer_digest(),
         }
     }
     #[must_use]
@@ -188,6 +214,7 @@ impl ManagedConsent {
             ManagedWire::OriginalPersonal { product_digest, .. }
             | ManagedWire::MindEntitlement { product_digest, .. } => *product_digest,
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.basis().product_digest,
+            ManagedWire::MindCharterTransferV1 { pending } => pending.terms_digest(),
         }
     }
 }
@@ -233,7 +260,8 @@ fn key(snapshot: &EconomySnapshot, key: &IdempotencyKey) -> bool {
 }
 
 fn closed_money_namespace(namespace: &str) -> bool {
-    crate::managed_purchase::closed_namespace(namespace)
+    namespace == crate::managed_charter_transfer::NAMESPACE
+        || crate::managed_purchase::closed_namespace(namespace)
         || namespace == crate::managed_renewal::NAMESPACE
         || namespace == crate::registry_filing::update::receipt::NAMESPACE
         || namespace == crate::registry_filing::charter_transfer::receipt::NAMESPACE

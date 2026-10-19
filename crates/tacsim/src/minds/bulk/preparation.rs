@@ -16,6 +16,14 @@ pub(super) enum Request {
         recipe: Recipe,
         factory: Arc<ScenarioFactory>,
     },
+    Reconformance {
+        ticket: u64,
+        account: mush_core::AccountId,
+        nonce: u64,
+        candidate: mush_roll::commerce::rating::reconformance::reader::ReconformanceCandidate,
+        source: Arc<str>,
+        factory: Arc<crate::minds::registry::factory::Factory>,
+    },
     Registry {
         ticket: u64,
         account: mush_core::AccountId,
@@ -83,6 +91,26 @@ impl Preparer {
                                 recipe,
                                 result,
                             }
+                        }
+                        Request::Reconformance {
+                            ticket,
+                            account,
+                            nonce,
+                            candidate,
+                            source,
+                            factory,
+                        } => {
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    factory.prepare_reconformance(account, nonce, candidate, source)
+                                }))
+                                .map_err(|_| invalid("Registry re-conformance preparation failed"))
+                                .and_then(|r| {
+                                    r.map_err(|_| {
+                                        invalid("Registry re-conformance preparation refused")
+                                    })
+                                });
+                            Completion::Registry { ticket, result }
                         }
                         Request::Registry {
                             ticket,

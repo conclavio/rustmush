@@ -532,6 +532,18 @@ pub(crate) fn validate_charter_transfer(
         PlanGuard::CharterTransfer(proof),
     )
 }
+pub(crate) fn validate_charter_pending(
+    proof: &crate::managed_charter_transfer::ClosedCharterPendingPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(
+        proof.plan(),
+        snapshot,
+        env,
+        PlanGuard::CharterPending(proof),
+    )
+}
 pub(crate) fn validate_core_integration(
     proof: &crate::core_integration::ClosedCorePlan,
     snapshot: &EconomySnapshot,
@@ -548,6 +560,7 @@ pub(crate) fn validate_core_integration(
 enum PlanGuard<'a> {
     Legacy,
     CharterTransfer(&'a crate::registry_filing::charter_transfer::ClosedCharterTransferPlan),
+    CharterPending(&'a crate::managed_charter_transfer::ClosedCharterPendingPlan),
     CoreIntegration(&'a crate::core_integration::ClosedCorePlan),
     Purchase(&'a crate::managed_purchase::ClosedPurchasePlan),
     Renewal(&'a crate::managed_renewal::ClosedRenewalPlan),
@@ -561,6 +574,7 @@ impl PlanGuard<'_> {
     ) -> Result<(), EconomyError> {
         match self {
             Self::CharterTransfer(proof) => proof.check(plan, snapshot),
+            Self::CharterPending(proof) => proof.check(plan, snapshot),
             _ => crate::managed_title::require_unmanaged_mutations(plan, snapshot),
         }
     }
@@ -572,6 +586,7 @@ impl PlanGuard<'_> {
             Self::Renewal(proof) => proof.check(plan, snapshot),
             Self::CompatibleUpdate(proof) => proof.check(plan, snapshot),
             Self::CharterTransfer(proof) => proof.check(plan, snapshot),
+            Self::CharterPending(proof) => proof.check(plan, snapshot),
         }
     }
 }

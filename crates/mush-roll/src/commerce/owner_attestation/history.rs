@@ -289,15 +289,14 @@ pub(crate) fn verify(
     )?;
     let term = read(ctx, &f.terms, op.next.key())?;
     let filed = read(ctx, &f.filed, op.filed.key())?;
-    let rating = ratings
-        .resolve_receipt_read(ctx, &op.rating)
-        .map_err(unavailable)?;
+    let rating =
+        super::super::rating::reconformance::history::certificate(ctx, ratings, filed, &op.rating)
+            .map_err(unavailable)?;
     if term != &op.next
         || filed.content.id() != op.filed
         || filed.content.revision() != op.revision
         || filed.content.position().charter != op.charter
         || filed.content.position().line != op.line
-        || filed.rating != op.rating
         || rating.subject().revision() != op.revision
         || rating.compatibility().digest() != op.manifest.digest()
     {

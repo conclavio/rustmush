@@ -258,9 +258,9 @@ fn project_owner_for(
             return Err(OwnerProjectionError::Integrity);
         }
     }
-    let rating = ratings
-        .complete_active_receipt(ctx, &filed.rating, expected)
-        .map_err(|_| OwnerProjectionError::NotHeld)?;
+    let rating =
+        super::rating::reconformance::current::receipt(ctx, families, ratings, filed, expected)
+            .map_err(|_| OwnerProjectionError::NotHeld)?;
     if rating.subject().revision() != identity
         || rating.subject().definition() != filed.definition
         || rating.subject().schema() != line.schema_digest
@@ -316,7 +316,9 @@ fn project_owner_for(
         revision: revision.clone(),
         identity,
         definition: filed.definition,
-        rating: filed.rating,
+        rating: rating
+            .reference()
+            .map_err(|_| OwnerProjectionError::Integrity)?,
         compatibility: rating.compatibility().clone(),
         qualification,
         declared: rating.subject().declared(),

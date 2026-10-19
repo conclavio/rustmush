@@ -357,7 +357,11 @@ pub(super) fn require_disjoint_operation(
     view: &View<'_>,
     operation: CommitToken,
 ) -> Result<(), ActionStateError> {
-    for family in ["roll_mind_paid_purchase", "roll_mind_entitlement_purchase"] {
+    for family in [
+        "roll_mind_paid_purchase",
+        "roll_mind_entitlement_purchase",
+        "roll_mind_house_purchase",
+    ] {
         if optional_family_value(view, family, operation)?.is_some() {
             return Err(refused("renewal operation has another purchase recipe"));
         }

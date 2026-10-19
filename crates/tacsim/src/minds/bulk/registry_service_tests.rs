@@ -330,6 +330,7 @@ fn admitted_transition_no_intent_preserves_exact_machine_ticket_and_paid_receipt
             _ => return Err("phase".into()),
         };
         let mut entry = Entry {
+            reconformance: false,
             id: ticket.get(),
             account: binding.account,
             actor: binding.character,
@@ -408,6 +409,7 @@ fn binding(actor: u32) -> TestResult<Binding> {
 }
 fn entry(binding: Binding, ticket: TicketId, drops: Arc<AtomicUsize>) -> Entry {
     Entry {
+        reconformance: false,
         id: ticket.get(),
         account: binding.account,
         actor: binding.character,

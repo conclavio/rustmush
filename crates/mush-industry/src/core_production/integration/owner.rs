@@ -11,7 +11,7 @@ use crate::core_production::{
     CoreOriginMode, authority::Definitions, participant::CoreProductionState,
 };
 use mush_core::participant::{OwnerPreparationBinding, OwnerPrepareContext, ParticipantError};
-use mush_core::{CommitToken, DefinitionRef, GOD, ReplayWrite};
+use mush_core::{GOD, ReplayWrite};
 use mush_economy::core_integration::{CoreFundingOutput, CoreTerminalOutput};
 use mush_inventory::core_input::{CoreInputRequest, CoreInputWitness, RegisteredCoreInputs};
 use std::sync::Arc;

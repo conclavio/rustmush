@@ -9,13 +9,29 @@ use mush_roll::commerce::rating::RatingCompatibility;
 use super::{factory::Factory, manifest::FrozenPolicy};
 
 #[derive(Clone)]
-pub(in crate::minds) struct Resources(Arc<FrozenPolicy>);
+pub(in crate::minds) struct Resources(Arc<FrozenPolicy>, bool);
 impl Resources {
     pub(in crate::minds) fn roll_owners(module: mush_roll::RollModule) -> mush_roll::RollModule {
         super::registration::roll_owners(module)
     }
     pub(in crate::minds) fn capture() -> Result<Self, Box<dyn std::error::Error>> {
-        Ok(Self(Arc::new(super::tests::frozen_policy()?)))
+        Ok(Self(Arc::new(super::tests::frozen_policy()?), false))
+    }
+    pub(in crate::minds) fn reconformance_config(
+        cfg: crate::config::TacsimConfig,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        cfg.arena.validate()?;
+        cfg.minds.validate()?;
+        Ok(Self(
+            Arc::new(super::tests::frozen_policy_with_config(cfg)?),
+            true,
+        ))
+    }
+    pub(in crate::minds) fn reconformance(&self) -> bool {
+        self.1
+    }
+    pub(in crate::minds) fn reference(&self) -> Result<DefinitionRef, ModError> {
+        self.0.definition_ref()
     }
     pub(in crate::minds) fn config(&self) -> crate::config::TacsimConfig {
         self.0.cfg.clone()
@@ -53,7 +69,11 @@ impl Resources {
         active: bool,
     ) -> Result<(DefinitionRef, RatingCompatibility, Option<Arc<Factory>>), ModError> {
         if active {
-            let (manifest, factory) = super::registration::register(reg, Arc::clone(&self.0))?;
+            let (manifest, factory) = if self.1 {
+                super::registration::register_profiles(reg, Arc::clone(&self.0), false, true)?
+            } else {
+                super::registration::register(reg, Arc::clone(&self.0))?
+            };
             Ok((
                 manifest.definition().clone(),
                 manifest.compatibility().clone(),

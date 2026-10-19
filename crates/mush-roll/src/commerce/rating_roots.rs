@@ -15,6 +15,7 @@ pub(crate) struct RatingRoots {
     before: Vec<RequiredRoot>,
     after: Vec<RequiredRoot>,
     marked: Option<super::marked_rating::AdmissionFence>,
+    reconformance: Option<super::rating::reconformance::fence::ServiceFence>,
 }
 
 fn root(job: &RatingJob, anchor: RootAnchor) -> RequiredRoot {
@@ -69,6 +70,7 @@ impl RatingRoots {
             before: required(job)?,
             after: required(job)?,
             marked: None,
+            reconformance: None,
         })
     }
     /// Called only by the closed admission builder after checking destination
@@ -82,6 +84,7 @@ impl RatingRoots {
             before: Vec::new(),
             after: required(job)?,
             marked: None,
+            reconformance: None,
         })
     }
 
@@ -102,6 +105,23 @@ impl RatingRoots {
         let mut request = Self::admission(job, commit)?;
         request.marked = Some(fence);
         Ok(request)
+    }
+    pub(crate) fn with_reconformance(
+        mut self,
+        action: mush_core::DefinitionRef,
+        manifest: mush_core::DefinitionRef,
+    ) -> Result<Self, RatingError> {
+        self.reconformance = Some(super::rating::reconformance::fence::ServiceFence::new(
+            action,
+            manifest,
+            self.commit,
+        )?);
+        Ok(self)
+    }
+    pub(crate) fn reconformance(
+        &self,
+    ) -> Option<&super::rating::reconformance::fence::ServiceFence> {
+        self.reconformance.as_ref()
     }
     pub(crate) fn marked(&self) -> Option<&super::marked_rating::AdmissionFence> {
         self.marked.as_ref()
@@ -136,6 +156,7 @@ impl RatingRoots {
             before: required(before)?,
             after: required(after)?,
             marked: None,
+            reconformance: None,
         })
     }
 

@@ -15,6 +15,7 @@ pub(crate) struct Registration {
     original_config: TacsimConfig,
     reference: DefinitionRef,
     mode: CommerceMode,
+    reconformance: bool,
 }
 
 fn error(error: impl std::fmt::Display) -> ModError {
@@ -44,9 +45,17 @@ impl Registration {
             original_config: cfg.clone(),
             reference,
             mode,
+            reconformance: false,
         })
     }
 
+    pub(crate) fn with_reconformance(mut self) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.reconformance {
+            return Err(ModError::msg("reconformance requires one Active Registry"));
+        }
+        self.reconformance = true;
+        Ok(self)
+    }
     pub(crate) fn reference(&self) -> &DefinitionRef {
         &self.reference
     }
@@ -75,7 +84,13 @@ impl Registration {
         // Every content descriptor has already entered this actual Tacsim
         // registrar. Its manifest validator resolves their exact references.
         let registered = if self.mode == CommerceMode::Active {
-            super::registration::register_with_ic(reg, Arc::clone(&self.policy), ic)?.0
+            super::registration::register_profiles(
+                reg,
+                Arc::clone(&self.policy),
+                ic,
+                self.reconformance,
+            )?
+            .0
         } else {
             self.policy.register(reg)?
         };

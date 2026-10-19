@@ -659,6 +659,40 @@ impl<'a> ParticipantPreparation<'a> {
         Ok(output)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn deliver_core_output<
+        P: crate::core_output::CoreOutputPolicy,
+        D: crate::core_delivery::CoreDeliveryPolicy,
+    >(
+        &mut self,
+        service: &crate::core_delivery::CoreOutputDeliveries<P, D>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        commit: CommitToken,
+        order: u64,
+        facts: crate::core_delivery::DeliveryFacts,
+        hooks: std::sync::Arc<[crate::module::HookReg]>,
+        base: &crate::action_state::ActionReadBase,
+        provider: &crate::action::ProviderRegistrationOrdinal,
+    ) -> Result<crate::core_delivery::DeliveredCoreOutput, ParticipantError> {
+        if self.shell.is_some() {
+            return Err(ParticipantError::Authority);
+        }
+        let (output, image) = service.prepare(
+            self.world,
+            self.invocation,
+            self.provider.action(),
+            commit,
+            txn,
+            order,
+            facts,
+            hooks,
+            base,
+            provider,
+        )?;
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::Delivery(image));
+        Ok(output)
+    }
+
     pub(crate) fn reserve_shell(
         &mut self,
         service: &crate::reserved_shell::ShellReservations,

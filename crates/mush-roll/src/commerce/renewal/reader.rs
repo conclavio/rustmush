@@ -370,7 +370,6 @@ impl OwnerReadService for RenewalReader {
             || sale.revision() != binding.revision
             || sale.charter() != binding.charter
             || sale.line() != binding.line
-            || sale.rating() != birth.rating()
             || sale.minimum() > binding.terms.class()
             || sale.royalty().reference().map_err(integrity)? != binding.grant.royalty_chain()
             || !sale.materialization().creates().is_empty()

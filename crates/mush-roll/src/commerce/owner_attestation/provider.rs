@@ -240,10 +240,14 @@ impl Provider {
         } else {
             None
         };
-        let rating = self
-            .ratings
-            .complete_active_receipt_in_txn(txn, &filed.rating, &self.expected)
-            .map_err(invalid)?;
+        let rating = super::super::rating::reconformance::current::receipt_in_txn(
+            txn,
+            &self.families,
+            &self.ratings,
+            &filed,
+            &self.expected,
+        )
+        .map_err(invalid)?;
         if rating.subject().revision() != filed.content.revision()
             || rating.subject().definition() != filed.definition
             || rating.subject().schema() != line.schema_digest
@@ -326,7 +330,7 @@ impl Provider {
             predecessor_digest: term_digest(&old)?,
             filed: filed.content.id(),
             revision: filed.content.revision(),
-            rating: filed.rating,
+            rating: rating.reference().map_err(invalid)?,
             title_revision,
             observed_ic: observed.clone(),
             observed_utc: world.now(),

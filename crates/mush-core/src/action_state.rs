@@ -748,6 +748,7 @@ pub struct StateFamilyRegistryBuilder {
     registry_rating: Option<terminal_capacity::Protocol>,
     original_purchase: Option<terminal_capacity::PurchaseProtocol>,
     entitlement_purchase: Option<terminal_capacity::EntitlementProtocol>,
+    house_purchase: Option<terminal_capacity::HouseProtocol>,
     mind_renewal: Option<terminal_capacity::RenewalProtocol>,
     ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
     core_integration: Option<terminal_capacity::CoreIntegrationProtocol>,
@@ -959,6 +960,27 @@ impl StateFamilyRegistryBuilder {
         Ok(())
     }
 
+    pub(crate) fn house_mind_purchase_capacity(
+        &mut self,
+        owner: &OwnerId,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 3],
+    ) -> Result<(), ActionStateError> {
+        if self.house_purchase.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate purchase protocol",
+            ));
+        }
+        self.house_purchase = Some(terminal_capacity::HouseProtocol::new(
+            owner,
+            manifest,
+            participants,
+            actions,
+        )?);
+        Ok(())
+    }
+
     pub(crate) fn mind_entitlement_purchase_capacity(
         &mut self,
         owner: &OwnerId,
@@ -994,6 +1016,25 @@ impl StateFamilyRegistryBuilder {
             ));
         }
         self.core_integration = Some(terminal_capacity::CoreIntegrationProtocol::new(
+            owner,
+            participants,
+            actions,
+        )?);
+        Ok(())
+    }
+
+    pub(crate) fn core_integration_delivery_capacity(
+        &mut self,
+        owner: &OwnerId,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 6],
+    ) -> Result<(), ActionStateError> {
+        if self.core_integration.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate core integration protocol",
+            ));
+        }
+        self.core_integration = Some(terminal_capacity::CoreIntegrationProtocol::with_delivery(
             owner,
             participants,
             actions,
@@ -1106,6 +1147,7 @@ impl StateFamilyRegistryBuilder {
             self.mind_renewal.as_ref(),
             self.ic_mind_claim.as_ref(),
             self.core_integration.as_ref(),
+            self.house_purchase.as_ref(),
         )?;
         let registry = StateFamilyRegistry {
             entries: self.entries,
@@ -1117,6 +1159,7 @@ impl StateFamilyRegistryBuilder {
             mind_renewal: self.mind_renewal,
             ic_mind_claim: self.ic_mind_claim,
             core_integration: self.core_integration,
+            house_purchase: self.house_purchase,
             fingerprint,
             owner_readiness,
         };
@@ -1134,6 +1177,11 @@ impl StateFamilyRegistryBuilder {
             protocol
                 .validate_families(&registry)
                 .map_err(|e| StateFamilyRegistryError::EntitlementPurchase(e.to_string()))?;
+        }
+        if let Some(protocol) = &registry.house_purchase {
+            protocol
+                .validate_families(&registry)
+                .map_err(|e| StateFamilyRegistryError::HousePurchase(e.to_string()))?;
         }
         if let Some(protocol) = &registry.mind_renewal {
             protocol
@@ -1164,6 +1212,7 @@ pub struct StateFamilyRegistry {
     registry_rating: Option<terminal_capacity::Protocol>,
     original_purchase: Option<terminal_capacity::PurchaseProtocol>,
     entitlement_purchase: Option<terminal_capacity::EntitlementProtocol>,
+    house_purchase: Option<terminal_capacity::HouseProtocol>,
     mind_renewal: Option<terminal_capacity::RenewalProtocol>,
     ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
     core_integration: Option<terminal_capacity::CoreIntegrationProtocol>,
@@ -1194,6 +1243,9 @@ impl StateFamilyRegistry {
             protocol.validate_composition(definitions, providers, participants)?;
         }
         if let Some(protocol) = &self.entitlement_purchase {
+            protocol.validate_composition(definitions, providers, participants)?;
+        }
+        if let Some(protocol) = &self.house_purchase {
             protocol.validate_composition(definitions, providers, participants)?;
         }
         if let Some(protocol) = &self.mind_renewal {
@@ -1314,6 +1366,7 @@ fn state_family_fingerprint<'a>(
     mind_renewal: Option<&terminal_capacity::RenewalProtocol>,
     ic_mind_claim: Option<&terminal_capacity::IcClaimProtocol>,
     core_integration: Option<&terminal_capacity::CoreIntegrationProtocol>,
+    house_purchase: Option<&terminal_capacity::HouseProtocol>,
 ) -> Result<DefinitionDigest, CanonicalEncodingError> {
     let mut value = serde_json::Map::from_iter([
         (
@@ -1397,12 +1450,20 @@ fn state_family_fingerprint<'a>(
     } else {
         domain
     };
+    let domain = if let Some(protocol) = house_purchase {
+        value.insert("house_purchase".to_owned(), json!(protocol));
+        "state_family_registry.v10"
+    } else {
+        domain
+    };
     DefinitionDigest::for_canonical_value(domain, &Value::Object(value))
 }
 
 /// State-family registration failure.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum StateFamilyRegistryError {
+    #[error("House purchase capacity composition: {0}")]
+    HousePurchase(String),
     #[error("Core integration capacity composition: {0}")]
     CoreIntegration(String),
     #[error("IC mind claim capacity composition: {0}")]
@@ -2553,6 +2614,24 @@ impl ActionTxn<'_> {
                 ActionStateError::TerminalCapacity("entitlement transaction base differs")
             })?;
             terminal_capacity::entitlement_change(self, commit, terminal)
+        })();
+        if let Err(error) = &result {
+            self.poison(error);
+        }
+        result
+    }
+    pub(crate) fn house_mind_purchase_completion(
+        &mut self,
+        base: &ActionReadBase,
+        provider: &ProviderRegistrationOrdinal,
+        commit: crate::CommitToken,
+        terminal: Option<crate::CommitToken>,
+    ) -> Result<(), ActionStateError> {
+        let result = (|| {
+            self.read_preimage(base, provider).map_err(|_| {
+                ActionStateError::TerminalCapacity("house transaction base differs")
+            })?;
+            terminal_capacity::house_change(self, commit, terminal)
         })();
         if let Err(error) = &result {
             self.poison(error);

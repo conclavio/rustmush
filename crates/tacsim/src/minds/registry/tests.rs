@@ -304,6 +304,11 @@ fn duplicate_or_foreign_jobs_cannot_become_valid_measurement() -> TestResult {
 }
 
 pub(super) fn frozen_policy() -> Result<super::manifest::FrozenPolicy, Box<dyn std::error::Error>> {
+    frozen_policy_with_config(crate::config::TacsimConfig::default())
+}
+pub(super) fn frozen_policy_with_config(
+    cfg: crate::config::TacsimConfig,
+) -> Result<super::manifest::FrozenPolicy, Box<dyn std::error::Error>> {
     use mush_atlas::{AtlasModule, AtlasState};
     use mush_content::{Appliers, ContentModule};
     use mush_testkit::TestWorld;
@@ -325,8 +330,6 @@ pub(super) fn frozen_policy() -> Result<super::manifest::FrozenPolicy, Box<dyn s
         .records;
     let catalog = Arc::new(crate::definitions::Catalog::build_fielded(&[], crate::NS)?);
     Ok(super::manifest::FrozenPolicy::capture(
-        catalog,
-        records,
-        crate::config::TacsimConfig::default(),
+        catalog, records, cfg,
     )?)
 }

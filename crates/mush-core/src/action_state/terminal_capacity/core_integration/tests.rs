@@ -125,6 +125,7 @@ struct Defs {
     recipe: DefinitionDescriptor,
     participants: [DefinitionRef; 2],
     actions: [DefinitionRef; 5],
+    delivery: Option<DefinitionRef>,
     ordinary: DefinitionRef,
     outcome: DefinitionRef,
 }
@@ -144,6 +145,9 @@ fn descriptor_ref(owner: &str, d: DefinitionDescriptor) -> TestResult<Definition
     Ok(DefinitionRegistryBuilder::new().register(owner_id(owner)?, d)?)
 }
 fn defs(version: u64) -> TestResult<Arc<Defs>> {
+    defs_profile(version, false)
+}
+fn defs_profile(version: u64, delivery_profile: bool) -> TestResult<Arc<Defs>> {
     let recipe = DefinitionDescriptor::new(
         DefinitionKind::new("recipe")?,
         DefinitionId::new("core_integrate")?,
@@ -151,7 +155,10 @@ fn defs(version: u64) -> TestResult<Arc<Defs>> {
         json!({"version":version}),
     )?;
     let recipe_ref = descriptor_ref("industry", recipe.clone())?;
-    let policy = json!({"recipe":recipe_ref,"factory":100,"output_container":101});
+    let mut policy = json!({"recipe":recipe_ref,"factory":100,"output_container":101});
+    if delivery_profile {
+        policy["delivery"] = json!("personal_custody_v1");
+    }
     let actions = std::array::from_fn(|i| action_reference(&policy, i).unwrap());
     let ordinary = descriptor_ref("industry", simple("action", "core_capacity_fixture"))?;
     let outcome = descriptor_ref("industry", simple("outcome", "core_capacity_fixture"))?;
@@ -163,6 +170,9 @@ fn defs(version: u64) -> TestResult<Arc<Defs>> {
             descriptor_ref("economy", participant(1)?)?,
         ],
         actions,
+        delivery: delivery_profile
+            .then(delivery::action_reference)
+            .transpose()?,
         ordinary,
         outcome,
     }))
@@ -224,6 +234,7 @@ impl<const N: u8> GameModule for Module<N> {
                     .filter(|(i, _)| !(self.fault == 3 && N == 1 && *i == 0))
                     .map(|(_, a)| a.clone())
                     .chain([self.defs.ordinary.clone()])
+                    .chain(self.defs.delivery.iter().cloned())
                     .collect(),
                 Adapter::<N> {
                     trace: self.trace.clone(),
@@ -231,7 +242,10 @@ impl<const N: u8> GameModule for Module<N> {
             )?;
         }
         let mut all = Vec::new();
-        for (owner, name, _) in FAMILIES {
+        for (owner, name, _) in FAMILIES
+            .into_iter()
+            .chain(self.defs.delivery.iter().flat_map(|_| delivery::FAMILIES))
+        {
             if owner == self.name() {
                 all.push((name.to_owned(), descriptor(name).map_err(moderr)?));
             }
@@ -289,6 +303,11 @@ impl<const N: u8> GameModule for Module<N> {
                 self.defs.ordinary.clone(),
                 simple("action", "core_capacity_fixture"),
             ));
+            if let Some(action) = &self.defs.delivery {
+                let descriptor = DefinitionDescriptor::new(DefinitionKind::new("action").map_err(moderr)?,DefinitionId::new("deliver_core_output").map_err(moderr)?,1,
+                    json!({"format":1,"protocol":"certified_core_delivery_v1","authority":"actual_completed_requester","effect":"ordinary_personal_custody","current_recipe_required":false,"core_receipt_bytes":16384,"industry_receipt_bytes":4096})).map_err(moderr)?;
+                actions.push((action.clone(), descriptor));
+            }
             validate(reg, "action", actions.clone())?;
             let d = simple("outcome", "core_capacity_fixture");
             validate(reg, "outcome", vec![(self.defs.outcome.clone(), d.clone())])?;
@@ -313,7 +332,15 @@ impl<const N: u8> GameModule for Module<N> {
                 if self.fault == 4 {
                     actions.swap(0, 1);
                 }
-                reg.core_integration_capacity(self.defs.participants.clone(), actions)?;
+                if let Some(delivery) = &self.defs.delivery {
+                    let [a, b, c, d, e] = actions;
+                    reg.core_integration_delivery_capacity(
+                        self.defs.participants.clone(),
+                        [a, b, c, d, e, delivery.clone()],
+                    )?;
+                } else {
+                    reg.core_integration_capacity(self.defs.participants.clone(), actions)?;
+                }
                 if self.fault == 5 {
                     reg.core_integration_capacity(
                         self.defs.participants.clone(),
@@ -368,7 +395,7 @@ impl ActionProvider for Provider {
             }
             .map_err(|_| err())?;
         }
-        if self.index < 5 {
+        if self.index < 5 || self.index == 6 {
             ctx.prepare_owner(&self.first, false).map_err(|_| err())?;
             if matches!(self.index, 0 | 3 | 4) {
                 ctx.prepare_owner(&self.second, false).map_err(|_| err())?;
@@ -403,7 +430,16 @@ fn fixture(version: u64, enabled: bool, reverse: bool) -> TestResult<Fixture> {
     fixture_fault(version, enabled, reverse, 0)
 }
 fn fixture_fault(version: u64, enabled: bool, reverse: bool, fault: u8) -> TestResult<Fixture> {
-    let defs = defs(version)?;
+    fixture_profile(version, enabled, reverse, fault, false)
+}
+fn fixture_profile(
+    version: u64,
+    enabled: bool,
+    reverse: bool,
+    fault: u8,
+    delivery: bool,
+) -> TestResult<Fixture> {
+    let defs = defs_profile(version, delivery)?;
     let handles = Arc::new(Mutex::new(BTreeMap::new()));
     let trace = Arc::new(Mutex::new(Vec::new()));
     macro_rules! m {
@@ -468,7 +504,9 @@ fn prepare(
     actor: ObjId,
     principal: Option<PrincipalId>,
 ) -> TestResult<crate::composed::PreparedComposedTxn> {
-    let action = if index == 5 {
+    let action = if index == 6 {
+        f.defs.delivery.clone().ok_or("delivery definition")?
+    } else if index == 5 {
         f.defs.ordinary.clone()
     } else {
         f.defs.actions[index].clone()
@@ -612,7 +650,10 @@ fn admission(d: &Defs, order: u64, op: CommitToken) -> TestResult<(Value, Vec<Mu
     Ok((raw, writes))
 }
 fn accepted(reverse: bool) -> TestResult<(Fixture, Value)> {
-    let mut f = fixture(1, true, reverse)?;
+    accepted_profile(reverse, false)
+}
+fn accepted_profile(reverse: bool, delivery: bool) -> TestResult<(Fixture, Value)> {
+    let mut f = fixture_profile(1, true, reverse, 0, delivery)?;
     let (raw, writes) = admission(&f.defs, 0, token(1))?;
     let r = Row::parse(raw.clone(), 0)?;
     let keys = r.keys()?;
@@ -956,3 +997,6 @@ fn maximal_nested_terminal_and_full_native_facility_book_fit_complete_envelopes(
     );
     Ok(())
 }
+
+#[path = "tests/delivery.rs"]
+mod delivery_tests;

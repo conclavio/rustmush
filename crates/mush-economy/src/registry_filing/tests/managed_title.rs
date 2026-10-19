@@ -1,5 +1,5 @@
 use super::*;
-use crate::{AllowAll, Encumbrance, MapOnlyKeys};
+use crate::{AllowAll, Encumbrance, InstrumentId, MapOnlyKeys};
 
 fn unrestricted() -> ValidateEnv<'static> {
     ValidateEnv {

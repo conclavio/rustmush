@@ -12,6 +12,10 @@ use super::records::*;
 /// No public constructor, family-name lookup or blanket delegation is added.
 #[derive(Clone)]
 pub struct CommerceFamilies {
+    pub(crate) measured_recalls:
+        StateFamilyHandle<String, super::rating::reconformance::recall::records::MeasuredRecall>,
+    pub(crate) reconformance_heads:
+        StateFamilyHandle<String, super::rating::reconformance::ReconformanceHead>,
     pub(crate) charter_transfer_offers:
         StateFamilyHandle<String, super::charter_transfer::records::CharterOffer>,
     pub(crate) charter_transfers:
@@ -69,6 +73,8 @@ pub struct CommerceFamilies {
 impl CommerceFamilies {
     pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<Self, ModError> {
         Ok(Self {
+            measured_recalls: register(reg)?,
+            reconformance_heads: register(reg)?,
             charter_transfer_offers: register(reg)?,
             charter_transfers: register(reg)?,
             charter_ownership: register(reg)?,
@@ -180,12 +186,19 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
         | "roll_mind_authored_retirement"
         | "roll_mind_author_withdrawal"
         | "roll_registry_revision_recalls"
+        | "roll_registry_term_revocations"
+        | "roll_registry_measured_recalls"
         | "roll_mind_owner_qualification_operation"
         | "roll_mind_owner_attestation_operation"
         | "roll_mind_entitlement_purchase"
         | "roll_mind_renewal_operation" => hex(head, 32, false) && parts.next().is_none(),
-        "roll_mind_filed_identity" => hex(head, 64, false) && parts.next().is_none(),
-        "roll_mind_owner_term" | "roll_mind_paid_term" | "roll_mind_paid_term_economics" => {
+        "roll_registry_reconformance_heads" | "roll_mind_filed_identity" => {
+            hex(head, 64, false) && parts.next().is_none()
+        }
+        "roll_registry_revoked_terms"
+        | "roll_mind_owner_term"
+        | "roll_mind_paid_term"
+        | "roll_mind_paid_term_economics" => {
             head == "licence"
                 && parts.next().is_some_and(|v| hex(v, 16, true))
                 && parts.next() == Some("term")

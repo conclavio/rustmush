@@ -587,3 +587,75 @@ fn registry_revocation_policy_is_closed_bounded_and_does_not_invent_identifier_m
     assert!(serde_json::from_value::<RegistryRevocationPolicy>(raw).is_err());
     Ok(())
 }
+
+#[test]
+fn registered_revocation_families_allow_empty_reads_and_exact_term_and_operation_keys() -> Result {
+    // Structural records exercise the actual codecs only. No commerce health,
+    // real licence, authorization or successful revocation is manufactured.
+    type Captured = Arc<Mutex<Option<super::super::families::CommerceFamilies>>>;
+    struct Keys(Captured);
+    impl GameModule for Keys {
+        fn name(&self) -> &'static str {
+            crate::NS
+        }
+        fn register(&mut self, reg: &mut Registrar<'_>) -> std::result::Result<(), ModError> {
+            *self.0.lock().map_err(|_| ModError::msg("handles"))? =
+                Some(super::super::families::CommerceFamilies::register(reg)?);
+            Ok(())
+        }
+    }
+    let captured = Captured::default();
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(Keys(captured.clone()))],
+    )?;
+    boot(&mut engine, HashMap::new())?;
+    let f = captured
+        .lock()
+        .map_err(|_| "handles")?
+        .clone()
+        .ok_or("registered families")?;
+    let op = operation()?;
+    let status = op.status()?;
+    let mut txn = engine.action_transaction(&f.revoked_terms)?;
+    assert!(txn.get(&f.revoked_terms, &status.key())?.is_none());
+    assert!(txn.get(&f.registry_revocations, &op.key())?.is_none());
+    super::current::require_in_txn(&mut txn, &f, status.licence, status.generation, None)?;
+    drop(txn);
+    for key in [
+        format!("{}/extra", status.key()),
+        status.key().to_uppercase(),
+        status.key().replace("licence/", "license/"),
+    ] {
+        let mut txn = engine.action_transaction(&f.revoked_terms)?;
+        assert!(txn.get(&f.revoked_terms, &key).is_err());
+        assert!(txn.prepare().is_err());
+    }
+    for key in [
+        format!("{}/extra", op.key()),
+        op.key().to_uppercase(),
+        status.key(),
+    ] {
+        let mut txn = engine.action_transaction(&f.registry_revocations)?;
+        assert!(txn.get(&f.registry_revocations, &key).is_err());
+        assert!(txn.prepare().is_err());
+    }
+    let mut txn = engine.action_transaction(&f.revoked_terms)?;
+    txn.insert(&f.registry_revocations, &op.key(), op.clone())?;
+    txn.insert(&f.revoked_terms, &status.key(), status.clone())?;
+    assert!(
+        super::current::require_in_txn(&mut txn, &f, status.licence, status.generation, None)
+            .is_err()
+    );
+    let (_, installation) = txn.prepare()?.into_parts();
+    engine.install_prepared_action(installation)?;
+    let mut txn = engine.action_transaction(&f.revoked_terms)?;
+    assert!(txn.get(&f.revoked_terms, &status.key())? == Some(&status));
+    assert!(txn.get(&f.registry_revocations, &op.key())? == Some(&op));
+    assert!(
+        super::current::require_in_txn(&mut txn, &f, status.licence, status.generation, None)
+            .is_err()
+    );
+    Ok(())
+}

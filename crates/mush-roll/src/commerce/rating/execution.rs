@@ -184,6 +184,17 @@ pub struct ExecutionAdmission {
     // Absent for historical admissions: their exact future-key promise is unchanged.
     #[serde(default, skip_serializing_if = "is_false")]
     pub measured_rejection: bool,
+    #[serde(
+        default,
+        deserialize_with = "present_reconformance",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reconformance: Option<super::reconformance::ReconformanceAdmission>,
+}
+fn present_reconformance<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<super::reconformance::ReconformanceAdmission>, D::Error> {
+    super::reconformance::ReconformanceAdmission::deserialize(d).map(Some)
 }
 fn is_false(value: &bool) -> bool {
     !value
@@ -191,6 +202,12 @@ fn is_false(value: &bool) -> bool {
 impl ExecutionAdmission {
     pub fn validate(&self) -> Result<(), RatingError> {
         self.start.validate()?;
+        if let Some(binding) = &self.reconformance {
+            binding.validate()?;
+            if self.character != mush_core::GOD || !self.measured_rejection {
+                return Err(RatingError::Identity);
+            }
+        }
         if self.character.0 == 0
             || self.run == 0
             || self.nonce == 0
@@ -207,7 +224,15 @@ impl ExecutionAdmission {
         Ok(())
     }
     fn matches_job(&self, job: &RatingJob) -> Result<(), RatingError> {
-        if self.character != job.subject().revision().revision().key.character
+        let correct_actor = match &self.reconformance {
+            None => self.character == job.subject().revision().revision().key.character,
+            Some(binding) => {
+                self.character == mush_core::GOD
+                    && binding.birth_rating().job() != job.job()
+                    && binding.previous_attempt() != Some(job.job())
+            }
+        };
+        if !correct_actor
             || self.subject != job.subject().digest()?
             || self.compatibility != job.compatibility().digest()
             || self.plan != job.plan()

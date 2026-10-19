@@ -22,37 +22,51 @@ impl RevisionAdapter for RevisionRules {
     }
 
     fn validate(&self, source: &str, envelope: &Envelope) -> Result<(), RollError> {
-        envelope.validate()?;
-        if source.len() > mush_roll::MAX_SOURCE_BYTES {
-            return Err(invalid("source", "maximum 32 KiB"));
-        }
-        if envelope.mind_abi != super::MIND_ABI {
-            return Err(invalid("mind_abi", "not the current executable ABI"));
-        }
-        let class = CoreClass::parse(&envelope.declared_class)
-            .ok_or_else(|| invalid("declared_class", "expected I, II or III"))?;
-        if class == CoreClass::Zero {
-            return Err(invalid(
-                "declared_class",
-                "class 0 is the Registry drive ROM; authored scripts require I, II or III",
-            ));
-        }
-        crate::arena::schema::validate_envelope(
-            &envelope.schema,
-            &envelope.presets,
-            &envelope.profiles,
-            &envelope.rules,
-            class,
-        )
-        .map_err(|error| invalid("envelope", error.to_string()))?;
-        super::metadata::validate(source, envelope)?;
-        let sandbox = Sandbox::new(&EngineLimits::default(), super::register_api);
-        let digest = Digest(Sha256::digest(source.as_bytes()).into());
-        sandbox
-            .compile(source, digest, super::MIND_ABI)
-            .map_err(|error| invalid("source", error.to_string()))?;
-        Ok(())
+        validate_source(source, envelope, true)
     }
+}
+
+/// Pure re-conformance validation of an immutable retained filed envelope.
+/// This is not source/filing authority. The closed Registry reader and typed
+/// producer independently prove the retained filed subject. Author saves keep
+/// their exact current-ABI requirement; source and old metadata are unchanged.
+pub(crate) fn validate_retained_registry(
+    source: &str,
+    envelope: &Envelope,
+) -> Result<(), RollError> {
+    validate_source(source, envelope, false)
+}
+fn validate_source(source: &str, envelope: &Envelope, current_save: bool) -> Result<(), RollError> {
+    envelope.validate()?;
+    if source.len() > mush_roll::MAX_SOURCE_BYTES {
+        return Err(invalid("source", "maximum 32 KiB"));
+    }
+    if current_save && envelope.mind_abi != super::MIND_ABI {
+        return Err(invalid("mind_abi", "not the current executable ABI"));
+    }
+    let class = CoreClass::parse(&envelope.declared_class)
+        .ok_or_else(|| invalid("declared_class", "expected I, II or III"))?;
+    if class == CoreClass::Zero {
+        return Err(invalid(
+            "declared_class",
+            "class 0 is the Registry drive ROM; authored scripts require I, II or III",
+        ));
+    }
+    crate::arena::schema::validate_envelope(
+        &envelope.schema,
+        &envelope.presets,
+        &envelope.profiles,
+        &envelope.rules,
+        class,
+    )
+    .map_err(|error| invalid("envelope", error.to_string()))?;
+    super::metadata::validate(source, envelope)?;
+    let sandbox = Sandbox::new(&EngineLimits::default(), super::register_api);
+    let digest = Digest(Sha256::digest(source.as_bytes()).into());
+    sandbox
+        .compile(source, digest, super::MIND_ABI)
+        .map_err(|error| invalid("source", error.to_string()))?;
+    Ok(())
 }
 
 fn invalid(field: &str, message: impl Into<String>) -> RollError {

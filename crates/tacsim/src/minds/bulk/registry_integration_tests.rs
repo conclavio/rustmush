@@ -95,6 +95,7 @@ impl AccountIdentity for Accounts {
 }
 #[derive(Default)]
 struct Registered {
+    reconformance: bool,
     manifest: Option<DefinitionRef>,
     compatibility: Option<RatingCompatibility>,
     filing: Option<DefinitionRef>,
@@ -144,6 +145,7 @@ impl GameModule for Tacsim {
             )?;
         }
         let mut shared = self.shared.lock().map_err(module_error)?;
+        shared.reconformance = self.resources.reconformance();
         shared.manifest = Some(manifest);
         shared.compatibility = Some(compatibility);
         shared.factory = factory;

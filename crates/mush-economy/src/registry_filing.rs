@@ -144,6 +144,7 @@ pub struct InitialFilingParticipant {
     compatible_update: Option<mush_core::DefinitionRef>,
     charter_transfer: Option<mush_core::DefinitionRef>,
     core_integration: Option<crate::core_integration::CoreIntegrationConfig>,
+    charter_pending: Option<crate::managed_charter_transfer::CharterPendingConfig>,
 }
 impl InitialFilingParticipant {
     pub fn new(policy: InitialFilingPolicy) -> Self {
@@ -153,6 +154,7 @@ impl InitialFilingParticipant {
             compatible_update: None,
             charter_transfer: None,
             core_integration: None,
+            charter_pending: None,
         }
     }
 }
@@ -195,6 +197,35 @@ pub(crate) fn register_with_core(
     compatible_update: Option<&mush_core::DefinitionRef>,
     charter_transfer: Option<&mush_core::DefinitionRef>,
     core_integration: Option<&crate::core_integration::CoreIntegrationConfig>,
+) -> Result<(), mush_core::ModError> {
+    register_with_pending(
+        reg,
+        policy,
+        action,
+        purchases,
+        entitlements,
+        house_action,
+        dependent_action,
+        renewals,
+        compatible_update,
+        charter_transfer,
+        core_integration,
+        None,
+    )
+}
+pub(crate) fn register_with_pending(
+    reg: &mut mush_core::Registrar<'_>,
+    policy: InitialFilingPolicy,
+    action: mush_core::mechanics::DefinitionRef,
+    purchases: Option<&[mush_core::mechanics::DefinitionRef; 3]>,
+    entitlements: Option<&[[mush_core::mechanics::DefinitionRef; 3]; 2]>,
+    house_action: Option<&mush_core::mechanics::DefinitionRef>,
+    dependent_action: Option<&mush_core::mechanics::DefinitionRef>,
+    renewals: Option<&crate::managed_renewal::bridge::Configuration>,
+    compatible_update: Option<&mush_core::DefinitionRef>,
+    charter_transfer: Option<&mush_core::DefinitionRef>,
+    core_integration: Option<&crate::core_integration::CoreIntegrationConfig>,
+    charter_pending: Option<&crate::managed_charter_transfer::CharterPendingConfig>,
 ) -> Result<(), mush_core::ModError> {
     use mush_core::mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionValidationContext,
@@ -342,6 +373,23 @@ pub(crate) fn register_with_core(
         }
         actions.insert(action.clone());
     }
+    if let Some(config) = charter_pending {
+        config.validate().map_err(|e| bad(&e))?;
+        if config.issuer != policy.issuer
+            || config.catalog != policy.catalog
+            || charter_transfer.is_none()
+        {
+            return Err(mush_core::ModError::msg(
+                "pending charter requires exact filing/title policy and immediate transfer composition",
+            ));
+        }
+        actions.extend([
+            config.fund.clone(),
+            config.settle.clone(),
+            config.refund.clone(),
+        ]);
+        actions.extend(config.revoke.iter().cloned());
+    }
     if let Some(config) = core_integration {
         actions.extend(crate::core_integration::bridge::register(reg, config)?);
     }
@@ -354,6 +402,7 @@ pub(crate) fn register_with_core(
             compatible_update: compatible_update.cloned(),
             charter_transfer: charter_transfer.cloned(),
             core_integration: core_integration.cloned(),
+            charter_pending: charter_pending.cloned(),
         },
     )
 }
@@ -853,6 +902,8 @@ impl InitialFilingParticipant {
 /// original filing request/output wrappers avoids sharing money authority
 /// through a second adapter or generic plan callback.
 pub enum EconomyRequest {
+    CharterPendingFunding(crate::managed_charter_transfer::CharterPendingFundingRequest),
+    CharterPendingTerminal(crate::managed_charter_transfer::CharterPendingTerminalRequest),
     CharterTransfer(charter_transfer::RegistryCharterTransfer),
     CoreFunding(crate::core_integration::CoreFundingRequest),
     CoreCompletion(crate::core_integration::CoreCompletionRequest),
@@ -890,6 +941,7 @@ impl From<RegistryInitialFiling> for EconomyRequest {
     }
 }
 pub enum EconomyOutput {
+    CharterPending(crate::managed_charter_transfer::CharterPendingOutput),
     CharterTransfer(charter_transfer::CharterTransferOutput),
     CoreFunding(crate::core_integration::CoreFundingOutput),
     CoreTerminal(crate::core_integration::CoreTerminalOutput),
@@ -904,6 +956,14 @@ pub enum EconomyOutput {
     RenewalTerminal(crate::managed_renewal::RenewalTerminalOutput),
 }
 impl EconomyOutput {
+    pub fn charter_pending(
+        self,
+    ) -> Result<crate::managed_charter_transfer::CharterPendingOutput, ParticipantError> {
+        match self {
+            Self::CharterPending(out) => Ok(out),
+            _ => Err(refused()),
+        }
+    }
     pub fn charter_transfer(
         self,
     ) -> Result<charter_transfer::CharterTransferOutput, ParticipantError> {
@@ -994,6 +1054,7 @@ impl EconomyOutput {
     }
 }
 pub enum EconomyPatch {
+    CharterPending(Box<crate::managed_charter_transfer::CharterPendingPatch>),
     CharterTransfer(Box<charter_transfer::CharterTransferPatch>),
     CoreMoney(Box<crate::core_integration::CoreMoneyPatch>),
     CompatibleUpdate(Box<update::CompatibleUpdatePatch>),
@@ -1008,6 +1069,7 @@ impl From<InitialFilingPatch> for EconomyPatch {
     }
 }
 pub enum BoundEconomy<'a> {
+    CharterPending(crate::managed_charter_transfer::BoundCharterPending<'a>),
     CharterTransfer(charter_transfer::BoundCharterTransfer<'a>),
     CoreMoney(crate::core_integration::BoundCoreMoney<'a>),
     CompatibleUpdate(update::BoundCompatibleUpdate<'a>),
@@ -1022,6 +1084,7 @@ impl BoundParticipant for BoundEconomy<'_> {
             Self::InitialFiling(bound) => bound.apply(),
             Self::CompatibleUpdate(bound) => bound.apply(),
             Self::CharterTransfer(bound) => bound.apply(),
+            Self::CharterPending(bound) => bound.apply(),
             Self::Purchase(bound) => bound.apply(),
             Self::RenewalOffer(bound) => bound.apply(),
             Self::RenewalMoney(bound) => bound.apply(),
@@ -1031,6 +1094,21 @@ impl BoundParticipant for BoundEconomy<'_> {
 }
 
 impl InitialFilingParticipant {
+    fn prepare_pending(
+        &self,
+        state: &EconomyStore,
+        context: &OwnerPrepareContext<'_>,
+        request: crate::managed_charter_transfer::native::Request,
+    ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
+        let config = self.charter_pending.as_ref().ok_or_else(refused)?;
+        let (output, patch, writes) =
+            crate::managed_charter_transfer::install::prepare(config, state, context, request)?;
+        Ok(OwnerPreparation::new(
+            EconomyOutput::CharterPending(output),
+            EconomyPatch::CharterPending(Box::new(patch)),
+            writes,
+        ))
+    }
     fn prepare_core(
         &self,
         state: &EconomyStore,
@@ -1164,6 +1242,16 @@ impl OwnerParticipant for InitialFilingParticipant {
     ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
         use crate::managed_purchase::{PurchaseOutcome, install};
         match request {
+            EconomyRequest::CharterPendingFunding(request) => self.prepare_pending(
+                state,
+                context,
+                crate::managed_charter_transfer::native::Request::Fund(request),
+            ),
+            EconomyRequest::CharterPendingTerminal(request) => self.prepare_pending(
+                state,
+                context,
+                crate::managed_charter_transfer::native::Request::Terminal(request),
+            ),
             EconomyRequest::CoreFunding(request) => self.prepare_core(
                 state,
                 context,
@@ -1431,6 +1519,11 @@ impl OwnerParticipant for InitialFilingParticipant {
         patch: &EconomyPatch,
     ) -> Result<(), ParticipantError> {
         match patch {
+            EconomyPatch::CharterPending(patch) => patch.recheck(
+                self.charter_pending.as_ref().ok_or_else(refused)?,
+                state,
+                context,
+            ),
             EconomyPatch::CharterTransfer(patch) => charter_transfer::recheck(
                 &self.policy,
                 self.charter_transfer.as_ref().ok_or_else(refused)?,
@@ -1468,6 +1561,9 @@ impl OwnerParticipant for InitialFilingParticipant {
         patch: EconomyPatch,
     ) -> Result<BoundEconomy<'a>, ParticipantError> {
         match patch {
+            EconomyPatch::CharterPending(patch) => {
+                (*patch).bind(state).map(BoundEconomy::CharterPending)
+            }
             EconomyPatch::CharterTransfer(patch) => {
                 charter_transfer::bind(state, *patch).map(BoundEconomy::CharterTransfer)
             }

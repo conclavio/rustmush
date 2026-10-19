@@ -67,6 +67,21 @@ impl PreparedSubject {
         source: &str,
         arena: &ArenaConfig,
     ) -> Result<Self, RatingError> {
+        Self::prepare_inner(revision, source, arena, false)
+    }
+    pub(super) fn prepare_reconformance(
+        revision: &Revision,
+        source: &str,
+        arena: &ArenaConfig,
+    ) -> Result<Self, RatingError> {
+        Self::prepare_inner(revision, source, arena, true)
+    }
+    fn prepare_inner(
+        revision: &Revision,
+        source: &str,
+        arena: &ArenaConfig,
+        reconformance: bool,
+    ) -> Result<Self, RatingError> {
         let revision_identity =
             RevisionIdentity::capture(revision).map_err(|_| RatingError::Invalid)?;
         let envelope = revision.envelope();
@@ -76,9 +91,14 @@ impl PreparedSubject {
         {
             return Err(RatingError::Identity);
         }
-        RevisionRules
-            .validate(source, envelope)
-            .map_err(|_| RatingError::Invalid)?;
+        if reconformance {
+            crate::minds::authoring::validate_retained_registry(source, envelope)
+                .map_err(|_| RatingError::Invalid)?;
+        } else {
+            RevisionRules
+                .validate(source, envelope)
+                .map_err(|_| RatingError::Invalid)?;
+        }
         let class = CoreClass::parse(&envelope.declared_class).ok_or(RatingError::Invalid)?;
         let declared = rating_class(class)?;
         let checked = validate_envelope(

@@ -106,16 +106,15 @@ pub(super) fn audit_with_renewals(
         allocated(row.licence.get())?;
         let filed = read(ctx, &f.filed, row.filed.key())?;
         if filed.content.revision() != row.revision
-            || filed.rating != row.rating
             || filed.content.position().charter != row.charter
             || filed.content.position().line != row.line
             || filed.content.parent().is_some()
         {
             return Err(PublicationError::Mismatch);
         }
-        let rated = ratings
-            .resolve_receipt(ctx, &row.rating)
-            .map_err(|_| PublicationError::Unavailable)?;
+        let rated =
+            super::rating::reconformance::history::certificate(ctx, ratings, filed, &row.rating)
+                .map_err(|_| PublicationError::Unavailable)?;
         if rated.subject().revision() != row.revision || row.terms.class() < rated.minimum() {
             return Err(PublicationError::Mismatch);
         }

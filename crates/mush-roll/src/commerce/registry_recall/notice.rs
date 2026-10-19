@@ -211,22 +211,11 @@ fn own(
     let Some(operation) = status.recalled_by else {
         return Ok(None);
     };
-    let cause = read(ctx, &s.f.registry_recalls, operation.to_hex())?;
-    let initial = super::super::line_update::audit::birth(ctx, &s.f, row)?;
-    cause.matches(initial, row)?;
-    if cause.status() != *status {
+    let cause = super::audit::cause_root(ctx, &s.f, &s.ratings, operation)?;
+    if cause.identity != row.content.revision() {
         return Err(PublicationError::Mismatch);
     }
-    let receipt = s
-        .ratings
-        .resolve_receipt_read(ctx, &cause.rating)
-        .map_err(bad)?;
-    if receipt.subject().revision() != row.content.revision()
-        || receipt.subject().definition() != row.definition
-    {
-        return Err(PublicationError::Mismatch);
-    }
-    roll.check_required_root(&cause.root()?).map_err(bad)?;
+    roll.check_required_root(&cause).map_err(bad)?;
     Ok(Some(Notice {
         actor,
         licence,

@@ -1,6 +1,6 @@
 # 17f — Mind commerce, Registry rights and IC hardware: implementation plan
 
-Implementation continuation, 2026-10-18, on `codex/unit-minds-through-m6`.
+Implementation continuation, 2026-10-19, on `codex/unit-minds-through-m6`.
 M6 is accepted in `17097f5b` with the owner's explicit one-time parity
 exception; [17e](17e-field-pilot-acceptance.md) preserves the failed raw comparison
 and the passing functional evidence. The current economy checkpoint is IC14
@@ -422,16 +422,33 @@ tests preserve old declaration bytes and cover actual transaction/hydration
 boundaries. Registry source access, service submission, certification selection
 and automatic recall remain separate producer integration work.
 
-N69 (`8b866937db843ee4e4b94fe16d58869e15d36e0f`) compiles; its remaining
-runtime stages are still running at this checkpoint. The eight Industry-capacity
-and five reconformance-capacity tests pass. One negative Core fixture now needs
-to observe the intended early refusal rather than a later prepare failure; that
-assertion is repaired without changing production behavior. The actual measured
-rejection worker also fails at settlement. N70 adds bounded fixed-phase
-instrumentation to identify that refusal; it does not treat the rejection path
-as working. The lane-pack regression above also affects travel, sky and several
-cockpit fixtures. Inventory (103), Economy E4 (340), Market (80) and Economy unit
-(159) checks pass in this partial run; these are not full M7 acceptance.
+N69 (`8b866937db843ee4e4b94fe16d58869e15d36e0f`) compiled and completed
+45 stages: **1,993 passed, 133 failed, 2 ignored**. Its 46-file unchanged-source
+archive is SHA-256
+`dbaa388b8f537ee2a8963f4500d5a1f5d78022b324b1fe53304b11923a1b68c0`
+(83,725 bytes), verified and reconciled. Both genuine purchase stories remained
+unstarted after prerequisite failures. The eight Industry-capacity and five
+reconformance-capacity tests passed, as did Inventory (103), Economy E4 (340),
+Market (80), Economy unit (159), IC runtime composition (3), OOC seal compatibility
+(15), twelve L resume/watch tests, two leader presentation tests and the real bot
+lapse producer.
+
+One negative Core fixture needs to observe the intended early refusal rather
+than later prepare failure; its repair preserves production behavior. The actual
+measured rejection worker fails at settlement, with bounded phase instrumentation
+queued for diagnosis. Three Roll reader failures exposed missing key-validator
+rules for the revocation operation and exact licence/term families: even an absent
+sanction could not be read. N71 adds only those canonical key grammars and an
+actual registered-family empty-read/insert/readback regression, retaining malformed
+key rejection and transaction poisoning. The other 128 failures occur in the
+lane-pack-dependent gates affected by the incorrect rounding repair above.
+
+N70 was frozen at `1989f01a31f3c3dbf7d6a807a89bf80797a27f81`, committed in
+`79c5097b`, then merged normally with main at `03ce517e` and pushed. It never ran:
+the newly identified revocation key bug is included in the superseding N71 input,
+which starts from the actual last tested N69 source. N70's queued changes below
+are therefore tested as part of N71, without claiming a nonexistent N70 result.
+M7 acceptance remains open.
 
 N70 includes reviewed actual immediate personal charter sales: signed seller
 consent, actual buyer payment and native title transfer in the same acknowledged
@@ -464,6 +481,47 @@ corruption. Initialize cannot issue stock. No importer or hardware producer is
 enabled by default. Factory orders, payment/title and consumption are now queued
 for N70 validation. Production activation, delivery and installation are still required.
 
+
+N71 through N74 stopped at compilation and executed zero runtime tests.
+Their terminal evidence archives verify unchanged source. The repairs correct
+the Economy plan field, the Core delivery read-error adapter, the actual
+Economy participant and borrowed input APIs, and generic Roll receipt readers.
+They preserve the existing checks rather than relaxing failed gates. N74,
+tree `42f6a3f6032ce7f442948e309bde7188a0d1bdc8` with 330 reviewed packages,
+reached the house-catalogue fixture and found one missing explicit nested-module
+path. Its narrow repair is queued for the next run. N74 includes the real
+re-conformance service and current
+certificate selector, the scoped house catalogue reader, and Core's paid
+manufacture-to-delivery capacity handoff. None of these runs is acceptance.
+
+The implementation branch already merged current main `4465bf06` normally at
+`03ce517e`; a fresh fetch on 2026-10-19 found no newer main commit. N71–N73
+archive SHA-256 values are respectively
+`76cd0661bf7bd7e76c97237ef7d834fe0bfcdedbeb30a205db844472132dcc53`,
+`7b7f0b0538e595d4536b13791f09f850fca5cca1cadc545eadcba1e688af872f`,
+and `325704a7416ff9d732d3deab2dd81cda91893ab43d3e64ae2730860374a12a37`.
+N74's archive is
+`0d3baecc04250d4f99f1ad95acfc1efc8df83cc5d0a832a2825f15aaf04afb19`.
+
+The re-conformance implementation preserves the filed version, uses actual paid
+Registry work, and selects a current certificate only after successful completion.
+An actual measured nonconformance publishes permanent evidence and a separate
+automatic recall. Its genuine purchase/re-conformance story still requires
+execution. The original measured-rejection settlement failure from N69 also
+remains open until the bounded phase diagnostic identifies its cause.
+
+The house catalogue uses actual organization and scope identities and current
+scoped publishing authority. House policy preserves listings after curator departure;
+personal customers still pay for their own licence. The separately reviewed
+house capacity prerequisite now preserves independently accepted future renewal
+terms. Actual House Market/Economy/Roll checkout and renewal are still in progress.
+
+Core delivery now has exact prebuilt ordinary carry images and a permanent
+delivery receipt. The optional paid delivery profile reserves its complete future
+receipts at purchase, shrinks the same reservation after manufacture, then consumes
+the remainder at delivery. Actual Industry delivery, component installation,
+pending charter settlement, SafeConduct underwriting and final release acceptance
+remain required; these prerequisites do not activate those public services.
 
 The L R4 release-notice correction passes in N56: a side lead's fully offered
 whole-squad RELEASE also removes the persona commander's watch, preventing a
@@ -501,9 +559,11 @@ updates and author withdrawal now have implementations and focused evidence;
 their genuine combined commerce stories and final acceptance remain required.
 Registry recall/revocation and production IC claim/close are implemented with
 focused checks; their combined genuine-story and final acceptance gates remain.
-Remaining implementation includes automatic re-conformance and current
-certificate selection, resale and charter transfer, the scoped house catalogue
-and underwriting, and governed Core manufacture, delivery and refit.
+Automatic re-conformance, current certificate selection and the scoped house
+catalogue reader now have reviewed implementations awaiting their combined
+runtime evidence. Remaining implementation includes pending charter settlement,
+paid resale, full house checkout/renewal and underwriting, and completion of
+governed Core manufacture, delivery and refit.
 The acknowledged Core output reservation and certified Origin producer are
 prerequisites, not completed manufacturing or usable installed hardware.
 

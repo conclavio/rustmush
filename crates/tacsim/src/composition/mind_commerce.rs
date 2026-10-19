@@ -94,6 +94,14 @@ impl MindCommerce {
         })
     }
 
+    /// Re-conform exact retained filed revisions under the current Registry.
+    /// Default composition starts no automatic work or recall service.
+    pub fn with_registry_reconformance(mut self) -> Result<Self, ModError> {
+        self.roll = self.roll.with_registry_reconformance()?;
+        self.registry = self.registry.with_reconformance()?;
+        Ok(self)
+    }
+
     /// Historical public filed facts and scoped personal term-lapse occurrences.
     /// This opts in the same opaque provider in the actual Roll and Economy
     /// owners; it grants no source, transfer or house authority.

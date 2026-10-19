@@ -24,7 +24,7 @@ pub use policy::{
     OutputRecheckContext,
 };
 pub(crate) mod image;
-mod records;
+pub(crate) mod records;
 pub use records::{CoreOutputHistory, ReservedCoreOutput};
 use records::{OutputDeployment, OutputRecord, OutputState};
 
@@ -86,7 +86,7 @@ impl CoreOutputBinding {
 }
 
 pub struct CoreOutputReservations<P: CoreOutputPolicy> {
-    records: StateFamilyHandle<u64, OutputRecord>,
+    pub(crate) records: StateFamilyHandle<u64, OutputRecord>,
     deployment: StateFamilyHandle<(), OutputDeployment>,
     reader: OwnerReadHandle<PolicyReader<P>>,
     policy: Arc<P>,
@@ -414,6 +414,14 @@ impl<P: CoreOutputPolicy> CoreOutputReservations<P> {
     pub fn audit(
         &self,
         ctx: &ModuleCtx<'_>,
+        visit: impl FnMut(CoreOutputHistory) -> Result<(), ParticipantError>,
+    ) -> Result<(), ParticipantError> {
+        self.audit_checked(ctx, require_birth_world, visit)
+    }
+    pub(crate) fn audit_checked(
+        &self,
+        ctx: &ModuleCtx<'_>,
+        mut placement: impl FnMut(&World, &OutputRecord) -> Result<(), ParticipantError>,
         mut visit: impl FnMut(CoreOutputHistory) -> Result<(), ParticipantError>,
     ) -> Result<(), ParticipantError> {
         let deployment = ctx
@@ -451,7 +459,7 @@ impl<P: CoreOutputPolicy> CoreOutputReservations<P> {
                 {
                     return Err(ParticipantError::Authority);
                 }
-                require_birth_world(ctx.w, row)?;
+                placement(ctx.w, row)?;
                 if matches!(row.state, OutputState::Consumed { .. }) {
                     count = count.checked_add(1).ok_or(ParticipantError::ImageLimit)?;
                 }
@@ -479,7 +487,10 @@ fn require_reserved(
     }
     require_birth_world(world, row)
 }
-fn require_birth_world(world: &World, row: &OutputRecord) -> Result<(), ParticipantError> {
+pub(crate) fn require_birth_world(
+    world: &World,
+    row: &OutputRecord,
+) -> Result<(), ParticipantError> {
     if world.get(row.object) != Some(&row.birth_object())
         || world
             .get(row.order.container())
@@ -489,7 +500,7 @@ fn require_birth_world(world: &World, row: &OutputRecord) -> Result<(), Particip
     }
     Ok(())
 }
-fn fixed_action(def: &DefinitionRef, id: &str) -> bool {
+pub(crate) fn fixed_action(def: &DefinitionRef, id: &str) -> bool {
     def.key().owner.as_str() == "industry"
         && def.key().kind.as_str() == "action"
         && def.key().id.as_str() == id
@@ -517,7 +528,7 @@ fn decode<T: serde::de::DeserializeOwned + Serialize>(v: &Value) -> Result<T, St
     }
     Ok(row)
 }
-fn object_digest(object: &Obj) -> Result<DefinitionDigest, ParticipantError> {
+pub(crate) fn object_digest(object: &Obj) -> Result<DefinitionDigest, ParticipantError> {
     DefinitionDigest::for_canonical_value("core.industry_core_output.v1", &bounded(object)?)
         .map_err(|_| ParticipantError::Encoding)
 }

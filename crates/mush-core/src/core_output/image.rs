@@ -297,6 +297,7 @@ impl BoundCoreOutputObjects<'_> {
 pub(crate) enum BuiltinObjects {
     Shell(ShellObjects),
     CoreOutput(CoreOutputObjects),
+    Delivery(crate::core_delivery::DeliveryObjects),
 }
 impl From<ShellObjects> for BuiltinObjects {
     fn from(value: ShellObjects) -> Self {
@@ -308,24 +309,32 @@ impl BuiltinObjects {
         match self {
             Self::Shell(x) => x.creates_object(),
             Self::CoreOutput(x) => x.create,
+            Self::Delivery(_) => false,
         }
     }
     pub(crate) fn writes(&self) -> &[ReplayWrite] {
         match self {
             Self::Shell(x) => x.writes(),
             Self::CoreOutput(x) => &x.writes,
+            Self::Delivery(x) => x.writes(),
         }
     }
-    pub(crate) fn recheck(&self, world: &World) -> Result<(), ParticipantError> {
+    pub(crate) fn recheck(
+        &self,
+        world: &World,
+        lens: crate::action_state::TypedStateLens<'_>,
+    ) -> Result<(), ParticipantError> {
         match self {
             Self::Shell(x) => x.recheck(world),
             Self::CoreOutput(x) => x.recheck(world),
+            Self::Delivery(x) => x.recheck(world, lens),
         }
     }
     pub(crate) fn local(&self, world: &World) -> Result<(), ParticipantError> {
         match self {
             Self::Shell(_) => Ok(()),
             Self::CoreOutput(x) => x.fence.local(world),
+            Self::Delivery(x) => x.local(world),
         }
     }
     pub(crate) fn bind(
@@ -335,18 +344,21 @@ impl BuiltinObjects {
         match self {
             Self::Shell(x) => x.bind(storage).map(BoundBuiltinObjects::Shell),
             Self::CoreOutput(x) => x.bind(storage).map(BoundBuiltinObjects::CoreOutput),
+            Self::Delivery(x) => x.bind(storage).map(BoundBuiltinObjects::Delivery),
         }
     }
 }
 pub(crate) enum BoundBuiltinObjects<'a> {
     Shell(BoundShellObjects<'a>),
     CoreOutput(BoundCoreOutputObjects<'a>),
+    Delivery(crate::core_delivery::BoundDeliveryObjects<'a>),
 }
 impl BoundBuiltinObjects<'_> {
     pub(crate) fn apply(self) {
         match self {
             Self::Shell(x) => x.apply(),
             Self::CoreOutput(x) => x.apply(),
+            Self::Delivery(x) => x.apply(),
         }
     }
 }

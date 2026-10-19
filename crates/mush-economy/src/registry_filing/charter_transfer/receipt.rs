@@ -246,7 +246,7 @@ impl CharterTransferReceiptAudit {
     pub(crate) fn install_lineage(&mut self, row: super::lineage::Lineage) {
         self.lineages.insert(row.object(), row);
     }
-    pub(super) fn lineage(&self, object: ObjId) -> Option<&super::lineage::Lineage> {
+    pub(crate) fn lineage(&self, object: ObjId) -> Option<&super::lineage::Lineage> {
         self.lineages.get(&object)
     }
     pub(super) fn prepare_sale_lineage(
@@ -263,7 +263,62 @@ impl CharterTransferReceiptAudit {
             .ok_or(ReceiptAuditError::Refused)?
             .advance(tx, effect, Some(sale))
     }
+    pub(crate) fn prepare_pending_lineage(
+        &self,
+        tx: &EconomicTransaction,
+        history: &crate::managed_charter_transfer::CharterPendingHistory,
+    ) -> Result<super::lineage::Lineage, ReceiptAuditError> {
+        self.require_complete()?;
+        let [effect] = tx.asset_effects.as_slice() else {
+            return Err(ReceiptAuditError::Refused);
+        };
+        self.lineages
+            .get(&history.consent().terms.charter)
+            .ok_or(ReceiptAuditError::Refused)?
+            .advance_pending(tx, effect, history)
+    }
+    pub(crate) fn verify_pending_lineages(
+        &self,
+        pending: &crate::managed_charter_transfer::history::CharterPendingAudit,
+    ) -> Result<(), ReceiptAuditError> {
+        self.require_complete()?;
+        let mut counts = BTreeMap::<ObjId, u64>::new();
+        for history in pending
+            .histories()
+            .map_err(|_| ReceiptAuditError::Refused)?
+        {
+            let object = history.consent().terms.charter;
+            let lineage = self
+                .lineages
+                .get(&object)
+                .ok_or(ReceiptAuditError::Refused)?;
+            if lineage.birth().commit() != history.consent().terms.birth {
+                return Err(ReceiptAuditError::Refused);
+            }
+            if history.terminal().is_some_and(|t| t.title().is_some()) {
+                let n = counts.entry(object).or_default();
+                *n = n.checked_add(1).ok_or(ReceiptAuditError::Refused)?;
+            }
+        }
+        if self
+            .lineages
+            .values()
+            .any(|l| l.pending_sales() != counts.get(&l.object()).copied().unwrap_or(0))
+        {
+            return Err(ReceiptAuditError::Refused);
+        }
+        Ok(())
+    }
     pub(crate) fn observe(&mut self, tx: &EconomicTransaction) {
+        // Old direct callers cannot authorize the new namespace. Actual fold
+        // uses the separately replayed pending inventory below.
+        self.observe_with_pending(tx, &Default::default())
+    }
+    pub(crate) fn observe_with_pending(
+        &mut self,
+        tx: &EconomicTransaction,
+        pending: &crate::managed_charter_transfer::history::CharterPendingAudit,
+    ) {
         let cause_matches =
             matches!(&tx.cause, EconomicCause::Ruleset { namespace, .. } if namespace == NAMESPACE);
         if super::lineage::is_birth_namespace(tx.idempotency.namespace.as_str()) {
@@ -291,7 +346,17 @@ impl CharterTransferReceiptAudit {
         };
         for effect in &tx.asset_effects {
             if let Some(before) = self.lineages.get(&effect.object) {
-                match before.advance(tx, effect, sale.as_ref()) {
+                let next = if tx.idempotency.namespace.as_str()
+                    == crate::managed_charter_transfer::NAMESPACE
+                {
+                    pending
+                        .pending_settlement(tx)
+                        .map_err(|_| ReceiptAuditError::Refused)
+                        .and_then(|h| before.advance_pending(tx, effect, h))
+                } else {
+                    before.advance(tx, effect, sale.as_ref())
+                };
+                match next {
                     Ok(after) => {
                         self.install_lineage(after);
                     }
