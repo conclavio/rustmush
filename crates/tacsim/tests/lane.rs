@@ -380,6 +380,64 @@ fn ic2_the_lane_pack_is_pinned() {
     }
 }
 
+/// **Every number in the lane is spelled as `serde_json` prints it** (doc 19 cut
+/// A.8): the canonical digest writes each number with `Number`'s `Display`, and a
+/// build with `serde_json`'s `arbitrary_precision` feature (mush-bot's, unified into
+/// any workspace-wide build) keeps the authored text instead of re-spelling the
+/// parsed value. So an authored `6.2686e-05` — Python's spelling, which A.7's
+/// element tables carried — digests differently there than the `6.2686e-5` every
+/// other build prints, and the pin refuses the lane. Each numeric token of the file
+/// is checked against the spelling of its own value.
+#[test]
+fn a8_every_number_in_the_lane_is_spelled_as_serde_json_prints_it() {
+    let text = LANE_JSON;
+    let bytes = text.as_bytes();
+    let (mut i, mut in_string, mut numbers) = (0, false, 0);
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            match c {
+                b'\\' => i += 1,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+        if c == b'"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        if c == b'-' || c.is_ascii_digit() {
+            let start = i;
+            while i < bytes.len()
+                && matches!(bytes[i], b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
+            {
+                i += 1;
+            }
+            let token = &text[start..i];
+            let spelled = if token.contains(['.', 'e', 'E']) {
+                let value: f64 = token.parse().expect("a float");
+                serde_json::Number::from_f64(value)
+                    .expect("a finite float")
+                    .to_string()
+            } else {
+                let value: i64 = token.parse().expect("an integer");
+                value.to_string()
+            };
+            assert_eq!(
+                token, spelled,
+                "the lane spells {token} as {spelled} would digest"
+            );
+            numbers += 1;
+            continue;
+        }
+        i += 1;
+    }
+    assert!(numbers > 1_000, "{numbers} numbers checked");
+}
+
 // ---------------------------------------------------------------------------
 // The sky
 // ---------------------------------------------------------------------------
