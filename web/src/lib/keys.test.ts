@@ -125,3 +125,31 @@ describe("isTextField", () => {
     expect(isTextField(null)).toBe(false);
   });
 });
+
+// Doc 19 cut A.3b: Alt+letter is a digitless screen's hotkey when the screen
+// binds nothing to the letter; a bound letter, an exit and a bare letter are
+// what they were.
+describe("a letter hotkey (doc 19 cut A.3b)", () => {
+  it("Alt+letter unbound is a screenKey intent; bound, bare or an exit it is not", () => {
+    const none = new Map<string, string>();
+    const unbound = new Set<string>();
+    expect(navIntent({ key: "c", alt: true, ctrl: false, meta: false, shift: false, inField: false }, none, unbound)).toEqual({
+      kind: "screenKey",
+      key: "c",
+    });
+    expect(navIntent({ key: "c", alt: true, ctrl: false, meta: false, shift: false, inField: true }, none, unbound)).toEqual({
+      kind: "screenKey",
+      key: "c",
+    });
+    expect(navIntent({ key: "c", alt: true, ctrl: false, meta: false, shift: false, inField: false }, none, new Set(["c"]))).toEqual({
+      kind: "binding",
+      key: "c",
+    });
+    expect(
+      navIntent({ key: "c", alt: true, ctrl: false, meta: false, shift: false, inField: false }, new Map([["c", "cellar"]]), unbound),
+    ).toEqual({ kind: "exit", name: "cellar" });
+    // A bare letter never switches screens: it is a trigger, an exit, a binding, or nothing.
+    expect(navIntent({ key: "c", alt: false, ctrl: false, meta: false, shift: false, inField: false }, none, unbound)).toBeNull();
+    expect(navIntent({ key: "C", alt: true, ctrl: false, meta: false, shift: false, inField: false }, none, unbound)).toBeNull();
+  });
+});

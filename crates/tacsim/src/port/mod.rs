@@ -108,6 +108,8 @@ pub mod capacity;
 /// Doc 19 cut A.3: `+chart` — the sky from where you stand, the passages now and
 /// the window over the next IC year (doc 19 §5).
 pub mod chart;
+/// Doc 19 cut A.3b: the `sky.chart` panel — one frame, three renders (doc 19 §5).
+pub mod chart_panel;
 pub mod coop;
 pub mod credit;
 pub mod def;
@@ -134,6 +136,10 @@ pub use burn::{BURN_ACTION, BURN_KEY_PREFIX, BURN_OUTCOME};
 pub use chart::{
     CHART_HELP, CHART_NO_BODY, CHART_NO_LANE, CHART_NO_ROUTE, CHART_NOWHERE, CHART_VERB,
     PLAN_WINDOW_DAYS, WINDOW_DAYS,
+};
+pub use chart_panel::{
+    GRID_HEIGHT, GRID_WIDTH, SKY_CHART_FEED, chart_frame, expand_rows, flat_lines, radial_fraction,
+    rasterize,
 };
 pub use coop::{
     Charter, EndCause, Enrolment, EnrolmentState, EnrolmentStatus, Helm, ProgrammePort, Standing,

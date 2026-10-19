@@ -48,7 +48,8 @@ pub const CHART_VERB: &str = "+chart";
 pub const CHART_HELP: &str = "+chart                  the sky now, from the port you stand at: every lane body's                    distance, longitude and latitude, how far it is from here and the light lag;                    then each port this one clears for, planned now at your hull's load and empty,                    and what the direct chord would cost beside the listed route.
                    +chart <port>           the window: the passage to that port planned on every                    IC day of the next year — the fastest day, the cheapest and the worst, against                    now. A season that is not worth the fuel is a season to wait out.
                    +chart/body <body>      one body's row and the elements it moves on.
-                   Without a charter the port's Dray is planned empty. Nothing is written.";
+                   Without a charter the port's Dray is planned empty. Nothing is written.
++chart/map              the sky as a flat map: the Sun, every orbit, the bodies by letter,                    the listed routes dotted, you at @ — the TUI's chart pane for a line player.";
 
 /// How many IC days `+chart <port>` scans (one IC year).
 pub const WINDOW_DAYS: i64 = 365;
@@ -69,27 +70,27 @@ pub const CHART_NO_ROUTE: &str =
 pub const CHART_NO_BODY: &str = "No lane body is called that; the sky holds {list}.";
 
 /// Where the chart is read from and what it plans with.
-struct Vantage<'w> {
+pub(crate) struct Vantage<'w> {
     /// The port stood at or docked at.
-    def: &'w PortDef,
+    pub(crate) def: &'w PortDef,
     /// Its body.
-    body: CanonicalId,
+    pub(crate) body: CanonicalId,
     /// The hull planned: the actor's charter, or the port's Dray.
-    spec: HullSpec,
+    pub(crate) spec: HullSpec,
     /// Its name for the lines.
-    hull: String,
+    pub(crate) hull: String,
     /// The payload planned, kilograms.
-    payload_kg: u64,
+    pub(crate) payload_kg: u64,
     /// Souls aboard.
-    occupants: u32,
+    pub(crate) occupants: u32,
     /// The lane pack.
-    pack: &'w RulesPack,
+    pub(crate) pack: &'w RulesPack,
     /// The sky.
-    sky: Sky,
+    pub(crate) sky: Sky,
 }
 
 /// The body a lane place stands on.
-fn body_of(pack: &RulesPack, place: &CanonicalId) -> Option<CanonicalId> {
+pub(crate) fn body_of(pack: &RulesPack, place: &CanonicalId) -> Option<CanonicalId> {
     match pack.entry(place) {
         Some(PackEntry::Location(def)) => def.body.clone(),
         _ => None,
@@ -97,14 +98,14 @@ fn body_of(pack: &RulesPack, place: &CanonicalId) -> Option<CanonicalId> {
 }
 
 /// Kilometres as AU to three decimals, half up in integer arithmetic.
-fn au3(km: u64) -> String {
+pub(crate) fn au3(km: u64) -> String {
     let milli = (u128::from(km) * 1_000 + u128::from(AU_KM) / 2) / u128::from(AU_KM);
     format!("{}.{:03}", milli / 1_000, milli % 1_000)
 }
 
 /// Seconds as hours at the world rate (`h.h h`), or IC days when the clock is
 /// stopped.
-fn hours_text(w: &World, secs: i64) -> String {
+pub(crate) fn hours_text(w: &World, secs: i64) -> String {
     let rate = i64::from(w.world_timeline().current().rate);
     if rate == 0 {
         return format!("{} IC days", crate::port::voyage::ic_days(secs));
@@ -113,7 +114,7 @@ fn hours_text(w: &World, secs: i64) -> String {
 }
 
 /// Light seconds as minutes and seconds.
-fn lag_text(secs: u64) -> String {
+pub(crate) fn lag_text(secs: u64) -> String {
     format!("{}m {:02}s light", secs / 60, secs % 60)
 }
 
@@ -126,9 +127,8 @@ fn vantage<'w>(ctx: &'w Ctx<'_>) -> Result<Vantage<'w>, CmdError> {
     let store = w
         .module_state::<TacsimStore>()
         .ok_or_else(|| CmdError::msg(CHART_NO_LANE))?;
-    let (pack, ports) = report_ports(store, w);
+    let (pack, _) = report_ports(store, w);
     let pack = pack.ok_or_else(|| CmdError::msg(CHART_NO_LANE))?;
-    let goods = store.goods().ok_or_else(|| CmdError::msg(CHART_NO_LANE))?;
     let sky = Sky::from_pack(pack, &store.config().time.ephemeris);
     // A docked charter: its port, its load.
     if let Some(charter) = helm_of(w, ctx.actor)
@@ -152,9 +152,28 @@ fn vantage<'w>(ctx: &'w Ctx<'_>) -> Result<Vantage<'w>, CmdError> {
             sky,
         });
     }
-    // The port whose domain host or gallery the actor stands in (the port map's
-    // rooms), else the lane's first port.
-    let here = w.get(ctx.actor).and_then(|o| o.location).map(|room| room.0);
+    vantage_for_world(w, ctx.actor).map_err(CmdError::msg)
+}
+
+/// **The vantage without a helm** (doc 19 cut A.3b, for the `sky.chart` panel,
+/// which answers from a `World` and an actor): the port whose domain host or
+/// gallery the actor stands in (the port map's rooms), else the lane's first
+/// port, planned with the port's programme hull — else the game's Dray — empty.
+/// `+chart` from a docked charter's helm plans the charter's load instead
+/// ([`vantage`]); the panel never reads a hold.
+///
+/// # Errors
+///
+/// No lane loaded, or nowhere the lane knows.
+pub(crate) fn vantage_for_world(w: &World, actor: mush_core::ObjId) -> Result<Vantage<'_>, String> {
+    let store = w
+        .module_state::<TacsimStore>()
+        .ok_or_else(|| CHART_NO_LANE.to_owned())?;
+    let (pack, ports) = report_ports(store, w);
+    let pack = pack.ok_or_else(|| CHART_NO_LANE.to_owned())?;
+    let goods = store.goods().ok_or_else(|| CHART_NO_LANE.to_owned())?;
+    let sky = Sky::from_pack(pack, &store.config().time.ephemeris);
+    let here = w.get(actor).and_then(|o| o.location).map(|room| room.0);
     let standing = crate::port::voyage::lane_ports(w)
         .into_iter()
         .find(|(_, map)| {
@@ -168,18 +187,18 @@ fn vantage<'w>(ctx: &'w Ctx<'_>) -> Result<Vantage<'w>, CmdError> {
         None => ports
             .first()
             .map(|(_, def)| *def)
-            .ok_or_else(|| CmdError::msg(CHART_NOWHERE))?,
+            .ok_or_else(|| CHART_NOWHERE.to_owned())?,
     };
-    let body = body_of(pack, &def.location).ok_or_else(|| CmdError::msg(CHART_NOWHERE))?;
+    let body = body_of(pack, &def.location).ok_or_else(|| CHART_NOWHERE.to_owned())?;
     // The port's programme hull, else the game's Dray (a port without a programme).
     let unit = def
         .programme
         .as_ref()
         .map(|programme| programme.unit.clone())
         .or_else(|| CanonicalId::new(crate::definitions::content::DRAY).ok())
-        .ok_or_else(|| CmdError::msg(CHART_NOWHERE))?;
-    let (_, spec) = hull_spec_of(store.definitions(), goods, &unit)
-        .map_err(|_| CmdError::msg(CHART_NOWHERE))?;
+        .ok_or_else(|| CHART_NOWHERE.to_owned())?;
+    let (_, spec) =
+        hull_spec_of(store.definitions(), goods, &unit).map_err(|_| CHART_NOWHERE.to_owned())?;
     let payload_kg = u64::from(spec.allowance_kg);
     Ok(Vantage {
         def,
@@ -195,7 +214,7 @@ fn vantage<'w>(ctx: &'w Ctx<'_>) -> Result<Vantage<'w>, CmdError> {
 
 /// Plan the listed routes to `dest` at `depart_ic` for the vantage's hull at
 /// `payload_kg`.
-fn plan_at(
+pub(crate) fn plan_at(
     v: &Vantage<'_>,
     dest: &Destination,
     payload_kg: u64,
@@ -218,7 +237,7 @@ fn plan_at(
 
 /// The direct chord's passage from the vantage's body to `to` at `depart_ic`:
 /// one leg, the law's seconds and burn.
-fn direct_at(
+pub(crate) fn direct_at(
     v: &Vantage<'_>,
     to: &CanonicalId,
     payload_kg: u64,
@@ -241,8 +260,13 @@ fn direct_at(
 /// `+chart`: the sky table and the passages now.
 fn chart_sky(ctx: &mut Ctx<'_>) -> Result<Vec<String>, CmdError> {
     let v = vantage(ctx)?;
-    let w: &World = ctx.w;
-    let now = w.world_ic_now().at;
+    let now = ctx.w.world_ic_now().at;
+    Ok(sky_lines(ctx.w, &v, now))
+}
+
+/// **The sky table and the passages now** (`+chart`'s lines; doc 19 cut A.3b
+/// factored them out for the `sky.chart` panel, which carries them too).
+pub(crate) fn sky_lines(w: &World, v: &Vantage<'_>, now: i64) -> Vec<String> {
     let motion = if v.sky.ephemeris().rate_permille() == 0 {
         "constant".to_owned()
     } else {
@@ -314,9 +338,9 @@ fn chart_sky(ctx: &mut Ctx<'_>) -> Result<Vec<String>, CmdError> {
         else {
             continue;
         };
-        let loaded = plan_at(&v, dest, v.payload_kg, now);
-        let bare = plan_at(&v, dest, empty, now);
-        let direct = direct_at(&v, &to, v.payload_kg, now);
+        let loaded = plan_at(v, dest, v.payload_kg, now);
+        let bare = plan_at(v, dest, empty, now);
+        let direct = direct_at(v, &to, v.payload_kg, now);
         let mut line = format!("  {}: ", dest.port);
         match loaded {
             Ok(plan) => line.push_str(&format!(
@@ -347,7 +371,7 @@ fn chart_sky(ctx: &mut Ctx<'_>) -> Result<Vec<String>, CmdError> {
         line.push('.');
         lines.push(line);
     }
-    Ok(lines)
+    lines
 }
 
 /// One day of the window scan.
@@ -371,7 +395,24 @@ fn chart_window(ctx: &mut Ctx<'_>, word: &str) -> Result<Vec<String>, CmdError> 
                 .replace("{list}", &list.join(", ")),
         )
     })?;
-    let today = plan_at(&v, dest, v.payload_kg, now).map_err(|e| CmdError::msg(e.to_string()))?;
+    window_lines_for(w, &v, dest, now).map_err(CmdError::msg)
+}
+
+/// **One destination's window** (`+chart <port>`'s lines; doc 19 cut A.3b
+/// factored them out for the `sky.chart` panel): now, then the fastest, the
+/// cheapest and the worst day of the next [`WINDOW_DAYS`] against now, or
+/// "every day is today" under a constant sky.
+///
+/// # Errors
+///
+/// The plan's refusal, in words.
+pub(crate) fn window_lines_for(
+    w: &World,
+    v: &Vantage<'_>,
+    dest: &Destination,
+    now: i64,
+) -> Result<Vec<String>, String> {
+    let today = plan_at(v, dest, v.payload_kg, now).map_err(|e| e.to_string())?;
     let mut lines = vec![format!(
         "The window for {} from {}, the {} at {} t, scanned a day at a time over the next {} IC days:",
         dest.port,
@@ -395,7 +436,7 @@ fn chart_window(ctx: &mut Ctx<'_>, word: &str) -> Result<Vec<String>, CmdError> 
     let mut days: Vec<Day> = Vec::with_capacity(usize::try_from(WINDOW_DAYS).unwrap_or(0) + 1);
     for offset in 0..=WINDOW_DAYS {
         let depart = now.saturating_add(offset.saturating_mul(DAY));
-        if let Ok(plan) = plan_at(&v, dest, v.payload_kg, depart) {
+        if let Ok(plan) = plan_at(v, dest, v.payload_kg, depart) {
             days.push(Day {
                 offset,
                 total_s: plan.total_s,
@@ -621,6 +662,9 @@ pub(crate) fn chart_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let raw = ctx.args.raw().trim().to_owned();
     let lines = if ctx.switches.has("body") {
         chart_body(ctx, &raw)?
+    } else if ctx.switches.has("map") {
+        // Doc 19 cut A.3b: the flat render, the TUI's chart pane for a line player.
+        crate::port::chart_panel::flat_lines(ctx.w, ctx.actor).map_err(CmdError::msg)?
     } else if raw.is_empty() {
         chart_sky(ctx)?
     } else {

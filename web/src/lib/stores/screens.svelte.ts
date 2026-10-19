@@ -64,8 +64,13 @@ export interface GateInput {
 
 export interface ScreenDef {
   id: string;
-  /** The hotkey digit, shared with the TUI where the screen exists there. */
-  digit: number;
+  /** The hotkey digit, shared with the TUI where the screen exists there;
+   * `null` for a screen on a letter hotkey (doc 19 cut A.3b, the digitless
+   * policy: the ten digits are spent, so a ruleset screen past them is reached
+   * by Alt+letter — a letter the active screen does not bind itself). */
+  digit: number | null;
+  /** The letter hotkey of a digitless screen, `a`-`z`; shared with the TUI. */
+  hotkey?: string;
   label: string;
   keys: KeyBinding[];
   /** Whether the room's one-letter exits are keys here (the scene screen). */
@@ -127,6 +132,9 @@ export const RUN_ALLOWLIST: readonly string[] = [
   "scan",
   "range",
   "bearing",
+  // Doc 19 cut A.3b: the chart reads the sky and plans nothing.
+  "+chart",
+  "+chart/map",
 ];
 
 const hasPanel = (g: GateInput, p: string): boolean => g.panels.includes(p);
@@ -264,11 +272,44 @@ export const BUILTIN_SCREENS: readonly ScreenDef[] = [
   },
 ];
 
-/** Where a screen sits in the strip: `0` reads LAST, as it does on a keyboard
- * and in the TUI's tab bar. */
+/** Where a screen sits in the strip: `0` reads LAST of the digits, as it does
+ * on a keyboard and in the TUI's tab bar; a letter screen after every digit,
+ * in letter order. */
 function stripOrder(def: ScreenDef): number {
+  if (def.digit === null) {
+    return 11 + (def.hotkey?.charCodeAt(0) ?? 0);
+  }
   return def.digit === 0 ? 10 : def.digit;
 }
+
+/**
+ * **The sky chart** (doc 19 cut A.3b; doc 19 §5): the `sky.chart` panel drawn
+ * as a picture with its tables beside it, on the letter hotkey `c` — the ten
+ * digits are spent (the unit screen took the last free one), so this is the
+ * first digitless screen, reached by Alt+c from any screen that does not bind
+ * `c` itself (the cockpit's `c` is its contacts). Registered by `GameApp` once,
+ * on a hello whose manifest carries a `.chart` feed. `r` asks for the frame
+ * again, `w` prefills the window verb, `m` prints the flat map in the
+ * scrollback — every Run is on the allowlist.
+ */
+export const CHART_SCREEN: FeedScreen = {
+  suffix: ".chart",
+  def: {
+    id: "chart",
+    digit: null,
+    hotkey: "c",
+    label: "chart",
+    keys: [
+      { key: "r", label: "refresh", action: { kind: "local", action: "refresh" } },
+      { key: "w", label: "window", action: { kind: "prefill", line: "+chart " } },
+      { key: "m", label: "flat map", action: { kind: "run", cmd: "+chart/map" } },
+    ],
+    exitsAreKeys: false,
+    // A FeedScreen's own gate is never consulted (`available` filters by
+    // suffix alone); the manifest feed IS the gate.
+    gate: () => true,
+  },
+};
 
 /** A ruleset screen: present only when a manifest feed ends with `suffix`. */
 export interface FeedScreen {
@@ -321,21 +362,41 @@ export const UNIT_SCREEN: FeedScreen = {
 export function validateScreens(defs: readonly ScreenDef[]): string | null {
   const ids = new Set<string>();
   const digits = new Set<number>();
+  const hotkeys = new Set<string>();
   for (const s of defs) {
     if (ids.has(s.id)) {
       return `screen ${s.id} declared twice`;
     }
     ids.add(s.id);
-    // 16b cut Q.5 opened the range to the tenth digit the cockpit takes; a
-    // ruleset screen still gets one of 1-9, because `freeDigit` hands out
-    // nothing else.
-    if (!Number.isInteger(s.digit) || s.digit < 0 || s.digit > 9) {
-      return `screen ${s.id}: digit ${s.digit} is not 0-9`;
+    if (s.digit === null) {
+      // Doc 19 cut A.3b: a digitless screen has one letter hotkey, never a
+      // global or jump key, and no two screens share one.
+      const k = s.hotkey ?? "";
+      if (!/^[a-z]$/.test(k)) {
+        return `screen ${s.id}: no digit and no letter hotkey`;
+      }
+      if (GLOBAL_KEYS.has(k) || JUMP_KEYS.has(k)) {
+        return `screen ${s.id}: hotkey ${k} is a global key`;
+      }
+      if (hotkeys.has(k)) {
+        return `screen ${s.id}: hotkey ${k} used twice`;
+      }
+      hotkeys.add(k);
+    } else {
+      // 16b cut Q.5 opened the range to the tenth digit the cockpit takes; a
+      // ruleset screen still gets one of 1-9, because `freeDigit` hands out
+      // nothing else.
+      if (!Number.isInteger(s.digit) || s.digit < 0 || s.digit > 9) {
+        return `screen ${s.id}: digit ${s.digit} is not 0-9`;
+      }
+      if (digits.has(s.digit)) {
+        return `screen ${s.id}: digit ${s.digit} used twice`;
+      }
+      digits.add(s.digit);
+      if (s.hotkey !== undefined) {
+        return `screen ${s.id}: a digit and a hotkey both`;
+      }
     }
-    if (digits.has(s.digit)) {
-      return `screen ${s.id}: digit ${s.digit} used twice`;
-    }
-    digits.add(s.digit);
     // Both tables (16b cut I.2), each held to every rule on its own.
     for (const table of [s.keys, s.altKeys ?? []]) {
       const err = validateTable(s, table);
@@ -388,10 +449,11 @@ export class ScreensStore {
   /** The lowest hotkey digit 1-9 not used by a built-in or a registered
    * feed screen; `null` when all nine are taken (interface plan I9). */
   freeDigit(): number | null {
-    const used = new Set<number>([
-      ...BUILTIN_SCREENS.map((s) => s.digit),
-      ...this.feedScreens.map((f) => f.def.digit),
-    ]);
+    const used = new Set<number>(
+      [...BUILTIN_SCREENS.map((s) => s.digit), ...this.feedScreens.map((f) => f.def.digit)].filter(
+        (d): d is number => d !== null,
+      ),
+    );
     for (let d = 1; d <= 9; d++) {
       if (!used.has(d)) {
         return d;
@@ -466,6 +528,13 @@ export class ScreensStore {
   /** Switch by hotkey digit; `false` when no available screen has it. */
   switchDigit(digit: number, gate: GateInput): boolean {
     const def = this.available(gate).find((s) => s.digit === digit);
+    return def ? this.switchTo(def.id, gate) : false;
+  }
+
+  /** Switch by letter hotkey (doc 19 cut A.3b, Alt+letter); `false` when no
+   * available screen has it. */
+  switchHotkey(key: string, gate: GateInput): boolean {
+    const def = this.available(gate).find((s) => s.digit === null && s.hotkey === key);
     return def ? this.switchTo(def.id, gate) : false;
   }
 

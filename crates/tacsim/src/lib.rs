@@ -559,6 +559,8 @@ impl GameModule for TacsimRuleset {
              site, connection and room records the pack describes (doc 18 cut IC14 row 48)",
         )?;
         commands::register(reg)?;
+        // Doc 19 cut A.3b: the `sky.chart` panel feed and its query, with the port verbs.
+        port::chart_panel::register(reg)?;
         // 16b cut C.2 (C1): the game's definitions, through the C1 registry.
         // One validator per kind first — `Registrar::definition` admits nothing
         // whose kind has none — then the descriptors in dependency order.

@@ -292,6 +292,9 @@ fn expected_panels() -> Vec<&'static str> {
     // and no `.vitals` feed — doc 16 §3.3 leaves M32's `TacticalUnit` cells the
     // one damage authority, so the sheet declares no health track to publish.
     panels.push("tacsim.sheet");
+    // Doc 19 cut A.3b: the sky chart's feed, registered by the tacsim layer with
+    // its port verbs — before `arena_bridge::register` and so before the arena's.
+    panels.push("sky.chart");
     // 16b cut T.2: the arena's cockpit frame feed, registered by the TacSim LAYER
     // (module `tacsim`) rather than by the sheet (module `pilot`) — hence after
     // `tacsim.sheet` in registration order. It is registered whether or not

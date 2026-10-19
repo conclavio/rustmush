@@ -35,6 +35,8 @@ import {
 } from "./render";
 import { isOwnRoll } from "./roll";
 import { ARENA_MAP_FEED, COCKPIT_FEED, decodeArenaMap, isNoticeSentence } from "./cockpit";
+import { SKY_CHART_FEED } from "./chart";
+import { ChartStore } from "./stores/chart.svelte";
 import { OBSERVER_FEED, REPLAY_FEED, decodeReplayGrid } from "./replay";
 import { exitKeys, type NavIntent } from "./keys";
 import { paletteEntries, type PaletteEntry } from "./palette";
@@ -51,7 +53,7 @@ import { LlmDashboardStore } from "./stores/llm.svelte";
 import { MailStore } from "./stores/mail.svelte";
 import { PresenceStore } from "./stores/presence.svelte";
 import { RollsStore } from "./stores/rolls.svelte";
-import { ScreensStore, UNIT_SCREEN, type GateInput } from "./stores/screens.svelte";
+import { CHART_SCREEN, ScreensStore, UNIT_SCREEN, type GateInput } from "./stores/screens.svelte";
 import { ScrollbackStore, type SbOlderBlock } from "./stores/scrollback.svelte";
 import { SessionStore } from "./stores/session.svelte";
 import { SheetStore } from "./stores/sheet.svelte";
@@ -109,7 +111,8 @@ type PendingReq =
   | { kind: "mind.bulk" }
   | { kind: "arena.replay" }
   | { kind: "arena.observer" }
-  | { kind: "scenes" };
+  | { kind: "scenes" }
+  | { kind: "chart" };
 
 const HELP_LINES = [
   "Client commands (handled locally, never sent to the game):",
@@ -198,6 +201,11 @@ export function hydrationQueries(
   if (session.hasPanel("scenes")) {
     out.push({ pending: { kind: "scenes" }, q: { t: "panel_subscribe", d: { feed: "scenes" } } });
   }
+  // The sky chart (doc 19 cut A.3b), last: pulled, never pushed, and a
+  // re-attach holds no chart.
+  if (session.hasPanel(SKY_CHART_FEED)) {
+    out.push({ pending: { kind: "chart" }, q: { t: "panel_subscribe", d: { feed: SKY_CHART_FEED } } });
+  }
   return out;
 }
 
@@ -236,6 +244,8 @@ export class GameApp {
   cockpit = new CockpitStore();
   /** A finished match open on screen 0 (16b cut I.2). */
   replay = new ReplayStore();
+  /** The sky chart (doc 19 cut A.3b): the `sky.chart` keyframe. */
+  chart = new ChartStore();
   presence = new PresenceStore();
   genericViews = new GenericViewStore();
   requests = new RequestStore();
@@ -692,6 +702,13 @@ export class GameApp {
     ) {
       this.#screenRefused(UNIT_SCREEN.def.label, this.screens.registerFeedScreen(UNIT_SCREEN));
     }
+    // The sky chart (doc 19 cut A.3b), the same way, on its letter hotkey.
+    if (
+      this.session.panels.some((p) => p.endsWith(CHART_SCREEN.suffix)) &&
+      !this.screens.feedScreens.some((f) => f.def.id === CHART_SCREEN.def.id)
+    ) {
+      this.#screenRefused(CHART_SCREEN.def.label, this.screens.registerFeedScreen(CHART_SCREEN));
+    }
     let mapAsked = false;
     for (const { pending, q } of hydrationQueries(this.session)) {
       const sent = this.#req(pending, q);
@@ -979,6 +996,11 @@ export class GameApp {
         this.replay.applyMap(d.data);
         // The ground that lands stops the heal; one that is dropped does not.
         this.#armMapHeal();
+      }
+    } else if (d.feed === SKY_CHART_FEED) {
+      // The sky chart (doc 19 cut A.3b): every frame is a whole keyframe.
+      if (d.kind === "keyframe") {
+        this.chart.applyKeyframe(d.data);
       }
     } else if (d.feed === REPLAY_FEED) {
       // A finished match (16b cut I.2; 16c N9): the pushed grid opens it, the
@@ -1326,6 +1348,8 @@ export class GameApp {
     switch (intent.kind) {
       case "screen":
         return this.screens.switchDigit(intent.digit, this.gate);
+      case "screenKey":
+        return this.screens.switchHotkey(intent.key, this.gate);
       case "compose":
         this.focusComposer(intent.prefill.length > 0 ? intent.prefill : undefined);
         return true;
@@ -1510,11 +1534,19 @@ export class GameApp {
             this.refreshUnit();
             this.refreshContacts();
             return;
+          case "chart":
+            this.refreshChart();
+            return;
           default:
             this.refreshWho();
         }
       }
     }
+  }
+
+  /** Ask for the sky chart again (doc 19 cut A.3b, the chart screen's `r`). */
+  refreshChart(): void {
+    this.#req({ kind: "chart" }, { t: "panel_subscribe", d: { feed: SKY_CHART_FEED } });
   }
 
   /** Re-subscribe every `.vitals` feed (the rolls screen's board, I6). A
