@@ -12,6 +12,14 @@ use super::records::*;
 /// No public constructor, family-name lookup or blanket delegation is added.
 #[derive(Clone)]
 pub struct CommerceFamilies {
+    pub(crate) owner_qualification_operations:
+        StateFamilyHandle<String, super::owner_qualification::records::QualificationOperation>,
+    pub(crate) owner_qualification_heads:
+        StateFamilyHandle<String, super::owner_qualification::records::QualificationHead>,
+    pub(crate) line_updates:
+        StateFamilyHandle<String, super::line_update::records::UpdateOperation>,
+    pub(crate) update_positions:
+        StateFamilyHandle<String, super::line_update::records::UpdatePosition>,
     pub(crate) withdrawals:
         StateFamilyHandle<String, super::withdrawal::records::WithdrawalOperation>,
     pub(crate) renewal_operations: StateFamilyHandle<String, super::renewal::RenewalOperationV1>,
@@ -45,6 +53,10 @@ pub struct CommerceFamilies {
 impl CommerceFamilies {
     pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<Self, ModError> {
         Ok(Self {
+            owner_qualification_operations: register(reg)?,
+            owner_qualification_heads: register(reg)?,
+            line_updates: register(reg)?,
+            update_positions: register(reg)?,
             withdrawals: register(reg)?,
             renewal_operations: register(reg)?,
             renewal_heads: register(reg)?,
@@ -121,7 +133,7 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
     let mut parts = key.split('/');
     let head = parts.next().unwrap_or("");
     match family {
-        "roll_mind_owner_parent" => {
+        "roll_mind_owner_parent" | "roll_mind_owner_qualification_head" => {
             head == "licence"
                 && parts.next().is_some_and(|v| hex(v, 16, true))
                 && parts.next() == Some("owner")
@@ -135,10 +147,12 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
                 && parts.next().is_none()
         }
         "roll_mind_commerce" => head == "registry" && parts.next().is_none(),
-        "roll_mind_initial_filing"
+        "roll_mind_line_update"
+        | "roll_mind_initial_filing"
         | "roll_mind_paid_purchase"
         | "roll_mind_authored_retirement"
         | "roll_mind_author_withdrawal"
+        | "roll_mind_owner_qualification_operation"
         | "roll_mind_entitlement_purchase"
         | "roll_mind_renewal_operation" => hex(head, 32, false) && parts.next().is_none(),
         "roll_mind_filed_identity" => hex(head, 64, false) && parts.next().is_none(),
@@ -147,6 +161,16 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
                 && parts.next().is_some_and(|v| hex(v, 16, true))
                 && parts.next() == Some("term")
                 && parts.next().is_some_and(|v| hex(v, 16, true))
+                && parts.next().is_none()
+        }
+        "roll_mind_line_update_position" => {
+            head == "line"
+                && parts.next().is_some_and(|v| hex(v, 16, true))
+                && parts.next().is_some_and(|v| {
+                    hex(v, 16, true)
+                        && u64::from_str_radix(v, 16)
+                            .is_ok_and(|n| n >= 2 && n <= crate::MAX_RECORDS as u64 + 1)
+                })
                 && parts.next().is_none()
         }
         "roll_mind_filed_position" => {

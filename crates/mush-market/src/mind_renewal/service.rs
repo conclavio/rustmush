@@ -59,8 +59,9 @@ impl CloseIntent {
     }
     fn identity(&self) -> Result<CanonicalId, String> {
         let d=DefinitionDigest::for_canonical_value("market.renewal_service_intent.v1",&serde_json::json!({"before":self.before,"action":self.action,"reason":self.reason,"key":self.key})).map_err(|_|super::records::invalid())?;
-        CanonicalId::new(format!("renewal_service.{}", d.to_hex()))
-            .map_err(|_| super::records::invalid())
+        // The digest is already domain-separated and uses the full 64-byte
+        // canonical identifier budget; a prefix would make every guard fail.
+        CanonicalId::new(d.to_hex()).map_err(|_| super::records::invalid())
     }
     pub fn guard(&self) -> Result<AuthorityGuard, String> {
         Ok(AuthorityGuard::Capability {

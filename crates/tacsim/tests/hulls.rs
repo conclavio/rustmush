@@ -30,7 +30,7 @@ use mush_sim::data::{SpaceAnchor, SpatialState};
 use mush_testkit::{TestWorld, fold_module_ops};
 use smol_str::SmolStr;
 use tacsim::definitions::InteriorDef;
-use tacsim::definitions::content::{DRAY, LANE_JSON, LANE_PACK};
+use tacsim::definitions::content::{DRAY, LANE_JSON, LANE_PACK, LANE_VERSION};
 use tacsim::pack::{PackEntry, load_pack};
 use tacsim::port::apply::room_by_key;
 use tacsim::port::hull::{HULL_DETAIL_PREFIX, REGISTRY_ISSUER, registry_mark};
@@ -999,7 +999,7 @@ fn ic4_hull_drift_is_refused_before_anything_is_made() {
         let (_plan, apply) = plan_and_apply(&mut tw);
         assert!(apply.contains(words), "{name}:\n{apply}");
         assert!(!apply.contains("Applied "), "{name}:\n{apply}");
-        assert_eq!(lane_latch(&tw), Some(3), "{name}");
+        assert_eq!(lane_latch(&tw), Some(LANE_VERSION), "{name}");
         assert_eq!(maps(&tw), before_maps, "{name}");
         assert_eq!(tw.world().iter().count(), objects, "{name}");
         assert_eq!(economy(&tw).journal_len(), journal, "{name}");

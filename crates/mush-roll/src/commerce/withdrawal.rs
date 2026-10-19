@@ -169,7 +169,7 @@ impl Withdrawal {
             filed: subject.filed.content.id(),
             charter: subject.initial.charter,
             line: subject.initial.line,
-            revision: subject.initial.revision,
+            revision: subject.filed.content.revision(),
             title_revision: subject.title_revision,
         };
         operation.matches_initial(&subject.initial, &subject.filed)?;

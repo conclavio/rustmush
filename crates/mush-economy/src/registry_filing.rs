@@ -8,6 +8,8 @@
 mod boot_tests;
 mod house;
 mod receipt;
+pub mod update;
+pub use update::{RegistryCompatibleUpdate, UpdateAuditSubject};
 pub use house::{
     HOUSE_FILING_ACTION, HOUSE_PUBLICATION_CAPABILITY, HouseFilingAttribution, RegistryHouseFiling,
 };
@@ -138,12 +140,14 @@ impl InitialFilingOutput {
 pub struct InitialFilingParticipant {
     policy: InitialFilingPolicy,
     renewals: Option<crate::managed_renewal::bridge::Configuration>,
+    compatible_update: Option<mush_core::DefinitionRef>,
 }
 impl InitialFilingParticipant {
     pub fn new(policy: InitialFilingPolicy) -> Self {
         Self {
             policy,
             renewals: None,
+            compatible_update: None,
         }
     }
 }
@@ -157,6 +161,7 @@ pub(crate) fn register(
     house_action: Option<&mush_core::mechanics::DefinitionRef>,
     dependent_action: Option<&mush_core::mechanics::DefinitionRef>,
     renewals: Option<&crate::managed_renewal::bridge::Configuration>,
+    compatible_update: Option<&mush_core::DefinitionRef>,
 ) -> Result<(), mush_core::ModError> {
     use mush_core::mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionValidationContext,
@@ -279,12 +284,26 @@ pub(crate) fn register(
         actions.extend(renewals.actions.iter().cloned());
         actions.extend(renewals.service_close.iter().cloned());
     }
+    if let Some(action) = compatible_update {
+        if policy.fee.minor() <= 0
+            || action.key().owner.as_str() != "roll"
+            || action.key().kind.as_str() != "action"
+            || action.key().id.as_str() != update::ACTION_ID
+            || action.version() != 1
+        {
+            return Err(mush_core::ModError::msg(
+                "compatible updates require the exact action and positive filing fee",
+            ));
+        }
+        actions.insert(action.clone());
+    }
     reg.owner_participant(
         definition,
         actions,
         InitialFilingParticipant {
             policy,
             renewals: renewals.cloned(),
+            compatible_update: compatible_update.cloned(),
         },
     )
 }
@@ -775,6 +794,7 @@ impl InitialFilingParticipant {
 /// original filing request/output wrappers avoids sharing money authority
 /// through a second adapter or generic plan callback.
 pub enum EconomyRequest {
+    CompatibleUpdate(update::RegistryCompatibleUpdate),
     InitialFiling(RegistryInitialFiling),
     DependentInitialFiling(RegistryInitialFiling),
     HouseInitialFiling(RegistryHouseFiling),
@@ -807,6 +827,7 @@ impl From<RegistryInitialFiling> for EconomyRequest {
     }
 }
 pub enum EconomyOutput {
+    CompatibleUpdate(update::CompatibleUpdateOutput),
     InitialFiling(InitialFilingOutput),
     PurchaseFunding(crate::managed_purchase::FundingOutput),
     PurchaseTerminal(crate::managed_purchase::TerminalOutput),
@@ -817,6 +838,12 @@ pub enum EconomyOutput {
     RenewalTerminal(crate::managed_renewal::RenewalTerminalOutput),
 }
 impl EconomyOutput {
+    pub fn compatible_update(self) -> Result<update::CompatibleUpdateOutput, ParticipantError> {
+        match self {
+            Self::CompatibleUpdate(output) => Ok(output),
+            _ => Err(refused()),
+        }
+    }
     pub fn renewal_offer(
         self,
     ) -> Result<crate::managed_renewal::RenewalOfferOutput, ParticipantError> {
@@ -877,6 +904,7 @@ impl EconomyOutput {
     }
 }
 pub enum EconomyPatch {
+    CompatibleUpdate(Box<update::CompatibleUpdatePatch>),
     InitialFiling(Box<InitialFilingPatch>),
     Purchase(Box<crate::managed_purchase::PurchasePatch>),
     RenewalOffer(Box<crate::managed_renewal::install::OfferPatch>),
@@ -888,6 +916,7 @@ impl From<InitialFilingPatch> for EconomyPatch {
     }
 }
 pub enum BoundEconomy<'a> {
+    CompatibleUpdate(update::BoundCompatibleUpdate<'a>),
     InitialFiling(BoundInitialFiling<'a>),
     Purchase(crate::managed_purchase::BoundPurchase<'a>),
     RenewalOffer(crate::managed_renewal::install::BoundOffer<'a>),
@@ -897,6 +926,7 @@ impl BoundParticipant for BoundEconomy<'_> {
     fn apply(self) {
         match self {
             Self::InitialFiling(bound) => bound.apply(),
+            Self::CompatibleUpdate(bound) => bound.apply(),
             Self::Purchase(bound) => bound.apply(),
             Self::RenewalOffer(bound) => bound.apply(),
             Self::RenewalMoney(bound) => bound.apply(),
@@ -1101,6 +1131,16 @@ impl OwnerParticipant for InitialFilingParticipant {
                     writes,
                 ))
             }
+            EconomyRequest::CompatibleUpdate(request) => {
+                let action = self.compatible_update.as_ref().ok_or_else(refused)?;
+                let (output, patch, writes) =
+                    update::prepare(&self.policy, action, state, context, request)?;
+                Ok(OwnerPreparation::new(
+                    EconomyOutput::CompatibleUpdate(output),
+                    EconomyPatch::CompatibleUpdate(Box::new(patch)),
+                    writes,
+                ))
+            }
             EconomyRequest::InitialFiling(request) => {
                 let action = context.action();
                 if action.key().owner.as_str() != "roll"
@@ -1247,6 +1287,13 @@ impl OwnerParticipant for InitialFilingParticipant {
         patch: &EconomyPatch,
     ) -> Result<(), ParticipantError> {
         match patch {
+            EconomyPatch::CompatibleUpdate(patch) => update::recheck(
+                &self.policy,
+                self.compatible_update.as_ref().ok_or_else(refused)?,
+                state,
+                context,
+                patch,
+            ),
             EconomyPatch::InitialFiling(patch) => self.recheck_filing(state, context, patch),
             EconomyPatch::Purchase(patch) => patch.recheck(state, context),
             EconomyPatch::RenewalOffer(patch) => {
@@ -1265,6 +1312,9 @@ impl OwnerParticipant for InitialFilingParticipant {
         patch: EconomyPatch,
     ) -> Result<BoundEconomy<'a>, ParticipantError> {
         match patch {
+            EconomyPatch::CompatibleUpdate(patch) => {
+                update::bind(state, *patch).map(BoundEconomy::CompatibleUpdate)
+            }
             EconomyPatch::InitialFiling(patch) => self
                 .bind_filing(state, *patch)
                 .map(BoundEconomy::InitialFiling),

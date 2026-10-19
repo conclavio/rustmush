@@ -2516,7 +2516,10 @@ refinery work orders, Ceres deposits, a construction sink) before a second cohor
 **P7** Pallas as a port (data); **P8** delete the legacy seed latch (M); **P9** the net share with a run
 book and carried deficit (M); **P-A** the astronomy engine (§4.8; L in six sub-cuts: data and model M,
 laws M, chart S+M, price policy M, comms S, flip S; after IC12, with P5 for its prices and P7 for its
-showcase).
+showcase) — **designed as [doc 19](19-astronomy-engine.md) (2026-10-18) and built as its cuts A.1–A.6;
+A.1 (the element tables, `Sky::Kepler`, lane v4) landed 2026-10-18**, the cut note in
+[18-cut-notes.md](18-cut-notes.md) "A.1"; Q-18-35..41 are ruled by doc 19 §2's defaults, the owner
+overriding by data.
 
 **IC0.** As recorded in [18-cut-notes.md](18-cut-notes.md). `spacecraft` out of `SELF_MODES`
 (`travel.rs:90`) and `options_from_corridor_room` is IC1's, with its test (Q-18-6, binding).

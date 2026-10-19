@@ -15,13 +15,12 @@ use mush_economy::{AssetLifecycle, EconomyStore};
 use serde::Serialize;
 use std::{any::TypeId, collections::BTreeSet};
 
-use super::super::dependent_owner::OwnerParentBinding;
 use super::super::families::CommerceFamilies;
 use super::super::owner_holdings::{OwnerProjectionError, project_owner_with_parent_for};
 use super::super::personal_filed_reader::PersonalFiledHolding;
 use super::super::personal_paid_holdings::project_entitlement_paid_for;
 use super::super::rating::{RatingCompatibility, RatingFamilies};
-use super::super::records::{PublicationError, Record};
+use super::super::records::PublicationError;
 use super::super::{Capacity, LicenceId, TermPhase, TermWindow, WorldIcSeconds};
 use crate::RollStore;
 
@@ -260,32 +259,9 @@ impl OwnerReadService for IcAdmissionReader {
                 if charter.revision != holding.title_revision() {
                     return Err(OwnerReadError::Integrity);
                 }
-                // The full projection above already proved the immediate
-                // parent's exact current grant. Capture only its actual current
-                // term window here; do not walk that certificate a second time.
-                let binding = ctx.action_state(
-                    &self.families.owner_parents,
-                    &OwnerParentBinding::key_for(holding.licence(), ctx.actor()),
-                )?;
-                let parent_window = match binding {
-                    None => None,
-                    Some(binding) => {
-                        binding.validate().map_err(|_| OwnerReadError::Integrity)?;
-                        let licence = ctx
-                            .action_state(
-                                &self.families.paid_licences,
-                                &binding.parent.licence.key(),
-                            )?
-                            .ok_or(OwnerReadError::Integrity)?;
-                        let key = format!("{}/{}", licence.id().key(), licence.term().key());
-                        let term = ctx
-                            .action_state(&self.families.paid_terms, &key)?
-                            .ok_or(OwnerReadError::Integrity)?;
-                        term.matches_current(licence)
-                            .map_err(|_| OwnerReadError::Integrity)?;
-                        Some(term.window())
-                    }
-                };
+                // Use the selected current qualification already proved by
+                // this owner projection; birth ancestry is a separate record.
+                let parent_window = holding.qualification().map(|q| q.window());
                 (
                     PersonalFiledHolding::original(holding),
                     Some(charter),

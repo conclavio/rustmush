@@ -43,7 +43,7 @@ use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, fold_module_ops_into};
 use smol_str::SmolStr;
 use tacsim::config::PackSource;
-use tacsim::definitions::content::{LANE_JSON, LANE_PACK};
+use tacsim::definitions::content::{LANE_JSON, LANE_PACK, LANE_VERSION};
 use tacsim::pack::{PackEntry, load_pack};
 use tacsim::port::apply::room_by_key;
 use tacsim::port::voyage::{GOODS_LEAVING, Voyage, VoyageState};
@@ -1218,7 +1218,7 @@ fn ic10_selling_metals_at_stickney_pays_the_pilot_and_the_trust_from_journals() 
 /// ask (200) — one payout row, the line's share 0.00cr, the counters +1 / +0 / +0.
 #[test]
 fn ic10_a_sale_at_reference_pays_no_share() {
-    let lane = lane_variant(3, |doc| {
+    let lane = lane_variant(LANE_VERSION, |doc| {
         kasei_metals_bid(doc)["price_major"] = serde_json::json!(200);
     });
     let mut rig = stocked_with(Roster::seeded(lane));
@@ -1252,7 +1252,7 @@ fn ic10_a_sale_at_reference_pays_no_share() {
 /// `(baseline ref)` memo.
 #[test]
 fn ic10_the_reference_is_the_origin_asks_live_price() {
-    let lane = lane_variant(3, |doc| {
+    let lane = lane_variant(LANE_VERSION, |doc| {
         let vendors = doc["entries"]["ceres_port"]["def"]["vendors"]
             .as_array_mut()
             .expect("vendors");
@@ -1420,7 +1420,7 @@ fn ic10_refusals_before_any_contract() {
     );
 
     // An unfunded house.
-    let lane = lane_variant(3, |doc| {
+    let lane = lane_variant(LANE_VERSION, |doc| {
         let orgs = doc["entries"]["stickney_port"]["def"]["orgs"]
             .as_array_mut()
             .expect("orgs");
@@ -1620,7 +1620,7 @@ fn ic10_an_unlanded_leg_refunds_kasei_and_restores_the_bid() {
 /// nothing.
 #[test]
 fn ic10_an_exhausted_bid_reads_taken_and_is_never_reposted() {
-    let lane = lane_variant(3, |doc| {
+    let lane = lane_variant(LANE_VERSION, |doc| {
         kasei_metals_bid(doc)["intake"] = serde_json::json!(20);
     });
     let mut rig = stocked_with(Roster::seeded(lane));
@@ -1788,9 +1788,9 @@ fn ic10_a_lapsed_bid_is_reposted_by_the_clerk() {
 /// the clerk posts it at 3,000.
 #[test]
 fn ic10_a_gone_bid_with_a_changed_intake_is_posted_at_the_new_intake() {
-    let base = lane_variant(3, |_| {});
+    let base = lane_variant(LANE_VERSION, |_| {});
     let mut next_doc: serde_json::Value = serde_json::from_str(&base).expect("JSON");
-    next_doc["manifest"]["version"] = serde_json::json!(4);
+    next_doc["manifest"]["version"] = serde_json::json!(LANE_VERSION + 1);
     next_doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
     kasei_metals_bid(&mut next_doc)["intake"] = serde_json::json!(3_000);
     let next_json = sign(&serde_json::to_string_pretty(&next_doc).expect("serializes"));
@@ -1806,7 +1806,7 @@ fn ic10_a_gone_bid_with_a_changed_intake_is_posted_at_the_new_intake() {
     assert!(market(&rig.tw).listing(old).is_none());
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@4")),
+        apply.contains(&format!("Applied {LANE_PACK}@{}", LANE_VERSION + 1)),
         "{plan}\n{apply}"
     );
     let row =
@@ -1907,11 +1907,11 @@ fn ic10_a_reboot_between_the_leg_and_the_settlement_settles_once() {
 /// bid and drops its `BidRow` (owner item O4(c)).
 #[test]
 fn ic10_retire_refuses_with_a_sale_in_progress() {
-    let base = lane_variant(3, |doc| {
+    let base = lane_variant(LANE_VERSION, |doc| {
         kasei_metals_bid(doc)["intake"] = serde_json::json!(20);
     });
     let mut base_doc: serde_json::Value = serde_json::from_str(&base).expect("JSON");
-    base_doc["manifest"]["version"] = serde_json::json!(4);
+    base_doc["manifest"]["version"] = serde_json::json!(LANE_VERSION + 1);
     base_doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
     base_doc["entries"]
         .as_object_mut()
@@ -1939,7 +1939,7 @@ fn ic10_retire_refuses_with_a_sale_in_progress() {
     assert_eq!(bid_qty(&rig.tw, bid), Some(0));
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@4")),
+        apply.contains(&format!("Applied {LANE_PACK}@{}", LANE_VERSION + 1)),
         "{plan}\n{apply}"
     );
     assert!(
@@ -2062,11 +2062,11 @@ fn ic10_the_books_fold_by_pilot_and_hold() {
 /// range"), the listing stands at 0 and the `BidRow` records intake 10.
 #[test]
 fn ic10_an_intake_cut_over_an_exhausted_bid_leaves_it_at_zero() {
-    let base = lane_variant(3, |doc| {
+    let base = lane_variant(LANE_VERSION, |doc| {
         kasei_metals_bid(doc)["intake"] = serde_json::json!(20);
     });
     let mut next_doc: serde_json::Value = serde_json::from_str(&base).expect("JSON");
-    next_doc["manifest"]["version"] = serde_json::json!(4);
+    next_doc["manifest"]["version"] = serde_json::json!(LANE_VERSION + 1);
     next_doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
     kasei_metals_bid(&mut next_doc)["intake"] = serde_json::json!(10);
     let next_json = sign(&serde_json::to_string_pretty(&next_doc).expect("serializes"));
@@ -2083,7 +2083,7 @@ fn ic10_an_intake_cut_over_an_exhausted_bid_leaves_it_at_zero() {
     assert_eq!(bid_qty(&rig.tw, bid), Some(0));
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@4")),
+        apply.contains(&format!("Applied {LANE_PACK}@{}", LANE_VERSION + 1)),
         "{plan}\n{apply}"
     );
     assert!(!apply.contains("out of range"), "{apply}");

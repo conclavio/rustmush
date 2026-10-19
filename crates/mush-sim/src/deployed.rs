@@ -187,6 +187,30 @@ pub fn refuse_if_deployed(w: &World, unit: ObjId) -> Result<(), UnitDeployed> {
     }
 }
 
+/// A normal physical mutation cannot bypass either independent custody owner.
+/// The old OOC error/marker remains unchanged; IC never fabricates a MatchId.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum UnitCustodied {
+    #[error(transparent)]
+    Match(#[from] UnitDeployed),
+    #[error("{unit} is held by IC sortie {sortie}; its custody owner must close it.")]
+    Ic { unit: ObjId, sortie: u64 },
+}
+#[must_use]
+pub fn is_custodied(w: &World, unit: ObjId) -> bool {
+    is_deployed(w, unit) || crate::ic_exclusion::identity_of(w, unit).is_some()
+}
+pub fn refuse_if_custodied(w: &World, unit: ObjId) -> Result<(), UnitCustodied> {
+    refuse_if_deployed(w, unit)?;
+    if let Some(identity) = crate::ic_exclusion::identity_of(w, unit) {
+        return Err(UnitCustodied::Ic {
+            unit,
+            sortie: identity.sortie,
+        });
+    }
+    Ok(())
+}
+
 /// **What a world-side listing is about to show**, for [`crate::deployed::excluded`] (16b cut S.2).
 ///
 /// Two kinds, because doc 16 §3.6's exclusion is about two kinds of thing — the
@@ -227,7 +251,7 @@ pub enum Shown {
 #[must_use]
 pub fn excluded(w: &World, shown: Shown) -> bool {
     match shown {
-        Shown::Unit(unit) => mark_of(w, unit).is_some(),
+        Shown::Unit(unit) => is_custodied(w, unit),
         Shown::Domain(domain) => w.module_state::<DeployedUnits>().is_some_and(|index| {
             index
                 .by_unit

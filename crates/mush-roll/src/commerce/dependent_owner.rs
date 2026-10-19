@@ -317,31 +317,11 @@ pub(crate) fn require_current(
     ratings: &super::rating::RatingFamilies,
     expected: &super::rating::RatingCompatibility,
     binding: &OwnerParentBinding,
-) -> Result<(), super::owner_holdings::OwnerProjectionError> {
-    use super::owner_holdings::OwnerProjectionError as Error;
-    if binding.parent.owner != holder {
-        return Err(Error::NotHeld);
-    }
-    let actual = super::personal_paid_holdings::project_personal_paid_for(
-        ctx,
-        holder,
-        families,
-        ratings,
-        binding.parent.licence,
-        expected,
-    )?;
-    if actual.filed() != binding.parent.parent.filed
-        || actual.identity() != binding.parent.parent.revision
-        || actual.charter() != binding.parent.charter
-        || actual.line() != binding.parent.line
-        || !matches!(
-            actual.terms().form(),
-            super::paid::PaidForm::Open {} | super::paid::PaidForm::OpenResale {}
-        )
-    {
-        return Err(Error::NotHeld);
-    }
-    Ok(())
+) -> Result<
+    super::owner_qualification::current::CurrentQualification,
+    super::owner_holdings::OwnerProjectionError,
+> {
+    super::owner_qualification::current::resolve(ctx, holder, families, ratings, expected, binding)
 }
 
 /// Snapshot only the bounded existing ancestry from this real transaction.

@@ -63,6 +63,7 @@ mod contact;
 /// with no live arena behind them.
 pub mod custody;
 pub mod ground;
+pub mod ic_custody;
 pub mod mobility;
 pub mod module;
 pub mod sensor;

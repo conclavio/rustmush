@@ -1317,7 +1317,7 @@ async fn ic12_part_one_a_leg_by_hand() {
         (fuel, fuel),
         "the burn is the bunkered fixed point: {plan}"
     );
-    assert_eq!((days, locker), (21, food), "lane v3's 21 crew-days: {plan}");
+    assert_eq!((days, locker), (22, food), "lane v4's 22 crew-days: {plan}");
 
     // The undock, and IC9 T7: a fire while the burn is still queued in the engine
     // (the world task's deferred submit: legacy work owns the next commit) defers the

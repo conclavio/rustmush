@@ -289,7 +289,7 @@ pub(crate) trait Installer: Send {
         reg: &mut Registrar<'_>,
         manifest: &DefinitionRef,
         families: CommerceFamilies,
-        parent: DefinitionRef,
+        parent: OwnerReadHandle<ParentGrantReader>,
         definitions: [DefinitionRef; 2],
     ) -> Result<(), ModError>;
 }
@@ -308,7 +308,7 @@ impl<S: OwnerReadService<Request = ForkMaterialRequest, Output = ForkMaterial>> 
         reg: &mut Registrar<'_>,
         manifest: &DefinitionRef,
         families: CommerceFamilies,
-        parent: DefinitionRef,
+        parent: OwnerReadHandle<ParentGrantReader>,
         definitions: [DefinitionRef; 2],
     ) -> Result<(), ModError> {
         // The owner registered these once before granting RootParticipant's
@@ -320,7 +320,6 @@ impl<S: OwnerReadService<Request = ForkMaterialRequest, Output = ForkMaterial>> 
                 super::fork_protocol::material_descriptor(manifest)?,
             )
             .map_err(error)?;
-        let parent = reg.request_owner_read::<ParentGrantReader>(parent)?;
         let source = reg.request_owner_read::<S>(source)?;
         let roots = reg.request_owner_participant::<RootParticipant>(action.clone())?;
         reg.action_provider(

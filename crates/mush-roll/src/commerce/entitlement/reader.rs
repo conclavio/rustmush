@@ -19,7 +19,6 @@ use mush_core::{
 use mush_economy::{EconomyStore, managed_entitlement::EntitlementProtocol};
 use serde::Serialize;
 
-use super::super::dependent_owner::OwnerParentBinding;
 use super::super::families::CommerceFamilies;
 use super::super::filed::ParentContent;
 use super::super::owner_holdings::{
@@ -406,41 +405,15 @@ impl OwnerReadService for EntitlementSaleReader {
         let filed =
             history::read(ctx, &self.families.filed, holding.filed().key()).map_err(integrity)?;
         let qualifying_parent = if let Some(parent) = filed.content.parent() {
-            // The owner projection above has already verified this binding's
-            // historical integrity and the current own paid grant, including
-            // its complete current certificate. The same immutable owner read
-            // rereads only exact metadata to require the stronger resale form.
-            let binding = history::read(
-                ctx,
-                &self.families.owner_parents,
-                OwnerParentBinding::key_for(holding.licence(), seller),
-            )
-            .map_err(integrity)?;
-            let paid = history::read(
-                ctx,
-                &self.families.paid_licences,
-                binding.parent.licence.key(),
-            )
-            .map_err(integrity)?;
-            let term = history::read(
-                ctx,
-                &self.families.paid_terms,
-                format!("{}/{}", paid.id().key(), paid.term().key()),
-            )
-            .map_err(integrity)?;
-            term.matches_current(paid).map_err(integrity)?;
-            if binding.parent.parent != parent
-                || binding.parent.owner != seller
-                || paid.holder() != seller
-                || term.terms().form() != (PaidForm::OpenResale {})
-            {
+            let selected = holding.qualification().ok_or(OwnerReadError::Integrity)?;
+            if selected.source() != parent || selected.form() != (PaidForm::OpenResale {}) {
                 return Err(OwnerReadError::Refused);
             }
             Some(QualifyingParent {
                 parent,
-                licence: paid.id(),
-                term: paid.term(),
-                window: term.window(),
+                licence: selected.licence(),
+                term: selected.term(),
+                window: selected.window(),
             })
         } else {
             None

@@ -204,7 +204,7 @@ pub fn reset_stock_tanks(
         // Never a deployed unit. The reset runs on the way into `Idle`, so this
         // cannot happen on a healthy server; when it does, the arena is the
         // single writer for that record and the honest answer is to say so.
-        if mush_sim::deployed::is_deployed(ctx.w, object) {
+        if mush_sim::deployed::is_custodied(ctx.w, object) {
             tracing::warn!(
                 unit = %object,
                 "tacsim: a roster tank is still deployed at an Idle transition; it is not reset"

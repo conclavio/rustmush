@@ -264,6 +264,7 @@ struct PurchaseConfiguration {
     participants: PurchaseParticipants,
     writer: OriginalPurchaseWriter,
     dependent: Option<DefinitionRef>,
+    compatible_update: Option<DefinitionRef>,
     entitlements: Option<mush_market::mind_entitlement::EntitlementConfig>,
     renewals: Option<mush_market::mind_renewal::RenewalConfig>,
 }
@@ -314,6 +315,7 @@ fn configuration(manifest: DefinitionRef, source_forms: bool) -> TestResult<Purc
         participants,
         writer,
         dependent: None,
+        compatible_update: None,
         entitlements: None,
         renewals: None,
     })
@@ -321,6 +323,14 @@ fn configuration(manifest: DefinitionRef, source_forms: bool) -> TestResult<Purc
 fn entitlement_configuration(
     base: &PurchaseConfiguration,
     manifest: DefinitionRef,
+) -> TestResult<mush_market::mind_entitlement::EntitlementConfig> {
+    entitlement_configuration_with_window(base, manifest, TERM_SECONDS, GRACE_SECONDS)
+}
+fn entitlement_configuration_with_window(
+    base: &PurchaseConfiguration,
+    manifest: DefinitionRef,
+    term_seconds: i64,
+    grace_seconds: i64,
 ) -> TestResult<mush_market::mind_entitlement::EntitlementConfig> {
     use mush_economy::managed_entitlement::{GrossRecipientCut, Recipient};
     use mush_market::mind_entitlement::{EntitlementConfig, EntitlementPolicy};
@@ -341,8 +351,8 @@ fn entitlement_configuration(
                 recipient: None,
             },
             transferable: true,
-            term_seconds: TERM_SECONDS,
-            grace_seconds: GRACE_SECONDS,
+            term_seconds,
+            grace_seconds,
             quote_seconds: QUOTE_SECONDS,
             renewal_price: Amount::from_minor(73),
             renewal_term_seconds: TERM_SECONDS,
@@ -386,7 +396,10 @@ struct PurchaseRoll {
     entitlements: bool,
     renewals: bool,
     renewal_service: bool,
+    owner_qualification: bool,
+    qualification_short_parent: bool,
     author_withdrawal: bool,
+    compatible_updates: bool,
     shared: Shared,
     purchase: PurchaseShared,
     inner: Option<RollModule>,
@@ -435,8 +448,14 @@ impl GameModule for PurchaseRoll {
             config
         };
         let config = if self.entitlements {
-            let entitlement =
-                entitlement_configuration(&purchase, manifest.clone()).map_err(module_error)?;
+            let entitlement = if self.qualification_short_parent {
+                // A lawful explicit fixture offer policy; existing immutable terms
+                // remain unchanged when the next composition uses normal durations.
+                entitlement_configuration_with_window(&purchase, manifest.clone(), 60, 0)
+            } else {
+                entitlement_configuration(&purchase, manifest.clone())
+            }
+            .map_err(module_error)?;
             let config = config.with_mind_entitlements(
                 entitlement.writer(),
                 purchase.participants.clone(),
@@ -477,6 +496,18 @@ impl GameModule for PurchaseRoll {
         };
         let config = if self.author_withdrawal {
             config.with_author_withdrawal()?
+        } else {
+            config
+        };
+        let config = if self.owner_qualification {
+            config.with_owner_parent_qualification()?
+        } else {
+            config
+        };
+        let config = if self.compatible_updates {
+            let config = config.with_compatible_updates()?;
+            purchase.compatible_update = Some(config.compatible_update_action()?);
+            config
         } else {
             config
         };
@@ -537,6 +568,9 @@ impl GameModule for PurchaseEconomy {
             .with_title_issuers(vec![issuer().map_err(module_error)?])
             .with_initial_filing(filing_policy().map_err(module_error)?, action)
             .with_original_mind_purchases(purchase.purchases.actions()?);
+        if let Some(action) = purchase.compatible_update {
+            module = module.with_compatible_mind_updates(action);
+        }
         if let Some(action) = purchase.dependent {
             module = module.with_dependent_initial_filing(action);
         }
@@ -745,6 +779,7 @@ struct PurchaseFixture {
     disk: Disk,
     config: PurchaseConfiguration,
     filing: DefinitionRef,
+    factory: Arc<Factory>,
 }
 impl PurchaseFixture {
     fn boot(resources: Resources, accounts: Arc<Accounts>, saved: &Durable) -> TestResult<Self> {
@@ -755,6 +790,15 @@ impl PurchaseFixture {
         accounts: Arc<Accounts>,
         saved: &Durable,
         source_forms: bool,
+    ) -> TestResult<Self> {
+        Self::boot_options(resources, accounts, saved, source_forms, false)
+    }
+    fn boot_options(
+        resources: Resources,
+        accounts: Arc<Accounts>,
+        saved: &Durable,
+        source_forms: bool,
+        compatible_updates: bool,
     ) -> TestResult<Self> {
         let shared: Shared = Arc::new(Mutex::new(Registered::default()));
         let purchase: PurchaseShared = Arc::new(Mutex::new(None));
@@ -780,7 +824,10 @@ impl PurchaseFixture {
                     entitlements: false,
                     renewals: false,
                     renewal_service: false,
+                    owner_qualification: false,
+                    qualification_short_parent: false,
                     author_withdrawal: false,
+                    compatible_updates,
                     shared: shared.clone(),
                     purchase: purchase.clone(),
                     inner: None,
@@ -806,6 +853,12 @@ impl PurchaseFixture {
             .filing
             .clone()
             .ok_or("filing registration")?;
+        let factory = shared
+            .lock()
+            .map_err(module_error)?
+            .factory
+            .clone()
+            .ok_or("actual Registry factory")?;
         let config = purchase
             .lock()
             .map_err(module_error)?
@@ -819,6 +872,7 @@ impl PurchaseFixture {
             disk,
             config,
             filing,
+            factory,
         })
     }
     fn fund_buyer_cash(&mut self) -> TestResult {
@@ -1419,6 +1473,9 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
     paid_checkout::exercise(&granted, &committed)?;
     eprintln!("M7_STORY phase=paid_checkout event=complete");
     source_forms::historical_v1(&granted, &funded, &committed)?;
+    eprintln!("M7_STORY phase=compatible_update event=begin");
+    paid_checkout::exercise_updates(&granted, &committed)?;
+    eprintln!("M7_STORY phase=compatible_update event=complete");
     let refund_boot = refunded.reboot(&refunded.snapshot())?;
     assert_eq!(refund_boot.balances()?, before_money);
     assert_eq!(refund_boot.roots()?, roots);

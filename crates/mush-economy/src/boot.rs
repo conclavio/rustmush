@@ -114,6 +114,33 @@ pub(crate) fn load_boot_with_renewals(
     require_purchase_receipts: bool,
     require_renewal_receipts: bool,
 ) -> Result<EconomyStore, ModError> {
+    load_boot_with_line_updates(
+        ctx,
+        data,
+        providers,
+        outcomes,
+        tail_max,
+        window_secs,
+        require_filing_receipts,
+        require_purchase_receipts,
+        require_renewal_receipts,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) fn load_boot_with_line_updates(
+    ctx: &mut ModuleCtx<'_>,
+    data: ModuleBootData,
+    providers: &CustodyTable,
+    outcomes: &crate::contract::CanonOutcomeKinds,
+    tail_max: usize,
+    window_secs: i64,
+    require_filing_receipts: bool,
+    require_purchase_receipts: bool,
+    require_renewal_receipts: bool,
+    require_update_receipts: bool,
+) -> Result<EconomyStore, ModError> {
     let ModuleBootData {
         kv,
         ledger: mut ledger_docs,
@@ -520,6 +547,20 @@ pub(crate) fn load_boot_with_renewals(
             .push("checkpoint lacks exact renewal inventory coverage; full replay required".into());
         checkpoint = None;
     }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
+            .update_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes.push(
+            "checkpoint lacks complete compatible-update receipt coverage; full replay required"
+                .into(),
+        );
+        checkpoint = None;
+    }
     for note in &checkpoint_notes {
         tracing::error!(%note, "economy: checkpoint rejected; replaying past it");
     }
@@ -767,6 +808,21 @@ pub(crate) fn load_boot_with_renewals(
     // inspection are done with.
     drop(ledger_docs);
     drop(history);
+    // Fee-only update history is closed even when its paired consumer is absent.
+    // Complete replay (or a complete checkpoint plus tail) proves absence; an
+    // omitted/unavailable inventory is never treated as an empty history.
+    state.update_receipts.finish_replay().map_err(|error| {
+        ModError::msg(format!(
+            "economy: compatible-update receipt replay refused: {error}"
+        ))
+    })?;
+    if !require_update_receipts {
+        state.update_receipts.require_absent().map_err(|error| {
+            ModError::msg(format!(
+                "economy: compatible-update history requires paired recovery: {error}"
+            ))
+        })?;
+    }
     let renewal_offers = crate::managed_renewal::bridge::recover(
         &mut state,
         &mut snapshot,

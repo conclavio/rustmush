@@ -1,0 +1,131 @@
+//! Only the checked update producer can request its exact immutable roots.
+use super::records::UpdateOperation;
+use crate::commerce::{
+    TermPhase, TermWindow, WorldIcSeconds,
+    records::{FiledRecord, PublicationError},
+    roots::{RequiredRoot, RootAnchor},
+};
+use mush_core::action::{PerceivedRef, PrincipalId};
+use mush_core::participant::OwnerPrepareContext;
+use mush_core::{ClockStamp, CommitToken, DefinitionRef, Flags, ObjId, ObjKind};
+#[derive(Clone)]
+pub(crate) struct UpdateFence {
+    action: DefinitionRef,
+    commit: CommitToken,
+    actor: ObjId,
+    observed: ClockStamp,
+    window: TermWindow,
+    revision: crate::commerce::RevisionIdentity,
+}
+impl UpdateFence {
+    pub(crate) fn check(&self, ctx: &OwnerPrepareContext<'_>) -> Result<(), PublicationError> {
+        super::check_action(ctx.action())?;
+        let world = ctx.world();
+        let now = world.world_ic_now();
+        if ctx.action() != &self.action
+            || ctx.commit_token() != self.commit
+            || ctx.invocation().actor() != self.actor
+            || ctx.invocation().principal() != &(PrincipalId::Object { id: self.actor })
+            || ctx.invocation().subject() != &PerceivedRef::SelfActor
+            || !ctx.invocation().targets().is_empty()
+            || now.clock != self.observed.clock
+            || now.at < self.observed.at
+            || world
+                .get(self.actor)
+                .is_none_or(|o| o.kind != ObjKind::Player || o.flags.contains(Flags::GOING))
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        if !matches!(
+            self.window
+                .phase_at(WorldIcSeconds::from_stamp(&now).map_err(|_| PublicationError::Invalid)?),
+            TermPhase::Active | TermPhase::Grace
+        ) {
+            return Err(PublicationError::Unavailable);
+        }
+        let roll = world
+            .module_state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?;
+        roll.commerce_ready()
+            .map_err(|_| PublicationError::Unavailable)?;
+        let reference = self.revision.revision();
+        roll.owned_mind(self.actor, reference.key.mind)
+            .map_err(|_| PublicationError::Unavailable)?;
+        let revision = roll
+            .revision(self.actor, reference.key)
+            .map_err(|_| PublicationError::Unavailable)?;
+        revision
+            .require_original_access()
+            .map_err(|_| PublicationError::Unavailable)?;
+        if !self
+            .revision
+            .matches(revision)
+            .map_err(|_| PublicationError::Invalid)?
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        Ok(())
+    }
+}
+pub(crate) struct UpdateRoots {
+    commit: CommitToken,
+    fence: UpdateFence,
+    before: [RequiredRoot; 2],
+    after: [RequiredRoot; 2],
+}
+impl UpdateRoots {
+    pub(super) fn new(
+        op: &UpdateOperation,
+        previous: &FiledRecord,
+        window: TermWindow,
+    ) -> Result<Self, PublicationError> {
+        use crate::commerce::records::Record;
+        op.validate()?;
+        previous.validate()?;
+        if previous.content.id() != op.previous
+            || previous.content.position().line != op.line
+            || previous.content.position().charter != op.charter
+            || previous.content.position().sequence.get().checked_add(1) != Some(op.sequence)
+            || previous.content.filed_at().get() > op.at_ic.at
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        Ok(Self {
+            commit: op.commit,
+            fence: UpdateFence {
+                action: op.action.clone(),
+                commit: op.commit,
+                actor: op.actor,
+                observed: op.at_ic.clone(),
+                window,
+                revision: op.revision,
+            },
+            before: [
+                RequiredRoot {
+                    anchor: RootAnchor::Filed(op.previous),
+                    identity: previous.content.revision(),
+                },
+                RequiredRoot {
+                    anchor: RootAnchor::Rating {
+                        job: op.rating.job(),
+                        id: op.rating.id(),
+                    },
+                    identity: op.revision,
+                },
+            ],
+            after: super::audit::required(op),
+        })
+    }
+    pub(crate) fn commit(&self) -> CommitToken {
+        self.commit
+    }
+    pub(crate) fn fence(&self) -> &UpdateFence {
+        &self.fence
+    }
+    pub(crate) fn before(&self) -> &[RequiredRoot] {
+        &self.before
+    }
+    pub(crate) fn after(&self) -> &[RequiredRoot] {
+        &self.after
+    }
+}

@@ -20,17 +20,18 @@ use crate::mechanics::{
 };
 use crate::module::{ErasedSlotCapture, ModuleStateMap, StateInit};
 
-/// Registered legacy slots: Economy, Roll, and Tacsim's bulk/artifact stores.
-pub const MAX_OWNER_PARTICIPANTS: usize = 4;
+/// Four existing commerce slots, three IC physical slots and the optional
+/// hardware replacement slot. Registration grants no per-invocation expansion.
+pub const MAX_OWNER_PARTICIPANTS: usize = 8;
 /// An invocation binds at most three distinct slots belonging to two modules.
 pub const MAX_OWNER_PARTICIPANT_IMAGES: usize = 3;
 pub const MAX_OWNER_PARTICIPANT_MODULES: usize = 2;
 /// Registration requests are bounded independently of each invocation's images.
-/// Registry, filing, fork and legacy purchase actions use 28 exact grants; the
-/// two entitlement protocols add 14 and authored retirement adds one. A ceiling
-/// of 64 also leaves room for the ten proposed renewal grants. Registration
-/// does not expand the three-slot, two-module limit on any single invocation.
-pub const MAX_OWNER_PARTICIPANT_REQUESTS: usize = 64;
+/// The full optional commerce roster uses 60 exact grants and IC adds eight.
+/// This declaration ceiling leaves bounded room for later owner actions; ordinary
+/// invocations remain three slots/two modules, and only the validated fixed IC
+/// protocol may prepare its exact four slots/four modules.
+pub const MAX_OWNER_PARTICIPANT_REQUESTS: usize = 128;
 
 /// A refusal before publication, or an integrity failure at post-receipt bind.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -325,7 +326,10 @@ impl ParticipantRegistryBuilder {
         if definition.key().owner != owner
             || allowed_actions.is_empty()
             || self.registrations.iter().any(|r| {
-                r.adapter_type == TypeId::of::<P>() || r.state_type == TypeId::of::<P::State>()
+                r.adapter_type == TypeId::of::<P>()
+                    || r.definition == definition
+                    || (r.state_type == TypeId::of::<P::State>()
+                        && (r.owner != owner || !r.allowed_actions.is_disjoint(&allowed_actions)))
             })
         {
             return Err(ParticipantError::Registration);
@@ -437,6 +441,7 @@ impl ParticipantRegistryBuilder {
             requests: self.requests,
             readiness,
             fingerprint,
+            ic_claim: None,
         })
     }
 }
@@ -447,9 +452,28 @@ pub(crate) struct ParticipantRegistry {
     requests: Vec<RequestRegistration>,
     readiness: MechanicalOwnerReadiness,
     fingerprint: DefinitionDigest,
+    ic_claim: Option<([DefinitionRef; 2], [DefinitionRef; 4])>,
 }
 
 impl ParticipantRegistry {
+    pub(crate) fn enable_ic_claim(
+        &mut self,
+        actions: [DefinitionRef; 2],
+        participants: [DefinitionRef; 4],
+    ) -> Result<(), ParticipantError> {
+        if self.ic_claim.is_some() {
+            return Err(ParticipantError::Registration);
+        }
+        self.fingerprint = DefinitionDigest::for_canonical_value(
+            "owner_participants.v2",
+            &serde_json::json!({
+                "base": self.fingerprint, "ic_actions": actions, "ic_participants": participants
+            }),
+        )
+        .map_err(|_| ParticipantError::Encoding)?;
+        self.ic_claim = Some((actions, participants));
+        Ok(())
+    }
     /// Validate the actual registered adapter and granted request, not merely a
     /// participant-shaped definition. Used only by the closed core protocol.
     pub(crate) fn grants_exact(
@@ -639,7 +663,25 @@ impl ParticipantRegistry {
         {
             return Err(ParticipantError::DuplicateSlot);
         }
-        if images.0.len() >= MAX_OWNER_PARTICIPANT_IMAGES
+        let ic = self
+            .ic_claim
+            .as_ref()
+            .filter(|(actions, _)| actions.contains(provider.action()));
+        if let Some((_, participants)) = ic {
+            if !participants.contains(&r.definition)
+                || images.0.iter().any(|image| {
+                    !participants.contains(&image.definition) || image.action != *provider.action()
+                })
+            {
+                return Err(ParticipantError::Authority);
+            }
+        }
+        let (max_images, max_modules) = if ic.is_some() {
+            (4, 4)
+        } else {
+            (MAX_OWNER_PARTICIPANT_IMAGES, MAX_OWNER_PARTICIPANT_MODULES)
+        };
+        if images.0.len() >= max_images
             || images
                 .0
                 .iter()
@@ -647,7 +689,7 @@ impl ParticipantRegistry {
                 .chain(std::iter::once(&r.owner))
                 .collect::<BTreeSet<_>>()
                 .len()
-                > MAX_OWNER_PARTICIPANT_MODULES
+                > max_modules
         {
             return Err(ParticipantError::ImageLimit);
         }
@@ -738,6 +780,29 @@ impl fmt::Debug for OwnerImages {
 }
 
 impl OwnerImages {
+    pub(crate) fn require_exact_ic(
+        &self,
+        participants: &[DefinitionRef; 4],
+        action: &DefinitionRef,
+        commit: CommitToken,
+    ) -> Result<(), ParticipantError> {
+        if self.0.len() != 4
+            || self
+                .0
+                .iter()
+                .any(|image| image.action != *action || image.commit_token != commit)
+            || participants.iter().any(|reference| {
+                self.0
+                    .iter()
+                    .filter(|image| &image.definition == reference)
+                    .count()
+                    != 1
+            })
+        {
+            return Err(ParticipantError::Authority);
+        }
+        Ok(())
+    }
     pub(crate) fn order(&mut self) {
         self.0.sort_by(|a, b| a.definition.cmp(&b.definition));
     }
@@ -810,12 +875,13 @@ impl OwnerImages {
         let first = rows.next();
         let second = rows.next();
         let third = rows.next();
+        let fourth = rows.next();
         if rows.next().is_some() {
             return Err(ParticipantError::ImageLimit);
         }
-        let bound = match (first, second, third) {
-            (None, None, None) => Ok(BoundOwners::None),
-            (Some(a), None, None) => {
+        let bound = match (first, second, third, fourth) {
+            (None, None, None, None) => Ok(BoundOwners::None),
+            (Some(a), None, None, None) => {
                 a.readiness
                     .require_ready(&a.owner)
                     .map_err(|_| ParticipantError::NotReady)?;
@@ -824,7 +890,7 @@ impl OwnerImages {
                     .map_err(|_| ParticipantError::Slot)?;
                 Ok(BoundOwners::One(a.adapter.bind(state, a.patch)?))
             }
-            (Some(a), Some(b), None) => {
+            (Some(a), Some(b), None, None) => {
                 a.readiness
                     .require_ready(&a.owner)
                     .map_err(|_| ParticipantError::NotReady)?;
@@ -838,7 +904,7 @@ impl OwnerImages {
                 let second = b.adapter.bind(right, b.patch)?;
                 Ok(BoundOwners::Two(first, second))
             }
-            (Some(a), Some(b), Some(c)) => {
+            (Some(a), Some(b), Some(c), None) => {
                 for image in [&a, &b, &c] {
                     image
                         .readiness
@@ -853,6 +919,16 @@ impl OwnerImages {
                 let third = c.adapter.bind(right, c.patch)?;
                 Ok(BoundOwners::Three(first, second, third))
             }
+            (Some(a), Some(b), Some(c), Some(d)) => {
+                let (one, two, three, four) = slots
+                    .get_erased_captured_four_mut(&a.capture, &b.capture, &c.capture, &d.capture)
+                    .map_err(|_| ParticipantError::Slot)?;
+                let a = a.adapter.bind(one, a.patch)?;
+                let b = b.adapter.bind(two, b.patch)?;
+                let c = c.adapter.bind(three, c.patch)?;
+                let d = d.adapter.bind(four, d.patch)?;
+                Ok(BoundOwners::Four(a, b, c, d))
+            }
             _ => Err(ParticipantError::Type),
         }?;
         // An integrity-discovering bind may close a latch while returning a
@@ -863,6 +939,12 @@ impl OwnerImages {
 }
 
 pub(crate) enum BoundOwners<'a> {
+    Four(
+        Box<dyn ErasedBound + 'a>,
+        Box<dyn ErasedBound + 'a>,
+        Box<dyn ErasedBound + 'a>,
+        Box<dyn ErasedBound + 'a>,
+    ),
     None,
     One(Box<dyn ErasedBound + 'a>),
     Two(Box<dyn ErasedBound + 'a>, Box<dyn ErasedBound + 'a>),
@@ -875,6 +957,12 @@ pub(crate) enum BoundOwners<'a> {
 impl BoundOwners<'_> {
     pub(crate) fn apply(self) {
         match self {
+            Self::Four(a, b, c, d) => {
+                a.apply();
+                b.apply();
+                c.apply();
+                d.apply();
+            }
             Self::None => {}
             Self::One(a) => a.apply(),
             Self::Two(a, b) => {
@@ -984,7 +1072,8 @@ mod tests {
     }
 
     #[test]
-    fn composition_accepts_sixty_four_distinct_requests_and_refuses_the_next() {
+    fn composition_accepts_128_distinct_requests_and_refuses_129() {
+        assert_eq!(MAX_OWNER_PARTICIPANT_REQUESTS, 128);
         let caller = OwnerId::new("writer").unwrap();
         let mut definitions = DefinitionRegistryBuilder::new();
         let mut builder = ParticipantRegistryBuilder::default();
@@ -1379,3 +1468,6 @@ mod tests {
         assert_eq!(f.world.module_state::<Cell<2>>(), Some(&Cell(22)));
     }
 }
+
+#[cfg(test)]
+mod ic_tests;

@@ -1918,6 +1918,51 @@ impl ModuleStateMap {
         Ok((left.value.as_mut(), right.value.as_mut()))
     }
 
+    pub(crate) fn get_erased_captured_four_mut(
+        &mut self,
+        a: &ErasedSlotCapture,
+        b: &ErasedSlotCapture,
+        c: &ErasedSlotCapture,
+        d: &ErasedSlotCapture,
+    ) -> Result<
+        (
+            &mut (dyn Any + Send),
+            &mut (dyn Any + Send),
+            &mut (dyn Any + Send),
+            &mut (dyn Any + Send),
+        ),
+        StateSlotBindError,
+    > {
+        let ids = [a.type_id, b.type_id, c.type_id, d.type_id];
+        if ids
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != 4
+        {
+            return Err(StateSlotBindError::Aliased);
+        }
+        let [Some(one), Some(two), Some(three), Some(four)] = self
+            .slots
+            .get_disjoint_mut([&a.type_id, &b.type_id, &c.type_id, &d.type_id])
+        else {
+            return Err(StateSlotBindError::Missing);
+        };
+        if !Arc::ptr_eq(&one.incarnation, &a.incarnation)
+            || !Arc::ptr_eq(&two.incarnation, &b.incarnation)
+            || !Arc::ptr_eq(&three.incarnation, &c.incarnation)
+            || !Arc::ptr_eq(&four.incarnation, &d.incarnation)
+        {
+            return Err(StateSlotBindError::Replaced);
+        }
+        Ok((
+            one.value.as_mut(),
+            two.value.as_mut(),
+            three.value.as_mut(),
+            four.value.as_mut(),
+        ))
+    }
+
     pub(crate) fn get_erased_captured_triple_mut(
         &mut self,
         a: &ErasedSlotCapture,
@@ -2317,7 +2362,7 @@ impl Registry {
         let definition_migrations = std::mem::take(&mut self.definition_migration_builder)
             .freeze_for_composition(&definitions, owner_readiness.clone())
             .map_err(|e| ModError::msg(format!("definition migration registry: {e}")))?;
-        let participants = std::mem::take(&mut self.participant_builder)
+        let mut participants = std::mem::take(&mut self.participant_builder)
             .freeze(
                 &definitions,
                 &action_providers,
@@ -2326,7 +2371,11 @@ impl Registry {
             )
             .map_err(|e| ModError::msg(format!("owner participant registry: {e}")))?;
         state_families
-            .validate_registry_rating_composition(&definitions, &action_providers, &participants)
+            .validate_registry_rating_composition(
+                &definitions,
+                &action_providers,
+                &mut participants,
+            )
             .map_err(|e| ModError::msg(format!("Registry rating capacity: {e}")))?;
         let owner_reads = std::mem::take(&mut self.owner_read_builder)
             .freeze(
@@ -3287,6 +3336,29 @@ impl<'a> Registrar<'a> {
                 original_actions,
                 derived_actions,
             )
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
+    /// Declare the fixed IC claim Open/Close protocol. Participants are Roll
+    /// retention, Tacsim seal, Tactics custody and Sim exclusion, in that order.
+    /// The one Roll target and Tacsim metadata owner are derived by core.
+    pub fn ic_mind_claim_capacity(
+        &mut self,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 4],
+        actions: [crate::DefinitionRef; 2],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "tacsim" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "IC claim capacity requires the unfrozen Tacsim registrar",
+            ));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str())
+            .map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .ic_mind_claim_capacity(&owner, manifest, participants, actions)
             .map_err(|e| ModError::msg(e.to_string()))
     }
 

@@ -831,7 +831,7 @@ fn spatial_tree(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// world placement frozen by the check-out; these are the two verbs that would
 /// otherwise move it out from under the arena's own integrator.
 fn refuse_deployed(ctx: &Ctx<'_>, obj: ObjId) -> Result<(), CmdError> {
-    crate::deployed::refuse_if_deployed(ctx.w, obj)
+    crate::deployed::refuse_if_custodied(ctx.w, obj)
         .map_err(|error| CmdError::msg(error.to_string()))
 }
 

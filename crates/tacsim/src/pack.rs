@@ -53,6 +53,8 @@ use std::collections::BTreeMap;
 use mush_core::{CanonicalId, DefinitionDigest};
 use serde::{Deserialize, Serialize};
 
+use crate::kepler::{ElementRow, MAX_ELEMENT_ROWS, ROW_FIELDS};
+
 /// The domain tag every TacSim pack digest is taken under.
 ///
 /// `hash_parts` length-prefixes it, so this value *is* the encoding version: change
@@ -606,7 +608,16 @@ pub struct LocationDef {
 /// heliocentric longitude and distance at `epoch_ic`** — the real date its
 /// numbers were read for — and the sky holds it there; a body without one (every
 /// fixture body) is placed at the configured campaign epoch, exactly as before.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+///
+/// **Doc 19 cut A.1 (D-19-1, D-19-2)**: a body may carry an **element table**
+/// (`elements`: rows of osculating Keplerian elements at sorted epochs,
+/// [`crate::kepler::ElementRow`]), and then it moves on a real orbit in three
+/// dimensions behind `Sky::Kepler`; the four circular numbers stay authored and
+/// true at `epoch_ic`, and the wire refuses a table that disagrees with them
+/// there ([`BodyDef::with_elements`]). A body without a table is circular, as
+/// every fixture body is; the field is skipped on the wire when empty, so no
+/// fixture's re-encoding moves.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BodyDef {
     /// Orbit radius (the heliocentric distance at the epoch), micro-AU;
     /// `1..=MAX_ORBIT_UAU`.
@@ -621,6 +632,11 @@ pub struct BodyDef {
     /// config epoch governs. `|epoch_ic| <= MAX_EPOCH_IC`. Skipped on the wire
     /// when absent, so no fixture's re-encoding moves.
     pub epoch_ic: Option<i64>,
+    /// **Doc 19 cut A.1** — the element table, sorted by epoch, or empty for a
+    /// circular body. Non-empty only with `epoch_ic` present; every row within
+    /// the wire's bounds and the table consistent with the four numbers above at
+    /// `epoch_ic` ([`BodyDef::with_elements`]).
+    pub elements: Vec<ElementRow>,
 }
 
 /// The largest orbit a pack may author, micro-AU (100 000 AU).
@@ -633,7 +649,7 @@ pub const MAX_PERIOD_MDAYS: u64 = 1_000_000_000_000;
 pub const MAX_EPOCH_IC: i64 = 1_000_000_000_000;
 
 /// The authored form of a [`BodyDef`].
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BodyDefWire {
     orbit_au: f64,
@@ -641,6 +657,10 @@ struct BodyDefWire {
     phase_deg_at_epoch: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     epoch_ic: Option<i64>,
+    /// Doc 19 cut A.1: the element table, one `[epoch_ic, a_au, e, i_deg,
+    /// node_deg, peri_deg, mean_anomaly_deg, mean_motion_deg_day]` per row.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    elements: Vec<[f64; ROW_FIELDS]>,
 }
 
 impl Serialize for BodyDef {
@@ -652,6 +672,7 @@ impl Serialize for BodyDef {
             phase_deg_at_epoch: self.phase_mdeg as f64 / 1_000.0,
             // Written only when present (`skip_serializing_if`).
             epoch_ic: self.epoch_ic,
+            elements: self.elements.iter().map(ElementRow::authored).collect(),
         };
         wire.serialize(serializer)
     }
@@ -666,9 +687,20 @@ impl<'de> Deserialize<'de> for BodyDef {
             wire.phase_deg_at_epoch,
             wire.epoch_ic,
         )
+        .and_then(|def| def.with_elements(&wire.elements))
         .map_err(serde::de::Error::custom)
     }
 }
+
+/// How far a body's element table may disagree with its authored heliocentric
+/// distance at `epoch_ic`, permille (doc 19 D-19-2's consistency rule).
+pub const ELEMENTS_DISTANCE_TOLERANCE_PERMILLE: u64 = 5;
+/// How far a body's element table may disagree with its authored true longitude
+/// at `epoch_ic`, milli-degrees.
+pub const ELEMENTS_LONGITUDE_TOLERANCE_MDEG: i64 = 500;
+/// How far a body's authored period may sit from the nearest row's `360 /
+/// mean_motion`, permille.
+pub const ELEMENTS_PERIOD_TOLERANCE_PERMILLE: u64 = 10;
 
 impl BodyDef {
     /// From the authored numbers.
@@ -714,7 +746,98 @@ impl BodyDef {
             period_mdays,
             phase_mdeg: mdeg as i64,
             epoch_ic,
+            elements: Vec::new(),
         })
+    }
+
+    /// **The same body with an element table** (doc 19 cut A.1, D-19-2): each
+    /// row through [`ElementRow::from_authored`]; `1..=MAX_ELEMENT_ROWS` rows,
+    /// strictly ascending by epoch; `epoch_ic` present; and **the consistency
+    /// rule** — the table's position at `epoch_ic` within
+    /// [`ELEMENTS_DISTANCE_TOLERANCE_PERMILLE`] of `orbit_au` and
+    /// [`ELEMENTS_LONGITUDE_TOLERANCE_MDEG`] of `phase_deg_at_epoch`, and
+    /// `period_days` within [`ELEMENTS_PERIOD_TOLERANCE_PERMILLE`] of the nearest
+    /// row's `360 / mean_motion` — so a pack cannot carry two skies that
+    /// contradict each other. An empty `rows` is the circular body unchanged.
+    ///
+    /// # Errors
+    ///
+    /// A message naming the rule broken.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    pub fn with_elements(mut self, rows: &[[f64; ROW_FIELDS]]) -> Result<BodyDef, String> {
+        if rows.is_empty() {
+            self.elements = Vec::new();
+            return Ok(self);
+        }
+        if rows.len() > MAX_ELEMENT_ROWS {
+            return Err(format!(
+                "a body's element table has at most {MAX_ELEMENT_ROWS} rows; {} is too many",
+                rows.len()
+            ));
+        }
+        let Some(epoch) = self.epoch_ic else {
+            return Err("a body with an element table carries epoch_ic".to_string());
+        };
+        let mut table: Vec<ElementRow> = Vec::with_capacity(rows.len());
+        for row in rows {
+            let decoded = ElementRow::from_authored(row)?;
+            if table
+                .last()
+                .is_some_and(|previous| previous.epoch_ic >= decoded.epoch_ic)
+            {
+                return Err("a body's element rows ascend strictly by epoch_ic".to_string());
+            }
+            table.push(decoded);
+        }
+        // The consistency rule, at the body's own epoch.
+        let jd = crate::kepler::julian_day(epoch);
+        let position = crate::kepler::table_position(&table, jd)
+            .ok_or_else(|| "a body's element table is empty".to_string())?;
+        let (r_km, longitude, _) = crate::kepler::polar(position);
+        let au = crate::ephemeris::AU_KM as f64;
+        let authored_km = self.orbit_uau as f64 * au / 1_000_000.0;
+        let tolerance_km = authored_km * ELEMENTS_DISTANCE_TOLERANCE_PERMILLE as f64 / 1_000.0;
+        if (r_km - authored_km).abs() > tolerance_km {
+            return Err(format!(
+                "a body's element table puts it at {:.6} AU at its epoch, not the authored {:.6} AU",
+                r_km / au,
+                self.orbit_uau as f64 / 1_000_000.0
+            ));
+        }
+        let table_mdeg = (longitude * 1_000.0).round() as i64;
+        let gap = (table_mdeg - self.phase_mdeg).rem_euclid(360_000);
+        if gap.min(360_000 - gap) > ELEMENTS_LONGITUDE_TOLERANCE_MDEG {
+            return Err(format!(
+                "a body's element table puts it at {longitude:.3} degrees at its epoch, not the authored {:.3}",
+                self.phase_mdeg as f64 / 1_000.0
+            ));
+        }
+        let nearest = table
+            .iter()
+            .min_by_key(|row| row.epoch_ic.abs_diff(epoch))
+            .ok_or_else(|| "a body's element table is empty".to_string())?;
+        let period_days = 360.0 * 1e9 / nearest.n_ndeg_day as f64;
+        let authored_days = self.period_mdays as f64 / 1_000.0;
+        if (period_days - authored_days).abs()
+            > authored_days * ELEMENTS_PERIOD_TOLERANCE_PERMILLE as f64 / 1_000.0
+        {
+            return Err(format!(
+                "a body's element table gives a period of {period_days:.3} days, not the authored {authored_days:.3}"
+            ));
+        }
+        self.elements = table;
+        Ok(self)
+    }
+
+    /// Whether the body moves on an element table (`Sky::Kepler`) rather than
+    /// the circular model.
+    #[must_use]
+    pub fn is_keplerian(&self) -> bool {
+        !self.elements.is_empty()
     }
 }
 

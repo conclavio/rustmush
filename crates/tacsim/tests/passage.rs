@@ -7,10 +7,12 @@
 //! drive from the fielded catalog, the sky from `Sky::from_pack` under an explicit
 //! ephemeris configuration. No world.
 //!
-//! The figures pinned are **lane v3's** (lead ruling L2: 226 km/s legs under
-//! `route_duration`'s floor arithmetic, L1): out 959,361 + 735,600 s (1,694,961),
-//! 41 t, 21 crew-days; back 653,642 + 852,473 s (1,506,115), 37 t, 18 crew-days.
-//! Doc 18's 965,623 + 730,645 / 1,507,276 were lane v1's 205 km/s legs (for IC12).
+//! The figures pinned are **lane v4's** (doc 19 cut A.1: the three-dimensional
+//! chords of the Kepler sky at the epoch, Kirkwood trailing Ceres by 2°, 226 km/s
+//! legs under `route_duration`'s floor arithmetic, lead rulings L1/L2): out
+//! 110,305 + 1,683,834 s (1,794,139), 41 t, 22 crew-days; back 1,496,209 + 98,014 s
+//! (1,594,223), 37 t, 20 crew-days. Lane v3's were 959,361 + 735,600 / 653,642 +
+//! 852,473 (21 / 18 crew-days); doc 18's 965,623 + 730,645 were lane v1's.
 
 mod support;
 
@@ -29,8 +31,9 @@ use support::ground::{UNSIGNED, sign};
 /// The Dray's dry mass, kilograms (Dray v2: 240 t).
 const DRY_KG: u64 = 240_000;
 /// The outbound full load's payload (§4.2/§4.4): the both-limits cargo (100 t),
-/// 42 t of reaction mass, 21 crew-days (84 kg) and one occupant's 100 kg.
-const OUT_PAYLOAD: u64 = 142_184;
+/// 42 t of reaction mass, 22 crew-days (88 kg; 21 at lane v3) and one occupant's
+/// 100 kg.
+const OUT_PAYLOAD: u64 = 142_188;
 /// The return load's payload (§4.4).
 const BACK_PAYLOAD: u64 = 106_176;
 
@@ -139,10 +142,10 @@ fn plan_passage_reproduces_the_slice_figures() {
         depart,
     )
     .expect("the outbound plan");
-    assert_eq!(secs(&out), vec![959_361, 735_600]);
-    assert_eq!(out.total_s, 1_694_961);
+    assert_eq!(secs(&out), vec![110_305, 1_683_834]);
+    assert_eq!(out.total_s, 1_794_139);
     assert_eq!(out.burn_t, 41);
-    assert_eq!(out.crew_days, 21);
+    assert_eq!(out.crew_days, 22);
     assert_eq!(out.law.as_str(), "coast");
     assert_eq!(out.route.as_str(), LANE_ROUTE_OUT);
     assert_eq!(out.depart_ic, depart);
@@ -168,10 +171,10 @@ fn plan_passage_reproduces_the_slice_figures() {
         depart,
     )
     .expect("the return plan");
-    assert_eq!(secs(&back), vec![653_642, 852_473]);
-    assert_eq!(back.total_s, 1_506_115);
+    assert_eq!(secs(&back), vec![1_496_209, 98_014]);
+    assert_eq!(back.total_s, 1_594_223);
     assert_eq!(back.burn_t, 37);
-    assert_eq!(back.crew_days, 18);
+    assert_eq!(back.crew_days, 20);
 
     // The rail: the ceiling plans, one kilogram past it refuses.
     let ceiling = drive.payload_ceiling_kg;

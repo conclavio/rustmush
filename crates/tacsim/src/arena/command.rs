@@ -267,6 +267,16 @@ pub struct SquadWatch {
 }
 
 impl Arena {
+    /// The live arena predicate for a persona's command hull, checked both
+    /// before requesting deliberation and when its delayed answer lands.
+    pub(crate) fn commander_can_order(&self, commander: ObjId) -> bool {
+        self.unit(commander).is_some_and(|unit| {
+            !unit.limits.wreck
+                && !unit.disabled
+                && (!unit.weapons.is_empty() || unit.mobility.max_speed_cms != 0)
+        })
+    }
+
     /// The squad a unit belongs to, if any.
     #[must_use]
     pub fn squad_of(&self, unit: ObjId) -> Option<&SquadRoster> {
@@ -323,9 +333,6 @@ impl Arena {
             let Some(commander) = self.unit(squad.commander) else {
                 continue;
             };
-            if commander.limits.wreck || commander.disabled {
-                continue;
-            }
             // **16b cut O.3** (16c N13; plan items 7, 14): nor does a commander
             // that is **inert** — no weapon and no speed, which is what a range's
             // target is (`tacsim.unit.target_mk1`) and what the stock mind
@@ -339,7 +346,7 @@ impl Arena {
             // order it gave. A squad is skipped by its commander alone, as a
             // wrecked commander's is: the range fields targets in squads of
             // targets, so no armed unit is ever under an inert commander.
-            if commander.weapons.is_empty() && commander.mobility.max_speed_cms == 0 {
+            if !self.commander_can_order(squad.commander) {
                 continue;
             }
             let row = watch.entry(squad.id).or_default();

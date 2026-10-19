@@ -477,6 +477,7 @@ fn every_refusal() -> Vec<Refusal> {
         Refusal::Overheated,
         Refusal::NoWeapon,
         Refusal::NotMachine,
+        Refusal::NoCommander,
         Refusal::NoJammer,
         // 17b cut M1b.1: the law's two words and the count's.
         Refusal::Unwarranted,
@@ -502,6 +503,7 @@ fn every_refusal() -> Vec<Refusal> {
             | Refusal::Overheated
             | Refusal::NoWeapon
             | Refusal::NotMachine
+            | Refusal::NoCommander
             | Refusal::NoJammer
             | Refusal::Unwarranted
             | Refusal::NoSlot

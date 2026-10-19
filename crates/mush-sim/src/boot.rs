@@ -499,6 +499,7 @@ pub(crate) fn load_boot(
     // Validate placements against the world and the graph.
     st.placements = placements;
     st.derived = rebuild(&st);
+    crate::ic_exclusion::check_boot_spatial(ctx, &st)?;
     let now = ctx.w.now();
 
     // A readable record whose object no longer exists is a tombstone. Held
@@ -772,7 +773,11 @@ pub(crate) fn load_boot(
 }
 
 /// Why a live placement is invalid, if it is.
-fn validate_live(ctx: &ModuleCtx<'_>, st: &SpatialState, rec: &PlacementRecord) -> Option<String> {
+pub(crate) fn validate_live(
+    ctx: &ModuleCtx<'_>,
+    st: &SpatialState,
+    rec: &PlacementRecord,
+) -> Option<String> {
     let w: &mush_core::World = ctx.w;
     let obj = rec.object;
     let gone = |id: ObjId| w.get(id).is_none_or(|o| o.flags.contains(Flags::GOING));

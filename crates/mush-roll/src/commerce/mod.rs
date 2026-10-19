@@ -15,6 +15,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::{Revision, RevisionRef};
 
 /// Version of these source-free value envelopes, independent of M6 workflow JSON.
+pub(crate) mod line_update;
 pub const VALUE_FORMAT: u16 = 1;
 /// Explicit representational ceiling for a purchased seat count. New-work and
 /// open-claim storage reservations remain separate, lower operational limits.
@@ -416,6 +417,7 @@ pub mod authored_access;
 pub(crate) mod authored_fork;
 pub mod authored_history;
 pub(crate) mod authored_retirement;
+pub(crate) mod owner_qualification;
 pub(crate) mod withdrawal;
 pub use authored_retirement::entry::AuthoredRetirementSelection;
 pub(crate) mod bootstrap;

@@ -8,13 +8,15 @@ use mush_core::action::{
     PerceivedRef, PreparedAuthoritativeAction, PreparedCausalRef, PrincipalId, RequestUid,
     ScopedIdempotencyKey,
 };
+use mush_core::action_state::{StateFamilyDescriptor, StateFamilyHandle, StateFamilyId};
 use mush_core::authoritative::{AuthoritativeBundle, AuthoritativeBundleDraft};
 use mush_core::participant::ParticipantHandle;
 use mush_core::{
-    ActionTxn, CanonicalId, DefinitionRegistryBuilder, GOD, GameModule, PrepareCtx, RevisionSet,
-    RulesValue,
+    ActionTxn, CanonicalId, DefinitionRegistryBuilder, DefinitionValidationContext, GOD,
+    GameModule, PrepareCtx, RevisionSet, RulesValue,
 };
 use mush_testkit::TestWorld;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -71,7 +73,22 @@ impl ReplacementPolicy for Policy {
         ))
     }
 }
+// The fixture producer records its actual owner result in the typed half of
+// the composed action. This is an adapter-test receipt, not a commercial fee,
+// certified core, title or custody proof.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureReceipt {
+    format: u8,
+    action: DefinitionRef,
+    commit: CommitToken,
+    actor: ObjId,
+    unit: ObjId,
+    from: u64,
+    to: u64,
+}
 struct Provider {
+    receipts: StateFamilyHandle<CommitToken, FixtureReceipt>,
     handle: ParticipantHandle<ComponentReplacementParticipant<Policy>>,
     outcome: DefinitionRef,
 }
@@ -82,7 +99,7 @@ impl ActionProvider for Provider {
     fn prepare_authoritative_with_context(
         &self,
         inv: &ActionInvocation,
-        _: &mut ActionTxn<'_>,
+        txn: &mut ActionTxn<'_>,
         ctx: &mut PrepareCtx<'_>,
     ) -> std::result::Result<AuthoritativeActionOutput, ActionError> {
         let prepare = || -> Result<_> {
@@ -114,6 +131,20 @@ impl ActionProvider for Provider {
         let output = ctx
             .prepare_owner(&self.handle, request)
             .map_err(|_| error())?;
+        txn.insert(
+            &self.receipts,
+            &output.commit(),
+            FixtureReceipt {
+                format: 1,
+                action: output.action().clone(),
+                commit: output.commit(),
+                actor: output.actor(),
+                unit: output.journal().object,
+                from: output.journal().from_revision,
+                to: output.journal().to_revision,
+            },
+        )
+        .map_err(|_| error())?;
         let result = RulesValue::new(self.outcome.clone(), json!({"action":output.action(),"commit":output.commit(),"actor":output.actor(),"from":output.journal().from_revision,"to":output.journal().to_revision})).map_err(|_|error())?;
         Ok(AuthoritativeActionOutput::new(result).with_definitions(vec![self.outcome.clone()]))
     }
@@ -232,12 +263,52 @@ impl GameModule for Rules {
         for d in &self.descriptors {
             reg.definition(d.clone())?;
         }
+        let receipts = reg.state_family(
+            StateFamilyDescriptor::new(
+                StateFamilyId::new("replacement_fixture_receipt")
+                    .map_err(|e| ModError::msg(e.to_string()))?,
+                CanonicalId::new("replacement_fixture_receipt.key.v1")
+                    .map_err(|e| ModError::msg(e.to_string()))?,
+                CanonicalId::new("replacement_fixture_receipt.value.v1")
+                    .map_err(|e| ModError::msg(e.to_string()))?,
+                1,
+                CanonicalId::new("replacement_fixture_receipt.decode.v1")
+                    .map_err(|e| ModError::msg(e.to_string()))?,
+                CanonicalId::new("replacement_fixture_receipt.validate.v1")
+                    .map_err(|e| ModError::msg(e.to_string()))?,
+                CanonicalId::new("replacement_fixture_receipt.canonical.v1")
+                    .map_err(|e| ModError::msg(e.to_string()))?,
+            )
+            .map_err(|e| ModError::msg(e.to_string()))?
+            .with_limits(32, 4096)
+            .map_err(|e| ModError::msg(e.to_string()))?,
+            |key: &CommitToken| Ok(key.to_hex()),
+            |value: &Value| {
+                serde_json::from_value::<FixtureReceipt>(value.clone())
+                    .map_err(|_| "fixture receipt encoding".into())
+            },
+            |row: &FixtureReceipt| {
+                if row.format == 1
+                    && row.unit.0 != 0
+                    && row.actor.0 != 0
+                    && row.from.checked_add(1) == Some(row.to)
+                {
+                    Ok(())
+                } else {
+                    Err("fixture receipt shape".into())
+                }
+            },
+            |row: &FixtureReceipt| {
+                serde_json::to_value(row).map_err(|_| "fixture receipt encoding".into())
+            },
+        )?;
         let handle = reg.request_owner_participant::<ComponentReplacementParticipant<Policy>>(
             self.action.clone(),
         )?;
         reg.action_provider(
             self.action.clone(),
             Provider {
+                receipts: receipts.clone(),
                 handle: handle.clone(),
                 outcome: self.outcome.clone(),
             },
@@ -247,6 +318,7 @@ impl GameModule for Rules {
         reg.action_provider(
             self.other.clone(),
             Provider {
+                receipts,
                 handle,
                 outcome: self.outcome.clone(),
             },
@@ -432,13 +504,15 @@ fn actual_composed_replacement_preserves_damage_and_publishes_matching_lifecycle
     let before = stored(&f);
     let (p, o, inv) = prepare(&mut f)?;
     let writes = p.authoritative_replay_writes();
-    assert_eq!(writes.len(), 1);
+    assert_eq!(writes.len(), 2);
+    assert!(f.world.engine().action_state().is_empty());
     assert_eq!(stored(&f), before);
     stage(&mut f, p, o, &inv)?;
     let held = f.world.engine_mut().take_staged_action()?.ok_or("staged")?;
     assert_eq!(stored(&f), before);
     let (_, installation) = held.into_parts();
     f.world.engine_mut().install_composed_action(installation)?;
+    assert!(!f.world.engine().action_state().is_empty());
     let after = stored(&f);
     let unit = after.units.get(&f.hull).ok_or("after unit")?;
     assert_eq!(
@@ -469,7 +543,30 @@ fn actual_composed_replacement_preserves_damage_and_publishes_matching_lifecycle
         after.record_definition.as_ref().ok_or("schema")?,
     )?;
     assert_eq!(record.unit.as_ref(), Some(unit));
-    let ReplayWrite::ModuleJsonSet { key, value, .. } = writes.first().ok_or("write")? else {
+    let receipt = writes
+        .iter()
+        .find_map(|write| match write {
+            ReplayWrite::ModuleJsonSet {
+                namespace, value, ..
+            } if namespace.as_str() == "hardware_fixture" => Some(value),
+            _ => None,
+        })
+        .ok_or("actual typed fixture receipt")?;
+    let receipt: FixtureReceipt = serde_json::from_value(receipt["value"].clone())?;
+    assert_eq!(receipt.action, f.rules.action);
+    assert_eq!(receipt.commit, token());
+    assert_eq!(receipt.actor, GOD);
+    assert_eq!(receipt.unit, f.hull);
+    assert_eq!(receipt.from + 1, unit.revision());
+    assert_eq!(receipt.to, unit.revision());
+    let ReplayWrite::ModuleJsonSet { key, value, .. } = writes
+        .iter()
+        .find(|write| {
+            matches!(write, ReplayWrite::ModuleJsonSet {namespace, ..}
+            if namespace.as_str() == "tactics")
+        })
+        .ok_or("Tactics write")?
+    else {
         return Err("wrong write".into());
     };
     assert!(crate::module::replacement_write_is_exact(
@@ -685,6 +782,7 @@ fn local_bind_refusal_after_custody_cannot_partially_publish() -> Result {
             .install_composed_action(installation)
             .is_err()
     );
+    assert!(f.world.engine().action_state().is_empty());
     assert_eq!(stored(&f), before);
     Ok(())
 }

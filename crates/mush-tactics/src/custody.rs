@@ -157,6 +157,11 @@ pub fn check_out(
             .w
             .module_state::<crate::module::UnitStore>()
             .ok_or(CustodyError::Unavailable)?;
+        if store.is_ic_custodied(unit) {
+            return Err(CustodyError::Refused(
+                "unit is held by dedicated IC custody".into(),
+            ));
+        }
         if let Some(existing) = store.deployed.get(&unit) {
             return Err(CustodyError::AlreadyDeployed {
                 unit,

@@ -495,11 +495,25 @@ pub(crate) fn validate_renewal(
 ) -> PlanResult {
     validate_guarded(proof.plan(), snapshot, env, PlanGuard::Renewal(proof))
 }
+/// Separate closed fee proof; public legacy posting cannot occupy its history.
+pub(crate) fn validate_compatible_update(
+    proof: &crate::registry_filing::update::ClosedUpdatePlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(
+        proof.plan(),
+        snapshot,
+        env,
+        PlanGuard::CompatibleUpdate(proof),
+    )
+}
 #[derive(Clone, Copy)]
 enum PlanGuard<'a> {
     Legacy,
     Purchase(&'a crate::managed_purchase::ClosedPurchasePlan),
     Renewal(&'a crate::managed_renewal::ClosedRenewalPlan),
+    CompatibleUpdate(&'a crate::registry_filing::update::ClosedUpdatePlan),
 }
 impl PlanGuard<'_> {
     fn check(self, plan: &EconomyPlan, snapshot: &EconomySnapshot) -> Result<(), EconomyError> {
@@ -507,6 +521,7 @@ impl PlanGuard<'_> {
             Self::Legacy => crate::contract::managed::require_legacy_plan(plan, snapshot),
             Self::Purchase(proof) => proof.check(plan, snapshot),
             Self::Renewal(proof) => proof.check(plan, snapshot),
+            Self::CompatibleUpdate(proof) => proof.check(plan, snapshot),
         }
     }
 }

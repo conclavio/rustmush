@@ -39,7 +39,7 @@ use mush_proto::OutputEvent;
 use mush_sim::{CarrierJourney, JourneyBook, SpatialParent, SpatialState};
 use mush_testkit::{TestWorld, fold_module_ops_into};
 use smol_str::SmolStr;
-use tacsim::definitions::content::{LANE_JSON, LANE_PACK};
+use tacsim::definitions::content::{LANE_JSON, LANE_PACK, LANE_VERSION};
 use tacsim::pack::{PackEntry, load_pack};
 use tacsim::port::apply::room_by_key;
 use tacsim::port::voyage::{
@@ -770,7 +770,7 @@ fn undock_and_burn(rig: &mut Rig, pilot: ObjId, hull: ObjId) -> tacsim::port::Pe
 #[test]
 #[allow(clippy::too_many_lines)]
 fn ic9_undock_flies_the_lane_and_docks_at_stickney() {
-    let (mut rig, pilot, row) = aboard_with_load(3_600, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(3_600, 42, 22);
     let hull = ObjId(row.hull);
     let vault = hold_vault(&rig.tw, &row);
     let crew = room_of(&row, "crew");
@@ -806,13 +806,13 @@ fn ic9_undock_flies_the_lane_and_docks_at_stickney() {
         "line 5: {plan}"
     );
     assert!(
-        lines.contains(&"Stores 21 crew-days (locker 21; 0 left)."),
+        lines.contains(&"Stores 22 crew-days (locker 22; 0 left)."),
         "line 6: {plan}"
     );
     assert!(
         lines
             .iter()
-            .any(|l| l.starts_with("Passage 19.6 IC days ≈ 7 m real; arrives about ")),
+            .any(|l| l.starts_with("Passage 20.7 IC days ≈ 8 m real; arrives about ")),
         "line 7: {plan}"
     );
     assert_eq!(
@@ -833,8 +833,8 @@ fn ic9_undock_flies_the_lane_and_docks_at_stickney() {
     let (filed, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
     assert!(
         filed.contains(
-            "Clearance filed for Stickney Yards: the plan burns 41 t of reaction mass and 21 \
-             crew-days; arrival in 19.6 IC days, about "
+            "Clearance filed for Stickney Yards: the plan burns 41 t of reaction mass and 22 \
+             crew-days; arrival in 20.7 IC days, about "
         ),
         "{filed}"
     );
@@ -879,21 +879,21 @@ fn ic9_undock_flies_the_lane_and_docks_at_stickney() {
     );
     land_all(&mut rig, &queued);
     assert_eq!(pool(&mut rig.tw, vault, "propellant"), 1, "42 -> 1");
-    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 0, "21 -> 0");
+    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 0, "22 -> 0");
     let t = ticket(&mut rig.tw, hull, 1).expect("ticket {hull, seq 1}");
     let secs: Vec<u32> = t.plan.legs.iter().map(|l| l.secs).collect();
-    assert_eq!(secs, vec![959_361, 735_600]);
-    assert_eq!(t.plan.total_s, 1_694_961);
+    assert_eq!(secs, vec![110_305, 1_683_834]);
+    assert_eq!(t.plan.total_s, 1_794_139);
     assert_eq!(t.seq, 1);
     assert_eq!(t.manifest.tank, 42);
-    assert_eq!(t.manifest.locker, 21);
-    assert_eq!(t.payload_kg, 142_184);
+    assert_eq!(t.manifest.locker, 22);
+    assert_eq!(t.payload_kg, 142_188);
 
     // The next tacsim.port fire launches it.
     let events = fire_quietly(&mut rig);
     let j = journey(&rig.tw, hull).expect("a journey");
     assert_eq!(j.route().id().as_str(), "ceres_stickney");
-    assert_eq!(j.leg_times(), Some(&[959_361_u32, 735_600][..]));
+    assert_eq!(j.leg_times(), Some(&[110_305_u32, 1_683_834][..]));
     assert_eq!(j.departed().at, t.plan.depart_ic);
     let heard = said(&rig.tw, &events, pilot);
     assert!(
@@ -908,7 +908,7 @@ fn ic9_undock_flies_the_lane_and_docks_at_stickney() {
         let heard = said(&rig.tw, &events, pilot);
         granted += heard
             .matches(
-                "Clearance granted. 41 t reaction mass and 21 crew-days committed; the Salt Moth \
+                "Clearance granted. 41 t reaction mass and 22 crew-days committed; the Salt Moth \
                  is under way for Stickney Yards, arrival in ",
             )
             .count();
@@ -936,7 +936,7 @@ fn ic9_undock_flies_the_lane_and_docks_at_stickney() {
     assert!(report.contains(", 1 under way."), "{report}");
 
     // The Kirkwood boundary.
-    let boundary = t.plan.depart_ic + 959_361;
+    let boundary = t.plan.depart_ic + 110_305;
     let events = to_ic(&mut rig, boundary - 3_600);
     assert!(!said(&rig.tw, &events, pilot).contains("slides past"));
     let events = to_ic(&mut rig, boundary);
@@ -958,7 +958,7 @@ fn ic9_undock_flies_the_lane_and_docks_at_stickney() {
     );
 
     // The docking.
-    let arrival = t.plan.depart_ic + 1_694_961;
+    let arrival = t.plan.depart_ic + 1_794_139;
     let events = to_ic(&mut rig, arrival - 3_600);
     assert!(!said(&rig.tw, &events, pilot).contains("docks at"));
     let events = to_ic(&mut rig, arrival);
@@ -1039,7 +1039,7 @@ fn ic9_undock_refusals_move_nothing() {
     let (pilot, row) = chartered(&mut rig, "Pilot", 1);
     let hull = ObjId(row.hull);
     let vault = hold_vault(&rig.tw, &row);
-    load(&mut rig, &row, 39, 21);
+    load(&mut rig, &row, 39, 22);
     let gallery = c01(&rig.tw);
     teleport(&mut rig.tw, pilot, gallery);
     let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
@@ -1047,19 +1047,19 @@ fn ic9_undock_refusals_move_nothing() {
         out.contains(&NOT_ABOARD.replace("{name}", "Salt Moth")),
         "{out}"
     );
-    assert_nothing_moved(&mut rig, hull, vault, (39, 21), None, &queued);
+    assert_nothing_moved(&mut rig, hull, vault, (39, 22), None, &queued);
     // `at=` a later hour; `via=`.
     let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney at=+2h");
     assert!(out.contains(AT_NOT_YET), "{out}");
-    assert_nothing_moved(&mut rig, hull, vault, (39, 21), None, &queued);
+    assert_nothing_moved(&mut rig, hull, vault, (39, 22), None, &queued);
     let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney via=kirkwood_depot");
     assert!(out.contains(VIA_NOT_YET), "{out}");
-    assert_nothing_moved(&mut rig, hull, vault, (39, 21), None, &queued);
+    assert_nothing_moved(&mut rig, hull, vault, (39, 22), None, &queued);
     let out = run(&mut rig.tw, pilot, "+ship/plan stickney via=kirkwood_depot");
     assert!(out.contains(VIA_NOT_YET), "{out}");
     let (out, queued) = undock(&mut rig, pilot, "+ship/undock");
     assert!(out.contains("Usage: +ship/undock <port>"), "{out}");
-    assert_nothing_moved(&mut rig, hull, vault, (39, 21), None, &queued);
+    assert_nothing_moved(&mut rig, hull, vault, (39, 22), None, &queued);
     // The tank: the full cargo with 39 t burns 40 t (L27).
     board(&mut rig, pilot);
     let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
@@ -1072,7 +1072,7 @@ fn ic9_undock_refusals_move_nothing() {
         ),
         "{out}"
     );
-    assert_nothing_moved(&mut rig, hull, vault, (39, 21), None, &queued);
+    assert_nothing_moved(&mut rig, hull, vault, (39, 22), None, &queued);
     // No route.
     let (out, queued) = undock(&mut rig, pilot, "+ship/undock pallas");
     assert!(
@@ -1083,7 +1083,7 @@ fn ic9_undock_refusals_move_nothing() {
         ),
         "{out}"
     );
-    assert_nothing_moved(&mut rig, hull, vault, (39, 21), None, &queued);
+    assert_nothing_moved(&mut rig, hull, vault, (39, 22), None, &queued);
     // Overloaded: seeded past the hold's limits.
     seed_pool(&mut rig, vault, "propellant", 41, LotId(905));
     seed_pool(&mut rig, vault, "provisions", 99, LotId(906));
@@ -1098,10 +1098,10 @@ fn ic9_undock_refusals_move_nothing() {
         ),
         "{out}"
     );
-    assert_nothing_moved(&mut rig, hull, vault, (80, 120), None, &queued);
+    assert_nothing_moved(&mut rig, hull, vault, (80, 121), None, &queued);
 
     // A fresh world: the destination domain paused; then departing; then under way.
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let vault = hold_vault(&rig.tw, &row);
     let stickney = domain_of(&rig.tw, "stickney_port");
@@ -1116,7 +1116,7 @@ fn ic9_undock_refusals_move_nothing() {
         ),
         "{out}"
     );
-    assert_nothing_moved(&mut rig, hull, vault, (42, 21), None, &queued);
+    assert_nothing_moved(&mut rig, hull, vault, (42, 22), None, &queued);
     let _ = run(&mut rig.tw, GOD, &format!("@domain/resume {stickney}"));
     // Departing: a second undock before the launch fire.
     let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
@@ -1159,7 +1159,7 @@ fn ic9_undock_refusals_move_nothing() {
         "{out}"
     );
     // Under way: after the launch.
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let _ = undock_and_burn(&mut rig, pilot, hull);
     let _ = fire_quietly(&mut rig);
@@ -1197,7 +1197,7 @@ fn ic9_undock_refusals_move_nothing() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn ic9_a_held_launch_pages_and_recovers() {
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let vault = hold_vault(&rig.tw, &row);
     let pending = undock_and_burn(&mut rig, pilot, hull);
@@ -1241,7 +1241,7 @@ fn ic9_a_held_launch_pages_and_recovers() {
     );
 
     // A revoked lease holds the launch; staff stand it down.
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let pending = undock_and_burn(&mut rig, pilot, hull);
     let lease = tacsim::port::live_charter(rig.tw.world(), pilot)
@@ -1307,7 +1307,7 @@ fn ic9_a_held_launch_pages_and_recovers() {
 /// pilot is placed back aboard, then flies the frozen plan at its own `depart_ic`.
 #[test]
 fn ic9_a_pilot_moved_ashore_holds_the_launch() {
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let pending = undock_and_burn(&mut rig, pilot, hull);
     support::with_ctx(&mut rig.tw, |ctx| {
@@ -1388,7 +1388,7 @@ fn ic9_an_unreadable_sailing_plan_fails_closed() {
         }),
     ];
     for (case, edit) in edits {
-        let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+        let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
         let hull = ObjId(row.hull);
         let other = port_map(&rig.tw, "ceres_port")
             .hulls
@@ -1454,7 +1454,7 @@ fn ic9_goods_not_yet_aboard_hold_the_hull() {
     let hull = ObjId(row.hull);
     let vault = hold_vault(&rig.tw, &row);
     seed_pool(&mut rig, vault, "propellant", 42, LotId(903));
-    seed_pool(&mut rig, vault, "provisions", 21, LotId(904));
+    seed_pool(&mut rig, vault, "provisions", 22, LotId(904));
     // Top up and buy ten metals at C07; the Draw stays unlanded.
     let instrument = mush_economy::InstrumentId::new(tacsim::CREDIT).expect("credit");
     let account = economy(&rig.tw)
@@ -1529,7 +1529,7 @@ fn ic9_goods_not_yet_aboard_hold_the_hull() {
     let vault = hold_vault(&rig.tw, &row);
     seed_pool(&mut rig, vault, "metals", 10, LotId(908));
     seed_pool(&mut rig, vault, "propellant", 42, LotId(903));
-    seed_pool(&mut rig, vault, "provisions", 21, LotId(904));
+    seed_pool(&mut rig, vault, "provisions", 22, LotId(904));
     let vendor = port_map(&rig.tw, "ceres_port").vendors[&cid("freeport_exchange")]
         .vendor
         .expect("a vendor");
@@ -1575,7 +1575,7 @@ fn ic12_t8_goods_pending_aboard_releases_a_terminal_contract_and_holds_for_a_lap
     let hull = ObjId(row.hull);
     let vault = hold_vault(&rig.tw, &row);
     seed_pool(&mut rig, vault, "propellant", 42, LotId(903));
-    seed_pool(&mut rig, vault, "provisions", 21, LotId(904));
+    seed_pool(&mut rig, vault, "provisions", 22, LotId(904));
     let metals = market(&rig.tw)
         .lot_listing_of(
             EndpointRef(VaultId(
@@ -1641,7 +1641,7 @@ fn ic12_t8_goods_pending_aboard_releases_a_terminal_contract_and_holds_for_a_lap
     let vault = hold_vault(&rig.tw, &row);
     seed_pool(&mut rig, vault, "metals", 10, LotId(908));
     seed_pool(&mut rig, vault, "propellant", 42, LotId(903));
-    seed_pool(&mut rig, vault, "provisions", 21, LotId(904));
+    seed_pool(&mut rig, vault, "provisions", 22, LotId(904));
     let vendor = port_map(&rig.tw, "ceres_port").vendors[&cid("freeport_exchange")]
         .vendor
         .expect("a vendor");
@@ -1693,7 +1693,7 @@ fn ic12_t8_goods_pending_aboard_releases_a_terminal_contract_and_holds_for_a_lap
 /// and the arrival notice are queued and rendered once under the heading.
 #[test]
 fn ic9_an_absent_pilot_reads_the_passage_on_reconnect() {
-    let (mut rig, pilot, row) = aboard_with_load(3_600, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(3_600, 42, 22);
     let hull = ObjId(row.hull);
     let pending = undock_and_burn(&mut rig, pilot, hull);
     disconnect(&mut rig.tw, pilot);
@@ -1701,8 +1701,8 @@ fn ic9_an_absent_pilot_reads_the_passage_on_reconnect() {
         let _ = fire_quietly(&mut rig);
     }
     assert!(journey(&rig.tw, hull).is_some(), "launched");
-    let _ = to_ic(&mut rig, pending.plan.depart_ic + 959_361);
-    let _ = to_ic(&mut rig, pending.plan.depart_ic + 1_694_961);
+    let _ = to_ic(&mut rig, pending.plan.depart_ic + 110_305);
+    let _ = to_ic(&mut rig, pending.plan.depart_ic + 1_794_139);
     let queued = pending_notices(rig.tw.world(), pilot);
     let has = |needle: &str| queued.iter().filter(|line| line.contains(needle)).count();
     assert_eq!(
@@ -1748,7 +1748,7 @@ fn ic9_an_absent_pilot_reads_the_passage_on_reconnect() {
 /// drops the command's submission before any drain lands it.
 #[test]
 fn ic9_a_lapsed_clearance_burns_nothing() {
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let vault = hold_vault(&rig.tw, &row);
     let (out, dropped) = undock(&mut rig, pilot, "+ship/undock stickney");
@@ -1767,7 +1767,7 @@ fn ic9_a_lapsed_clearance_burns_nothing() {
     assert!(ticket(&mut rig.tw, hull, 1).is_none(), "no ticket");
     assert!(journey(&rig.tw, hull).is_none(), "no journey");
     assert_eq!(pool(&mut rig.tw, vault, "propellant"), 42);
-    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 21);
+    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 22);
     // A late landing of the dropped burn can no longer land.
     assert!(
         land(&mut rig, &dropped[0]).is_err(),
@@ -1785,7 +1785,7 @@ fn ic9_a_lapsed_clearance_burns_nothing() {
     // The brief's other arm: the hold seeded between the command and the landing,
     // so the prepare refuses "the hold changed…" and nothing burns; the clearance
     // then lapses the same way.
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let vault = hold_vault(&rig.tw, &row);
     let (out, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
@@ -1798,7 +1798,7 @@ fn ic9_a_lapsed_clearance_burns_nothing() {
         "{refused}"
     );
     assert_eq!(pool(&mut rig.tw, vault, "propellant"), 42, "nothing burned");
-    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 21, "nothing burned");
+    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 22, "nothing burned");
     assert!(ticket(&mut rig.tw, hull, 1).is_none(), "no ticket");
     let mut told = 0;
     for _ in 0..(LAUNCH_GRACE_FIRES + 4) {
@@ -1924,7 +1924,7 @@ fn ic9_staff_cannot_fly_a_programme_hull_unplanned() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn ic9_the_burn_offer_takes_no_forged_plan() {
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     assert!(
         !burn_offered(&rig.tw, pilot),
@@ -1994,7 +1994,7 @@ fn ic9_the_burn_offer_takes_no_forged_plan() {
     assert_eq!(t.plan.depart_ic, filed.plan.depart_ic);
     let vault = hold_vault(&rig.tw, &row);
     assert_eq!(pool(&mut rig.tw, vault, "propellant"), 1, "42 -> 1");
-    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 0, "21 -> 0");
+    assert_eq!(pool(&mut rig.tw, vault, "provisions"), 0, "22 -> 0");
     // The replay guard: the pending stands until the launch fire, so the offer
     // still projects, and the same submission landed again (a fresh request) is
     // refused by the ticket, debiting nothing.
@@ -2028,7 +2028,7 @@ fn ticket_freezes_the_plan_across_a_sky_change() {
 /// The shared world of tests 4 and 5: burned and launched at sky rate 0, rebooted
 /// at sky rate 1000; returns the rig, the pilot, the hull and the ticket.
 fn sky_change_world() -> (Rig, ObjId, ObjId, Ticket) {
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let _ = undock_and_burn(&mut rig, pilot, hull);
     let _ = fire_quietly(&mut rig);
@@ -2045,8 +2045,8 @@ fn sky_change_world() -> (Rig, ObjId, ObjId, Ticket) {
     assert_eq!((0..2).map(|k| j.leg_due_at(k)).collect::<Vec<_>>(), due);
     assert_eq!(j.arrival_at(), arrival);
     let lane = store(&rig.tw)
-        .pack(&lane_id(), 3)
-        .expect("lane v3 is loaded")
+        .pack(&lane_id(), LANE_VERSION)
+        .expect("the shipped lane is loaded")
         .pack
         .clone();
     let new_sky = Sky::from_pack(&lane, &store(&rig.tw).config().time.ephemeris);
@@ -2082,7 +2082,7 @@ fn journey_arrives_at_its_frozen_instant_across_a_reboot_with_a_new_sky() {
 /// one burn).
 #[test]
 fn a_restart_between_burn_and_launch_yields_exactly_one_journey() {
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let vault = hold_vault(&rig.tw, &row);
     let pending = undock_and_burn(&mut rig, pilot, hull);
@@ -2124,7 +2124,7 @@ fn a_restart_between_burn_and_launch_yields_exactly_one_journey() {
 /// it was.
 #[test]
 fn ic9_f2_a_ticket_that_disagrees_with_the_filed_plan_holds_the_launch() {
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let pending = undock_and_burn(&mut rig, pilot, hull);
     let burned = ticket(&mut rig.tw, hull, pending.seq).expect("the ticket");
@@ -2189,7 +2189,7 @@ fn grants_heard(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjId) 
 /// as held.
 #[test]
 fn ic14_a_held_launch_warns_once_across_backoffs() {
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let _pending = undock_and_burn(&mut rig, pilot, hull);
     let stickney = domain_of(&rig.tw, "stickney_port");
@@ -2220,7 +2220,7 @@ fn ic14_a_held_launch_warns_once_across_backoffs() {
 /// once that transaction installs, the lapse proceeds and is told once.
 #[test]
 fn ic14_a_lapse_waits_while_a_commit_is_pending() {
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let (out, dropped) = undock(&mut rig, pilot, "+ship/undock stickney");
     assert!(out.contains("Clearance filed"), "{out}");
@@ -2277,7 +2277,7 @@ fn ic14_a_lapse_waits_while_a_commit_is_pending() {
 /// `Deferred`, the pending stays, and no `CLEARANCE_LAPSED` is told.
 #[test]
 fn ic14_t7_a_lapse_defers_while_the_burn_is_still_queued() {
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let out = run(&mut rig.tw, pilot, "+ship/undock stickney");
     assert!(out.contains("Clearance filed"), "{out}");
@@ -2307,7 +2307,7 @@ fn ic14_t7_a_lapse_defers_while_the_burn_is_still_queued() {
 /// (a render of the rate) moves.
 #[test]
 fn ic14_t9_a_rate_change_mid_journey_keeps_the_frozen_leg_seconds() {
-    let (mut rig, pilot, row) = aboard_with_load(24, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(24, 42, 22);
     let hull = ObjId(row.hull);
     let _ = undock_and_burn(&mut rig, pilot, hull);
     for _ in 0..4 {
@@ -2342,7 +2342,7 @@ fn ic14_t9_a_rate_change_mid_journey_keeps_the_frozen_leg_seconds() {
 /// reboot tells nothing more.
 #[test]
 fn ic14_a_reboot_between_launch_and_verify_tells_the_grant_once() {
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let pending = undock_and_burn(&mut rig, pilot, hull);
     let mut granted = 0;
@@ -2400,7 +2400,7 @@ fn ic14_a_reboot_between_launch_and_verify_tells_the_grant_once() {
 /// again and queues nothing.
 #[test]
 fn ic14_a_grant_told_live_is_not_retold_after_a_reboot() {
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let pending = undock_and_burn(&mut rig, pilot, hull);
     let mut granted = 0;
@@ -2451,7 +2451,7 @@ fn ic14_a_grant_told_live_is_not_retold_after_a_reboot() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn ic14_an_unreadable_sailing_plan_fails_closed_everywhere() {
-    let (mut rig, pilot, row) = aboard_with_load(1, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(1, 42, 22);
     let hull = ObjId(row.hull);
     let (out, _dropped) = undock(&mut rig, pilot, "+ship/undock stickney");
     assert!(out.contains("Clearance filed"), "{out}");
@@ -2624,7 +2624,7 @@ fn look_aboard(rig: &mut Rig, who: ObjId, row: &HullRow, id: &str) -> Vec<String
 #[test]
 fn ic14_the_burn_gauge_reads_the_filed_plan() {
     use tacsim::port::ship::{BURN_GAUGE, BURN_GAUGE_NONE};
-    let (mut rig, pilot, row) = aboard_with_load(3_600, 42, 21);
+    let (mut rig, pilot, row) = aboard_with_load(3_600, 42, 22);
     let hull = ObjId(row.hull);
     let none = BURN_GAUGE_NONE.to_owned();
     let tank = "Tank gauges: reaction mass, 42 of 80 t.".to_owned();

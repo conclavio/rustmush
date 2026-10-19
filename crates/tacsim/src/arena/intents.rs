@@ -562,6 +562,10 @@ pub enum Refusal {
     /// would; the pilot's sentence (`crate::match_::cockpit`) is unchanged.
     #[error("that unit is not flown by a machine")]
     NotMachine,
+    /// A delayed persona order has lost its live command hull. This does not
+    /// revoke previously accepted orders or turn a mind into an order author.
+    #[error("that lance leader has no active command hull")]
+    NoCommander,
     /// **`EMCON` for a unit that carries no jamming pod** (16b cut O.2, 16c
     /// N12). The cockpit refuses it locally off the held frame; this is the
     /// word the arena's own refusal path uses when the order gets that far.
@@ -620,6 +624,7 @@ impl Refusal {
             Refusal::Overheated => "overheated",
             Refusal::NoWeapon => "no_weapon",
             Refusal::NotMachine => "not_machine",
+            Refusal::NoCommander => "no_commander",
             Refusal::NoJammer => "no_jammer",
             // 17b cut M1b.1: the law's two words and the count's.
             Refusal::Unwarranted => "unwarranted",
@@ -913,6 +918,18 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
         // deleted the reflex, which took it as it stood.
         if unit.controller == Controller::Pilot {
             return IntentOutcome::Refused(Refusal::NotMachine);
+        }
+        // A provider reply may arrive after the commander was wrecked. The
+        // world record still names its persona, so recheck the actual arena
+        // hull before changing any surviving member's standing order.
+        if let crate::deliberation::CharacterRef::Persona { squad } = &order.by {
+            let commands = *squad == order.squad
+                && arena.squads.iter().any(|roster| {
+                    roster.id == *squad && arena.commander_can_order(roster.commander)
+                });
+            if !commands {
+                return IntentOutcome::Refused(Refusal::NoCommander);
+            }
         }
         let at = arena.now_ms;
         // **16b cut Y.1**: the hash is asked **before** the order is written —

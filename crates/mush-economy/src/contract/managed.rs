@@ -234,6 +234,7 @@ fn key(snapshot: &EconomySnapshot, key: &IdempotencyKey) -> bool {
 fn closed_money_namespace(namespace: &str) -> bool {
     crate::managed_purchase::closed_namespace(namespace)
         || namespace == crate::managed_renewal::NAMESPACE
+        || namespace == crate::registry_filing::update::receipt::NAMESPACE
 }
 
 /// Refuse before idempotency lookup, custom authorization or approval replay.

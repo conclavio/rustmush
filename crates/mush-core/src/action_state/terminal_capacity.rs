@@ -5,11 +5,13 @@
 use super::*;
 
 mod entitlement;
+mod ic_claim;
 mod paid;
 mod registry;
 mod renewal;
 use crate::{CommitToken, DefinitionRef};
 pub(super) use entitlement::{Protocol as EntitlementProtocol, entitlement_change};
+pub(super) use ic_claim::{Protocol as IcClaimProtocol, ic_claim_change};
 pub(super) use paid::{Protocol as PurchaseProtocol, purchase_change};
 pub(super) use registry::registry_change;
 pub(super) use registry::{Protocol, RegisteredTxnIdentity};
@@ -89,10 +91,20 @@ pub(super) struct StoredReservation {
     path: AuthoritativeKey,
 }
 
+// Only the fixed IC protocol has a Roll sponsor and Tacsim-owned metadata.
+// Every other protocol keeps its exact historical namespace and identifier.
+fn metadata_owner(record: &Reservation) -> &OwnerId {
+    if ic_claim::metadata_shape(record) {
+        &record.effect.key().owner
+    } else {
+        &record.sponsor.owner
+    }
+}
+
 impl StoredReservation {
     pub(super) fn id(&self) -> ReservationId {
         ReservationId(
-            self.record.sponsor.owner.clone(),
+            metadata_owner(&self.record).clone(),
             self.record.funding.to_hex(),
         )
     }
@@ -109,7 +121,7 @@ pub(super) fn decode(raw: &ActionStateBootRecord) -> Result<StoredReservation, A
     let record: Reservation =
         serde_json::from_value(raw.value.clone()).map_err(|_| refused("metadata encoding"))?;
     let stored = encode(record)?;
-    if raw.namespace != stored.record.sponsor.owner.as_str()
+    if raw.namespace != metadata_owner(&stored.record).as_str()
         || raw.key.as_str() != stored.path.as_str()
         || stored.canonical != canonical
     {
@@ -122,7 +134,7 @@ fn encode(record: Reservation) -> Result<StoredReservation, ActionStateError> {
     if record.format != 1
         || record.targets.is_empty()
         || record.targets.len() > MAX_TARGETS
-        || record.effect.key().owner != record.sponsor.owner
+        || (record.effect.key().owner != record.sponsor.owner && !ic_claim::metadata_shape(&record))
     {
         return Err(refused("metadata shape"));
     }
@@ -185,6 +197,12 @@ impl Verifiers {
                 verify: renewal::verify,
             });
         }
+        if let Some(protocol) = &registry.ic_mind_claim {
+            rows.push(Verifier {
+                effect: protocol.admission_action().clone(),
+                verify: ic_claim::verify,
+            });
+        }
         Self(rows)
     }
 
@@ -217,6 +235,10 @@ impl Verifiers {
                     || registry.entitlement_purchase.as_ref().is_some_and(|protocol| {
                         protocol.admission_actions().contains(&&v.effect)
                             && v.effect.key() == reservation.effect.key()
+                            && protocol.recognizes_historical(&reservation.effect)
+                    })
+                    || registry.ic_mind_claim.as_ref().is_some_and(|protocol| {
+                        v.effect == *protocol.admission_action()
                             && protocol.recognizes_historical(&reservation.effect)
                     })
                     || registry.mind_renewal.as_ref().is_some_and(|protocol| {
@@ -419,6 +441,7 @@ pub(super) fn hydrate(
     paid::audit_boot(&view, &records)?;
     entitlement::audit_boot(&view, &records)?;
     renewal::audit_boot(&view, &records)?;
+    ic_claim::audit_boot(&view, &records)?;
     let state = CapacityState::rebuild(registry, records, &view)?;
     let usage = charged(
         &state,
@@ -475,6 +498,7 @@ pub(super) fn prepare(
     paid::validate_changes(store, mutations, &changes, identity)?;
     entitlement::validate_changes(store, mutations, &changes, identity)?;
     renewal::validate_changes(store, mutations, &changes, identity)?;
+    ic_claim::validate_changes(store, mutations, &changes, identity)?;
     let mut replacement = None;
     let mut writes = Vec::new();
     let mut write_bytes = 0;
@@ -515,7 +539,7 @@ pub(super) fn prepare(
             .records
             .get(id)
             .ok_or_else(|| refused("missing reservation"))?;
-        if &stored.record.sponsor.owner != owner {
+        if metadata_owner(&stored.record) != owner {
             return Err(refused("terminal owner"));
         }
         let sponsor = stored.record.sponsor.resolve(&store.registry)?;
@@ -558,7 +582,7 @@ pub(super) fn prepare(
         });
     }
     if let Some(record) = changes.funding {
-        if &record.sponsor.owner != owner {
+        if metadata_owner(&record) != owner {
             return Err(refused("funding owner"));
         }
         let stored = Arc::new(encode(record)?);

@@ -5311,6 +5311,7 @@ impl ActionProviderRegistry {
             read_observations.recheck(world)?;
             account_observations.recheck(world)?;
         }
+        txn.require_ic_owner_images(&owner_images)?;
         definitions.extend(owner_images.definitions().cloned());
         definitions.extend(read_observations.definitions().cloned());
         definitions.sort();

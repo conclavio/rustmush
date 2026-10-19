@@ -36,6 +36,7 @@ pub struct MindCommerce {
     roll: CommerceConfig,
     filing: InitialFilingPolicy,
     filing_action: DefinitionRef,
+    compatible_update_action: Option<DefinitionRef>,
     house_filing_action: Option<DefinitionRef>,
     dependent_filing_action: Option<DefinitionRef>,
     purchases: Option<OriginalPurchaseConfig>,
@@ -75,6 +76,7 @@ impl MindCommerce {
             roll,
             filing,
             filing_action,
+            compatible_update_action: None,
             house_filing_action: None,
             dependent_filing_action: None,
             purchases: None,
@@ -84,6 +86,13 @@ impl MindCommerce {
             authored_forks: false,
             marked_registry: false,
         })
+    }
+
+    /// Explicit positive-fee original-author updates; no new major or paid Follow.
+    pub fn with_compatible_updates(mut self) -> Result<Self, ModError> {
+        self.roll = self.roll.with_compatible_updates()?;
+        self.compatible_update_action = Some(self.roll.compatible_update_action()?);
+        Ok(self)
     }
 
     /// Explicit scoped filing only. The real curator must independently hold
@@ -289,6 +298,10 @@ impl MindCommerce {
     /// must already allow the configured filing issuer; no issuer is added here.
     pub fn configure_economy(&self, module: EconomyModule) -> EconomyModule {
         let module = module.with_initial_filing(self.filing.clone(), self.filing_action.clone());
+        let module = match &self.compatible_update_action {
+            Some(action) => module.with_compatible_mind_updates(action.clone()),
+            None => module,
+        };
         let module = match &self.house_filing_action {
             Some(action) => module.with_house_initial_filing(action.clone()),
             None => module,

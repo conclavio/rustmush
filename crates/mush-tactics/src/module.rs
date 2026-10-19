@@ -147,6 +147,7 @@ impl UnitRecordStatus {
 /// `unit:<obj>` doc.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UnitStore {
+    pub(crate) ic: crate::ic_custody::IcCustodies,
     /// Active tactical units by object. Frozen, migrating, and quarantined
     /// records never enter this mechanics-facing index.
     pub units: BTreeMap<ObjId, TacticalUnit>,
@@ -350,6 +351,7 @@ pub struct TacticsModule {
     /// crate did, because the trait is `mush-core`'s. Unwired arms nothing.
     sensors: mush_core::SensorPolicyHandle,
     replacement: Option<Arc<dyn crate::component_replacement::Installer>>,
+    ic: Option<crate::ic_custody::IcCustodyConfig>,
 }
 
 impl Default for TacticsModule {
@@ -369,6 +371,7 @@ impl TacticsModule {
             ground_definition: None,
             sensors: mush_core::SensorPolicyHandle::unwired(),
             replacement: None,
+            ic: None,
         }
     }
     /// A module with a frozen catalog (a ruleset / dev wiring supplies it).
@@ -381,7 +384,16 @@ impl TacticsModule {
             current_record_definition: None,
             sensors: mush_core::SensorPolicyHandle::unwired(),
             replacement: None,
+            ic: None,
         }
+    }
+
+    /// Opt in the fixed IC physical owner. This installs no public start/close
+    /// action and grants no region event authority by itself.
+    #[must_use]
+    pub fn with_ic_mind_custody(mut self, config: crate::ic_custody::IcCustodyConfig) -> Self {
+        self.ic = Some(config);
+        self
     }
 
     /// Opt in one closed, composition-selected component replacement policy.
@@ -1145,8 +1157,38 @@ impl GameModule for TacticsModule {
             record_definition: Some(v2.clone()),
             ..UnitStore::default()
         });
+        let mut owner_descriptors = Vec::new();
+        if let Some(replacement) = &self.replacement {
+            owner_descriptors.push(replacement.descriptor(&v2)?);
+        }
+        if self.ic.is_some() {
+            owner_descriptors.push(crate::ic_custody::participant_descriptor()?);
+        }
+        if !owner_descriptors.is_empty() {
+            let exact = exact_definition_validator(&owner_descriptors);
+            let ic = self.ic.clone();
+            reg.definition_validator(
+                DefinitionKind::new("owner_participant")
+                    .map_err(|e| ModError::msg(e.to_string()))?,
+                move |ctx: &DefinitionValidationContext<'_>| {
+                    exact(ctx)?;
+                    for reference in ctx.definition().references() {
+                        ctx.get_exact(reference).map_err(|e| e.to_string())?;
+                    }
+                    if ctx.definition().reference().key().id.as_str() == "ic_custody" {
+                        ic.as_ref()
+                            .ok_or_else(|| "IC custody is not configured".to_string())?
+                            .validate_registration(ctx)?;
+                    }
+                    Ok(())
+                },
+            )?;
+        }
         if let Some(replacement) = &self.replacement {
             replacement.register(reg, &v2)?;
+        }
+        if let Some(ic) = &self.ic {
+            ic.register(reg, &v2)?;
         }
         reg.recovery_reporter(Arc::new(TacticsRecoveryReporter))?;
 
@@ -1232,7 +1274,12 @@ impl GameModule for TacticsModule {
             .current_record_definition
             .clone()
             .ok_or_else(|| ModError::msg("tactics current record definition was not registered"))?;
-        boot_units(ctx, data, &self.catalog, &legacy, &current)?;
+        let mut data = data;
+        let ic = crate::ic_custody::load(&mut data, self.ic.is_some())?;
+        boot_units_with_ic(ctx, data, &self.catalog, &legacy, &current, ic)?;
+        if let Some(config) = &self.ic {
+            config.loaded(ctx)?;
+        }
         if let Some(replacement) = &self.replacement {
             replacement.loaded(ctx)?;
         }
@@ -1393,6 +1440,14 @@ fn on_obj_destroyed(
     let WorldEvent::ObjDestroyed { obj } = ev else {
         return;
     };
+    if ctx
+        .w
+        .module_state::<UnitStore>()
+        .is_some_and(|s| s.is_ic_custodied(*obj))
+    {
+        tracing::error!(unit=%obj,"IC-held hull destruction requires its genuine owner close event; retaining custody");
+        return;
+    }
     let obj = *obj;
     let dependency_freeze = ctx
         .w
@@ -1437,6 +1492,14 @@ fn on_obj_destroyed(
         scrub_component_assets(&store.units, now, &|a| a == obj)
     };
     for unit in repaired {
+        if ctx
+            .w
+            .module_state::<UnitStore>()
+            .is_some_and(|s| s.is_ic_custodied(unit.object()))
+        {
+            tracing::error!(unit=%unit.object(),"IC-held component asset cleanup retained for custody repair");
+            continue;
+        }
         // **16b cut AF.3**: a unit out on loan keeps its marker through the
         // rewrite (`encode_unit_document`'s doc says why).
         let marker = ctx
@@ -1529,7 +1592,7 @@ struct TacticsDestroyGate;
 impl DestroyGate for TacticsDestroyGate {
     fn check(&self, w: &World, reg: &Registry, _actor: ObjId, obj: ObjId) -> Result<(), String> {
         // 16b cut T.3 (doc 16 §3.1 "Custody"), admission site 1 of 6.
-        mush_sim::deployed::refuse_if_deployed(w, obj).map_err(|error| error.to_string())?;
+        crate::ic_custody::refuse_mutation(w, obj)?;
         let Some(store) = w.module_state::<UnitStore>() else {
             return Ok(());
         };
@@ -1581,7 +1644,7 @@ impl DetachGate for TacticsDetachGate {
         // cockpit's channel grants, and detaching it mid-match would take the
         // seat out from under a pilot the arena is still integrating.
         if behavior.as_str() == UNIT_BEHAVIOR {
-            mush_sim::deployed::refuse_if_deployed(w, obj).map_err(|error| error.to_string())?;
+            crate::ic_custody::refuse_mutation(w, obj)?;
         }
         if behavior.as_str() == UNIT_BEHAVIOR
             && w.module_state::<UnitStore>().is_some_and(|store| {
@@ -2141,6 +2204,25 @@ fn boot_units(
     legacy_record_definition: &DefinitionRef,
     current_record_definition: &DefinitionRef,
 ) -> Result<(), ModError> {
+    let mut data = data;
+    let ic = crate::ic_custody::load(&mut data, false)?;
+    boot_units_with_ic(
+        ctx,
+        data,
+        catalog,
+        legacy_record_definition,
+        current_record_definition,
+        ic,
+    )
+}
+fn boot_units_with_ic(
+    ctx: &mut ModuleCtx<'_>,
+    data: ModuleBootData,
+    catalog: &UnitCatalog,
+    legacy_record_definition: &DefinitionRef,
+    current_record_definition: &DefinitionRef,
+    ic: crate::ic_custody::IcCustodies,
+) -> Result<(), ModError> {
     let unit_behavior = BehaviorId::new(UNIT_BEHAVIOR).expect("static behavior id");
     let owner = OwnerId::new(NS).expect("canonical owner");
     let now = ctx.w.now();
@@ -2338,6 +2420,7 @@ fn boot_units(
     fan_out_owner_freezes(ctx.reg, &mut pending)?;
 
     let mut store = UnitStore {
+        ic,
         record_definition: Some(current_record_definition.clone()),
         ..UnitStore::default()
     };
@@ -2465,6 +2548,10 @@ fn boot_units(
         store.push_binding_repair(repair, &mut report);
     }
 
+    // No held IC hull may enter legacy repair or OOC restoration. Its exact
+    // four-owner reconciliation follows after all owners have hydrated.
+    crate::ic_custody::check_boot(&store)?;
+
     // E3c: the boot half of the component-asset scrub. Only `@destroy` emits
     // `ObjDestroyed`, so a programmatic `World::destroy` (or an object lost
     // during downtime) leaves a component pointing at nothing; this is the pass
@@ -2479,6 +2566,11 @@ fn boot_units(
         })
     };
     for unit in repaired {
+        if store.is_ic_custodied(unit.object()) {
+            return Err(ModError::msg(
+                "IC-held component assets require actual custody repair",
+            ));
+        }
         // **16b cut AF.3**: the kept marker rides the rewrite, so a scrubbed
         // deployed unit's document still says it is out on loan and a second
         // restart still finds it. The marker's own check-out snapshot is not
@@ -2590,8 +2682,7 @@ fn first_unit_dependency_freeze(
 /// 16b cut T.3 (doc 16 §3.1 "Custody"): this crate's two command-side admission
 /// sites, through the one shared helper and the one named error.
 fn refuse_deployed(ctx: &Ctx<'_>, obj: ObjId) -> Result<(), CmdError> {
-    mush_sim::deployed::refuse_if_deployed(ctx.w, obj)
-        .map_err(|error| CmdError::msg(error.to_string()))
+    crate::ic_custody::refuse_mutation(ctx.w, obj).map_err(CmdError::msg)
 }
 
 fn info(ctx: &mut Ctx<'_>, msg: impl Into<String>) {
@@ -2714,7 +2805,7 @@ pub fn apply_plan(
     obj: ObjId,
     plan: &UnitMutationPlan,
 ) -> Result<(TacticalUnit, Journal), String> {
-    mush_sim::deployed::refuse_if_deployed(ctx.w, obj).map_err(|error| error.to_string())?;
+    crate::ic_custody::refuse_mutation(ctx.w, obj)?;
     let record_definition = ctx
         .w
         .module_state::<UnitStore>()
@@ -2854,7 +2945,7 @@ pub fn refit_unit(ctx: &mut Ctx<'_>, obj: ObjId, spec: &UnitSpec) -> Result<Tact
     if unit_of(ctx.w, obj).is_none() {
         return Err(format!("#{} holds no unit to refit", obj.0));
     }
-    if mush_sim::deployed::is_deployed(ctx.w, obj) {
+    if crate::ic_custody::refuse_mutation(ctx.w, obj).is_err() {
         return Err(format!(
             "#{} is deployed; a deployed unit cannot be refitted",
             obj.0

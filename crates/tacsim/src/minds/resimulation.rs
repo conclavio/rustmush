@@ -851,7 +851,7 @@ pub(crate) mod tests {
         let (_, header) = opening(2);
         assert_eq!(TAPE_FORMAT, 2);
         assert_eq!(EngineStamp::current().engine, "tacsim-engine-m7-v1");
-        assert_eq!(EngineStamp::current().snapshot, 14);
+        assert_eq!(EngineStamp::current().snapshot, 15);
         for mutation in 0..4 {
             let mut old = (*header).clone();
             match mutation {
@@ -865,7 +865,7 @@ pub(crate) mod tests {
                         Snapshot::head(&old.opening),
                         Err(crate::arena::snapshot::SnapshotError::Format {
                             found: 13,
-                            expected: 14
+                            expected: 15
                         })
                     ));
                 }

@@ -221,6 +221,13 @@ fn renewal_service_opt_in_preserves_five_actions_and_private_intent_is_exact() -
     assert!(service.with_service().is_err());
     let original = intent()?;
     let guard = original.guard()?;
+    let AuthorityGuard::Capability { capability, .. } = &guard else {
+        return Err("expected exact service capability".into());
+    };
+    assert_eq!(
+        capability.as_str().len(),
+        mush_core::mechanics::CANONICAL_ID_MAX_BYTES
+    );
     for changed in 0..3 {
         let mut next = original.clone();
         match changed {

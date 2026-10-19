@@ -52,10 +52,17 @@ pub struct OriginalOwnerHolding {
     definition: DefinitionDigest,
     rating: RatingRef,
     compatibility: RatingCompatibility,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    qualification: Option<super::owner_qualification::current::CurrentQualification>,
     declared: RatingClass,
     minimum: RatingClass,
 }
 impl OriginalOwnerHolding {
+    pub(crate) fn qualification(
+        &self,
+    ) -> Option<&super::owner_qualification::current::CurrentQualification> {
+        self.qualification.as_ref()
+    }
     pub const fn actor(&self) -> ObjId {
         self.actor
     }
@@ -203,13 +210,13 @@ fn project_owner_for(
     let identity = filed.content.revision();
     if filed.content.position().charter != charter.id
         || filed.content.position().line != line.id
-        || filed.operation != licence.operation
+        || (filed.format != 3 && filed.operation != licence.operation)
         || status.filed != filed_id
         || pin.is_some_and(|p| p != identity)
     {
         return Err(OwnerProjectionError::Integrity);
     }
-    if filed.content.parent().is_some() {
+    let qualification = if filed.content.parent().is_some() {
         if !dependent {
             return Err(OwnerProjectionError::NotHeld);
         }
@@ -223,9 +230,21 @@ fn project_owner_for(
             ctx, roll, families, ratings, binding, filed, term, operation,
         )
         .map_err(|_| OwnerProjectionError::Integrity)?;
-        super::dependent_owner::require_current(ctx, holder, families, ratings, expected, binding)?;
-    } else if filed.format != 1 || term.format != 1 || term.parent.is_some() {
-        return Err(OwnerProjectionError::Integrity);
+        Some(super::dependent_owner::require_current(
+            ctx, holder, families, ratings, expected, binding,
+        )?)
+    } else {
+        if !matches!(filed.format, 1 | 3) || term.format != 1 || term.parent.is_some() {
+            return Err(OwnerProjectionError::Integrity);
+        }
+        None
+    };
+    if filed.format == 3 {
+        let birth = super::line_update::audit::birth(ctx, families, filed)
+            .map_err(|_| OwnerProjectionError::Integrity)?;
+        if birth.commit != licence.operation {
+            return Err(OwnerProjectionError::Integrity);
+        }
     }
     let rating = ratings
         .complete_active_receipt(ctx, &filed.rating, expected)
@@ -286,6 +305,7 @@ fn project_owner_for(
         definition: filed.definition,
         rating: filed.rating,
         compatibility: rating.compatibility().clone(),
+        qualification,
         declared: rating.subject().declared(),
         minimum: rating.minimum(),
     })

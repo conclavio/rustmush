@@ -309,6 +309,45 @@ impl<'a> PrepareCtx<'a> {
         result
     }
 
+    /// Reserve the fixed Roll claim's maximum Close image during actual IC Open.
+    pub fn reserve_ic_mind_claim_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.ic_mind_claim_completion(txn, None)
+    }
+
+    /// Consume the acknowledged IC Open reservation using the current Close
+    /// action. Actual physical event authority remains with the four owners.
+    pub fn close_ic_mind_claim_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        open: CommitToken,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.ic_mind_claim_completion(txn, Some(open))
+    }
+
+    fn ic_mind_claim_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        open: Option<CommitToken>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        let result = match (self.owner_error.is_none(), self.registered_transaction) {
+            (true, Some((base, provider))) => {
+                txn.ic_mind_claim_completion(base, provider, self.commit_token, open)
+            }
+            _ => Err(crate::action_state::ActionStateError::TerminalCapacity(
+                "IC claim preparation unavailable",
+            )),
+        };
+        if result.is_err() {
+            txn.poison_owner_read();
+            self.owner_error
+                .get_or_insert(crate::participant::ParticipantError::Authority);
+        }
+        result
+    }
+
     /// Reserve the exact seven completion targets for this renewal Draft.
     /// The action, operation, paired images and provider must be this invocation.
     pub fn reserve_mind_renewal_completion(

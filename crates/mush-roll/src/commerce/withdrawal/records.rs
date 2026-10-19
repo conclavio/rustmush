@@ -72,12 +72,12 @@ impl WithdrawalOperation {
         initial.validate()?;
         filed.validate()?;
         if initial.commit != self.initial_filing
-            || filed.operation != self.initial_filing
+            || (filed.format != 3 && filed.operation != self.initial_filing)
             || initial.requester != self.author
             || initial.economic.house.is_some()
             || initial.economic.issued_owner != mush_org::PrincipalId::Object(self.author)
-            || initial.revision != self.revision
-            || initial.filed != self.filed
+            || (filed.format != 3
+                && (initial.revision != self.revision || initial.filed != self.filed))
             || filed.content.id() != self.filed
             || filed.content.revision() != self.revision
             || initial.charter != self.charter

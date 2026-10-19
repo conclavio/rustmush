@@ -333,11 +333,11 @@ impl OwnerReadService for RenewalReader {
         let binding = RenewalBindingV1::capture(licence, term, economics).map_err(integrity)?;
         let filed =
             history::read(ctx, &self.families.filed, binding.filed.key()).map_err(integrity)?;
-        let filing = history::read(ctx, &self.families.operations, filed.operation.to_hex())
+        let filing = super::super::line_update::audit::birth(ctx, &self.families, filed)
             .map_err(integrity)?;
         if filed.content.revision() != binding.revision
             || filed.content.position().charter != binding.charter
-            || filing.filed != binding.filed
+            || (filed.format != 3 && filing.filed != binding.filed)
             || filing.charter != binding.charter
         {
             return Err(OwnerReadError::Integrity);

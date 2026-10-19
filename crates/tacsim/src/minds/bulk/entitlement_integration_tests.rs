@@ -19,6 +19,8 @@ use mush_roll::commerce::{
     purchase::PurchasePhase,
     records::{FiledRecord, InitialFilingOperation},
 };
+#[path = "owner_qualification_integration_tests.rs"]
+mod owner_qualification;
 #[path = "renewal_integration_tests.rs"]
 mod renewal;
 
@@ -812,6 +814,10 @@ pub(super) async fn exercise(
     original_v3(f, &filed)?;
     lapse_refund(f, &filed, owner)?;
     let (granted, allocation) = transactions(f, &filed, owner)?;
+    story_phase("owner.qualification", || {
+        owner_qualification::exercise(f, &granted, owner, &allocation)
+    })?
+    .await?;
     story_phase("author.withdrawal", || {
         withdrawal::exercise(f, &granted, owner, &allocation)
     })?

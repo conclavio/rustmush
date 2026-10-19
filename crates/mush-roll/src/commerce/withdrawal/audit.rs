@@ -20,7 +20,7 @@ pub(crate) fn status(
             return Err(PublicationError::Mismatch);
         }
         let filed = read(ctx, &families.filed, status.filed.key())?;
-        let initial = read(ctx, &families.operations, filed.operation.to_hex())?;
+        let initial = super::super::line_update::audit::birth(ctx, families, filed)?;
         operation.matches_initial(initial, filed)?;
     }
     Ok(())
@@ -32,7 +32,7 @@ pub(crate) fn causes(
 ) -> Result<(), PublicationError> {
     scan(ctx, &families.withdrawals, |operation| {
         let filed = read(ctx, &families.filed, operation.filed.key())?;
-        let initial = read(ctx, &families.operations, operation.initial_filing.to_hex())?;
+        let initial = super::super::line_update::audit::birth(ctx, families, filed)?;
         operation.matches_initial(initial, filed)?;
         if read(ctx, &families.status, operation.filed.key())? != &operation.status() {
             return Err(PublicationError::Mismatch);

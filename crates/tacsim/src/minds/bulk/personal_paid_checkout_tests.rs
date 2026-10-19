@@ -3,6 +3,11 @@
 //! certificate, seat, seal or arena is used here. Like the parent, persistence
 //! is an in-process installation boundary, not server writer/Unknown evidence.
 use super::*;
+#[path = "compatible_update_integration_tests.rs"]
+mod compatible_updates;
+pub(super) fn exercise_updates(f: &PurchaseFixture, saved: &Durable) -> TestResult {
+    compatible_updates::exercise(f, saved)
+}
 #[path = "authored_fork_integration_tests.rs"]
 mod fork_tests;
 #[path = "personal_paid_source_tests.rs"]
@@ -94,7 +99,11 @@ impl Drop for PlayerWorld {
 }
 impl PlayerWorld {
     fn boot(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_forks(f, saved, false)
+        if f.config.compatible_update.is_some() {
+            Self::boot_updates(f, saved)
+        } else {
+            Self::boot_forks(f, saved, false)
+        }
     }
     fn boot_forks(f: &PurchaseFixture, saved: &Durable, authored_forks: bool) -> TestResult<Self> {
         Self::boot_options(
@@ -107,25 +116,35 @@ impl PlayerWorld {
             false,
             false,
             false,
+            false,
         )
     }
     fn boot_marked(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(f, saved, true, true, false, false, false, false, false)
+        Self::boot_options(
+            f, saved, true, true, false, false, false, false, false, false,
+        )
     }
     fn boot_dependent(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(f, saved, true, true, true, false, false, false, false)
+        Self::boot_options(
+            f, saved, true, true, true, false, false, false, false, false,
+        )
     }
     fn boot_entitlements(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(f, saved, true, true, true, true, false, false, false)
+        Self::boot_options(f, saved, true, true, true, true, false, false, false, false)
     }
     fn boot_renewals(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(f, saved, true, true, true, true, true, false, false)
+        Self::boot_options(f, saved, true, true, true, true, true, false, false, false)
     }
     fn boot_withdrawal(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(f, saved, true, true, true, true, false, true, false)
+        Self::boot_options(f, saved, true, true, true, true, false, true, false, false)
     }
     fn boot_renewal_service(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(f, saved, true, true, true, true, true, false, true)
+        Self::boot_options(f, saved, true, true, true, true, true, false, true, false)
+    }
+    fn boot_updates(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
+        Self::boot_options(
+            f, saved, false, false, false, false, false, false, false, true,
+        )
     }
     fn boot_options(
         f: &PurchaseFixture,
@@ -137,6 +156,49 @@ impl PlayerWorld {
         renewals: bool,
         author_withdrawal: bool,
         renewal_service: bool,
+        compatible_updates: bool,
+    ) -> TestResult<Self> {
+        Self::boot_options_with_qualification(
+            f,
+            saved,
+            authored_forks,
+            marked_registry,
+            dependent_owners,
+            entitlements,
+            renewals,
+            author_withdrawal,
+            renewal_service,
+            compatible_updates,
+            false,
+            false,
+        )
+    }
+    fn boot_owner_qualification(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
+        Self::boot_options_with_qualification(
+            f, saved, true, true, true, true, false, false, false, false, true, false,
+        )
+    }
+    fn boot_owner_qualification_short_parent(
+        f: &PurchaseFixture,
+        saved: &Durable,
+    ) -> TestResult<Self> {
+        Self::boot_options_with_qualification(
+            f, saved, true, true, true, true, false, false, false, false, true, true,
+        )
+    }
+    fn boot_options_with_qualification(
+        f: &PurchaseFixture,
+        saved: &Durable,
+        authored_forks: bool,
+        marked_registry: bool,
+        dependent_owners: bool,
+        entitlements: bool,
+        renewals: bool,
+        author_withdrawal: bool,
+        renewal_service: bool,
+        compatible_updates: bool,
+        owner_qualification: bool,
+        qualification_short_parent: bool,
     ) -> TestResult<Self> {
         let manifest = f
             .engine
@@ -195,6 +257,9 @@ impl PlayerWorld {
                 renewals,
                 renewal_service,
                 author_withdrawal,
+                compatible_updates,
+                owner_qualification,
+                qualification_short_parent,
                 shared: shared.clone(),
                 purchase: purchase.clone(),
                 inner: None,

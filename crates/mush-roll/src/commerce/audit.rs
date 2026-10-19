@@ -83,6 +83,66 @@ pub(crate) fn audit_and_open_renewal_configured(
     renewals: bool,
     registry: Option<&dyn super::rating::registration::Installer>,
 ) -> Result<(), PublicationError> {
+    audit_and_open_update_configured(
+        ctx,
+        families,
+        ratings,
+        shells,
+        paid,
+        forks,
+        dependent_owners,
+        entitlements,
+        renewals,
+        None,
+        registry,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn audit_and_open_update_configured(
+    ctx: &mut ModuleCtx<'_>,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    shells: &ShellReservations,
+    paid: bool,
+    forks: bool,
+    dependent_owners: bool,
+    entitlements: bool,
+    renewals: bool,
+    update: Option<&mush_core::DefinitionRef>,
+    registry: Option<&dyn super::rating::registration::Installer>,
+) -> Result<(), PublicationError> {
+    audit_and_open_owner_configured(
+        ctx,
+        families,
+        ratings,
+        shells,
+        paid,
+        forks,
+        dependent_owners,
+        entitlements,
+        renewals,
+        update,
+        false,
+        registry,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn audit_and_open_owner_configured(
+    ctx: &mut ModuleCtx<'_>,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    shells: &ShellReservations,
+    paid: bool,
+    forks: bool,
+    dependent_owners: bool,
+    entitlements: bool,
+    renewals: bool,
+    update: Option<&mush_core::DefinitionRef>,
+    owner_qualification: bool,
+    registry: Option<&dyn super::rating::registration::Installer>,
+) -> Result<(), PublicationError> {
     ctx.state_mut::<RollStore>()
         .ok_or(PublicationError::Unavailable)?
         .close_commerce_for_audit()
@@ -104,6 +164,14 @@ pub(crate) fn audit_and_open_renewal_configured(
             dependent_owners,
             entitlements,
             renewals,
+            update,
+        )?;
+        super::owner_qualification::history::audit(
+            ctx,
+            roll,
+            families,
+            ratings,
+            owner_qualification,
         )?;
         super::parent_selector::audit(ctx, roll, families, ratings, forks)?;
         let stopped = ratings
@@ -224,6 +292,7 @@ fn audit(
     dependent_owners: bool,
     entitlements: bool,
     renewals: bool,
+    update: Option<&mush_core::DefinitionRef>,
 ) -> Result<(), PublicationError> {
     let deployment = read(ctx, &f.deployment, "registry".into())?;
     if scan(ctx, &f.deployment, |_| Ok(()))? != 1 {
@@ -320,6 +389,7 @@ fn audit(
             Ok(())
         })
         .map_err(|_| PublicationError::Mismatch)?;
+    let update_count = super::line_update::audit::audit(ctx, roll, f, ratings, update)?;
     let mut lines = Allocated::default();
     let mut filed = Allocated::default();
     let mut licences = Allocated::default();
@@ -338,9 +408,13 @@ fn audit(
         lines.observe(row.id.get())
     })?;
     scan(ctx, &f.filed, |row| {
-        let op = read(ctx, &f.operations, row.operation.to_string())?;
-        if op.filed != row.content.id() {
-            return Err(PublicationError::Mismatch);
+        if row.format == 3 {
+            read(ctx, &f.line_updates, row.operation.to_string())?.check_filed(row)?;
+        } else {
+            let op = read(ctx, &f.operations, row.operation.to_string())?;
+            if op.filed != row.content.id() {
+                return Err(PublicationError::Mismatch);
+            }
         }
         filed.observe(row.content.id().get())
     })?;
@@ -394,15 +468,21 @@ fn audit(
     if [
         charter_count,
         lines.count,
-        filed.count,
         owner_licences,
         term_count,
-        status_count,
-        identity_count,
         position_count,
     ]
     .into_iter()
     .any(|n| n != operation_count)
+    {
+        return Err(PublicationError::Mismatch);
+    }
+    let filed_count = operation_count
+        .checked_add(update_count)
+        .ok_or(PublicationError::Capacity)?;
+    if [filed.count, status_count, identity_count]
+        .into_iter()
+        .any(|n| n != filed_count)
     {
         return Err(PublicationError::Mismatch);
     }
@@ -413,6 +493,9 @@ fn audit(
         let identity = match &anchor {
             RootAnchor::Filed(id) => read(ctx, &f.filed, id.key())?.content.revision(),
             RootAnchor::Operation(token) => read(ctx, &f.operations, token.to_string())?.revision,
+            RootAnchor::UpdateOperation(token) => {
+                read(ctx, &f.line_updates, token.to_string())?.revision
+            }
             RootAnchor::OwnerParent(licence, owner) => {
                 read(
                     ctx,
@@ -422,6 +505,13 @@ fn audit(
                 .parent
                 .parent
                 .revision
+            }
+            RootAnchor::OwnerQualification(commit, digest) => {
+                let operation = read(ctx, &f.owner_qualification_operations, commit.to_hex())?;
+                if operation.digest()? != *digest {
+                    return Err(PublicationError::Mismatch);
+                }
+                operation.selected_parent.revision
             }
             RootAnchor::AuthorWithdrawal(commit, digest) => {
                 let operation = read(ctx, &f.withdrawals, commit.to_hex())?;
@@ -490,7 +580,7 @@ fn verify_operation(
         || charter.line != op.line
         || line.operation != op.commit
         || line.charter != op.charter
-        || line.head != op.filed
+        || (line.format == 1 && line.head != op.filed)
         || filed.content.position().charter != op.charter
         || filed.content.position().line != op.line
         || licence.operation != op.commit

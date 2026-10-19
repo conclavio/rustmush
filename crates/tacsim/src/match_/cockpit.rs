@@ -1425,6 +1425,7 @@ pub(crate) fn refusal_line(
         (Refusal::MotionDisabled, _) => "Your tank cannot move.".to_owned(),
         (Refusal::Linkdead, _) => "Your seat has gone linkdead.".to_owned(),
         (Refusal::NotMachine, _) => "That tank has a pilot in it.".to_owned(),
+        (Refusal::NoCommander, _) => "That lance leader has no active command hull.".to_owned(),
         // 16b cut O.2: the cockpit refuses it locally off the frame; the arena's
         // word reaches here only when the frame was not yet there to say so.
         (Refusal::NoJammer, _) => CockpitError::NoJammer.to_string(),
@@ -8291,7 +8292,15 @@ fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
         }
         // **16b cut Z.2 (16c Q44)**: a release carries no order at all; it
         // takes its own road from here (`release`).
-        ObjectiveWords::Release => return release(ctx, seat, match_id, targets),
+        ObjectiveWords::Release => {
+            return release(
+                ctx,
+                seat,
+                match_id,
+                targets,
+                matches!(command, Command::Squads(_)),
+            );
+        }
     };
 
     // (5) The order.
@@ -8422,9 +8431,9 @@ fn order(ctx: &mut Ctx<'_>, seat: &Seat, rest: &str) -> Result<(), CockpitError>
 /// 3. **the fan-out** — [`crate::arena_bridge::forward_release`] per squad (the
 ///    seat authorised once, on the pilot's own tank), `Busy` when no unit could
 ///    be offered;
-/// 4. **the watch** — [`ArenaRegistry::note_order_released`] per squad reached,
-///    which drops the world's watch on it only when this pilot's tank gave the
-///    order the watch was kept for;
+/// 4. **the watch** — after every target was offered the release, remove this
+///    pilot's watch. A side lead releasing a whole squad also removes its
+///    commander watch; a wingman's release retains that squad-wide watch;
 /// 5. **the acknowledgement** ([`order_ack`] with [`ObjectiveWords::Release`]),
 ///    to the issuer alone.
 ///
@@ -8435,6 +8444,7 @@ fn release(
     seat: &Seat,
     match_id: MatchId,
     targets: Vec<(crate::deliberation::SquadId, Vec<ObjId>, String)>,
+    whole_squads: bool,
 ) -> Result<(), CockpitError> {
     let actor = ctx.actor;
     let now_ms = ctx.w.now().saturating_mul(1_000);
@@ -8444,23 +8454,28 @@ fn release(
             .note_order_stamp(seat.unit, now_ms, command_cfg.orders_per_minute)
             .map_err(|n| CockpitError::RateFull { n })?;
     }
-    let mut reached: Vec<(crate::deliberation::SquadId, String)> = Vec::new();
+    let mut reached: Vec<(crate::deliberation::SquadId, String, bool)> = Vec::new();
     for (squad, units, who) in targets {
         let offered =
             crate::arena_bridge::forward_release(ctx, seat.driver, seat.unit, &units, squad)?;
         if offered > 0 {
-            reached.push((squad, who));
+            reached.push((squad, who, offered == units.len()));
         }
     }
     if reached.is_empty() {
         return Err(CockpitError::Order(IntentRefusal::Busy));
     }
     if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
-        for (squad, _) in &reached {
-            registry.note_order_released(match_id, *squad, seat.unit);
+        for (squad, _, complete) in &reached {
+            if *complete {
+                registry.note_order_released(match_id, *squad, seat.unit);
+                if whole_squads {
+                    registry.note_commander_order_released(match_id, *squad);
+                }
+            }
         }
     }
-    let who: Vec<String> = reached.into_iter().map(|(_, who)| who).collect();
+    let who: Vec<String> = reached.into_iter().map(|(_, who, _)| who).collect();
     let line = order_ack(&who, &ObjectiveWords::Release, None, None, false, 0);
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
     Ok(())
@@ -8756,7 +8771,7 @@ fn waiting_to_start(w: &World, actor: ObjId) -> &'static str {
         .collect();
     let seated = station_id().is_some_and(|station| {
         seats_of(w, actor).into_iter().any(|(unit, held)| {
-            held == station && !mush_sim::deployed::is_deployed(w, unit) && roster.contains(&unit)
+            held == station && !mush_sim::deployed::is_custodied(w, unit) && roster.contains(&unit)
         })
     });
     if seated {
@@ -9394,6 +9409,7 @@ mod tests {
             Refusal::Overheated,
             Refusal::NoWeapon,
             Refusal::NotMachine,
+            Refusal::NoCommander,
             // 16b cut O.2.
             Refusal::NoJammer,
         ] {

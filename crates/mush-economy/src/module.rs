@@ -602,6 +602,11 @@ impl EconomyStore {
         crate::managed_renewal::bridge::require_absent(self)
     }
 
+    /// Complete journal-derived compatible-update fees; this read grants no authority.
+    pub fn update_receipt_audit(&self) -> &crate::registry_filing::update::UpdateReceiptAudit {
+        &self.fold.update_receipts
+    }
+
     pub fn filing_receipt_audit(&self) -> &crate::registry_filing::ReceiptAudit {
         &self.fold.filing_receipts
     }
@@ -1553,6 +1558,7 @@ pub struct EconomyModule {
     mind_renewals: Option<crate::managed_renewal::bridge::Configuration>,
     house_initial_filing: Option<mush_core::mechanics::DefinitionRef>,
     dependent_initial_filing: Option<mush_core::mechanics::DefinitionRef>,
+    compatible_update: Option<mush_core::mechanics::DefinitionRef>,
     providers: CustodyTable,
     config: EconomyConfig,
     facts: crate::facts::FactTable,
@@ -1602,6 +1608,16 @@ impl EconomyModule {
         action: mush_core::mechanics::DefinitionRef,
     ) -> Self {
         self.dependent_initial_filing = Some(action);
+        self
+    }
+    /// Enable the fee-only compatible-update action on the existing Economy
+    /// participant. Requires a configured positive filing fee and paired Roll audit.
+    #[must_use]
+    pub fn with_compatible_mind_updates(
+        mut self,
+        action: mush_core::mechanics::DefinitionRef,
+    ) -> Self {
+        self.compatible_update = Some(action);
         self
     }
     /// Add the three exact closed Market purchase actions to the existing
@@ -1913,12 +1929,14 @@ impl GameModule for EconomyModule {
                 self.house_initial_filing.as_ref(),
                 self.dependent_initial_filing.as_ref(),
                 self.mind_renewals.as_ref(),
+                self.compatible_update.as_ref(),
             )?;
         }
         if (self.original_purchases.is_some()
             || self.entitlement_purchases.is_some()
             || self.house_initial_filing.is_some()
-            || self.dependent_initial_filing.is_some())
+            || self.dependent_initial_filing.is_some()
+            || self.compatible_update.is_some())
             && self.initial_filing.is_none()
         {
             return Err(ModError::msg(
@@ -1994,7 +2012,7 @@ impl GameModule for EconomyModule {
         } else {
             self.config.tx_tail_max
         };
-        let mut store = boot::load_boot_with_renewals(
+        let mut store = boot::load_boot_with_line_updates(
             ctx,
             data,
             &self.providers,
@@ -2004,6 +2022,7 @@ impl GameModule for EconomyModule {
             self.initial_filing.is_some(),
             self.original_purchases.is_some() || self.entitlement_purchases.is_some(),
             self.mind_renewals.is_some(),
+            self.compatible_update.is_some(),
         )?;
         // C17 (08g §12.1 item 5): the cold replay is the whole boot cost until a
         // durability checkpoint exists. Say what it cost, every boot, and say loudly

@@ -44,8 +44,8 @@ use mush_testkit::{TestWorld, fold_module_ops, fold_module_ops_into};
 use serde_json::Value;
 use tacsim::TacsimConfig;
 use tacsim::definitions::content::{
-    CERES_PACK, CERES_REGION_PACK, CERES_ROOMS, LANE_PACK, STATION_SOURCES, STICKNEY_PACK,
-    STICKNEY_REGION_PACK, STICKNEY_ROOMS, boot_packs, station_packs,
+    CERES_PACK, CERES_REGION_PACK, CERES_ROOMS, LANE_PACK, LANE_VERSION, STATION_SOURCES,
+    STICKNEY_PACK, STICKNEY_REGION_PACK, STICKNEY_ROOMS, boot_packs, station_packs,
 };
 use tacsim::ic_return::{self, PORTS};
 
@@ -443,7 +443,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     }
     // Doc 18 cut IC2: and the lane after them (at version 3 since cut IC8).
     assert!(
-        out.contains(&format!(" {LANE_PACK}@3 (")),
+        out.contains(&format!(" {LANE_PACK}@{LANE_VERSION} (")),
         "{LANE_PACK}:\n{out}"
     );
 }
@@ -967,7 +967,11 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
         );
     }
     // Doc 18 cut IC2: the lane too (was nine latches), at version 3 since cut IC8.
-    assert_eq!(after.get(LANE_PACK).map(|l| l.0), Some(3), "{LANE_PACK}");
+    assert_eq!(
+        after.get(LANE_PACK).map(|l| l.0),
+        Some(LANE_VERSION),
+        "{LANE_PACK}"
+    );
     assert_eq!(after.len(), 10);
     assert_eq!(
         location(&tw, walker),

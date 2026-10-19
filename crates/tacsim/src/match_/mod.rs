@@ -834,6 +834,9 @@ pub enum StartError {
     /// A named unit is already in a match.
     #[error("{0}")]
     Deployed(#[from] mush_sim::deployed::UnitDeployed),
+    /// IC keeps a separate authority and never borrows an OOC match ID.
+    #[error("{unit} is held by IC sortie {sortie}; its custody owner must close it")]
+    IcCustody { unit: ObjId, sortie: u64 },
     /// The arena definition is unknown.
     #[error("there is no arena definition called `{0}`")]
     NoArena(SmolStr),
@@ -1147,7 +1150,14 @@ pub fn start(
                 return Err(StartError::DuplicateUnit(unit));
             }
             seen.push(unit);
-            mush_sim::deployed::refuse_if_deployed(ctx.w, unit)?;
+            if let Err(held) = mush_sim::deployed::refuse_if_custodied(ctx.w, unit) {
+                return Err(match held {
+                    mush_sim::deployed::UnitCustodied::Match(old) => StartError::Deployed(old),
+                    mush_sim::deployed::UnitCustodied::Ic { unit, sortie } => {
+                        StartError::IcCustody { unit, sortie }
+                    }
+                });
+            }
             // "Is it a unit at all" before "is it placed": an object that is
             // neither wants the first answer, not the second.
             if mush_tactics::module::unit_of(ctx.w, unit).is_none() {

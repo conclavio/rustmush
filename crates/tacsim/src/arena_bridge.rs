@@ -1113,6 +1113,24 @@ impl ArenaRegistry {
         }
     }
 
+    /// A fully offered release by the side's pilot lead ends the squad's
+    /// commander watch too. A wingman's release never calls this: it affects
+    /// only one machine. Partial offers retain the watch for the others.
+    pub(crate) fn note_commander_order_released(
+        &mut self,
+        match_id: MatchId,
+        squad: crate::deliberation::SquadId,
+    ) {
+        if let Some(state) = self.deliberation.get_mut(&match_id)
+            && state
+                .orders
+                .get(&squad)
+                .is_some_and(|watch| watch.issuer.is_none())
+        {
+            state.orders.remove(&squad);
+        }
+    }
+
     /// **Spend one of `issuer`'s orders for this minute** (16b cut Y.2; doc 16
     /// §2 W8's human trigger), at world millisecond `now_ms`.
     ///

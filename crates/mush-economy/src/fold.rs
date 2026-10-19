@@ -31,6 +31,11 @@ use crate::record::{AssetEffectKind, EconomicAsset, EconomicTransaction, Hold, H
 /// The journal-derived accumulators at [`FoldState::covered_seq`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FoldState {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::registry_filing::update::UpdateReceiptAudit::uninitialized"
+    )]
+    pub(crate) update_receipts: crate::registry_filing::update::UpdateReceiptAudit,
     /// Sparse historical proof for registered original filings. Old checkpoints
     /// omit it and remain usable outside commerce; commerce requires full replay
     /// before it can open a missing proof, even when no filings are visible.
@@ -99,6 +104,7 @@ impl FoldState {
     /// live post path both call; a change here changes both.
     pub fn fold_entry(&mut self, seq: u64, tx: &EconomicTransaction) {
         self.filing_receipts.observe(tx);
+        self.update_receipts.observe(tx);
         self.purchase_receipts.observe(tx);
         self.renewal_receipts.observe(tx);
         let mut touched: BTreeSet<AccountId> = BTreeSet::new();

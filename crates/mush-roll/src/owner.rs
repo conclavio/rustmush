@@ -1176,6 +1176,33 @@ impl RollStore {
         self.prepare(changes)
     }
 
+    pub(crate) fn prepare_line_update_roots(
+        &self,
+        request: &crate::commerce::line_update::publication::UpdateRoots,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        for required in request.before() {
+            self.check_required_root(required)?;
+        }
+        let mut changes = Vec::with_capacity(request.after().len());
+        for required in request.after() {
+            self.check_root_subject(required)?;
+            let record = ReferenceRecord {
+                format: FORMAT,
+                key: required.anchor.key(),
+                revisions: vec![required.target()],
+            };
+            if self.occupied.contains(&record.key.key()) {
+                return Err(invalid(
+                    "compatible update",
+                    "obligation is already retained",
+                ));
+            }
+            changes.push(Change::Reference(record));
+        }
+        self.prepare(changes)
+    }
+
     pub(crate) fn bind_commercial_roots(
         &mut self,
         prepared: PreparedChange,
@@ -1413,6 +1440,31 @@ impl RollStore {
         };
         if self.occupied.contains(&record.key.key()) {
             return Err(invalid("withdrawal retention", "cause already retained"));
+        }
+        self.prepare(vec![Change::Reference(record)])
+    }
+
+    /// A current qualification changes no owned source or old root. Its exact
+    /// permanent cause retains the selected revision under normal owner limits.
+    pub(crate) fn prepare_owner_qualification_root(
+        &self,
+        request: &crate::commerce::owner_qualification::Qualification,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        for root in request.original_roots() {
+            self.check_required_root(&root)?;
+        }
+        let required = request
+            .cause_root()
+            .map_err(|_| invalid("owner qualification", "invalid cause"))?;
+        self.check_root_subject(&required)?;
+        let record = ReferenceRecord {
+            format: FORMAT,
+            key: required.anchor.key(),
+            revisions: vec![required.target()],
+        };
+        if self.occupied.contains(&record.key.key()) {
+            return Err(invalid("owner qualification", "cause exists"));
         }
         self.prepare(vec![Change::Reference(record)])
     }

@@ -500,7 +500,7 @@ impl ArenaApplier {
     fn refuse_while_deployed(w: &mush_core::World, id: &CanonicalId) -> Result<(), String> {
         let running = ArenaApplier::named_slots(w, id)
             .values()
-            .any(|object| w.get(*object).is_some() && mush_sim::deployed::is_deployed(w, *object));
+            .any(|object| w.get(*object).is_some() && mush_sim::deployed::is_custodied(w, *object));
         if running {
             return Err(format!(
                 "{id}: a match is running; apply with the centre idle"

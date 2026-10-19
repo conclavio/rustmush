@@ -122,12 +122,105 @@ Its two-file terminal archive is verified, SHA-256
 Both runs executed zero runtime tests; all downstream stages remain unstarted.
 The next candidate removes that conversion without changing output bytes.
 
+N49 tree `3dcf5b3e21b5981ef7a1e3286e7fcac980edc3e1` also stopped at
+compilation on the two remaining redundant status-output conversions. It ran
+zero tests; its verified archive is
+`edb8e088f64fd633843bc622f8a577e739b573086093a2ae54a41220f4ef69af`.
+N50 tree `f3067fa096c0c94ab3826cd2c47d72b5503fcede` compiled and finished
+with 1,184 passing tests, 8 failures and 1 ignored test. Six Tactics
+replacement tests now reach the actual provider and expose its test fixture's
+missing typed transaction receipt. Two renewal-service tests expose an overlong
+capability identifier. Narrow repairs add the test-only typed receipt and retain
+the complete domain-separated service digest within Core's 64-byte identifier
+limit. Core's 564 tests, Economy's 152 and Roll's 186 pass. Both genuine stories
+remain unstarted because required gates failed. All retained evidence verifies
+against unchanged source; archive SHA-256 is
+`569f7eced01fcca8e8f32f1d39d319529e961b49278fa165bb9edecfe9cc21da`. These failed runs remain evidence,
+not acceptance results.
+
+N50 was committed and pushed as `2d9d79fd`. A fresh fetch then found main at
+`9cc0dc16`; its CI-only linker/job/resource changes were merged normally and
+pushed as `bc817ac9`. The next candidate includes that exact CI update. It also
+adds opt-in compatible original-line publication with an actual new Registry
+certificate and fee, and personal dependent-owner parent-licence replacement.
+The latter preserves original source ancestry, child expiry and independent
+paid-customer terms; Open restores owner rights while OpenResale is required for
+new sales and renewals. Neither prepared feature has runtime acceptance yet.
+The four-owner IC custody service and its fixed future-close capacity are still
+in separate preparation; the inactive claim records alone do not enable it.
+
+N51 tree `f64926fae3bc9acc84a91a7b6a6f314ecaa52507` stopped at compilation
+because two already-public compatible-update types lacked the parent module
+re-exports used by Roll. It executed zero runtime tests. Its two-file archive
+verifies unchanged source, SHA-256
+`fc043ec96f75d3fb33682713d9df09d5555afe8644403109743127226c6ce716`.
+The next candidate fixes those exports and adds the reviewed Core IC capacity
+prerequisite: one fixed Roll claim target with Tacsim metadata, immutable Open
+fingerprint, reserved complete Close capacity, exact four-owner preparation and
+all binds before any apply. Current optional commerce needs 60 participant
+requests; IC adds eight, so the declaration ceiling becomes 128. Eight adapters
+cover the seven IC/commerce slots plus optional hardware. Same-owner adapters
+may share a state slot only with disjoint exact actions; each invocation still
+refuses duplicate slots. Ordinary transactions retain their three-image/two-module
+limit; only the fully validated IC protocol receives four/four. Ten new tests
+and the updated 128/129 boundary are prepared, not passing evidence. Physical
+owners, actual seal/event authority and complete integration remain required.
+
+N52 tree `60ba2a4f39fa9a4858407e54ca4ff4c5e0755f15` was frozen and
+materialized but superseded before upload or execution. Static review caught a
+compatible-update history helper calling mutable transaction reads through an
+immutable reference. The narrow repair accepts the existing mutable transaction
+and owns the exact operation row across subsequent reads; all identity/proof
+checks remain. N52 has no compiler or runtime result. The next runner applies
+its combined delta directly over the retained terminal N51 source.
+
+N53 tree `d27ad8f27a00c33c5e876c75d523d8e60e560783` stopped at compilation on two
+overlapping mutable transaction borrows in the compatible-update provider. It
+ran no tests. Its unchanged-source archive verifies as
+`fbfcd14dcc5c0493fd08d1b640cdf653090a5ae7d242bd88a7c4de7dd1477261`. The repair owns the charter and
+licence snapshots before reading subsequent rows; identity and eligibility
+predicates are unchanged. The next candidate also incorporates upstream main
+`41e7259d` (astronomy engine A.1) and adds its sky regression gate.
+
+The next candidate includes the reviewed Sim/Tactics physical IC owners and
+their actual Engine adapter tests. The Sim guard rechecks even retained public
+transition plans before effects, refuses retirement of the captured domain and
+fails closed on missing or crossed indexed custody history. Strict test-only
+typed receipts accompany the physical prepared images. These are prerequisites,
+not a complete IC service: actual sealed Tacsim runtime/host event authority,
+paired Roll roots/claims and complete four-owner boot audit remain required.
+
+N54 tree `2ae22abee09c0fecb49e2e5056043fb1f35a2052` stopped at compilation on three
+private `CarrierJourney.root` field accesses in the new Sim boot audit. Its
+verified unchanged-source archive is
+`d88c64bb5714c90df05fcd6668f741a1c6819a77ca9a3cec82a947545247ec47`; zero tests ran. The next
+candidate uses the existing read-only `root()` accessor for the same hull,
+base-space and domain-host overlap checks. No admission predicate changes.
+
+N55 tree `67f4627978a2ea8c003d666d4d8e8ed9c6b229eb` passed production checking but
+the compile stage failed on a missing `DefinitionValidationContext` import in
+the Tactics component-replacement test module. No runtime tests executed. Its
+unchanged-source archive is
+`ad6e317446ca64fd049d5cbeb5f94e6d117375b0749c253c65e6cd7bf367f75d`. The next candidate adds only
+that test import and this evidence note before rerunning all required gates.
+
+The L R4 release-notice correction is now prepared: a side lead's fully offered
+whole-squad RELEASE also removes the persona commander's watch, preventing a
+false expiry announcement. A partial offer or wingman's release preserves the
+squad-wide watch. The public BOARD/reply/RELEASE/TTL regression is included;
+runtime remains pending. Lost watch state on resume is a separate residual.
+
 The L residual audit also confirms and repairs 17b's R1: direct character ORDER
 admission now binds `issuer` to the actual occupied hull and applies the same
 published wreck predicate as typed cockpit ORDER. The existing actual boarded
 lead/wingman regression adds missing/borrowed issuer and egress-wreck refusals,
-preserving its valid controls and Persona rules. Runtime validation is pending;
-this does not close the other historical L residuals.
+preserving its valid controls and Persona rules. Its actual boarded regression
+passes in N50. The next candidate rechecks commander fitness when a delayed
+persona reply lands, tests wrecked/disabled/inert commanders, and replaces five
+older manually seated fixtures with actual public BOARD. The new no-commander
+snapshot notice requires snapshot format 15; old formats refuse explicitly.
+Those additional checks are prepared, not runtime passes, and do not close every
+historical L residual.
 
 The five real renewal providers and genuine renewal story are integrated, with
 new service cleanup/due/status/control work continuing separately. Reviewed

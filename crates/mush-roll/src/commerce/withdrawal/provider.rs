@@ -37,11 +37,8 @@ impl Provider {
             .map_err(bad)?
             .ok_or(PublicationError::Missing)?
             .clone();
-        let initial = txn
-            .get(&self.families.operations, &file.operation.to_hex())
-            .map_err(bad)?
-            .ok_or(PublicationError::Missing)?
-            .clone();
+        let initial =
+            super::super::line_update::audit::birth_in_txn(txn, world, &self.families, &file)?;
         let status = txn
             .get(&self.families.status, &filed.key())
             .map_err(bad)?
@@ -54,11 +51,13 @@ impl Provider {
             || initial.revision.revision().key.character != actor
             || initial.economic.house.is_some()
             || initial.economic.issued_owner != mush_org::PrincipalId::Object(actor)
-            || initial.filed != filed
+            || (file.format != 3 && initial.filed != filed)
             || file.content.id() != filed
             || status.filed != filed
-            || file.content.revision() != initial.revision
-            || initial.commit != file.operation
+            || file.content.revision().revision().key.character != actor
+            || (file.format != 3
+                && (file.content.revision() != initial.revision
+                    || initial.commit != file.operation))
             || status.withdrawn_by.is_some()
             || status.recalled_by.is_some()
         {
@@ -66,7 +65,7 @@ impl Provider {
         }
         roll.check_required_root(&RequiredRoot {
             anchor: RootAnchor::Filed(filed),
-            identity: initial.revision,
+            identity: file.content.revision(),
         })
         .map_err(|_| PublicationError::Mismatch)?;
         Ok(Subject {

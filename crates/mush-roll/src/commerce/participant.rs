@@ -25,6 +25,7 @@ pub(crate) struct RootParticipant;
 /// and artifact participants are available in the same composed invocation.
 pub(crate) enum RootRequest {
     InitialFiling(InitialRoots),
+    CompatibleUpdate(super::line_update::publication::UpdateRoots),
     DependentFiling(super::dependent_filing::DependentRoots),
     Rating(RatingRoots),
     Paid(PaidRoots),
@@ -33,12 +34,14 @@ pub(crate) enum RootRequest {
     AuthoredFork(super::authored_fork::AuthoredFork),
     Retirement(super::authored_retirement::Retirement),
     Withdrawal(super::withdrawal::Withdrawal),
+    OwnerQualification(super::owner_qualification::Qualification),
 }
 
 impl RootRequest {
     fn commit(&self) -> CommitToken {
         match self {
             Self::InitialFiling(request) => request.commit(),
+            Self::CompatibleUpdate(request) => request.commit(),
             Self::DependentFiling(request) => request.commit(),
             Self::Rating(request) => request.commit(),
             Self::Paid(request) => request.commit(),
@@ -47,6 +50,7 @@ impl RootRequest {
             Self::AuthoredFork(request) => request.commit(),
             Self::Retirement(request) => request.commit(),
             Self::Withdrawal(request) => request.commit(),
+            Self::OwnerQualification(request) => request.commit(),
         }
     }
 }
@@ -83,9 +87,11 @@ pub(crate) struct RootPatch {
     entitlement: Option<super::entitlement::roots::EntitlementFence>,
     renewal: Option<super::renewal::roots::RenewalFence>,
     dependent: Option<super::dependent_filing::FilingFence>,
+    update: Option<super::line_update::publication::UpdateFence>,
     marked: Option<super::marked_rating::AdmissionFence>,
     retirement: Option<super::authored_retirement::RetirementFence>,
     withdrawal: Option<super::withdrawal::WithdrawalFence>,
+    qualification: Option<super::owner_qualification::QualificationFence>,
     fork: Option<(
         mush_core::DefinitionRef,
         super::parent_grant::CurrentParentGrant,
@@ -194,10 +200,34 @@ impl OwnerParticipant for RootParticipant {
             }
             _ => None,
         };
+        let qualification = match &request {
+            RootRequest::OwnerQualification(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
+        let update = match &request {
+            RootRequest::CompatibleUpdate(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
         let mut retired = None;
         let (change, selection) = match &request {
             RootRequest::InitialFiling(request) => (
                 state.prepare_commercial_roots(request).map_err(refusal)?,
+                None,
+            ),
+            RootRequest::CompatibleUpdate(request) => (
+                state.prepare_line_update_roots(request).map_err(refusal)?,
                 None,
             ),
             RootRequest::DependentFiling(request) => (
@@ -219,6 +249,12 @@ impl OwnerParticipant for RootParticipant {
             RootRequest::Renewal(request) => {
                 (state.prepare_renewal_roots(request).map_err(refusal)?, None)
             }
+            RootRequest::OwnerQualification(request) => (
+                state
+                    .prepare_owner_qualification_root(request)
+                    .map_err(refusal)?,
+                None,
+            ),
             RootRequest::Withdrawal(request) => (
                 state.prepare_withdrawal_root(request).map_err(refusal)?,
                 None,
@@ -276,9 +312,11 @@ impl OwnerParticipant for RootParticipant {
                 entitlement,
                 renewal,
                 dependent,
+                update,
                 marked,
                 retirement,
                 withdrawal,
+                qualification,
                 fork,
             },
             writes,
@@ -293,6 +331,16 @@ impl OwnerParticipant for RootParticipant {
     ) -> Result<(), ParticipantError> {
         if patch.commit != context.commit_token() {
             return Err(ParticipantError::Authority);
+        }
+        if let Some(fence) = &patch.qualification {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
+        if let Some(fence) = &patch.update {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
         }
         if let Some(fence) = &patch.renewal {
             fence
@@ -434,10 +482,12 @@ impl OwnerParticipant for RootParticipant {
                     | RootAnchor::Term(_, _)
                     | RootAnchor::OwnerParent(_, _)
                     | RootAnchor::Operation(_)
+                    | RootAnchor::UpdateOperation(_)
                     | RootAnchor::PaidOperation(_)
                     | RootAnchor::RenewalOperation(_)
                     | RootAnchor::DraftRetirement(_, _)
                     | RootAnchor::AuthorWithdrawal(_, _)
+                    | RootAnchor::OwnerQualification(_, _)
                     | RootAnchor::RatingJob(_)
                     | RootAnchor::RatingPending(_)
                     | RootAnchor::Rating { .. })

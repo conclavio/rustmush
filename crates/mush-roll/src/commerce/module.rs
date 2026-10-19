@@ -36,6 +36,8 @@ pub struct CommerceConfig {
     compatibility: RatingCompatibility,
     original_market_quotes: bool,
     author_withdrawal: bool,
+    owner_qualification: bool,
+    compatible_updates: bool,
     authored_forks: bool,
     marked_registry: bool,
     house_filings: bool,
@@ -90,6 +92,8 @@ impl CommerceConfig {
             compatibility,
             original_market_quotes: false,
             author_withdrawal: false,
+            owner_qualification: false,
+            compatible_updates: false,
             authored_forks: false,
             marked_registry: false,
             house_filings: false,
@@ -98,6 +102,39 @@ impl CommerceConfig {
             entitlements: None,
             renewals: None,
         })
+    }
+
+    /// Explicitly replace only an existing personal dependent owner's current
+    /// qualifying parent. No owner term, ancestry or paid grant is issued.
+    pub fn with_owner_parent_qualification(mut self) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || !self.dependent_owners || self.owner_qualification {
+            return Err(ModError::msg(
+                "owner qualification requires one Active dependent-owner configuration",
+            ));
+        }
+        self.owner_qualification = true;
+        Ok(self)
+    }
+
+    /// Enable only original author's exact-schema certified line updates.
+    pub fn with_compatible_updates(mut self) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.compatible_updates {
+            return Err(ModError::msg(
+                "compatible updates require one Active configuration",
+            ));
+        }
+        self.compatible_updates = true;
+        Ok(self)
+    }
+    /// Exact configured reference for the existing Economy participant grant.
+    pub fn compatible_update_action(&self) -> Result<DefinitionRef, ModError> {
+        if !self.compatible_updates {
+            return Err(ModError::msg("compatible updates are not configured"));
+        }
+        let [action, _] = super::line_update::registration::definitions(&self.manifest)?;
+        DefinitionRegistryBuilder::new()
+            .register(OwnerId::new(crate::NS).map_err(error)?, action)
+            .map_err(error)
     }
 
     /// Enable only personal initial-author withdrawal. No source, house,
@@ -385,6 +422,16 @@ impl CommerceConfig {
                 json!({"format":1}),
             )?);
         }
+        if self.owner_qualification {
+            definitions.extend(super::owner_qualification::protocol::definitions(
+                &self.manifest,
+            )?);
+        }
+        if self.compatible_updates {
+            definitions.extend(super::line_update::registration::definitions(
+                &self.manifest,
+            )?);
+        }
         if self.author_withdrawal {
             let [action, outcome] = super::withdrawal::definitions()?;
             definitions.extend([action, outcome]);
@@ -454,6 +501,8 @@ impl CommerceConfig {
 
 pub(crate) struct CommerceRegistration {
     withdrawal: Option<super::withdrawal::EconomyReadiness>,
+    owner_qualification: bool,
+    update: Option<DefinitionRef>,
     pub(crate) families: CommerceFamilies,
     pub(crate) ratings: RatingFamilies,
     pub(crate) shells: ShellReservations,
@@ -733,8 +782,18 @@ pub(crate) fn register(
     } else {
         None
     };
+    let update_registration = if config.compatible_updates {
+        let [action, outcome] = super::line_update::registration::definitions(&config.manifest)?;
+        Some([reg.definition(action)?, reg.definition(outcome)?])
+    } else {
+        None
+    };
+    let update = update_registration.as_ref().map(|pair| pair[0].clone());
     let root_definition = reg.definition(commercial_roots_descriptor()?)?;
     let mut root_actions = BTreeSet::from([action.clone()]);
+    if let Some(action) = &update {
+        root_actions.insert(action.clone());
+    }
     if let Some((house_action, _)) = &house_filing {
         root_actions.insert(house_action.clone());
     }
@@ -813,6 +872,16 @@ pub(crate) fn register(
     } else {
         None
     };
+    let qualification_registration = if config.owner_qualification {
+        let [action, outcome] =
+            super::owner_qualification::protocol::definitions(&config.manifest)?;
+        let action = reg.definition(action)?;
+        let outcome = reg.definition(outcome)?;
+        root_actions.insert(action.clone());
+        Some([action, outcome])
+    } else {
+        None
+    };
     let withdrawal_registration = if config.author_withdrawal {
         let [action, outcome] = super::withdrawal::definitions()?;
         let action = reg.definition(action)?;
@@ -823,6 +892,16 @@ pub(crate) fn register(
         None
     };
     reg.owner_participant(root_definition, root_actions, RootParticipant)?;
+    if let Some(definitions) = update_registration {
+        super::line_update::registration::register(
+            reg,
+            families.clone(),
+            ratings.clone(),
+            config.manifest.clone(),
+            config.compatibility.clone(),
+            definitions,
+        )?;
+    }
     let withdrawal = withdrawal_registration
         .map(|definitions| super::withdrawal::register(reg, families.clone(), definitions))
         .transpose()?;
@@ -837,7 +916,23 @@ pub(crate) fn register(
             &config.manifest,
             config.compatibility.clone(),
         )?;
-        fork.register(reg, &config.manifest, families.clone(), parent, definitions)?;
+        let parent = reg.request_owner_read::<super::parent_grant::ParentGrantReader>(parent)?;
+        fork.register(
+            reg,
+            &config.manifest,
+            families.clone(),
+            parent.clone(),
+            definitions,
+        )?;
+        if let Some(definitions) = qualification_registration {
+            super::owner_qualification::register(
+                reg,
+                families.clone(),
+                &config.manifest,
+                parent,
+                definitions,
+            )?;
+        }
         super::authored_history::register(
             reg,
             families.clone(),
@@ -967,6 +1062,8 @@ pub(crate) fn register(
     }
     Ok(CommerceRegistration {
         withdrawal,
+        owner_qualification: config.owner_qualification,
+        update,
         families,
         ratings,
         shells,
@@ -992,7 +1089,7 @@ impl CommerceRegistration {
             readiness.capture(ctx)?;
         }
         match self.mode {
-            CommerceMode::Active => super::audit::audit_and_open_renewal_configured(
+            CommerceMode::Active => super::audit::audit_and_open_owner_configured(
                 ctx,
                 &self.families,
                 &self.ratings,
@@ -1002,6 +1099,8 @@ impl CommerceRegistration {
                 self.dependent_owners,
                 self.entitlements,
                 self.renewals,
+                self.update.as_ref(),
+                self.owner_qualification,
                 registry,
             )
             .map_err(error),

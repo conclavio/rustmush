@@ -26,11 +26,13 @@ pub(crate) enum RootAnchor {
     Filed(FiledRevisionId),
     Term(LicenceId, TermGeneration),
     Operation(CommitToken),
+    UpdateOperation(CommitToken),
     OwnerParent(LicenceId, mush_core::ObjId),
     PaidOperation(CommitToken),
     RenewalOperation(CommitToken),
     DraftRetirement(CommitToken, mush_core::DefinitionDigest),
     AuthorWithdrawal(CommitToken, mush_core::DefinitionDigest),
+    OwnerQualification(CommitToken, mush_core::DefinitionDigest),
     Rating {
         job: CommitToken,
         id: RatingId,
@@ -46,12 +48,16 @@ impl RootAnchor {
             Self::Filed(id) => format!("v1/{}", id.key()),
             Self::Term(id, term) => format!("v1/{}/{}", id.key(), term.key()),
             Self::Operation(token) => format!("v1/operation/{token}"),
+            Self::UpdateOperation(token) => format!("v1/line_update/{token}"),
             Self::OwnerParent(licence, owner) => {
                 format!("v1/owner_parent/{:016x}/{:08x}", licence.get(), owner.0)
             }
             Self::PaidOperation(token) => format!("v1/paid_operation/{token}"),
             Self::RenewalOperation(token) => format!("v1/renewal_operation/{token}"),
             Self::DraftRetirement(token, digest) => format!("v1/draft_retirement/{token}/{digest}"),
+            Self::OwnerQualification(token, digest) => {
+                format!("v1/owner_qualification/{token}/{digest}")
+            }
             Self::AuthorWithdrawal(token, digest) => {
                 format!("v1/author_withdrawal/{token}/{digest}")
             }
@@ -108,11 +114,21 @@ impl RootAnchor {
             "operation" => {
                 Self::Operation(CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?)
             }
+            "line_update" => Self::UpdateOperation(
+                CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
+            ),
             "paid_operation" => Self::PaidOperation(
                 CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
             ),
             "renewal_operation" => Self::RenewalOperation(
                 CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
+            ),
+            "owner_qualification" => Self::OwnerQualification(
+                CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
+                mush_core::DefinitionDigest::from_hex(
+                    parts.next().ok_or(PublicationError::Invalid)?,
+                )
+                .map_err(|_| PublicationError::Invalid)?,
             ),
             "author_withdrawal" => Self::AuthorWithdrawal(
                 CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,

@@ -749,6 +749,7 @@ pub struct StateFamilyRegistryBuilder {
     original_purchase: Option<terminal_capacity::PurchaseProtocol>,
     entitlement_purchase: Option<terminal_capacity::EntitlementProtocol>,
     mind_renewal: Option<terminal_capacity::RenewalProtocol>,
+    ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
 }
 
 impl fmt::Debug for StateFamilyRegistryBuilder {
@@ -967,6 +968,27 @@ impl StateFamilyRegistryBuilder {
         Ok(())
     }
 
+    pub(crate) fn ic_mind_claim_capacity(
+        &mut self,
+        owner: &OwnerId,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 4],
+        actions: [crate::DefinitionRef; 2],
+    ) -> Result<(), ActionStateError> {
+        if self.ic_mind_claim.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate IC claim protocol",
+            ));
+        }
+        self.ic_mind_claim = Some(terminal_capacity::IcClaimProtocol::new(
+            owner,
+            manifest,
+            participants,
+            actions,
+        )?);
+        Ok(())
+    }
+
     pub(crate) fn mind_renewal_capacity(
         &mut self,
         owner: &OwnerId,
@@ -1049,6 +1071,7 @@ impl StateFamilyRegistryBuilder {
             self.original_purchase.as_ref(),
             self.entitlement_purchase.as_ref(),
             self.mind_renewal.as_ref(),
+            self.ic_mind_claim.as_ref(),
         )?;
         let registry = StateFamilyRegistry {
             entries: self.entries,
@@ -1058,6 +1081,7 @@ impl StateFamilyRegistryBuilder {
             original_purchase: self.original_purchase,
             entitlement_purchase: self.entitlement_purchase,
             mind_renewal: self.mind_renewal,
+            ic_mind_claim: self.ic_mind_claim,
             fingerprint,
             owner_readiness,
         };
@@ -1081,6 +1105,11 @@ impl StateFamilyRegistryBuilder {
                 .validate_families(&registry)
                 .map_err(|e| StateFamilyRegistryError::MindRenewal(e.to_string()))?;
         }
+        if let Some(protocol) = &registry.ic_mind_claim {
+            protocol
+                .validate_families(&registry)
+                .map_err(|e| StateFamilyRegistryError::IcMindClaim(e.to_string()))?;
+        }
         Ok(registry)
     }
 }
@@ -1096,6 +1125,7 @@ pub struct StateFamilyRegistry {
     original_purchase: Option<terminal_capacity::PurchaseProtocol>,
     entitlement_purchase: Option<terminal_capacity::EntitlementProtocol>,
     mind_renewal: Option<terminal_capacity::RenewalProtocol>,
+    ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
     fingerprint: DefinitionDigest,
     owner_readiness: MechanicalOwnerReadiness,
 }
@@ -1114,7 +1144,7 @@ impl StateFamilyRegistry {
         &self,
         definitions: &crate::mechanics::DefinitionRegistry,
         providers: &crate::action::ActionProviderRegistry,
-        participants: &crate::participant::ParticipantRegistry,
+        participants: &mut crate::participant::ParticipantRegistry,
     ) -> Result<(), ActionStateError> {
         if let Some(protocol) = &self.registry_rating {
             protocol.validate_composition(definitions, providers, participants)?;
@@ -1127,6 +1157,14 @@ impl StateFamilyRegistry {
         }
         if let Some(protocol) = &self.mind_renewal {
             protocol.validate_composition(definitions, providers, participants)?;
+        }
+        if let Some(protocol) = &self.ic_mind_claim {
+            protocol.validate_composition(definitions, providers, participants)?;
+            protocol
+                .enable_participant_limits(participants)
+                .map_err(|_| {
+                    ActionStateError::TerminalCapacity("IC image admission configuration")
+                })?;
         }
         Ok(())
     }
@@ -1230,6 +1268,7 @@ fn state_family_fingerprint<'a>(
     original_purchase: Option<&terminal_capacity::PurchaseProtocol>,
     entitlement_purchase: Option<&terminal_capacity::EntitlementProtocol>,
     mind_renewal: Option<&terminal_capacity::RenewalProtocol>,
+    ic_mind_claim: Option<&terminal_capacity::IcClaimProtocol>,
 ) -> Result<DefinitionDigest, CanonicalEncodingError> {
     let mut value = serde_json::Map::from_iter([
         (
@@ -1301,12 +1340,20 @@ fn state_family_fingerprint<'a>(
     } else {
         domain
     };
+    let domain = if let Some(protocol) = ic_mind_claim {
+        value.insert("ic_mind_claim".to_owned(), json!(protocol));
+        "state_family_registry.v8"
+    } else {
+        domain
+    };
     DefinitionDigest::for_canonical_value(domain, &Value::Object(value))
 }
 
 /// State-family registration failure.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum StateFamilyRegistryError {
+    #[error("IC mind claim capacity composition: {0}")]
+    IcMindClaim(String),
     #[error("Mind renewal capacity composition: {0}")]
     MindRenewal(String),
     #[error("Entitlement purchase capacity composition: {0}")]
@@ -2453,6 +2500,38 @@ impl ActionTxn<'_> {
                 ActionStateError::TerminalCapacity("entitlement transaction base differs")
             })?;
             terminal_capacity::entitlement_change(self, commit, terminal)
+        })();
+        if let Err(error) = &result {
+            self.poison(error);
+        }
+        result
+    }
+
+    pub(crate) fn require_ic_owner_images(
+        &self,
+        images: &crate::participant::OwnerImages,
+    ) -> Result<(), crate::participant::ParticipantError> {
+        if let (Some(protocol), Some(identity)) = (
+            &self.store.registry.ic_mind_claim,
+            &self.registered_identity,
+        ) {
+            protocol.require_owner_images(identity, images)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn ic_mind_claim_completion(
+        &mut self,
+        base: &ActionReadBase,
+        provider: &ProviderRegistrationOrdinal,
+        commit: crate::CommitToken,
+        open: Option<crate::CommitToken>,
+    ) -> Result<(), ActionStateError> {
+        let result = (|| {
+            self.read_preimage(base, provider).map_err(|_| {
+                ActionStateError::TerminalCapacity("IC claim transaction base differs")
+            })?;
+            terminal_capacity::ic_claim_change(self, commit, open)
         })();
         if let Err(error) = &result {
             self.poison(error);

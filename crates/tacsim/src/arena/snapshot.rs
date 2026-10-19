@@ -327,7 +327,10 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// **14 since M7:** filed origins carry the exact immutable Registry certificate
 /// and saved revision identity, including when the effective execution is ROM.
 /// There is no default certificate or migration from an unbound filed origin.
-pub const SNAPSHOT_FORMAT: u32 = 14;
+/// **15 since the L delayed-order closure:** the carried refusal enum adds
+/// `no_commander`. A delayed persona reply must still have its actual live command
+/// hull when it lands. Format14 is refused before decoding; no migration is made.
+pub const SNAPSHOT_FORMAT: u32 = 15;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///

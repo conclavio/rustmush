@@ -9,8 +9,8 @@ use crate::unit::replacement::{
 use crate::{ComponentId, TacticalUnit};
 use mush_core::authoritative::{AuthoritativeKey, ReplayWrite};
 use mush_core::mechanics::{
-    DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistry,
-    DefinitionValidationContext, MechanicalState, OwnerId,
+    DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistry, MechanicalState,
+    OwnerId,
 };
 use mush_core::participant::{
     BoundParticipant, OwnerParticipant, OwnerPreparation, OwnerPrepareContext, ParticipantError,
@@ -180,7 +180,7 @@ fn world_ready(context: &OwnerPrepareContext<'_>, object: ObjId) -> Result<(), P
     world
         .module_state::<mush_sim::deployed::DeployedUnits>()
         .ok_or_else(refused)?;
-    mush_sim::deployed::refuse_if_deployed(world, object).map_err(|_| refused())?;
+    mush_sim::deployed::refuse_if_custodied(world, object).map_err(|_| refused())?;
     let spatial = world
         .module_state::<mush_sim::SpatialState>()
         .ok_or_else(refused)?;
@@ -207,6 +207,7 @@ fn active<'a>(
     record: &DefinitionRef,
 ) -> Result<(usize, &'a TacticalUnit, &'a UnitRecordStatus), ParticipantError> {
     if state.record_definition.as_ref() != Some(record)
+        || state.is_ic_custodied(object)
         || state.deployed.contains_key(&object)
         || state.boot_deployed.iter().any(|(id, _)| *id == object)
         || state.binding_repairs.iter().any(|r| r.object == object)
@@ -421,6 +422,7 @@ impl BoundParticipant for BoundReplacement<'_> {
 }
 
 pub(crate) trait Installer: Send + Sync + std::fmt::Debug {
+    fn descriptor(&self, record: &DefinitionRef) -> Result<DefinitionDescriptor, ModError>;
     fn register(&self, reg: &mut Registrar<'_>, record: &DefinitionRef) -> Result<(), ModError>;
     fn loaded(&self, ctx: &ModuleCtx<'_>) -> Result<(), ModError>;
 }
@@ -441,9 +443,8 @@ impl<P: ReplacementPolicy> std::fmt::Debug for Install<P> {
     }
 }
 impl<P: ReplacementPolicy> Installer for Install<P> {
-    fn register(&self, reg: &mut Registrar<'_>, record: &DefinitionRef) -> Result<(), ModError> {
-        if reg.module() != NS
-            || self.action.key().kind.as_str() != "action"
+    fn descriptor(&self, record: &DefinitionRef) -> Result<DefinitionDescriptor, ModError> {
+        if self.action.key().kind.as_str() != "action"
             || self.roots.is_empty()
             || self.roots.len() > MAX_REPLACEMENT_ROOTS
             || self.roots.iter().any(|r| r.key().kind.as_str() != "unit")
@@ -461,21 +462,13 @@ impl<P: ReplacementPolicy> Installer for Install<P> {
         let descriptor = DefinitionDescriptor::new(DefinitionKind::new("owner_participant").map_err(bad)?,
             DefinitionId::new("component_replacement").map_err(bad)?, 1,
             serde_json::json!({"format":1,"component":self.component,"roots":self.roots,"action":self.action,"record":record,"intact_incoming":true})).map_err(bad)?.with_references(refs.clone());
-        let expected = descriptor.payload().clone();
-        reg.definition_validator(
-            DefinitionKind::new("owner_participant").map_err(bad)?,
-            move |ctx: &DefinitionValidationContext<'_>| {
-                if ctx.definition().payload() != &expected
-                    || ctx.definition().references() != refs.as_slice()
-                {
-                    return Err("replacement binding differs".into());
-                }
-                for reference in &refs {
-                    ctx.get_exact(reference).map_err(|e| e.to_string())?;
-                }
-                Ok(())
-            },
-        )?;
+        Ok(descriptor)
+    }
+    fn register(&self, reg: &mut Registrar<'_>, record: &DefinitionRef) -> Result<(), ModError> {
+        if reg.module() != NS {
+            return Err(bad("replacement owner differs"));
+        }
+        let descriptor = self.descriptor(record)?;
         let definition = reg.definition(descriptor)?;
         reg.owner_participant(
             definition,

@@ -146,8 +146,8 @@ pub struct LineRecord {
 
 /// Initial combat lines use exact canonical schema equality. Source, saved
 /// values, presets, rules, declaration and interpreter ABI belong to revision
-/// or rating identities. Later compatible-update admission must deliberately
-/// define its permitted schema changes; this initial-only codec does not.
+/// or rating identities. The closed compatible-update producer requires this
+/// exact digest; this helper never authorizes a schema migration.
 pub fn schema_line_digest(
     envelope: &crate::Envelope,
 ) -> Result<DefinitionDigest, PublicationError> {
@@ -202,10 +202,10 @@ impl Record for LineRecord {
         self.id.key()
     }
     fn validate(&self) -> Result<(), PublicationError> {
-        version(self.format)?;
-        // This registered schema is the initial original-filing cut. A later
-        // revision producer must extend the audited schema deliberately.
-        if self.next_sequence != 2 {
+        if !matches!((self.format, self.next_sequence), (1, 2))
+            && !(self.format == 2
+                && (3..=crate::MAX_RECORDS as u64 + 2).contains(&self.next_sequence))
+        {
             return Err(PublicationError::Invalid);
         }
         Ok(())
@@ -272,10 +272,13 @@ impl Record for FiledRecord {
         self.content
             .encode()
             .map_err(|_| PublicationError::Invalid)?;
+        let sequence = self.content.position().sequence.get();
         if !matches!(
-            (self.format, self.content.parent().is_some()),
-            (1, false) | (2, true)
-        ) || self.content.position().sequence.get() != 1
+            (self.format, self.content.parent().is_some(), sequence),
+            (1, false, 1) | (2, true, 1)
+        ) && !(self.format == 3
+            && self.content.parent().is_none()
+            && (2..=crate::MAX_RECORDS as u64 + 1).contains(&sequence))
         {
             return Err(PublicationError::Invalid);
         }
