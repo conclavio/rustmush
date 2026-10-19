@@ -808,3 +808,93 @@ fn house_and_historical_personal_purchases_register_without_replacing_protocols(
 
 #[path = "pending_tests.rs"]
 mod pending;
+
+fn house_renewal_policy() -> Result<mush_market::mind_house_renewal::RenewalPolicy, ModError> {
+    let house = house_policy()?;
+    Ok(mush_market::mind_house_renewal::RenewalPolicy {
+        registry: house.registry,
+        venue: None,
+        offer_ic_seconds: 600,
+    })
+}
+#[test]
+fn house_renewal_requires_explicit_active_purchase_and_all_three_owners() -> TestResult {
+    assert!(
+        prepare(CommerceMode::Initialize)?
+            .with_house_mind_renewals(house_renewal_policy()?)
+            .is_err()
+    );
+    assert!(
+        prepare(CommerceMode::Active)?
+            .with_house_mind_renewals(house_renewal_policy()?)
+            .is_err()
+    );
+    let ordinary = prepare(CommerceMode::Active)?
+        .with_house_filings()?
+        .with_house_minds(house_policy()?)?;
+    assert!(!has(
+        &house_engine(&ordinary, true)?,
+        "market",
+        "action",
+        "draft_house_mind_renewal"
+    ));
+    let selected = ordinary.with_house_mind_renewals(house_renewal_policy()?)?;
+    assert!(house_engine(&selected, false).is_err());
+    let actual = house_engine(&selected, true)?;
+    for id in [
+        "draft_house_mind_renewal",
+        "fund_house_mind_renewal",
+        "settle_house_mind_renewal",
+        "refund_house_mind_renewal",
+        "close_house_mind_renewal",
+    ] {
+        assert!(has(&actual, "market", "action", id));
+    }
+    assert!(!has(
+        &actual,
+        "market",
+        "action",
+        "close_house_mind_renewal_service"
+    ));
+    assert!(has(&actual, "roll", "owner_read", "house_mind_renewal"));
+    assert!(
+        selected
+            .with_house_mind_renewals(house_renewal_policy()?)
+            .is_err()
+    );
+    Ok(())
+}
+#[test]
+fn house_renewal_service_is_optional_and_retains_exact_purchase_refs() -> TestResult {
+    assert!(
+        prepare(CommerceMode::Active)?
+            .with_house_mind_renewal_service()
+            .is_err()
+    );
+    let selected = prepare(CommerceMode::Active)?
+        .with_house_filings()?
+        .with_house_minds(house_policy()?)?
+        .with_house_mind_renewals(house_renewal_policy()?)?
+        .with_house_mind_renewal_service()?;
+    let actual = house_engine(&selected, true)?;
+    let definitions = actual.registry.definitions().ok_or("definitions")?;
+    let house = selected.house_purchases.as_ref().ok_or("house")?;
+    let renewal = selected.house_renewals.as_ref().ok_or("renewal")?;
+    assert_eq!(house.participants(), renewal.participants());
+    for reference in renewal
+        .actions()?
+        .into_iter()
+        .chain(house.purchase_actions(mush_roll::commerce::house_purchase::HouseProtocol::HouseV1)?)
+    {
+        assert!(definitions.get_exact(&reference).is_ok());
+    }
+    assert!(has(
+        &actual,
+        "market",
+        "action",
+        "close_house_mind_renewal_service"
+    ));
+    assert!(!has(&actual, "market", "action", "draft_mind_renewal"));
+    assert!(selected.with_house_mind_renewal_service().is_err());
+    Ok(())
+}

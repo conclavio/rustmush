@@ -186,3 +186,4 @@ pub use trade::{
 };
 
 pub mod mind_house;
+pub mod mind_house_renewal;

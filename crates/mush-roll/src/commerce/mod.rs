@@ -478,3 +478,5 @@ mod bootstrap_tests;
 mod filing_tests;
 
 pub mod house_purchase;
+
+pub mod house_renewal;

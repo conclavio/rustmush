@@ -75,6 +75,12 @@ pub struct FoldState {
         skip_serializing_if = "crate::managed_renewal::receipt::RenewalReceiptAudit::uninitialized"
     )]
     pub(crate) renewal_receipts: crate::managed_renewal::receipt::RenewalReceiptAudit,
+    /// Separate renewal provenance; old checkpoints retain exact omission.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_house_renewal::receipt::RenewalReceiptAudit::uninitialized"
+    )]
+    pub(crate) house_renewal_receipts: crate::managed_house_renewal::receipt::RenewalReceiptAudit,
     /// The last journal sequence folded, or `None` before any.
     pub covered_seq: Option<u64>,
     /// Per account, the sum of every journal line (`i128`, so an overflow past
@@ -129,6 +135,7 @@ impl FoldState {
             .observe_with_pending(tx, &self.charter_pending_receipts);
         self.purchase_receipts.observe(tx);
         self.renewal_receipts.observe(tx);
+        self.house_renewal_receipts.observe(tx);
         let mut touched: BTreeSet<AccountId> = BTreeSet::new();
         for line in &tx.lines {
             *self.running.entry(line.account).or_insert(0) += line.delta.widen();

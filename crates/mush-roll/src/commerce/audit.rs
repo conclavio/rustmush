@@ -287,6 +287,47 @@ pub(crate) fn audit_and_open_pending_configured(
     registry: Option<&dyn super::rating::registration::Installer>,
     pending_charters: bool,
 ) -> Result<(), PublicationError> {
+    audit_and_open_house_renewal_configured(
+        ctx,
+        families,
+        ratings,
+        shells,
+        paid,
+        forks,
+        dependent_owners,
+        entitlements,
+        renewals,
+        update,
+        owner_qualification,
+        owner_attestations,
+        ic,
+        houses,
+        false,
+        registry,
+        pending_charters,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn audit_and_open_house_renewal_configured(
+    ctx: &mut ModuleCtx<'_>,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    shells: &ShellReservations,
+    paid: bool,
+    forks: bool,
+    dependent_owners: bool,
+    entitlements: bool,
+    renewals: bool,
+    update: Option<&mush_core::DefinitionRef>,
+    owner_qualification: bool,
+    owner_attestations: bool,
+    ic: Option<&dyn super::ic_claims::registration::Installer>,
+    houses: bool,
+    house_renewals: bool,
+    registry: Option<&dyn super::rating::registration::Installer>,
+    pending_charters: bool,
+) -> Result<(), PublicationError> {
     ctx.state_mut::<RollStore>()
         .ok_or(PublicationError::Unavailable)?
         .close_commerce_for_audit()
@@ -311,6 +352,7 @@ pub(crate) fn audit_and_open_pending_configured(
             update,
             owner_attestations,
             houses,
+            house_renewals,
         )?;
         super::owner_qualification::history::audit(
             ctx,
@@ -458,6 +500,7 @@ fn audit(
     update: Option<&mush_core::DefinitionRef>,
     owner_attestations: bool,
     houses: bool,
+    house_renewals: bool,
 ) -> Result<(), PublicationError> {
     let deployment = read(ctx, &f.deployment, "registry".into())?;
     if scan(ctx, &f.deployment, |_| Ok(()))? != 1 {
@@ -629,7 +672,7 @@ fn audit(
         Ok(())
     })?;
     let owner_licences = licences.count;
-    let paid_roots = super::paid_audit::audit_with_houses(
+    let paid_roots = super::paid_audit::audit_with_house_renewals(
         ctx,
         roll,
         f,
@@ -638,6 +681,7 @@ fn audit(
         entitlements,
         renewals,
         houses,
+        house_renewals,
         |id| licences.observe(id),
     )?;
     lines.verify(deployment.next_line)?;
@@ -766,7 +810,9 @@ fn audit(
                 }
                 operation.parent
             }
-            RootAnchor::PaidOperation(_) | RootAnchor::RenewalOperation(_) => {
+            RootAnchor::PaidOperation(_)
+            | RootAnchor::RenewalOperation(_)
+            | RootAnchor::HouseRenewalOperation(_) => {
                 *paid_roots.get(&anchor).ok_or(PublicationError::Missing)?
             }
             RootAnchor::Term(_, _) if paid_roots.contains_key(&anchor) => {

@@ -34,6 +34,7 @@ pub(crate) enum RootRequest {
     Entitlement(super::entitlement::roots::EntitlementRoots),
     House(super::house_purchase::roots::HouseRoots),
     Renewal(super::renewal::roots::RenewalRoots),
+    HouseRenewal(super::house_renewal::roots::RenewalRoots),
     AuthoredFork(super::authored_fork::AuthoredFork),
     Retirement(super::authored_retirement::Retirement),
     Withdrawal(super::withdrawal::Withdrawal),
@@ -59,6 +60,7 @@ impl RootRequest {
             Self::Entitlement(request) => request.commit(),
             Self::House(request) => request.commit(),
             Self::Renewal(request) => request.commit(),
+            Self::HouseRenewal(request) => request.commit(),
             Self::AuthoredFork(request) => request.commit(),
             Self::Retirement(request) => request.commit(),
             Self::Withdrawal(request) => request.commit(),
@@ -107,6 +109,7 @@ pub(crate) struct RootPatch {
     entitlement: Option<super::entitlement::roots::EntitlementFence>,
     house: Option<super::house_purchase::roots::HouseFence>,
     renewal: Option<super::renewal::roots::RenewalFence>,
+    house_renewal: Option<super::house_renewal::roots::RenewalFence>,
     dependent: Option<super::dependent_filing::FilingFence>,
     update: Option<super::line_update::publication::UpdateFence>,
     marked: Option<super::marked_rating::AdmissionFence>,
@@ -257,6 +260,16 @@ impl OwnerParticipant for RootParticipant {
             }
             _ => None,
         };
+        let house_renewal = match &request {
+            RootRequest::HouseRenewal(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
         let registry_recall = match &request {
             RootRequest::RegistryRecall(request) => {
                 request
@@ -396,6 +409,12 @@ impl OwnerParticipant for RootParticipant {
             RootRequest::Renewal(request) => {
                 (state.prepare_renewal_roots(request).map_err(refusal)?, None)
             }
+            RootRequest::HouseRenewal(request) => (
+                state
+                    .prepare_house_renewal_roots(request)
+                    .map_err(refusal)?,
+                None,
+            ),
             RootRequest::OwnerAttestation(request) => (
                 state
                     .prepare_owner_attestation_roots(request)
@@ -497,6 +516,7 @@ impl OwnerParticipant for RootParticipant {
                 entitlement,
                 house,
                 renewal,
+                house_renewal,
                 dependent,
                 update,
                 marked,
@@ -551,6 +571,11 @@ impl OwnerParticipant for RootParticipant {
                 .map_err(|_| ParticipantError::Authority)?;
         }
         if let Some(fence) = &patch.renewal {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
+        if let Some(fence) = &patch.house_renewal {
             fence
                 .check(context)
                 .map_err(|_| ParticipantError::Authority)?;
@@ -728,6 +753,7 @@ impl OwnerParticipant for RootParticipant {
                     | RootAnchor::UpdateOperation(_)
                     | RootAnchor::PaidOperation(_)
                     | RootAnchor::RenewalOperation(_)
+                    | RootAnchor::HouseRenewalOperation(_)
                     | RootAnchor::DraftRetirement(_, _)
                     | RootAnchor::CharterPendingOffer(_, _)
                     | RootAnchor::CharterPendingFunding(_, _)

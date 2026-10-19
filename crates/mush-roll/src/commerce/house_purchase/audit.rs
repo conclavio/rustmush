@@ -160,12 +160,21 @@ pub(crate) fn audit(
         Ok(())
     })?;
     scan(ctx, &f.house_economics, |row| {
-        let birth = read(ctx, &f.house_allocations, row.operation().to_hex())?;
-        if row.generation().get() != 1
-            || !matches!(birth.phase, PurchasePhase::Granted { .. })
-            || &birth.economics != row
-        {
-            return Err(PublicationError::Mismatch);
+        if row.generation().get() == 1 {
+            let birth = read(ctx, &f.house_allocations, row.operation().to_hex())?;
+            if !matches!(birth.phase, PurchasePhase::Granted { .. }) || &birth.economics != row {
+                return Err(PublicationError::Mismatch);
+            }
+        } else {
+            let operation = read(ctx, &f.house_renewal_operations, row.operation().to_hex())?;
+            let licence = read(ctx, &f.paid_licences, row.licence().key())?;
+            let birth = read(ctx, &f.house_allocations, licence.operation().to_hex())?;
+            if operation.granted_rows()?.2 != *row
+                || !operation.binding().matches_birth(licence)
+                || operation.binding().issuer() != birth.issuer()
+            {
+                return Err(PublicationError::Mismatch);
+            }
         }
         Ok(())
     })?;

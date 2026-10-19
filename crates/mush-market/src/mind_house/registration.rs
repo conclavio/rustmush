@@ -19,10 +19,28 @@ pub(crate) fn register(
     validators_registered: bool,
     policy_registered: bool,
 ) -> Result<Families, ModError> {
+    register_with_renewal_definitions(
+        reg,
+        config,
+        gate,
+        validators_registered,
+        policy_registered,
+        &[],
+    )
+}
+pub(crate) fn register_with_renewal_definitions(
+    reg: &mut Registrar<'_>,
+    config: &HouseConfig,
+    gate: Arc<dyn crate::VenueGate>,
+    validators_registered: bool,
+    policy_registered: bool,
+    renewal_definitions: &[mush_core::mechanics::DefinitionDescriptor],
+) -> Result<Families, ModError> {
     if reg.module() != crate::NS {
         return Err(error("entitlement providers are Market owned"));
     }
-    let declarations = config.declarations()?;
+    let mut declarations = config.declarations()?;
+    declarations.extend_from_slice(renewal_definitions);
     for kind in ["action", "outcome", "entitlement_policy"] {
         if (validators_registered && kind != "entitlement_policy")
             || (policy_registered && kind == "entitlement_policy")

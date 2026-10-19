@@ -53,6 +53,7 @@ pub struct CommerceConfig {
     entitlements: Option<EntitlementRegistration>,
     house_purchases: Option<HouseRegistration>,
     renewals: Option<RenewalRegistration>,
+    house_renewals: Option<HouseRenewalRegistration>,
     ic: Option<std::sync::Arc<dyn super::ic_claims::registration::Installer>>,
 }
 #[derive(Clone, Debug)]
@@ -82,6 +83,13 @@ struct HouseRegistration {
 #[derive(Clone, Debug)]
 struct RenewalRegistration {
     writer: super::renewal::writer::RenewalWriter,
+    participants: super::purchase::PurchaseParticipants,
+    actions: [DefinitionRef; 5],
+    service_close: Option<DefinitionRef>,
+}
+#[derive(Clone, Debug)]
+struct HouseRenewalRegistration {
+    writer: super::house_renewal::writer::RenewalWriter,
     participants: super::purchase::PurchaseParticipants,
     actions: [DefinitionRef; 5],
     service_close: Option<DefinitionRef>,
@@ -129,6 +137,7 @@ impl CommerceConfig {
             entitlements: None,
             house_purchases: None,
             renewals: None,
+            house_renewals: None,
             ic: None,
         })
     }
@@ -505,6 +514,31 @@ impl CommerceConfig {
         Ok(self)
     }
 
+    /// Explicit issuer-bound House renewal; current purchase history remains immutable.
+    pub fn with_house_mind_renewals(
+        mut self,
+        writer: super::house_renewal::writer::RenewalWriter,
+        participants: super::purchase::PurchaseParticipants,
+        actions: [DefinitionRef; 5],
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active
+            || self.house_purchases.is_none()
+            || self.house_renewals.is_some()
+        {
+            return Err(ModError::msg(
+                "renewal requires one Active house purchase composition",
+            ));
+        }
+        super::house_renewal::protocol::validate_refs(&self.manifest, &participants, &actions)?;
+        self.house_renewals = Some(HouseRenewalRegistration {
+            writer,
+            participants,
+            actions,
+            service_close: None,
+        });
+        Ok(self)
+    }
+
     /// Optional exact registered service, without changing old five-action config.
     pub fn with_mind_renewal_service(mut self, action: DefinitionRef) -> Result<Self, ModError> {
         let r = self
@@ -514,6 +548,28 @@ impl CommerceConfig {
         if r.service_close.is_some()
             || action
                 != super::renewal::protocol::service_reference(&self.manifest, &r.participants)?
+        {
+            return Err(ModError::msg("renewal service composition differs"));
+        }
+        r.service_close = Some(action);
+        Ok(self)
+    }
+
+    /// Optional bounded service for genuine House offers.
+    pub fn with_house_mind_renewal_service(
+        mut self,
+        action: DefinitionRef,
+    ) -> Result<Self, ModError> {
+        let r = self
+            .house_renewals
+            .as_mut()
+            .ok_or_else(|| ModError::msg("renewal service requires renewals"))?;
+        if r.service_close.is_some()
+            || action
+                != super::house_renewal::protocol::service_reference(
+                    &self.manifest,
+                    &r.participants,
+                )?
         {
             return Err(ModError::msg("renewal service composition differs"));
         }
@@ -744,6 +800,7 @@ pub(crate) struct CommerceRegistration {
     entitlements: bool,
     house_purchases: bool,
     renewals: bool,
+    house_renewals: bool,
     forks: bool,
     dependent_owners: bool,
 }
@@ -905,6 +962,15 @@ pub(crate) fn register(
                     .is_some_and(|r| r.service_close.is_some()),
             )?);
         }
+        if config.house_renewals.is_some() {
+            declarations.push(super::house_renewal::reader::configured_descriptor(
+                &config.manifest,
+                config
+                    .house_renewals
+                    .as_ref()
+                    .is_some_and(|r| r.service_close.is_some()),
+            )?);
+        }
         reg.definition_validator(
             DefinitionKind::new("owner_read").map_err(error)?,
             move |ctx: &DefinitionValidationContext<'_>| {
@@ -1011,6 +1077,19 @@ pub(crate) fn register(
                 config.compatibility.clone(),
                 config
                     .renewals
+                    .as_ref()
+                    .is_some_and(|r| r.service_close.is_some()),
+            )?;
+        }
+        if config.house_renewals.is_some() {
+            super::house_renewal::reader::register(
+                reg,
+                families.clone(),
+                ratings.clone(),
+                &config.manifest,
+                config.compatibility.clone(),
+                config
+                    .house_renewals
                     .as_ref()
                     .is_some_and(|r| r.service_close.is_some()),
             )?;
@@ -1157,6 +1236,21 @@ pub(crate) fn register(
         )?;
     }
     if let Some(renewal) = &config.renewals {
+        if renewal.participants.retention() != &root_definition {
+            return Err(ModError::msg("renewal retention definition differs"));
+        }
+        root_actions.extend(renewal.actions.iter().cloned());
+        root_actions.extend(renewal.service_close.iter().cloned());
+        renewal.writer.install(
+            reg,
+            families.clone(),
+            config.manifest.clone(),
+            renewal.participants.clone(),
+            renewal.actions.clone(),
+            renewal.service_close.clone(),
+        )?;
+    }
+    if let Some(renewal) = &config.house_renewals {
         if renewal.participants.retention() != &root_definition {
             return Err(ModError::msg("renewal retention definition differs"));
         }
@@ -1565,6 +1659,7 @@ pub(crate) fn register(
         entitlements: config.entitlements.is_some(),
         house_purchases: config.house_purchases.is_some(),
         renewals: config.renewals.is_some(),
+        house_renewals: config.house_renewals.is_some(),
         forks: fork.is_some(),
         dependent_owners: config.dependent_owners,
     })
@@ -1618,7 +1713,7 @@ impl CommerceRegistration {
             .map_err(error)?;
         }
         match self.mode {
-            CommerceMode::Active => super::audit::audit_and_open_pending_configured(
+            CommerceMode::Active => super::audit::audit_and_open_house_renewal_configured(
                 ctx,
                 &self.families,
                 &self.ratings,
@@ -1633,6 +1728,7 @@ impl CommerceRegistration {
                 self.owner_attestations,
                 self.ic.as_deref(),
                 self.house_purchases,
+                self.house_renewals,
                 registry,
                 self.pending_charters.is_some(),
             )

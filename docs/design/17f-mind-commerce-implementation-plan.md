@@ -557,12 +557,48 @@ personal/House coexistence and independent service closure. The pure Safe Conduc
 financial layer now has strict versioned terms, checked minor-unit arithmetic and
 same-generation WorldIc term/claim-delay calculations. Its dual price illustration
 is conditional; it is not an eligibility proof, quote acceptance, premium, policy,
-liability reservation or claim service. Five new tests are prepared, not yet run.
+liability reservation or claim service. The five financial/window tests pass in N82; this is arithmetic evidence, not a bound policy.
 Paid-resale IC capture has a separate exact format 3 carrying only paid ownership;
 format 2 remains charter ownership and format 1 remains unchanged. This Core
 shape and its prepared tests do not substitute for actual resale issuance/history.
-The full House renewal owner path, paid resale and actual Industry refit remain
-under implementation/review. None of N79–N81 ran their runtime stages.
+The full House renewal owner path has now passed its assigned source reviews and
+is integrated for the next runtime candidate. Paid resale and actual Industry
+refit remain under implementation/review. None of N79–N81 ran runtime stages.
+
+Latest fetched main `b0d036d324b987ae280dfe9b8d388b5cc71f4133` merged cleanly
+as `1457eba89c0f97c4281ccb45566969ded472c7bb`: doc 19 A8a's versioned goods,
+parent-frame moon passage and throttle bisection updates remain in the M7 tree.
+N82's immutable tree `313987d7848c00e79107d92aa37f534b0d87ee2b` includes that
+merge and the reviewed charter PendingTransfer term-window correction. The
+correction uses Roll's actual bounded interval rules: issue during Grace is
+valid history and never shifts any date or revives current admission. N82
+compilation and five underwriting arithmetic/window checks pass; its remaining
+runtime gates are still running at this checkpoint. This is not final evidence.
+
+Subsequent reviewed source packages, not included in N82, add:
+
+- The actual House renewal E4/Roll/Market providers, native contract/hold inverse
+  checks, historical cleanup and optional service lifecycle, retaining distinct
+  captured purchase terms and current renewal terms. Its genuine child uses the
+  real paid House purchase and exercises curator departure, retry, service close,
+  terminal hold retention, restart and captured IC checkout. Eight Roll, eight
+  Market and two composition tests plus the genuine continuation await execution.
+- A bounded immutable underwriting product payload binding real Org/scope/account
+  identifier domains, adjudicator, complete financial terms, exact hull/zone
+  definitions and exact charter/line/filed revision/certificate/role-trial/profile
+  references. It requires an explicit recorded-IC-destruction loss rule, excludes
+  OOC elimination and journey anomalies, and requires same-transition wreck title
+  on payout. This payload still grants no publication, eligibility, money or host
+  authority. Five structural tests await execution. The actual CREDIT example
+  uses its two-decimal scale: 10,000cr insured value, 100cr ordinary premium,
+  conditional 90cr qualified premium and 8,000cr reserved maximum payout.
+
+Underwriting Bind is a separate E4/Roll transition after acknowledged four-owner
+IC Open and before a genuine host releases covered departure. Its private host
+permit must be retained through Unknown; unavailable host cannot charge. Cover
+starts at Bind, never retroactively at Open. Full funded binding, immutable
+loss/close evaluation, delayed payout and liability release remain implementation
+obligations; the product/math packages do not satisfy those gates.
 
 The L R4 release-notice correction passes in N56: a side lead's fully offered
 whole-squad RELEASE also removes the persona commander's watch, preventing a
@@ -602,8 +638,9 @@ Registry recall/revocation and production IC claim/close are implemented with
 focused checks; their combined genuine-story and final acceptance gates remain.
 Automatic re-conformance, current certificate selection and the scoped house
 catalogue reader now have reviewed implementations awaiting their combined
-runtime evidence. Remaining implementation includes paid licence resale,
-House renewal and underwriting, actual governed refit and
+runtime evidence. House renewal now awaits its combined runtime and genuine-story
+evidence. Remaining implementation includes paid licence resale and underwriting,
+actual governed refit and
 production activation. Reviewed checkout and delivery need their combined runtime
 and genuine-story acceptance.
 The acknowledged Core output reservation and certified Origin producer are
@@ -612,8 +649,8 @@ prerequisites, not completed manufacturing or usable installed hardware.
 These are M7 obligations. Only integration with an unavailable live IC sortie
 or convoy driver is conditional; its production services remain required.
 M8's contraband and NPC procurement programme remains separate. Current parallel
-work covers actual House renewal, paid-licence holder transfer and Industry
-refit, alongside underwriting and combined verification. The absent region caller does not waive its claim, capacity
+work covers paid-licence holder transfer and Industry refit, alongside
+underwriting and combined House renewal verification. The absent region caller does not waive its claim, capacity
 or custody owner services. Scoped fact consumers, generated client bindings,
 operator surfaces and final complete acceptance still follow their actual
 implementation. Existing partial passes and source review do not substitute

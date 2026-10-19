@@ -153,7 +153,7 @@ impl HouseConfig {
     }
     pub(super) fn quote_descriptor(
         &self,
-        protocol: HouseProtocol,
+        _protocol: HouseProtocol,
     ) -> Result<DefinitionDescriptor, ModError> {
         Ok(descriptor("action","quote_house_mind",1,serde_json::json!({"format":1,"protocol":"house_mind_purchase_v1","transition":"quote","funding":false}))?.with_references(vec![self.manifest.clone(),self.policy_ref()?]))
     }

@@ -15,11 +15,17 @@ use mush_roll::commerce::house_purchase::{
 use mush_roll::commerce::{LicenceId, purchase::PurchasePhase};
 use std::collections::BTreeSet;
 
+#[path = "house_renewal_integration_tests.rs"]
+mod renewal;
+type RenewalShared = Arc<Mutex<Option<mush_market::mind_house_renewal::RenewalConfig>>>;
+
 const FIRST: u128 = 19_000_000;
 type HouseShared = Arc<Mutex<Option<HouseConfig>>>;
 struct Roll {
+    renewals: bool,
     shared: Shared,
     house: HouseShared,
+    renewal: RenewalShared,
     inner: Option<RollModule>,
 }
 impl GameModule for Roll {
@@ -77,9 +83,37 @@ impl GameModule for Roll {
         .with_house_filings()?
         .with_house_mind_purchases(
             config.writer(),
-            participants,
+            participants.clone(),
             config.owner_actions(HouseProtocol::HouseV1)?,
         )?;
+        let commerce = if self.renewals {
+            let r = mush_market::mind_house_renewal::RenewalConfig::new(
+                &config,
+                mush_roll::commerce::house_renewal::writer::RenewalWriter::new(),
+                mush_market::mind_house_renewal::RenewalPolicy {
+                    registry: GrossRecipientCut {
+                        permille: 100,
+                        recipient: Some(Recipient {
+                            account: WalletId(1),
+                            owner: EconomicOwner::System(issuer().map_err(module_error)?),
+                        }),
+                    },
+                    venue: None,
+                    offer_ic_seconds: 600,
+                },
+            )?
+            .with_service()?;
+            let next = commerce
+                .with_house_mind_renewals(r.writer(), participants, r.actions()?)?
+                .with_house_mind_renewal_service(
+                    r.service_action()?
+                        .ok_or_else(|| ModError::msg("service"))?,
+                )?;
+            *self.renewal.lock().map_err(module_error)? = Some(r);
+            next
+        } else {
+            commerce
+        };
         self.shared.lock().map_err(module_error)?.filing = Some(commerce.initial_filing_action()?);
         *self.house.lock().map_err(module_error)? = Some(config);
         let mut inner =
@@ -108,6 +142,7 @@ impl GameModule for Roll {
 struct Economy {
     shared: Shared,
     house: HouseShared,
+    renewal: RenewalShared,
     inner: Option<EconomyModule>,
 }
 impl GameModule for Economy {
@@ -143,6 +178,18 @@ impl GameModule for Economy {
             )
             .with_house_initial_filing(commerce.house_filing_action()?)
             .with_house_mind_purchases(config.purchase_actions(HouseProtocol::HouseV1)?);
+        if let Some(r) = self.renewal.lock().map_err(module_error)?.clone() {
+            inner = inner
+                .with_house_mind_renewals(
+                    r.manifest().clone(),
+                    r.participants().ordered(),
+                    r.actions()?,
+                )
+                .with_house_mind_renewal_service(
+                    r.service_action()?
+                        .ok_or_else(|| ModError::msg("service"))?,
+                )?;
+        }
         inner.register(reg)?;
         self.inner = Some(inner);
         Ok(())
@@ -160,6 +207,7 @@ impl GameModule for Economy {
 }
 struct Market {
     house: HouseShared,
+    renewal: RenewalShared,
     inner: Option<MarketModule>,
 }
 impl GameModule for Market {
@@ -176,6 +224,9 @@ impl GameModule for Market {
         let mut inner = MarketModule::new()
             .with_venue_gate(Arc::new(Venue))
             .with_house_minds(config);
+        if let Some(r) = self.renewal.lock().map_err(module_error)?.clone() {
+            inner = inner.with_house_mind_renewals(r);
+        }
         inner.register(reg)?;
         reg.command(
             mush_core::CommandSpec {
@@ -254,8 +305,12 @@ fn revoke_curator(ctx: &mut mush_core::Ctx<'_>) -> Result<(), mush_core::CmdErro
     .map_err(|e| mush_core::CmdError::msg(e.to_string()))
 }
 fn boot(registry: &Fixture, saved: &Durable) -> TestResult<PlayerWorld> {
+    boot_options(registry, saved, false)
+}
+fn boot_options(registry: &Fixture, saved: &Durable, renewals: bool) -> TestResult<PlayerWorld> {
     let shared: Shared = Arc::new(Mutex::new(Registered::default()));
     let house: HouseShared = Arc::new(Mutex::new(None));
+    let renewal: RenewalShared = Arc::new(Mutex::new(None));
     let manifest = registry.definitions.manifest().clone();
     let mut cfg = registry.resources.config();
     cfg.enabled = true;
@@ -278,16 +333,23 @@ fn boot(registry: &Fixture, saved: &Durable) -> TestResult<PlayerWorld> {
             shared: shared.clone(),
         }),
         Box::new(Roll {
+            renewals,
+            renewal: renewal.clone(),
             shared: shared.clone(),
             house: house.clone(),
             inner: None,
         }),
         Box::new(Economy {
+            renewal: renewal.clone(),
             shared: shared.clone(),
             house: house.clone(),
             inner: None,
         }),
-        Box::new(Market { house, inner: None }),
+        Box::new(Market {
+            house,
+            renewal,
+            inner: None,
+        }),
         content()?,
     ];
     let mut engine = Engine::with_modules(saved.world()?, Registry::new(), modules)?;
@@ -815,7 +877,7 @@ fn flow(
     snapshot: &Durable,
     organization: OrgId,
     scope: OrgScopeId,
-) -> TestResult<(Durable, LicenceId)> {
+) -> TestResult<(Durable, LicenceId, Durable)> {
     let birth = one(rows(&snapshot.disk, "roll", "roll_mind_initial_filing"))?;
     let owner: LicenceId =
         serde_json::from_value(birth.get("licence").cloned().ok_or("owner licence")?)?;
@@ -987,6 +1049,12 @@ fn flow(
     let _: HouseReceiptV1 =
         serde_json::from_value(one(rows(&disk(&w), "market", "market_mind_house_receipt"))?)?;
     let granted = saved(&w);
+    let renewed = renewal::exercise(
+        registry,
+        &granted,
+        allocation.licence(),
+        owner_term.window().grace_end().get(),
+    )?;
     let _cold = boot(registry, &granted)?;
     for (owner, family) in [
         ("market", "market_mind_house_purchase"),
@@ -1072,7 +1140,7 @@ fn flow(
     selection(&mut cold, allocation.licence(), true)?;
     set_ic(&mut cold, paid.window().grace_end().get())?;
     selection(&mut cold, allocation.licence(), false)?;
-    Ok((independent, allocation.licence()))
+    Ok((independent, allocation.licence(), renewed))
 }
 pub(super) fn exercise(
     registry: &Fixture,
@@ -1085,7 +1153,8 @@ pub(super) fn exercise(
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let (granted, licence) = flow(registry, saved, organization, scope)?;
+        let (granted, licence, renewed) = flow(registry, saved, organization, scope)?;
+        renewal::checkout(registry, &renewed, licence).await?;
         checkout(registry, &granted, licence).await
     })
 }

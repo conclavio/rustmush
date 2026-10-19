@@ -48,6 +48,9 @@ pub struct MindCommerce {
     house_filing_action: Option<DefinitionRef>,
     house_purchases: Option<mush_market::mind_house::HouseConfig>,
     house_purchase_actions: Option<[DefinitionRef; 3]>,
+    house_renewals: Option<mush_market::mind_house_renewal::RenewalConfig>,
+    house_renewal_actions: Option<[DefinitionRef; 5]>,
+    house_renewal_service: Option<DefinitionRef>,
     dependent_filing_action: Option<DefinitionRef>,
     purchases: Option<OriginalPurchaseConfig>,
     entitlements: Option<mush_market::mind_entitlement::EntitlementConfig>,
@@ -95,6 +98,9 @@ impl MindCommerce {
             house_filing_action: None,
             house_purchases: None,
             house_purchase_actions: None,
+            house_renewals: None,
+            house_renewal_actions: None,
+            house_renewal_service: None,
             dependent_filing_action: None,
             purchases: None,
             entitlements: None,
@@ -103,6 +109,55 @@ impl MindCommerce {
             authored_forks: false,
             marked_registry: false,
         })
+    }
+
+    /// Explicit issuer-bound renewal offers. A host may enable the bounded
+    /// service separately; neither option accepts or pays on the buyer's behalf.
+    pub fn with_house_mind_renewals(
+        mut self,
+        policy: mush_market::mind_house_renewal::RenewalPolicy,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.house_renewals.is_some() {
+            return Err(ModError::msg(
+                "House renewals require one Active composition",
+            ));
+        }
+        let house = self
+            .house_purchases
+            .as_ref()
+            .ok_or_else(|| ModError::msg("House renewals require House purchases"))?;
+        let config = mush_market::mind_house_renewal::RenewalConfig::new(
+            house,
+            mush_roll::commerce::house_renewal::writer::RenewalWriter::new(),
+            policy,
+        )?;
+        let actions = config.actions()?;
+        self.roll = self.roll.with_house_mind_renewals(
+            config.writer(),
+            config.participants().clone(),
+            actions.clone(),
+        )?;
+        self.house_renewal_actions = Some(actions);
+        self.house_renewals = Some(config);
+        Ok(self)
+    }
+    /// Source-free offer/status and acknowledged terminal continuations.
+    pub fn with_house_mind_renewal_service(mut self) -> Result<Self, ModError> {
+        if self.house_renewal_service.is_some() {
+            return Err(ModError::msg("House renewal service already configured"));
+        }
+        let config = self
+            .house_renewals
+            .take()
+            .ok_or_else(|| ModError::msg("House renewal service requires renewals"))?
+            .with_service()?;
+        let action = config
+            .service_action()?
+            .ok_or_else(|| ModError::msg("House renewal service action"))?;
+        self.roll = self.roll.with_house_mind_renewal_service(action.clone())?;
+        self.house_renewal_service = Some(action);
+        self.house_renewals = Some(config);
+        Ok(self)
     }
 
     /// Re-conform exact retained filed revisions under the current Registry.
@@ -554,8 +609,23 @@ impl MindCommerce {
             }
             None => module,
         };
-        match &self.house_purchase_actions {
+        let module = match &self.house_purchase_actions {
             Some(actions) => module.with_house_mind_purchases(actions.clone()),
+            None => module,
+        };
+        let module = match (&self.house_renewals, &self.house_renewal_actions) {
+            (Some(config), Some(actions)) => module.with_house_mind_renewals(
+                config.manifest().clone(),
+                [
+                    config.participants().economy().clone(),
+                    config.participants().retention().clone(),
+                ],
+                actions.clone(),
+            ),
+            _ => module,
+        };
+        match &self.house_renewal_service {
+            Some(action) => module.with_house_mind_renewal_service(action.clone()),
             None => module,
         }
     }
@@ -572,8 +642,12 @@ impl MindCommerce {
             Some(config) => module.with_mind_entitlements(config.clone()),
             None => module,
         };
-        match &self.house_purchases {
+        let module = match &self.house_purchases {
             Some(config) => module.with_house_minds(config.clone()),
+            None => module,
+        };
+        match &self.house_renewals {
+            Some(config) => module.with_house_mind_renewals(config.clone()),
             None => module,
         }
     }

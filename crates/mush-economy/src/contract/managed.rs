@@ -48,6 +48,9 @@ enum ManagedWire {
     MindRenewalOfferV1 {
         renewal: RenewalMarkerV1,
     },
+    HouseMindRenewalOfferV1 {
+        renewal: crate::managed_house_renewal::RenewalMarkerV1,
+    },
     MindCharterTransferV1 {
         pending: crate::managed_charter_transfer::CharterPendingMarkerV1,
     },
@@ -100,6 +103,11 @@ impl TryFrom<ManagedWire> for ManagedConsent {
                     .map_err(|_| "invalid pending charter consent")?;
             }
             ManagedWire::MindRenewalOfferV1 { renewal } => {
+                renewal
+                    .validate()
+                    .map_err(|_| "invalid mind renewal offer consent")?;
+            }
+            ManagedWire::HouseMindRenewalOfferV1 { renewal } => {
                 renewal
                     .validate()
                     .map_err(|_| "invalid mind renewal offer consent")?;
@@ -182,6 +190,12 @@ impl ManagedConsent {
         Self::try_from(ManagedWire::MindRenewalOfferV1 { renewal })
             .map_err(mush_core::participant::ParticipantError::refused)
     }
+    pub(crate) fn house_renewal_offer(
+        renewal: crate::managed_house_renewal::RenewalMarkerV1,
+    ) -> Result<Self, mush_core::participant::ParticipantError> {
+        Self::try_from(ManagedWire::HouseMindRenewalOfferV1 { renewal })
+            .map_err(mush_core::participant::ParticipantError::refused)
+    }
     pub(crate) fn charter_pending(
         pending: crate::managed_charter_transfer::CharterPendingMarkerV1,
     ) -> Result<Self, mush_core::participant::ParticipantError> {
@@ -199,6 +213,14 @@ impl ManagedConsent {
     pub fn renewal_offer_marker(&self) -> Option<&RenewalMarkerV1> {
         match &self.wire {
             ManagedWire::MindRenewalOfferV1 { renewal } => Some(renewal),
+            _ => None,
+        }
+    }
+    pub fn house_renewal_offer_marker(
+        &self,
+    ) -> Option<&crate::managed_house_renewal::RenewalMarkerV1> {
+        match &self.wire {
+            ManagedWire::HouseMindRenewalOfferV1 { renewal } => Some(renewal),
             _ => None,
         }
     }
@@ -223,6 +245,7 @@ impl ManagedConsent {
             | ManagedWire::MindEntitlement { operation, .. }
             | ManagedWire::HouseMind { operation, .. } => *operation,
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.operation(),
+            ManagedWire::HouseMindRenewalOfferV1 { renewal } => renewal.operation(),
             ManagedWire::MindCharterTransferV1 { pending } => pending.operation(),
         }
     }
@@ -233,6 +256,7 @@ impl ManagedConsent {
             | ManagedWire::MindEntitlement { effect, .. }
             | ManagedWire::HouseMind { effect, .. } => effect,
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.effect(),
+            ManagedWire::HouseMindRenewalOfferV1 { renewal } => renewal.effect(),
             ManagedWire::MindCharterTransferV1 { pending } => pending.effect(),
         }
     }
@@ -245,6 +269,7 @@ impl ManagedConsent {
             | ManagedWire::MindEntitlement { quote, .. }
             | ManagedWire::HouseMind { quote, .. } => *quote,
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.basis().prior_quote,
+            ManagedWire::HouseMindRenewalOfferV1 { renewal } => renewal.basis().prior_quote,
             ManagedWire::MindCharterTransferV1 { pending } => pending.offer(),
         }
     }
@@ -255,6 +280,7 @@ impl ManagedConsent {
             | ManagedWire::MindEntitlement { quote_digest, .. }
             | ManagedWire::HouseMind { quote_digest, .. } => *quote_digest,
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.basis().prior_quote_digest,
+            ManagedWire::HouseMindRenewalOfferV1 { renewal } => renewal.basis().prior_quote_digest,
             ManagedWire::MindCharterTransferV1 { pending } => pending.offer_digest(),
         }
     }
@@ -265,6 +291,7 @@ impl ManagedConsent {
             | ManagedWire::MindEntitlement { product_digest, .. }
             | ManagedWire::HouseMind { product_digest, .. } => *product_digest,
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.basis().product_digest,
+            ManagedWire::HouseMindRenewalOfferV1 { renewal } => renewal.basis().product_digest,
             ManagedWire::MindCharterTransferV1 { pending } => pending.terms_digest(),
         }
     }
@@ -314,6 +341,7 @@ fn closed_money_namespace(namespace: &str) -> bool {
     namespace == crate::managed_charter_transfer::NAMESPACE
         || crate::managed_purchase::closed_namespace(namespace)
         || namespace == crate::managed_renewal::NAMESPACE
+        || namespace == crate::managed_house_renewal::NAMESPACE
         || namespace == crate::registry_filing::update::receipt::NAMESPACE
         || namespace == crate::registry_filing::charter_transfer::receipt::NAMESPACE
         || namespace == crate::core_integration::NAMESPACE

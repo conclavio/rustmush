@@ -145,6 +145,7 @@ impl InitialFilingOutput {
 pub struct InitialFilingParticipant {
     policy: InitialFilingPolicy,
     renewals: Option<crate::managed_renewal::bridge::Configuration>,
+    house_renewals: Option<crate::managed_house_renewal::bridge::Configuration>,
     compatible_update: Option<mush_core::DefinitionRef>,
     charter_transfer: Option<mush_core::DefinitionRef>,
     core_integration: Option<crate::core_integration::CoreIntegrationConfig>,
@@ -155,6 +156,7 @@ impl InitialFilingParticipant {
         Self {
             policy,
             renewals: None,
+            house_renewals: None,
             compatible_update: None,
             charter_transfer: None,
             core_integration: None,
@@ -261,6 +263,39 @@ pub(crate) fn register_with_house_purchases(
     core_integration: Option<&crate::core_integration::CoreIntegrationConfig>,
     charter_pending: Option<&crate::managed_charter_transfer::CharterPendingConfig>,
     house_purchases: Option<&[mush_core::DefinitionRef; 3]>,
+) -> Result<(), mush_core::ModError> {
+    register_with_house_renewals(
+        reg,
+        policy,
+        action,
+        purchases,
+        entitlements,
+        house_action,
+        dependent_action,
+        renewals,
+        compatible_update,
+        charter_transfer,
+        core_integration,
+        charter_pending,
+        house_purchases,
+        None,
+    )
+}
+pub(crate) fn register_with_house_renewals(
+    reg: &mut mush_core::Registrar<'_>,
+    policy: InitialFilingPolicy,
+    action: mush_core::mechanics::DefinitionRef,
+    purchases: Option<&[mush_core::mechanics::DefinitionRef; 3]>,
+    entitlements: Option<&[[mush_core::mechanics::DefinitionRef; 3]; 2]>,
+    house_action: Option<&mush_core::mechanics::DefinitionRef>,
+    dependent_action: Option<&mush_core::mechanics::DefinitionRef>,
+    renewals: Option<&crate::managed_renewal::bridge::Configuration>,
+    compatible_update: Option<&mush_core::DefinitionRef>,
+    charter_transfer: Option<&mush_core::DefinitionRef>,
+    core_integration: Option<&crate::core_integration::CoreIntegrationConfig>,
+    charter_pending: Option<&crate::managed_charter_transfer::CharterPendingConfig>,
+    house_purchases: Option<&[mush_core::DefinitionRef; 3]>,
+    house_renewals: Option<&crate::managed_house_renewal::bridge::Configuration>,
 ) -> Result<(), mush_core::ModError> {
     use mush_core::mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionValidationContext,
@@ -401,6 +436,11 @@ pub(crate) fn register_with_house_purchases(
         actions.extend(renewals.actions.iter().cloned());
         actions.extend(renewals.service_close.iter().cloned());
     }
+    if let Some(house_renewals) = house_renewals {
+        house_renewals.validate(&definition)?;
+        actions.extend(house_renewals.actions.iter().cloned());
+        actions.extend(house_renewals.service_close.iter().cloned());
+    }
     if let Some(action) = compatible_update {
         if policy.fee.minor() <= 0
             || action.key().owner.as_str() != "roll"
@@ -452,6 +492,7 @@ pub(crate) fn register_with_house_purchases(
         InitialFilingParticipant {
             policy,
             renewals: renewals.cloned(),
+            house_renewals: house_renewals.cloned(),
             compatible_update: compatible_update.cloned(),
             charter_transfer: charter_transfer.cloned(),
             core_integration: core_integration.cloned(),
@@ -990,6 +1031,22 @@ pub enum EconomyRequest {
         operation: CommitToken,
         reason: crate::managed_renewal::UnfundedCloseReason,
     },
+    HouseRenewalDraft(crate::managed_house_renewal::RenewalOffer),
+    HouseRenewalRetry {
+        offer: crate::managed_house_renewal::RenewalOffer,
+        previous_operation: CommitToken,
+    },
+    HouseRenewalFunding(crate::managed_house_renewal::RenewalMoneyRequest),
+    HouseRenewalGrant(crate::managed_house_renewal::RenewalMoneyRequest),
+    HouseRenewalRefund(crate::managed_house_renewal::RenewalMoneyRequest),
+    HouseRenewalServiceClose {
+        operation: CommitToken,
+        reason: crate::managed_house_renewal::RenewalServiceCloseReason,
+    },
+    HouseRenewalClose {
+        operation: CommitToken,
+        reason: crate::managed_house_renewal::UnfundedCloseReason,
+    },
 }
 impl From<RegistryInitialFiling> for EconomyRequest {
     fn from(value: RegistryInitialFiling) -> Self {
@@ -1012,6 +1069,9 @@ pub enum EconomyOutput {
     RenewalOffer(crate::managed_renewal::RenewalOfferOutput),
     RenewalFunding(crate::managed_renewal::RenewalFundingOutput),
     RenewalTerminal(crate::managed_renewal::RenewalTerminalOutput),
+    HouseRenewalOffer(crate::managed_house_renewal::RenewalOfferOutput),
+    HouseRenewalFunding(crate::managed_house_renewal::RenewalFundingOutput),
+    HouseRenewalTerminal(crate::managed_house_renewal::RenewalTerminalOutput),
 }
 impl EconomyOutput {
     pub fn house_funding(
@@ -1076,6 +1136,14 @@ impl EconomyOutput {
             _ => Err(refused()),
         }
     }
+    pub fn house_renewal_offer(
+        self,
+    ) -> Result<crate::managed_house_renewal::RenewalOfferOutput, ParticipantError> {
+        match self {
+            Self::HouseRenewalOffer(output) => Ok(output),
+            _ => Err(refused()),
+        }
+    }
     pub fn renewal_funding(
         self,
     ) -> Result<crate::managed_renewal::RenewalFundingOutput, ParticipantError> {
@@ -1084,11 +1152,27 @@ impl EconomyOutput {
             _ => Err(refused()),
         }
     }
+    pub fn house_renewal_funding(
+        self,
+    ) -> Result<crate::managed_house_renewal::RenewalFundingOutput, ParticipantError> {
+        match self {
+            Self::HouseRenewalFunding(output) => Ok(output),
+            _ => Err(refused()),
+        }
+    }
     pub fn renewal_terminal(
         self,
     ) -> Result<crate::managed_renewal::RenewalTerminalOutput, ParticipantError> {
         match self {
             Self::RenewalTerminal(output) => Ok(output),
+            _ => Err(refused()),
+        }
+    }
+    pub fn house_renewal_terminal(
+        self,
+    ) -> Result<crate::managed_house_renewal::RenewalTerminalOutput, ParticipantError> {
+        match self {
+            Self::HouseRenewalTerminal(output) => Ok(output),
             _ => Err(refused()),
         }
     }
@@ -1136,6 +1220,8 @@ pub enum EconomyPatch {
     Purchase(Box<crate::managed_purchase::PurchasePatch>),
     RenewalOffer(Box<crate::managed_renewal::install::OfferPatch>),
     RenewalMoney(Box<crate::managed_renewal::money_install::RenewalMoneyPatch>),
+    HouseRenewalOffer(Box<crate::managed_house_renewal::install::OfferPatch>),
+    HouseRenewalMoney(Box<crate::managed_house_renewal::money_install::RenewalMoneyPatch>),
 }
 impl From<InitialFilingPatch> for EconomyPatch {
     fn from(value: InitialFilingPatch) -> Self {
@@ -1151,6 +1237,8 @@ pub enum BoundEconomy<'a> {
     Purchase(crate::managed_purchase::BoundPurchase<'a>),
     RenewalOffer(crate::managed_renewal::install::BoundOffer<'a>),
     RenewalMoney(crate::managed_renewal::money_install::BoundRenewalMoney<'a>),
+    HouseRenewalOffer(crate::managed_house_renewal::install::BoundOffer<'a>),
+    HouseRenewalMoney(crate::managed_house_renewal::money_install::BoundRenewalMoney<'a>),
 }
 impl BoundParticipant for BoundEconomy<'_> {
     fn apply(self) {
@@ -1161,7 +1249,9 @@ impl BoundParticipant for BoundEconomy<'_> {
             Self::CharterPending(bound) => bound.apply(),
             Self::Purchase(bound) => bound.apply(),
             Self::RenewalOffer(bound) => bound.apply(),
+            Self::HouseRenewalOffer(bound) => bound.apply(),
             Self::RenewalMoney(bound) => bound.apply(),
+            Self::HouseRenewalMoney(bound) => bound.apply(),
             Self::CoreMoney(bound) => bound.apply(),
         }
     }
@@ -1212,6 +1302,16 @@ impl InitialFilingParticipant {
         id: &str,
     ) -> Result<(), ParticipantError> {
         self.renewals
+            .as_ref()
+            .ok_or_else(refused)?
+            .require(context.action(), id)
+    }
+    fn require_house_renewal(
+        &self,
+        context: &OwnerPrepareContext<'_>,
+        id: &str,
+    ) -> Result<(), ParticipantError> {
+        self.house_renewals
             .as_ref()
             .ok_or_else(refused)?
             .require(context.action(), id)
@@ -1424,6 +1524,95 @@ impl OwnerParticipant for InitialFilingParticipant {
                 Ok(OwnerPreparation::new(
                     EconomyOutput::RenewalTerminal(output),
                     EconomyPatch::RenewalMoney(Box::new(patch)),
+                    writes,
+                ))
+            }
+            EconomyRequest::HouseRenewalDraft(request) => {
+                self.require_house_renewal(context, crate::managed_house_renewal::DRAFT_ACTION)?;
+                let (output, patch, writes) =
+                    crate::managed_house_renewal::prepare_offer(state, context, request)?;
+                Ok(OwnerPreparation::new(
+                    EconomyOutput::HouseRenewalOffer(output),
+                    EconomyPatch::HouseRenewalOffer(Box::new(patch)),
+                    writes,
+                ))
+            }
+            EconomyRequest::HouseRenewalRetry {
+                offer,
+                previous_operation,
+            } => {
+                self.require_house_renewal(context, crate::managed_house_renewal::DRAFT_ACTION)?;
+                let (output, patch, writes) = crate::managed_house_renewal::prepare_retry(
+                    state,
+                    context,
+                    offer,
+                    previous_operation,
+                )?;
+                Ok(OwnerPreparation::new(
+                    EconomyOutput::HouseRenewalOffer(output),
+                    EconomyPatch::HouseRenewalOffer(Box::new(patch)),
+                    writes,
+                ))
+            }
+            EconomyRequest::HouseRenewalServiceClose { operation, reason } => {
+                self.require_house_renewal(
+                    context,
+                    crate::managed_house_renewal::SERVICE_CLOSE_ACTION,
+                )?;
+                let (output, patch, writes) = crate::managed_house_renewal::prepare_service_close(
+                    state, context, operation, reason,
+                )?;
+                Ok(OwnerPreparation::new(
+                    EconomyOutput::HouseRenewalOffer(output),
+                    EconomyPatch::HouseRenewalOffer(Box::new(patch)),
+                    writes,
+                ))
+            }
+            EconomyRequest::HouseRenewalClose { operation, reason } => {
+                self.require_house_renewal(context, crate::managed_house_renewal::CLOSE_ACTION)?;
+                let (output, patch, writes) =
+                    crate::managed_house_renewal::prepare_close(state, context, operation, reason)?;
+                Ok(OwnerPreparation::new(
+                    EconomyOutput::HouseRenewalOffer(output),
+                    EconomyPatch::HouseRenewalOffer(Box::new(patch)),
+                    writes,
+                ))
+            }
+            EconomyRequest::HouseRenewalFunding(request) => {
+                self.require_house_renewal(context, crate::managed_house_renewal::FUND_ACTION)?;
+                let (output, patch, writes) =
+                    crate::managed_house_renewal::prepare_funding(state, context, request)?;
+                Ok(OwnerPreparation::new(
+                    EconomyOutput::HouseRenewalFunding(output),
+                    EconomyPatch::HouseRenewalMoney(Box::new(patch)),
+                    writes,
+                ))
+            }
+            EconomyRequest::HouseRenewalGrant(request) => {
+                self.require_house_renewal(context, crate::managed_house_renewal::GRANT_ACTION)?;
+                let (output, patch, writes) = crate::managed_house_renewal::prepare_terminal(
+                    state,
+                    context,
+                    request,
+                    crate::managed_house_renewal::RenewalOutcome::Granted,
+                )?;
+                Ok(OwnerPreparation::new(
+                    EconomyOutput::HouseRenewalTerminal(output),
+                    EconomyPatch::HouseRenewalMoney(Box::new(patch)),
+                    writes,
+                ))
+            }
+            EconomyRequest::HouseRenewalRefund(request) => {
+                self.require_house_renewal(context, crate::managed_house_renewal::REFUND_ACTION)?;
+                let (output, patch, writes) = crate::managed_house_renewal::prepare_terminal(
+                    state,
+                    context,
+                    request,
+                    crate::managed_house_renewal::RenewalOutcome::Refunded,
+                )?;
+                Ok(OwnerPreparation::new(
+                    EconomyOutput::HouseRenewalTerminal(output),
+                    EconomyPatch::HouseRenewalMoney(Box::new(patch)),
                     writes,
                 ))
             }
@@ -1662,6 +1851,14 @@ impl OwnerParticipant for InitialFilingParticipant {
                 self.require_renewal(context, context.action().key().id.as_str())?;
                 patch.recheck(state, context)
             }
+            EconomyPatch::HouseRenewalOffer(patch) => {
+                self.require_house_renewal(context, context.action().key().id.as_str())?;
+                patch.recheck(state, context)
+            }
+            EconomyPatch::HouseRenewalMoney(patch) => {
+                self.require_house_renewal(context, context.action().key().id.as_str())?;
+                patch.recheck(state, context)
+            }
         }
     }
     fn bind<'a>(
@@ -1690,6 +1887,12 @@ impl OwnerParticipant for InitialFilingParticipant {
             EconomyPatch::RenewalMoney(patch) => {
                 (*patch).bind(state).map(BoundEconomy::RenewalMoney)
             }
+            EconomyPatch::HouseRenewalOffer(patch) => {
+                (*patch).bind(state).map(BoundEconomy::HouseRenewalOffer)
+            }
+            EconomyPatch::HouseRenewalMoney(patch) => {
+                (*patch).bind(state).map(BoundEconomy::HouseRenewalMoney)
+            }
         }
     }
     fn accepts_write(&self, write: &ReplayWrite) -> bool {
@@ -1711,6 +1914,26 @@ impl OwnerParticipant for InitialFilingParticipant {
                 }
                 if let Some(operation) = key.as_str().strip_prefix("renewal-offer:") {
                     return self.renewals.is_some()
+                        && operation.len() == 32
+                        && operation
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+                }
+                if let Some(operation) = key
+                    .as_str()
+                    .strip_prefix(crate::managed_house_renewal::service::PREFIX)
+                {
+                    return self
+                        .house_renewals
+                        .as_ref()
+                        .is_some_and(|c| c.service_close.is_some())
+                        && operation.len() == 32
+                        && operation
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+                }
+                if let Some(operation) = key.as_str().strip_prefix("house-renewal-offer:") {
+                    return self.house_renewals.is_some()
                         && operation.len() == 32
                         && operation
                             .bytes()

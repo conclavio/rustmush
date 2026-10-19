@@ -167,6 +167,17 @@ fn row<'a, R: Record>(
     Ok(r)
 }
 impl HouseSaleReader {
+    pub(crate) fn for_renewal(
+        f: CommerceFamilies,
+        ratings: RatingFamilies,
+        expected: RatingCompatibility,
+    ) -> Self {
+        Self {
+            f,
+            ratings,
+            expected,
+        }
+    }
     pub fn request(
         reg: &mut Registrar<'_>,
         manifest: &DefinitionRef,

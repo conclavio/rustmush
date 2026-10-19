@@ -48,6 +48,9 @@ pub struct CommerceFamilies {
         StateFamilyHandle<String, super::registry_recall::records::RecallOperation>,
     pub(crate) withdrawals:
         StateFamilyHandle<String, super::withdrawal::records::WithdrawalOperation>,
+    pub(crate) house_renewal_operations:
+        StateFamilyHandle<String, super::house_renewal::RenewalOperationV1>,
+    pub(crate) house_renewal_heads: StateFamilyHandle<String, super::house_renewal::RenewalHeadV1>,
     pub(crate) renewal_operations: StateFamilyHandle<String, super::renewal::RenewalOperationV1>,
     pub(crate) renewal_heads: StateFamilyHandle<String, super::renewal::RenewalHeadV1>,
     pub(crate) authored_retirements:
@@ -102,6 +105,8 @@ impl CommerceFamilies {
             registry_revocations: register(reg)?,
             revoked_terms: register(reg)?,
             withdrawals: register(reg)?,
+            house_renewal_operations: register(reg)?,
+            house_renewal_heads: register(reg)?,
             renewal_operations: register(reg)?,
             renewal_heads: register(reg)?,
             authored_retirements: register(reg)?,
@@ -209,6 +214,7 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
         | "roll_mind_owner_attestation_operation"
         | "roll_mind_entitlement_purchase"
         | "roll_mind_house_purchase"
+        | "roll_house_mind_renewal_operation"
         | "roll_mind_renewal_operation" => hex(head, 32, false) && parts.next().is_none(),
         "roll_registry_reconformance_heads" | "roll_mind_filed_identity" => {
             hex(head, 64, false) && parts.next().is_none()
@@ -266,11 +272,13 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
         | "roll_mind_status"
         | "roll_mind_owner_licence"
         | "roll_mind_personal_paid_licence"
+        | "roll_house_mind_renewal_head"
         | "roll_mind_renewal_head" => {
             let prefix = match family {
                 "roll_mind_line" => "line",
                 "roll_mind_owner_licence"
                 | "roll_mind_personal_paid_licence"
+                | "roll_house_mind_renewal_head"
                 | "roll_mind_renewal_head" => "licence",
                 _ => "filed",
             };

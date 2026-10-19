@@ -108,15 +108,13 @@ pub(crate) fn verify_grant(
             .ok_or(PublicationError::Missing)?,
     )
     .map_err(invalid)?;
-    let expected = PersonalPaidLicence::original(
-        row.licence,
-        row.charter,
-        row.line,
-        row.holder,
-        row.term,
-        row.operation,
-    )?;
-    if licence != &expected
+    licence.validate()?;
+    if licence.id() != row.licence
+        || licence.charter() != row.charter
+        || licence.line() != row.line
+        || licence.holder() != row.holder
+        || licence.operation() != row.operation
+        || licence.term().get() < row.term.get()
         || economics != &row.economics
         || term.licence() != row.licence
         || term.generation() != row.term

@@ -392,6 +392,8 @@ pub struct MarketModule {
     entitlement_families: Option<crate::mind_entitlement::Families>,
     mind_renewals: Option<crate::mind_renewal::RenewalConfig>,
     renewal_families: Option<crate::mind_renewal::Families>,
+    house_renewals: Option<crate::mind_house_renewal::RenewalConfig>,
+    house_renewal_families: Option<crate::mind_house_renewal::Families>,
 }
 
 impl std::fmt::Debug for MarketModule {
@@ -452,6 +454,16 @@ impl MarketModule {
     /// continuations and controls; acceptance is always explicit.
     pub fn with_mind_renewals(mut self, config: crate::mind_renewal::RenewalConfig) -> Self {
         self.mind_renewals = Some(config);
+        self
+    }
+
+    /// Explicit House renewal composition; buyers always accept new money holds.
+    #[must_use]
+    pub fn with_house_mind_renewals(
+        mut self,
+        config: crate::mind_house_renewal::RenewalConfig,
+    ) -> Self {
+        self.house_renewals = Some(config);
         self
     }
 
@@ -686,10 +698,29 @@ impl GameModule for MarketModule {
                 return Err(ModError::msg("renewal owner composition differs"));
             }
         }
+        let house_renewal_definitions = self
+            .house_renewals
+            .as_ref()
+            .map(crate::mind_house_renewal::RenewalConfig::declarations)
+            .transpose()?
+            .unwrap_or_default();
+        if let Some(config) = &self.house_renewals {
+            let house = self
+                .house_minds
+                .as_ref()
+                .ok_or_else(|| ModError::msg("House renewals require House purchases"))?;
+            if config.manifest() != house.manifest()
+                || config.participants() != house.participants()
+                || config.purchase_policy() != &house.policy_ref()?
+            {
+                return Err(ModError::msg("House renewal composition differs"));
+            }
+        }
         let mut purchase_definitions = purchase_definitions;
         purchase_definitions.extend(entitlement_definitions.iter().cloned());
         purchase_definitions.extend(house_definitions.iter().cloned());
         purchase_definitions.extend(renewal_definitions.iter().cloned());
+        purchase_definitions.extend(house_renewal_definitions.iter().cloned());
         quote_definitions.extend(purchase_definitions.iter().cloned());
         crate::mind_entitlement::register_capabilities_with_house(
             reg,
@@ -753,7 +784,11 @@ impl GameModule for MarketModule {
                     config,
                     gate,
                     lot_registered || self.original_mind_quotes.is_some(),
-                    &house_definitions,
+                    &house_definitions
+                        .iter()
+                        .chain(house_renewal_definitions.iter())
+                        .cloned()
+                        .collect::<Vec<_>>(),
                 )?);
         }
         if let Some(config) = &self.house_minds {
@@ -761,7 +796,7 @@ impl GameModule for MarketModule {
                 .venue_gate
                 .clone()
                 .ok_or_else(|| ModError::msg("house purchase requires the actual venue gate"))?;
-            self.house_families = Some(crate::mind_house::register(
+            self.house_families = Some(crate::mind_house::register_with_renewal_definitions(
                 reg,
                 config,
                 gate,
@@ -769,10 +804,14 @@ impl GameModule for MarketModule {
                     || self.original_mind_quotes.is_some()
                     || self.mind_entitlements.is_some(),
                 self.mind_entitlements.is_some(),
+                &house_renewal_definitions,
             )?);
         }
         if let Some(config) = &self.mind_renewals {
             self.renewal_families = Some(crate::mind_renewal::register(reg, config)?);
+        }
+        if let Some(config) = &self.house_renewals {
+            self.house_renewal_families = Some(crate::mind_house_renewal::register(reg, config)?);
         }
         crate::commands::register(reg)?;
         Ok(())
@@ -851,6 +890,15 @@ impl GameModule for MarketModule {
             crate::mind_renewal::enable_service(ctx)?;
         } else {
             crate::mind_renewal::require_disabled(ctx)?;
+        }
+        if let Some(config) = &self.house_renewals {
+            self.house_renewal_families
+                .as_ref()
+                .ok_or_else(|| ModError::msg("House renewal families unavailable"))?
+                .audit(ctx, config)?;
+            crate::mind_house_renewal::enable_service(ctx)?;
+        } else {
+            crate::mind_house_renewal::require_disabled(ctx)?;
         }
         Ok(())
     }

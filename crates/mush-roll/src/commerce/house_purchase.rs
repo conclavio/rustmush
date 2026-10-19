@@ -12,7 +12,7 @@ pub enum HouseProtocol {
     HouseV1,
 }
 
-mod admission_capacity;
+pub(crate) mod admission_capacity;
 pub(crate) mod roots;
 pub mod writer;
 

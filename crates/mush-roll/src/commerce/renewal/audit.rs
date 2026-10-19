@@ -220,7 +220,14 @@ pub(crate) fn audit(
                 return Err(PublicationError::Mismatch);
             }
         } else if row.generation().get() != 1 {
-            return Err(PublicationError::Mismatch);
+            let licence = read(ctx, &f.paid_licences, row.licence().key())?;
+            if !matches!(
+                birth_history::resolve(ctx, f, licence.operation())?,
+                Birth::House(_)
+            ) {
+                return Err(PublicationError::Mismatch);
+            }
+            // The disjoint House audit proves every actual House generation.
         }
         Ok(())
     })?;

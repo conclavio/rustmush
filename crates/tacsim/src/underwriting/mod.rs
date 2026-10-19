@@ -9,9 +9,11 @@
 //! No default composition activates underwriting. In particular an OOC seal,
 //! purchased licence or decoded value here cannot activate it.
 
+mod product;
 mod terms;
 mod window;
 
+pub use product::{ApprovedConductV1, CoverageProductV1, LossRule, SafeConductRole};
 pub use terms::{CoverageAmounts, CoverageIllustration, CoverageTermsV1};
 pub use window::CoverageWindow;
 
@@ -20,6 +22,8 @@ pub use window::CoverageWindow;
 pub enum CoverageError {
     #[error("invalid or unsupported coverage terms")]
     Terms,
+    #[error("invalid or unsupported coverage product")]
+    Product,
     #[error("coverage value is outside the agreed bounds")]
     Value,
     #[error("coverage encoding exceeds its bound")]
@@ -34,3 +38,6 @@ pub enum CoverageError {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod product_tests;

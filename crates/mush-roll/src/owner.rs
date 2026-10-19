@@ -1627,6 +1627,49 @@ impl RollStore {
         self.prepare(changes)
     }
 
+    pub(crate) fn prepare_house_renewal_roots(
+        &self,
+        request: &crate::commerce::house_renewal::roots::RenewalRoots,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        let mut seen = std::collections::BTreeSet::new();
+        for before in request.before() {
+            if !seen.insert(before.anchor.clone())
+                || !request
+                    .after()
+                    .iter()
+                    .any(|after| before.anchor == after.anchor && before.identity == after.identity)
+            {
+                return Err(invalid(
+                    "house renewal retention",
+                    "retained obligation changed",
+                ));
+            }
+            self.check_required_root(before)?;
+        }
+        let mut after_keys = std::collections::BTreeSet::new();
+        let mut changes = Vec::new();
+        for after in request.after() {
+            if !after_keys.insert(after.anchor.clone()) {
+                return Err(invalid("house renewal retention", "duplicate obligation"));
+            }
+            self.check_root_subject(after)?;
+            let record = ReferenceRecord {
+                format: FORMAT,
+                key: after.anchor.key(),
+                revisions: vec![after.target()],
+            };
+            if !seen.contains(&after.anchor) && self.occupied.contains(&record.key.key()) {
+                return Err(invalid(
+                    "house renewal retention",
+                    "new obligation already exists",
+                ));
+            }
+            changes.push(Change::Reference(record));
+        }
+        self.prepare(changes)
+    }
+
     /// New permanent metadata cause, retaining the exact immutable filed subject.
     pub(crate) fn prepare_withdrawal_root(
         &self,

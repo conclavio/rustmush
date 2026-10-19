@@ -506,6 +506,13 @@ pub(crate) fn validate_renewal(
 ) -> PlanResult {
     validate_guarded(proof.plan(), snapshot, env, PlanGuard::Renewal(proof))
 }
+pub(crate) fn validate_house_renewal(
+    proof: &crate::managed_house_renewal::ClosedHouseRenewalPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(proof.plan(), snapshot, env, PlanGuard::HouseRenewal(proof))
+}
 /// Separate closed fee proof; public legacy posting cannot occupy its history.
 pub(crate) fn validate_compatible_update(
     proof: &crate::registry_filing::update::ClosedUpdatePlan,
@@ -564,6 +571,7 @@ enum PlanGuard<'a> {
     CoreIntegration(&'a crate::core_integration::ClosedCorePlan),
     Purchase(&'a crate::managed_purchase::ClosedPurchasePlan),
     Renewal(&'a crate::managed_renewal::ClosedRenewalPlan),
+    HouseRenewal(&'a crate::managed_house_renewal::ClosedHouseRenewalPlan),
     CompatibleUpdate(&'a crate::registry_filing::update::ClosedUpdatePlan),
 }
 impl PlanGuard<'_> {
@@ -584,6 +592,7 @@ impl PlanGuard<'_> {
             Self::Purchase(proof) => proof.check(plan, snapshot),
             Self::CoreIntegration(proof) => proof.check(plan, snapshot),
             Self::Renewal(proof) => proof.check(plan, snapshot),
+            Self::HouseRenewal(proof) => proof.check(plan, snapshot),
             Self::CompatibleUpdate(proof) => proof.check(plan, snapshot),
             Self::CharterTransfer(proof) => proof.check(plan, snapshot),
             Self::CharterPending(proof) => proof.check(plan, snapshot),

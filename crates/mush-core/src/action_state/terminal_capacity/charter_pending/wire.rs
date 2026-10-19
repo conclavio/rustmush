@@ -119,7 +119,16 @@ fn native_term(v: &Value) -> Result<Value, ActionStateError> {
     let issued = signed(w, "issued_at")?;
     let end = signed(w, "term_end")?;
     let grace = signed(w, "grace_end")?;
-    if num(w, "format")? != 1 || start > issued || issued >= end || end > grace {
+    // Match the actual immutable Roll TermWindow: an issue may occur before
+    // eligibility or during Grace. Current transfer admission is checked
+    // separately; structural history must not invent a narrower term.
+    let term = i128::from(end) - i128::from(start);
+    let grace_duration = i128::from(grace) - i128::from(end);
+    if num(w, "format")? != 1
+        || !(1..=7_776_000).contains(&term)
+        || !(0..=259_200).contains(&grace_duration)
+        || issued >= grace
+    {
         return Err(refused("pending term window"));
     }
     Ok(
@@ -754,4 +763,43 @@ pub(super) fn require_terminal_room(p: &Pair, protocol: &Protocol) -> Result<(),
 }
 fn envelope(family: &str, key: String, row: Value, max: usize) -> Result<(), ActionStateError> {
     canonical_json_bytes_with_limit(&json!({"family":{"owner":"roll","id":family},"schema":{"id":format!("{family}.value.v1"),"version":1},"key":key,"value":row}),max).map(|_|()).map_err(|_|refused("pending full terminal envelope"))
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+    fn term(start: i64, issued: i64, end: i64, grace: i64) -> Value {
+        json!({"licence":"1","generation":"1","operation":CommitToken::from_bytes([1;16]),
+            "digest":DefinitionDigest::from_bytes([2;32]),"window":{
+                "format":1,"eligibility_start":start,"issued_at":issued,
+                "term_end":end,"grace_end":grace}})
+    }
+    #[test]
+    fn pending_term_codec_preserves_actual_grace_and_early_issue_history() -> TestResult {
+        for issued in [-1, 0, 499, 500, 599] {
+            let value = term(0, issued, 500, 600);
+            let before = value.clone();
+            let native = native_term(&value)?;
+            assert_eq!(value, before);
+            assert_eq!(native["term_end"], json!(500));
+            assert_eq!(native["grace_end"], json!(600));
+        }
+        native_term(&term(0, 0, 7_776_000, 8_035_200))?;
+        Ok(())
+    }
+    #[test]
+    fn pending_term_codec_refuses_invalid_dates_bounds_and_overflow() {
+        for value in [
+            term(0, 600, 500, 600),
+            term(0, 0, 0, 100),
+            term(0, 0, 500, 499),
+            term(0, 0, 7_776_001, 7_776_001),
+            term(0, 0, 500, 259_701),
+            term(i64::MIN, 0, i64::MAX, i64::MAX),
+            term(i64::MIN, i64::MIN, i64::MIN + 1, i64::MAX),
+        ] {
+            assert!(native_term(&value).is_err());
+        }
+    }
 }

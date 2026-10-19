@@ -237,8 +237,10 @@ pub enum PendingEconomyReadKind {
 pub struct EconomyStore {
     /// Complete immutable renewal-offer owner state; composition is opt-in.
     pub(crate) renewal_offers: crate::managed_renewal::history::OfferBook,
+    pub(crate) house_renewal_offers: crate::managed_house_renewal::history::OfferBook,
     /// RAM-only proof that actual boot checked the full renewal inventory.
     pub(crate) renewal_inventory_checked: bool,
+    pub(crate) house_renewal_inventory_checked: bool,
     /// The last boot's cold replay cost (H3); `None` until `on_world_loaded`.
     pub(crate) boot_replay: Option<ReplayStats>,
     /// Journal transactions posted since this boot (doc 12 D-12-1): with
@@ -593,6 +595,14 @@ impl EconomyStore {
     {
         crate::managed_renewal::audit::read(self)
     }
+    pub fn house_renewal_audit(
+        &self,
+    ) -> Result<
+        crate::managed_house_renewal::RenewalAudit<'_>,
+        crate::managed_house_renewal::RenewalAuditError,
+    > {
+        crate::managed_house_renewal::audit::read(self)
+    }
 
     /// Refuse retained, invalid or unavailable renewal inventory when a paired
     /// consumer is not configured. This read grants no mutation authority.
@@ -600,6 +610,11 @@ impl EconomyStore {
         &self,
     ) -> Result<(), crate::managed_renewal::RenewalAuditError> {
         crate::managed_renewal::bridge::require_absent(self)
+    }
+    pub fn require_no_house_renewal_history(
+        &self,
+    ) -> Result<(), crate::managed_house_renewal::RenewalAuditError> {
+        crate::managed_house_renewal::bridge::require_absent(self)
     }
 
     /// Complete journal-derived compatible-update fees; this read grants no authority.
@@ -649,7 +664,9 @@ impl EconomyStore {
     pub(crate) fn from_parts(p: BootParts) -> EconomyStore {
         EconomyStore {
             renewal_offers: crate::managed_renewal::history::OfferBook::default(),
+            house_renewal_offers: crate::managed_house_renewal::history::OfferBook::default(),
             renewal_inventory_checked: false,
+            house_renewal_inventory_checked: false,
             boot_replay: None,
             posts_since_boot: 0,
             snapshot: p.snapshot,
@@ -1593,6 +1610,7 @@ pub struct EconomyModule {
     house_purchases: Option<[mush_core::DefinitionRef; 3]>,
     entitlement_purchases: Option<[[mush_core::mechanics::DefinitionRef; 3]; 2]>,
     mind_renewals: Option<crate::managed_renewal::bridge::Configuration>,
+    house_mind_renewals: Option<crate::managed_house_renewal::bridge::Configuration>,
     house_initial_filing: Option<mush_core::mechanics::DefinitionRef>,
     dependent_initial_filing: Option<mush_core::mechanics::DefinitionRef>,
     compatible_update: Option<mush_core::mechanics::DefinitionRef>,
@@ -1695,14 +1713,16 @@ impl EconomyModule {
         self.original_purchases = Some(actions);
         self
     }
-    /// Grant only the fixed original-v3 and derived-v1 entitlement actions
-    /// access to this existing owner slot. Market/Roll retain their own audits.
+    /// Grant only the closed House purchase actions access to this owner slot.
     #[must_use]
     pub fn with_house_mind_purchases(mut self, actions: [mush_core::DefinitionRef; 3]) -> Self {
         self.house_purchases = Some(actions);
         self
     }
 
+    /// Grant only the fixed original-v3 and derived-v1 entitlement actions.
+    /// Market and Roll retain their own complete audits.
+    #[must_use]
     pub fn with_mind_entitlement_purchases(
         mut self,
         original: [mush_core::mechanics::DefinitionRef; 3],
@@ -1728,6 +1748,20 @@ impl EconomyModule {
         config.service_close = Some(action);
         Ok(self)
     }
+    pub fn with_house_mind_renewal_service(
+        mut self,
+        action: mush_core::DefinitionRef,
+    ) -> Result<Self, ModError> {
+        let config = self
+            .house_mind_renewals
+            .as_mut()
+            .ok_or_else(|| ModError::msg("renewal service requires renewal configuration"))?;
+        if config.service_close.is_some() || action != config.service_reference()? {
+            return Err(ModError::msg("renewal service action differs"));
+        }
+        config.service_close = Some(action);
+        Ok(self)
+    }
 
     /// Freeze the exact five renewal actions on the existing Economy owner slot.
     /// Paired Roll/Market audits remain required; defaults grant no renewal action.
@@ -1739,6 +1773,20 @@ impl EconomyModule {
         actions: [mush_core::DefinitionRef; 5],
     ) -> Self {
         self.mind_renewals = Some(crate::managed_renewal::bridge::Configuration {
+            manifest,
+            participants,
+            actions,
+            service_close: None,
+        });
+        self
+    }
+    pub fn with_house_mind_renewals(
+        mut self,
+        manifest: mush_core::DefinitionRef,
+        participants: [mush_core::DefinitionRef; 2],
+        actions: [mush_core::DefinitionRef; 5],
+    ) -> Self {
+        self.house_mind_renewals = Some(crate::managed_house_renewal::bridge::Configuration {
             manifest,
             participants,
             actions,
@@ -2001,7 +2049,7 @@ impl GameModule for EconomyModule {
                     "initial filing issuer is not in the composition title-issuer table",
                 ));
             }
-            crate::registry_filing::register_with_house_purchases(
+            crate::registry_filing::register_with_house_renewals(
                 reg,
                 policy.clone(),
                 action.clone(),
@@ -2015,6 +2063,7 @@ impl GameModule for EconomyModule {
                 self.core_integration.as_ref(),
                 self.charter_pending.as_ref(),
                 self.house_purchases.as_ref(),
+                self.house_mind_renewals.as_ref(),
             )?;
         }
         if (self.house_purchases.is_some()
@@ -2042,6 +2091,13 @@ impl GameModule for EconomyModule {
         {
             return Err(ModError::msg(
                 "mind renewals require the existing filing and entitlement participants",
+            ));
+        }
+        if self.house_mind_renewals.is_some()
+            && (self.initial_filing.is_none() || self.house_purchases.is_none())
+        {
+            return Err(ModError::msg(
+                "mind renewals require the existing filing and House purchase participants",
             ));
         }
         if self
@@ -2126,7 +2182,7 @@ impl GameModule for EconomyModule {
         } else {
             self.config.tx_tail_max
         };
-        let mut store = boot::load_boot_with_charter_pending(
+        let mut store = boot::load_boot_with_house_renewals(
             ctx,
             data,
             &self.providers,
@@ -2142,6 +2198,7 @@ impl GameModule for EconomyModule {
             self.charter_transfer.is_some(),
             self.core_integration.is_some(),
             self.charter_pending.is_some(),
+            self.house_mind_renewals.is_some(),
         )?;
         // C17 (08g §12.1 item 5): the cold replay is the whole boot cost until a
         // durability checkpoint exists. Say what it cost, every boot, and say loudly

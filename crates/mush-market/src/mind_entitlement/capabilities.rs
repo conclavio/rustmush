@@ -35,6 +35,9 @@ impl AuthorityGuardValidator for Capabilities {
         if crate::mind_renewal::service_guard_current(ctx, guard) {
             return Ok(true);
         }
+        if crate::mind_house_renewal::service_guard_current(ctx, guard) {
+            return Ok(true);
+        }
         Ok(false)
     }
 }

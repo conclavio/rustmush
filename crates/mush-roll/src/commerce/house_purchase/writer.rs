@@ -349,11 +349,28 @@ impl HousePurchaseWriter {
                 },
                 row.operation,
             )?;
-            if current_licence != &expected_licence
+            let birth_licence = PersonalPaidLicence::original(
+                current_licence.id(),
+                current_licence.charter(),
+                current_licence.line(),
+                current_licence.holder(),
+                row.term,
+                current_licence.operation(),
+            )?;
+            if birth_licence != expected_licence
+                || current_licence.term().get() < row.term.get()
                 || term != Some(&expected_term)
                 || economics != Some(&row.economics)
             {
                 return Err(PublicationError::Mismatch);
+            }
+            if current_licence.term().get() > 1 {
+                super::super::house_renewal::audit::verify_current_pointer(
+                    ctx,
+                    roll,
+                    &r.families,
+                    current_licence,
+                )?;
             }
         } else if licence.is_some() || term.is_some() || economics.is_some() {
             return Err(PublicationError::Mismatch);

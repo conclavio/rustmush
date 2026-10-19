@@ -231,6 +231,39 @@ pub(crate) fn load_boot_with_charter_pending(
     require_core_receipts: bool,
     require_charter_pending: bool,
 ) -> Result<EconomyStore, ModError> {
+    load_boot_with_house_renewals(
+        ctx,
+        data,
+        providers,
+        outcomes,
+        tail_max,
+        window_secs,
+        require_filing_receipts,
+        require_purchase_receipts,
+        require_renewal_receipts,
+        require_update_receipts,
+        require_charter_transfer_receipts,
+        require_core_receipts,
+        require_charter_pending,
+        false,
+    )
+}
+pub(crate) fn load_boot_with_house_renewals(
+    ctx: &mut ModuleCtx<'_>,
+    data: ModuleBootData,
+    providers: &CustodyTable,
+    outcomes: &crate::contract::CanonOutcomeKinds,
+    tail_max: usize,
+    window_secs: i64,
+    require_filing_receipts: bool,
+    require_purchase_receipts: bool,
+    require_renewal_receipts: bool,
+    require_update_receipts: bool,
+    require_charter_transfer_receipts: bool,
+    require_core_receipts: bool,
+    require_charter_pending: bool,
+    require_house_renewal_receipts: bool,
+) -> Result<EconomyStore, ModError> {
     let ModuleBootData {
         kv,
         ledger: mut ledger_docs,
@@ -239,6 +272,8 @@ pub(crate) fn load_boot_with_charter_pending(
     } = data;
     let renewal_documents =
         crate::managed_renewal::bridge::documents(&kv, require_renewal_receipts)?;
+    let house_renewal_documents =
+        crate::managed_house_renewal::bridge::documents(&kv, require_house_renewal_receipts)?;
     // J4 (doc 12 §5.6): what the loader left out on the boot manifest — the
     // min-present marker the inspection honours; 0 for a whole fetch.
     let narrowed_below: u64 = omitted
@@ -482,6 +517,17 @@ pub(crate) fn load_boot_with_charter_pending(
                     "economy: renewal contract requires complete paired recovery",
                 ));
             }
+            if c.consent
+                .managed
+                .as_ref()
+                .and_then(|m| m.house_renewal_offer_marker())
+                .is_some()
+                && !require_house_renewal_receipts
+            {
+                return Err(ModError::msg(
+                    "economy: house_renewal contract requires complete paired recovery",
+                ));
+            }
             stored_contracts.insert(c.id, c);
         } else if let Some(id) = key.strip_prefix("escalation:") {
             // A **leaf** (§4.6), exactly like an approval request: an unreadable alert
@@ -643,6 +689,18 @@ pub(crate) fn load_boot_with_charter_pending(
     }) {
         checkpoint_notes
             .push("checkpoint lacks exact renewal inventory coverage; full replay required".into());
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !crate::managed_house_renewal::bridge::checkpoint_complete(
+            &saved.head.body.fold,
+            &saved.rows,
+            require_house_renewal_receipts,
+        )
+    }) {
+        checkpoint_notes.push(
+            "checkpoint lacks exact house_renewal inventory coverage; full replay required".into(),
+        );
         checkpoint = None;
     }
     if checkpoint.as_ref().is_some_and(|saved| {
@@ -994,6 +1052,14 @@ pub(crate) fn load_boot_with_charter_pending(
         &stored_holds,
         &renewal_documents,
         require_renewal_receipts,
+    )?;
+    let house_renewal_offers = crate::managed_house_renewal::bridge::recover(
+        &mut state,
+        &mut snapshot,
+        &mut stored_contracts,
+        &stored_holds,
+        &house_renewal_documents,
+        require_house_renewal_receipts,
     )?;
     // Managed purchases are a paired immutable protocol, not legacy container
     // reconciliation. Inspect exact raw contract/hold documents before any
@@ -2189,6 +2255,8 @@ pub(crate) fn load_boot_with_charter_pending(
     });
     store.renewal_offers = renewal_offers;
     store.renewal_inventory_checked = true;
+    store.house_renewal_offers = house_renewal_offers;
+    store.house_renewal_inventory_checked = true;
     // Persist `meta` at the END of every boot, always. Two things ride on it and
     // both were previously RAM-only until the next post happened to write one: the
     // whole-economy **freeze latch** (a boot that froze, healed, and never wrote it

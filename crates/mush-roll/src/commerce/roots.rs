@@ -36,6 +36,7 @@ pub(crate) enum RootAnchor {
     OwnerParent(LicenceId, mush_core::ObjId),
     PaidOperation(CommitToken),
     RenewalOperation(CommitToken),
+    HouseRenewalOperation(CommitToken),
     DraftRetirement(CommitToken, mush_core::DefinitionDigest),
     AuthorWithdrawal(CommitToken, mush_core::DefinitionDigest),
     CharterPendingOffer(CommitToken, mush_core::DefinitionDigest),
@@ -79,6 +80,7 @@ impl RootAnchor {
                 format!("v1/owner_parent/{:016x}/{:08x}", licence.get(), owner.0)
             }
             Self::PaidOperation(token) => format!("v1/paid_operation/{token}"),
+            Self::HouseRenewalOperation(token) => format!("v1/house_renewal_operation/{token}"),
             Self::RenewalOperation(token) => format!("v1/renewal_operation/{token}"),
             Self::IcClaim(token, digest) => format!("v1/ic_claim/{token}/{digest}"),
             Self::DraftRetirement(token, digest) => format!("v1/draft_retirement/{token}/{digest}"),
@@ -184,6 +186,9 @@ impl RootAnchor {
                 CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
             ),
             "paid_operation" => Self::PaidOperation(
+                CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
+            ),
+            "house_renewal_operation" => Self::HouseRenewalOperation(
                 CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
             ),
             "renewal_operation" => Self::RenewalOperation(

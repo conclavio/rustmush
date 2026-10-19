@@ -452,9 +452,7 @@ pub(crate) fn granted<'a>(
             super::super::paid_audit::verify_granted(row, licence, birth_term, actual)?;
         }
         Birth::House(row) => {
-            if birth_economics.is_some()
-                || term.generation() != row.term
-                || licence.term() != row.term
+            if birth_economics.is_some() || optional(ctx, &f.term_economics, term.key())?.is_some()
             {
                 return Err(PublicationError::Mismatch);
             }
@@ -484,6 +482,13 @@ pub(crate) fn granted<'a>(
         (
             birth_economics,
             actual.terminal().ok_or(PublicationError::Missing)?.commit(),
+        )
+    } else if let Birth::House(birth_row) = birth {
+        (
+            None,
+            super::super::house_renewal::history::granted_generation(
+                ctx, f, licence, term, birth_row, economy,
+            )?,
         )
     } else {
         let Birth::Entitlement(birth_row) = birth else {
@@ -542,8 +547,46 @@ pub(crate) fn current<'a>(
 ) -> Result<Granted<'a>, PublicationError> {
     term.matches_current(licence)?;
     let grant = granted(ctx, f, ratings, licence, term)?;
-    let head = optional(ctx, &f.renewal_heads, licence.id().key())?;
-    match head {
+    let personal_head = optional(ctx, &f.renewal_heads, licence.id().key())?;
+    let house_head = optional(ctx, &f.house_renewal_heads, licence.id().key())?;
+    if let Birth::House(birth) = grant.birth() {
+        if personal_head.is_some() {
+            return Err(PublicationError::Mismatch);
+        }
+        match house_head {
+            None if licence.term().get() == 1 => (),
+            Some(head) => {
+                let row = read(
+                    ctx,
+                    &f.house_renewal_operations,
+                    head.last_operation().to_hex(),
+                )?;
+                if head != &super::super::house_renewal::RenewalHeadV1::for_operation(row)?
+                    || !row.binding().matches_birth(licence)
+                    || row.binding().issuer() != birth.issuer()
+                    || head.current() != licence.term()
+                {
+                    return Err(PublicationError::Mismatch);
+                }
+                let economy = ctx
+                    .world()
+                    .module_state::<EconomyStore>()
+                    .ok_or(PublicationError::Unavailable)?;
+                let view = economy
+                    .house_renewal_audit()
+                    .map_err(invalid)?
+                    .get(row.operation())
+                    .map_err(invalid)?;
+                super::super::house_renewal::history::verify(row, &view)?;
+            }
+            _ => return Err(PublicationError::Missing),
+        }
+        return Ok(grant);
+    }
+    if house_head.is_some() {
+        return Err(PublicationError::Mismatch);
+    }
+    match personal_head {
         None if licence.term().get() == 1 => {}
         Some(head) => {
             let row = read(ctx, &f.renewal_operations, head.last_operation().to_hex())?;
