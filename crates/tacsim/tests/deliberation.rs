@@ -2228,10 +2228,10 @@ fn an_order_at_three_cadences_is_one_event_list_and_one_hash_sequence() {
     // cadence a snapshot is taken under the standing order (the first pulse at
     // or past 5,000 ms; the order stands to 10,000), every carried standing
     // order decodes field for field, and the arena resumed from it steps to the
-    // same hash sequence the uninterrupted run did. (17b cut M4.5a, Q3: the
-    // order rides the mind row, which carries its squad and objective and no
-    // author — the `by` round trip this proved on the reflex row is LOST, not
-    // re-asserted.)
+    // same hash sequence the uninterrupted run did. This fixture checks the
+    // mind's projected order. Format 16 separately restores accepted author
+    // attribution through record-only watches; the r4 snapshot and actual
+    // match-boot tests cover that path without adding authors to MindView.
     for (at, cadence) in cadences.into_iter().enumerate() {
         let resumed = replay_ordered_hashes_resumed_at(cadence, 30_000, 5_000);
         let whole = runs
@@ -2249,24 +2249,17 @@ fn an_order_at_three_cadences_is_one_event_list_and_one_hash_sequence() {
 /// one decoded from its own snapshot at the first pulse at or past `snap_ms`
 /// (17b cut L.1). Asserts, at the swap, that the document is the current
 /// format and that every standing order the arena carried came back field for
-/// field (on the reflex row that included its author; see below).
+/// field. These are the projected `FrameOrder` fields the mind reads: squad,
+/// objective, constraints and deadline. `MindState::order_issuer` separately
+/// retains the commanding hull. The squad assertion does not prove author
+/// identity: it comes from `Order.squad`, not `Order.by`.
 ///
-/// **17b cut M4.5a** (Q3; the M4.3 precedent, `cockpit.rs`'
-/// `l1_a_typed_order_carries_the_seats_character`): the squad's machines are
-/// minds, so the snapshot carries each hull's order on its mind row as the
-/// `FrameOrder` the mind reads — red-1's squad word, the objective, the
-/// constraints and `expires_ms` — and every one is asserted back field for
-/// field. A mind's order names no author: D-UM-52's `by` is the world's watch's
-/// and the tape's, and the issuer is not mind-row state at M4.5 (since 17b cut
-/// M4.6, the owner's STOP C, it is: `MindState::order_issuer`, carried and
-/// unfolded; the author still is not), so **the
-/// author half of the round trip is LOST** (Q3), where the reflex row carried
-/// the `StandingOrder` whole. What is asserted is what the mind row carries:
-/// the order's squad and objective. The squad check is not an author check —
-/// `FrameOrder.squad` comes from `Order.squad`, not `Order.by`, and would read
-/// red-1 whoever the author were. The loop steps
-/// `step_settled`: a snapshot right after `Arena::step` can be refused while a
-/// think is unanswered.
+/// Format 16 carries accepted author attribution in record-only watches. The
+/// r4 snapshot and actual match-boot tests prove that recovery, including
+/// character and persona authors and superseded-order tombstones. This helper
+/// checks projection and combat hash continuity at three pulse cadences. It
+/// uses `step_settled`, because a snapshot immediately after `Arena::step` can
+/// be refused while a think is unanswered.
 fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64) -> Vec<u64> {
     use tacsim::arena::snapshot::{SNAPSHOT_FORMAT, Snapshot};
     let cfg = arena_cfg(30_000);
@@ -2311,7 +2304,8 @@ fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64
             );
             // 17b cut M3.2 moved the format to 8, 17b cut M4.6 to 9 and 17b
             // cut M5.2 to 10 and M5rules to 11 for ordered typed rules.
-            assert_eq!(SNAPSHOT_FORMAT, 15);
+            // Format 16 adds record-only accepted-order attribution (R4).
+            assert_eq!(SNAPSHOT_FORMAT, 16);
             let mut resumed = Snapshot::decode(&snapshot.document, (*arena.definition).clone())
                 .expect("the document decodes");
             let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
@@ -2328,10 +2322,9 @@ fn replay_ordered_hashes_resumed_at(cadence_ms: i64, until_ms: i64, snap_ms: i64
                     "{unit:?}'s standing order came back field for field"
                 );
                 if let Some(standing) = written {
-                    // What the mind row carries: the order's squad (from
-                    // `Order.squad` — red-1, the squad the fixture's persona
-                    // leads; NOT the author, whose round trip is lost, Q3)
-                    // and its objective.
+                    // The mind projection carries the squad and objective.
+                    // Accepted-author recovery has its own r4 record tests;
+                    // the squad word alone does not identify the author.
                     let CharacterRef::Persona { squad } = persona(red_one()) else {
                         unreachable!("the fixture's author is a persona");
                     };
@@ -4703,19 +4696,12 @@ fn l1_sides(
 /// before (`an_advance_order_moves_the_patrol_target` and the hint tests pass
 /// unchanged): the squad makes for the cell.
 ///
-/// **17b cut M4.5a — on the unit mind** (Q3; the M4.3 precedent,
-/// `cockpit.rs`' `l1_a_typed_order_carries_the_seats_character`): at M4.5 the
-/// author and the issuer are not mind-row state (the issuer is since 17b cut
-/// M4.6, `MindState::order_issuer`; the author is not) — a mind's order is the
-/// `FrameOrder` it reads (the squad word, the objective, the constraints and
-/// the deadline), and D-UM-52's `by` is the world's watch's. So the author
-/// and the issuer are asserted on the `Order` value issued (as before); the
-/// "stands under it **with that author**" half is LOST (Q3) — every unit of
-/// red-1 stands under the order on its mind row with red-1's squad word and
-/// the objective, and the squad word comes from `Order.squad`, so it would
-/// read the same for any `by`; and the issuer the order carried is the
-/// tape's: one `ordered` line per unit naming red-1 and no issuer (`None`
-/// against the fixture's `None`, as before — the commander's own scope).
+/// The assertions here cover the issued `Order`, each mind's projected squad
+/// and objective, and one `ordered` tape line per unit with the original
+/// issuer. A squad word alone does not identify an author. Format 16's
+/// record-only accepted watches retain that attribution separately; the r4
+/// snapshot and actual match-boot tests verify its recovery for both character
+/// and persona orders.
 #[test]
 fn l1_the_deliberation_fixtures_carry_by_and_issuer_unchanged() {
     let cfg = arena_cfg(30_000);
@@ -4878,7 +4864,7 @@ fn l1_a_reply_after_its_commander_falls_is_refused_at_landing() {
         .notices
         .push(notice.clone());
     let snapshot = Snapshot::encode(&control).expect("new refusal encodes");
-    assert_eq!(snapshot.document["format"], 15);
+    assert_eq!(snapshot.document["format"], 16);
     let restored = Snapshot::decode(&snapshot.document, definition()).expect("new refusal decodes");
     assert_eq!(
         restored
@@ -4889,22 +4875,22 @@ fn l1_a_reply_after_its_commander_falls_is_refused_at_landing() {
             .last(),
         Some(&notice)
     );
-    let mut old = snapshot.document.clone();
-    old["format"] = serde_json::json!(14);
-    assert_eq!(
-        Snapshot::head(&old).map(|head| head.format),
-        Err(SnapshotError::Format {
-            found: 14,
-            expected: 15
-        })
-    );
-    assert!(matches!(
-        Snapshot::decode(&old, definition()),
-        Err(SnapshotError::Format {
-            found: 14,
-            expected: 15
-        })
-    ));
+    // Both the previous commander format and its predecessor remain refused.
+    for found in [15, 14] {
+        let mut old = snapshot.document.clone();
+        old["format"] = serde_json::json!(found);
+        assert_eq!(
+            Snapshot::head(&old).map(|head| head.format),
+            Err(SnapshotError::Format {
+                found,
+                expected: 16
+            })
+        );
+        assert!(matches!(
+            Snapshot::decode(&old, definition()),
+            Err(SnapshotError::Format { found: actual, expected: 16 }) if actual == found
+        ));
+    }
     assert_eq!(Refusal::NoCommander.as_str(), "no_commander");
     assert_eq!(
         serde_json::to_value(Refusal::NoCommander).expect("wire refusal"),

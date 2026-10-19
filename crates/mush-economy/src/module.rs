@@ -607,6 +607,13 @@ impl EconomyStore {
         &self.fold.update_receipts
     }
 
+    /// Complete native charter transfer history; this accessor grants no authority.
+    pub fn charter_transfer_receipt_audit(
+        &self,
+    ) -> &crate::registry_filing::charter_transfer::CharterTransferReceiptAudit {
+        &self.fold.charter_transfer_receipts
+    }
+
     pub fn filing_receipt_audit(&self) -> &crate::registry_filing::ReceiptAudit {
         &self.fold.filing_receipts
     }
@@ -1549,6 +1556,7 @@ pub(crate) fn note_window_debits(
 /// module — economy authorizes through it).
 #[derive(Debug, Default)]
 pub struct EconomyModule {
+    core_integration: Option<crate::core_integration::CoreIntegrationConfig>,
     initial_filing: Option<(
         crate::registry_filing::InitialFilingPolicy,
         mush_core::mechanics::DefinitionRef,
@@ -1559,6 +1567,7 @@ pub struct EconomyModule {
     house_initial_filing: Option<mush_core::mechanics::DefinitionRef>,
     dependent_initial_filing: Option<mush_core::mechanics::DefinitionRef>,
     compatible_update: Option<mush_core::mechanics::DefinitionRef>,
+    charter_transfer: Option<mush_core::mechanics::DefinitionRef>,
     providers: CustodyTable,
     config: EconomyConfig,
     facts: crate::facts::FactTable,
@@ -1579,6 +1588,16 @@ pub struct EconomyModule {
 }
 
 impl EconomyModule {
+    /// Configure the closed Industry payment/title leg on the existing owner slot.
+    /// Industry's independent exact input/order/slot audit must also be installed.
+    pub fn with_core_integration(
+        mut self,
+        config: crate::core_integration::CoreIntegrationConfig,
+    ) -> Self {
+        self.core_integration = Some(config);
+        self
+    }
+
     /// Enable the closed initial-filing participant for one exact registered
     /// Roll action. This is composition configuration, never a runtime grant.
     #[must_use]
@@ -1618,6 +1637,13 @@ impl EconomyModule {
         action: mush_core::mechanics::DefinitionRef,
     ) -> Self {
         self.compatible_update = Some(action);
+        self
+    }
+    /// Enable one exact native charter transfer action. Roll must provide the
+    /// immutable seller offer, buyer consent, claim fence and paired boot audit.
+    #[must_use]
+    pub fn with_mind_charter_transfers(mut self, action: mush_core::DefinitionRef) -> Self {
+        self.charter_transfer = Some(action);
         self
     }
     /// Add the three exact closed Market purchase actions to the existing
@@ -1736,6 +1762,15 @@ impl EconomyModule {
         }
         self.facts = Arc::new(providers);
         self
+    }
+
+    /// Add one explicitly configured fact provider without replacing the host's
+    /// existing table. The same startup duplicate-namespace check applies.
+    #[must_use]
+    pub fn with_fact_provider(self, provider: Arc<dyn crate::facts::FactProvider>) -> Self {
+        let mut providers = self.facts.as_ref().clone();
+        providers.push(provider);
+        self.with_facts(providers)
     }
 
     /// Wire the canon kinds that count as a **producer-declared outcome** (E4c
@@ -1914,13 +1949,16 @@ impl GameModule for EconomyModule {
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::EconomyCarveOut);
         reg.state(EconomyStore::default());
+        for provider in self.facts.iter() {
+            provider.register_scoped(reg)?;
+        }
         if let Some((policy, action)) = &self.initial_filing {
             if !self.title_issuers.contains(policy.issuer()) {
                 return Err(ModError::msg(
                     "initial filing issuer is not in the composition title-issuer table",
                 ));
             }
-            crate::registry_filing::register(
+            crate::registry_filing::register_with_core(
                 reg,
                 policy.clone(),
                 action.clone(),
@@ -1930,13 +1968,17 @@ impl GameModule for EconomyModule {
                 self.dependent_initial_filing.as_ref(),
                 self.mind_renewals.as_ref(),
                 self.compatible_update.as_ref(),
+                self.charter_transfer.as_ref(),
+                self.core_integration.as_ref(),
             )?;
         }
         if (self.original_purchases.is_some()
             || self.entitlement_purchases.is_some()
             || self.house_initial_filing.is_some()
             || self.dependent_initial_filing.is_some()
-            || self.compatible_update.is_some())
+            || self.compatible_update.is_some()
+            || self.charter_transfer.is_some()
+            || self.core_integration.is_some())
             && self.initial_filing.is_none()
         {
             return Err(ModError::msg(
@@ -1948,6 +1990,15 @@ impl GameModule for EconomyModule {
         {
             return Err(ModError::msg(
                 "mind renewals require the existing filing and entitlement participants",
+            ));
+        }
+        if self
+            .core_integration
+            .as_ref()
+            .is_some_and(|c| !self.title_issuers.contains(&c.policy.issuer))
+        {
+            return Err(ModError::msg(
+                "Core integration issuer is absent from configured title issuers",
             ));
         }
         // WS03-A1: an economy command emits an EconomicEvent and the wired
@@ -2005,6 +2056,17 @@ impl GameModule for EconomyModule {
         ctx: &mut ModuleCtx<'_>,
         data: ModuleBootData,
     ) -> Result<(), ModError> {
+        if let Some(config) = &self.core_integration {
+            let defs = ctx
+                .reg
+                .definitions()
+                .ok_or_else(|| ModError::msg("Core payment definitions unavailable"))?
+                .clone();
+            config
+                .definitions
+                .set(defs)
+                .map_err(|_| ModError::msg("Core payment definitions already captured"))?;
+        }
         let fetch_ms = data.fetch_ms;
         let started = std::time::Instant::now();
         let tail_max = if self.config.tx_tail_max == 0 {
@@ -2012,7 +2074,7 @@ impl GameModule for EconomyModule {
         } else {
             self.config.tx_tail_max
         };
-        let mut store = boot::load_boot_with_line_updates(
+        let mut store = boot::load_boot_with_core_integration(
             ctx,
             data,
             &self.providers,
@@ -2023,6 +2085,8 @@ impl GameModule for EconomyModule {
             self.original_purchases.is_some() || self.entitlement_purchases.is_some(),
             self.mind_renewals.is_some(),
             self.compatible_update.is_some(),
+            self.charter_transfer.is_some(),
+            self.core_integration.is_some(),
         )?;
         // C17 (08g §12.1 item 5): the cold replay is the whole boot cost until a
         // durability checkpoint exists. Say what it cost, every boot, and say loudly

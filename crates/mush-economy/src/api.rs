@@ -1361,8 +1361,8 @@ pub(crate) fn post_with_companions(
         // E4c: the wiring-frozen fact table, read live. An empty table answers
         // `None` for everything, which is unknown, which is unsatisfied — exactly
         // the `NoFacts` behaviour this replaced.
-        let facts = crate::facts::WorldFacts {
-            w: ctx.w,
+        let facts = crate::facts::scoped::ContextualWorldFacts {
+            ctx,
             providers: store.facts(),
         };
         let now = ctx.w.now();
@@ -2494,6 +2494,35 @@ pub(crate) fn prepare_contract_write(
     contract: crate::contract::EconomicContract,
 ) -> Result<LegacyContractWrite, EconomyError> {
     require_legacy_contract(ctx, &contract)?;
+    let current = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|store| store.snapshot().contract(contract.id));
+    if current.is_none_or(|old| {
+        old.issuer != contract.issuer
+            || old.consent != contract.consent
+            || old.amendments != contract.amendments
+    }) {
+        let attachment = crate::facts::scoped::prepare_attachment(ctx, &contract)
+            .map_err(|_| EconomyError::Unauthorized)?;
+        if !attachment.matches(&contract) {
+            return Err(EconomyError::Unauthorized);
+        }
+    }
+    Ok(LegacyContractWrite { contract })
+}
+
+/// Only synchronous offer/amendment code holds this exact attachment preflight.
+/// No provider callback or actor/subject replacement occurs after money lands.
+pub(crate) fn prepare_contract_write_authorized(
+    ctx: &Ctx<'_>,
+    contract: crate::contract::EconomicContract,
+    attachment: &crate::facts::scoped::FactAttachment,
+) -> Result<LegacyContractWrite, EconomyError> {
+    require_legacy_contract(ctx, &contract)?;
+    if !attachment.matches(&contract) {
+        return Err(EconomyError::Unauthorized);
+    }
     Ok(LegacyContractWrite { contract })
 }
 

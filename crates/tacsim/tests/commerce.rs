@@ -2340,15 +2340,19 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
         for entry in ["ceres_port", "stickney_port"] {
             if let Some(def) = doc["entries"][entry]["def"].as_object_mut() {
                 def.remove("vendors");
-                // Doc 19 cut A.4 (lane v5) added the premium block.
+                // Doc 19 cut A.4 (lane v5) added the premium block, A.4b (v6) the
+                // emergency block.
                 def.remove("premium");
+                def.remove("emergency");
             }
         }
         // Doc 19 cut A.1 (lane v4) added eight bodies, the element tables and the
         // three-dimensional legs; v2 had none of them.
         let entries = doc["entries"].as_object_mut().expect("the entries");
+        // Doc 19 cut A.7 (lane v7) added the four moons and put Stickney on Phobos.
         for body in [
-            "mercury", "venus", "earth", "jupiter", "saturn", "juno", "vesta", "hygiea",
+            "mercury", "venus", "earth", "jupiter", "saturn", "juno", "vesta", "hygiea", "luna",
+            "phobos", "deimos", "titan",
         ] {
             assert!(
                 entries.remove(body).is_some(),
@@ -2361,6 +2365,7 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
                 .expect("a body")
                 .remove("elements");
         }
+        entries["stickney_yards"]["def"]["body"] = serde_json::json!("mars");
         // Kirkwood was a circular body at 2.06 AU on the chord, 1,080-day period.
         entries["kirkwood"]["def"] = serde_json::json!({
             "orbit_au": 2.06,

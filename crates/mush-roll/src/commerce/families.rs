@@ -12,14 +12,30 @@ use super::records::*;
 /// No public constructor, family-name lookup or blanket delegation is added.
 #[derive(Clone)]
 pub struct CommerceFamilies {
+    pub(crate) charter_transfer_offers:
+        StateFamilyHandle<String, super::charter_transfer::records::CharterOffer>,
+    pub(crate) charter_transfers:
+        StateFamilyHandle<String, super::charter_transfer::records::CharterTransfer>,
+    pub(crate) charter_ownership:
+        StateFamilyHandle<String, super::charter_transfer::records::CharterOwnershipHead>,
+    pub(crate) lapse_occurrences: StateFamilyHandle<String, super::facts::records::LapseOccurrence>,
+    pub(crate) ic_claims: StateFamilyHandle<String, super::ic_claims::ClaimRecord>,
     pub(crate) owner_qualification_operations:
         StateFamilyHandle<String, super::owner_qualification::records::QualificationOperation>,
+    pub(crate) owner_attestations:
+        StateFamilyHandle<String, super::owner_attestation::records::AttestationOperation>,
     pub(crate) owner_qualification_heads:
         StateFamilyHandle<String, super::owner_qualification::records::QualificationHead>,
     pub(crate) line_updates:
         StateFamilyHandle<String, super::line_update::records::UpdateOperation>,
     pub(crate) update_positions:
         StateFamilyHandle<String, super::line_update::records::UpdatePosition>,
+    pub(crate) registry_revocations:
+        StateFamilyHandle<String, super::registry_revocation::records::RevocationOperation>,
+    pub(crate) revoked_terms:
+        StateFamilyHandle<String, super::registry_revocation::records::RevokedTerm>,
+    pub(crate) registry_recalls:
+        StateFamilyHandle<String, super::registry_recall::records::RecallOperation>,
     pub(crate) withdrawals:
         StateFamilyHandle<String, super::withdrawal::records::WithdrawalOperation>,
     pub(crate) renewal_operations: StateFamilyHandle<String, super::renewal::RenewalOperationV1>,
@@ -53,10 +69,19 @@ pub struct CommerceFamilies {
 impl CommerceFamilies {
     pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<Self, ModError> {
         Ok(Self {
+            charter_transfer_offers: register(reg)?,
+            charter_transfers: register(reg)?,
+            charter_ownership: register(reg)?,
+            lapse_occurrences: register(reg)?,
+            ic_claims: register(reg)?,
             owner_qualification_operations: register(reg)?,
             owner_qualification_heads: register(reg)?,
+            owner_attestations: register(reg)?,
             line_updates: register(reg)?,
             update_positions: register(reg)?,
+            registry_recalls: register(reg)?,
+            registry_revocations: register(reg)?,
+            revoked_terms: register(reg)?,
             withdrawals: register(reg)?,
             renewal_operations: register(reg)?,
             renewal_heads: register(reg)?,
@@ -147,12 +172,16 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
                 && parts.next().is_none()
         }
         "roll_mind_commerce" => head == "registry" && parts.next().is_none(),
-        "roll_mind_line_update"
+        "roll_mind_charter_transfer_offers"
+        | "roll_mind_ic_claim"
+        | "roll_mind_line_update"
         | "roll_mind_initial_filing"
         | "roll_mind_paid_purchase"
         | "roll_mind_authored_retirement"
         | "roll_mind_author_withdrawal"
+        | "roll_registry_revision_recalls"
         | "roll_mind_owner_qualification_operation"
+        | "roll_mind_owner_attestation_operation"
         | "roll_mind_entitlement_purchase"
         | "roll_mind_renewal_operation" => hex(head, 32, false) && parts.next().is_none(),
         "roll_mind_filed_identity" => hex(head, 64, false) && parts.next().is_none(),
@@ -179,7 +208,19 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
                 && parts.next() == Some("0000000000000001")
                 && parts.next().is_none()
         }
-        "roll_mind_charter" => {
+        "roll_mind_charter_transfers" => {
+            head == "charter"
+                && parts.next().is_some_and(|v| {
+                    hex(v, 16, true)
+                        && u64::from_str_radix(v, 16).is_ok_and(|n| u32::try_from(n).is_ok())
+                })
+                && parts.next().is_some_and(|v| {
+                    hex(v, 16, true)
+                        && u64::from_str_radix(v, 16).is_ok_and(|n| (2..=65_537).contains(&n))
+                })
+                && parts.next().is_none()
+        }
+        "roll_mind_charter" | "roll_mind_charter_ownership" => {
             head == "charter"
                 && parts.next().is_some_and(|v| {
                     hex(v, 16, true)

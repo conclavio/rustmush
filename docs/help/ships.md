@@ -78,6 +78,9 @@ sky moves: the best departure in the next thirty IC days against today's.
   +chart <port>           the window: that passage planned on every IC day of
                           the next year — the fastest, the cheapest, the worst
   +chart/body <body>      one body and the elements it moves on
+  +chart/map              the sky as a flat map: the Sun, every orbit, the bodies
+                          by letter, the listed routes dotted, you at @ — what the
+                          TUI's chart screen (Alt+c) and the web's chart tab draw
 
 `+ship/undock` files a clearance: the port checks the plan, the tank and the
 locker, and on its next tick the burn is committed and the ship launches. If the

@@ -66,6 +66,26 @@ BODIES = {
     "hygiea": "'DES=2000010;'",
 }
 
+# The moons (doc 19 cut A.7; Q-19-9): their ELEMENTS are asked about the PARENT
+# (Horizons CENTER = the planet's body centre), so the pack's rows are
+# planetocentric and `tacsim::sky` adds the parent's position; their golden
+# VECTORS stay heliocentric like every other body's, which is what the Rust is
+# measured against. `parent` is the pack id of the primary.
+MOONS = {
+    "luna": dict(command="'301'", center="'500@399'", parent="earth"),
+    "phobos": dict(command="'401'", center="'500@499'", parent="mars"),
+    "deimos": dict(command="'402'", center="'500@499'", parent="mars"),
+    # Horizons' Titan ephemeris ends at 2250-01-05, a century before the window:
+    # its rows are the last decade Horizons knows (2240–2249), and the Rust
+    # propagates the last row alone past the table (two-body about Saturn — a
+    # near-circular 15.9-day orbit whose plane precesses in centuries, so the
+    # extrapolated sky is self-consistent rather than Horizons-true). No golden
+    # rows and no measure: there is nothing to measure against.
+    "titan": dict(command="'606'", center="'500@699'", parent="saturn", until=(2250, 1, 1)),
+}
+
+SUN_CENTER = "'500@10'"
+
 # Kirkwood Depot (doc 18 Q-18-36; doc 19 D-19-6): Ceres's own rows, trailing by
 # this many degrees of mean anomaly.
 KIRKWOOD_TRAIL_DEG = 2.0
@@ -140,8 +160,8 @@ def row_dates(first_year, last_year, epoch):
 CACHE = {"dir": None}
 
 
-def horizons(params):
-    query = dict(format="json", OBJ_DATA="'NO'", MAKE_EPHEM="'YES'", CENTER="'500@10'",
+def horizons(params, center=SUN_CENTER):
+    query = dict(format="json", OBJ_DATA="'NO'", MAKE_EPHEM="'YES'", CENTER=center,
                  REF_PLANE="'ECLIPTIC'", REF_SYSTEM="'J2000'", CSV_FORMAT="'YES'")
     query.update(params)
     url = API + "?" + urllib.parse.urlencode(query)
@@ -190,14 +210,15 @@ def cached(key, fetch):
 TLIST_CHUNK = 40
 
 
-def elements_at(command, dates):
-    """Osculating elements at each date (00:00 TDB): date, JD, a, e, i, om, w, ma, n."""
+def elements_at(command, dates, center=SUN_CENTER):
+    """Osculating elements at each date (00:00 TDB) about `center`: date, JD, a, e,
+    i, om, w, ma, n, pr."""
     out = []
     for start in range(0, len(dates), TLIST_CHUNK):
         chunk = dates[start : start + TLIST_CHUNK]
         tlist = " ".join("%.1f" % julian_day(date) for date in chunk)
         result = horizons(dict(COMMAND=command, EPHEM_TYPE="'ELEMENTS'", OUT_UNITS="'AU-D'",
-                               TLIST="'%s'" % tlist))
+                               TLIST="'%s'" % tlist), center)
         rows = table(result)
         if len(rows) != len(chunk):
             raise ValueError("Horizons answered %d of %d epochs" % (len(rows), len(chunk)))
@@ -313,6 +334,8 @@ def main():
     parser.add_argument("--to", dest="last", type=int, default=2400)
     parser.add_argument("--write-golden", dest="golden_path", default=None)
     parser.add_argument("--bodies", default=",".join(BODIES))
+    parser.add_argument("--moons", default=",".join(MOONS),
+                        help="the moons to fetch about their parents (doc 19 cut A.7)")
     parser.add_argument("--cache", default=None, help="a directory for the raw Horizons rows")
     args = parser.parse_args()
     CACHE["dir"] = args.cache
@@ -321,6 +344,7 @@ def main():
     dates = row_dates(args.first, args.last, epoch)
     ic = epoch_ic(epoch)
     names = [n for n in args.bodies.split(",") if n]
+    moons = [n for n in args.moons.split(",") if n]
 
     out = dict(epoch=date_str(epoch), epoch_ic=ic, window=[date_str(first), date_str(last)],
                rows=len(dates), golden_step=GOLDEN_STEP, bodies={}, measure={})
@@ -347,6 +371,66 @@ def main():
             phase_deg_at_epoch=round(lam, 3), epoch_ic=ic, elements=pack_rows(rows),
             latitude_deg_at_epoch=round(beta, 3))
         out["measure"][name] = measure(rows, vecs)
+        golden["bodies"][name] = [
+            [epoch_ic(g["date"]), round(g["x"], 1), round(g["y"], 1), round(g["z"], 1)]
+            for g in vecs if not (g["date"][1] == 2 and g["date"][2] == 29)]
+
+    # The moons (doc 19 cut A.7): elements about the parent, golden vectors about
+    # the Sun. The pack's four numbers are the planetocentric distance, period and
+    # longitude at the epoch; the measure composes the parent's table (fetched
+    # above, or now) with the moon's and compares the sum with Horizons.
+    parent_rows = {}
+    for name in moons:
+        spec = MOONS[name]
+        print("fetching %s about %s ..." % (name, spec["parent"]), file=sys.stderr)
+        until = spec.get("until")
+        if until:
+            # The last decade Horizons knows, Jan 1 and Jul 1 rows, before the cutoff.
+            mdates = [d for d in row_dates(until[0] - 10, until[0] - 1, epoch) if d < until]
+            raw = cached("elements-%s-%d-%d-%s" % (name, until[0] - 10, until[0] - 1,
+                                                    date_str(epoch)),
+                         lambda: elements_at(spec["command"], mdates, spec["center"]))
+            vecs = []
+        else:
+            raw = cached("elements-%s-%d-%d-%s" % (name, args.first, args.last, date_str(epoch)),
+                         lambda: elements_at(spec["command"], dates, spec["center"]))
+            vecs = cached("vectors-%s-%d-%d-%s" % (name, args.first, args.last, GOLDEN_STEP),
+                          lambda: vectors(spec["command"], first, last, GOLDEN_STEP))
+        parent = spec["parent"]
+        if parent not in parent_rows:
+            praw = cached("elements-%s-%d-%d-%s" % (parent, args.first, args.last, date_str(epoch)),
+                          lambda: elements_at(BODIES[parent], dates))
+            parent_rows[parent] = [quantize(r) for r in praw]
+        rows = [quantize(r) for r in raw]
+        at_epoch = position(rows, julian_day(epoch))
+        r, lam, beta = polar(at_epoch)
+        at_row = ([row for row in raw if row["date"] == epoch] or [raw[-1]])[0]
+        out["bodies"][name] = dict(
+            orbit_au=round(r / AU_KM, 9), period_days=round(at_row["pr"], 3),
+            phase_deg_at_epoch=round(lam, 3), epoch_ic=ic, elements=pack_rows(rows),
+            parent=parent, latitude_deg_at_epoch=round(beta, 3))
+        if until:
+            out["bodies"][name]["extrapolated_from"] = date_str(raw[-1]["date"])
+            out["measure"][name] = dict(about=parent, note="no Horizons ephemeris in the window")
+            continue
+        composed = [dict(g, **{"x": g["x"], "y": g["y"], "z": g["z"]}) for g in vecs]
+        prow = parent_rows[parent]
+        def composed_position(jd, rows=rows, prow=prow):
+            p = position(prow, jd)
+            m = position(rows, jd)
+            return (p[0] + m[0], p[1] + m[1], p[2] + m[2])
+        worst = (0.0, None)
+        sq = 0.0
+        for g in composed:
+            pred = composed_position(g["jd"])
+            err = math.dist(pred, (g["x"], g["y"], g["z"]))
+            rel = err / math.hypot(g["x"], g["y"], g["z"])
+            sq += rel * rel
+            if rel > worst[0]:
+                worst = (rel, date_str(g["date"]))
+        out["measure"][name] = dict(max_permille=round(worst[0] * 1000, 4), worst_date=worst[1],
+                                    rms_permille=round(math.sqrt(sq / len(composed)) * 1000, 4),
+                                    about=parent)
         golden["bodies"][name] = [
             [epoch_ic(g["date"]), round(g["x"], 1), round(g["y"], 1), round(g["z"], 1)]
             for g in vecs if not (g["date"][1] == 2 and g["date"][2] == 29)]

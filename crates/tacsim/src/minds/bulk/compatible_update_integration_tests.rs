@@ -7,6 +7,8 @@ use mush_proto::{
     InvokeRequest, InvokeResult, MindEditBase, MindRequest, MindResponse, OutputEvent,
 };
 use mush_roll::commerce::records::{FiledRecord, OwnerTerm, canonical_duplicate_digest};
+#[path = "compatible_update_integration_tests/attested.rs"]
+mod attested;
 #[path = "compatible_update_integration_tests/captured.rs"]
 mod captured;
 #[path = "compatible_update_integration_tests/registry.rs"]
@@ -178,7 +180,7 @@ fn refusals(
     ] {
         let mut w = boot(f, saved)?;
         let action = action(&w)?;
-        let before = w.balances()?;
+        let mut before = w.balances()?;
         let mut p = params.clone();
         if mode == "foreign" {
             assert!(w.prepare(&action, BUYER, START + 1, p).is_err());
@@ -205,10 +207,10 @@ fn refusals(
                 .cloned()
                 .ok_or("charter")?;
             let charter: mush_roll::commerce::CharterId = serde_json::from_value(charter)?;
-            w.setup_command(
-                91,
-                &format!("@asset/transfer #{}=#{}", charter.get(), BUYER.0),
-            )?;
+            w.transfer_charter(charter.object(), BUYER, 49_001_100)?;
+            // Native sale payment is asserted by the helper; the refused
+            // compatible update must add no Registry fee or other debit.
+            before = w.balances()?;
             assert_eq!(
                 w.economy()?
                     .snapshot()
@@ -316,6 +318,13 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
     let mut w = boot(f, &saved)?;
     let rating = registry::certify(&mut w, &revision)?;
     let certified = w.snapshot();
+    // Branch from the already measured second revision before either branch
+    // files it. This earns no additional certificate and preserves the original
+    // immediate-update/captured-sortie scenario below.
+    runtime.block_on(super::fork_tests::boxed_story_phase(
+        "compatible_update.attested",
+        || attested::exercise(f, &certified, &revision, rating),
+    )?)?;
     refusals(f, &certified, &revision, rating)?;
     runtime.block_on(captured::exercise(f, &certified, &revision, rating))?;
     let before_money = w.balances()?;

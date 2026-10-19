@@ -60,6 +60,7 @@ fn the_corridor_pack_carries_its_sky() {
             period_mdays: 686_980,
             phase_mdeg: 130_000,
             epoch_ic: None,
+            parent: None,
         })
     );
 }

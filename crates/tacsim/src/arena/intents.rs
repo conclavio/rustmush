@@ -960,6 +960,7 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
         let Some(row) = arena.minds.get_mut(&i.unit) else {
             return IntentOutcome::Refused(Refusal::Unknown);
         };
+        let watch_expiry = rekeyed.expires_ms;
         row.order = Some(rekeyed);
         // **17b cut M4.6** (the owner's STOP C ruling, 2026-10-09): the issuer
         // beside the order, written here where it lands — from the same
@@ -979,6 +980,7 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> Inte
             crate::deliberation::order::Objective::Support { of } if of != i.unit => Some(of),
             _ => None,
         };
+        arena.note_accepted_order(i.unit, order, watch_expiry);
         // **16b cut Y.1** — the black box records the order that landed, one line
         // per unit, at `now_ms`, with no draws. It is cadence-safe for the reason
         // `StandingOrder::accepted_ms` already is: phase 2 runs at the pulse's
@@ -1292,6 +1294,7 @@ fn release_machine_order(
         state.order_issuer = None;
         state.order_charge = None;
     }
+    arena.clear_order_watch_member(unit);
     journal_released(arena, unit, squad, issuer, at, hash);
 }
 

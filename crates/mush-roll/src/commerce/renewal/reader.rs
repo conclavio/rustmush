@@ -325,6 +325,14 @@ impl OwnerReadService for RenewalReader {
         let Birth::Entitlement(birth) = proved.birth() else {
             return Err(OwnerReadError::Refused);
         };
+        super::super::registry_revocation::current::require(
+            ctx,
+            &self.families,
+            licence.id(),
+            term.generation(),
+            Some(WorldIcSeconds::from_stamp(&ctx.world().world_ic_now()).map_err(integrity)?),
+        )
+        .map_err(integrity)?;
         let predecessor_term_end = term.window().term_end();
         if ctx.world().world_ic_now().at < predecessor_term_end.get() {
             return Err(OwnerReadError::Refused);

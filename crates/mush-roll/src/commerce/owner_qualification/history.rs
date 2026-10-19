@@ -19,12 +19,12 @@ pub(crate) fn verify(
     op: &QualificationOperation,
 ) -> Result<(), PublicationError> {
     op.validate()?;
+    let birth = paid_history::read(ctx, &f.operations, op.birth_operation.to_hex())?;
     let binding = paid_history::read(
         ctx,
         &f.owner_parents,
-        OwnerParentBinding::key_for(op.owner_licence, op.owner),
+        OwnerParentBinding::key_for(op.owner_licence, birth.requester),
     )?;
-    let birth = paid_history::read(ctx, &f.operations, op.birth_operation.to_hex())?;
     let filed = paid_history::read(ctx, &f.filed, op.filed.key())?;
     let term = paid_history::read(
         ctx,
@@ -32,6 +32,13 @@ pub(crate) fn verify(
         OwnerTerm::encoded_key(op.owner_licence, op.owner_term),
     )?;
     op.matches_birth(binding, filed, term, birth)?;
+    super::super::charter_transfer::history::require_captured(
+        ctx,
+        f,
+        birth,
+        op.charter_ownership.as_ref(),
+        op.owner,
+    )?;
     super::super::dependent_owner::verify_history(
         ctx, roll, f, ratings, binding, filed, term, birth,
     )?;

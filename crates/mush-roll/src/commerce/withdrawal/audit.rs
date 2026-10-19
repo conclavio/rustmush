@@ -11,12 +11,10 @@ pub(crate) fn status(
     families: &CommerceFamilies,
     status: &super::super::records::RevisionStatus,
 ) -> Result<(), PublicationError> {
-    if status.recalled_by.is_some() {
-        return Err(PublicationError::Mismatch);
-    }
+    super::super::registry_recall::audit::status(ctx, families, status)?;
     if let Some(cause) = status.withdrawn_by {
         let operation = read(ctx, &families.withdrawals, cause.to_hex())?;
-        if operation.status() != *status {
+        if operation.filed != status.filed || status.withdrawn_by != Some(operation.operation) {
             return Err(PublicationError::Mismatch);
         }
         let filed = read(ctx, &families.filed, status.filed.key())?;
@@ -34,7 +32,8 @@ pub(crate) fn causes(
         let filed = read(ctx, &families.filed, operation.filed.key())?;
         let initial = super::super::line_update::audit::birth(ctx, families, filed)?;
         operation.matches_initial(initial, filed)?;
-        if read(ctx, &families.status, operation.filed.key())? != &operation.status() {
+        let status = read(ctx, &families.status, operation.filed.key())?;
+        if status.filed != operation.filed || status.withdrawn_by != Some(operation.operation) {
             return Err(PublicationError::Mismatch);
         }
         roll.check_required_root(&operation.root()?)

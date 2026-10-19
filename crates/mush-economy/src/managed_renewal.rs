@@ -329,6 +329,7 @@ fn contract(record: &history::OfferRecord) -> Result<EconomicContract, Participa
     let marker = RenewalMarkerV1::new(record.operation, record.action.clone(), offer)?;
     let buyer = PrincipalId::Object(offer.terms.buyer);
     let consent = ConsentSurface {
+        fact_consent: None,
         managed: Some(ManagedConsent::renewal_offer(marker)?),
         parties: vec![buyer.clone()],
         terms: ContractTerms {

@@ -217,6 +217,43 @@ pub struct SealTerms {
     pub fallback: Option<SmolStr>,
 }
 
+/// Internal shared execution inputs, deliberately without a match identity.
+/// A policy is data, not admission, a start event, or permission to publish.
+pub(crate) struct SealPolicy<'a> {
+    pub(crate) authored: Option<&'a CardDefinition>,
+    pub(crate) selected_profiles: &'a [SmolStr],
+    pub(crate) classes: &'a ClassTable,
+    pub(crate) rom_cfg: &'a ReflexConfig,
+    pub(crate) principal: &'a Option<CharacterRef>,
+    pub(crate) card: &'a StockCard,
+    pub(crate) odds_floor_permille: u32,
+    pub(crate) engine_for_minds: SealEngine,
+    pub(crate) rated: CoreClass,
+    pub(crate) class_cap: CoreClass,
+    pub(crate) identity: &'a SealIdentity,
+    pub(crate) profiles: &'a [(SmolStr, StockCard)],
+    pub(crate) fallback: &'a Option<SmolStr>,
+}
+impl<'a> From<&'a SealTerms> for SealPolicy<'a> {
+    fn from(v: &'a SealTerms) -> Self {
+        Self {
+            authored: v.authored.as_deref(),
+            selected_profiles: &v.selected_profiles,
+            classes: &v.classes,
+            rom_cfg: &v.rom_cfg,
+            principal: &v.principal,
+            card: &v.card,
+            odds_floor_permille: v.odds_floor_permille,
+            engine_for_minds: v.engine_for_minds,
+            rated: v.rated,
+            class_cap: v.class_cap,
+            identity: &v.identity,
+            profiles: &v.profiles,
+            fallback: &v.fallback,
+        }
+    }
+}
+
 /// **The fallback a substituted seal records** (17b cut M5.2; Q-UM-15 at the
 /// owner's OQ-5): a non-Doctrine choice sealed as Standard Doctrine because
 /// humans are on both sides ([`SealTerms::fallback`]).
@@ -419,11 +456,30 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
             rounds_max: w.count_per_load,
         })
         .collect::<Vec<_>>();
+    seal_with_policy(
+        unit.id,
+        &unit.unit,
+        &weapons,
+        SortieId::in_match(terms.match_id.0, unit.id),
+        &SealPolicy::from(terms),
+    )
+}
+
+/// Pure executable sealing over actual owner hardware. The caller supplies an
+/// already allocated sortie identity; this calculation grants no custody or
+/// host-transition authority. OOC retains its exact wrapper above.
+pub(crate) fn seal_with_policy(
+    id: mush_core::ObjId,
+    unit: &mush_tactics::TacticalUnit,
+    weapons: &[crate::arena::rules::RuleWeapon],
+    sortie: SortieId,
+    terms: &SealPolicy<'_>,
+) -> Result<MindSeal, SealError> {
     let mut channels = vec![Channel::Helm, Channel::Sensors];
     if !weapons.is_empty() {
         channels.push(Channel::Fire);
     }
-    let hardware = read_core(&unit.unit);
+    let hardware = read_core(unit);
     if let Some(hw) = hardware.as_ref()
         && hw.governed
         && terms.rated > hw.class
@@ -441,7 +497,7 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
     };
     let class = terms.rated.min(core_class).min(terms.class_cap);
     if let Some(certificate) = terms.identity.origin.certificate() {
-        let definition = terms.authored.as_deref().ok_or_else(|| {
+        let definition = terms.authored.ok_or_else(|| {
             SealError::Schema(crate::arena::schema::SchemaError {
                 field: "certificate".into(),
                 message: "filed source requires its complete certified definition".into(),
@@ -461,10 +517,10 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
     }
     let rom_identity = SealIdentity::doctrine();
     let rom = SealedCards::prepare(
-        rom_definition(&terms.rom_cfg, terms.odds_floor_permille)?,
+        rom_definition(terms.rom_cfg, terms.odds_floor_permille)?,
         &[],
         &terms.classes.row(CoreClass::Zero),
-        &weapons,
+        weapons,
         &channels,
         terms.odds_floor_permille,
     )?;
@@ -477,17 +533,17 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
             Some(SmolStr::new_static(NO_CORE_FALLBACK)),
         )
     } else {
-        let cards = prepare_cards(terms, class, &weapons, &channels)?;
+        let cards = prepare_policy_cards(terms, class, weapons, &channels)?;
         (
-            terms.identity.clone(),
+            (*terms.identity).clone(),
             terms.engine_for_minds,
             cards,
-            terms.fallback.clone(),
+            (*terms.fallback).clone(),
         )
     };
     let seal = MindSeal {
-        unit: unit.id,
-        sortie: SortieId::in_match(terms.match_id.0, unit.id),
+        unit: id,
+        sortie,
         core,
         core_class,
         class,
@@ -495,13 +551,13 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
         mind: identity.mind,
         origin: identity.origin,
         source_sha256: identity.source_sha256,
-        requested: terms.identity.clone(),
+        requested: (*terms.identity).clone(),
         card: cards.opening_card.clone(),
         card_digest: cards.opening_digest,
         abi: crate::minds::MIND_ABI.into(),
-        principal: terms.principal.clone(),
+        principal: (*terms.principal).clone(),
         channels,
-        weapons: weapons.clone(),
+        weapons: weapons.to_vec(),
         odds_floor_permille: terms.odds_floor_permille,
         fallback,
         engine,
@@ -509,7 +565,7 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
         rom_identity,
         rom,
     };
-    seal.verify(&terms.classes, &weapons)?;
+    seal.verify(terms.classes, weapons)?;
     Ok(seal)
 }
 
@@ -520,8 +576,16 @@ pub fn prepare_cards(
     weapons: &[crate::arena::rules::RuleWeapon],
     channels: &[Channel],
 ) -> Result<SealedCards, SealError> {
+    prepare_policy_cards(&SealPolicy::from(terms), class, weapons, channels)
+}
+fn prepare_policy_cards(
+    terms: &SealPolicy<'_>,
+    class: CoreClass,
+    weapons: &[crate::arena::rules::RuleWeapon],
+    channels: &[Channel],
+) -> Result<SealedCards, SealError> {
     terms.identity.validate()?;
-    let (definition, names) = if let Some(definition) = &terms.authored {
+    let (definition, names) = if let Some(definition) = terms.authored {
         let class_matches = match terms.identity.origin.certificate() {
             Some(certificate) => {
                 certificate.verify_definition(definition)?;
@@ -535,7 +599,7 @@ pub fn prepare_cards(
                 message: "authored source class or engine differs from immutable revision".into(),
             }));
         }
-        ((**definition).clone(), terms.selected_profiles.clone())
+        (definition.clone(), terms.selected_profiles.to_vec())
     } else {
         if terms.identity.origin.certificate().is_some() {
             return Err(SealError::Schema(crate::arena::schema::SchemaError {
@@ -580,9 +644,9 @@ pub fn prepare_cards(
 /// [`SealError::Card`] naming the presets for a profile that is none of
 /// them, and a range of 1 to 4 for a set of more than four — neither
 /// reachable through the lobby, which refuses both at the choice.
-fn sealed_set(terms: &SealTerms) -> Result<Vec<(&'static str, &StockCard)>, SealError> {
+fn sealed_set<'a>(terms: &SealPolicy<'a>) -> Result<Vec<(&'static str, &'a StockCard)>, SealError> {
     if terms.profiles.is_empty() {
-        return Ok(vec![("Line", &terms.card)]);
+        return Ok(vec![("Line", terms.card)]);
     }
     if terms.profiles.len() > crate::arena::card::ProfileSet::MOST {
         return Err(SealError::Card(CardError::Range {

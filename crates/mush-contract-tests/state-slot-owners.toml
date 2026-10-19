@@ -1105,29 +1105,35 @@ into the actual registered Sim slot. It proves that missing journey authority
 cannot authorize a replacement; no unit, title, custody or work order is minted.
 """
 
+
+
+
+
 [[site]]
-path = "crates/mush-economy/src/registry_filing/update/tests.rs"
+path = "crates/mush-industry/src/core_production/tests.rs"
 accessor = "World::module_state_mut"
-slot = "EconomyStore"
-owner = "economy"
+slot = "OrgStore"
+owner = "org"
 reason = """
-M7 cfg(test) compatible-update owner fixture installs the actual prepared Economy capsule after its native journal and before-image checks. This is the same owner-local installation exercised by the production participant; no client authority or receipt is fabricated.
+The cfg(test) Org command uses the real policy allocator and audited Org submit
+service to install scoped Allow/Deny rules. Actual commands create the importer,
+scope and grants; no certificate, stock, quota or readiness state is fabricated.
 """
 
 [[site]]
-path = "crates/tacsim/src/minds/bulk/compatible_update_integration_tests/registry.rs"
+path = "crates/mush-bot/tests/arena_contract/lapse_producer.rs"
 accessor = "World::module_state_mut"
-slot = "Artifacts"
+slot = "ArenaRegistry"
 owner = "tacsim"
-reason = """
-M7 cfg(test) compatible-update certificate child uses the actual retained Registry ticket and paid quota owner, exact registered actions and acknowledged leases. It runs the real worker and consumes real acknowledgements; it never fabricates a certificate or grants source authority.
-"""
+reason = "Test-only R14: seeds notice watches through the existing public integration seam, then renders actual egress-produced lapse events through the bot reader. No native order, match authority, or persistent state is created."
 
 [[site]]
-path = "crates/tacsim/src/minds/bulk/compatible_update_integration_tests/registry.rs"
+path = "crates/tacsim/tests/match_lifecycle/resume_watch.rs"
 accessor = "World::module_state_mut"
-slot = "BulkStore"
-owner = "tacsim"
+slot = "AccountOracle"
+owner = "sim"
 reason = """
-M7 cfg(test) compatible-update certificate child uses the actual retained Registry ticket and paid quota owner, exact registered actions and acknowledged leases. It runs the real worker and consumes real acknowledgements; it never fabricates a certificate or grants source authority.
+R4 test-only actual fresh production reboot restores the same real fixture
+character-to-account wiring after all module slots are newly registered and
+hydrated. This is host identity wiring, not source, seal or recall authority.
 """

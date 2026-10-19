@@ -500,7 +500,8 @@ own minds and you alone are told
 hears the same of its own lance leaders' orders
 (`Squad red-1: red lance leader 1's hold order has run out; back on their minds.`).
 Nobody else is told you gave an order: nothing is said on your side's radio
-unless you say it.
+unless you say it. The squad keeps one lapse notice: a later order from a
+teammate replaces yours.
 
 **You may hold orders on four squads at once**: a fifth is refused until one of
 the four runs out or you release one, and a new order to a squad you already

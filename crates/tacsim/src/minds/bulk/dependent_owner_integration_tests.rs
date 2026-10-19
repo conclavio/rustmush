@@ -369,14 +369,14 @@ pub(super) async fn exercise(
         let mut titles = PlayerWorld::boot_dependent(f, &filed)?;
         let parent_licence: PersonalPaidLicence = serde_json::from_value(one(rows(&filed.disk, "roll", "roll_mind_personal_paid_licence"))?)?;
         let parent_charter = parent_licence.charter().object();
-        titles.say(GOD, &format!("@asset/transfer #{}=#{}", parent_charter.0, BUYER.0))?;
+        titles.transfer_charter(parent_charter, BUYER, 49_000_060)?;
         assert_eq!(titles.engine.world.module_state::<EconomyStore>().ok_or("economy")?.snapshot()
             .asset(parent_charter).ok_or("parent title")?.title_owner, EconomicOwner::Object(BUYER));
         // The issuer's title departure does not revoke the customer's own
         // qualifying paid grant or its dependent owner's source.
         filed_source(&mut titles, BUYER, licence, true, saved.source())?;
         filed_source(&mut titles, BUYER, parent_licence.id().get(), true, mush_roll::source_digest(SOURCE))?;
-        titles.say(GOD, &format!("@asset/transfer #{}=#{}", shell.0, GOD.0))?;
+        titles.transfer_charter(shell, GOD, 49_000_070)?;
         assert_eq!(titles.engine.world.module_state::<EconomyStore>().ok_or("economy")?.snapshot()
             .asset(shell).ok_or("child title")?.title_owner, EconomicOwner::Object(GOD));
         filed_source(&mut titles, BUYER, licence, false, saved.source())?;

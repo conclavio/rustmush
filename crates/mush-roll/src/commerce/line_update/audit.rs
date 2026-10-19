@@ -57,6 +57,13 @@ pub(crate) fn birth<'a>(
     let op = get(ctx, &f.line_updates, filed.operation.to_string())?;
     let initial = get(ctx, &f.operations, op.initial.to_string())?;
     op.check_birth(initial)?;
+    super::super::charter_transfer::history::require_captured(
+        ctx,
+        f,
+        initial,
+        op.charter_ownership.as_ref(),
+        op.actor,
+    )?;
     op.check_filed(filed)?;
     let charter = get(ctx, &f.charters, op.charter.key())?;
     let line = get(ctx, &f.lines, op.line.key())?;
@@ -88,6 +95,9 @@ pub(crate) fn birth<'a>(
         .world()
         .module_state::<RollStore>()
         .ok_or(PublicationError::Unavailable)?;
+    let term =
+        super::super::owner_attestation::history::historical(ctx, roll, f, initial, op.term)?;
+    op.check_owner_term(&term)?;
     for root in required(op) {
         roll.check_required_root(&root)
             .map_err(|_| PublicationError::Mismatch)?;
@@ -253,8 +263,21 @@ pub(crate) fn birth_in_txn(
         let initial = txn
             .get(&f.operations, &op.initial.to_string())
             .map_err(|_| PublicationError::Unavailable)?
+            .cloned()
             .ok_or(PublicationError::Missing)?;
-        op.check_birth(initial)?;
+        op.check_birth(&initial)?;
+        super::super::charter_transfer::history::require_captured_in_txn(
+            txn,
+            world,
+            f,
+            &initial,
+            op.charter_ownership.as_ref(),
+            op.actor,
+        )?;
+        let term = super::super::owner_attestation::history::historical_in_txn(
+            txn, world, f, &initial, op.term,
+        )?;
+        op.check_owner_term(&term)?;
         world
             .module_state::<mush_economy::EconomyStore>()
             .ok_or(PublicationError::Unavailable)?

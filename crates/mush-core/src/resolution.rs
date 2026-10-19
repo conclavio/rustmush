@@ -348,6 +348,44 @@ impl<'a> PrepareCtx<'a> {
         result
     }
 
+    /// Reserve the fixed actual Industry order's future terminal rows at Accept.
+    pub fn reserve_core_integration_completion(
+        &mut self,
+        txn: &mut crate::ActionTxn<'_>,
+        order: u64,
+    ) -> Result<(), crate::ActionStateError> {
+        self.core_integration_completion(txn, order, true)
+    }
+    /// Retain through Reserve/Advance; release only on actual Complete/Cancel.
+    pub fn advance_core_integration_completion(
+        &mut self,
+        txn: &mut crate::ActionTxn<'_>,
+        order: u64,
+    ) -> Result<(), crate::ActionStateError> {
+        self.core_integration_completion(txn, order, false)
+    }
+    fn core_integration_completion(
+        &mut self,
+        txn: &mut crate::ActionTxn<'_>,
+        order: u64,
+        admission: bool,
+    ) -> Result<(), crate::ActionStateError> {
+        let result = match (self.owner_error.is_none(), self.registered_transaction) {
+            (true, Some((base, provider))) => {
+                txn.core_integration_completion(base, provider, self.commit_token, order, admission)
+            }
+            _ => Err(crate::ActionStateError::TerminalCapacity(
+                "core integration preparation unavailable",
+            )),
+        };
+        if result.is_err() {
+            txn.poison_owner_read();
+            self.owner_error
+                .get_or_insert(crate::participant::ParticipantError::Authority);
+        }
+        result
+    }
+
     /// Reserve the exact seven completion targets for this renewal Draft.
     /// The action, operation, paired images and provider must be this invocation.
     pub fn reserve_mind_renewal_completion(
@@ -529,6 +567,40 @@ impl<'a> PrepareCtx<'a> {
         result
     }
 
+    /// Compare an opaque owner-preparation identity with this actual complete
+    /// invocation/action/commit and the registered transaction pre-image.
+    /// This grants no authority and does not replace the owner's live checks.
+    /// A mismatch poisons both preparation and transaction even if caught.
+    pub fn require_owner_preparation_binding(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        binding: &crate::participant::OwnerPreparationBinding,
+    ) -> Result<(), crate::participant::ParticipantError> {
+        let result = (|| {
+            if let Some(error) = &self.owner_error {
+                return Err(error.clone());
+            }
+            let (base, provider) = self
+                .registered_transaction
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            txn.read_preimage(base, provider)
+                .map_err(|_| crate::participant::ParticipantError::Authority)?;
+            if !self
+                .participants
+                .as_ref()
+                .is_some_and(|p| p.matches_preparation(binding, self.commit_token))
+            {
+                return Err(crate::participant::ParticipantError::Authority);
+            }
+            Ok(())
+        })();
+        if let Err(error) = &result {
+            txn.poison_owner_read();
+            self.owner_error.get_or_insert_with(|| error.clone());
+        }
+        result
+    }
+
     /// Prepare one registered owner's closed effect in this exact action.
     /// A refused request poisons this preparation even if provider code catches it.
     pub fn prepare_owner<P: crate::participant::OwnerParticipant>(
@@ -561,6 +633,58 @@ impl<'a> PrepareCtx<'a> {
             .as_ref()
             .map(|p| p.world())
             .ok_or(crate::participant::ParticipantError::Unavailable)
+    }
+
+    /// Initialize the closed hardware reservation deployment alongside the
+    /// actual Industry production marker. The owner policy proves empty history.
+    pub fn initialize_core_outputs<P: crate::core_output::CoreOutputPolicy>(
+        &mut self,
+        service: &crate::core_output::CoreOutputReservations<P>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+    ) -> Result<(), crate::participant::ParticipantError> {
+        let facts = self
+            .read_owner_preimage(
+                txn,
+                service.reader(),
+                service.request(crate::core_output::OutputPhase::Initialize, None),
+            )
+            .map_err(|_| crate::participant::ParticipantError::Authority)?;
+        self.with_shell(|p, c| p.initialize_core_outputs(service, txn, c, facts))
+    }
+    /// Resolve the actual accepted order through its registered owner. Core
+    /// derives the fixed inert object and trusted-container inverse image.
+    pub fn reserve_core_output<P: crate::core_output::CoreOutputPolicy>(
+        &mut self,
+        service: &crate::core_output::CoreOutputReservations<P>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        order: u64,
+    ) -> Result<crate::core_output::ReservedCoreOutput, crate::participant::ParticipantError> {
+        let facts = self
+            .read_owner_preimage(
+                txn,
+                service.reader(),
+                service.request(crate::core_output::OutputPhase::Reserve, Some(order)),
+            )
+            .map_err(|_| crate::participant::ParticipantError::Authority)?;
+        self.with_shell(|p, c| p.reserve_core_output(service, txn, c, order, facts))
+    }
+    /// Verify and consume the acknowledged output for this exact actual order.
+    /// The returned identity feeds the same-commit certificate/title producer;
+    /// it grants neither by itself and never edits World at completion.
+    pub fn consume_core_output<P: crate::core_output::CoreOutputPolicy>(
+        &mut self,
+        service: &crate::core_output::CoreOutputReservations<P>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        order: u64,
+    ) -> Result<crate::core_output::ReservedCoreOutput, crate::participant::ParticipantError> {
+        let facts = self
+            .read_owner_preimage(
+                txn,
+                service.reader(),
+                service.request(crate::core_output::OutputPhase::Complete, Some(order)),
+            )
+            .map_err(|_| crate::participant::ParticipantError::Authority)?;
+        self.with_shell(|p, c| p.consume_core_output(service, txn, c, order, facts))
     }
 
     /// Reserve one inert charter object using this invocation's actual actor.

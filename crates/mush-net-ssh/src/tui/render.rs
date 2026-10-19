@@ -4048,11 +4048,23 @@ pub fn tab_strip(
     right: &str,
     width: usize,
 ) -> Line<'static> {
-    let label_of = |digit: u8, name: &str, badge: usize, named: bool| match (named, badge > 0) {
-        (true, true) => format!(" {digit} {name} {badge} "),
-        (true, false) => format!(" {digit} {name} "),
-        (false, true) => format!(" {digit} {badge} "),
-        (false, false) => format!(" {digit} "),
+    // Doc 19 cut A.3b: a lettered screen's id is its letter's byte, and the
+    // strip prints the letter (`Alt+c`); a digit prints as itself.
+    let hotkey = |digit: u8| -> String {
+        if digit <= 9 {
+            digit.to_string()
+        } else {
+            char::from(digit).to_string()
+        }
+    };
+    let label_of = |digit: u8, name: &str, badge: usize, named: bool| {
+        let key = hotkey(digit);
+        match (named, badge > 0) {
+            (true, true) => format!(" {key} {name} {badge} "),
+            (true, false) => format!(" {key} {name} "),
+            (false, true) => format!(" {key} {badge} "),
+            (false, false) => format!(" {key} "),
+        }
     };
     let full: usize = "rustmush".len()
         + screens
@@ -4170,6 +4182,139 @@ pub fn legend_line(
     }
     push(&mut spans, &help.0, help.1);
     Line::from(spans)
+}
+
+// ---- doc 19 cut A.3b: the sky chart screen ---------------------------------------
+
+/// The `sky.chart` feed (`tacsim::port::chart_panel::SKY_CHART_FEED`).
+pub const CHART_FEED: &str = "sky.chart";
+
+fn chart_num(data: &Value, key: &str) -> usize {
+    data.get(key)
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(0)
+}
+
+fn chart_cell(v: Option<&Value>) -> Option<(usize, usize)> {
+    let arr = v?.as_array()?;
+    Some((
+        usize::try_from(arr.first()?.as_u64()?).ok()?,
+        usize::try_from(arr.get(1)?.as_u64()?).ok()?,
+    ))
+}
+
+/// **The sky chart pane** (doc 19 cut A.3b; doc 19 §5): the `sky.chart` frame's
+/// flat render — the server's own grid, the one `+chart/map` prints — windowed
+/// to the pane around the viewer's port (the whole 60-by-28 grid fits a
+/// 120-column terminal's Main pane), its title above and its legend below. No
+/// frame yet: a sentence; a frame with no grid (no lane here): the sentence the
+/// server sent as its title.
+pub fn render_chart_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    if data.is_null() {
+        return PaneRows::one("(no chart yet: r asks the server for the sky)");
+    }
+    let title = data
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("The sky");
+    let width = chart_num(data, "width");
+    let height = chart_num(data, "height");
+    if width == 0 || height == 0 {
+        return PaneRows::one(&clean(title));
+    }
+    let empty = Vec::new();
+    let runs = data.get("rows").and_then(Value::as_array).unwrap_or(&empty);
+    let (pane_w, pane_h) = match ctx.pane {
+        Some((w, h)) => (usize::from(w).max(8), usize::from(h).max(4)),
+        None => (width, height + 2),
+    };
+    // The title is one clipped row; the legend wraps at entry boundaries over
+    // as many rows as it needs; the grid takes what is left, windowed around
+    // the viewer's port.
+    let clip = |text: &str| -> String { clean(text).chars().take(pane_w).collect() };
+    let entries: Vec<String> = data
+        .get("legend")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|pair| {
+                    Some(format!(
+                        "{} {}",
+                        pair.get(0)?.as_str()?,
+                        pair.get(1)?.as_str()?
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut legend_rows: Vec<String> = Vec::new();
+    for entry in entries {
+        let entry = clean(&entry);
+        match legend_rows.last_mut() {
+            Some(last) if last.chars().count() + 2 + entry.chars().count() <= pane_w => {
+                last.push_str("  ");
+                last.push_str(&entry);
+            }
+            _ => legend_rows.push(clip(&entry)),
+        }
+    }
+    let grid_h = pane_h.saturating_sub(1 + legend_rows.len()).max(1);
+    let you = chart_cell(data.get("you"));
+    let (x0, y0, w, h) = mush_ansi::viewport(width, height, you, pane_w, grid_h);
+    let grid = mush_ansi::window_rows(runs, width, height, x0, y0, w, h);
+    let mut rows = vec![PaneRow::plain(Line::from(Span::styled(
+        clip(title),
+        Style::default().add_modifier(Modifier::BOLD),
+    )))];
+    // North up: the grid's row 0 is the south edge.
+    for row in grid.iter().rev() {
+        rows.push(PaneRow::plain(Line::from(row.iter().collect::<String>())));
+    }
+    for line in legend_rows {
+        rows.push(PaneRow::plain(Line::from(dim_span_owned(&line))));
+    }
+    PaneRows { rows }
+}
+
+/// **The chart's tables pane** (doc 19 cut A.3b): the lines `+chart` and
+/// `+chart <port>` print — the sky table and the passages now, then each
+/// destination's window — as the server sent them in `chart.lines`, so this
+/// client composes no figure of its own.
+pub fn render_chart_table_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    if data.is_null() {
+        return PaneRows::one("(no chart yet)");
+    }
+    let Some(lines) = data.pointer("/chart/lines") else {
+        return PaneRows::one("(the server sent no tables)");
+    };
+    let system = ctx.tag("system");
+    let mut rows = Vec::new();
+    // The window first — the trader's question — then the sky table, which the
+    // picture beside it already draws.
+    for (key, head) in [
+        ("window", "the window"),
+        ("sky", "the sky and the passages now"),
+    ] {
+        let Some(list) = lines.get(key).and_then(Value::as_array) else {
+            continue;
+        };
+        if list.is_empty() {
+            continue;
+        }
+        rows.push(PaneRow::plain(Line::from(Span::styled(
+            head.to_owned(),
+            system,
+        ))));
+        for line in list.iter().filter_map(Value::as_str) {
+            rows.push(PaneRow::plain(Line::from(clean(line))));
+        }
+    }
+    if rows.is_empty() {
+        return PaneRows::one("(the server sent no tables)");
+    }
+    PaneRows { rows }
 }
 
 #[cfg(test)]

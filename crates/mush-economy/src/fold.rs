@@ -31,6 +31,18 @@ use crate::record::{AssetEffectKind, EconomicAsset, EconomicTransaction, Hold, H
 /// The journal-derived accumulators at [`FoldState::covered_seq`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FoldState {
+    /// Exact charter transfer journal inventory, including its inverse key index.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::registry_filing::charter_transfer::CharterTransferReceiptAudit::uninitialized"
+    )]
+    pub(crate) charter_transfer_receipts:
+        crate::registry_filing::charter_transfer::CharterTransferReceiptAudit,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::core_integration::receipt::CoreReceiptAudit::uninitialized"
+    )]
+    pub(crate) core_receipts: crate::core_integration::receipt::CoreReceiptAudit,
     #[serde(
         default,
         skip_serializing_if = "crate::registry_filing::update::UpdateReceiptAudit::uninitialized"
@@ -103,8 +115,10 @@ impl FoldState {
     /// Fold one journal entry at `seq`. The one function boot replay and the
     /// live post path both call; a change here changes both.
     pub fn fold_entry(&mut self, seq: u64, tx: &EconomicTransaction) {
+        self.core_receipts.observe(tx);
         self.filing_receipts.observe(tx);
         self.update_receipts.observe(tx);
+        self.charter_transfer_receipts.observe(tx);
         self.purchase_receipts.observe(tx);
         self.renewal_receipts.observe(tx);
         let mut touched: BTreeSet<AccountId> = BTreeSet::new();

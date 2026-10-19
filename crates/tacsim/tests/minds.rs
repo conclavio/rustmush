@@ -5772,6 +5772,55 @@ fn charge_run(charge: Charge, stop_at_fire: bool) -> (Rig, Vec<Kept>) {
     (rig, kept)
 }
 
+#[test]
+fn l2_a_self_charged_support_expires_once_as_engage() {
+    let mut rig = Rig::new(charge_field());
+    let first = intent(
+        &rig.arena,
+        RED,
+        IntentKind::Order(Box::new(order(
+            RED_ONE,
+            Objective::Support { of: RED },
+            Some(RED2),
+            1_000,
+        ))),
+        1,
+    );
+    let _ = rig.pulse(&[], &[first]);
+    let held = rig.arena.frame_order(RED).expect("the self-charge landed");
+    assert_eq!(held.objective, MindObjective::Engage { target: None });
+    let deadline = held.expires_ms;
+    assert_eq!(rig.arena.minds[&RED].order_charge, None);
+    assert!(rig.lines("order_expired", RED).is_empty());
+
+    let _ = rig.until(deadline + 3 * STOCK_THINK_MS, |arena| {
+        arena
+            .minds
+            .get(&RED)
+            .is_some_and(|state| state.order.is_none())
+    });
+    assert!(
+        rig.arena.now_ms >= deadline,
+        "the self-charge did not expire early"
+    );
+    let state = &rig.arena.minds[&RED];
+    assert_eq!(state.order_issuer, None);
+    assert_eq!(state.order_charge, None);
+    let after = rig.arena.now_ms + 3 * STOCK_THINK_MS;
+    let _ = rig.until(after + SUBSTEP, |arena| arena.now_ms >= after);
+    let expired: Vec<_> = rig
+        .journal()
+        .into_iter()
+        .filter(|event| event.kind.as_str() == "order_expired")
+        .collect();
+    assert_eq!(expired.len(), 1);
+    assert!(expired[0].t_ms >= deadline);
+    let line = serde_json::to_value(&expired[0].kind).expect("expiry event");
+    assert_eq!(line["unit"], serde_json::json!(RED.0));
+    assert_eq!(line["squad"], serde_json::json!("red-1"));
+    assert_eq!(line["objective"], serde_json::json!("engage"));
+}
+
 /// **A self-charged `Support` fights on doctrine** (17b cut L.2; the plan's
 /// Q-L6; D-UM-15; M1a.6's residual (3), reachable now that a mind's hull is in
 /// a squad). `rekey_order` re-keys `Support { of: self }` through the

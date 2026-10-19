@@ -144,6 +144,7 @@ pub mod context;
 mod coprates_drill;
 mod doctrine_library;
 pub mod fees;
+pub(crate) mod ic_sortie;
 pub mod kernels;
 #[cfg(test)]
 mod meridiani_field;

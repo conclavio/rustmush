@@ -65,6 +65,7 @@
 )]
 
 pub mod commands;
+pub mod core_production;
 pub mod custody;
 pub mod facility;
 pub mod facts;

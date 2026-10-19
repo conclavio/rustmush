@@ -57,6 +57,9 @@ impl SelectedParent {
 #[serde(try_from = "OperationWire")]
 pub(crate) struct QualificationOperation {
     pub(crate) format: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) charter_ownership:
+        Option<super::super::charter_transfer::records::CharterOwnershipRef>,
     pub(crate) operation: CommitToken,
     pub(crate) action: DefinitionRef,
     pub(crate) manifest: DefinitionRef,
@@ -82,6 +85,11 @@ pub(crate) struct QualificationOperation {
 #[serde(deny_unknown_fields)]
 struct OperationWire {
     format: u16,
+    #[serde(
+        default,
+        deserialize_with = "super::super::charter_transfer::records::present_ownership"
+    )]
+    charter_ownership: Option<super::super::charter_transfer::records::CharterOwnershipRef>,
     operation: CommitToken,
     action: DefinitionRef,
     manifest: DefinitionRef,
@@ -111,6 +119,7 @@ impl TryFrom<OperationWire> for QualificationOperation {
     fn try_from(w: OperationWire) -> Result<Self, Self::Error> {
         let value = Self {
             format: w.format,
+            charter_ownership: w.charter_ownership,
             operation: w.operation,
             action: w.action,
             manifest: w.manifest,
@@ -143,9 +152,14 @@ impl Record for QualificationOperation {
     }
     fn validate(&self) -> Result<(), PublicationError> {
         self.selected_parent.validate()?;
+        if let Some(ownership) = &self.charter_ownership {
+            ownership.transferred()?;
+        }
         let now = WorldIcSeconds::from_stamp(&self.observed_ic).map_err(invalid)?;
-        if self.format != 1
-            || self.owner.0 == 0
+        if !matches!(
+            (self.format, self.charter_ownership.is_some()),
+            (1, false) | (2, true)
+        ) || self.owner.0 == 0
             || self.title_revision == 0
             || self.owner_term.get() != 1
             || self.ordinal == 0
@@ -157,7 +171,8 @@ impl Record for QualificationOperation {
             || self.line == self.parent_line
             || self.filed == self.source_parent.filed
             || self.filed == self.selected_parent.filed
-            || self.owner != self.child_revision.revision().key.character
+            || (self.charter_ownership.is_none()
+                && self.owner != self.child_revision.revision().key.character)
             || !matches!(self.observed_ic.clock, ClockRef::WorldIc { generation } if generation != 0)
             || self.action != super::protocol::action(&self.manifest)?
             || !matches!(
@@ -208,7 +223,7 @@ impl QualificationOperation {
     ) -> Result<(), PublicationError> {
         self.validate()?;
         binding.check_rows(filed, term, birth)?;
-        if self.owner != binding.parent.owner
+        if (self.charter_ownership.is_none() && self.owner != binding.parent.owner)
             || self.owner_licence != binding.licence
             || self.owner_term != binding.term
             || self.charter != binding.charter

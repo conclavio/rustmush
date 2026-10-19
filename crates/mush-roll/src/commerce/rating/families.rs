@@ -9,6 +9,7 @@ use mush_core::{CommitToken, ModError, ModuleCtx, Registrar};
 use serde::{Serialize, de::DeserializeOwned};
 
 use super::execution::{EXECUTION_BYTES, RatingExecution};
+use super::nonconformance::{NonconformanceRef, RatingNonconformance};
 use super::*;
 use crate::RollStore;
 use crate::commerce::read::CommerceRead;
@@ -16,6 +17,7 @@ use crate::commerce::roots::{RequiredRoot, RootAnchor};
 
 #[derive(Clone)]
 pub struct RatingFamilies {
+    pub(crate) nonconformance: StateFamilyHandle<CommitToken, RatingNonconformance>,
     pub(crate) receipts: StateFamilyHandle<CommitToken, RatingReceipt>,
     pub(crate) pages: StateFamilyHandle<RatingPageKey, RatingPage>,
     pub(crate) jobs: StateFamilyHandle<CommitToken, RatingJob>,
@@ -59,6 +61,13 @@ impl RatingFamilies {
             |v: &RatingReceipt| v.validate().map_err(|e| e.to_string()),
             |v: &RatingReceipt| serialize(v, MAX_RECEIPT_BYTES),
         )?;
+        let nonconformance = reg.state_family(
+            descriptor("rating_nonconformance", MAX_RECEIPT_BYTES)?,
+            |key: &CommitToken| Ok(key.to_string()),
+            |v: &serde_json::Value| decode::<RatingNonconformance>(v, MAX_RECEIPT_BYTES),
+            |v: &RatingNonconformance| v.validate().map_err(|e| e.to_string()),
+            |v: &RatingNonconformance| serialize(v, MAX_RECEIPT_BYTES),
+        )?;
         let pages = reg.state_family(
             descriptor("rating_pages", MAX_PAGE_BYTES)?,
             |key: &RatingPageKey| Ok(key.encoded()),
@@ -95,6 +104,7 @@ impl RatingFamilies {
             |v: &RatingExecution| serialize(v, EXECUTION_BYTES),
         )?;
         Ok(Self {
+            nonconformance,
             receipts,
             pages,
             jobs,
@@ -115,7 +125,7 @@ impl RatingFamilies {
         self.resolve_receipt_read(ctx, reference)
     }
 
-    fn resolve_receipt_read<'a>(
+    pub(crate) fn resolve_receipt_read<'a>(
         &self,
         ctx: &'a impl CommerceRead,
         reference: &RatingRef,
@@ -240,6 +250,62 @@ impl RatingFamilies {
         execution.verify_completion(job, row, &pages)
     }
 
+    pub(crate) fn complete_nonconformance<'a>(
+        &self,
+        ctx: &'a impl CommerceRead,
+        reference: &NonconformanceRef,
+    ) -> Result<&'a RatingNonconformance, RatingError> {
+        let row = read(ctx, &self.nonconformance, &reference.job())?;
+        row.validate()?;
+        if row.reference()? != *reference {
+            return Err(RatingError::Identity);
+        }
+        let job = read(ctx, &self.jobs, &reference.job())?;
+        let execution = read(ctx, &self.executions, &reference.job())?;
+        if !job.matches_nonconformance(row)?
+            || ctx
+                .get(&self.receipts, &reference.job())
+                .map_err(|_| RatingError::Unavailable)?
+                .is_some()
+            || ctx
+                .get(&self.completions, &reference.job())
+                .map_err(|_| RatingError::Unavailable)?
+                .is_some()
+            || ctx
+                .get(&self.status, &reference.job())
+                .map_err(|_| RatingError::Unavailable)?
+                .is_some()
+        {
+            return Err(RatingError::Identity);
+        }
+        let mut pages = Vec::with_capacity(row.result().pages().len());
+        for references in row
+            .result()
+            .pages()
+            .chunks(mush_core::read_service::MAX_OWNER_READ_PAGE)
+        {
+            let keys = references
+                .iter()
+                .map(|r| RatingPageKey::new(reference.job(), r.ordinal()))
+                .collect::<Result<Vec<_>, _>>()?;
+            let found = ctx
+                .get_many(&self.pages, &keys)
+                .map_err(|_| RatingError::Unavailable)?;
+            if found.len() != keys.len() {
+                return Err(RatingError::Incomplete);
+            }
+            for (key, page) in keys.into_iter().zip(found) {
+                let page = page.ok_or(RatingError::Incomplete)?;
+                if page.key() != key {
+                    return Err(RatingError::Identity);
+                }
+                pages.push(page.clone());
+            }
+        }
+        execution.verify_nonconformance(job, row, &pages)?;
+        Ok(row)
+    }
+
     /// Exact actual-record projection for the reverse root audit. Missing rows
     /// and unavailable families differ; neither can open collection by itself.
     pub(crate) fn root_subject(
@@ -333,7 +399,7 @@ impl RatingFamilies {
     }
 
     /// Synchronous final retention audit, after source hydration. It scans all
-    /// six real families even when no Roll roots exist. No absence of records
+    /// seven real families even when no Roll roots exist. No absence of records
     /// is substituted for an unavailable owner-scoped typed reader. The caller
     /// also reverse-checks all Roll roots and binds typed/source generations.
     pub(crate) fn audit_for_collection(
@@ -355,6 +421,17 @@ impl RatingFamilies {
                 row.subject().revision(),
             )
         })?;
+        scan(ctx, &self.nonconformance, |key, row| {
+            if key != row.publication().job().to_string() {
+                return Err(RatingError::Identity);
+            }
+            self.complete_nonconformance(ctx, &row.reference()?)?;
+            required(
+                roll,
+                RootAnchor::RatingJob(row.publication().job()),
+                row.subject().revision(),
+            )
+        })?;
         scan(ctx, &self.jobs, |key, row| {
             row.validate()?;
             if key != row.job().to_string() {
@@ -371,6 +448,8 @@ impl RatingFamilies {
                     return Err(RatingError::Identity);
                 }
                 self.complete_receipt(ctx, receipt)?;
+            } else if let RatingJobState::Nonconforming { receipt } = row.state() {
+                self.complete_nonconformance(ctx, receipt)?;
             }
             Ok(())
         })?;
@@ -406,15 +485,21 @@ impl RatingFamilies {
             if key != page.key().encoded() {
                 return Err(RatingError::Identity);
             }
-            let parent = read(ctx, &self.receipts, &page.job)?;
-            if parent.publication.job != page.job
-                || parent.id() != page.rating
-                || parent.result().id() != page.result
-            {
+            let success = ctx
+                .action_state(&self.receipts, &page.job)
+                .map_err(|_| RatingError::Unavailable)?;
+            let rejected = ctx
+                .action_state(&self.nonconformance, &page.job)
+                .map_err(|_| RatingError::Unavailable)?;
+            let (parent_job, parent_id, result) = match (success, rejected) {
+                (Some(parent), None) => (parent.publication().job(), parent.id(), parent.result()),
+                (None, Some(parent)) => (parent.publication().job(), parent.id(), parent.result()),
+                _ => return Err(RatingError::Identity),
+            };
+            if parent_job != page.job || parent_id != page.rating || result.id() != page.result {
                 return Err(RatingError::Identity);
             }
-            let expected = parent
-                .result()
+            let expected = result
                 .pages()
                 .get(usize::from(page.content.ordinal))
                 .ok_or(RatingError::Incomplete)?;

@@ -577,11 +577,14 @@ pub const EXTENSIONS_HAULER: [(&str, &str); 1] = [("tacsim/content/units/dray.js
 pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// **The lane version this server ships** (doc 18 cut IC3; v3 since cut IC8; v4
 /// since doc 19 cut A.1: the twelve bodies with element tables, the sky in three
-/// dimensions, the routes re-timed to the epoch's 3D chords; **v5 since doc 19 cut
-/// A.4**: both ports' `premium` blocks, the reach premium on demand-side bids).
-/// The port readiness report (`crate::port::readiness`) reads the latched version
-/// against it, and every test that names the lane's version reads it here.
-pub const LANE_VERSION: u32 = 5;
+/// dimensions, the routes re-timed to the epoch's 3D chords; v5 since doc 19 cut
+/// A.4: both ports' `premium` blocks, the reach premium on demand-side bids; **v6
+/// since doc 19 cut A.4b: both ports' `emergency` blocks, the emergency Wanted
+/// bids; **v7 since doc 19 cut A.7**: the four moons — Luna about Earth, Phobos and
+/// Deimos about Mars, Titan about Saturn — and Stickney Yards on Phobos). The port
+/// readiness report (`crate::port::readiness`) reads the latched version against it,
+/// and every test that names the lane's version reads it here.
+pub const LANE_VERSION: u32 = 7;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.

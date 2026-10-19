@@ -332,6 +332,11 @@ impl ConfiguredIcBase {
     pub fn definition(&self) -> &DefinitionRef {
         &self.definition
     }
+    /// Exact immutable declaration for the trusted Tacsim composition that
+    /// selected this already-validated base. This exposes no placement writer.
+    pub fn registration_descriptor(&self) -> Result<DefinitionDescriptor, ModError> {
+        Self::descriptor(self.definition.key().id.clone(), &self.space)
+    }
     fn domain(&self) -> Result<crate::DomainId, ParticipantError> {
         match self.space.anchor {
             crate::SpaceAnchor::FixedDomain { domain, .. } => Ok(domain),

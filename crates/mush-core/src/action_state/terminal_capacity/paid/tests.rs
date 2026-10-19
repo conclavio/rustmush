@@ -203,9 +203,6 @@ fn quote() -> Value {
     let product = json!({"kind":{"kind":"original_personal"},"seats":1,"form":{"kind":"sealed"},"class":"II","revision":{"kind":"pin","filed":"1","revision":revision},"transferable":true,"term_seconds":100,"grace_seconds":10});
     json!({"format":1,"publication":quote_id(),"buyer":7,"subject":{"charter":"1","line":"1","filed":"1","revision":revision,"rating":hash},"product":product,"product_digest":digest("market.original_product.v1",&product).unwrap()})
 }
-fn quote_for(protocol: &Protocol) -> Value {
-    quote_for_form(protocol, "sealed")
-}
 fn quote_for_form(protocol: &Protocol, form: &str) -> Value {
     let mut q = quote();
     let version = protocol.actions[0].version();

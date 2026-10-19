@@ -396,6 +396,14 @@ pub fn reconcile(ctx: &mut Ctx<'_>, families: &InventoryFamilies) {
         complete = false;
     }
 
+    // Never let an ordinary pool/marker sweep erase an exact-input refusal.
+    // Reconstruct its permanent K/lot/head/census joins on every reconciliation.
+    if !crate::core_input::audit::reconcile(ctx, families) {
+        complete = false;
+        tracing::error!(
+            "inventory: exact core-input history disagrees; quantity readiness remains unavailable"
+        );
+    }
     let (reconciliations, attempt_at, attempt_seq) = ctx
         .w
         .module_state::<InventoryStore>()

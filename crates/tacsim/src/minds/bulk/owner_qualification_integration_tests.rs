@@ -1,6 +1,8 @@
 //! Exact dependent birth and actual additional paid grants. No synthetic rating,
 //! grant or readiness is constructed; installation models the in-process ACK.
 use super::*;
+#[path = "owner_attestation_integration_tests.rs"]
+mod attestation;
 use mush_core::{OfferExecutionContext, OfferSubmission};
 use mush_roll::commerce::records::OwnerTerm;
 const START: u128 = 21_000_000;
@@ -291,7 +293,7 @@ fn fences(
     for mode in ["foreign", "clock", "lapse_stage", "lapse_take", "title"] {
         let mut w = boot(f, saved)?;
         let before = disk(&w);
-        let money = balances(&w)?;
+        let mut money = balances(&w)?;
         if mode == "foreign" {
             assert!(prepare_q(&mut w, GOD, START + 30, p.clone()).is_err());
         } else {
@@ -313,10 +315,10 @@ fn fences(
                             .ok_or("birth")?;
                         let charter: mush_roll::commerce::CharterId =
                             serde_json::from_value(op.get("charter").ok_or("charter")?.clone())?;
-                        w.say(
-                            GOD,
-                            &format!("@asset/transfer #{}=#{}", charter.get(), GOD.0),
-                        )?;
+                        w.transfer_charter(charter.object(), GOD, 49_000_110)?;
+                        // The helper proves the actual one-minor-unit sale. The
+                        // refused owner operation must add no further money effect.
+                        money = balances(&w)?;
                         assert_eq!(
                             w.engine
                                 .world
@@ -446,6 +448,10 @@ pub(super) async fn exercise(
     owner: LicenceId,
     customer: &EntitlementAllocationV1,
 ) -> TestResult {
+    super::story_phase("qualification.chartered", || {
+        chartered(f, saved, owner, customer)
+    })?
+    .await?;
     super::story_phase("qualification.short_parent", || {
         short_parent_lapse_and_restore(f, saved, owner, customer)
     })?
@@ -547,11 +553,180 @@ pub(super) async fn exercise(
             serde_json::to_value(&child)?
         );
         assert!(boot(f, &capture(&expired, &disk(&expired))).is_ok());
+        let restored_lapsed = capture(&expired, &disk(&expired));
+        super::story_phase("qualification.attestation", || {
+            attestation::exercise(f, &restored_lapsed, owner, customer)
+        })?
+        .await?;
+
         expired.tasks.shutdown(Duration::from_secs(5)).await;
         cold.tasks.shutdown(Duration::from_secs(5)).await;
         Ok(())
     }
     .await;
     tasks.shutdown(Duration::from_secs(5)).await;
+    result
+}
+
+async fn chartered(
+    f: &PurchaseFixture,
+    saved: &Durable,
+    owner: LicenceId,
+    customer: &EntitlementAllocationV1,
+) -> TestResult {
+    use crate::minds::bulk::registry_integration_tests::original_purchase::charter_transfer_fixture;
+    const SALE: u128 = 48_200_000;
+    let mut w = boot(f, saved)?;
+    let mut tasks = vec![w.tasks.clone()];
+    let result: TestResult = async {
+        let child = owner_term(&w, owner)?;
+        let source = child_source(&w, owner)?;
+        let birth = rows(&disk(&w), "roll", "roll_mind_initial_filing")
+            .into_iter()
+            .find(|v| v.get("licence") == Some(&json!(owner)))
+            .ok_or("actual child birth")?;
+        let child_charter: mush_roll::commerce::CharterId = serde_json::from_value(
+            birth
+                .get("charter")
+                .cloned()
+                .ok_or("actual child charter")?,
+        )?;
+        let parent_charter: mush_roll::commerce::CharterId = serde_json::from_value(
+            birth
+                .pointer("/parent/charter")
+                .cloned()
+                .ok_or("actual parent charter")?,
+        )?;
+        let old_parent: LicenceId = serde_json::from_value(
+            birth
+                .pointer("/parent/licence")
+                .cloned()
+                .ok_or("actual parent's acquired grant")?,
+        )?;
+        // The new child owner acquires a real same-line parent grant from the
+        // new parent title holder. Neither title sale itself grants source use.
+        w.transfer_charter(parent_charter.object(), BUYER, SALE)?;
+        for actor in [GOD, BUYER] {
+            w.engine.world.move_to(actor, ROOM)?;
+        }
+        commit(
+            &mut w,
+            "market",
+            "list_original_mind",
+            3,
+            BUYER,
+            SALE + 2,
+            listing_params(LicenceId::new(1)?, "open", 0),
+        )?;
+        commit(
+            &mut w,
+            "market",
+            "quote_original_mind",
+            3,
+            GOD,
+            SALE + 3,
+            json!({"listing":token(SALE + 2)}),
+        )?;
+        commit(
+            &mut w,
+            "market",
+            "purchase_original_mind",
+            3,
+            GOD,
+            SALE + 4,
+            json!({"quote":token(SALE + 3)}),
+        )?;
+        commit(
+            &mut w,
+            "market",
+            "settle_original_mind",
+            3,
+            GOD,
+            SALE + 5,
+            json!({"operation":token(SALE + 4)}),
+        )?;
+        let parent = allocation(&w, SALE + 4)?;
+        assert_eq!(parent.holder(), GOD);
+        let immutable = retained(&w);
+        w.transfer_charter(child_charter.object(), GOD, SALE + 6)?;
+        source_answer(&mut w, BUYER, owner, None)?;
+        source_answer(&mut w, GOD, owner, None)?;
+        assert!(prepare_q(&mut w, GOD, SALE + 8, params(owner, old_parent)).is_err());
+        assert!(prepare_q(&mut w, GOD, SALE + 8, params(owner, customer.licence())).is_err());
+        let before = balances(&w)?;
+        let p = charter_transfer_fixture::signed(
+            &mut w.engine,
+            ACTION,
+            GOD,
+            SALE + 8,
+            params(owner, parent.licence()),
+        )?;
+        let (writes, install) = p.into_parts();
+        apply(&mut w, &writes, install)?;
+        assert_eq!(balances(&w)?, before);
+        source_answer(&mut w, GOD, owner, Some(source))?;
+        let proof = rows(&disk(&w), "roll", OPS)
+            .into_iter()
+            .find(|v| v.get("operation") == Some(&json!(token(SALE + 8))))
+            .ok_or("actual new owner's qualification")?;
+        assert_eq!(proof.get("format"), Some(&json!(2)));
+        assert_eq!(proof.get("owner"), Some(&json!(GOD)));
+        assert_eq!(
+            proof.pointer("/charter_ownership/generation"),
+            Some(&json!(2))
+        );
+        assert!(
+            super::prepare(
+                &mut w,
+                "market",
+                "list_derived_mind",
+                1,
+                GOD,
+                SALE + 9,
+                listing_params(owner, "open_resale", 100)
+            )
+            .is_err()
+        );
+        assert!(
+            retained(&w) == immutable,
+            "qualification rewrote immutable acquisition or term"
+        );
+        source_answer(
+            &mut w,
+            GOD,
+            customer.licence(),
+            Some(customer.revision().source()),
+        )?;
+        let saved = capture(&w, &disk(&w));
+        let mut cold = boot(f, &saved)?;
+        tasks.push(cold.tasks.clone());
+        source_answer(&mut cold, GOD, owner, Some(source))?;
+        cold.transfer_charter(child_charter.object(), BUYER, SALE + 10)?;
+        // Reacquisition does not make the former owner's old qualification
+        // current again: the new ownership generation needs its own selection.
+        source_answer(&mut cold, BUYER, owner, None)?;
+        source_answer(&mut cold, GOD, owner, None)?;
+        let p = signed(&mut cold, SALE + 12, params(owner, old_parent))?;
+        let (writes, install) = p.into_parts();
+        apply(&mut cold, &writes, install)?;
+        source_answer(&mut cold, BUYER, owner, Some(source))?;
+        assert!(rows(&disk(&cold), "roll", OPS).contains(&proof));
+        assert!(serde_json::to_value(owner_term(&cold, owner)?)? == serde_json::to_value(&child)?);
+        let saved = capture(&cold, &disk(&cold));
+        let mut final_world = boot(f, &saved)?;
+        tasks.push(final_world.tasks.clone());
+        source_answer(&mut final_world, BUYER, owner, Some(source))?;
+        source_answer(
+            &mut final_world,
+            GOD,
+            customer.licence(),
+            Some(customer.revision().source()),
+        )?;
+        Ok(())
+    }
+    .await;
+    for task in tasks {
+        task.shutdown(Duration::from_secs(5)).await;
+    }
     result
 }

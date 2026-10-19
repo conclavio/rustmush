@@ -1,5 +1,7 @@
 [
   "+actions",
+  "+chart",
+  "+chart/map",
   "+contacts",
   "+intel",
   "+recap",

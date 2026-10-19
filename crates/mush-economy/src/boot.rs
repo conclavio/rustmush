@@ -141,6 +141,65 @@ pub(crate) fn load_boot_with_line_updates(
     require_renewal_receipts: bool,
     require_update_receipts: bool,
 ) -> Result<EconomyStore, ModError> {
+    load_boot_with_charter_transfers(
+        ctx,
+        data,
+        providers,
+        outcomes,
+        tail_max,
+        window_secs,
+        require_filing_receipts,
+        require_purchase_receipts,
+        require_renewal_receipts,
+        require_update_receipts,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) fn load_boot_with_charter_transfers(
+    ctx: &mut ModuleCtx<'_>,
+    data: ModuleBootData,
+    providers: &CustodyTable,
+    outcomes: &crate::contract::CanonOutcomeKinds,
+    tail_max: usize,
+    window_secs: i64,
+    require_filing_receipts: bool,
+    require_purchase_receipts: bool,
+    require_renewal_receipts: bool,
+    require_update_receipts: bool,
+    require_charter_transfer_receipts: bool,
+) -> Result<EconomyStore, ModError> {
+    load_boot_with_core_integration(
+        ctx,
+        data,
+        providers,
+        outcomes,
+        tail_max,
+        window_secs,
+        require_filing_receipts,
+        require_purchase_receipts,
+        require_renewal_receipts,
+        require_update_receipts,
+        require_charter_transfer_receipts,
+        false,
+    )
+}
+
+pub(crate) fn load_boot_with_core_integration(
+    ctx: &mut ModuleCtx<'_>,
+    data: ModuleBootData,
+    providers: &CustodyTable,
+    outcomes: &crate::contract::CanonOutcomeKinds,
+    tail_max: usize,
+    window_secs: i64,
+    require_filing_receipts: bool,
+    require_purchase_receipts: bool,
+    require_renewal_receipts: bool,
+    require_update_receipts: bool,
+    require_charter_transfer_receipts: bool,
+    require_core_receipts: bool,
+) -> Result<EconomyStore, ModError> {
     let ModuleBootData {
         kv,
         ledger: mut ledger_docs,
@@ -561,6 +620,32 @@ pub(crate) fn load_boot_with_line_updates(
         );
         checkpoint = None;
     }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
+            .charter_transfer_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes.push(
+            "checkpoint lacks exact charter-transfer receipt coverage; full replay required".into(),
+        );
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
+            .core_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes.push(
+            "checkpoint lacks exact Core integration receipt coverage; full replay required".into(),
+        );
+        checkpoint = None;
+    }
     for note in &checkpoint_notes {
         tracing::error!(%note, "economy: checkpoint rejected; replaying past it");
     }
@@ -823,6 +908,24 @@ pub(crate) fn load_boot_with_line_updates(
             ))
         })?;
     }
+    state
+        .charter_transfer_receipts
+        .finish_replay()
+        .map_err(|_| ModError::msg("economy: charter-transfer receipt replay refused"))?;
+    if !require_charter_transfer_receipts {
+        state
+            .charter_transfer_receipts
+            .require_absent()
+            .map_err(|_| {
+                ModError::msg("economy: charter-transfer history requires paired recovery")
+            })?;
+    }
+    crate::core_integration::bridge::recover(
+        &mut state,
+        &stored_holds,
+        &stored_assets,
+        require_core_receipts,
+    )?;
     let renewal_offers = crate::managed_renewal::bridge::recover(
         &mut state,
         &mut snapshot,
@@ -1960,10 +2063,29 @@ pub(crate) fn load_boot_with_line_updates(
     // stored docs, after the journal fold), so the membership filter runs here, once,
     // against the assembled snapshot.
     debit_window.retain(|account, _| crate::module::account_windowed(&snapshot, *account));
-    if require_filing_receipts && !frozen {
+    if frozen && (require_filing_receipts || !state.filing_receipts.uninitialized()) {
+        snapshot.managed_titles = crate::managed_title::ManagedTitleIndex::Unavailable;
+    } else if require_filing_receipts || !state.filing_receipts.uninitialized() {
         state.filing_receipts.finish_replay().map_err(|error| {
             ModError::msg(format!("economy: filing receipt replay refused: {error}"))
         })?;
+        snapshot.managed_titles =
+            crate::managed_title::ManagedTitleIndex::from_filings(&state.filing_receipts)
+                .map_err(|_| ModError::msg("economy: managed title history refused"))?;
+        state
+            .charter_transfer_receipts
+            .verify_lineages(&state.filing_receipts, &state.journal_assets)
+            .map_err(|_| {
+                ModError::msg("economy: managed charter lineage differs from complete history")
+            })?;
+    }
+    if frozen && require_core_receipts {
+        snapshot.managed_titles = crate::managed_title::ManagedTitleIndex::Unavailable;
+    } else if !frozen {
+        snapshot.managed_titles = snapshot
+            .managed_titles
+            .with_cores(&state.core_receipts)
+            .map_err(|_| ModError::msg("economy: managed Core title history refused"))?;
     }
     let mut store = EconomyStore::from_parts(BootParts {
         snapshot,

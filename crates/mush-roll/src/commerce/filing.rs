@@ -51,6 +51,9 @@ impl InitialFilingTerms {
             grace_seconds,
         })
     }
+    pub(crate) const fn durations(&self) -> (i64, i64) {
+        (self.term_seconds, self.grace_seconds)
+    }
     pub(crate) fn payload(&self) -> serde_json::Value {
         json!({"format":1,"original_only":true,"term_seconds":self.term_seconds,
             "grace_seconds":self.grace_seconds,"owner_revision_policy":"follow"})
@@ -393,6 +396,7 @@ impl InitialFilingBuilder {
                 operation: commit,
             },
             term: OwnerTerm {
+                attestation: None,
                 parent: subject.parent.clone(),
                 format: if subject.parent.is_some() {
                     2

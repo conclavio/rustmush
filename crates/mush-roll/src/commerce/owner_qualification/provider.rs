@@ -76,10 +76,30 @@ impl Provider {
             .map_err(invalid)?
             .ok_or(PublicationError::Missing)?
             .clone();
+        // Lapsed metadata replacement remains legal. Prove the actual current
+        // generation separately while all qualification history keeps birth term1.
+        super::super::owner_attestation::history::current_in_txn(
+            txn,
+            ctx.world().map_err(invalid)?,
+            &self.families,
+            &licence,
+        )?;
+        let birth = txn
+            .get(&self.families.operations, &licence.operation.to_hex())
+            .map_err(invalid)?
+            .cloned()
+            .ok_or(PublicationError::Missing)?;
+        let ownership = super::super::charter_transfer::history::current_in_txn(
+            txn,
+            ctx.world().map_err(invalid)?,
+            &self.families,
+            &birth,
+            actor,
+        )?;
         let binding = txn
             .get(
                 &self.families.owner_parents,
-                &OwnerParentBinding::key_for(owner_licence, actor),
+                &OwnerParentBinding::key_for(owner_licence, birth.requester),
             )
             .map_err(invalid)?
             .ok_or(PublicationError::Missing)?
@@ -92,13 +112,8 @@ impl Provider {
         let term = txn
             .get(
                 &self.families.terms,
-                &OwnerTerm::encoded_key(owner_licence, licence.term),
+                &OwnerTerm::encoded_key(owner_licence, binding.term),
             )
-            .map_err(invalid)?
-            .ok_or(PublicationError::Missing)?
-            .clone();
-        let birth = txn
-            .get(&self.families.operations, &binding.operation.to_hex())
             .map_err(invalid)?
             .ok_or(PublicationError::Missing)?
             .clone();
@@ -119,12 +134,10 @@ impl Provider {
         if licence.id != owner_licence
             || licence.charter != binding.charter
             || licence.line != birth.line
-            || licence.term != binding.term
             || licence.operation != binding.operation
-            || binding.parent.owner != actor
-            || birth.requester != actor
+            || binding.parent.owner != birth.requester
             || birth.economic.house.is_some()
-            || birth.economic.issued_owner != mush_org::PrincipalId::Object(actor)
+            || birth.economic.issued_owner != mush_org::PrincipalId::Object(birth.requester)
             || charter.id != licence.charter
             || charter.line != licence.line
             || charter.operation != birth.commit
@@ -174,6 +187,14 @@ impl Provider {
                     .clone();
                 head.matches(&op)?;
                 op.matches_birth(&binding, &filed, &term, &birth)?;
+                super::super::charter_transfer::history::require_captured_in_txn(
+                    txn,
+                    ctx.world().map_err(invalid)?,
+                    &self.families,
+                    &birth,
+                    op.charter_ownership.as_ref(),
+                    actor,
+                )?;
                 Some(op)
             }
         };
@@ -206,13 +227,14 @@ impl Provider {
             return Err(PublicationError::Mismatch);
         }
         let operation = QualificationOperation {
-            format: 1,
+            format: if ownership.generation == 1 { 1 } else { 2 },
+            charter_ownership: (ownership.generation > 1).then_some(ownership),
             operation: ctx.commit_token(),
             action: self.action.clone(),
             manifest: self.manifest.clone(),
             owner: actor,
             owner_licence,
-            owner_term: licence.term,
+            owner_term: binding.term,
             charter: licence.charter,
             line: licence.line,
             filed: filed.content.id(),

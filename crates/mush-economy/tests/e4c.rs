@@ -34,6 +34,11 @@ use mush_org::{CapabilityId, PrincipalId, SystemPrincipalId};
 use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, text_of};
 
+#[path = "e4c/fact_revision.rs"]
+mod fact_revision;
+#[path = "e4c/scoped_facts.rs"]
+mod scoped_facts;
+
 const NS: &str = "economy";
 /// The namespace the canon module writes its ledger chunk under. The economy never
 /// depends on `mush-canon`, so these tests stand in for canon's append with a

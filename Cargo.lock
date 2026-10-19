@@ -2657,6 +2657,8 @@ dependencies = [
  "mush-economy",
  "mush-org",
  "mush-proto",
+ "mush-sim",
+ "mush-tactics",
  "serde",
  "serde_json",
  "sha2",

@@ -1,6 +1,8 @@
 //! Immutable compatible-line publication and its exact sequence index.
 use crate::commerce::rating::RatingRef;
-use crate::commerce::records::{FiledRecord, InitialFilingOperation, PublicationError, Record};
+use crate::commerce::records::{
+    FiledRecord, InitialFilingOperation, OwnerTerm, PublicationError, Record, RevisionPolicy,
+};
 use crate::commerce::{
     CharterId, FiledRevisionId, LicenceId, LineId, RevisionIdentity, TermGeneration,
 };
@@ -12,6 +14,9 @@ use serde::{Deserialize, Serialize};
 #[serde(try_from = "OperationWire")]
 pub(crate) struct UpdateOperation {
     pub(crate) format: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) charter_ownership:
+        Option<super::super::charter_transfer::records::CharterOwnershipRef>,
     pub(crate) commit: CommitToken,
     pub(crate) action: DefinitionRef,
     pub(crate) actor: ObjId,
@@ -34,6 +39,11 @@ pub(crate) struct UpdateOperation {
 #[serde(deny_unknown_fields)]
 struct OperationWire {
     format: u16,
+    #[serde(
+        default,
+        deserialize_with = "super::super::charter_transfer::records::present_ownership"
+    )]
+    charter_ownership: Option<super::super::charter_transfer::records::CharterOwnershipRef>,
     commit: CommitToken,
     action: DefinitionRef,
     actor: ObjId,
@@ -57,6 +67,7 @@ impl TryFrom<OperationWire> for UpdateOperation {
     fn try_from(w: OperationWire) -> Result<Self, Self::Error> {
         let row = Self {
             format: w.format,
+            charter_ownership: w.charter_ownership,
             commit: w.commit,
             action: w.action,
             actor: w.actor,
@@ -92,8 +103,17 @@ impl Record for UpdateOperation {
         super::check_action(&self.action)?;
         crate::commerce::WorldIcSeconds::from_stamp(&self.at_ic)
             .map_err(|_| PublicationError::Invalid)?;
-        if self.format != 1
-            || self.actor.0 == 0
+        if let Some(ownership) = &self.charter_ownership {
+            ownership.transferred()?;
+        }
+        if !matches!(
+            (
+                self.format,
+                self.term.get(),
+                self.charter_ownership.is_some()
+            ),
+            (1, 1, false) | (2, 2.., false) | (3, 1.., true)
+        ) || self.actor.0 == 0
             || self.commit == self.initial
             || self.previous == self.filed
             || !(2..=crate::MAX_RECORDS as u64 + 1).contains(&self.sequence)
@@ -118,11 +138,33 @@ impl UpdateOperation {
             || birth.parent.is_some()
             || birth.economic.house.is_some()
             || birth.commit != self.initial
-            || birth.requester != self.actor
+            || (self.charter_ownership.is_none() && birth.requester != self.actor)
             || birth.charter != self.charter
             || birth.line != self.line
             || birth.licence != self.licence
-            || birth.term != self.term
+            || birth.term.get() != 1
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        Ok(())
+    }
+    /// Structural relation to the separately proved actual historical term.
+    /// Generation two and later require the original attestation format; this
+    /// does not mint a term or turn a decoded row into current authority.
+    pub(crate) fn check_owner_term(&self, term: &OwnerTerm) -> Result<(), PublicationError> {
+        self.validate()?;
+        term.validate()?;
+        let at = crate::commerce::WorldIcSeconds::from_stamp(&self.at_ic)
+            .map_err(|_| PublicationError::Invalid)?;
+        if term.licence != self.licence
+            || term.generation != self.term
+            || term.revision != (RevisionPolicy::Follow { line: self.line })
+            || !matches!((self.term.get(), term.format), (1, 1) | (2.., 3))
+            || (self.term.get() == 1 && term.operation != self.initial)
+            || (self.term.get() > 1 && term.operation == self.initial)
+            || at < term.window.issued_at()
+            || at < term.window.eligibility_start()
+            || at >= term.window.grace_end()
         {
             return Err(PublicationError::Mismatch);
         }

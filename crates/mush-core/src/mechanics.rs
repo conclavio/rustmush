@@ -1349,6 +1349,20 @@ impl DefinitionRegistry {
         Ok(entry)
     }
 
+    /// Require an actual composed owner to remain ready even when that owner
+    /// publishes no definitions. Clones retain the same monotonic readiness
+    /// latch; structural/uncomposed registries cannot authorize this check.
+    /// This checks availability only, never caller permission or business facts.
+    pub fn require_owner_ready(
+        &self,
+        owner: &OwnerId,
+    ) -> Result<(), MechanicalOwnerReadinessError> {
+        self.owner_readiness
+            .as_ref()
+            .ok_or(MechanicalOwnerReadinessError::RegistryUnavailable)?
+            .require_ready(owner)
+    }
+
     pub(crate) fn bind_owner_readiness(&mut self, readiness: MechanicalOwnerReadiness) {
         debug_assert!(self.owner_readiness.is_none());
         self.owner_readiness = Some(readiness);
@@ -3179,6 +3193,45 @@ mod tests {
             left.resolve_locator(&locator).unwrap(),
             right.resolve_locator(&locator).unwrap()
         );
+    }
+
+    #[test]
+    fn definition_owner_probe_requires_composition_and_tracks_descriptorless_owner_freeze() {
+        let org = owner("org");
+        let mut definitions = DefinitionRegistryBuilder::new().freeze().unwrap();
+        assert!(matches!(
+            definitions.require_owner_ready(&org),
+            Err(MechanicalOwnerReadinessError::RegistryUnavailable)
+        ));
+        let readiness =
+            MechanicalOwnerReadiness::for_owners(&BTreeSet::from([org.clone(), owner("roll")]));
+        definitions.bind_owner_readiness(readiness.clone());
+        let retained = definitions.clone();
+        assert_eq!(definitions.iter().len(), 0, "no fabricated Org definition");
+        assert!(retained.require_owner_ready(&org).is_ok());
+        assert!(matches!(
+            retained.require_owner_ready(&owner("absent")),
+            Err(MechanicalOwnerReadinessError::UnknownOwner { .. })
+        ));
+        readiness
+            .freeze(
+                &org,
+                IncidentId(7),
+                RecoveryReason::IntegrityViolation {
+                    code: CanonicalId::new("org_conflict").unwrap(),
+                },
+            )
+            .unwrap();
+        for view in [&definitions, &retained] {
+            assert!(matches!(
+                view.require_owner_ready(&org),
+                Err(MechanicalOwnerReadinessError::Frozen {
+                    incident: IncidentId(7),
+                    ..
+                })
+            ));
+            assert!(view.require_owner_ready(&owner("roll")).is_ok());
+        }
     }
 
     #[test]

@@ -308,6 +308,15 @@ fn compose_server_modules(
     .into_iter()
     .chain(game.reserved_rooms.iter().copied())
     .collect();
+    let simulation = mush_sim::SimulationModule::new()
+        .with_route_catalog(Arc::new(self::sim_routes::TacsimRouteCatalog))
+        .with_carrier_hooks(Arc::new(self::sim_routes::TacsimCarrierHooks));
+    let tactics = mush_tactics::TacticsModule::with_catalog(tactics_catalog())
+        .with_sensor_policy(Arc::new(mush_propagation::PropagationSensorPolicy));
+    let (tactics, simulation) = match commerce {
+        Some(c) => c.configure_ic_physical(tactics, simulation),
+        None => (tactics, simulation),
+    };
     let modules: Vec<Box<dyn GameModule>> = vec![
         Box::new(mush_comsys::ComsysModule::new()),
         Box::new(mush_canon::CanonModule::new()),
@@ -360,11 +369,7 @@ fn compose_server_modules(
         // same way — the manual-departure refusal on the resolved route and the
         // trade run's boundary and arrival narration (a no-op for anything that is
         // not a programme hull, so every roster carries it).
-        Box::new(
-            mush_sim::SimulationModule::new()
-                .with_route_catalog(Arc::new(self::sim_routes::TacsimRouteCatalog))
-                .with_carrier_hooks(Arc::new(self::sim_routes::TacsimCarrierHooks)),
-        ),
+        Box::new(simulation),
         // S1 (14-spatial-implementation-plan §3.1): the atlas — places with geometry
         // — immediately after `mush-sim`, whose placement graph S2's journeys read.
         // It owns the `atlas` records and the `+atlas`/`@atlas` surface; the packs
@@ -386,10 +391,7 @@ fn compose_server_modules(
         // the same unit from the same spec. The module composed with an empty
         // catalog until this cut and every `@unit/create` refused for want of a
         // schema.
-        Box::new(
-            mush_tactics::TacticsModule::with_catalog(tactics_catalog())
-                .with_sensor_policy(Arc::new(mush_propagation::PropagationSensorPolicy)),
-        ),
+        Box::new(tactics),
         // E7 cut 7 (10b §3.7): the propagation layer itself. It composes AFTER
         // `mush-sim` (whose `SpatialState` every context is built from) and
         // after `mush-tactics` (whose leak-safe contact ledger its policy
@@ -850,6 +852,8 @@ pub fn org_capability_vocabulary() -> std::collections::BTreeSet<mush_org::Capab
         .chain(["org.role.manage", "org.grant.delegate"])
         // Vocabulary declaration only; default composition grants nothing.
         .chain([mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY])
+        .chain([mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY])
+        .chain([mush_roll::commerce::registry_revocation::REGISTRY_REVOCATION_CAPABILITY])
         .map(|c| mush_org::CapabilityId::new(c).expect("a built-in capability id is well-formed"))
         .collect()
 }

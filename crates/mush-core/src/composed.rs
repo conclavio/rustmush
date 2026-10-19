@@ -22,7 +22,7 @@ use smol_str::SmolStr;
 pub struct PreparedComposedTxn {
     typed: PreparedTxn,
     owners: OwnerImages,
-    shell: Option<crate::reserved_shell::ShellObjects>,
+    shell: Option<crate::core_output::image::BuiltinObjects>,
     reads: crate::read_service::ReadObservations,
     accounts: crate::account::observation::AccountObservations,
     writes: Vec<ReplayWrite>,
@@ -42,7 +42,7 @@ impl PreparedComposedTxn {
     pub(crate) fn new(
         typed: PreparedTxn,
         mut owners: OwnerImages,
-        shell: Option<crate::reserved_shell::ShellObjects>,
+        shell: Option<crate::core_output::image::BuiltinObjects>,
         reads: crate::read_service::ReadObservations,
         accounts: crate::account::observation::AccountObservations,
     ) -> Result<Self, ComposedPrepareError> {
@@ -146,7 +146,7 @@ impl From<PreparedTxn> for PreparedComposedTxn {
 pub struct ComposedInstallation {
     typed: PreparedInstallation,
     owners: OwnerImages,
-    shell: Option<crate::reserved_shell::ShellObjects>,
+    shell: Option<crate::core_output::image::BuiltinObjects>,
     reads: crate::read_service::ReadObservations,
     accounts: crate::account::observation::AccountObservations,
 }
@@ -202,6 +202,9 @@ impl ComposedInstallation {
         // Every owner binds before the first typed/owner apply. A later bind
         // refusal drops prior bindings without writing; the typed reservation
         // remains poisoned for the driver to fail stop after the durable ack.
+        if let Some(shell) = &self.shell {
+            shell.local(world)?;
+        }
         let (slots, objects) = world.composed_install_parts_mut();
         let owners_bound = self.owners.bind(slots)?;
         let shell_bound = self.shell.map(|shell| shell.bind(objects)).transpose()?;

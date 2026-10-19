@@ -2537,10 +2537,13 @@ laws M, chart S+M, price policy M, comms S, flip S; after IC12, with P5 for its 
 showcase) — **designed as [doc 19](19-astronomy-engine.md) (2026-10-18) and built as its cuts A.1–A.6,
 all landed 2026-10-18: A.1 (the element tables, `Sky::Kepler`, lane v4), A.2 (the flip law, the
 throttle, the keep-out, route policies, Dray v3), A.3 (`+chart`, the plan's window line), A.4 (the
-reach premium on demand-side bids against the synodic median, lane v5), A.6 (the shipped sky at real
-motion); A.5 closed as a seam**, the cut notes in [18-cut-notes.md](18-cut-notes.md) "A.1"–"A.6";
-A.3b (the chart panel) and A.4b (the emergency bids) open; Q-18-35..41 are ruled by doc 19 §2's
-defaults, the owner overriding by data.
+reach premium on demand-side bids against the synodic median, lane v5), A.4b (the emergency Wanted
+bids, lane v6), A.6 (the shipped sky at real motion), A.7 (the moons — Luna, Phobos, Deimos and
+Titan as bodies about their parents, Stickney Yards on Phobos, lane v7; 2026-10-19), A.3b (the
+`sky.chart` panel — one frame, three renders: `+chart/map`, the TUI's lettered screen `c`, the web's
+chart tab; 2026-10-19); A.5 closed as a seam**, the cut notes in [18-cut-notes.md](18-cut-notes.md)
+"A.1"–"A.7"; every A-cut is in; Q-18-35..41 are ruled by doc 19 §2's defaults, the owner overriding
+by data.
 
 **IC0.** As recorded in [18-cut-notes.md](18-cut-notes.md). `spacecraft` out of `SELF_MODES`
 (`travel.rs:90`) and `options_from_corridor_room` is IC1's, with its test (Q-18-6, binding).

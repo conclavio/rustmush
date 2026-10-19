@@ -20,9 +20,10 @@ use crate::mechanics::{
 };
 use crate::module::{ErasedSlotCapture, ModuleStateMap, StateInit};
 
-/// Four existing commerce slots, three IC physical slots and the optional
-/// hardware replacement slot. Registration grants no per-invocation expansion.
-pub const MAX_OWNER_PARTICIPANTS: usize = 8;
+/// Four existing commerce adapters, three IC physical adapters, hardware
+/// replacement and one shared Industry production adapter. Registration grants
+/// no per-invocation expansion; both Tactics adapters share one owner slot.
+pub const MAX_OWNER_PARTICIPANTS: usize = 9;
 /// An invocation binds at most three distinct slots belonging to two modules.
 pub const MAX_OWNER_PARTICIPANT_IMAGES: usize = 3;
 pub const MAX_OWNER_PARTICIPANT_MODULES: usize = 2;
@@ -80,6 +81,26 @@ impl ParticipantError {
     }
 }
 
+/// Opaque identity of one actual authenticated owner preparation. This is only
+/// comparable by Core; it grants no owner permission and records no freshness.
+/// Capturing it never permits constructing or altering an invocation.
+pub struct OwnerPreparationBinding {
+    invocation: ActionInvocation,
+    action: DefinitionRef,
+    commit: CommitToken,
+}
+
+impl OwnerPreparationBinding {
+    fn matches(
+        &self,
+        action: &DefinitionRef,
+        invocation: &ActionInvocation,
+        commit: CommitToken,
+    ) -> bool {
+        self.action == *action && self.invocation == *invocation && self.commit == commit
+    }
+}
+
 /// Read access during one synchronous owner preparation/recheck. Current
 /// authority must be explicitly rechecked: borrowing World does not track reads.
 pub struct OwnerPrepareContext<'a> {
@@ -90,6 +111,22 @@ pub struct OwnerPrepareContext<'a> {
 }
 
 impl<'a> OwnerPrepareContext<'a> {
+    /// Capture the complete actual invocation, full action reference and commit.
+    /// A consumer can only ask Core to compare this with another actual context.
+    #[must_use]
+    pub fn preparation_binding(&self) -> OwnerPreparationBinding {
+        OwnerPreparationBinding {
+            invocation: self.invocation.clone(),
+            action: self.action.clone(),
+            commit: self.commit_token,
+        }
+    }
+
+    #[must_use]
+    pub fn matches_preparation(&self, binding: &OwnerPreparationBinding) -> bool {
+        binding.matches(self.action, self.invocation, self.commit_token)
+    }
+
     #[must_use]
     pub const fn world(&self) -> &'a World {
         self.world
@@ -499,10 +536,18 @@ pub(crate) struct ParticipantPreparation<'a> {
     provider: &'a ActionProviderEntry,
     world: &'a World,
     images: &'a mut OwnerImages,
-    shell: &'a mut Option<crate::reserved_shell::ShellObjects>,
+    shell: &'a mut Option<crate::core_output::image::BuiltinObjects>,
     invocation: &'a ActionInvocation,
 }
 impl<'a> ParticipantPreparation<'a> {
+    pub(crate) fn matches_preparation(
+        &self,
+        binding: &OwnerPreparationBinding,
+        commit: CommitToken,
+    ) -> bool {
+        binding.matches(self.provider.action(), self.invocation, commit)
+    }
+
     pub(crate) fn world(&self) -> &World {
         self.world
     }
@@ -511,7 +556,7 @@ impl<'a> ParticipantPreparation<'a> {
         provider: &'a ActionProviderEntry,
         world: &'a World,
         images: &'a mut OwnerImages,
-        shell: &'a mut Option<crate::reserved_shell::ShellObjects>,
+        shell: &'a mut Option<crate::core_output::image::BuiltinObjects>,
         invocation: &'a ActionInvocation,
     ) -> Self {
         Self {
@@ -546,6 +591,74 @@ impl<'a> ParticipantPreparation<'a> {
             .prepare(handle, self.provider, &context, self.images, request)
     }
 
+    pub(crate) fn initialize_core_outputs<P: crate::core_output::CoreOutputPolicy>(
+        &mut self,
+        service: &crate::core_output::CoreOutputReservations<P>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        commit: CommitToken,
+        facts: crate::core_output::OutputPolicyFacts,
+    ) -> Result<(), ParticipantError> {
+        if self.shell.is_some() || !self.images.is_empty() {
+            return Err(ParticipantError::Authority);
+        }
+        let image = service.initialize(
+            self.world,
+            self.invocation,
+            self.provider.action(),
+            commit,
+            txn,
+            facts,
+        )?;
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::CoreOutput(image));
+        Ok(())
+    }
+    pub(crate) fn reserve_core_output<P: crate::core_output::CoreOutputPolicy>(
+        &mut self,
+        service: &crate::core_output::CoreOutputReservations<P>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        commit: CommitToken,
+        order: u64,
+        facts: crate::core_output::OutputPolicyFacts,
+    ) -> Result<crate::core_output::ReservedCoreOutput, ParticipantError> {
+        if self.shell.is_some() || !self.images.is_empty() {
+            return Err(ParticipantError::Authority);
+        }
+        let (output, image) = service.reserve(
+            self.world,
+            self.invocation,
+            self.provider.action(),
+            commit,
+            txn,
+            order,
+            facts,
+        )?;
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::CoreOutput(image));
+        Ok(output)
+    }
+    pub(crate) fn consume_core_output<P: crate::core_output::CoreOutputPolicy>(
+        &mut self,
+        service: &crate::core_output::CoreOutputReservations<P>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        commit: CommitToken,
+        order: u64,
+        facts: crate::core_output::OutputPolicyFacts,
+    ) -> Result<crate::core_output::ReservedCoreOutput, ParticipantError> {
+        if self.shell.is_some() {
+            return Err(ParticipantError::Authority);
+        }
+        let (output, image) = service.consume(
+            self.world,
+            self.invocation,
+            self.provider.action(),
+            commit,
+            txn,
+            order,
+            facts,
+        )?;
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::CoreOutput(image));
+        Ok(output)
+    }
+
     pub(crate) fn reserve_shell(
         &mut self,
         service: &crate::reserved_shell::ShellReservations,
@@ -562,7 +675,7 @@ impl<'a> ParticipantPreparation<'a> {
             commit,
             txn,
         )?;
-        *self.shell = Some(shell);
+        *self.shell = Some(shell.into());
         Ok((key, object))
     }
 
@@ -575,13 +688,17 @@ impl<'a> ParticipantPreparation<'a> {
         if self.shell.is_some() || !self.images.is_empty() {
             return Err(ParticipantError::Authority);
         }
-        *self.shell = Some(service.initialize(
-            self.world,
-            self.invocation,
-            self.provider.action(),
-            commit,
-            txn,
-        )?);
+        *self.shell = Some(
+            service
+                .initialize(
+                    self.world,
+                    self.invocation,
+                    self.provider.action(),
+                    commit,
+                    txn,
+                )?
+                .into(),
+        );
         Ok(())
     }
 
@@ -610,14 +727,18 @@ impl<'a> ParticipantPreparation<'a> {
         if self.shell.is_some() {
             return Err(ParticipantError::Authority);
         }
-        *self.shell = Some(service.consume(
-            self.world,
-            self.invocation,
-            self.provider.action(),
-            txn,
-            shell,
-            commit,
-        )?);
+        *self.shell = Some(
+            service
+                .consume(
+                    self.world,
+                    self.invocation,
+                    self.provider.action(),
+                    txn,
+                    shell,
+                    commit,
+                )?
+                .into(),
+        );
         Ok(())
     }
 }

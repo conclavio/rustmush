@@ -33,6 +33,7 @@
 
 use mush_core::{CanonicalId, World};
 
+use crate::definitions::GoodsTable;
 use crate::port::def::{BidDef, PortDef};
 use crate::port::passage::{DEFAULT_THROTTLE_PERMILLE, RoutePolicy, choose_route};
 use crate::port::readiness::report_ports;
@@ -238,9 +239,135 @@ pub fn bid_price_major(w: &World, def: &PortDef, bid: &BidDef) -> u64 {
     )
 }
 
+// ---- doc 19 cut A.4b: the emergency bids ----------------------------------------
+
+/// How often the stock clerk takes a port's emergency reading, real seconds: once
+/// an hour — one IC day at the shipped world rate of 24.
+pub const EMERGENCY_CHECK_SECS: i64 = 3_600;
+
+/// **Whether reach crosses the emergency ratio** (doc 19 §6): `now / median ≥
+/// ratio`, in permille and integer arithmetic; never with a median of zero.
+#[must_use]
+pub fn emergency_crossed(reach: Reach, ratio_permille: u32) -> bool {
+    reach.median_s > 0
+        && reach.now_s > 0
+        && i128::from(reach.now_s) * 1_000
+            >= i128::from(reach.median_s) * i128::from(ratio_permille)
+}
+
+/// The reach ratio `now / median`, permille, for the chart; `None` without a
+/// positive median.
+#[must_use]
+pub fn reach_ratio_permille(reach: Reach) -> Option<u64> {
+    if reach.median_s <= 0 || reach.now_s < 0 {
+        return None;
+    }
+    u64::try_from(i128::from(reach.now_s) * 1_000 / i128::from(reach.median_s)).ok()
+}
+
+/// **The reference an emergency bid is priced from**: the port's highest authored
+/// ask or bid for the good among its vendors (the port's own board knows the
+/// good's worth), else the goods table's `reference_major`; `None` when neither
+/// is a positive figure.
+#[must_use]
+pub fn emergency_reference_major(
+    def: &PortDef,
+    goods: &GoodsTable,
+    good: &CanonicalId,
+) -> Option<u64> {
+    let authored = def
+        .vendors
+        .iter()
+        .flat_map(|vendor| {
+            vendor
+                .asks
+                .iter()
+                .map(|ask| (&ask.good, ask.price_major))
+                .chain(vendor.bids.iter().map(|bid| (&bid.good, bid.price_major)))
+        })
+        .filter(|(named, price)| *named == good && *price > 0)
+        .map(|(_, price)| price)
+        .max();
+    authored.or_else(|| {
+        goods
+            .good(good)
+            .map(|row| row.reference_major)
+            .filter(|&price| price > 0)
+    })
+}
+
+/// One emergency good's reading, for the clerk and the chart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmergencyReading {
+    /// The good.
+    pub good: CanonicalId,
+    /// Its reach, when a port supplies it.
+    pub reach: Option<Reach>,
+    /// Whether the reach crosses the port's ratio.
+    pub crossed: bool,
+    /// What the emergency bid posts at, major units: the reference under the
+    /// premium's cap; `None` without a reference.
+    pub price_major: Option<u64>,
+}
+
+/// **The readings for every emergency good of `def`**, authored order; empty
+/// when the port has no emergency block or no premium to take the cap from.
+#[must_use]
+pub fn emergency_readings(w: &World, def: &PortDef) -> Vec<EmergencyReading> {
+    let (Some(emergency), Some(premium)) = (&def.emergency, &def.premium) else {
+        return Vec::new();
+    };
+    let goods = w.module_state::<TacsimStore>().and_then(TacsimStore::goods);
+    emergency
+        .goods
+        .iter()
+        .map(|good| {
+            let reach = reach_for(w, def, good);
+            let crossed =
+                reach.is_some_and(|reach| emergency_crossed(reach, emergency.ratio_permille));
+            let price_major = goods
+                .and_then(|goods| emergency_reference_major(def, goods, good))
+                .map(|reference| priced(reference, premium.cap_permille));
+            EmergencyReading {
+                good: good.clone(),
+                reach,
+                crossed,
+                price_major,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a4b_the_emergency_crosses_at_the_ratio() {
+        let at = Reach {
+            now_s: 1_500,
+            median_s: 1_000,
+        };
+        assert!(emergency_crossed(at, 1_500), "at the ratio counts");
+        assert!(!emergency_crossed(at, 1_501));
+        assert!(emergency_crossed(at, 1_000));
+        let same = Reach {
+            now_s: 1_000,
+            median_s: 1_000,
+        };
+        assert!(
+            emergency_crossed(same, 1_000),
+            "a ratio of 1000 is always on"
+        );
+        assert!(!emergency_crossed(same, 1_001));
+        let broken = Reach {
+            now_s: 5,
+            median_s: 0,
+        };
+        assert!(!emergency_crossed(broken, 1_000));
+        assert_eq!(reach_ratio_permille(at), Some(1_500));
+        assert_eq!(reach_ratio_permille(broken), None);
+    }
 
     #[test]
     fn a4_the_premium_is_the_capped_excess_over_the_median_reach() {

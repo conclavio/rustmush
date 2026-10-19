@@ -36,7 +36,12 @@ pub struct CommerceConfig {
     compatibility: RatingCompatibility,
     original_market_quotes: bool,
     author_withdrawal: bool,
+    charter_transfers: bool,
+    minds_facts: Option<super::facts::MindsFactProvider>,
+    registry_recall: Option<super::registry_recall::RegistryRecallPolicy>,
+    registry_revocation: Option<super::registry_revocation::RegistryRevocationPolicy>,
     owner_qualification: bool,
+    owner_attestations: bool,
     compatible_updates: bool,
     authored_forks: bool,
     marked_registry: bool,
@@ -45,6 +50,7 @@ pub struct CommerceConfig {
     original_purchases: Option<PurchaseRegistration>,
     entitlements: Option<EntitlementRegistration>,
     renewals: Option<RenewalRegistration>,
+    ic: Option<std::sync::Arc<dyn super::ic_claims::registration::Installer>>,
 }
 #[derive(Clone, Debug)]
 struct PurchaseRegistration {
@@ -92,7 +98,12 @@ impl CommerceConfig {
             compatibility,
             original_market_quotes: false,
             author_withdrawal: false,
+            charter_transfers: false,
+            minds_facts: None,
+            registry_recall: None,
+            registry_revocation: None,
             owner_qualification: false,
+            owner_attestations: false,
             compatible_updates: false,
             authored_forks: false,
             marked_registry: false,
@@ -101,7 +112,59 @@ impl CommerceConfig {
             original_purchases: None,
             entitlements: None,
             renewals: None,
+            ic: None,
         })
+    }
+
+    /// Explicit historical facts and automatic personal term-lapse observation.
+    /// Pass the same opaque provider to the actual Economy fact table.
+    pub fn with_minds_facts(
+        mut self,
+        provider: super::facts::MindsFactProvider,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.minds_facts.is_some() {
+            return Err(ModError::msg(
+                "minds facts require one Active configuration",
+            ));
+        }
+        self.minds_facts = Some(provider);
+        Ok(self)
+    }
+
+    /// Explicit free personal-owner generation transitions. No automatic renewal,
+    /// monetary participant or paid-customer row is enabled by this option.
+    pub fn with_owner_attestations(mut self) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.owner_attestations {
+            return Err(ModError::msg("owner attestations require Active commerce"));
+        }
+        self.owner_attestations = true;
+        Ok(self)
+    }
+
+    /// Select the actual closed seal owner alongside the concrete Tactics and
+    /// Sim participants. This registers no host transition and enables nothing
+    /// in default/Initialize composition.
+    pub fn with_ic_minds<S>(
+        mut self,
+        config: super::ic_claims::IcClaimConfig,
+        writer: super::ic_claims::IcWriter,
+    ) -> Result<Self, ModError>
+    where
+        S: super::ic_claims::IcSealParticipant,
+        S::Output: super::ic_claims::IcSealOutput,
+    {
+        if self.mode != CommerceMode::Active
+            || self.ic.is_some()
+            || config.manifest() != &self.manifest
+        {
+            return Err(ModError::msg(
+                "IC requires one exact Active owner composition",
+            ));
+        }
+        self.ic = Some(std::sync::Arc::new(
+            super::ic_claims::registration::Selected::<S>::new(config, writer),
+        ));
+        Ok(self)
     }
 
     /// Explicitly replace only an existing personal dependent owner's current
@@ -135,6 +198,51 @@ impl CommerceConfig {
         DefinitionRegistryBuilder::new()
             .register(OwnerId::new(crate::NS).map_err(error)?, action)
             .map_err(error)
+    }
+
+    /// Explicit Registry recall authority. No organizations, grants or operators
+    /// are created. Every actual recall repeats the configured live Org policy.
+    pub fn with_registry_recall(
+        mut self,
+        policy: super::registry_recall::RegistryRecallPolicy,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.registry_recall.is_some() {
+            return Err(ModError::msg(
+                "Registry recall requires one Active configuration",
+            ));
+        }
+        policy.validate().map_err(error)?;
+        self.registry_recall = Some(policy);
+        Ok(self)
+    }
+
+    /// Explicit Registry revocation authority. No organizations, grants or operators
+    /// are created. Every actual revocation repeats the configured live Org policy.
+    pub fn with_registry_revocation(
+        mut self,
+        policy: super::registry_revocation::RegistryRevocationPolicy,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.registry_revocation.is_some() {
+            return Err(ModError::msg(
+                "Registry revocation requires one Active configuration",
+            ));
+        }
+        policy.validate().map_err(error)?;
+        self.registry_revocation = Some(policy);
+        Ok(self)
+    }
+
+    /// Enable source-free personal charter offers and native immediate settlement.
+    /// Pending transfers and paid-licence resale remain unavailable.
+    pub fn with_charter_transfers(
+        mut self,
+        _config: super::charter_transfer::CharterTransferConfig,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.charter_transfers {
+            return Err(error("charter transfer requires one Active configuration"));
+        }
+        self.charter_transfers = true;
+        Ok(self)
     }
 
     /// Enable only personal initial-author withdrawal. No source, house,
@@ -422,6 +530,14 @@ impl CommerceConfig {
                 json!({"format":1}),
             )?);
         }
+        if self.owner_attestations {
+            let (term, grace) = self.terms.durations();
+            definitions.extend(super::owner_attestation::protocol::definitions(
+                &self.manifest,
+                term,
+                grace,
+            )?);
+        }
         if self.owner_qualification {
             definitions.extend(super::owner_qualification::protocol::definitions(
                 &self.manifest,
@@ -431,6 +547,18 @@ impl CommerceConfig {
             definitions.extend(super::line_update::registration::definitions(
                 &self.manifest,
             )?);
+        }
+        if self.minds_facts.is_some() {
+            definitions.extend(super::facts::protocol::definitions()?);
+        }
+        if let Some(policy) = &self.registry_recall {
+            definitions.extend(policy.definitions()?);
+        }
+        if let Some(policy) = &self.registry_revocation {
+            definitions.extend(policy.definitions()?);
+        }
+        if self.charter_transfers {
+            definitions.extend(super::charter_transfer::protocol::definitions()?);
         }
         if self.author_withdrawal {
             let [action, outcome] = super::withdrawal::definitions()?;
@@ -471,7 +599,12 @@ impl CommerceConfig {
         if let Some(registry) = registry {
             definitions.extend(registry.definitions());
         }
-        for kind in ["action", "outcome", "owner_participant"] {
+        for kind in [
+            "action",
+            "outcome",
+            "owner_participant",
+            "registry_authority",
+        ] {
             let expected = definitions
                 .iter()
                 .filter(|definition| definition.kind().as_str() == kind)
@@ -500,8 +633,17 @@ impl CommerceConfig {
 }
 
 pub(crate) struct CommerceRegistration {
+    ic: Option<std::sync::Arc<dyn super::ic_claims::registration::Installer>>,
     withdrawal: Option<super::withdrawal::EconomyReadiness>,
+    charter_transfer: Option<super::charter_transfer::Readiness>,
+    facts_readiness: Option<super::facts::MindsFactProvider>,
+    registry_recall: Option<super::registry_recall::Readiness>,
+    registry_revocation: Option<super::registry_revocation::Readiness>,
+    recall_readback: Option<super::registry_recall::notice::Readback>,
+    revocation_readback: Option<super::registry_revocation::notice::Readback>,
+    attestation_readiness: Option<super::withdrawal::EconomyReadiness>,
     owner_qualification: bool,
+    owner_attestations: bool,
     update: Option<DefinitionRef>,
     pub(crate) families: CommerceFamilies,
     pub(crate) ratings: RatingFamilies,
@@ -590,6 +732,12 @@ pub(crate) fn register(
     let ratings = RatingFamilies::register(reg)?;
     if config.mode == CommerceMode::Active {
         let mut declarations = vec![super::holding_reader::descriptor(&config.manifest)?];
+        if config.minds_facts.is_some() {
+            declarations.push(super::facts::reader::descriptor()?);
+        }
+        if config.ic.is_some() {
+            declarations.push(super::ic_claims::reader::descriptor(&config.manifest)?);
+        }
         if fork.is_some() {
             declarations.push(super::parent_grant::descriptor(&config.manifest)?);
             declarations.push(super::authored_access::descriptor(&config.manifest)?);
@@ -791,6 +939,18 @@ pub(crate) fn register(
     let update = update_registration.as_ref().map(|pair| pair[0].clone());
     let root_definition = reg.definition(commercial_roots_descriptor()?)?;
     let mut root_actions = BTreeSet::from([action.clone()]);
+    if let Some(ic) = &config.ic {
+        if ic.config().participants().first() != Some(&root_definition) {
+            return Err(ModError::msg("IC retention definition differs"));
+        }
+        root_actions.extend(ic.config().actions()?);
+        ic.register(
+            reg,
+            families.clone(),
+            ratings.clone(),
+            config.compatibility.clone(),
+        )?;
+    }
     if let Some(action) = &update {
         root_actions.insert(action.clone());
     }
@@ -872,6 +1032,17 @@ pub(crate) fn register(
     } else {
         None
     };
+    let attestation_registration = if config.owner_attestations {
+        let (term, grace) = config.terms.durations();
+        let [action, outcome] =
+            super::owner_attestation::protocol::definitions(&config.manifest, term, grace)?;
+        let action = reg.definition(action)?;
+        let outcome = reg.definition(outcome)?;
+        root_actions.insert(action.clone());
+        Some([action, outcome])
+    } else {
+        None
+    };
     let qualification_registration = if config.owner_qualification {
         let [action, outcome] =
             super::owner_qualification::protocol::definitions(&config.manifest)?;
@@ -879,6 +1050,48 @@ pub(crate) fn register(
         let outcome = reg.definition(outcome)?;
         root_actions.insert(action.clone());
         Some([action, outcome])
+    } else {
+        None
+    };
+    let facts_registration = if config.minds_facts.is_some() {
+        let [action, outcome] = super::facts::protocol::definitions()?;
+        let action = reg.definition(action)?;
+        let outcome = reg.definition(outcome)?;
+        root_actions.insert(action.clone());
+        Some([action, outcome])
+    } else {
+        None
+    };
+    let recall_registration = if let Some(policy) = &config.registry_recall {
+        let [authority, action, outcome] = policy.definitions()?;
+        let authority = reg.definition(authority)?;
+        let action = reg.definition(action)?;
+        let outcome = reg.definition(outcome)?;
+        root_actions.insert(action.clone());
+        Some((policy.clone(), [authority, action, outcome]))
+    } else {
+        None
+    };
+    let revocation_registration = if let Some(policy) = &config.registry_revocation {
+        let [authority, action, outcome] = policy.definitions()?;
+        let authority = reg.definition(authority)?;
+        let action = reg.definition(action)?;
+        let outcome = reg.definition(outcome)?;
+        root_actions.insert(action.clone());
+        Some((policy.clone(), [authority, action, outcome]))
+    } else {
+        None
+    };
+    let charter_transfer_registration = if config.charter_transfers {
+        let [offer, accept, offered, transferred] =
+            super::charter_transfer::protocol::definitions()?;
+        let offer = reg.definition(offer)?;
+        let accept = reg.definition(accept)?;
+        let offered = reg.definition(offered)?;
+        let transferred = reg.definition(transferred)?;
+        root_actions.insert(offer.clone());
+        root_actions.insert(accept.clone());
+        Some([offer, accept, offered, transferred])
     } else {
         None
     };
@@ -902,12 +1115,46 @@ pub(crate) fn register(
             definitions,
         )?;
     }
+    let facts_readiness = facts_registration
+        .map(|definitions| {
+            super::facts::register(
+                reg,
+                families.clone(),
+                ratings.clone(),
+                config
+                    .minds_facts
+                    .as_ref()
+                    .ok_or_else(|| error("minds facts configuration absent"))?,
+                definitions,
+            )
+        })
+        .transpose()?;
+    let registry_recall = recall_registration
+        .map(|(policy, definitions)| {
+            super::registry_recall::register(reg, families.clone(), policy, definitions)
+        })
+        .transpose()?;
+    let registry_revocation = revocation_registration
+        .map(|(policy, definitions)| {
+            super::registry_revocation::register(
+                reg,
+                families.clone(),
+                ratings.clone(),
+                policy,
+                definitions,
+            )
+        })
+        .transpose()?;
+    let charter_transfer = charter_transfer_registration
+        .map(|definitions| super::charter_transfer::register(reg, families.clone(), definitions))
+        .transpose()?;
     let withdrawal = withdrawal_registration
         .map(|definitions| super::withdrawal::register(reg, families.clone(), definitions))
         .transpose()?;
     if let Some(definitions) = retirement_registration {
         super::authored_retirement::register(reg, families.clone(), definitions)?;
     }
+    let mut attestation_parent = None;
     if let Some((fork, definitions)) = fork_registration {
         let parent = super::parent_grant::register(
             reg,
@@ -917,6 +1164,7 @@ pub(crate) fn register(
             config.compatibility.clone(),
         )?;
         let parent = reg.request_owner_read::<super::parent_grant::ParentGrantReader>(parent)?;
+        attestation_parent = Some(parent.clone());
         fork.register(
             reg,
             &config.manifest,
@@ -948,6 +1196,21 @@ pub(crate) fn register(
             config.compatibility.clone(),
         )?;
     }
+    let attestation_readiness = if let Some(definitions) = attestation_registration {
+        Some(super::owner_attestation::register(
+            reg,
+            families.clone(),
+            &config.manifest,
+            attestation_parent,
+            ratings.clone(),
+            config.compatibility.clone(),
+            config.terms.clone(),
+            definitions,
+        )?)
+    } else {
+        None
+    };
+
     let economy = reg.request_owner_participant::<InitialFilingParticipant>(action.clone())?;
     let roots = reg.request_owner_participant::<RootParticipant>(action.clone())?;
     let refusal = ActionError::new(
@@ -1060,9 +1323,26 @@ pub(crate) fn register(
             shells.clone(),
         )?;
     }
+    let recall_readback = (config.mode == CommerceMode::Active)
+        .then(|| super::registry_recall::notice::register(reg, families.clone(), ratings.clone()))
+        .transpose()?;
+    let revocation_readback = (config.mode == CommerceMode::Active)
+        .then(|| {
+            super::registry_revocation::notice::register(reg, families.clone(), ratings.clone())
+        })
+        .transpose()?;
     Ok(CommerceRegistration {
+        ic: config.ic.clone(),
         withdrawal,
+        charter_transfer,
+        facts_readiness,
+        registry_recall,
+        registry_revocation,
+        recall_readback,
+        revocation_readback,
+        attestation_readiness,
         owner_qualification: config.owner_qualification,
+        owner_attestations: config.owner_attestations,
         update,
         families,
         ratings,
@@ -1085,11 +1365,31 @@ impl CommerceRegistration {
         ctx: &mut ModuleCtx<'_>,
         registry: Option<&dyn super::rating::registration::Installer>,
     ) -> Result<(), ModError> {
+        if let Some(readiness) = &self.registry_recall {
+            readiness.capture(ctx)?;
+        }
+        if let Some(readiness) = &self.registry_revocation {
+            readiness.capture(ctx)?;
+        }
+        if let Some(readiness) = &self.charter_transfer {
+            readiness.capture(ctx)?;
+        }
         if let Some(readiness) = &self.withdrawal {
             readiness.capture(ctx)?;
         }
+        if let Some(readiness) = &self.attestation_readiness {
+            readiness.capture(ctx)?;
+        }
+        if self.mode == CommerceMode::Active {
+            super::charter_transfer::audit::audit(
+                ctx,
+                &self.families,
+                self.charter_transfer.is_some(),
+            )
+            .map_err(error)?;
+        }
         match self.mode {
-            CommerceMode::Active => super::audit::audit_and_open_owner_configured(
+            CommerceMode::Active => super::audit::audit_and_open_ic_configured(
                 ctx,
                 &self.families,
                 &self.ratings,
@@ -1101,6 +1401,8 @@ impl CommerceRegistration {
                 self.renewals,
                 self.update.as_ref(),
                 self.owner_qualification,
+                self.owner_attestations,
+                self.ic.as_deref(),
                 registry,
             )
             .map_err(error),
@@ -1112,6 +1414,16 @@ impl CommerceRegistration {
                 &self.ratings,
                 &self.shells,
             ),
+        }?;
+        if let Some(readiness) = &self.facts_readiness {
+            readiness.capture(ctx)?;
         }
+        if let Some(readback) = &self.recall_readback {
+            readback.enable(ctx)?;
+        }
+        if let Some(readback) = &self.revocation_readback {
+            readback.enable(ctx)?;
+        }
+        Ok(())
     }
 }

@@ -124,6 +124,15 @@ pub fn register(
     inventory: Option<&InventoryHandleCell>,
     burn: Option<crate::port::burn::BurnTable>,
 ) -> Result<(), ModError> {
+    register_with_ic(reg, test_world, inventory, burn, None)
+}
+pub(crate) fn register_with_ic(
+    reg: &mut Registrar<'_>,
+    test_world: bool,
+    inventory: Option<&InventoryHandleCell>,
+    burn: Option<crate::port::burn::BurnTable>,
+    ic: Option<&crate::minds::ic_sortie::registration::Registration>,
+) -> Result<(), ModError> {
     let port_families = families::register(reg)?;
     let probe = if test_world {
         Some(reg.state_family::<ProbeKey, ProbeMark, _, _, _, _>(
@@ -142,7 +151,10 @@ pub fn register(
     };
     // One `outcome` validator for the whole crate, over the very descriptors
     // registered next (built once, so the two cannot drift).
-    let outcomes = outcome_descriptors(test_world)?;
+    let mut outcomes = outcome_descriptors(test_world)?;
+    if let Some(ic) = ic {
+        outcomes.push(ic.outcome()?);
+    }
     reg.definition_validator(
         kind("outcome")?,
         crate::definitions::exact_validator(outcomes.clone()),
@@ -162,7 +174,10 @@ pub fn register(
         .cloned()
         .ok_or_else(|| ModError::msg("the burn outcome did not register"))?;
     // One `action` validator for the whole crate, likewise.
-    let actions = action_descriptors(&stock_outcome, &burn_outcome, probe_outcome.as_ref())?;
+    let mut actions = action_descriptors(&stock_outcome, &burn_outcome, probe_outcome.as_ref())?;
+    if let Some(ic) = ic {
+        actions.extend(ic.actions()?);
+    }
     reg.definition_validator(
         kind("action")?,
         crate::definitions::exact_validator(actions.clone()),
@@ -415,6 +430,10 @@ pub struct PortTickState {
     /// Doc 18 cut IC10: the bid re-posts the market refused this boot, by `(vault,
     /// good)` — each is logged once.
     pub(crate) bid_warned: BTreeSet<(u64, CanonicalId)>,
+    /// Doc 19 cut A.4b: when each port's emergency reading was last taken with
+    /// nothing to do, by entry id (real seconds); the clerk reads it again
+    /// `crate::port::price::EMERGENCY_CHECK_SECS` later.
+    pub(crate) emergency_checked: BTreeMap<CanonicalId, i64>,
     /// Doc 18 cut IC11: hulls whose unreadable queued sailing plan has paged this
     /// boot (once each).
     pub(crate) orders_warned: BTreeSet<u32>,

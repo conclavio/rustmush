@@ -528,3 +528,67 @@ fn registry_cancel_wins_over_a_measured_completion_without_losing_its_charge() -
     assert!(account.active.is_none());
     Ok(())
 }
+
+#[test]
+fn maximum_class_rejection_is_new_admission_only_and_old_budget_bytes_stay_exact() -> TestResult {
+    let hash = DefinitionDigest::from_bytes([8; 32]);
+    let case = RegistryCase {
+        key: CaseKey::new(
+            RatingClass::III,
+            CaseKind::Probe {
+                pair: 0,
+                name: ProbeName::EmptyArmed,
+            },
+        )?,
+        units: 1,
+        native_ms: 250,
+        maximum_ms: 1000,
+    };
+    let budget = RegistryBudget::prepare(hash, hash, hash, vec![case.clone()])?;
+    let from = RegistryCursor::default();
+    let next = budget.advance(from, 250, RegistryEnding::Rejected)?;
+    assert_eq!(
+        next,
+        RegistryCursor {
+            index: 0,
+            simulated_ms: 250
+        }
+    );
+    let mut old = serde_json::to_value(&budget)?;
+    old.as_object_mut()
+        .ok_or("budget")?
+        .remove("measured_rejection");
+    let historical: RegistryBudget = serde_json::from_value(old.clone())?;
+    assert_eq!(serde_json::to_value(&historical)?, old);
+    assert!(
+        historical
+            .advance(from, 250, RegistryEnding::Rejected)
+            .is_err()
+    );
+    assert!(
+        historical
+            .advance(from, 250, RegistryEnding::Certified)
+            .is_ok()
+    );
+    assert_ne!(historical.digest()?, budget.digest()?);
+    let mut lower = case.clone();
+    lower.key = CaseKey::new(
+        RatingClass::II,
+        CaseKind::Probe {
+            pair: 0,
+            name: ProbeName::EmptyArmed,
+        },
+    )?;
+    let lower = RegistryBudget::prepare(hash, hash, hash, vec![lower])?;
+    assert!(lower.advance(from, 250, RegistryEnding::Rejected).is_err());
+    let mut kernel = case;
+    kernel.key = CaseKey::new(
+        RatingClass::III,
+        CaseKind::Kernel {
+            name: mush_roll::commerce::rating::KernelName::MemoryKeysAt,
+        },
+    )?;
+    let kernel = RegistryBudget::prepare(hash, hash, hash, vec![kernel])?;
+    assert!(kernel.advance(from, 250, RegistryEnding::Rejected).is_err());
+    Ok(())
+}

@@ -135,7 +135,7 @@ async fn success(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         let paid=rows(&disk(&world),"roll","roll_mind_paid_term");
         let term:PaidTermRecord=serde_json::from_value(one(paid.clone())?)?;
         let licence:PersonalPaidLicence=serde_json::from_value(one(rows(&disk(&world),"roll","roll_mind_personal_paid_licence"))?)?;
-        world.say(GOD,&format!("@asset/transfer #{}=#{}",licence.charter().object().0,BUYER.0))?;
+        world.transfer_charter(licence.charter().object(), BUYER, 49_000_030)?;
         assert!(world.engine.world.module_state::<EconomyStore>().ok_or("economy")?.snapshot()
             .asset(licence.charter().object()).ok_or("title")?.title_owner==EconomicOwner::Object(BUYER));
         world.engine.world.set_now(1000+TERM_SECONDS+GRACE_SECONDS);

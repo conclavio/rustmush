@@ -357,6 +357,17 @@ impl CustodyEval for NoCustody {
 /// contract can never settle on a fact nobody can answer, which is why the default
 /// impl answers `None` and [`NoFacts`] exists at all (D-E4-4).
 pub trait FactEval {
+    /// Resolve within the exact contract the pure engine is evaluating. Legacy
+    /// pure evaluators keep their existing behavior; live restricted providers
+    /// must authenticate this scope against retained world truth.
+    fn resolve_in_contract(
+        &self,
+        _contract: &crate::EconomicContract,
+        fact: &ExternalRef,
+    ) -> Option<bool> {
+        self.resolve(fact)
+    }
+
     /// Resolve one fact.
     fn resolve(&self, _fact: &ExternalRef) -> Option<bool> {
         None
@@ -508,20 +519,59 @@ pub(crate) fn validate_compatible_update(
         PlanGuard::CompatibleUpdate(proof),
     )
 }
+/// Only the private native adapter may authorize a managed charter mutation.
+pub(crate) fn validate_charter_transfer(
+    proof: &crate::registry_filing::charter_transfer::ClosedCharterTransferPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(
+        proof.plan(),
+        snapshot,
+        env,
+        PlanGuard::CharterTransfer(proof),
+    )
+}
+pub(crate) fn validate_core_integration(
+    proof: &crate::core_integration::ClosedCorePlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(
+        proof.plan(),
+        snapshot,
+        env,
+        PlanGuard::CoreIntegration(proof),
+    )
+}
 #[derive(Clone, Copy)]
 enum PlanGuard<'a> {
     Legacy,
+    CharterTransfer(&'a crate::registry_filing::charter_transfer::ClosedCharterTransferPlan),
+    CoreIntegration(&'a crate::core_integration::ClosedCorePlan),
     Purchase(&'a crate::managed_purchase::ClosedPurchasePlan),
     Renewal(&'a crate::managed_renewal::ClosedRenewalPlan),
     CompatibleUpdate(&'a crate::registry_filing::update::ClosedUpdatePlan),
 }
 impl PlanGuard<'_> {
+    fn managed_mutations(
+        self,
+        plan: &EconomyPlan,
+        snapshot: &EconomySnapshot,
+    ) -> Result<(), EconomyError> {
+        match self {
+            Self::CharterTransfer(proof) => proof.check(plan, snapshot),
+            _ => crate::managed_title::require_unmanaged_mutations(plan, snapshot),
+        }
+    }
     fn check(self, plan: &EconomyPlan, snapshot: &EconomySnapshot) -> Result<(), EconomyError> {
         match self {
             Self::Legacy => crate::contract::managed::require_legacy_plan(plan, snapshot),
             Self::Purchase(proof) => proof.check(plan, snapshot),
+            Self::CoreIntegration(proof) => proof.check(plan, snapshot),
             Self::Renewal(proof) => proof.check(plan, snapshot),
             Self::CompatibleUpdate(proof) => proof.check(plan, snapshot),
+            Self::CharterTransfer(proof) => proof.check(plan, snapshot),
         }
     }
 }
@@ -532,6 +582,9 @@ fn validate_guarded(
     guard: PlanGuard<'_>,
 ) -> PlanResult {
     if let Err(error) = guard.check(plan, snapshot) {
+        return PlanResult::Refused(error);
+    }
+    if let Err(error) = guard.managed_mutations(plan, snapshot) {
         return PlanResult::Refused(error);
     }
     let hash = plan_hash(plan);
@@ -568,6 +621,7 @@ fn validate_inner(
     // Boundedness caps (R-B5) — cheap, first, so a huge plan is refused before work.
     caps(plan)?;
     guard.check(plan, snapshot)?;
+    guard.managed_mutations(plan, snapshot)?;
 
     // Expected-revision staleness on ECONOMIC data (authorization is live, below).
     for e in &plan.expected_revisions {

@@ -38,6 +38,7 @@ pub enum OwnerProjectionError {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct OriginalOwnerHolding {
     actor: ObjId,
+    ownership: super::charter_transfer::records::CharterOwnershipRef,
     charter: CharterId,
     title_revision: u64,
     line: LineId,
@@ -62,6 +63,9 @@ impl OriginalOwnerHolding {
         &self,
     ) -> Option<&super::owner_qualification::current::CurrentQualification> {
         self.qualification.as_ref()
+    }
+    pub(crate) fn ownership(&self) -> &super::charter_transfer::records::CharterOwnershipRef {
+        &self.ownership
     }
     pub const fn actor(&self) -> ObjId {
         self.actor
@@ -172,24 +176,26 @@ fn project_owner_for(
     let licence = read(ctx, &families.licences, licence_id.key())?;
     let charter = read(ctx, &families.charters, licence.charter.key())?;
     let line = read(ctx, &families.lines, licence.line.key())?;
-    let term = read(
-        ctx,
-        &families.terms,
-        super::records::OwnerTerm::encoded_key(licence.id, licence.term),
-    )?;
+    let term = super::owner_attestation::history::current(ctx, roll, families, licence)
+        .map_err(|_| OwnerProjectionError::Integrity)?;
     let title = economy
         .snapshot()
         .asset(ObjId(charter.id.get()))
         .ok_or(OwnerProjectionError::NotHeld)?;
     check_title(holder, charter.id, title)?;
+    let birth = read(ctx, &families.operations, licence.operation.to_hex())?;
+    let ownership = super::charter_transfer::history::current(ctx, families, birth, holder)
+        .map_err(|_| OwnerProjectionError::NotHeld)?;
     check_term(term.window, WorldIcSeconds(ctx.world().game_now_unix()))?;
+    super::registry_revocation::current::require(ctx, families, licence.id, term.generation, None)
+        .map_err(|_| OwnerProjectionError::NotHeld)?;
     if charter.line != line.id
         || line.charter != charter.id
         || licence.charter != charter.id
         || licence.line != line.id
         || term.licence != licence.id
         || term.generation != licence.term
-        || [charter.operation, line.operation, term.operation]
+        || [charter.operation, line.operation]
             .into_iter()
             .any(|op| op != licence.operation)
     {
@@ -223,18 +229,24 @@ fn project_owner_for(
         let binding = read(
             ctx,
             &families.owner_parents,
-            super::dependent_owner::OwnerParentBinding::key_for(licence.id, holder),
+            super::dependent_owner::OwnerParentBinding::key_for(licence.id, birth.requester),
         )?;
         let operation = read(ctx, &families.operations, licence.operation.to_string())?;
+        let birth_term = read(
+            ctx,
+            &families.terms,
+            super::records::OwnerTerm::encoded_key(licence.id, binding.term),
+        )?;
         super::dependent_owner::verify_history(
-            ctx, roll, families, ratings, binding, filed, term, operation,
+            ctx, roll, families, ratings, binding, filed, birth_term, operation,
         )
         .map_err(|_| OwnerProjectionError::Integrity)?;
         Some(super::dependent_owner::require_current(
             ctx, holder, families, ratings, expected, binding,
         )?)
     } else {
-        if !matches!(filed.format, 1 | 3) || term.format != 1 || term.parent.is_some() {
+        if !matches!(filed.format, 1 | 3) || !matches!(term.format, 1 | 3) || term.parent.is_some()
+        {
             return Err(OwnerProjectionError::Integrity);
         }
         None
@@ -291,6 +303,7 @@ fn project_owner_for(
     }
     Ok(OriginalOwnerHolding {
         actor: holder,
+        ownership,
         charter: charter.id,
         title_revision: title.revision,
         line: line.id,

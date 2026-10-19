@@ -149,12 +149,37 @@ from Horizons at the lane's epoch 2351-05-13 (the date dev1's fresh store opened
 **kirkwood** on Ceres's elements trailing by 2° of mean anomaly (Q-18-36's default: the
 Ceres–Kirkwood leg is a constant short hop, Kirkwood–Mars the seasonal chord, every Ceres-bound ship
 passes it, and the depot cannot drift off the lane in a lifetime, which an independent 2.06 AU orbit
-would do in a decade). Moons are not bodies yet: Stickney keeps naming `mars` (Phobos's 9,376 km is
-nothing a passage reads), Luna and Titan wait for a port. The circular numbers of ceres, mars and
+would do in a decade). The circular numbers of ceres, mars and
 pallas are **unchanged** from lane v3 — the Kepler set is exact at the epoch, so the engine's sky and
 the slice's sky agree there in longitude and distance; they differ by the **ecliptic latitude** the
 slice flattened (Ceres at i ≈ 10.6°, Pallas at 34.8°), which moves the pinned chords and the legs'
 seconds once, measured in the cut note.
+
+**The moons — D-19-17 (cut A.7, 2026-10-19; Q-19-9 ruled by the owner: "the moons are really where
+the commerce is going to happen").** A `body` may name a **`parent`**: a body of the same pack about
+the Sun (one level). Its four circular numbers and its element table are then **planetocentric** —
+Horizons ELEMENTS with `CENTER` the planet, the ecliptic J2000 frame — and the sky places it at its
+parent's position plus its own (`Sky::position_km`, both models; `Sky::distance_km` measures a moon
+between composed positions, never by the coplanar law). Lane **v7** carries **luna** (about earth),
+**phobos** and **deimos** (about mars) and **titan** (about saturn), and **Stickney Yards stands on
+phobos** — the crater is Phobos's — so the Kirkwood–Stickney leg is 27 s shorter than the
+Kirkwood–Mars chord was. A moon's rows are blended **in element space** (`kepler::blended_elements_position`:
+scalars and the node interpolated linearly in time, the mean longitude ω + M interpolated along the
+shorter arc with each row's M first advanced to the instant, the blended row propagated over zero
+days), because a moon's node and pericentre precess in months (Phobos's node by 158° a year) and the
+planets' position blend puts the midpoint of two phases of a small orbit inside it — Phobos's radius
+halved at the worst instant; the planets keep the position blend as measured and pinned. Measured
+against Horizons' heliocentric positions every 91 days over 2340–2400: Luna within 1.50 ‰ (Earth's
+own 1.01 ‰ and the Sun's pull on a two-body lunar row), Phobos 0.088 ‰, Deimos 0.024 ‰. **Titan has
+no Horizons ephemeris past 2250-01-05**: its table is the last decade Horizons knows (nineteen rows,
+2240–2249), the last row propagated alone through the window — a near-circular 15.9-day orbit whose
+plane precesses in centuries, self-consistent rather than Horizons-true, with no golden rows. A moon's
+authored distance is quantized to the micro-AU (75 km), so the element table's consistency rule has a
+150 km floor (`ELEMENTS_DISTANCE_FLOOR_KM`). **A moon's season is its primary's**: `Sky::period_days`
+answers the parent's year for a moon, so the reach premium's synodic scan (§6) over a port on Phobos
+is Mars's and Ceres's, not a 7.65-hour one. `+chart` rows a moon under the sky with "moon of mars";
+`+chart/body phobos` shows its planetocentric row. Ports on Luna, Deimos and Titan are later content
+(P7's kind); the bodies are there for them.
 
 ### 3.7 The data pipeline — D-19-7
 
@@ -267,6 +292,34 @@ are what make that a rule rather than a preference) so the queue's behaviour is 
 
 ---
 
+**As built (cut A.3b, 2026-10-19; the chart panel — D-19-18).** One frame, three renders. The
+`sky.chart` panel feed (`port/chart_panel.rs`, registered with the port verbs; pulled, never pushed)
+answers a **grid-shaped** frame — the shape `atlas.map` and the arena map wear, so the one grid printer
+(`mush_ansi::grid_lines`) and the web's grid decoder already read it — whose grid is the server's
+**flat render** of the sky: 60 by 28, the Sun at the centre, every orbit a ring dotted every 5° at a
+**logarithmic radial scale** (`ln(1 + r/0.3 AU) / ln(1 + r_max/0.3 AU)`; a square root packed the six
+inner orbits into seven rows), the bodies by letter (nearest the Sun first keeps a shared cell; the
+vantage's body drawn last over everything; a moon shares its parent's cell and draws no letter), the
+listed routes' legs as `:` body to body, the vantage port as the viewer's `you`. Beside the grid a
+`chart` block carries the vector data (each body's position, distance, longitude, latitude, period,
+parent, light lag, raster cell; the routes' legs and passages now at this load, empty and the direct
+chord; the window over the next IC year; the lines `+chart` and `+chart <port>` print). **Line mode**:
+`+chart/map` prints the title, the legend, the whole grid north up with its blank edge rows trimmed,
+and the scale. **The TUI**: the first **lettered screen** — the ten digits are spent, so a screen past
+them is reached by `Alt+<letter>` when the active screen binds nothing to the letter (the cockpit's
+`c` stays its contacts), its `ScreenId` the letter's byte, which the tab strip prints as the letter;
+`c` is the chart, gated on the feed (a world without the lane never grows the tab), `on_enter` asking
+for the frame; its Main pane windows the grid to the pane around `you` with the title above and the
+legend below, its Right pane prints the server's lines; `r` asks again, `w` prefills `+chart `, `m`
+runs `+chart/map`. **The web**: the same policy (`ScreenDef.digit: number | null` with `hotkey`,
+`Alt+letter` → `screenKey` when unbound, a `FeedScreen` registered on a `.chart` feed) and a
+`ChartScreen` that draws an SVG picture from the vector data on the same scale (orbits, bodies, the
+routes' polylines, the vantage ringed), prints the tables from its own pure composers, and shows the
+flat map under a toggle; `web/src/lib/fixtures/chart/sky_chart.json` is a frame the server made,
+blessed by `tests/chart.rs` and decoded by the web tests. The panel plans the port's programme hull
+empty; `+chart` from a docked helm plans the charter's load. `+chart` and `+chart/map` joined the
+read-only verb allowlist (both copies and the fixture).
+
 ## 6. Prices (cut A.4) — D-19-14 (Q-19-5)
 
 Once per IC day the `tacsim.port` tick's price arm computes **reach(port, good)** = the least
@@ -295,9 +348,31 @@ samples (Ceres–Mars's 1,162 days every three), computed at each posting rather
 boot; under the constant sky (rate 0) one sample, so every bid posts at its authored price. The
 port entry's block is `"premium": { "k_permille": 300, "cap_permille": 500 }`, each `0..=10,000`,
 absent = authored prices (lane **v5**; both ports carry it). `MarketStore` holds the posted price;
-the port map's `BidRow.price_major` stays the authored figure. **Not built**: the emergency Wanted
-bids and `emergency_ratio` (cut **A.4b**), and the per-boot median cache (not needed at these
-costs).
+the port map's `BidRow.price_major` stays the authored figure. **Not built**: the per-boot median
+cache (not needed at these costs).
+
+**As built (cut A.4b, 2026-10-19; the emergency bids).** The port entry's block is
+`"emergency": { "org", "ratio_permille", "goods", "intake" }` (lane **v6**: the Exchange at Ceres
+and the Yards at Stickney, 1,500 ‰, provisions / volatiles / propellant, 100 units), bounded in
+`PortDef::check` (a premium to take the cap from; the ratio in 1,000..=100,000 ‰; one to sixteen
+goods of the goods table, none twice; an intake the market buys; an org that is one of the port's
+vendors and neither asks nor bids any of the goods). **The stock clerk** reads the port once a real
+hour (`EMERGENCY_CHECK_SECS`; one IC day at rate 24), before its stock steps: a good whose reach is
+at or past the ratio of its synodic median (`emergency_crossed`) and has no standing emergency bid
+gets one — the org's vendor posts a Wanted for the intake at the premium's **cap** over the good's
+**reference** (the port's highest authored ask or bid for it, else the goods table's
+`reference_major`; Stickney's volatiles 200 → 300, provisions 10 → 15, propellant 60 → 90), as the
+clerk, signed as every bid is; a house that cannot fund one unit posts nothing and is warned once a
+boot (`board::vendor_funds`); a bid gone before its recorded deadline (its intake taken) is not
+posted again until the deadline passes. A good whose reach fell back under the ratio while its bid
+stands has it withdrawn. One act a fire, authored order; the hour is spent only when nothing was
+due. The rows live in `PortMap.emergencies` (good → `BidRow`, the reference as `price_major`); a
+port retire withdraws them with the standing bids. A good no other port supplies has no reach and no
+emergency (Ceres's volatiles: nobody at Stickney asks volatiles). **`+chart <port>`** gained the
+destination's demand side: each standing bid's list price and what it posts at with the premium and
+the reach against the median, then the emergency line (which goods are due at the cap, or none and
+where the reach stands). The emergency bids carry no `boards` (no room board renders them;
+`+market/list` does).
 
 ## 7. Comms (cut A.5) — D-19-15
 
@@ -327,9 +402,10 @@ within rounding, the latitude term measured) and the drift per IC year recorded 
 | **A.1** data and model (**landed 2026-10-18**; the cut note in [18-cut-notes.md](18-cut-notes.md) "A.1") | `ElementRow` tables on `BodyDef` (wire, scales, bounds, the consistency rule); `kepler.rs` (`julian_day`, the solver, the blend); `Sky::Kepler` with `PosKm` in 3D, `isqrt` distances, `heliocentric`, `light_lag_s`, the revision; `fetch_elements.py` + `golden.json`; lane **v4** (eleven bodies + Kirkwood on Ceres's rows trailing 2°; the slice's circular numbers unchanged; routes re-timed to the 3D chords at the epoch); `@corridor/show` names the model; pins re-blessed (lane digest, passage figures) and the drift recorded | M | `a1_sky_kepler_tracks_horizons` within the recorded per-body tolerance; `a1_sky_kepler_is_the_circular_sky_at_the_epoch` (r within 10⁻⁶, λ within 0.001°, β the measured latitude); a fixture pack without tables is `Sky::Circular` byte for byte; every existing suite green |
 | **A.2** laws (**landed 2026-10-18**; the cut note "A.2") | `DriveLaw::Flip`, the thrust-limited laden rule, the rocket-equation burn, the throttle (on the plan too), five intercept passes, the keep-out detour, `RoutePolicy`, `via=` as a waypoint filter; `PassageOptions` on `+ship/plan`, `+ship/undock` and the depart order; Dray **v3**; pins re-blessed; doc 18 §4.4 "as built (A.2)"; lane v5's direct routes moved to A.3 | M | the epoch figures of §4.3 within 2 %; a worst-season plan over 24 h and over 70 t; `Cheapest` never slower-and-costlier than `Fastest`; a keep-out leg longer than its chord and never refused; a route planned under Coast byte-identical to IC9 |
 | **A.3** chart (**landed 2026-10-18**; the cut note "A.3") | `+chart` (the sky table, each port's passage now at this load and empty, the direct chord priced beside the listed route), `+chart <port>` (the window: fastest, cheapest, worst day of the next IC year against now), `+chart/body`, the `+ship/plan` window line; the direct comparison computed from the sky, so lane v5 stays uncut | S | `tests/chart.rs`: the scan ≤ 365 evaluations, the worst day no shorter than the fastest; 120 columns |
-| **A.3b** chart panel | the web cockpit panel and the TUI screen on the OutputEvent/Panel protocol | M | later |
+| **A.3b** chart panel (**landed 2026-10-19**; the cut note "A.3b") | the `sky.chart` panel feed (`port/chart_panel.rs`: a grid-shaped frame — the server's flat render, 60 by 28, the Sun, dotted orbits on a logarithmic radial scale, the bodies by letter, the listed routes dotted, the vantage as `you` — with a `chart` block of vector data, the routes, the window and the lines `+chart` prints); `+chart/map` in line mode; the TUI's lettered screen `c` (the digitless policy: `Alt+<letter>` where the screen binds nothing to it; `ScreenId` = the letter's byte), its chart pane windowed to the pane and its tables pane of server lines; the web's `ChartScreen` (an SVG picture from the vector data on the same scale, the tables, the flat map under a toggle) on the letter hotkey `c`, `FeedScreen` on a `.chart` feed; the fixture `web/src/lib/fixtures/chart/sky_chart.json` blessed by the Rust side | M | `tests/chart.rs`: the frame's shape, letters, legend, routes, window, lines, the flat map's lines, the blessed fixture; `chart_panel` unit tests (scale, raster, line, letters); `mush-net-ssh/tests/chart_screen.rs`: eleven screens validate, Alt+c opens the chart where the feed is published and is inert elsewhere, the frame draws; `web`: `chart.test.ts` (decoder, scale, points, polylines, tables), the hotkey screen and Alt+letter tests, `svelte-check` clean |
 | **A.4** prices (**landed 2026-10-18**; the cut note "A.4") | `port/price.rs`: reach (`choose_route`, the Dray empty, the least over the suppliers), the synodic median (`Sky::period_days`, `synodic_days`, `scan_days`, `median_of`; ≤ 400 samples; one under the constant sky), `premium_permille`, `priced`, `bid_price_major`; read at posting by the applier and the stock clerk; `PortDef.premium { k_permille, cap_permille }` with bounds; lane **v5** (both ports at 300 / 500); the trade help | M | `tests/price.rs`: both ports carry the block; rate 0 posts 280 / 520 (reach now = median); rate 1000 posts `priced(authored, premium(reach))` for every bid, never below authored, never above the cap; a port without the block posts authored prices; k past the bound refused; Ceres–Mars synodic ≈ 1,162 days, Ceres–Kirkwood capped |
-| **A.4b** emergency bids | the emergency Wanted bids for life-support goods at the cap when reach crosses `emergency_ratio`, funded from finite capital; `+chart <port>` naming the premium | S | later |
+| **A.7** moons (**landed 2026-10-19**; the cut note "A.7"; Q-19-9, D-19-17) | `BodyDef.parent` (wire, the pack's one-level rule `UnknownParent`), `Body.parent`, the sky composing a moon's position with its parent's on both models, `Sky::parent_of`, `period_days` as the primary's, `distance_km` between composed positions for a moon; `kepler::blended_elements_position` (the element blend for moons; `propagate_dt`); the 150 km distance floor; `fetch_elements.py --moons` (planet-centred ELEMENTS, heliocentric golden; Titan's last decade); lane **v7** (luna, phobos, deimos, titan; Stickney Yards on phobos; the Kirkwood–Stickney leg 942,997 s); `+chart` "moon of"; pins re-blessed (lane digest, legs, passage 321,547 + 1,256,295 / 1,195,643 + 306,023, the story's 326,136 + 1,274,226) | M | `tests/sky.rs`: sixteen bodies, the four moons' parents, a moon's period its primary's; Horizons tracking for fourteen bodies (Luna ≤ 1.60 ‰, Phobos ≤ 0.09 ‰, Deimos ≤ 0.03 ‰); a moon stands its own orbit from its parent at the epoch and a year either side (Luna 356,000–407,000 km, Phobos 9,200–9,600, Deimos 23,400–23,500, Titan 1,180,000–1,260,000); the epoch consistency planetocentric for moons; `tests/lane.rs` twenty-four entries, the chord Ceres–Phobos, 125 periods of phase; `tests/chart.rs` sixteen rows with "moon of mars" |
+| **A.4b** emergency bids (**landed 2026-10-19**; the cut note "A.4b") | `PortDef.emergency { org, ratio_permille, goods, intake }` with bounds; the stock clerk's emergency step (once an hour; post at the cap over the reference when the reach crosses the ratio, withdraw when it falls back, one act a fire; funded or nothing); `PortMap.emergencies`; `emergency_readings` and the `+chart <port>` demand-side lines; lane **v6** (both ports at 1,500 ‰, provisions / volatiles / propellant, 100 units); the trade help | S | `tests/price.rs`: the block and its refusals; rate 0 posts none (reach = median); a revision at 1,000 ‰ posts a Wanted per supplied good (the org's vendor, 100 units, `priced(reference, 500)`), the capital rows unchanged; a revision at 100,000 ‰ after a reboot withdraws them; `tests/chart.rs`: the demand-side and emergency lines under both skies |
 | **A.5** comms (**closed 2026-10-18 as a seam**) | `Sky::light_lag_s` shipped in A.1 and read by `+chart` in A.3; doc 15 §3.5 amended — the backbone (R1–R10) is not started, so there is no live lag table yet; R5 consumes the seam when built | S | `tests/sky.rs`: the lag is `distance / c` rounded up; `tests/chart.rs`: every body's lag from Ceres |
 | **A.6** flip (**landed 2026-10-18**; the cut note "A.6") | templates at rate 1000 (real motion; the Rust default stays 0); the readiness Sky line names the motion and the model; the migration tests of IC9/IC14 stand; docs 10/18/README amended; a drive-by: the stale dev1 clock pin in `shipped_configs.rs` | S | the two voyage tests; `shipped_configs` parity (12) |
 
@@ -351,13 +427,19 @@ file), pushed when green. No deploy without the owner.
   direct every season (the depot becomes a stop a captain chooses) until P4's customs compel it.
 - **Q-19-4 The throttle floor.** Default 250‰ (a passage at most twice its full-thrust length).
 - **Q-19-5 The price policy's caps.** Default: premium `k = 300‰` per unit of reach ratio, cap 500‰
-  (cut A.4, lane v5's `premium` block on both ports; a lane data edit); `emergency_ratio 1.5`,
-  life-support goods = provisions, volatiles, propellant (cut A.4b, not built).
+  (cut A.4, lane v5's `premium` block on both ports; a lane data edit); the emergency ratio 1,500 ‰,
+  life-support goods = provisions, volatiles, propellant, 100 units deep, posted by the Exchange at
+  Ceres and the Yards at Stickney (cut A.4b, lane v6's `emergency` block; a lane data edit).
 - **Q-19-6 The keep-out radius.** Default 0.3 AU (Mercury's orbit is 0.39 AU).
 - **Q-19-7 The chart panel.** Default: text first (A.3), the panel as A.3b after A.6.
 - **Q-19-8 Re-fitting the elements.** Default: one set per body for 2340–2400; a second era is a lane
   data change when the campaign nears 2400 (about 2,000 real days at rate 24 from 2351).
 - **Q-19-9 Moons as bodies.** Default: not yet (Stickney names `mars`); Luna and Titan with a port.
+  **Ruled by the owner 2026-10-19**: Luna, Phobos, Deimos and Titan are bodies — "the moons are
+  really where the commerce is going to happen" — built as cut A.7 (§3.6, D-19-17); Stickney stands
+  on Phobos.
+
+**Q-19-1 through Q-19-8: the defaults above were accepted as proposed by the owner on 2026-10-19.**
 
 ---
 

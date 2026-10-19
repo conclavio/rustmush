@@ -5855,9 +5855,14 @@ fn af1_catalog_shape_ignores_identity_but_walks_every_definition_field() {
 /// chosen-profile fixture's fitted Class I core adds another 37 component and
 /// capability paths. All 458 surviving paths retain their types:
 /// 559 - 101 + 235 = 693. Catalog digest keys alone are normalized, as above.
-const AF1_SHAPE_DIGEST: &str = "ee1b4473fd844452c5df2e05314db98df315f231b080e9e9afeacf3405213238";
+/// L R4, snapshot format 16: 19 paths for accepted order watches are added.
+/// The actual N60 walk covers both Character and Persona attribution, nullable
+/// and numeric issuer, request digest, objective and exact member deadlines.
+/// Removing only `state.order_watches` paths reproduces the prior 693-path
+/// digest byte for byte: no existing path/type changed. Total: 712 paths.
+const AF1_SHAPE_DIGEST: &str = "502a2e44b3572828e4ffbff518604fb8f31975f0210b20376dfe41899ece2d58";
 /// And how many lines that is.
-const AF1_SHAPE_LINES: usize = 693;
+const AF1_SHAPE_LINES: usize = 712;
 
 /// **The snapshot's shape is pinned** (16b cut AF.1).
 ///
@@ -5998,8 +6003,8 @@ fn af1_the_snapshot_shape_is_pinned() {
     // number and `order_charge` as a number are under the pin: red's second
     // tank holds the script's `Advance` (no issuer), and the mover a
     // `Support` of it capped at `Effective` (`max_range_band`, a `RangeBand`)
-    // with an issuer set (`ObjId(77)`, no tank of this fixture — a record
-    // field nothing here reads back), its charge re-keyed to the mover's own
+    // with its actual red issuer MOVER and character attribution, its charge
+    // re-keyed to the mover's own
     // row for it (`of` a number) and the unit riding `order_charge`. And
     // (the D21 ruling) blue's squad is ordered too, so every objective's
     // fields are walked: PARKED holds an `Engage` hinted at the mover in its
@@ -6015,7 +6020,8 @@ fn af1_the_snapshot_shape_is_pinned() {
         .expect("the squad script orders the mover");
     let support = tacsim::deliberation::Order {
         objective: Objective::Support { of: SQUAD_RED_B },
-        issuer: Some(ObjId(77)),
+        issuer: Some(MOVER),
+        by: tacsim::deliberation::CharacterRef::Character { id: ObjId(77) },
         constraints: tacsim::deliberation::order::Constraints {
             max_range_band: Some(RangeBand::Effective),
             ..order.constraints
@@ -6063,7 +6069,7 @@ fn af1_the_snapshot_shape_is_pinned() {
     let mover = squadded.minds.get(&MOVER).expect("the mover's row");
     assert_eq!(
         (mover.order_issuer, mover.order_charge),
-        (Some(ObjId(77)), Some(SQUAD_RED_B)),
+        (Some(MOVER), Some(SQUAD_RED_B)),
         "the landing wrote the issuer and the charge"
     );
     assert!(
@@ -6132,7 +6138,7 @@ fn af1_the_snapshot_shape_is_pinned() {
         tacsim::arena::snapshot::digest_text(&sha2::Sha256::digest(joined.as_bytes()).into());
     assert_eq!(
         tacsim::arena::snapshot::SNAPSHOT_FORMAT,
-        13,
+        16,
         "a format bump re-blesses the pin below in the same change"
     );
     assert_eq!(
@@ -6296,7 +6302,7 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
     // to 6, 17b cut M1b.1 to 7, 17b cut M3.2 to 8, 17b cut M4.6 to 9 and 17b
     // cut M5.2 to 10 (the sealed set, the active profile, STOP E's charge); a
     // format-2 document is still refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 15);
+    assert_eq!(SNAPSHOT_FORMAT, 16);
     assert_eq!(Snapshot::head(&two), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&two, (*arena.definition).clone()).map(|_| ()),
@@ -6380,7 +6386,7 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
     // 17b cut M1a.5 moved the format to 5, 17b cut L.1 to 6, 17b cut M1b.1
     // to 7, 17b cut M3.2 to 8, 17b cut M4.6 to 9 and 17b cut M5.2 to 10; a
     // format-3 document is still refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 15);
+    assert_eq!(SNAPSHOT_FORMAT, 16);
     assert_eq!(Snapshot::head(&three), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&three, (*arena.definition).clone()).map(|_| ()),
@@ -6599,8 +6605,10 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
     // cut M3.2's to M4.6's), a format-7 one (17b cut M1b.1's) and a format-4
     // one are refused by name. M6 also refuses its immediate predecessors:
     // M5r's format 12 and M5rules' format 11, before decoding their old state.
-    assert_eq!(SNAPSHOT_FORMAT, 15);
-    for old in [12_u32, 11, 10, 9, 8, 7, 4] {
+    // M7 also refuses format 15 without accepted-order attribution, M6 format
+    // 13 and certificate-bearing format 14 before reading carried state.
+    assert_eq!(SNAPSHOT_FORMAT, 16);
+    for old in [15_u32, 14, 13, 12, 11, 10, 9, 8, 7, 4] {
         let mut stale = snapshot.document.clone();
         stale["format"] = serde_json::json!(old);
         let refused = SnapshotError::Format {
@@ -6641,6 +6649,9 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
 /// for field: on both mind rows at 10,000 ms, in the encoded `state.minds`,
 /// and back from the decode with the same hash. The author half is declared
 /// the world's, not re-pinned; the format-5 refusal is unchanged.
+/// R4/format16 additionally carries actual accepted attribution in the private
+/// latest-group record. The new native/recovery tests pin that separate field;
+/// this existing test continues to pin the unchanged public mind order.
 #[test]
 fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() {
     use tacsim::arena::perception::{FrameOrder, MindObjective};
@@ -6705,7 +6716,7 @@ fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() 
     };
     // 17b cut M3.2 moved the format to 8, 17b cut M4.6 to 9 and 17b cut M5.2
     // to 10.
-    assert_eq!(SNAPSHOT_FORMAT, 15);
+    assert_eq!(SNAPSHOT_FORMAT, 16);
     assert_eq!(Snapshot::head(&five), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&five, (*arena.definition).clone()).map(|_| ()),

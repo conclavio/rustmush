@@ -321,9 +321,13 @@ impl GameModule for Consumer {
                     text,
                     readiness: Some(readiness.clone()),
                 };
+                let actual_actor = ctx.dispatch_actor();
+                assert_eq!(actual_actor, Some(ctx.actor));
                 if mode == 11 || mode == 12 {
                     ctx.actor = ObjId(999);
                     ctx.module = Some("owner".into());
+                    assert_eq!(ctx.dispatch_actor(), actual_actor);
+                    assert_ne!(ctx.dispatch_actor(), Some(ctx.actor));
                 }
                 let answer = if mode == 7 || mode == 12 {
                     ctx.hook_read_context("owner").read_owner(&handle, request)

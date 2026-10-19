@@ -15,6 +15,7 @@
 
   import ActionsPanel from "./ActionsPanel.svelte";
   import ChannelTabs from "./ChannelTabs.svelte";
+  import ChartScreen from "./ChartScreen.svelte";
   import ChannelView from "./ChannelView.svelte";
   import CockpitScreen from "./CockpitScreen.svelte";
   import ReplayScreen from "./ReplayScreen.svelte";
@@ -155,10 +156,10 @@
           class="tab"
           class:active={active.id === s.id}
           aria-current={active.id === s.id ? "page" : undefined}
-          title="{s.label} (key {s.digit})"
+          title="{s.label} (key {s.digit ?? `Alt+${s.hotkey ?? ''}`})"
           onclick={() => app.screens.switchTo(s.id, gate)}
         >
-          <kbd>{s.digit}</kbd>
+          <kbd>{s.digit ?? `⌥${s.hotkey ?? ""}`}</kbd>
           {s.label}
           {#if n > 0}<span class="badge">{n > 99 ? "99+" : n}</span>{/if}
         </button>
@@ -222,6 +223,9 @@
           <LlmPanel {app} />
         {:else if active.id === "unit"}
           <UnitScreen {app} />
+        {:else if active.id === "chart"}
+          <!-- Doc 19 cut A.3b: the sky chart, on the letter hotkey c. -->
+          <ChartScreen {app} />
         {:else if active.id === "cockpit" && app.pictureShown}
           <!-- 16b cut I.2: a finished match on screen 0 — a replay is open
                and no seat is held. A seat closes the replay. -->

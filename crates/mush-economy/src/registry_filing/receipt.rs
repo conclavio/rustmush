@@ -50,11 +50,28 @@ fn present_house<'de, D: serde::Deserializer<'de>>(
 }
 
 impl InitialFilingAuditSubject {
+    pub(crate) fn matches_checkpoint_key(&self, row: &crate::checkpoint::IdemRow) -> bool {
+        row.key.as_str() == self.commit.to_hex()
+            && row.tx == self.transaction
+            && row.seq == self.journal_seq
+            && row.ns.as_str()
+                == if self.house.is_some() {
+                    house::NAMESPACE
+                } else {
+                    FILING_NAMESPACE
+                }
+    }
     pub fn house(&self) -> Option<&HouseFilingAttribution> {
         self.house.as_ref()
     }
     pub const fn commit(&self) -> CommitToken {
         self.commit
+    }
+    pub(crate) fn managed_title_birth(&self) -> (ObjId, crate::managed_title::TitleBirth) {
+        (
+            self.title,
+            crate::managed_title::TitleBirth::charter(self.commit, self.transaction),
+        )
     }
     pub(super) const fn commit_token(&self) -> CommitToken {
         self.commit

@@ -32,11 +32,14 @@ use crate::{TacsimRuleset, minds::registry::composition::Registration};
 /// catalog and genuine application of the fixed shipped Registry ground.
 pub struct MindCommerce {
     registry: Registration,
+    minds_facts: Option<mush_roll::commerce::facts::MindsFactProvider>,
+    ic: Option<crate::minds::ic_sortie::registration::Composition>,
     mode: CommerceMode,
     roll: CommerceConfig,
     filing: InitialFilingPolicy,
     filing_action: DefinitionRef,
     compatible_update_action: Option<DefinitionRef>,
+    charter_transfer_action: Option<DefinitionRef>,
     house_filing_action: Option<DefinitionRef>,
     dependent_filing_action: Option<DefinitionRef>,
     purchases: Option<OriginalPurchaseConfig>,
@@ -72,11 +75,14 @@ impl MindCommerce {
         let filing_action = roll.initial_filing_action()?;
         Ok(Self {
             registry,
+            minds_facts: None,
+            ic: None,
             mode,
             roll,
             filing,
             filing_action,
             compatible_update_action: None,
+            charter_transfer_action: None,
             house_filing_action: None,
             dependent_filing_action: None,
             purchases: None,
@@ -86,6 +92,64 @@ impl MindCommerce {
             authored_forks: false,
             marked_registry: false,
         })
+    }
+
+    /// Historical public filed facts and scoped personal term-lapse occurrences.
+    /// This opts in the same opaque provider in the actual Roll and Economy
+    /// owners; it grants no source, transfer or house authority.
+    pub fn with_minds_facts(mut self) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.minds_facts.is_some() {
+            return Err(ModError::msg("minds facts require one Active composition"));
+        }
+        let provider = mush_roll::commerce::facts::MindsFactProvider::new();
+        self.roll = self.roll.with_minds_facts(provider.clone())?;
+        self.minds_facts = Some(provider);
+        Ok(self)
+    }
+
+    /// Explicit fixed-base IC custody. No host event or start transition is
+    /// minted, and ordinary rosters retain their previous configuration.
+    pub fn with_ic_minds(
+        mut self,
+        bases: Vec<mush_sim::ic_exclusion::ConfiguredIcBase>,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.ic.is_some() {
+            return Err(ModError::msg(
+                "IC requires explicit Active composition once",
+            ));
+        }
+        let ic = crate::minds::ic_sortie::registration::Composition::new(
+            self.manifest().clone(),
+            bases,
+        )?;
+        self.roll = self
+            .roll
+            .with_ic_minds::<crate::minds::ic_sortie::IcSortieParticipant>(
+                ic.claims.clone(),
+                ic.writer.clone(),
+            )?;
+        self.ic = Some(ic);
+        Ok(self)
+    }
+    pub fn configure_ic_physical(
+        &self,
+        tactics: mush_tactics::TacticsModule,
+        sim: mush_sim::SimulationModule,
+    ) -> (mush_tactics::TacticsModule, mush_sim::SimulationModule) {
+        match &self.ic {
+            Some(ic) => ic.physical(tactics, sim),
+            None => (tactics, sim),
+        }
+    }
+    /// Explicit personal charter offers and immediate native payment/title
+    /// settlement. Open OwnedDispatch claims refuse acceptance; this enables no
+    /// paid-licence resale, pending hold, automatic acceptance or source grant.
+    pub fn with_charter_transfers(mut self) -> Result<Self, ModError> {
+        let config = mush_roll::commerce::charter_transfer::CharterTransferConfig::new();
+        let [_, accept] = config.actions()?;
+        self.roll = self.roll.with_charter_transfers(config)?;
+        self.charter_transfer_action = Some(accept);
+        Ok(self)
     }
 
     /// Explicit positive-fee original-author updates; no new major or paid Follow.
@@ -182,6 +246,27 @@ impl MindCommerce {
         Ok(self)
     }
 
+    /// Explicit scoped Registry authority for one current accepted term.
+    /// Existing terms and captured sorties are not rewritten or reclaimed.
+    pub fn with_registry_revocation(
+        mut self,
+        policy: mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
+    ) -> Result<Self, ModError> {
+        self.roll = self.roll.with_registry_revocation(policy)?;
+        Ok(self)
+    }
+
+    /// Enable exact filed-revision Registry recall under configured live Org
+    /// authorization. Historical holder readback remains independent of the
+    /// currently configured authority; no source or sortie is rewritten.
+    pub fn with_registry_recall(
+        mut self,
+        policy: mush_roll::commerce::registry_recall::RegistryRecallPolicy,
+    ) -> Result<Self, ModError> {
+        self.roll = self.roll.with_registry_recall(policy)?;
+        Ok(self)
+    }
+
     fn with_purchase_protocol(
         mut self,
         policy: OriginalQuotePolicy,
@@ -274,6 +359,11 @@ impl MindCommerce {
         if self.marked_registry {
             layer.marked_registry = Some(self.manifest().clone());
         }
+        layer.ic_minds = self
+            .ic
+            .as_ref()
+            .map(|ic| ic.layer(&layer.cfg))
+            .transpose()?;
         layer.registry_commerce = Some(self.registry.clone());
         Ok(layer)
     }
@@ -297,7 +387,15 @@ impl MindCommerce {
     /// Preserve custody, facts, observers and existing title issuers. The host
     /// must already allow the configured filing issuer; no issuer is added here.
     pub fn configure_economy(&self, module: EconomyModule) -> EconomyModule {
+        let module = match &self.minds_facts {
+            Some(provider) => module.with_fact_provider(std::sync::Arc::new(provider.clone())),
+            None => module,
+        };
         let module = module.with_initial_filing(self.filing.clone(), self.filing_action.clone());
+        let module = match &self.charter_transfer_action {
+            Some(action) => module.with_mind_charter_transfers(action.clone()),
+            None => module,
+        };
         let module = match &self.compatible_update_action {
             Some(action) => module.with_compatible_mind_updates(action.clone()),
             None => module,

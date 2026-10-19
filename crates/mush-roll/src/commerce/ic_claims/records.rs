@@ -60,6 +60,13 @@ pub(crate) struct OpenClaim {
     pub(crate) unit: ObjId,
     pub(crate) sortie: SortieNumber,
     pub(crate) dispatcher: ObjId,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::super::charter_transfer::records::present_ownership"
+    )]
+    pub(crate) charter_ownership:
+        Option<super::super::charter_transfer::records::CharterOwnershipRef>,
     pub(crate) hull_title_revision: u64,
     pub(crate) licence: LicenceId,
     pub(crate) term: TermGeneration,
@@ -78,8 +85,39 @@ pub(crate) struct OpenClaim {
     /// Exact Sim IC exclusion row identity in the same owner union.
     pub(crate) exclusion_digest: DefinitionDigest,
 }
+pub(super) fn admission_digest(
+    value: &serde_json::Value,
+) -> Result<DefinitionDigest, PublicationError> {
+    DefinitionDigest::for_canonical_value_with_limit("roll.ic_mind_admission.v1", value, 16384)
+        .map_err(bad)
+}
 impl OpenClaim {
+    pub(crate) fn admission_digest(&self) -> Result<DefinitionDigest, PublicationError> {
+        let mut value = serde_json::json!({
+            "unit": self.unit, "dispatcher": self.dispatcher,
+            "hull_title_revision": self.hull_title_revision,
+            "licence": self.licence, "term": self.term, "charter": self.charter,
+            "line": self.line, "filed": self.filed, "revision": self.revision,
+            "rating": self.rating, "window": self.window, "capacity": self.capacity
+        });
+        if let Some(proof) = &self.charter_ownership {
+            value
+                .as_object_mut()
+                .ok_or(PublicationError::Invalid)?
+                .insert(
+                    "charter_ownership".into(),
+                    serde_json::to_value(proof).map_err(bad)?,
+                );
+        }
+        admission_digest(&value)
+    }
     pub(crate) fn validate(&self) -> Result<(), PublicationError> {
+        if let Some(proof) = &self.charter_ownership {
+            proof.transferred()?;
+            if !matches!(self.capacity, Capacity::OwnedDispatch {}) {
+                return Err(PublicationError::Invalid);
+            }
+        }
         self.protocol.validate()?;
         world_stamp(&self.at_ic)?;
         if self.action != self.protocol.action(Transition::Open)?
@@ -211,7 +249,10 @@ impl Record for ClaimRecord {
         self.open.operation.to_hex()
     }
     fn validate(&self) -> Result<(), PublicationError> {
-        if self.format != 1 {
+        if !matches!(
+            (self.format, self.open.charter_ownership.is_some()),
+            (1, false) | (2, true)
+        ) {
             return Err(PublicationError::Invalid);
         }
         self.open.validate()?;

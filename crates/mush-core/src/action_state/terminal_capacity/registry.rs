@@ -17,11 +17,14 @@ const ACTIONS: [&str; 5] = [
     "rating_cancel",
     "rating_recover",
 ];
+mod reconformance;
+use reconformance::{Binding, Profile};
 const TRANSITIONS: [&str; 5] = ["admit", "grant", "settle", "cancel", "recover"];
-const FAMILIES: [(&str, usize); 6] = [
+const FAMILIES: [(&str, usize); 7] = [
     ("rating_jobs", 4096),
     ("rating_executions", 4096),
     ("rating_receipts", 65536),
+    ("rating_nonconformance", 65536),
     ("rating_completions", 4096),
     ("rating_status", 4096),
     ("rating_pages", 32768),
@@ -64,7 +67,14 @@ fn closed_participants() -> Result<Vec<(OwnerId, DefinitionDescriptor)>, ActionS
     })
     .collect()
 }
+#[cfg(test)]
 fn closed_actions(manifest: &DefinitionRef) -> Result<[DefinitionDescriptor; 5], ActionStateError> {
+    closed_profile_actions(manifest, Profile::Ordinary)
+}
+fn closed_profile_actions(
+    manifest: &DefinitionRef,
+    profile: Profile,
+) -> Result<[DefinitionDescriptor; 5], ActionStateError> {
     let mut refs = vec![manifest.clone()];
     for (owner, descriptor) in closed_participants()? {
         refs.push(
@@ -73,7 +83,8 @@ fn closed_actions(manifest: &DefinitionRef) -> Result<[DefinitionDescriptor; 5],
                 .map_err(|_| refused("Registry closed participant reference"))?,
         );
     }
-    ACTIONS
+    profile
+        .ids()
         .into_iter()
         .zip(TRANSITIONS)
         .map(|(id, transition)| {
@@ -81,7 +92,7 @@ fn closed_actions(manifest: &DefinitionRef) -> Result<[DefinitionDescriptor; 5],
                 DefinitionKind::new("action").map_err(|_| refused("Registry closed kind"))?,
                 DefinitionId::new(id).map_err(|_| refused("Registry closed id"))?,
                 1,
-                json!({"format":1,"protocol":"registry_rating_v1","transition":transition}),
+                json!({"format":1,"protocol":profile.word(),"transition":transition}),
             )
             .map(|row| row.with_references(refs.clone()))
             .map_err(|_| refused("Registry closed action"))
@@ -91,7 +102,13 @@ fn closed_actions(manifest: &DefinitionRef) -> Result<[DefinitionDescriptor; 5],
         .map_err(|_| refused("Registry closed action count"))
 }
 fn closed_references(manifest: &DefinitionRef) -> Result<[DefinitionRef; 5], ActionStateError> {
-    closed_actions(manifest)?
+    closed_profile_references(manifest, Profile::Ordinary)
+}
+fn closed_profile_references(
+    manifest: &DefinitionRef,
+    profile: Profile,
+) -> Result<[DefinitionRef; 5], ActionStateError> {
+    closed_profile_actions(manifest, profile)?
         .into_iter()
         .map(|descriptor| {
             DefinitionRegistryBuilder::new()
@@ -112,6 +129,8 @@ fn closed_references(manifest: &DefinitionRef) -> Result<[DefinitionRef; 5], Act
 pub(in crate::action_state) struct Protocol {
     manifest: DefinitionRef,
     actions: [DefinitionRef; 5],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reconformance: Option<[DefinitionRef; 5]>,
 }
 
 impl Protocol {
@@ -142,9 +161,41 @@ impl Protocol {
                 "Registry current declaration is not the closed v1 recipe",
             ));
         }
-        Ok(Self { manifest, actions })
+        Ok(Self {
+            manifest,
+            actions,
+            reconformance: None,
+        })
     }
 
+    pub(in crate::action_state) fn with_reconformance(
+        &mut self,
+        owner: &OwnerId,
+        actions: [DefinitionRef; 5],
+    ) -> Result<(), ActionStateError> {
+        if owner.as_str() != "roll"
+            || self.reconformance.is_some()
+            || actions != closed_profile_references(&self.manifest, Profile::Reconformance)?
+        {
+            return Err(refused("Registry reconformance declaration differs"));
+        }
+        self.reconformance = Some(actions);
+        Ok(())
+    }
+    fn actions_for(&self, profile: Profile) -> Result<&[DefinitionRef; 5], ActionStateError> {
+        match profile {
+            Profile::Ordinary => Ok(&self.actions),
+            Profile::Reconformance => self
+                .reconformance
+                .as_ref()
+                .ok_or_else(|| refused("Registry reconformance profile unavailable")),
+        }
+    }
+    pub(in crate::action_state) fn admission_actions(&self) -> Vec<&DefinitionRef> {
+        std::iter::once(&self.actions[0])
+            .chain(self.reconformance.as_ref().map(|a| &a[0]))
+            .collect()
+    }
     pub(in crate::action_state) fn validate_families(
         &self,
         registry: &StateFamilyRegistry,
@@ -175,6 +226,9 @@ impl Protocol {
                 return Err(refused("Registry family descriptor differs"));
             }
         }
+        if self.reconformance.is_some() {
+            reconformance::validate_family(registry)?;
+        }
         Ok(())
     }
 
@@ -189,67 +243,75 @@ impl Protocol {
             .map_err(|_| refused("Registry manifest unavailable"))?;
         let participant = DefinitionKind::new("owner_participant")
             .map_err(|_| refused("Registry participant kind"))?;
-        for (action, transition) in self.actions.iter().zip(TRANSITIONS) {
-            let definition = definitions
-                .get_exact(action)
-                .map_err(|_| refused("Registry action definition unavailable"))?;
-            let provider = providers
-                .get_exact(action)
-                .map_err(|_| refused("Registry action provider unavailable"))?;
-            if provider.owner().as_str() != "roll"
-                || definition.payload()
-                    != &json!({"format":1,"protocol":"registry_rating_v1","transition":transition})
-            {
-                return Err(refused("Registry action protocol differs"));
-            }
-            let references = definition.references();
-            if references.len() != 4 || !references.contains(&self.manifest) {
-                return Err(refused("Registry action reference set differs"));
-            }
-            let mut roll = 0;
-            let mut tacsim = 0;
-            for reference in references
-                .iter()
-                .filter(|reference| *reference != &self.manifest)
-            {
-                definitions
-                    .get_exact(reference)
-                    .map_err(|_| refused("Registry participant definition unavailable"))?;
-                if reference.key().kind != participant
-                    || reference.version() != 1
-                    || !participants.grants_exact(reference, provider.owner(), action)
+        for (profile, actions) in std::iter::once((Profile::Ordinary, &self.actions)).chain(
+            self.reconformance
+                .as_ref()
+                .map(|a| (Profile::Reconformance, a)),
+        ) {
+            for (action, transition) in actions.iter().zip(TRANSITIONS) {
+                let definition = definitions
+                    .get_exact(action)
+                    .map_err(|_| refused("Registry action definition unavailable"))?;
+                let provider = providers
+                    .get_exact(action)
+                    .map_err(|_| refused("Registry action provider unavailable"))?;
+                if provider.owner().as_str() != "roll"
+                    || definition.payload()
+                        != &json!({"format":1,"protocol":profile.word(),"transition":transition})
                 {
-                    return Err(refused("Registry participant reference kind"));
+                    return Err(refused("Registry action protocol differs"));
                 }
-                match (reference.key().owner.as_str(), reference.key().id.as_str()) {
-                    ("roll", "commercial_roots") => roll += 1,
-                    ("tacsim", "registry_quota" | "registry_artifacts") => tacsim += 1,
-                    _ => return Err(refused("Registry participant reference identity")),
+                let references = definition.references();
+                if references.len() != 4 || !references.contains(&self.manifest) {
+                    return Err(refused("Registry action reference set differs"));
                 }
-            }
-            if roll != 1 || tacsim != 2 {
-                return Err(refused("Registry participant reference set differs"));
+                let mut roll = 0;
+                let mut tacsim = 0;
+                for reference in references
+                    .iter()
+                    .filter(|reference| *reference != &self.manifest)
+                {
+                    definitions
+                        .get_exact(reference)
+                        .map_err(|_| refused("Registry participant definition unavailable"))?;
+                    if reference.key().kind != participant
+                        || reference.version() != 1
+                        || !participants.grants_exact(reference, provider.owner(), action)
+                    {
+                        return Err(refused("Registry participant reference kind"));
+                    }
+                    match (reference.key().owner.as_str(), reference.key().id.as_str()) {
+                        ("roll", "commercial_roots") => roll += 1,
+                        ("tacsim", "registry_quota" | "registry_artifacts") => tacsim += 1,
+                        _ => return Err(refused("Registry participant reference identity")),
+                    }
+                }
+                if roll != 1 || tacsim != 2 {
+                    return Err(refused("Registry participant reference set differs"));
+                }
             }
         }
         Ok(())
     }
 
-    pub(in crate::action_state) fn admission_action(&self) -> &DefinitionRef {
-        &self.actions[0]
-    }
-
     fn captured_admission(
         &self,
         compatibility: DefinitionDigest,
+        profile: Profile,
     ) -> Result<DefinitionRef, ActionStateError> {
+        self.actions_for(profile)?;
         let manifest = DefinitionRef::new(self.manifest.key().clone(), 1, compatibility)
             .map_err(|_| refused("Registry captured manifest reference"))?;
-        let [admission, ..] = closed_references(&manifest)?;
+        let [admission, ..] = closed_profile_references(&manifest, profile)?;
         Ok(admission)
     }
 
-    fn action_index(&self, identity: &RegisteredTxnIdentity) -> Result<usize, ActionStateError> {
-        self.actions
+    fn action_index(
+        &self,
+        identity: &RegisteredTxnIdentity,
+        profile: Profile,
+    ) -> Result<usize, ActionStateError> {
+        self.actions_for(profile)?
             .iter()
             .position(|action| action == &identity.action)
             .ok_or_else(|| refused("Registry transaction action differs"))
@@ -377,6 +439,17 @@ struct Pair {
     execution: Value,
     phase: String,
     pages: usize,
+    measured_rejection: bool,
+    reconformance: Option<Binding>,
+}
+impl Pair {
+    fn profile(&self) -> Profile {
+        if self.reconformance.is_some() {
+            Profile::Reconformance
+        } else {
+            Profile::Ordinary
+        }
+    }
 }
 fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionStateError> {
     let job = required(view, "rating_jobs", id, None)?;
@@ -386,8 +459,15 @@ fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionStateError> {
     let phase = text(observation, "phase")?;
     let state = field(&job, "state")?;
     let state_kind = text(state, "kind")?;
+    let measured_rejection = match admission.get("measured_rejection") {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => return Err(refused("Registry measured rejection admission")),
+    };
+    let reconformance = reconformance::binding(admission, measured_rejection)?;
     let expected = match phase {
         "running" | "cancel_requested" => "running",
+        "complete" if measured_rejection && state_kind == "nonconforming" => "nonconforming",
         "complete" => "completed",
         other => other,
     };
@@ -477,12 +557,21 @@ fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionStateError> {
         execution: execution.clone(),
         phase: phase.into(),
         pages: pages as usize,
+        measured_rejection,
+        reconformance,
     })
 }
 
-fn targets(job: CommitToken, pages: usize) -> Result<Vec<Target>, ActionStateError> {
+fn targets(
+    job: CommitToken,
+    pages: usize,
+    measured_rejection: bool,
+) -> Result<Vec<Target>, ActionStateError> {
     let mut targets = Vec::with_capacity(5 + pages);
     for (family, ceiling) in FAMILIES {
+        if family == "rating_nonconformance" && !measured_rejection {
+            continue;
+        }
         let count = if family == "rating_pages" { pages } else { 1 };
         for page in 0..count {
             targets.push(Target {
@@ -523,13 +612,13 @@ pub(super) fn verify(
         .ok_or_else(|| refused("Registry protocol unavailable"))?;
     let pair = pair(view, reservation.funding)?;
     let captured = captured_compatibility(&pair)?;
-    if reservation.effect != protocol.captured_admission(captured)?
+    if reservation.effect != protocol.captured_admission(captured, pair.profile())?
         || (matches!(phase, Phase::Funding) && captured != protocol.manifest.digest())
         || (matches!(phase, Phase::Terminal)
             && captured != protocol.manifest.digest()
             && pair.phase != "interrupted")
         || reservation.sponsor != key("rating_executions", reservation.funding, None)?
-        || reservation.targets != targets(reservation.funding, pair.pages)?
+        || reservation.targets != targets(reservation.funding, pair.pages, pair.measured_rejection)?
         || reservation.protocol_fingerprint != Some(fingerprint(&pair.job, &pair.execution)?)
         || matches!(phase, Phase::Funding) && pair.phase != "queued"
         || matches!(phase, Phase::Funding | Phase::Retained) && is_terminal(&pair.phase)
@@ -539,13 +628,48 @@ pub(super) fn verify(
             "Registry reservation identity or lifecycle differs",
         ));
     }
+    reconformance::require_head(view, reservation.funding, &pair)?;
     outputs(view, reservation.funding, &pair)?;
+    Ok(())
+}
+
+fn verify_pages(
+    view: &View<'_>,
+    id: CommitToken,
+    receipt: &Value,
+    result: &Value,
+    refs: &[Value],
+) -> Result<(), ActionStateError> {
+    let mut cases = 0usize;
+    for (ordinal, reference) in refs.iter().enumerate() {
+        let page = required(view, "rating_pages", id, Some(ordinal))?;
+        let content = field(&page, "content")?;
+        let rows = field(content, "rows")?
+            .as_array()
+            .ok_or_else(|| refused("Registry page rows"))?;
+        if token(field(&page, "job")?)? != id
+            || field(&page, "rating")? != field(&receipt, "id")?
+            || field(&page, "result")? != field(result, "id")?
+            || number(content, "ordinal")? != ordinal as u64
+            || number(reference, "ordinal")? != ordinal as u64
+            || number(reference, "rows")? != rows.len() as u64
+            || rows.is_empty()
+            || rows.len() > 15
+            || *field(reference, "digest")? != json!(digest("tacsim.registry.page.v1", content)?)
+        {
+            return Err(refused("Registry page identity differs"));
+        }
+        cases = add(cases, rows.len())?;
+    }
+    if number(result, "cases")? != cases as u64 {
+        return Err(refused("Registry case count differs"));
+    }
     Ok(())
 }
 
 fn outputs(view: &View<'_>, id: CommitToken, pair: &Pair) -> Result<(), ActionStateError> {
     let mut expected_pages = 0;
-    if pair.phase == "complete" {
+    if pair.phase == "complete" && text(field(&pair.job, "state")?, "kind")? == "completed" {
         let receipt = required(view, "rating_receipts", id, None)?;
         let completion = required(view, "rating_completions", id, None)?;
         let status = required(view, "rating_status", id, None)?;
@@ -584,37 +708,57 @@ fn outputs(view: &View<'_>, id: CommitToken, pair: &Pair) -> Result<(), ActionSt
         if !matches!(standing, "active" | "recalled") {
             return Err(refused("Registry rating standing"));
         }
-        let mut cases = 0usize;
-        for (ordinal, reference) in refs.iter().enumerate() {
-            let page = required(view, "rating_pages", id, Some(ordinal))?;
-            let content = field(&page, "content")?;
-            let rows = field(content, "rows")?
-                .as_array()
-                .ok_or_else(|| refused("Registry page rows"))?;
-            if token(field(&page, "job")?)? != id
-                || field(&page, "rating")? != field(&receipt, "id")?
-                || field(&page, "result")? != field(result, "id")?
-                || number(content, "ordinal")? != ordinal as u64
-                || number(reference, "ordinal")? != ordinal as u64
-                || number(reference, "rows")? != rows.len() as u64
-                || rows.is_empty()
-                || rows.len() > 15
-                || *field(reference, "digest")?
-                    != json!(digest("tacsim.registry.page.v1", content)?)
-            {
-                return Err(refused("Registry page identity differs"));
+        verify_pages(view, id, &receipt, result, refs)?;
+    } else if pair.phase == "complete" {
+        if !pair.measured_rejection {
+            return Err(refused("Registry rejection lacks reserved output"));
+        }
+        let receipt = required(view, "rating_nonconformance", id, None)?;
+        let reference = field(field(&pair.job, "state")?, "receipt")?;
+        let result = field(&receipt, "result")?;
+        let admission = field(&pair.execution, "admission")?;
+        let refs = field(result, "pages")?
+            .as_array()
+            .ok_or_else(|| refused("Registry rejection page refs"))?;
+        expected_pages = refs.len();
+        if token(field(reference, "job")?)? != id
+            || token(field(field(&receipt, "publication")?, "job")?)? != id
+            || number(&receipt, "format")? != 1
+            || text(&receipt, "kind")? != "measured_nonconformance"
+            || text(&receipt, "cause")? != "maximum_class_budget"
+            || field(reference, "id")? != field(&receipt, "id")?
+            || number(reference, "schema")? != 1
+            || *field(reference, "receipt_digest")?
+                != json!(digest(
+                    "tacsim.registry.nonconformance.receipt.v1",
+                    &receipt
+                )?)
+            || field(&receipt, "subject")? != field(&pair.job, "subject")?
+            || field(&receipt, "compatibility")? != field(&pair.job, "compatibility")?
+            || field(&receipt, "plan")? != field(&pair.job, "plan")?
+            || refs.is_empty()
+            || refs.len() > pair.pages
+            || number(result, "cases")? > number(admission, "cases")?
+        {
+            return Err(refused("Registry terminal nonconformance differs"));
+        }
+        for family in ["rating_receipts", "rating_completions", "rating_status"] {
+            if value(view, family, id, None)?.is_some() {
+                return Err(refused("Registry rejected job has successful output"));
             }
-            cases = add(cases, rows.len())?;
         }
-        if number(result, "cases")? != cases as u64 {
-            return Err(refused("Registry case count differs"));
-        }
+        verify_pages(view, id, &receipt, result, refs)?;
     } else {
         for family in ["rating_receipts", "rating_completions", "rating_status"] {
             if value(view, family, id, None)?.is_some() {
                 return Err(refused("Registry premature successful output"));
             }
         }
+    }
+    if (pair.phase != "complete" || text(field(&pair.job, "state")?, "kind")? != "nonconforming")
+        && value(view, "rating_nonconformance", id, None)?.is_some()
+    {
+        return Err(refused("Registry unexpected nonconformance output"));
     }
     for ordinal in expected_pages..117 {
         if value(view, "rating_pages", id, Some(ordinal))?.is_some() {
@@ -648,7 +792,13 @@ pub(in crate::action_state) fn registry_change(
     {
         return Err(refused("Registry preparation identity differs"));
     }
-    let action = protocol.action_index(identity)?;
+    let view = View {
+        registry: &txn.store.registry,
+        records: &txn.store.records,
+        mutations: Some(&txn.mutations),
+    };
+    let profile = pair(&view, terminal.unwrap_or(commit))?.profile();
+    let action = protocol.action_index(identity, profile)?;
     if let Some(job) = terminal {
         if !matches!(action, 2..=4) {
             return Err(refused("Registry terminal action differs"));
@@ -667,9 +817,9 @@ pub(in crate::action_state) fn registry_change(
         let record = Reservation {
             format: 1,
             funding: commit,
-            effect: protocol.admission_action().clone(),
+            effect: protocol.actions_for(profile)?[0].clone(),
             sponsor: key("rating_executions", commit, None)?,
-            targets: targets(commit, pair.pages)?,
+            targets: targets(commit, pair.pages, pair.measured_rejection)?,
             protocol_fingerprint: Some(fingerprint(&pair.job, &pair.execution)?),
         };
         verify(Phase::Funding, &record, &view)?;
@@ -712,12 +862,13 @@ pub(super) fn audit_boot(
     reservations: &BTreeMap<ReservationId, Arc<StoredReservation>>,
 ) -> Result<(), ActionStateError> {
     if view.registry.registry_rating.is_none() {
-        return Ok(());
+        return reconformance::audit(view, &BTreeMap::new());
     }
     let mut jobs = BTreeSet::new();
     for key in view.records.keys().filter(|key| protected(key)) {
         jobs.insert(key_job(key)?);
     }
+    let mut checked = BTreeMap::new();
     for job in jobs {
         let pair = pair(view, job)?;
         let id = ReservationId(
@@ -729,8 +880,9 @@ pub(super) fn audit_boot(
             (true, None) => outputs(view, job, &pair)?,
             _ => return Err(refused("Registry reverse reservation completeness")),
         }
+        checked.insert(job, pair);
     }
-    Ok(())
+    reconformance::audit(view, &checked)
 }
 
 pub(super) fn validate_changes(
@@ -740,6 +892,9 @@ pub(super) fn validate_changes(
     identity: Option<&RegisteredTxnIdentity>,
 ) -> Result<(), ActionStateError> {
     let Some(protocol) = &store.registry.registry_rating else {
+        if mutations.keys().any(reconformance::protected) {
+            return Err(refused("Registry head without declared protocol"));
+        }
         return Ok(());
     };
     let mut jobs = BTreeSet::new();
@@ -747,6 +902,9 @@ pub(super) fn validate_changes(
         jobs.insert(key_job(key)?);
     }
     if jobs.is_empty() {
+        if mutations.keys().any(reconformance::protected) {
+            return Err(refused("Registry head without admission"));
+        }
         return Ok(());
     }
     let identity = identity.ok_or_else(|| refused("Registry write lacks actual invocation"))?;
@@ -760,6 +918,7 @@ pub(super) fn validate_changes(
         records: &store.records,
         mutations: Some(mutations),
     };
+    reconformance::validate_changes(&before, &after, mutations, identity, &jobs)?;
     for id in jobs {
         let old_job = value(&before, "rating_jobs", id, None)?;
         let current = pair(&after, id)?;
@@ -805,7 +964,13 @@ pub(super) fn validate_changes(
         {
             return Err(refused("Registry transition requires both post-images"));
         }
-        let action = protocol.action_index(identity)?;
+        let action = protocol.action_index(identity, current.profile())?;
+        if current.profile() == Profile::Reconformance
+            && (identity.actor != crate::GOD
+                || identity.principal != (PrincipalId::Object { id: crate::GOD }))
+        {
+            return Err(refused("Registry service invocation differs"));
+        }
         if token(field(&current.execution, "updated_by")?)? != identity.commit {
             return Err(refused("Registry transition commit differs"));
         }
@@ -901,7 +1066,9 @@ pub(super) fn validate_changes(
                     return Err(refused("Registry terminal metadata not retired"));
                 }
                 verify(Phase::Terminal, &reservation.record, &after)?;
-                if current.phase == "complete" {
+                if current.phase == "complete"
+                    && text(field(&current.job, "state")?, "kind")? == "completed"
+                {
                     let status = required(&after, "rating_status", id, None)?;
                     if text(field(&status, "standing")?, "kind")? != "active" {
                         return Err(refused("Registry initial rating status"));

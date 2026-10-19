@@ -397,7 +397,9 @@ fn scan(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
                 intent.action.clone(),
                 PerceivedRef::SelfActor,
                 vec![],
-                intent.parameters(),
+                // The private offer fixes the exact retained operation/reason.
+                // Selectors supply only public parameters; this schema is empty.
+                serde_json::json!({}),
                 intent.key,
             )?);
         }

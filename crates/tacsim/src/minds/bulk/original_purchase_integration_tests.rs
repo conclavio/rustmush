@@ -25,8 +25,16 @@ use mush_roll::commerce::{
     rating::{RatingReceipt, RatingRef},
 };
 
+#[path = "charter_transfer_fences.rs"]
+mod charter_transfer_fences;
+#[path = "charter_transfer_fixture.rs"]
+mod charter_transfer_fixture;
+#[path = "charter_transfer_integration_tests.rs"]
+mod charter_transfers;
 #[path = "house_filing_integration_tests.rs"]
 mod house_filing;
+#[path = "ic_integration_tests.rs"]
+mod ic_tests;
 #[path = "personal_paid_checkout_tests.rs"]
 mod paid_checkout;
 #[path = "personal_paid_holding_tests.rs"]
@@ -265,8 +273,10 @@ struct PurchaseConfiguration {
     writer: OriginalPurchaseWriter,
     dependent: Option<DefinitionRef>,
     compatible_update: Option<DefinitionRef>,
+    charter_transfer: Option<DefinitionRef>,
     entitlements: Option<mush_market::mind_entitlement::EntitlementConfig>,
     renewals: Option<mush_market::mind_renewal::RenewalConfig>,
+    minds_facts: Option<mush_roll::commerce::facts::MindsFactProvider>,
 }
 fn configuration(manifest: DefinitionRef, source_forms: bool) -> TestResult<PurchaseConfiguration> {
     let quotes = OriginalQuoteConfig::new(
@@ -316,8 +326,10 @@ fn configuration(manifest: DefinitionRef, source_forms: bool) -> TestResult<Purc
         writer,
         dependent: None,
         compatible_update: None,
+        charter_transfer: None,
         entitlements: None,
         renewals: None,
+        minds_facts: None,
     })
 }
 fn entitlement_configuration(
@@ -389,6 +401,7 @@ fn renewal_configuration(
 type PurchaseShared = Arc<Mutex<Option<PurchaseConfiguration>>>;
 
 struct PurchaseRoll {
+    minds_facts: Option<mush_roll::commerce::facts::MindsFactProvider>,
     source_forms: bool,
     authored_forks: bool,
     marked_registry: bool,
@@ -397,6 +410,9 @@ struct PurchaseRoll {
     renewals: bool,
     renewal_service: bool,
     owner_qualification: bool,
+    owner_attestations: bool,
+    registry_recall: Option<mush_roll::commerce::registry_recall::RegistryRecallPolicy>,
+    registry_revocation: Option<mush_roll::commerce::registry_revocation::RegistryRevocationPolicy>,
     qualification_short_parent: bool,
     author_withdrawal: bool,
     compatible_updates: bool,
@@ -504,6 +520,11 @@ impl GameModule for PurchaseRoll {
         } else {
             config
         };
+        let config = if self.owner_attestations {
+            config.with_owner_attestations()?
+        } else {
+            config
+        };
         let config = if self.compatible_updates {
             let config = config.with_compatible_updates()?;
             purchase.compatible_update = Some(config.compatible_update_action()?);
@@ -511,6 +532,29 @@ impl GameModule for PurchaseRoll {
         } else {
             config
         };
+        let config = if let Some(policy) = &self.registry_recall {
+            config.with_registry_recall(policy.clone())?
+        } else {
+            config
+        };
+        let config = if let Some(policy) = &self.registry_revocation {
+            config.with_registry_revocation(policy.clone())?
+        } else {
+            config
+        };
+        let config = if let Some(provider) = &self.minds_facts {
+            purchase.minds_facts = Some(provider.clone());
+            config.with_minds_facts(provider.clone())?
+        } else {
+            config
+        };
+        // Every genuine story that changes a charter title uses the actual
+        // closed seller/buyer protocol. Ordinary production composition remains
+        // explicit; this is the Active commerce fixture's declared option.
+        let charter = mush_roll::commerce::charter_transfer::CharterTransferConfig::new();
+        let [_, accept] = charter.actions()?;
+        let config = config.with_charter_transfers(charter)?;
+        purchase.charter_transfer = Some(accept);
         shared.filing = Some(config.initial_filing_action()?);
         let module =
             Resources::roll_owners(RollModule::with_writers(["tacsim"]).with_commerce(config));
@@ -568,6 +612,12 @@ impl GameModule for PurchaseEconomy {
             .with_title_issuers(vec![issuer().map_err(module_error)?])
             .with_initial_filing(filing_policy().map_err(module_error)?, action)
             .with_original_mind_purchases(purchase.purchases.actions()?);
+        if let Some(provider) = purchase.minds_facts {
+            module = module.with_fact_provider(Arc::new(provider));
+        }
+        if let Some(action) = purchase.charter_transfer {
+            module = module.with_mind_charter_transfers(action);
+        }
         if let Some(action) = purchase.compatible_update {
             module = module.with_compatible_mind_updates(action);
         }
@@ -817,6 +867,7 @@ impl PurchaseFixture {
                     source_forms,
                 )),
                 Box::new(PurchaseRoll {
+                    minds_facts: None,
                     source_forms,
                     authored_forks: false,
                     marked_registry: false,
@@ -825,6 +876,9 @@ impl PurchaseFixture {
                     renewals: false,
                     renewal_service: false,
                     owner_qualification: false,
+                    owner_attestations: false,
+                    registry_recall: None,
+                    registry_revocation: None,
                     qualification_short_parent: false,
                     author_withdrawal: false,
                     compatible_updates,
@@ -937,6 +991,12 @@ impl PurchaseFixture {
         }
         module_ops(&mut self.disk, &self.engine.take_module_ops())?;
         Ok(())
+    }
+    fn transfer_charter(&mut self, charter: ObjId, buyer: ObjId, n: u128) -> TestResult {
+        let disk = &mut self.disk;
+        charter_transfer_fixture::sale(&mut self.engine, charter, buyer, n, |writes| {
+            retain_writes(disk, writes)
+        })
     }
     fn snapshot(&self) -> Durable {
         Durable::capture(&self.engine, &self.disk)
@@ -1392,6 +1452,9 @@ fn genuine_registry_original_purchase_grant_refund_and_paired_recovery() -> Test
     );
     eprintln!("M7_STORY phase=v1_grant event=complete");
     let committed = granted.snapshot();
+    ic_tests::exercise(&granted, &committed)?;
+    charter_transfers::exercise(&granted, &committed)?;
+    charter_transfer_fences::exercise(&granted, &committed)?;
     let mut lost = f.reboot(&funded)?;
     lost.engine.world.set_now(1017);
     let prepared = lost.prepare(&grant, BUYER, 1_000_005, json!({"operation":operation}))?;

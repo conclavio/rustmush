@@ -40,6 +40,9 @@ pub struct EconomySnapshot {
     reversed: BTreeSet<TransactionId>,
     // ---- E3a ----
     assets: BTreeMap<ObjId, EconomicAsset>,
+    /// Derived from actual managed-title birth receipts, never catalogue text
+    /// or a mutable asset document. No serialized or public mutation surface.
+    pub(crate) managed_titles: crate::managed_title::ManagedTitleIndex,
     vaults: BTreeMap<VaultId, Vault>,
     approvals: BTreeMap<ApprovalRequestId, ApprovalRequest>,
     /// The ONE live (pending) request per plan hash (A1: duplicate live requests per

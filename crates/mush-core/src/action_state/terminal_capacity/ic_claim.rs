@@ -125,6 +125,7 @@ fn open_digest(open: &Value) -> Result<DefinitionDigest, ActionStateError> {
     digest("roll.ic_mind_claim.open.v1", open)
 }
 struct Claim {
+    format: u64,
     open: Value,
     closed: Option<Value>,
     action: DefinitionRef,
@@ -133,35 +134,44 @@ struct Claim {
 impl Claim {
     fn parse(raw: Value, operation: CommitToken) -> Result<Self, ActionStateError> {
         strict(&raw, &["format", "open", "closed"])?;
-        if field(&raw, "format")? != &json!(1) {
+        let format = number(&raw, "format")?;
+        if !matches!(format, 1 | 2) {
             return Err(refused("IC claim format"));
         }
         let open = field(&raw, "open")?.clone();
-        strict(
-            &open,
-            &[
-                "operation",
-                "action",
-                "protocol",
-                "unit",
-                "sortie",
-                "dispatcher",
-                "hull_title_revision",
-                "licence",
-                "term",
-                "charter",
-                "line",
-                "filed",
-                "revision",
-                "rating",
-                "window",
-                "capacity",
-                "at_ic",
-                "seal_digest",
-                "custody_digest",
-                "exclusion_digest",
-            ],
-        )?;
+        let mut fields = vec![
+            "operation",
+            "action",
+            "protocol",
+            "unit",
+            "sortie",
+            "dispatcher",
+            "hull_title_revision",
+            "licence",
+            "term",
+            "charter",
+            "line",
+            "filed",
+            "revision",
+            "rating",
+            "window",
+            "capacity",
+            "at_ic",
+            "seal_digest",
+            "custody_digest",
+            "exclusion_digest",
+        ];
+        if format == 2 {
+            fields.push("charter_ownership");
+            let ownership = field(&open, "charter_ownership")?;
+            strict(ownership, &["generation", "operation", "digest"])?;
+            if !(2..=65_537).contains(&number(ownership, "generation")?) {
+                return Err(refused("IC charter ownership generation"));
+            }
+            parsed::<CommitToken>(field(ownership, "operation")?)?;
+            parsed::<DefinitionDigest>(field(ownership, "digest")?)?;
+        }
+        strict(&open, &fields)?;
         let protocol: CapturedProtocol = parsed(field(&open, "protocol")?)?;
         let action: DefinitionRef = parsed(field(&open, "action")?)?;
         let unit: ObjId = parsed(field(&open, "unit")?)?;
@@ -221,6 +231,9 @@ impl Claim {
         match field(capacity, "kind")?.as_str() {
             Some("owned_dispatch") => strict(capacity, &["kind"])?,
             Some("paid_seats") => {
+                if format != 1 {
+                    return Err(refused("IC paid claim cannot carry charter ownership"));
+                }
                 strict(capacity, &["kind", "seats"])?;
                 if number(capacity, "seats")? > 1024 {
                     return Err(refused("IC paid seats"));
@@ -259,6 +272,7 @@ impl Claim {
         }
         let fingerprint = open_digest(&open)?;
         Ok(Self {
+            format,
             open,
             closed,
             action,
@@ -334,7 +348,7 @@ fn require_close_room(
 ) -> Result<(), ActionStateError> {
     // Accounting only: maximum-width fields and the longest fixed event kind.
     // Never persists or confers authority on this projected physical event.
-    let mut projected = json!({"format":1,"open":row.open,"closed":{
+    let mut projected = json!({"format":row.format,"open":row.open,"closed":{
         "operation":CommitToken::from_bytes([255;16]),"action":protocol.actions[1],"protocol":CapturedProtocol::current(protocol),
         "open":operation,"open_digest":row.fingerprint,"unit":field(&row.open,"unit")?,"sortie":field(&row.open,"sortie")?,
         "transition":u64::MAX,"event_sequence":u64::MAX,"event_digest":DefinitionDigest::from_bytes([255;32]),

@@ -1,6 +1,12 @@
 //! Genuine acquired OpenResale -> authored saved/Registry certificate ->
 //! dependent filing -> new six-target paid commerce. No grant/certificate is
 //! constructed. This models owner/core ACK installation, not server transport.
+#[path = "minds_facts_integration_tests.rs"]
+mod minds_facts;
+#[path = "registry_recall_integration_tests.rs"]
+mod registry_recall;
+#[path = "registry_revocation_integration_tests.rs"]
+mod registry_revocation;
 #[path = "author_withdrawal_integration_tests.rs"]
 mod withdrawal;
 use super::dependent_owner_integration_tests::apply;
@@ -327,10 +333,10 @@ fn title_fences(f: &PurchaseFixture, filed: &Durable, owner: LicenceId) -> TestR
             stage(
                 &mut world, definition, BUYER, number, params, prepared, output,
             )?;
-            world.say(GOD, &format!("@asset/transfer #{}=#{}", charter.0, GOD.0))?;
+            world.transfer_charter(charter, GOD, 49_000_080)?;
             assert!(world.engine.take_staged_action().is_err());
         } else {
-            world.say(GOD, &format!("@asset/transfer #{}=#{}", charter.0, GOD.0))?;
+            world.transfer_charter(charter, GOD, 49_000_090)?;
             assert!(
                 stage(
                     &mut world, definition, BUYER, number, params, prepared, output
@@ -820,6 +826,18 @@ pub(super) async fn exercise(
     .await?;
     story_phase("author.withdrawal", || {
         withdrawal::exercise(f, &granted, owner, &allocation)
+    })?
+    .await?;
+    story_phase("registry.recall", || {
+        registry_recall::exercise(f, &granted, owner, &allocation)
+    })?
+    .await?;
+    story_phase("registry.revocation", || {
+        registry_revocation::exercise(f, &granted, owner, &allocation)
+    })?
+    .await?;
+    story_phase("minds.facts", || {
+        minds_facts::exercise(f, &granted, owner, &allocation)
     })?
     .await?;
     story_phase("renewal", || {

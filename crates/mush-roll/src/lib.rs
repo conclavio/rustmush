@@ -4,7 +4,8 @@
 //! retention records. Game semantics and source storage belong to caller adapters.
 //! Commercial values and closed first-filing owner adapters live in [`commerce`].
 //! Data decoding never grants rights. Only actual registered owner composition
-//! can activate filing; there is no simulation, script or market dependency.
+//! can activate filing. The closed IC writer consumes concrete Tactics and Sim
+//! owner outputs; it has no Tacsim engine, interpreter or Market dependency.
 //!
 //! Every mutation is prepared, validated and fully serialized before publication.
 //! A caller publishes both owners inside one world operation and queues all their

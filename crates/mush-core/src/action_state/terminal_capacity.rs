@@ -4,12 +4,14 @@
 
 use super::*;
 
+mod core_integration;
 mod entitlement;
 mod ic_claim;
 mod paid;
 mod registry;
 mod renewal;
 use crate::{CommitToken, DefinitionRef};
+pub(super) use core_integration::{Protocol as CoreIntegrationProtocol, core_integration_change};
 pub(super) use entitlement::{Protocol as EntitlementProtocol, entitlement_change};
 pub(super) use ic_claim::{Protocol as IcClaimProtocol, ic_claim_change};
 pub(super) use paid::{Protocol as PurchaseProtocol, purchase_change};
@@ -57,6 +59,8 @@ impl Key {
 enum SlotMode {
     Create,
     UpdateExisting,
+    // Only the fixed Industry protocol may own an absent-then-created output.
+    IndustryOutput,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -172,10 +176,12 @@ impl Verifiers {
     pub(super) fn for_registry(registry: &StateFamilyRegistry) -> Self {
         let mut rows = Vec::new();
         if let Some(protocol) = &registry.registry_rating {
-            rows.push(Verifier {
-                effect: protocol.admission_action().clone(),
-                verify: registry::verify,
-            });
+            for action in protocol.admission_actions() {
+                rows.push(Verifier {
+                    effect: action.clone(),
+                    verify: registry::verify,
+                });
+            }
         }
         if let Some(protocol) = &registry.original_purchase {
             rows.push(Verifier {
@@ -203,6 +209,12 @@ impl Verifiers {
                 verify: ic_claim::verify,
             });
         }
+        if let Some(protocol) = &registry.core_integration {
+            rows.push(Verifier {
+                effect: protocol.admission_action().clone(),
+                verify: core_integration::verify,
+            });
+        }
         Self(rows)
     }
 
@@ -222,8 +234,7 @@ impl Verifiers {
                     // verifier must reconstruct and compare the complete old
                     // reference from the exact persisted compatibility digest.
                     || registry.registry_rating.as_ref().is_some_and(|protocol| {
-                        v.effect == *protocol.admission_action()
-                            && reservation.effect.locator() == protocol.admission_action().locator()
+                        protocol.admission_actions().iter().any(|action| v.effect == **action && reservation.effect.locator() == action.locator())
                     })
                     // Paid recovery likewise selects only its fixed locator.
                     // The closed verifier then reconstructs the full funding
@@ -241,6 +252,7 @@ impl Verifiers {
                         v.effect == *protocol.admission_action()
                             && protocol.recognizes_historical(&reservation.effect)
                     })
+                    || registry.core_integration.as_ref().is_some_and(|protocol| { v.effect == *protocol.admission_action() && protocol.recognizes_historical(&reservation.effect) })
                     || registry.mind_renewal.as_ref().is_some_and(|protocol| {
                         v.effect == *protocol.admission_action()
                             && protocol.recognizes_historical(&reservation.effect)
@@ -346,6 +358,15 @@ impl CapacityState {
                         }
                         claims.create = Some(id.clone());
                     }
+                    SlotMode::IndustryOutput => {
+                        if !core_integration::prospective_output(reservation, &target.key)
+                            || claims.create.is_some()
+                            || claims.existing != 0
+                        {
+                            return Err(refused("fixed Industry output claim differs"));
+                        }
+                        claims.create = Some(id.clone());
+                    }
                     SlotMode::UpdateExisting => {
                         if claims.create.is_some() || view.bytes(&key).is_none() {
                             return Err(refused("required existing key unavailable"));
@@ -442,6 +463,7 @@ pub(super) fn hydrate(
     entitlement::audit_boot(&view, &records)?;
     renewal::audit_boot(&view, &records)?;
     ic_claim::audit_boot(&view, &records)?;
+    core_integration::audit_boot(&view, &records)?;
     let state = CapacityState::rebuild(registry, records, &view)?;
     let usage = charged(
         &state,
@@ -499,6 +521,7 @@ pub(super) fn prepare(
     entitlement::validate_changes(store, mutations, &changes, identity)?;
     renewal::validate_changes(store, mutations, &changes, identity)?;
     ic_claim::validate_changes(store, mutations, &changes, identity)?;
+    core_integration::validate_changes(store, mutations, &changes, identity)?;
     let mut replacement = None;
     let mut writes = Vec::new();
     let mut write_bytes = 0;
@@ -521,7 +544,10 @@ pub(super) fn prepare(
             let target = admitted
                 .get(key)
                 .ok_or_else(|| refused("unreserved progress key"))?;
-            if target.mode != SlotMode::UpdateExisting {
+            if target.mode != SlotMode::UpdateExisting
+                && !(target.mode == SlotMode::IndustryOutput
+                    && core_integration::prospective_output(&stored.record, &target.key))
+            {
                 return Err(refused("progress cannot consume a future creation key"));
             }
             match mutation {
@@ -633,7 +659,20 @@ pub(super) fn prepare(
             .targets
             .get(key)
             .and_then(|c| c.create.as_ref())
-            .is_some_and(|id| changes.terminal.as_ref() != Some(id))
+            .is_some_and(|id| {
+                changes.terminal.as_ref() != Some(id)
+                    && !(changes.progress.as_ref() == Some(id)
+                        && store.capacity.records.get(id).is_some_and(|record| {
+                            core_integration::prospective_output(
+                                &record.record,
+                                &Key {
+                                    owner: key.owner.clone(),
+                                    family: key.family.clone(),
+                                    encoded: key.encoded.clone(),
+                                },
+                            )
+                        }))
+            })
         {
             return Err(refused("reserved creation key"));
         }

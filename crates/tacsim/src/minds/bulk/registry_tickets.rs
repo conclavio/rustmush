@@ -10,7 +10,7 @@ use std::{
 use mush_core::{AccountId, CommitToken, ObjId};
 use mush_roll::commerce::rating::{
     RatingCompatibility, RatingSubject,
-    execution::MeasuredRating,
+    nonconformance::MeasuredRegistryResult,
     protocol::{TicketId, Transition},
 };
 
@@ -53,7 +53,7 @@ pub(super) enum TicketKind {
         binding: Binding,
         receipt: Receipt,
         artifact: Option<ArtifactBytes>,
-        measured: Option<MeasuredRating>,
+        measured: Option<MeasuredRegistryResult>,
     },
     Cancel(Binding),
     /// Created only while boot owns the stopped worker service. Public cancel
@@ -197,7 +197,7 @@ impl Tickets {
         binding: Binding,
         receipt: Receipt,
         artifact: Option<ArtifactBytes>,
-        measured: Option<MeasuredRating>,
+        measured: Option<MeasuredRegistryResult>,
     ) -> Result<TicketId, BulkError> {
         self.insert_settlement(PreparedSettlement::prepare(
             binding, receipt, artifact, measured,
@@ -397,7 +397,7 @@ impl PreparedSettlement {
         let measured = match artifact
             .as_ref()
             .map(|bytes| {
-                serde_json::from_slice::<MeasuredRating>(bytes.bytes())
+                serde_json::from_slice::<MeasuredRegistryResult>(bytes.bytes())
                     .map_err(|_| invalid("Registry measured artifact codec"))
             })
             .transpose()
@@ -423,7 +423,7 @@ impl PreparedSettlement {
         binding: Binding,
         receipt: Receipt,
         artifact: Option<ArtifactBytes>,
-        measured: Option<MeasuredRating>,
+        measured: Option<MeasuredRegistryResult>,
     ) -> Result<Self, BulkError> {
         let bytes = Self::validate(binding, &receipt, &artifact, &measured)?;
         Ok(Self {
@@ -440,7 +440,7 @@ impl PreparedSettlement {
         binding: Binding,
         receipt: &Receipt,
         artifact: &Option<ArtifactBytes>,
-        measured: &Option<MeasuredRating>,
+        measured: &Option<MeasuredRegistryResult>,
     ) -> Result<u64, BulkError> {
         if receipt.account() != binding.account
             || receipt.run() != binding.run

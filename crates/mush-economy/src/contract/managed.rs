@@ -206,6 +206,7 @@ pub(crate) fn legacy_contract(c: &EconomicContract, snapshot: &EconomySnapshot) 
 
 fn purpose(snapshot: &EconomySnapshot, purpose: &HoldPurpose) -> bool {
     matches!(purpose, HoldPurpose::Escrow { contract } if at(snapshot, *contract))
+        || matches!(purpose, HoldPurpose::Reservation { kind, .. } if kind == crate::core_integration::HOLD_PURPOSE)
 }
 fn encumbrance(snapshot: &EconomySnapshot, value: &Encumbrance) -> bool {
     match value {
@@ -235,6 +236,8 @@ fn closed_money_namespace(namespace: &str) -> bool {
     crate::managed_purchase::closed_namespace(namespace)
         || namespace == crate::managed_renewal::NAMESPACE
         || namespace == crate::registry_filing::update::receipt::NAMESPACE
+        || namespace == crate::registry_filing::charter_transfer::receipt::NAMESPACE
+        || namespace == crate::core_integration::NAMESPACE
 }
 
 /// Refuse before idempotency lookup, custom authorization or approval replay.

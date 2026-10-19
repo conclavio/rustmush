@@ -6,13 +6,14 @@
 
 #[cfg(test)]
 mod boot_tests;
+pub mod charter_transfer;
 mod house;
 mod receipt;
 pub mod update;
-pub use update::{RegistryCompatibleUpdate, UpdateAuditSubject};
 pub use house::{
     HOUSE_FILING_ACTION, HOUSE_PUBLICATION_CAPABILITY, HouseFilingAttribution, RegistryHouseFiling,
 };
+pub use update::{RegistryCompatibleUpdate, UpdateAuditSubject};
 #[cfg(test)]
 mod tests;
 pub use receipt::{InitialFilingAuditSubject, ReceiptAudit, ReceiptAuditError};
@@ -141,6 +142,8 @@ pub struct InitialFilingParticipant {
     policy: InitialFilingPolicy,
     renewals: Option<crate::managed_renewal::bridge::Configuration>,
     compatible_update: Option<mush_core::DefinitionRef>,
+    charter_transfer: Option<mush_core::DefinitionRef>,
+    core_integration: Option<crate::core_integration::CoreIntegrationConfig>,
 }
 impl InitialFilingParticipant {
     pub fn new(policy: InitialFilingPolicy) -> Self {
@@ -148,6 +151,8 @@ impl InitialFilingParticipant {
             policy,
             renewals: None,
             compatible_update: None,
+            charter_transfer: None,
+            core_integration: None,
         }
     }
 }
@@ -162,6 +167,34 @@ pub(crate) fn register(
     dependent_action: Option<&mush_core::mechanics::DefinitionRef>,
     renewals: Option<&crate::managed_renewal::bridge::Configuration>,
     compatible_update: Option<&mush_core::DefinitionRef>,
+    charter_transfer: Option<&mush_core::DefinitionRef>,
+) -> Result<(), mush_core::ModError> {
+    register_with_core(
+        reg,
+        policy,
+        action,
+        purchases,
+        entitlements,
+        house_action,
+        dependent_action,
+        renewals,
+        compatible_update,
+        charter_transfer,
+        None,
+    )
+}
+pub(crate) fn register_with_core(
+    reg: &mut mush_core::Registrar<'_>,
+    policy: InitialFilingPolicy,
+    action: mush_core::mechanics::DefinitionRef,
+    purchases: Option<&[mush_core::mechanics::DefinitionRef; 3]>,
+    entitlements: Option<&[[mush_core::mechanics::DefinitionRef; 3]; 2]>,
+    house_action: Option<&mush_core::mechanics::DefinitionRef>,
+    dependent_action: Option<&mush_core::mechanics::DefinitionRef>,
+    renewals: Option<&crate::managed_renewal::bridge::Configuration>,
+    compatible_update: Option<&mush_core::DefinitionRef>,
+    charter_transfer: Option<&mush_core::DefinitionRef>,
+    core_integration: Option<&crate::core_integration::CoreIntegrationConfig>,
 ) -> Result<(), mush_core::ModError> {
     use mush_core::mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionValidationContext,
@@ -297,6 +330,21 @@ pub(crate) fn register(
         }
         actions.insert(action.clone());
     }
+    if let Some(action) = charter_transfer {
+        if action.key().owner.as_str() != "roll"
+            || action.key().kind.as_str() != "action"
+            || action.key().id.as_str() != charter_transfer::ACTION_ID
+            || action.version() != 1
+        {
+            return Err(mush_core::ModError::msg(
+                "charter transfer requires the exact Roll action",
+            ));
+        }
+        actions.insert(action.clone());
+    }
+    if let Some(config) = core_integration {
+        actions.extend(crate::core_integration::bridge::register(reg, config)?);
+    }
     reg.owner_participant(
         definition,
         actions,
@@ -304,6 +352,8 @@ pub(crate) fn register(
             policy,
             renewals: renewals.cloned(),
             compatible_update: compatible_update.cloned(),
+            charter_transfer: charter_transfer.cloned(),
+            core_integration: core_integration.cloned(),
         },
     )
 }
@@ -584,10 +634,15 @@ struct InitialFold {
     accounts: Vec<(AccountId, i128, u64, u64)>,
     title: EconomicAsset,
     receipt: InitialFilingAuditSubject,
+    lineage: charter_transfer::lineage::Lineage,
 }
 impl InitialFold {
     fn prepare(state: &FoldState, tx: &EconomicTransaction) -> Result<Self, ParticipantError> {
         let receipt = receipt::subject_of(tx).map_err(|_| refused())?;
+        let lineage = state
+            .charter_transfer_receipts
+            .prepare_birth(tx)
+            .map_err(|_| refused())?;
         let [effect] = tx.asset_effects.as_slice() else {
             return Err(refused());
         };
@@ -620,6 +675,7 @@ impl InitialFold {
             accounts,
             title: effect.post.clone(),
             receipt,
+            lineage,
         })
     }
     fn apply(self, state: &mut FoldState) {
@@ -633,6 +689,9 @@ impl InitialFold {
         state.max_txid = self.max_txid;
         state.covered_seq = self.covered;
         state.filing_receipts.install_prepared(self.receipt);
+        state
+            .charter_transfer_receipts
+            .install_lineage(self.lineage);
     }
 }
 
@@ -794,6 +853,10 @@ impl InitialFilingParticipant {
 /// original filing request/output wrappers avoids sharing money authority
 /// through a second adapter or generic plan callback.
 pub enum EconomyRequest {
+    CharterTransfer(charter_transfer::RegistryCharterTransfer),
+    CoreFunding(crate::core_integration::CoreFundingRequest),
+    CoreCompletion(crate::core_integration::CoreCompletionRequest),
+    CoreCancellation(crate::core_integration::CoreCancellationRequest),
     CompatibleUpdate(update::RegistryCompatibleUpdate),
     InitialFiling(RegistryInitialFiling),
     DependentInitialFiling(RegistryInitialFiling),
@@ -827,6 +890,9 @@ impl From<RegistryInitialFiling> for EconomyRequest {
     }
 }
 pub enum EconomyOutput {
+    CharterTransfer(charter_transfer::CharterTransferOutput),
+    CoreFunding(crate::core_integration::CoreFundingOutput),
+    CoreTerminal(crate::core_integration::CoreTerminalOutput),
     CompatibleUpdate(update::CompatibleUpdateOutput),
     InitialFiling(InitialFilingOutput),
     PurchaseFunding(crate::managed_purchase::FundingOutput),
@@ -838,6 +904,30 @@ pub enum EconomyOutput {
     RenewalTerminal(crate::managed_renewal::RenewalTerminalOutput),
 }
 impl EconomyOutput {
+    pub fn charter_transfer(
+        self,
+    ) -> Result<charter_transfer::CharterTransferOutput, ParticipantError> {
+        match self {
+            Self::CharterTransfer(output) => Ok(output),
+            _ => Err(refused()),
+        }
+    }
+    pub fn core_funding(
+        self,
+    ) -> Result<crate::core_integration::CoreFundingOutput, ParticipantError> {
+        match self {
+            Self::CoreFunding(output) => Ok(output),
+            _ => Err(refused()),
+        }
+    }
+    pub fn core_terminal(
+        self,
+    ) -> Result<crate::core_integration::CoreTerminalOutput, ParticipantError> {
+        match self {
+            Self::CoreTerminal(output) => Ok(output),
+            _ => Err(refused()),
+        }
+    }
     pub fn compatible_update(self) -> Result<update::CompatibleUpdateOutput, ParticipantError> {
         match self {
             Self::CompatibleUpdate(output) => Ok(output),
@@ -904,6 +994,8 @@ impl EconomyOutput {
     }
 }
 pub enum EconomyPatch {
+    CharterTransfer(Box<charter_transfer::CharterTransferPatch>),
+    CoreMoney(Box<crate::core_integration::CoreMoneyPatch>),
     CompatibleUpdate(Box<update::CompatibleUpdatePatch>),
     InitialFiling(Box<InitialFilingPatch>),
     Purchase(Box<crate::managed_purchase::PurchasePatch>),
@@ -916,6 +1008,8 @@ impl From<InitialFilingPatch> for EconomyPatch {
     }
 }
 pub enum BoundEconomy<'a> {
+    CharterTransfer(charter_transfer::BoundCharterTransfer<'a>),
+    CoreMoney(crate::core_integration::BoundCoreMoney<'a>),
     CompatibleUpdate(update::BoundCompatibleUpdate<'a>),
     InitialFiling(BoundInitialFiling<'a>),
     Purchase(crate::managed_purchase::BoundPurchase<'a>),
@@ -927,14 +1021,39 @@ impl BoundParticipant for BoundEconomy<'_> {
         match self {
             Self::InitialFiling(bound) => bound.apply(),
             Self::CompatibleUpdate(bound) => bound.apply(),
+            Self::CharterTransfer(bound) => bound.apply(),
             Self::Purchase(bound) => bound.apply(),
             Self::RenewalOffer(bound) => bound.apply(),
             Self::RenewalMoney(bound) => bound.apply(),
+            Self::CoreMoney(bound) => bound.apply(),
         }
     }
 }
 
 impl InitialFilingParticipant {
+    fn prepare_core(
+        &self,
+        state: &EconomyStore,
+        context: &OwnerPrepareContext<'_>,
+        request: crate::core_integration::money::Request,
+    ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
+        let config = self.core_integration.as_ref().ok_or_else(refused)?;
+        let (output, patch, writes) =
+            crate::core_integration::install::prepare(config, state, context, request)?;
+        let output = match output {
+            crate::core_integration::money::Output::Funded(output) => {
+                EconomyOutput::CoreFunding(output)
+            }
+            crate::core_integration::money::Output::Terminal(output) => {
+                EconomyOutput::CoreTerminal(output)
+            }
+        };
+        Ok(OwnerPreparation::new(
+            output,
+            EconomyPatch::CoreMoney(Box::new(patch)),
+            writes,
+        ))
+    }
     fn require_renewal(
         &self,
         context: &OwnerPrepareContext<'_>,
@@ -1045,6 +1164,21 @@ impl OwnerParticipant for InitialFilingParticipant {
     ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
         use crate::managed_purchase::{PurchaseOutcome, install};
         match request {
+            EconomyRequest::CoreFunding(request) => self.prepare_core(
+                state,
+                context,
+                crate::core_integration::money::Request::Fund(request),
+            ),
+            EconomyRequest::CoreCompletion(request) => self.prepare_core(
+                state,
+                context,
+                crate::core_integration::money::Request::Complete(request),
+            ),
+            EconomyRequest::CoreCancellation(request) => self.prepare_core(
+                state,
+                context,
+                crate::core_integration::money::Request::Cancel(request),
+            ),
             EconomyRequest::RenewalDraft(request) => {
                 self.require_renewal(context, crate::managed_renewal::DRAFT_ACTION)?;
                 let (output, patch, writes) =
@@ -1128,6 +1262,16 @@ impl OwnerParticipant for InitialFilingParticipant {
                 Ok(OwnerPreparation::new(
                     EconomyOutput::RenewalTerminal(output),
                     EconomyPatch::RenewalMoney(Box::new(patch)),
+                    writes,
+                ))
+            }
+            EconomyRequest::CharterTransfer(request) => {
+                let action = self.charter_transfer.as_ref().ok_or_else(refused)?;
+                let (output, patch, writes) =
+                    charter_transfer::prepare(&self.policy, action, state, context, request)?;
+                Ok(OwnerPreparation::new(
+                    EconomyOutput::CharterTransfer(output),
+                    EconomyPatch::CharterTransfer(Box::new(patch)),
                     writes,
                 ))
             }
@@ -1287,6 +1431,18 @@ impl OwnerParticipant for InitialFilingParticipant {
         patch: &EconomyPatch,
     ) -> Result<(), ParticipantError> {
         match patch {
+            EconomyPatch::CharterTransfer(patch) => charter_transfer::recheck(
+                &self.policy,
+                self.charter_transfer.as_ref().ok_or_else(refused)?,
+                state,
+                context,
+                patch,
+            ),
+            EconomyPatch::CoreMoney(patch) => patch.recheck(
+                self.core_integration.as_ref().ok_or_else(refused)?,
+                state,
+                context,
+            ),
             EconomyPatch::CompatibleUpdate(patch) => update::recheck(
                 &self.policy,
                 self.compatible_update.as_ref().ok_or_else(refused)?,
@@ -1312,6 +1468,10 @@ impl OwnerParticipant for InitialFilingParticipant {
         patch: EconomyPatch,
     ) -> Result<BoundEconomy<'a>, ParticipantError> {
         match patch {
+            EconomyPatch::CharterTransfer(patch) => {
+                charter_transfer::bind(state, *patch).map(BoundEconomy::CharterTransfer)
+            }
+            EconomyPatch::CoreMoney(patch) => (*patch).bind(state).map(BoundEconomy::CoreMoney),
             EconomyPatch::CompatibleUpdate(patch) => {
                 update::bind(state, *patch).map(BoundEconomy::CompatibleUpdate)
             }
@@ -1392,6 +1552,11 @@ impl InitialFilingPatch {
             || !self.before_meta.matches(state)
             || state.posts_since_boot != self.before_posts
             || state.snapshot.asset(self.request.shell).is_some()
+            || state.snapshot.managed_titles.contains(self.request.shell)
+            || !state
+                .fold
+                .charter_transfer_receipts
+                .birth_available(self.request.shell)
             || state.tx_index.contains_key(&self.transaction.id)
             || state.transactions.contains_key(&self.transaction.id)
             || state.debit_window.get(&self.request.payer) != self.before_window.as_ref()
@@ -1462,6 +1627,8 @@ impl BoundParticipant for BoundInitialFiling<'_> {
         } = self;
         let _already_persisted_write = journal.apply();
         delta.apply_to(snapshot);
+        let (object, birth) = fold_patch.receipt.managed_title_birth();
+        snapshot.managed_titles.install_prepared(object, birth);
         *next_transaction = after_next;
         *posts_since_boot = next_posts;
         chunk_firsts.entry(chunk).or_insert(transaction.journal_seq);

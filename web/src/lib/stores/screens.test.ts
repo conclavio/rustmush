@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   BUILTIN_SCREENS,
+  CHART_SCREEN,
   RUN_ALLOWLIST,
   ScreensStore,
   UNIT_SCREEN,
@@ -378,5 +379,37 @@ describe("the run allowlist", () => {
     for (const verb of bound) {
       expect(fixture).toContain(verb);
     }
+  });
+});
+
+// Doc 19 cut A.3b: the digitless screen and its letter hotkey.
+describe("a letter-hotkey screen (doc 19 cut A.3b)", () => {
+  const chartServer: GateInput = { ...full, panels: [...full.panels, "sky.chart"] };
+
+  it("validates: one letter, never a global key, never twice, never beside a digit", () => {
+    expect(validateScreens([...BUILTIN_SCREENS, CHART_SCREEN.def])).toBeNull();
+    const noKey: ScreenDef = { ...CHART_SCREEN.def, id: "nokey", hotkey: undefined };
+    expect(validateScreens([noKey])).toMatch(/no digit and no letter hotkey/);
+    const global: ScreenDef = { ...CHART_SCREEN.def, id: "g", hotkey: "g" };
+    expect(validateScreens([global])).toMatch(/global key/);
+    const twice: ScreenDef = { ...CHART_SCREEN.def, id: "twice" };
+    expect(validateScreens([CHART_SCREEN.def, twice])).toMatch(/used twice/);
+    const both: ScreenDef = { ...CHART_SCREEN.def, id: "both", digit: 5 };
+    expect(validateScreens([both])).toMatch(/a digit and a hotkey both/);
+  });
+
+  it("registers on a .chart feed, sits after every digit, and switches by Alt+c", () => {
+    const store = new ScreensStore();
+    expect(store.registerFeedScreen(CHART_SCREEN)).toBeNull();
+    expect(store.available(full).map((s) => s.id)).not.toContain("chart");
+    const ids = store.available(chartServer).map((s) => s.id);
+    expect(ids[ids.length - 1]).toBe("chart");
+    expect(store.switchHotkey("c", full)).toBe(false);
+    expect(store.switchHotkey("c", chartServer)).toBe(true);
+    expect(store.active).toBe("chart");
+    expect(store.switchHotkey("z", chartServer)).toBe(false);
+    // The unit screen's digit is untouched by a digitless neighbour.
+    expect(store.registerFeedScreen(UNIT_SCREEN)).toBeNull();
+    expect(store.freeDigit()).toBeNull();
   });
 });

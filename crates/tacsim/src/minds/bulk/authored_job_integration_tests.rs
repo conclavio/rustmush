@@ -408,7 +408,7 @@ async fn issuer_independent(f: &PurchaseFixture, saved: &Durable) -> TestResult 
             "roll_mind_personal_paid_licence",
         ))?)?;
         let shell = licence.charter().object();
-        world.say(GOD, &format!("@asset/transfer #{}=#{}", shell.0, BUYER.0))?;
+        world.transfer_charter(shell, BUYER, 49_000_040)?;
         assert_eq!(
             world
                 .engine

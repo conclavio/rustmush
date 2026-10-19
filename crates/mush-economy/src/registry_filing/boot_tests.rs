@@ -251,6 +251,7 @@ fn checkpoint_and_tail_recover_a_receipt_older_than_every_loaded_journal_chunk()
     let mut saved = BootMap::new();
     fold(&mut live, &mut saved);
     let (subject, receipt_seq, title) = file(&mut live, &mut saved);
+    assert_generic_title_commands_refuse(&mut live, title);
     let floor = checkpoint(&mut live, &mut saved);
     let covered = store(&live).checkpoint().unwrap().covered_seq;
     run(&mut live, "@econ/mint 0=1 1");
@@ -272,7 +273,29 @@ fn checkpoint_and_tail_recover_a_receipt_older_than_every_loaded_journal_chunk()
         store(&restarted).filing_receipt_audit().receipts()?.len(),
         1
     );
+    assert_generic_title_commands_refuse(&mut restarted, title);
     Ok(())
+}
+
+fn assert_generic_title_commands_refuse(tw: &mut TestWorld, title: ObjId) {
+    assert!(store(tw).snapshot.managed_titles.contains(title));
+    let before = store(tw).snapshot.asset(title).unwrap().clone();
+    let next = store(tw).next_transaction;
+    for command in [
+        format!("@asset/transfer #{}=#1", title.0),
+        format!("@asset/catalog #{}=none", title.0),
+        format!("@asset/writeoff #{}=fixture", title.0),
+    ] {
+        let events = tw.run(GOD, &command);
+        assert!(
+            events
+                .iter()
+                .any(|(_, event)| matches!(event, OutputEvent::Sys(text)
+            if text.spans().iter().any(|span| span.tag.as_deref() == Some("error"))))
+        );
+        assert_eq!(store(tw).snapshot.asset(title), Some(&before));
+        assert_eq!(store(tw).next_transaction, next);
+    }
 }
 
 #[test]

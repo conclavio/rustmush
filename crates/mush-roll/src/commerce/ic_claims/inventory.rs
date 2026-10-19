@@ -129,6 +129,14 @@ impl ClaimInventory {
     pub(crate) fn history_len(&self) -> usize {
         self.history.len()
     }
+    pub(crate) fn open_owned_charter(&self, charter: super::super::CharterId) -> bool {
+        self.open_units.values().any(|open| {
+            self.history.get(open).is_some_and(|row| {
+                row.open.charter == charter
+                    && matches!(row.open.capacity, Capacity::OwnedDispatch {})
+            })
+        })
+    }
     pub(crate) fn paid_open(&self, licence: LicenceId) -> usize {
         self.open_paid.get(&licence).copied().unwrap_or(0)
     }

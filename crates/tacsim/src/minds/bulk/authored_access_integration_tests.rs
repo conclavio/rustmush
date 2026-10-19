@@ -358,7 +358,7 @@ pub(super) async fn exercise(f: &PurchaseFixture, saved: &Durable) -> TestResult
         let before=roll(&world)?.mind(BUYER,"child")?.clone();
         let licence:PersonalPaidLicence=serde_json::from_value(one(rows(&disk(&world),"roll","roll_mind_personal_paid_licence"))?)?;
         let shell=licence.charter().object();
-        world.say(GOD,&format!("@asset/transfer #{}=#{}",shell.0,BUYER.0))?;
+        world.transfer_charter(shell, BUYER, 49_000_010)?;
         assert_eq!(world.engine.world.module_state::<EconomyStore>().ok_or("Economy")?.snapshot().asset(shell).ok_or("title")?.title_owner,EconomicOwner::Object(BUYER));
         world.engine.world.set_now(1000+TERM_SECONDS+GRACE_SECONDS);
         assert!(world.engine.world.now()<term.window().grace_end().get());

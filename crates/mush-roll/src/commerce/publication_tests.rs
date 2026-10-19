@@ -257,6 +257,7 @@ fn rows(revision: &Revision) -> (FiledRecord, OwnerTerm, InitialFilingOperation)
         operation: token(2),
     };
     let term_row = OwnerTerm {
+        attestation: None,
         parent: None,
         format: PUBLICATION_FORMAT,
         licence,

@@ -5,6 +5,15 @@ use super::*;
 #[path = "purchase_story_future.rs"]
 mod story_future;
 use story_future::story_phase;
+
+/// Share the same bounded heap boundary with sibling genuine story branches.
+pub(super) fn boxed_story_phase<F: std::future::Future>(
+    phase: &'static str,
+    make: impl FnOnce() -> F,
+) -> TestResult<std::pin::Pin<Box<F>>> {
+    story_phase(phase, make)
+}
+
 #[path = "authored_access_integration_tests.rs"]
 mod access_tests;
 #[path = "authored_job_integration_tests.rs"]
@@ -462,7 +471,7 @@ async fn issuer_independence(f: &PurchaseFixture, saved: &Durable) -> TestResult
         let licence: PersonalPaidLicence =
             serde_json::from_value(one(f.rows("roll", "roll_mind_personal_paid_licence"))?)?;
         let shell = licence.charter().object();
-        world.say(GOD, &format!("@asset/transfer #{}=#{}", shell.0, BUYER.0))?;
+        world.transfer_charter(shell, BUYER, 49_000_020)?;
         assert_eq!(
             world
                 .engine

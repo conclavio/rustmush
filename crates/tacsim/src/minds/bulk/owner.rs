@@ -704,8 +704,10 @@ impl BulkStore {
                 {
                     return Err(BulkError::Stale);
                 }
-                if (progress.ending == RegistryEnding::Certified)
-                    != (receipt.terminal == Some(Status::Complete))
+                if matches!(
+                    progress.ending,
+                    RegistryEnding::Certified | RegistryEnding::Rejected
+                ) != (receipt.terminal == Some(Status::Complete))
                 {
                     return Err(invalid("Registry certification/terminal mismatch"));
                 }

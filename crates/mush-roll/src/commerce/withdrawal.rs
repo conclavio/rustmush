@@ -46,7 +46,7 @@ impl EconomyReadiness {
             .set((definitions.clone(), exact))
             .map_err(|_| error("withdrawal runtime already captured"))
     }
-    fn check(&self) -> Result<(), PublicationError> {
+    pub(crate) fn check(&self) -> Result<(), PublicationError> {
         let (definitions, exact) = self.0.get().ok_or(PublicationError::Unavailable)?;
         definitions
             .get_exact(exact)

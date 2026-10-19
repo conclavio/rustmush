@@ -508,7 +508,7 @@ fn title_fences(
             };
             let definition = action(&world, "market", id, 1)?;
             let number_for_action = number + 2;
-            let before = balances(&world)?;
+            let mut before = balances(&world)?;
             let old = licence(&world, birth.licence())?;
             let (prepared, output) =
                 prepare_step(&mut world, id, GOD, number_for_action, params.clone())?;
@@ -522,16 +522,12 @@ fn title_fences(
                     prepared,
                     output,
                 )?;
-                world.say(
-                    GOD,
-                    &format!("@asset/transfer #{}=#{}", birth.charter().get(), GOD.0),
-                )?;
+                world.transfer_charter(birth.charter().object(), GOD, 49_000_130)?;
+                before = balances(&world)?;
                 assert!(world.engine.take_staged_action().is_err());
             } else {
-                world.say(
-                    GOD,
-                    &format!("@asset/transfer #{}=#{}", birth.charter().get(), GOD.0),
-                )?;
+                world.transfer_charter(birth.charter().object(), GOD, 49_000_140)?;
+                before = balances(&world)?;
                 assert!(
                     stage(
                         &mut world,

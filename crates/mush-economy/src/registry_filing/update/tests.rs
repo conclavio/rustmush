@@ -7,6 +7,7 @@ use mush_core::action::{
     IdempotencyScope, PerceivedRef, PreparedAuthoritativeAction, PreparedCausalRef,
     PrincipalId as ActionPrincipal, RequestUid, ScopedIdempotencyKey,
 };
+use mush_core::action_state::{StateFamilyDescriptor, StateFamilyHandle, StateFamilyId};
 use mush_core::authoritative::{AuthoritativeBundle, AuthoritativeBundleDraft};
 use mush_core::participant::ParticipantHandle;
 use mush_core::{
@@ -15,8 +16,8 @@ use mush_core::{
     ModuleBootData, ModuleOp, ModuleWrite, ObjKind, PrepareCtx, Registrar, RevisionSet, RulesValue,
 };
 use mush_testkit::{TestWorld, fold_module_ops_into};
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Boot = HashMap<SmolStr, ModuleBootData>;
@@ -71,7 +72,139 @@ struct Input {
     payer: AccountId,
     title_revision: u64,
 }
+// Strict test-only typed evidence derived from each actual prepared Economy
+// output. It is not a production Roll filing/update record or an authority.
+const RECEIPT_FAMILY: &str = "fee_update_fixture_receipt";
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "subject",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+enum FixtureEffect {
+    Initial(super::super::receipt::InitialFilingAuditSubject),
+    Update(UpdateAuditSubject),
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureReceipt {
+    format: u8,
+    action: DefinitionRef,
+    commit: CommitToken,
+    actor: ObjId,
+    effect: FixtureEffect,
+}
+impl FixtureReceipt {
+    fn validate(
+        &self,
+        initial: &DefinitionRef,
+        update: &DefinitionRef,
+    ) -> std::result::Result<(), String> {
+        if self.format != 1 || self.actor.0 == 0 {
+            return Err("fixture receipt shape".into());
+        }
+        match &self.effect {
+            FixtureEffect::Initial(s) if &self.action == initial && s.commit() == self.commit => {
+                let data = serde_json::to_value(s).map_err(|_| "initial encoding")?;
+                if data.get("issued_owner") != Some(&json!(PrincipalId::Object(self.actor))) {
+                    return Err("initial actor differs".into());
+                }
+            }
+            FixtureEffect::Update(s)
+                if &self.action == update && s.commit == self.commit && s.actor == self.actor =>
+            {
+                s.validate().map_err(|_| "update shape")?;
+            }
+            _ => return Err("fixture receipt affinity".into()),
+        }
+        Ok(())
+    }
+    fn verify(&self, state: &EconomyStore) -> Result {
+        match &self.effect {
+            FixtureEffect::Initial(subject) => state.filing_receipt_audit().verify(subject)?,
+            FixtureEffect::Update(subject) => state.update_receipt_audit().verify(subject)?,
+        }
+        Ok(())
+    }
+}
+fn receipts(
+    reg: &mut Registrar<'_>,
+    rules: &Rules,
+) -> std::result::Result<StateFamilyHandle<CommitToken, FixtureReceipt>, ModError> {
+    let bad = |e: &dyn std::fmt::Display| ModError::msg(e.to_string());
+    let initial = rules.initial.clone();
+    let update = rules.update.clone();
+    reg.state_family(
+        StateFamilyDescriptor::new(
+            StateFamilyId::new(RECEIPT_FAMILY).map_err(|e| bad(&e))?,
+            CanonicalId::new("fee_update_fixture_receipt.key.v1").map_err(|e| bad(&e))?,
+            CanonicalId::new("fee_update_fixture_receipt.value.v1").map_err(|e| bad(&e))?,
+            1,
+            CanonicalId::new("fee_update_fixture_receipt.decode.v1").map_err(|e| bad(&e))?,
+            CanonicalId::new("fee_update_fixture_receipt.validate.v1").map_err(|e| bad(&e))?,
+            CanonicalId::new("fee_update_fixture_receipt.canonical.v1").map_err(|e| bad(&e))?,
+        )
+        .map_err(|e| bad(&e))?
+        .with_limits(32, 4096)
+        .map_err(|e| bad(&e))?,
+        |key: &CommitToken| Ok(key.to_hex()),
+        |value: &Value| {
+            let row: FixtureReceipt = serde_json::from_value(value.clone())
+                .map_err(|_| "fixture receipt encoding".to_owned())?;
+            if serde_json::to_value(&row).map_err(|_| "fixture receipt encoding".to_owned())?
+                != *value
+            {
+                return Err("fixture receipt exact shape".into());
+            }
+            Ok(row)
+        },
+        move |row: &FixtureReceipt| row.validate(&initial, &update),
+        |row: &FixtureReceipt| {
+            serde_json::to_value(row).map_err(|_| "fixture receipt encoding".into())
+        },
+    )
+}
+fn prepared_receipt(
+    writes: &[ReplayWrite],
+    rules: &Rules,
+    action: &DefinitionRef,
+    commit: CommitToken,
+    actor: ObjId,
+) -> Result<FixtureReceipt> {
+    let mut found = None;
+    for write in writes {
+        let ReplayWrite::ModuleJsonSet {
+            namespace,
+            key,
+            value,
+        } = write
+        else {
+            continue;
+        };
+        if namespace.as_str() != "roll" {
+            continue;
+        }
+        let receipt: FixtureReceipt =
+            serde_json::from_value(value.get("value").ok_or("typed fixture value")?.clone())?;
+        receipt.validate(&rules.initial, &rules.update)?;
+        let expected = json!({"family":{"owner":"roll","id":RECEIPT_FAMILY},"key":receipt.commit.to_hex(),"schema":{"id":"fee_update_fixture_receipt.value.v1","version":1},"value":receipt});
+        if value != &expected
+            || key.as_str() != format!("action-state/v1/{RECEIPT_FAMILY}/{}", commit.to_hex())
+            || &receipt.action != action
+            || receipt.commit != commit
+            || receipt.actor != actor
+            || found.is_some()
+        {
+            return Err("unexpected/crossed typed fixture write".into());
+        }
+        found = Some(receipt);
+    }
+    found.ok_or_else(|| "actual composed fixture receipt missing".into())
+}
 struct Provider {
+    receipts: StateFamilyHandle<CommitToken, FixtureReceipt>,
+    action: DefinitionRef,
     handle: ParticipantHandle<InitialFilingParticipant>,
     initial: bool,
     outcome: DefinitionRef,
@@ -91,7 +224,7 @@ impl ActionProvider for Provider {
     fn prepare_authoritative_with_context(
         &self,
         inv: &ActionInvocation,
-        _: &mut ActionTxn<'_>,
+        txn: &mut ActionTxn<'_>,
         ctx: &mut PrepareCtx<'_>,
     ) -> std::result::Result<AuthoritativeActionOutput, ActionError> {
         let r: Input = serde_json::from_value(inv.parameters().clone()).map_err(|_| error())?;
@@ -112,12 +245,47 @@ impl ActionProvider for Provider {
         let output = ctx
             .prepare_owner(&self.handle, request)
             .map_err(|_| error())?;
-        let value = if self.initial {
-            json!({"posted":true})
+        let effect = if self.initial {
+            let output = output.initial_filing().map_err(|_| error())?;
+            let title = output.title();
+            FixtureEffect::Initial(
+                super::super::receipt::InitialFilingAuditSubject::new(
+                    output.commit_token(),
+                    output.transaction(),
+                    output.journal_seq(),
+                    title.object,
+                    title.title_owner.clone(),
+                    title.revision,
+                    output.payer(),
+                    output.sink(),
+                    output.fee(),
+                    output.issuer().clone(),
+                    title.catalog.clone().ok_or_else(error)?,
+                )
+                .map_err(|_| error())?,
+            )
         } else {
-            serde_json::to_value(output.compatible_update().map_err(|_| error())?.subject())
-                .map_err(|_| error())?
+            FixtureEffect::Update(
+                output
+                    .compatible_update()
+                    .map_err(|_| error())?
+                    .subject()
+                    .clone(),
+            )
         };
+        let value = serde_json::to_value(&effect).map_err(|_| error())?;
+        txn.insert(
+            &self.receipts,
+            &ctx.commit_token(),
+            FixtureReceipt {
+                format: 1,
+                action: self.action.clone(),
+                commit: ctx.commit_token(),
+                actor: inv.actor(),
+                effect,
+            },
+        )
+        .map_err(|_| error())?;
         let result = RulesValue::new(self.outcome.clone(), value).map_err(|_| error())?;
         Ok(AuthoritativeActionOutput::new(result).with_definitions(vec![self.outcome.clone()]))
     }
@@ -153,6 +321,7 @@ impl GameModule for Rules {
         for d in &self.declarations {
             reg.definition(d.clone())?;
         }
+        let receipts = receipts(reg, self)?;
         let initial =
             reg.request_owner_participant::<InitialFilingParticipant>(self.initial.clone())?;
         let update =
@@ -163,8 +332,10 @@ impl GameModule for Rules {
             (self.wrong.clone(), update, false),
         ] {
             reg.action_provider(
-                action,
+                action.clone(),
                 Provider {
+                    receipts: receipts.clone(),
+                    action,
                     handle,
                     initial: is_initial,
                     outcome: self.outcome.clone(),
@@ -206,6 +377,7 @@ struct Fixture {
     actor: ObjId,
     shell: ObjId,
     boot: Boot,
+    staged: Option<FixtureReceipt>,
 }
 impl Fixture {
     fn empty() -> Result<Self> {
@@ -222,6 +394,7 @@ impl Fixture {
             actor,
             shell,
             boot: Boot::new(),
+            staged: None,
         })
     }
     fn new() -> Result<Self> {
@@ -295,6 +468,7 @@ impl Fixture {
     ) -> Result<Vec<ReplayWrite>> {
         let (p, o, inv) = p;
         let writes = p.authoritative_replay_writes();
+        let receipt = prepared_receipt(&writes, &self.rules, &action, token(n), inv.actor())?;
         let (outcome, resolution, mut definitions, mut witnesses, mut outbox, events) =
             o.into_parts();
         definitions.push(action.clone());
@@ -333,6 +507,7 @@ impl Fixture {
         self.world
             .engine_mut()
             .stage_authoritative_action(p, guards, bundle)?;
+        self.staged = Some(receipt);
         Ok(writes)
     }
     fn take_install(&mut self) -> Result {
@@ -345,6 +520,10 @@ impl Fixture {
         self.world
             .engine_mut()
             .install_composed_action(installation)?;
+        self.staged
+            .take()
+            .ok_or("prepared typed receipt")?
+            .verify(self.state())?;
         Ok(())
     }
     fn publish(
@@ -419,7 +598,11 @@ fn actual_registered_update_posts_one_fee_preserves_birth_title_and_replays_exac
             .posted_balance,
         Amount::from_minor(200)
     );
-    assert_eq!(writes.len(), 5);
+    assert_eq!(
+        writes.len(),
+        6,
+        "five unchanged Economy writes plus one actual typed fixture receipt"
+    );
     assert!(!writes.iter().any(
         |w| matches!(w,ReplayWrite::ModuleJsonSet{key,..} if key.as_str().starts_with("asset:"))
     ));

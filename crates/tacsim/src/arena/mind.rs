@@ -1468,6 +1468,7 @@ impl Arena {
         }
         // 17b cut M4.1: a think collected and not yet written is dropped at
         // its write (`Arena::settle_collected` reads this set).
+        self.clear_order_watch_member(unit);
         self.awaiting.remove(&unit);
         self.forget_mind_events(unit);
     }
@@ -2757,6 +2758,7 @@ impl Arena {
             state.order_issuer = None;
             state.order_charge = None;
         }
+        self.clear_order_watch_member(unit);
         counters.orders_expired = counters.orders_expired.saturating_add(1);
         let _ = self.ledger.append(
             t_ms,

@@ -8,6 +8,7 @@
 use mush_core::{CommitToken, DefinitionDigest, account::PersonalAccountObservation};
 
 use super::execution::{ExecutionAdmission, ExecutionObservation, MeasuredRating, RatingExecution};
+use super::nonconformance::MeasuredRegistryResult;
 use super::{RatingCompatibility, RatingError, RatingSubject};
 use crate::commerce::RevisionIdentity;
 
@@ -241,13 +242,24 @@ impl ArtifactRequest {
 /// the actual measured worker data whose raw artifact identity is rechecked.
 pub struct ArtifactOutput {
     quota_digest: DefinitionDigest,
-    measured: Option<MeasuredRating>,
+    measured: Option<MeasuredRegistryResult>,
 }
 impl ArtifactOutput {
     pub fn observed(
         quota: &QuotaOutput,
         measured: Option<MeasuredRating>,
     ) -> Result<Self, RatingError> {
+        Self::observed_result(quota, measured.map(MeasuredRegistryResult::Certified))
+    }
+    pub fn observed_result(
+        quota: &QuotaOutput,
+        measured: Option<MeasuredRegistryResult>,
+    ) -> Result<Self, RatingError> {
+        if matches!(&measured, Some(MeasuredRegistryResult::Nonconforming(_)))
+            && !quota.admission().measured_rejection
+        {
+            return Err(RatingError::Identity);
+        }
         match (&measured, quota.after().phase) {
             (Some(result), super::execution::ExecutionPhase::Complete) => {
                 if quota.transition() != Transition::Settle
@@ -269,7 +281,7 @@ impl ArtifactOutput {
     pub(crate) fn matches(&self, quota: &QuotaOutput) -> Result<bool, RatingError> {
         Ok(self.quota_digest == quota.digest()?)
     }
-    pub(crate) fn into_measured(self) -> Option<MeasuredRating> {
+    pub(crate) fn into_measured(self) -> Option<MeasuredRegistryResult> {
         self.measured
     }
 }

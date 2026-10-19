@@ -58,7 +58,7 @@ use crate::contract::{
 use crate::custody::WorldCustody;
 use crate::engine::ValidateEnv;
 use crate::escalation::{EscalationKind, EscalationSubject};
-use crate::facts::WorldFacts;
+use crate::facts::scoped;
 use crate::ids::{AccountId, ContractId, HoldId, InstrumentId};
 use crate::module::EconomyStore;
 use crate::obligation::{GracePolicy, Obligation, ObligationCause, ObligationStatus};
@@ -247,7 +247,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @contract/split <id>=<acct> <exact|N‰> [<acct> <share> …]\n\
                    @contract/remainder <id>=<acct>\n\
                    @contract/condition <id>=attest <who> | deposit <obj> <vault> | title <obj> <principal>\n\
-                   \x20                    | fact <provider> <kind> <id> | before <secs|ic:secs> | after <n> <delay>\n\
+                   \x20                    | fact <provider> <kind> <id> [revision=<u64>] | before <secs|ic:secs> | after <n> <delay>\n\
                    \x20  <who> = party:<principal> | cap:<capability>:<scope> | staff | canon:<kind>:<source>\n\
                    \x20  `title` takes a bare <principal> (#123, org:Name) — no party: prefix\n\
                    @contract/deadline <id>=<secs|ic:secs> [refund|forfeit=<acct>|dispute]\n\
@@ -463,6 +463,7 @@ fn editable(ctx: &Ctx<'_>, s: &str) -> Result<EconomicContract, CmdError> {
 /// every acceptance or strand its escrow. Re-validating is the same gate `/offer`
 /// runs, and the parties are told their offer moved, because it did.
 fn save_open(ctx: &mut Ctx<'_>, mut c: EconomicContract) -> Result<ContractId, CmdError> {
+    scoped::stamp_attachment(ctx, &mut c).map_err(|_| CmdError::msg(NO_SUCH))?;
     c.consent_hash = consent_hash(&c.issuer, &c.consent);
     c.revision = c.revision.saturating_add(1);
     let id = c.id;
@@ -580,6 +581,7 @@ fn contract_draft(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         })?
     };
     let consent = ConsentSurface {
+        fact_consent: None,
         managed: None,
         parties: vec![issuer.clone()],
         terms: ContractTerms {
@@ -1101,7 +1103,7 @@ fn parse_attestor(ctx: &Ctx<'_>, s: &str) -> Option<AttestorSet> {
 
 fn build_condition(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "Usage: @contract/condition <id>=attest <who> | deposit <obj> <vault> | \
-                         title <obj> <principal> | fact <provider> <kind> <id> | \
+                         title <obj> <principal> | fact <provider> <kind> <id> [revision=<u64>] | \
                          before <secs|ic:secs> | after <n> <delay>   \
                          (<who> = party:<principal> | cap:<capability>:<scope> | staff | \
                          canon:<kind>:<source>; `title` takes a bare <principal>)";
@@ -1154,12 +1156,28 @@ fn build_condition(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .next()
                 .ok_or_else(|| CmdError::msg(USAGE))?
                 .to_string();
+            let revision = words
+                .next()
+                .map(|token| {
+                    let text = token
+                        .strip_prefix("revision=")
+                        .ok_or_else(|| CmdError::msg(USAGE))?;
+                    let value = text.parse::<u64>().map_err(|_| CmdError::msg(USAGE))?;
+                    if value.to_string() != text {
+                        return Err(CmdError::msg(USAGE));
+                    }
+                    Ok(value)
+                })
+                .transpose()?;
+            if words.next().is_some() {
+                return Err(CmdError::msg(USAGE));
+            }
             TypedCondition::Fact {
                 fact: ExternalRef {
                     provider: SmolStr::new(provider),
                     kind: SmolStr::new(fkind),
                     id: SmolStr::new(fid),
-                    revision: None,
+                    revision,
                 },
             }
         }
@@ -1622,6 +1640,13 @@ const PARTY_CAP_REFUSAL: &str = "a party is already on the most live contracts a
 /// hold was broken, is money the acceptance never covered, and `@contract/cancel`
 /// is the route that releases what still stands.
 pub(crate) fn check_offer(ctx: &Ctx<'_>, c: &EconomicContract) -> Result<(), ContractError> {
+    scoped::validate_attachment(ctx, c)?;
+    check_offer_structure(ctx, c)
+}
+
+/// Structural/account checks may repeat after the amendment refund; private
+/// fact authority has already been captured for the exact surface before it.
+fn check_offer_structure(ctx: &Ctx<'_>, c: &EconomicContract) -> Result<(), ContractError> {
     api::require_legacy_contract(ctx, c).map_err(ContractError::Refused)?;
     let store = ctx
         .w
@@ -1687,7 +1712,24 @@ pub(crate) fn freeze_and_offer(
     ctx: &mut Ctx<'_>,
     mut c: EconomicContract,
 ) -> Result<ContractId, EconomyError> {
+    // Text offers already name a real retained draft. The programmatic path
+    // passes its exact preallocation proof to freeze_and_offer_authorized.
+    let attachment = scoped::prepare_attachment(ctx, &c).map_err(|_| EconomyError::Unauthorized)?;
+    attachment
+        .apply(&mut c)
+        .map_err(|_| EconomyError::Unauthorized)?;
+    freeze_and_offer_authorized(ctx, c, &attachment)
+}
+
+fn freeze_and_offer_authorized(
+    ctx: &mut Ctx<'_>,
+    mut c: EconomicContract,
+    attachment: &scoped::FactAttachment,
+) -> Result<ContractId, EconomyError> {
     api::require_legacy_contract(ctx, &c)?;
+    attachment
+        .apply(&mut c)
+        .map_err(|_| EconomyError::Unauthorized)?;
     c.consent_hash = consent_hash(&c.issuer, &c.consent);
     let hash = c.consent_hash;
     for a in &mut c.acceptances {
@@ -1706,7 +1748,9 @@ pub(crate) fn freeze_and_offer(
     // for an acceptance that had already happened. Activation belongs wherever a
     // surface becomes fully accepted, and this is one of those places.
     let unanimous = c.fully_accepted();
-    save(ctx, c)?;
+    c.revision = c.revision.saturating_add(1);
+    let write = api::prepare_contract_write_authorized(ctx, c, attachment)?;
+    api::install_contract_write(ctx, write);
     for p in &parties {
         let already = standing
             .iter()
@@ -2506,8 +2550,8 @@ pub(crate) fn promote_and_settle_with(
             w: ctx.w,
             providers,
         };
-        let facts = WorldFacts {
-            w: ctx.w,
+        let facts = scoped::ContextualWorldFacts {
+            ctx,
             providers: store.facts(),
         };
         let world = api::WorldAuth { w: ctx.w };
@@ -2580,8 +2624,8 @@ fn settle_with(ctx: &mut Ctx<'_>, id: ContractId, companions: Vec<EconomicContra
             w: ctx.w,
             providers,
         };
-        let facts = WorldFacts {
-            w: ctx.w,
+        let facts = scoped::ContextualWorldFacts {
+            ctx,
             providers: store.facts(),
         };
         let world = api::WorldAuth { w: ctx.w };
@@ -3264,6 +3308,24 @@ fn amended_draft(
     back.roster_locked = false;
     back.settle_attempts = 0;
     back.revision = back.revision.saturating_add(1);
+    // The pure preflight and the actual refund must name the same generation.
+    // Preserve the existing already-posted recovery rule as well as a new refund.
+    let refunding = refund.is_some_and(|p| !p.hold_ops.is_empty());
+    let refund_landed = !voided.is_empty()
+        && c.escrow.iter().any(|h| {
+            snapshot.hold(*h).is_some_and(|hold| {
+                hold.purpose == (HoldPurpose::Escrow { contract: c.id })
+                    && !hold.status.is_held()
+                    && c.consent.terms.consideration.iter().any(|con| {
+                        con.account == hold.account
+                            && con.amount == hold.amount
+                            && principal_key(&con.from) != key
+                    })
+            })
+        });
+    if refunding || refund_landed {
+        back.amendments = c.amendments.saturating_add(1);
+    }
     // A `Draft` is re-hashed on every write; the survivors keep the hash they bound
     // and are re-stamped when the surface is re-offered.
     back.consent_hash = consent_hash(&back.issuer, &back.consent);
@@ -3330,7 +3392,7 @@ pub(crate) fn amend_core(
         return Err(ContractError::ConsentMismatch);
     }
     let now = ctx.w.now();
-    let (plan, mut back, voided, refund_landed) = {
+    let (plan, mut back, voided) = {
         let store = ctx
             .w
             .module_state::<EconomyStore>()
@@ -3345,40 +3407,11 @@ pub(crate) fn amend_core(
             None
         };
         let (back, voided) = amended_draft(&c, snap, author, plan.as_ref(), now);
-        // E6a step 1 verify fold (R2): **the already-posted shape.** A hold this
-        // record still lists as its own escrow, for a consideration a voided party
-        // owed, that the journal says is already terminal — the refund landed and the
-        // companion doc write was lost.
-        let refund_landed = !voided.is_empty()
-            && c.escrow.iter().any(|h| {
-                snap.hold(*h).is_some_and(|hold| {
-                    hold.purpose == (HoldPurpose::Escrow { contract: c.id })
-                        && !hold.status.is_held()
-                        && c.consent.terms.consideration.iter().any(|con| {
-                            con.account == hold.account
-                                && con.amount == hold.amount
-                                && principal_key(&con.from) != key
-                        })
-                })
-            });
-        (plan, back, voided, refund_landed)
+        (plan, back, voided)
     };
     let refunding = plan.as_ref().is_some_and(|p| !p.hold_ops.is_empty());
     let id = c.id;
-    // R2: the generation moves when a refund posts **or when one already has**.
-    //
-    // The old rule bumped only inside the refunding arm, and that burned a key. Lose
-    // the companion write after a refund lands, and the retry sees the voided parties'
-    // holds already `Released`: `qualifying_claims` yields nothing, the plan comes
-    // back empty, nothing bumps, and the record is left pointing at
-    // `contract/{id}/refund/{n}` — a key that is already spent. Every later unwind then
-    // hit `IdempotencyConflict`, `pending` stuck, and the escrow was frozen forever.
-    // Detecting the landed shape closes it while leaving M16 exactly as it was: an
-    // amendment that releases nothing and never released anything (a run board
-    // re-splitting its own listing) still spends no generation.
-    if refunding || refund_landed {
-        back.amendments = c.amendments.saturating_add(1);
-    }
+    scoped::stamp_attachment(ctx, &mut back)?;
     let back_write =
         api::prepare_contract_write(ctx, back.clone()).map_err(ContractError::Refused)?;
     match plan.filter(|_| refunding) {
@@ -4192,6 +4225,12 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         lines.push(format!("  deliverable {i}: {}", render_deliverable(ctx, d)));
     }
     for (i, cond) in c.consent.conditions.iter().enumerate() {
+        if let TypedCondition::Fact { fact } = cond
+            && !scoped::permitted(ctx, &c, fact, scoped::FactPurpose::Read)
+        {
+            lines.push(format!("  condition {i}: a restricted external fact"));
+            continue;
+        }
         let mark = match c.satisfied.get(i).and_then(|s| s.as_ref()) {
             Some(a) => format!(" [attested by {} at {}]", render_attestor(ctx, &a.by), a.at),
             None => String::new(),
@@ -4295,7 +4334,13 @@ fn notice_lines(ctx: &Ctx<'_>, c: &EconomicContract) -> Vec<String> {
         .iter()
         .enumerate()
         .map(|(i, cond)| {
-            let mark = if c.satisfied.get(i).and_then(|s| s.as_ref()).is_some() {
+            let visible = match cond {
+                TypedCondition::Fact { fact } => {
+                    scoped::permitted(ctx, c, fact, scoped::FactPurpose::Read)
+                }
+                _ => true,
+            };
+            let mark = if visible && c.satisfied.get(i).and_then(|s| s.as_ref()).is_some() {
                 " (met)"
             } else {
                 ""
@@ -4611,6 +4656,7 @@ pub fn offer_lease(ctx: &mut Ctx<'_>, spec: LeaseSpec) -> Result<ContractId, Con
     // Read before `spec.rent` is moved into the deliverable below.
     let rent_credit = spec.rent.credit_account;
     let consent = ConsentSurface {
+        fact_consent: None,
         managed: None,
         parties,
         terms: ContractTerms {
@@ -5109,6 +5155,7 @@ pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractI
     }
     let satisfied = vec![None; spec.conditions.len()];
     let consent = ConsentSurface {
+        fact_consent: None,
         managed: None,
         parties,
         terms: ContractTerms {
@@ -5151,7 +5198,23 @@ pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractI
         roles,
         revision: 1,
     };
-    check_offer(ctx, &c)?;
+    // Provisional MAX is only for structure/cap checks, never subject authority.
+    check_offer_structure(ctx, &c)?;
+    let next = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .ok_or(ContractError::Infeasible("no economy"))?
+        .peek_next_contract();
+    if next == u64::MAX {
+        return Err(ContractError::TooLarge(
+            "the contract-id allocator is exhausted",
+        ));
+    }
+    c.id = ContractId(next);
+    let attachment = scoped::prepare_attachment(ctx, &c)?;
+    attachment.apply(&mut c)?;
+    // The immutable preflight cannot mutate the World; this synchronous handler
+    // has no intervening callback or await before consuming the same allocator.
     let id = {
         let store = ctx
             .w
@@ -5161,8 +5224,11 @@ pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractI
             "the contract-id allocator is exhausted",
         ))?
     };
-    c.id = id;
-    let id = freeze_and_offer(ctx, c).map_err(ContractError::Refused)?;
+    assert_eq!(
+        id, c.id,
+        "synchronous preflight retains the next contract ID"
+    );
+    let id = freeze_and_offer_authorized(ctx, c, &attachment).map_err(ContractError::Refused)?;
     let meta = ctx
         .w
         .module_state::<EconomyStore>()
@@ -5420,7 +5486,9 @@ pub fn amend_contract(
         let (draft, _) = amended_draft(&c, snap, &author, refund.as_ref(), now);
         draft
     };
-    let probe = apply_amendment(probe, &amend)?;
+    let mut probe = apply_amendment(probe, &amend)?;
+    let attachment = scoped::prepare_attachment(ctx, &probe)?;
+    attachment.apply(&mut probe)?;
     if amend.reoffer {
         check_offer(ctx, &probe)?;
     }
@@ -5434,22 +5502,31 @@ pub fn amend_contract(
         Ok(back) => back,
         Err(e) => return Ok(AmendReoffer::NotReoffered(outcome, e)),
     };
-    back.revision = back.revision.saturating_add(1);
-    if let Err(error) = api::put_contract(ctx, back.clone()) {
+    // Same synchronous handler: only our own refund has run since preflight.
+    // Rebind the exact prepared surface, never re-authorize after money moved.
+    if let Err(e) = attachment.apply(&mut back) {
         ctx.gate_on_durable_ack();
-        return Ok(AmendReoffer::NotReoffered(
-            outcome,
-            ContractError::Refused(error),
-        ));
+        return Ok(AmendReoffer::NotReoffered(outcome, e));
+    }
+    back.revision = back.revision.saturating_add(1);
+    match api::prepare_contract_write_authorized(ctx, back.clone(), &attachment) {
+        Ok(write) => api::install_contract_write(ctx, write),
+        Err(error) => {
+            ctx.gate_on_durable_ack();
+            return Ok(AmendReoffer::NotReoffered(
+                outcome,
+                ContractError::Refused(error),
+            ));
+        }
     }
     if amend.reoffer {
         // Re-checked live: the projection was built before the refund posted, and
         // releasing escrow is exactly the kind of change `check_offer` reads.
-        if let Err(e) = check_offer(ctx, &back) {
+        if let Err(e) = check_offer_structure(ctx, &back) {
             ctx.gate_on_durable_ack();
             return Ok(AmendReoffer::NotReoffered(outcome, e));
         }
-        if let Err(error) = freeze_and_offer(ctx, back) {
+        if let Err(error) = freeze_and_offer_authorized(ctx, back, &attachment) {
             ctx.gate_on_durable_ack();
             return Ok(AmendReoffer::NotReoffered(
                 outcome,

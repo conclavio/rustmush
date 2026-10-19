@@ -108,6 +108,8 @@ pub mod capacity;
 /// Doc 19 cut A.3: `+chart` — the sky from where you stand, the passages now and
 /// the window over the next IC year (doc 19 §5).
 pub mod chart;
+/// Doc 19 cut A.3b: the `sky.chart` panel — one frame, three renders (doc 19 §5).
+pub mod chart_panel;
 pub mod coop;
 pub mod credit;
 pub mod def;
@@ -135,14 +137,19 @@ pub use chart::{
     CHART_HELP, CHART_NO_BODY, CHART_NO_LANE, CHART_NO_ROUTE, CHART_NOWHERE, CHART_VERB,
     PLAN_WINDOW_DAYS, WINDOW_DAYS,
 };
+pub use chart_panel::{
+    GRID_HEIGHT, GRID_WIDTH, SKY_CHART_FEED, chart_frame, expand_rows, flat_lines, radial_fraction,
+    rasterize,
+};
 pub use coop::{
     Charter, EndCause, Enrolment, EnrolmentState, EnrolmentStatus, Helm, ProgrammePort, Standing,
     charter_tenant, enrol_gate, gated, helm_holder, helm_of, live_charter, programme_port, shuts,
 };
 pub use def::{
-    AskDef, BidDef, MAX_PREMIUM_PERMILLE, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES,
-    PortDef, PortOrgDef, ProgrammeDef, ReachPremiumDef, StockRowDef, VendorDef, check_ports,
-    room_key, tranches,
+    AskDef, BidDef, EmergencyDef, MAX_EMERGENCY_GOODS, MAX_EMERGENCY_RATIO_PERMILLE,
+    MAX_PREMIUM_PERMILLE, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES, PortDef,
+    PortOrgDef, ProgrammeDef, ReachPremiumDef, StockRowDef, VendorDef, check_ports, room_key,
+    tranches,
 };
 pub use executor::{
     Ask, Bid, Bound, FILL_ITERATIONS, FillError, FillTargets, MAX_ORDER_ATTEMPTS,
@@ -176,8 +183,9 @@ pub use passage::{
     intercept_passes, leg_distance_km, leg_seconds, passage_burn, payload_kg, plan_passage,
 };
 pub use price::{
-    DAY_S, MAX_SCAN_DAYS, MAX_SCAN_SAMPLES, Reach, bid_price_major, median_of, premium_permille,
-    priced, reach_for, scan_days, synodic_days,
+    DAY_S, EMERGENCY_CHECK_SECS, EmergencyReading, MAX_SCAN_DAYS, MAX_SCAN_SAMPLES, Reach,
+    bid_price_major, emergency_crossed, emergency_readings, emergency_reference_major, median_of,
+    premium_permille, priced, reach_for, reach_ratio_permille, scan_days, synodic_days,
 };
 pub use proceeds::{
     BASELINE_MEMO, CoopProceeds, REFERENCE_DARK, SALE_BOOKS_DARK, SALE_LINE, SALE_LINE_NO_SHARE,

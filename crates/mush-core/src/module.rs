@@ -3286,6 +3286,25 @@ impl<'a> Registrar<'a> {
             .map_err(|e| ModError::msg(e.to_string()))
     }
 
+    /// Add the closed Registry-service reconformance profile after rating capacity.
+    /// The same exact manifest and owner participants remain required.
+    pub fn registry_reconformance_capacity(
+        &mut self,
+        actions: [crate::DefinitionRef; 5],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "roll" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "Registry reconformance requires unfrozen Roll registrar",
+            ));
+        }
+        let owner = crate::OwnerId::new("roll").map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .registry_reconformance_capacity(&owner, actions)
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
     /// Declare the closed original personal purchase protocol. Only Market may
     /// register it; action order is funding, grant and refund. Core derives all
     /// five future targets from actual acknowledged purchase/allocation rows.
@@ -3336,6 +3355,28 @@ impl<'a> Registrar<'a> {
                 original_actions,
                 derived_actions,
             )
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
+    /// Fixed Industry future completion: Industry/Economy owner refs followed
+    /// by Accept, Reserve, Advance, Complete and Cancel action refs. No targets
+    /// or ceilings are supplied by the module.
+    pub fn core_integration_capacity(
+        &mut self,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 5],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "industry" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "core integration capacity requires unfrozen Industry registrar",
+            ));
+        }
+        let owner =
+            crate::OwnerId::new(self.module.as_str()).map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .core_integration_capacity(&owner, participants, actions)
             .map_err(|e| ModError::msg(e.to_string()))
     }
 
@@ -5333,6 +5374,16 @@ pub fn fire_scene_hook(
 // ----------------------------------------------------------------------
 
 impl Ctx<'_> {
+    /// The actor stamped by actual Core dispatch. Unlike the legacy public
+    /// `actor` field, assigning a different value cannot change this identity.
+    /// Contexts without an actual dispatch caller have no authenticated actor.
+    #[must_use]
+    pub fn dispatch_actor(&self) -> Option<ObjId> {
+        self.typed_state
+            .dispatch_caller()
+            .map(|caller| caller.actor())
+    }
+
     /// Build the immutable view used when a command invokes a registered
     /// hook directly (for example, while deliberately skipping its own
     /// module's veto). The hook is stamped with its registering owner and

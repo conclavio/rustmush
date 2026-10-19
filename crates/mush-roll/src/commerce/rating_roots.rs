@@ -45,7 +45,8 @@ pub(crate) fn required(job: &RatingJob) -> Result<Vec<RequiredRoot>, RatingError
                 },
             ));
         }
-        RatingJobState::Failed { .. }
+        RatingJobState::Nonconforming { .. }
+        | RatingJobState::Failed { .. }
         | RatingJobState::Interrupted {}
         | RatingJobState::Cancelled {} => {}
     }

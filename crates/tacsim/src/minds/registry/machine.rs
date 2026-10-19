@@ -199,8 +199,12 @@ impl RegistryMachine {
                 CaseDisposition::Next => RegistryEnding::CaseComplete,
                 CaseDisposition::Promote => RegistryEnding::ClassBudget,
                 CaseDisposition::Certified => RegistryEnding::Certified,
+                CaseDisposition::Nonconforming => RegistryEnding::Rejected,
             };
-            if matches!(disposition, CaseDisposition::Certified) {
+            if matches!(
+                disposition,
+                CaseDisposition::Certified | CaseDisposition::Nonconforming
+            ) {
                 #[cfg(test)]
                 {
                     self.diagnostic_stage = "certificate-finish";

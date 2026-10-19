@@ -97,9 +97,18 @@ fn empty_in_txn(
             }
         };
     }
+    empty!(&f.charter_transfer_offers);
+    empty!(&f.charter_transfers);
+    empty!(&f.charter_ownership);
+    empty!(&f.lapse_occurrences);
+    empty!(&f.ic_claims);
+    empty!(&f.registry_recalls);
+    empty!(&f.registry_revocations);
+    empty!(&f.revoked_terms);
     empty!(&f.withdrawals);
     empty!(&f.owner_qualification_operations);
     empty!(&f.owner_qualification_heads);
+    empty!(&f.owner_attestations);
     empty!(&f.line_updates);
     empty!(&f.update_positions);
     empty!(&f.draft_parents);
@@ -154,9 +163,18 @@ fn validate_setup_boot(
             }
         };
     }
+    empty!(&f.charter_transfer_offers);
+    empty!(&f.charter_transfers);
+    empty!(&f.charter_ownership);
+    empty!(&f.lapse_occurrences);
+    empty!(&f.ic_claims);
+    empty!(&f.registry_recalls);
+    empty!(&f.registry_revocations);
+    empty!(&f.revoked_terms);
     empty!(&f.withdrawals);
     empty!(&f.owner_qualification_operations);
     empty!(&f.owner_qualification_heads);
+    empty!(&f.owner_attestations);
     empty!(&f.line_updates);
     empty!(&f.update_positions);
     empty!(&f.draft_parents);

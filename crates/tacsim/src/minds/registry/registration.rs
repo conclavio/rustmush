@@ -20,12 +20,22 @@ pub(super) fn register(
     reg: &mut Registrar<'_>,
     policy: Arc<FrozenPolicy>,
 ) -> Result<(RegisteredManifest, Arc<Factory>), ModError> {
+    register_with_ic(reg, policy, false)
+}
+pub(super) fn register_with_ic(
+    reg: &mut Registrar<'_>,
+    policy: Arc<FrozenPolicy>,
+    ic: bool,
+) -> Result<(RegisteredManifest, Arc<Factory>), ModError> {
     if reg.module() != crate::NS {
         return Err(ModError::msg("Registry owner"));
     }
     let manifest = policy.register(reg)?;
     let definitions = RegistryDefinitions::new(manifest.definition().clone())?;
-    let expected = [definitions.quota().clone(), definitions.artifacts().clone()];
+    let mut expected = vec![definitions.quota().clone(), definitions.artifacts().clone()];
+    if ic {
+        expected.push(crate::minds::ic_sortie::protocol::participant_descriptor()?);
+    }
     reg.definition_validator(
         DefinitionKind::new("owner_participant").map_err(error)?,
         move |context: &DefinitionValidationContext<'_>| {

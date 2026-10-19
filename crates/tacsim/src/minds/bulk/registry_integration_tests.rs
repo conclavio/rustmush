@@ -367,20 +367,23 @@ fn module_ops(disk: &mut Disk, operations: &[ModuleOp]) -> TestResult {
     Ok(())
 }
 fn save_source(disk: &mut Disk) -> TestResult<Revision> {
+    save_source_as(disk, SOURCE, "I")
+}
+fn save_source_as(disk: &mut Disk, source: &str, class: &str) -> TestResult<Revision> {
     let mut roll = RollStore::default();
     let envelope = Envelope {
         schema: json!({"sections":[]}),
         presets: json!({}),
         profiles: json!({"Default":{}}),
         rules: json!({}),
-        declared_class: "I".into(),
+        declared_class: class.into(),
         mind_abi: crate::minds::MIND_ABI.into(),
     };
     let create = roll.prepare_create(
         GOD,
         "Candidate",
         WorkingCopy {
-            source: SOURCE.into(),
+            source: source.into(),
             envelope,
         },
     )?;
@@ -466,9 +469,13 @@ struct Fixture {
     definitions: RegistryDefinitions,
     factory: Arc<Factory>,
     revision: Revision,
+    source: Arc<str>,
 }
 impl Fixture {
     fn new() -> TestResult<Self> {
+        Self::with_source(SOURCE, "I")
+    }
+    fn with_source(source: &str, class: &str) -> TestResult<Self> {
         let resources = Resources::capture()?;
         let account = AccountId::mint("registry-engine-fixture", 1)?;
         let accounts = Arc::new(Accounts::default());
@@ -511,7 +518,11 @@ impl Fixture {
             ),
             Err(mush_core::action::ActionProviderPrepareError::Lookup(_))
         ));
-        let revision = save_source(&mut disk)?;
+        let revision = if source == SOURCE && class == "I" {
+            save_source(&mut disk)?
+        } else {
+            save_source_as(&mut disk, source, class)?
+        };
         let (mut engine, shared) = engine(&resources, accounts.clone(), CommerceMode::Active)?;
         load(&mut engine, &disk)?;
         // Readiness is exercised by actual admission below, after the real
@@ -528,6 +539,7 @@ impl Fixture {
             definitions,
             factory,
             revision,
+            source: Arc::from(source),
         })
     }
     fn artifacts(&self) -> TestResult<&Artifacts> {
@@ -645,7 +657,7 @@ impl Fixture {
             .module_state::<TacsimStore>()
             .ok_or("sources")?;
         let source = mush_roll::SourceAdapter::read_source(source, self.revision.source())?;
-        assert_eq!(source, SOURCE);
+        assert_eq!(source, self.source.as_ref());
         let prepared = self.factory.prepare(
             self.account,
             GOD,
@@ -1007,3 +1019,195 @@ fn registered_admission_account_epoch_change_refuses_before_every_owner_image() 
 
 #[path = "original_purchase_integration_tests.rs"]
 mod original_purchase;
+
+#[test]
+fn real_measured_maximum_class_rejection_publishes_and_survives_private_history_eviction()
+-> TestResult {
+    use mush_roll::commerce::rating::RatingPage;
+    use mush_roll::commerce::rating::nonconformance::{
+        MeasuredNonconformance, RatingNonconformance,
+    };
+    let diagnostic = rejection_diagnostic::Phases::default();
+    let _tracing = tracing::subscriber::set_default(diagnostic.clone());
+    for declared in ["I", "III"] {
+        let mut f = Fixture::with_source("fn think(v,c) { while true {} }", declared)?;
+        let (binding, ready) = f.admitted()?;
+        let mut ready = Some(ready);
+        let executor = Executor::with_wake(&BulkConfig::default(), None)?;
+        let mut actual = 0_u64;
+        let mut complete = false;
+        for index in 0_u8..16 {
+            let current = ready.take().ok_or("exact continuation")?;
+            let operation = 4 + index * 4;
+            let lease = f.grant(binding, &current, operation)?;
+            executor
+                .submit(lease, current)
+                .map_err(|(error, _, _)| error)?;
+            let deadline = Instant::now() + Duration::from_secs(60);
+            let mut done = loop {
+                if let Some(done) = executor.poll() {
+                    break done;
+                }
+                if Instant::now() >= deadline {
+                    return Err("bounded real rejection worker did not return".into());
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            actual = actual
+                .checked_add(done.receipt.actual_unit_ms)
+                .ok_or("charge")?;
+            let terminal = done.receipt.terminal;
+            if terminal.is_some() {
+                assert_eq!(terminal, Some(Status::Complete));
+                assert_eq!(
+                    done.receipt
+                        .registry
+                        .as_ref()
+                        .ok_or("measured progress")?
+                        .ending,
+                    super::registry_budget::RegistryEnding::Rejected
+                );
+                assert!(done.receipt.result.is_some());
+            }
+            ready = done.ready.take();
+            let settlement = done
+                .registry_settlement
+                .take()
+                .ok_or("actual measured settlement")??;
+            let ticket = f
+                .artifacts_mut()?
+                .registry
+                .insert_settlement(settlement)
+                .map_err(|(error, _)| error)?;
+            let before = f.run(binding)?;
+            diagnostic.clear();
+            let prepared = f
+                .prepare(Transition::Settle, ticket, binding.job, operation + 2)
+                .map_err(|_| diagnostic.error(index, terminal.is_some()))?;
+            assert_eq!(f.run(binding)?, before);
+            assert!(
+                f.retained::<RatingNonconformance>("rating_nonconformance")
+                    .is_err()
+            );
+            f.ack(
+                prepared,
+                ticket,
+                binding.job,
+                operation + 2,
+                Transition::Settle,
+            )?;
+            assert_eq!(f.run(binding)?.charged_unit_ms, actual);
+            if terminal.is_some() {
+                complete = true;
+                break;
+            }
+        }
+        assert!(
+            complete,
+            "real measured rejection must finish within bounded quanta"
+        );
+        let header: RatingNonconformance = f.retained("rating_nonconformance")?;
+        let page: RatingPage = f.retained("rating_pages")?;
+        header.verify_pages(std::slice::from_ref(&page))?;
+        let measured = MeasuredNonconformance::maximum_class_budget(
+            header.subject().clone(),
+            header.compatibility().clone(),
+            header.plan(),
+            vec![page.content().clone()],
+        )?;
+        let execution: RatingExecution = f.retained("rating_executions")?;
+        assert_eq!(execution.observation().result, Some(measured.artifact()?));
+        assert!(execution.admission().measured_rejection);
+        let job: RatingJob = f.retained("rating_jobs")?;
+        assert!(
+            matches!(job.state(),RatingJobState::Nonconforming { receipt } if *receipt==header.reference()?)
+        );
+        for family in ["rating_receipts", "rating_completions", "rating_status"] {
+            assert!(f.retained::<Value>(family).is_err());
+        }
+        assert_eq!(f.roots()?, vec![format!("v1/rating_job/{}", binding.job)]);
+        assert!(
+            f.disk
+                .keys()
+                .all(|(_, key)| !key.starts_with("action-state/capacity/v1/"))
+        );
+        f.restart_terminal(binding, Status::Complete)?;
+        for missing in ["rating_nonconformance", "rating_pages"] {
+            let mut broken = f.disk.clone();
+            broken.retain(|_, value| {
+                value
+                    .get("family")
+                    .and_then(|v| v.get("id"))
+                    .and_then(Value::as_str)
+                    != Some(missing)
+            });
+            let (mut reboot, _) = engine(&f.resources, f.accounts.clone(), CommerceMode::Active)?;
+            assert!(load(&mut reboot, &broken).is_err());
+        }
+        let mut evicted = f.disk.clone();
+        evicted.retain(|(owner, key), _| owner != "tacsim" || !key.starts_with("tacsim:mindbulk:"));
+        let (mut reboot, _) = engine(&f.resources, f.accounts.clone(), CommerceMode::Active)?;
+        load(&mut reboot, &evicted)?;
+    }
+    Ok(())
+}
+
+/// A test-local subscriber captures only one fixed phase field from the closed
+/// producer. No arbitrary diagnostic payload or source is formatted.
+mod rejection_diagnostic {
+    use std::sync::{Arc, Mutex};
+    #[derive(Clone, Default)]
+    pub(super) struct Phases(Arc<Mutex<Option<String>>>);
+    impl Phases {
+        pub(super) fn clear(&self) {
+            if let Ok(mut value) = self.0.lock() {
+                *value = None;
+            }
+        }
+        pub(super) fn error(&self, quantum: u8, terminal: bool) -> String {
+            let phase = self
+                .0
+                .lock()
+                .ok()
+                .and_then(|v| v.clone())
+                .unwrap_or_else(|| "unknown".into());
+            format!(
+                "Registry rejection refusal phase={phase} quantum={quantum} terminal={terminal}"
+            )
+        }
+    }
+    struct PhaseVisitor(Option<String>);
+    impl tracing::field::Visit for PhaseVisitor {
+        fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            if field.name() == "stage"
+                && value.len() <= 32
+                && value.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
+            {
+                self.0 = Some(value.to_owned());
+            }
+        }
+    }
+    impl tracing::Subscriber for Phases {
+        fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
+            m.target() == "registry_preparation"
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            if event.metadata().target() != "registry_preparation" {
+                return;
+            }
+            let mut visitor = PhaseVisitor(None);
+            event.record(&mut visitor);
+            if let Ok(mut value) = self.0.lock() {
+                *value = visitor.0;
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+}

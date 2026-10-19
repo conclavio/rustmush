@@ -204,23 +204,287 @@ unchanged-source archive is
 `ad6e317446ca64fd049d5cbeb5f94e6d117375b0749c253c65e6cd7bf367f75d`. The next candidate adds only
 that test import and this evidence note before rerunning all required gates.
 
-The L R4 release-notice correction is now prepared: a side lead's fully offered
+Continuation on 2026-10-19: checkpoint N56, tree
+`f6dfe46241bd357cd21db5504ff2fbbac096d273`, was committed and pushed as
+`b476faee`. The normal merge of main `41e7259d` was pushed as `8eb5c3d4`.
+A fresh fetch then found main `c44c0bb6` (astronomy A.2-A.6); it was merged
+normally and pushed as `94af1bfb`, tree
+`cc86e77afee3983b0abf003871155fd50a8d97e4`. The newer chart, pricing,
+route-planning and ephemeris changes are included in the next candidate.
+N56's running source remains the earlier exact tree; its results do not
+validate the later main merge.
+
+N56 finished with 1,309 passing tests, 11 failures and two ignored tests.
+Core's 574 tests, all 45 deliberation tests, the actual BOARD/order and RELEASE
+regressions, all seven Tactics replacement checks, the bot arena contract,
+Market's 80 tests and Roll's 197 tests pass. Four Sim adapter tests stop at
+incomplete test-only participant registration. Five Economy update tests stop
+at an initial-filing fixture without a typed transaction write. The snapshot
+shape test first stops at obsolete expected format 13 (production is 15).
+The ownership census rejects three unnecessary same-owner declarations; its
+cross-owner access requirement remains unchanged. The reviewed narrow repairs
+are prepared. Both genuine stories remain unstarted because required earlier
+gates failed. All 29 retained files verify against unchanged source; archive
+SHA-256 is `b2181d4e099760cfbec47d686a6662d7bec7fb29416ccf2c53aca218de982be7`.
+This is partial correctness evidence, not M7 acceptance. N56 supplies runtime
+evidence for delayed commander fitness and the whole-squad RELEASE notice
+correction described below.
+
+The next candidate adds reviewed Core output reservations, personal owner
+attestation and compatible updates after attestation, plus explicit leader
+record/default and self-charge expiry tests. Output reservations are inert
+factory prerequisites, not completed manufacture, delivery or installation.
+The adapter registration ceiling becomes nine for the actual four commerce,
+three IC, Tactics replacement and Industry slots; ordinary transaction image
+and module limits do not change. The owner-attestation paths preserve paid
+customer terms, original ancestry and historical update generations. These
+new paths still require execution. An isolated snapshot diagnostic will first
+check the complete format-15 shape before its hash/count are repinned; merely
+changing the version assertion is not acceptance. Lost order watches on resume
+and the complete IC runtime remain separate work.
+
+N57 tree `074d5a62ab57220bda39a37949983f0f93dc194a` was an isolated
+snapshot diagnostic. It stopped during compilation: an Arc-backed Core test
+owner lacked `Clone`, the attestation history reader called a context-specific
+receipt API, and its nested JSON fixture exceeded the macro recursion limit.
+No runtime test or snapshot diagnostic executed. Its two-file archive verifies
+unchanged source, SHA-256
+`1547ee6d64bd471afa90cc690fb85e9e154e0a7706380b202392eb6886bbc4b3`.
+The next candidate repairs those integration errors before repeating the
+snapshot diagnostic; the complete runtime gate remains required.
+
+N58 tree `9f16c2d7e1161e930b791898479623d15d3d7810` compiled the N57
+repairs, then stopped on Industry API mismatches: three page-cursor conversions,
+two typed replay-write identifiers and two test uses of the acknowledged bundle.
+No runtime tests executed. Its unchanged-source archive is
+`f30b4af25b175c040f7c157be4295f59c3e6ffca32dcb41255817a4df5a8cd9f`.
+The narrow API repair precedes the repeated diagnostic.
+
+N59 tree `8bfe7d5caaa4d9c089151266d524dedf75319b91` compiled and ran
+the focused diagnostics: 37 passed, 16 failed, none ignored. Core output
+reservation (11), E4 update (6), owner attestation (6), attested compatible
+update (6), leader-record/default (1), self-charge expiry (1), state-owner
+contract (5) and snapshot shape (1) pass. The format-15 opening fixture retains
+the existing 693-path digest: neither the filed-origin variant nor the new
+refusal payload is populated by that walk, so this does not claim full format
+coverage. No shape hash was changed merely to make the diagnostic pass.
+
+All four Sim tests stopped on the fixture's invalid canonical namespace; all
+twelve Industry tests stopped because their cold-boot fixture omitted the real
+server's typed-state hydration step. The next candidate fixes those two setup
+errors without changing production predicates or weakening assertions. N59's
+12-file archive verifies unchanged source, SHA-256
+`2a01e0f301f7477fefe841f1a0902e691b2db60b55b38c35ee2cf658bd2f190a`
+(15,347 bytes); status SHA-256
+`00942606a5c2ed33432d42f5e7527e6bfc37450029bcec51368e67608b25acde`.
+This was a focused diagnostic, not the full gate; the genuine purchase and
+server stories were not part of its run.
+
+The reviewed L R4 recovery implementation now retains bounded, actual accepted
+order attribution in snapshot format 16. It restores the latest squad watch
+against the published arena clock, keeps an empty latest-group tombstone to
+prevent an older order from returning, and preserves character/persona notice
+scope. Existing world-clock watches retain their policy. The record grants no
+authority and changes no combat hash, public view or order wire. Thirteen new
+native, bridge and actual-boot tests plus independent shape capture ran in N60.
+Eleven of the twelve native/bridge tests pass. The 300-stock-hull test stopped
+because its fixture constructed overlapping hulls before placement; the actual
+boot test stopped because its lobby had not requested the second fill squad.
+The next candidate corrects those setups without removing capacity or recovery
+assertions. Cross-crash delivery remains subject to the acknowledged snapshot
+rollback boundary, not a new exactly-once guarantee.
+
+N60 tree `ba4502a433e00ab0c1c599859789341c0b5e572d` compiles and records
+**51 passed, 15 failed, 0 ignored** in its focused diagnostic. Core output (11),
+Economy update (6), owner attestation (6), attested update (6), leader record (1),
+self-charge expiry (1) and state-owner contract (5) pass. Sim reaches 1/4 and
+Industry 3/12; remaining cases stopped on pending bootstrap writes at the real
+commit boundary. The fixture repairs fold completed boot effects before the
+action, leaving the production dirty-world and legacy-write fences intact.
+
+The format-16 diagnostic deliberately retained the old shape pin. Its actual
+walk has **712 paths**, SHA-256
+`502a2e44b3572828e4ffbff518604fb8f31975f0210b20376dfe41899ece2d58`.
+Independent review found exactly 19 added `state.order_watches` paths; removing
+those reproduces all 693 old paths and their exact digest. The next candidate
+pins this observed shape; this does not claim coverage of unpopulated variants.
+
+N60's 14-file archive verifies unchanged source, SHA-256
+`5c58466c02858dfa56f45a3da0c778fec171659ab4583d0ba6e4e6d9ea71e274`
+(22,035 bytes); status SHA-256
+`b3e6be45e6ad11151b9fc97c21deedfad93dc1f905f45870f8093cbc27a58061`.
+The full runtime gate and both genuine purchase stories were outside this
+diagnostic. No M7 acceptance or deployment follows from these counts.
+
+N61 tree `899d3b5e3d518af1a43e54619b12b11b8bd701e6` compiles and records
+**1,512 passed, 5 failed, 2 ignored**. All twelve R4 native/bridge recovery
+checks pass; both leader presentation checks and the actual bot lapse producer
+pass. Sim IC custody (4), Industry (18, including all 12 Origin checks), Core
+(585), Economy (158), Roll (204) and Market (80) pass.
+
+Four failures are stale exact version-15 checks after the reviewed format-16
+change: two deliberation cases, one conditions snapshot and old-version replay
+refusal. The repair pins 16 while retaining all hash/behavior assertions and
+explicit predecessor refusal. The fifth failure is the R4 actual-boot fixture:
+its legacy partial restart reuses an already-hydrated BulkService. The repair
+uses the actual fresh production composition and complete normalized committed
+image, preserving the accepted Character/Persona attribution assertions.
+
+N61's 39-file archive verifies unchanged source, SHA-256
+`5379e4d53c68007b36e5d21d6d91254fa9e51b91810c24cbdcc4cebb78b4d0af`
+(71,634 bytes); status SHA-256
+`7439f225585a8ffda867ccd1722e0cac77cc5eb6605e435380edc34a64933721`.
+Both genuine purchase stories remained unstarted because prerequisite gates
+failed. N61 does not accept M7. N62 includes reviewed exact input reservation,
+four-owner IC runtime composition, scoped contract-fact consent and these
+fixture repairs. It also imports fetched main `e962b662ec22843f8883c711b4c2e386941aea10`
+(A.4b emergency bids and A.7 moons); the implementation branch's merge ancestry
+will be recorded at its next checkpoint. These additions still need runtime
+evidence; the actual persistent IC region driver remains a named dependency.
+
+N62 (`289bf58dd69031668e7653f9209b77f5507b0265`), N63
+(`313ae13434ead458e70f657fd8fbb71d7134e710`) and N64
+(`a9911e8c77c723428a90d72a2eae5550828be5d4`) stopped at compilation,
+with zero runtime tests and 43/44/44 downstream stages unstarted respectively.
+The repairs correct owner registration visibility and fixture API mismatches,
+including the existing ModuleCtx/Ctx alias, physical unit query routes and
+lossless DomainId conversion. No production predicate or assertion was relaxed.
+N63 also adds the opt-in actual Registry recall action, private holder notices
+and genuine-story branch; that behavior still needs runtime evidence.
+All three terminal archives were hash-verified and reconciled against unchanged
+source: N62 `9867bf53ef3753055d8e2afb27a09d42a79cdd1a9c871ebd3b99a4d53786d55b`
+(4,245 bytes), N63 `6bdf639d8786c7f40a476a58cfe77c15cbeb04162a7ae31f6c803cff94821195`
+(3,471 bytes), and N64 `e4ef0b5b404697a50e4046e13d7c9f42b394cfee7500eaedfd560d7201c44f39`
+(5,034 bytes).
+
+N65 (`dbec12c467be59ddd5e9fc65a01a6fe6c70a6871`) compiled and ran 43
+stages: 2,075 tests passed, eight failed and two were ignored. Its unchanged-source
+44-file archive is SHA-256
+`82f2013d8b76822772eae6fb47abb69114eee14f53fa45a3e8791b600fd014ef`
+(71,835 bytes). The three bot failures exposed feature-dependent JSON number
+spelling in the A.7 lane pack. The first attempted repair incorrectly rounded
+four moon coordinates and broke the published digest in N69. N70 restores the
+exact upstream values and generator, spelling small exponent values as decimal
+text. Decimal equality against upstream and independent canonical hashing retain
+published digest `11fb2c9228799918184cc872a01d683e85de91e830104f170b966c7311f23541`;
+the real production-loader and bot-composition checks must pass again. No Core
+canonical codec or previously published identity is changed. Four recall authority fixtures
+and one composition test exposed missing exact definition-validator registration;
+that registration is repaired without changing the authority predicates. The IC
+runtime stage selected zero tests because its filter used the file name instead
+of the Rust module name; N66 corrects the filter and still requires all three.
+Both genuine purchase stories remained unstarted. L resume/watch, cold resume,
+leader presentation, deliberation, physical custody and OOC compatibility checks
+passed on N65; these results do not accept M7.
+
+N66 adds the reviewed term-scoped Registry revocation, public signed-selector
+repairs, strict measured-nonconformance artifact codec and the additive format2
+IC ownership parser. The latter reserves no new authority: an owned Open may
+capture an exact retained charter transfer; old Opens keep their original format.
+The full charter producer and measured-failure publication are still separate
+implementation work. Actual scoped personal-term lapse facts are queued with
+strict private contract consent and committed occurrences. These additions
+require their own compilation, runtime and genuine-story evidence.
+
+N66 (`4004a453a89adc0b08a1c6f30e747c5d60e6c310`) stopped at compilation:
+nine fixture accesses to private initial-filing fields, with no runtime tests.
+The unchanged-source terminal archive is SHA-256
+`d1106393d32f24c9a76b4ffc3c962a9a9a3bdf523f732219dbba1e3fda6f3552`
+(4,979 bytes, two files). The fixture repairs preserve strict typed decoding
+and use checked public serialization, without widening production visibility.
+N67 also queues a dependent generation-two source-access correction and the
+actual measured-rejection worker/publication path. Rejection remains distinct
+from a successful certificate and from infrastructure failure, with an additive
+admission marker preserving older quota bytes and capacity promises. Automatic
+reconformance, current-certificate selection and resulting recall remain separate
+work. No M7 acceptance is claimed.
+
+N67 (`3a9cf2b1f9bca7779e72eb5022da14db881c1657`) stopped at compilation
+on two test-only issues: an inferred collection needed its explicit vector type,
+and the server's bounded phase logger needed the new Nonconforming enum arm.
+Its unchanged-source archive is SHA-256
+`7190377e2731451a62c3398e9c026d776f5fd004e80272b6cbb114d6779745ad`
+(5,428 bytes, two files); no runtime tests ran. Both narrow repairs preserve
+the original assertions and production authority. N68 also includes the reviewed
+fixed Industry completion-capacity prerequisite with eight structural tests;
+actual factory orders and payments remain separate integration work.
+
+N68 (`a9e9d0cf74024d564eb23d74b79ac24080764ebf`) stopped at compilation
+on the new Industry capacity module's private helper scopes and canonical-byte
+accessor. Its unchanged-source archive is SHA-256
+`87da83926a8c0d2b2fded21d7ea6224bad7425237a8e589b4effb4487f6f4180`
+(3,314 bytes, two files); no runtime tests ran. The repair exposes four helpers
+only to their enclosing coordinator module and uses the existing byte accessor.
+N69 also adds the inactive closed reconformance coordinator profile: exact
+Registry service actions, the same 123 future result targets, admission-only
+head publication and linear retry-history audit. Five structural coordinator
+tests preserve old declaration bytes and cover actual transaction/hydration
+boundaries. Registry source access, service submission, certification selection
+and automatic recall remain separate producer integration work.
+
+N69 (`8b866937db843ee4e4b94fe16d58869e15d36e0f`) compiles; its remaining
+runtime stages are still running at this checkpoint. The eight Industry-capacity
+and five reconformance-capacity tests pass. One negative Core fixture now needs
+to observe the intended early refusal rather than a later prepare failure; that
+assertion is repaired without changing production behavior. The actual measured
+rejection worker also fails at settlement. N70 adds bounded fixed-phase
+instrumentation to identify that refusal; it does not treat the rejection path
+as working. The lane-pack regression above also affects travel, sky and several
+cockpit fixtures. Inventory (103), Economy E4 (340), Market (80) and Economy unit
+(159) checks pass in this partial run; these are not full M7 acceptance.
+
+N70 includes reviewed actual immediate personal charter sales: signed seller
+consent, actual buyer payment and native title transfer in the same acknowledged
+union; immutable ownership history; current-owner attestations and compatible
+updates; old-title IC claim completion; and complete cold inverse audit. Seven
+native and five Roll tests are queued. Sales with open claims currently refuse;
+paid pending transfer, timed settlement and refunds remain implementation work.
+
+N70 also includes reviewed Core factory integration: actual scoped supplier
+consent, named buyer acceptance, exact certified die/facility holds, native cash
+reservation, bounded real K schedule progress, governed output birth/title and
+stable cancellation/refund. Ten actual Engine factory tests and three schedule
+replay tests are queued. Production recipe activation, positive Class III and
+customer-input acceptance, delivery and Install/Replace remain outstanding.
+These additions are not represented as runtime passes.
+
+Fetched main `4465bf06abf924b224cd63667a41c5723211ac3b` adds A.3b's chart panel,
+TUI screen and web rendering. Its source is included in N70; the implementation
+branch records normal merge ancestry at the checkpoint. The chart-screen and
+existing travel/chart checks run with M7. Registry reconformance lifecycle,
+automatic measured recall, organization catalogue/payment, pending resale and
+Safe Conduct production services still require implementation and acceptance.
+
+The certified Origin producer passes its twelve actual Engine checks in N61:
+actual Inventory mint, same-commit certificate and shared civil-month quota,
+scoped Org/E4 authority, an independent permanent Industry issuance index and
+complete cold reconciliation. Twelve Engine checks cover genuine initialization
+followed by an Active restart, real authority/custody boundaries and history
+corruption. Initialize cannot issue stock. No importer or hardware producer is
+enabled by default. Factory orders, payment/title and consumption are now queued
+for N70 validation. Production activation, delivery and installation are still required.
+
+
+The L R4 release-notice correction passes in N56: a side lead's fully offered
 whole-squad RELEASE also removes the persona commander's watch, preventing a
 false expiry announcement. A partial offer or wingman's release preserves the
 squad-wide watch. The public BOARD/reply/RELEASE/TTL regression is included;
-runtime remains pending. Lost watch state on resume is a separate residual.
+that regression passes in N56. The later format-16 accepted-watch implementation
+repairs resume attribution: N65 passes twelve focused resume/watch tests and the
+actual match-boot test with character and persona authors. Watches remain
+record-only, outside MindView and combat hashes; empty latest groups prevent an
+older held order from regaining its watch.
 
 The L residual audit also confirms and repairs 17b's R1: direct character ORDER
 admission now binds `issuer` to the actual occupied hull and applies the same
 published wreck predicate as typed cockpit ORDER. The existing actual boarded
 lead/wingman regression adds missing/borrowed issuer and egress-wreck refusals,
 preserving its valid controls and Persona rules. Its actual boarded regression
-passes in N50. The next candidate rechecks commander fitness when a delayed
+passes in N50 and N56. The implementation rechecks commander fitness when a delayed
 persona reply lands, tests wrecked/disabled/inert commanders, and replaces five
 older manually seated fixtures with actual public BOARD. The new no-commander
 snapshot notice requires snapshot format 15; old formats refuse explicitly.
-Those additional checks are prepared, not runtime passes, and do not close every
-historical L residual.
+Those additional checks pass in N56, but do not close every historical L residual.
 
 The five real renewal providers and genuine renewal story are integrated, with
 new service cleanup/due/status/control work continuing separately. Reviewed
@@ -232,19 +496,27 @@ its genuine child preserves paid Pins and captured sorties. These new source
 packages still require their combined runtime gates and are not default service
 activation. No existing paid term is truncated to start a renewal early.
 
-The remaining M7 work includes renewal due processing, cleanup/control and
-owner attestation; compatible updates, withdrawal and Registry recall;
-production IC claim/close and resale/charter-transfer policy; scoped house
-catalogue and underwriting; and governed core supply, custody and installation.
+Renewal due processing and cleanup/control, owner attestation, compatible
+updates and author withdrawal now have implementations and focused evidence;
+their genuine combined commerce stories and final acceptance remain required.
+Registry recall/revocation and production IC claim/close are implemented with
+focused checks; their combined genuine-story and final acceptance gates remain.
+Remaining implementation includes automatic re-conformance and current
+certificate selection, resale and charter transfer, the scoped house catalogue
+and underwriting, and governed Core manufacture, delivery and refit.
+The acknowledged Core output reservation and certified Origin producer are
+prerequisites, not completed manufacturing or usable installed hardware.
+
 These are M7 obligations. Only integration with an unavailable live IC sortie
 or convoy driver is conditional; its production services remain required.
-M8's contraband and NPC procurement programme remains separate. The current
-parallel slices are renewal service cleanup/control, compatible original-line
-updates, and durable IC claim/close with real physical exclusion. The absent
-region caller does not waive its claim, capacity or custody owner services. Real
-generated client bindings, transport checks and final complete acceptance
-still follow their actual implementation. Existing partial passes and source
-review do not substitute for those gates.
+M8's contraband and NPC procurement programme remains separate. Current parallel
+work covers durable IC claim/close with real physical exclusion, exact Inventory
+input holds and actual factory composition, and saved-order recovery followed by
+Registry control. The absent region caller does not waive its claim, capacity
+or custody owner services. Scoped fact consumers, generated client bindings,
+operator surfaces and final complete acceptance still follow their actual
+implementation. Existing partial passes and source review do not substitute
+for those gates.
 The detailed cuts below state the complete intended result. Existing inert
 components can land with focused evidence; public paid services require their
 own complete phase gates. Hardware, renewal/transfer, the house catalogue and
@@ -485,6 +757,14 @@ are independent facts. A dominant display refusal must not discard another
 fact. New admission evaluates integrity → current principal/title → sanctions →
 dependency → term → pending transfer → exact revision → class/station/floor →
 IC seat. The captured seal is independent thereafter.
+
+**Explicit user ruling, 2026-10-19:** Registry revocation covers the current
+accepted term, including its original Grace. The immutable sanction names the
+exact licence and accepted generation; the old generation remains revoked,
+including after clock rollback. At or after that term's original Grace end,
+a normal fresh term may be issued through current eligibility and consent
+checks. There is no automatic extension or restoration of the old term, and
+historical sanction evidence remains. Already sealed sorties still finish.
 
 The dependency step names the operation and licence kind. A dependent owner-use
 request checks that current owner's immediate-parent grant. Existing paid

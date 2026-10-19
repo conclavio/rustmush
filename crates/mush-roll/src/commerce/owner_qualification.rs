@@ -19,7 +19,11 @@ use mush_core::{CommitToken, DefinitionRef, Flags, ObjId, ObjKind, World};
 
 pub(crate) use provider::register;
 
-fn current_title(world: &World, actor: ObjId, charter: CharterId) -> Result<u64, PublicationError> {
+pub(crate) fn current_title(
+    world: &World,
+    actor: ObjId,
+    charter: CharterId,
+) -> Result<u64, PublicationError> {
     if world
         .get(actor)
         .is_none_or(|o| o.kind != ObjKind::Player || o.flags.contains(Flags::GOING))

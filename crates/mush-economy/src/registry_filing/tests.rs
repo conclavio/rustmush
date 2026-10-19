@@ -8,6 +8,9 @@ use mush_core::{GOD, ObjKind};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[path = "tests/managed_title.rs"]
+mod managed_title;
+
 fn fixture(
     fee: Amount,
 ) -> Result<(World, EconomyStore, InitialFilingParticipant, ObjId, ObjId), Box<dyn std::error::Error>>
@@ -54,6 +57,7 @@ fn fixture(
     }
     state.next_account = 2;
     state.fold.filing_receipts.finish_replay()?;
+    state.fold.charter_transfer_receipts.finish_replay()?;
     let policy = InitialFilingPolicy::new(
         issuer,
         AccountId(1),

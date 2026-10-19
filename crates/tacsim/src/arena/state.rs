@@ -4123,6 +4123,8 @@ pub struct Arena {
     /// (`crate::arena::hash`, item 3c), so an arena with no mind — every match
     /// that exists — folds no byte for it; carried whole by a snapshot.
     pub minds: BTreeMap<ObjId, crate::arena::mind::MindState>,
+    /// Record-only latest accepted attribution, outside combat state_hash.
+    pub(crate) order_watches: super::order_watch::OrderWatches,
     /// Immutable complete card definitions, admitted once and shared by key.
     pub cards: crate::arena::runtime_card::CardCatalog,
     /// Per-hull active program, profile generation and sampled rule authority.
@@ -5041,6 +5043,7 @@ impl Arena {
             // 17b cut M1a.5: no mind until the adoptions below; the runner is
             // the one `snapshot.rs`' decode sets too.
             minds: BTreeMap::new(),
+            order_watches: super::order_watch::OrderWatches::default(),
             cards,
             profiles,
             // 17b cut M1b.1: no slot, nothing said, and the default floor —

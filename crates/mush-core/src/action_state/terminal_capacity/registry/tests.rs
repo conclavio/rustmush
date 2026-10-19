@@ -24,6 +24,12 @@ fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
     fixture_with_manifest(json!({}))
 }
 fn fixture_with_manifest(payload: Value) -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_with_profile(payload, false)
+}
+fn fixture_with_profile(
+    payload: Value,
+    service: bool,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
     let owner = OwnerId::new("roll")?;
     let owners = BTreeSet::from([owner.clone(), OwnerId::new("tacsim")?]);
     let readiness = MechanicalOwnerReadiness::for_owners(&owners);
@@ -45,10 +51,22 @@ fn fixture_with_manifest(payload: Value) -> Result<Fixture, Box<dyn std::error::
         actions.push(definitions.register(owner.clone(), descriptor)?);
     }
     let actions: [DefinitionRef; 5] = actions.try_into().map_err(|_| "action count")?;
+    let reconformance = if service {
+        Some(
+            closed_profile_actions(&manifest, Profile::Reconformance)?
+                .into_iter()
+                .map(|d| definitions.register(owner.clone(), d))
+                .collect::<Result<Vec<_>, _>>()?
+                .try_into()
+                .map_err(|_| "service action count")?,
+        )
+    } else {
+        None::<[DefinitionRef; 5]>
+    };
     let mut definitions = definitions.freeze()?;
     definitions.bind_owner_readiness(readiness.clone());
     let mut providers = ActionProviderRegistryBuilder::new();
-    for action in &actions {
+    for action in actions.iter().chain(reconformance.iter().flatten()) {
         providers.register(owner.clone(), action.clone(), Arc::new(Provider))?;
     }
     let providers =
@@ -78,14 +96,28 @@ fn fixture_with_manifest(payload: Value) -> Result<Fixture, Box<dyn std::error::
         handles.insert(name.to_string(), handle);
     }
     builder.registry_rating_capacity(&owner, manifest.clone(), actions.clone())?;
+    if let Some(service_actions) = &reconformance {
+        let handle = builder.register(
+            owner.clone(),
+            super::reconformance::descriptor()?,
+            |key: &String| Ok(key.clone()),
+            |row: &Value| Ok(row.clone()),
+            |_: &Value| Ok(()),
+            |row: &Value| Ok(row.clone()),
+        )?;
+        handles.insert(super::reconformance::HEADS.to_owned(), handle);
+        builder.registry_reconformance_capacity(&owner, service_actions.clone())?;
+    }
+    let actions = reconformance.unwrap_or(actions);
     let store =
         ActionStateStore::new(builder.freeze_for_owners_with_readiness(&owners, readiness)?);
     let request = RequestUid::from_bytes([1; 16]);
-    let principal = PrincipalId::Object { id: ObjId(7) };
+    let actor = if service { crate::GOD } else { ObjId(7) };
+    let principal = PrincipalId::Object { id: actor };
     let invocation = ActionInvocation::new(ActionInvocationDraft {
         request,
         principal: principal.clone(),
-        actor: ObjId(7),
+        actor,
         offered_action: ActionOfferId(CanonicalHash::from_bytes([3; 32])),
         subject: PerceivedRef::SelfActor,
         targets: vec![],
@@ -120,13 +152,24 @@ fn rows(id: CommitToken, cases: u64, compatibility: DefinitionDigest) -> (Value,
     (job, execution)
 }
 fn admit(f: &mut Fixture, id: CommitToken, cases: u64) -> Result<PreparedTxn, ActionStateError> {
+    admit_with_rejection(f, id, cases, false)
+}
+fn admit_with_rejection(
+    f: &mut Fixture,
+    id: CommitToken,
+    cases: u64,
+    measured_rejection: bool,
+) -> Result<PreparedTxn, ActionStateError> {
     let entry = f.providers.get_exact(&f.actions[0]).unwrap();
     let mut txn = f
         .store
         .transaction_for_provider(entry.registration_ordinal())?;
     txn.bind_registered_invocation(entry, &f.invocation, id);
     let base = txn.read_base();
-    let (job, execution) = rows(id, cases, f.manifest.digest());
+    let (job, mut execution) = rows(id, cases, f.manifest.digest());
+    if measured_rejection {
+        execution["admission"]["measured_rejection"] = json!(true);
+    }
     txn.insert(&f.handles["rating_jobs"], &id.to_hex(), job)?;
     txn.insert(&f.handles["rating_executions"], &id.to_hex(), execution)?;
     let mut context = crate::resolution::PrepareCtx::new(f.invocation.idempotency(), id, None)
@@ -627,3 +670,155 @@ fn unsuccessful_terminal_pair_refuses_a_retained_result_descriptor() -> TestResu
     assert_eq!(f.store.capacity.records.len(), 1);
     Ok(())
 }
+
+#[test]
+fn measured_rejection_reserves_one_fixed_header_without_changing_old_targets() -> TestResult {
+    let mut f = fixture()?;
+    let id = CommitToken::from_bytes([5; 16]);
+    let prepared = admit_with_rejection(&mut f, id, 1755, true)?;
+    let durable = install(&mut f.store, prepared)?;
+    let reservation = f
+        .store
+        .capacity
+        .records
+        .values()
+        .next()
+        .ok_or("reservation")?;
+    assert_eq!(reservation.record.targets.len(), 123);
+    assert_eq!(
+        reservation
+            .record
+            .targets
+            .iter()
+            .map(|t| t.ceiling)
+            .sum::<usize>(),
+        3_981_312
+    );
+    assert_eq!(
+        reservation
+            .record
+            .targets
+            .iter()
+            .filter(|t| t.key.family.as_str() == "rating_nonconformance")
+            .count(),
+        1
+    );
+    let mut restart = fixture()?;
+    restart.store.hydrate(durable)?;
+    assert_eq!(restart.store.capacity_usage, f.store.capacity_usage);
+    assert_eq!(targets(id, 117, false)?.len(), 122);
+    Ok(())
+}
+
+#[test]
+fn measured_rejection_terminal_installs_exact_header_pages_without_successful_status() -> TestResult
+{
+    for enabled in [false, true] {
+        let mut f = fixture()?;
+        let id = CommitToken::from_bytes([5; 16]);
+        let admitted = admit_with_rejection(&mut f, id, 1, enabled)?;
+        install(&mut f.store, admitted)?;
+        let grant = transition(&mut f, id, 1, 6, false, |job, execution| {
+            job["state"] = json!({"kind":"running","lease_sequence":1});
+            execution["observation"]["phase"] = json!("running");
+            execution["observation"]["next_sequence"] = json!(2);
+            execution["observation"]["charged_unit_ms"] = json!(400);
+            execution["observation"]["flight"] = json!({"sequence":1,"utc_day":1,"allowance_unit_ms":400,"units":1,"native_ms":50,"cursor":{"index":0,"simulated_ms":0}});
+        })?;
+        install(&mut f.store, grant)?;
+        let view = View {
+            registry: &f.store.registry,
+            records: &f.store.records,
+            mutations: None,
+        };
+        let mut prior = pair(&view, id)?;
+        let hash = DefinitionDigest::from_bytes([8; 32]);
+        // Coordinator shape fixture only: Roll's real measured codec and actual
+        // worker tests establish business evidence, never these opaque rows.
+        let content = json!({"ordinal":0,"rows":[{"coordinator_fixture":true}]});
+        let result = json!({"id":hash,"cases":1,"pages":[{"ordinal":0,"rows":1,"digest":digest("tacsim.registry.page.v1",&content)?}]});
+        let header = json!({"format":1,"kind":"measured_nonconformance","id":hash,
+            "subject":prior.job["subject"],"compatibility":prior.job["compatibility"],"plan":prior.job["plan"],
+            "cause":"maximum_class_budget","result":result,"publication":{"job":id}});
+        let reference = json!({"job":id,"id":hash,"schema":1,"receipt_digest":digest("tacsim.registry.nonconformance.receipt.v1",&header)?});
+        let page = json!({"job":id,"rating":hash,"result":hash,"content":content});
+        let commit = CommitToken::from_bytes([7; 16]);
+        prior.job["state"] = json!({"kind":"nonconforming","receipt":reference});
+        prior.execution["updated_by"] = json!(commit);
+        prior.execution["observation"]["phase"] = json!("complete");
+        prior.execution["observation"]["flight"] = Value::Null;
+        prior.execution["observation"]["result"] = json!({"sha256":hash,"bytes":1});
+        let entry = f.providers.get_exact(&f.actions[2])?;
+        let mut txn = f
+            .store
+            .transaction_for_provider(entry.registration_ordinal())?;
+        txn.bind_registered_invocation(entry, &f.invocation, commit);
+        let base = txn.read_base();
+        txn.replace(&f.handles["rating_jobs"], &id.to_hex(), prior.job)?;
+        txn.replace(
+            &f.handles["rating_executions"],
+            &id.to_hex(),
+            prior.execution,
+        )?;
+        txn.insert(&f.handles["rating_nonconformance"], &id.to_hex(), header)?;
+        txn.insert(
+            &f.handles["rating_pages"],
+            &format!("{}/000", id.to_hex()),
+            page,
+        )?;
+        let mut context =
+            crate::resolution::PrepareCtx::new(f.invocation.idempotency(), commit, None)
+                .with_registered_transaction(&base, entry.registration_ordinal());
+        let finished = context.finish_registry_rating_completion(&mut txn, id);
+        drop(context);
+        if !enabled {
+            // The closed coordinator rejects the unsupported terminal shape
+            // before reserving publication; a later prepare is not required.
+            assert!(finished.is_err());
+            drop(txn);
+            assert_eq!(f.store.capacity.records.len(), 1);
+            assert!(!f.store.records.keys().any(|key| {
+                matches!(
+                    key.family.as_str(),
+                    "rating_nonconformance" | "rating_pages"
+                )
+            }));
+            continue;
+        }
+        finished?;
+        let prepared = txn.prepare()?;
+        let terminal = install(&mut f.store, prepared)?;
+        assert!(f.store.capacity.is_empty());
+        assert!(
+            !f.store
+                .records
+                .keys()
+                .any(|key| key.family.as_str() == "rating_status")
+        );
+        let mut restart = fixture()?;
+        restart.store.hydrate(terminal.clone())?;
+        for missing in [
+            "rating_nonconformance",
+            "rating_pages",
+            "rating_jobs",
+            "rating_executions",
+        ] {
+            let mut broken = fixture()?;
+            assert!(
+                broken
+                    .store
+                    .hydrate(
+                        terminal
+                            .iter()
+                            .filter(|row| !row.key.contains(missing))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    )
+                    .is_err()
+            );
+        }
+    }
+    Ok(())
+}
+
+mod reconformance;

@@ -132,6 +132,7 @@ pub(crate) fn completed_execution(
         },
         maximum_unit_ms: 1_000_000,
         cases,
+        measured_rejection: false,
         maximum_pages: u16::try_from(usize::from(cases).div_ceil(MAX_PAGE_ROWS))
             .map_err(|_| RatingError::Bound)?,
     };

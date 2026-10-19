@@ -138,7 +138,7 @@ fn stage_withdraw(
 }
 fn transfer(world: &mut PlayerWorld, a: &EntitlementAllocationV1) -> TestResult {
     let charter = a.charter().object();
-    world.say(GOD, &format!("@asset/transfer #{}=#{}", charter.0, GOD.0))?;
+    world.transfer_charter(charter, GOD, 49_000_000)?;
     assert_eq!(
         world
             .engine

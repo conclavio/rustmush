@@ -12540,3 +12540,6 @@ async fn m6_range_targets_preview_the_refitted_rom_class_and_checkout_uses_it() 
         );
     }
 }
+
+#[path = "match_lifecycle/resume_watch.rs"]
+mod resume_watch;

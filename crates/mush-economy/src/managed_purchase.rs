@@ -343,6 +343,7 @@ fn contract(
     let buyer = PrincipalId::Object(request.buyer);
     let remainder = request.payouts.first().ok_or_else(refused)?.account;
     let consent = ConsentSurface {
+        fact_consent: None,
         managed: Some(marker),
         // The buyer consents to this escrow. Seller licence issuance consent is
         // the exact acknowledged listing and current Roll title/rights proof;

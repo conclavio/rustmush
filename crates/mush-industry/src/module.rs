@@ -79,6 +79,9 @@ pub struct IndustryModule {
     catalog: Option<(SmolStr, SmolStr)>,
     inventory: Option<mush_inventory::InventoryHandleCell>,
     recipes: Option<Arc<dyn crate::workorder::RecipeAuthority>>,
+    core_origins: Option<crate::core_production::CoreOriginConfig>,
+    core_origin_runtime: Option<crate::core_production::Runtime>,
+    core_factory: Option<crate::core_production::integration::CoreFactoryConfig>,
 }
 
 impl std::fmt::Debug for IndustryModule {
@@ -100,7 +103,28 @@ impl IndustryModule {
             catalog: None,
             inventory: None,
             recipes: None,
+            core_origins: None,
+            core_origin_runtime: None,
+            core_factory: None,
         }
+    }
+
+    /// Explicitly enable the configured certified Origin producer. No defaults
+    /// or ordinary inventory authority imply this capability.
+    #[must_use]
+    pub fn with_core_origins(mut self, config: crate::core_production::CoreOriginConfig) -> Self {
+        self.core_origins = Some(config);
+        self
+    }
+
+    /// Enable the closed certified-input factory alongside the explicit Origin owner.
+    #[must_use]
+    pub fn with_core_factory(
+        mut self,
+        config: crate::core_production::integration::CoreFactoryConfig,
+    ) -> Self {
+        self.core_factory = Some(config);
+        self
     }
 
     /// Hand this module the one recipe authority (the composition-root seam that
@@ -593,7 +617,26 @@ impl GameModule for IndustryModule {
         )?;
 
         // ---- E7c3: B6 — the prepared path ----
-        crate::provider::register(reg, &families, self.recipes.clone())?;
+        if self.core_factory.is_some() && self.core_origins.is_none() {
+            return Err(ModError::msg(
+                "Core factory requires its configured certified Origin owner",
+            ));
+        }
+        crate::provider::register_with_core_origins(
+            reg,
+            &families,
+            self.recipes.clone(),
+            self.core_origins.as_ref(),
+            self.core_factory.as_ref(),
+        )?;
+        if let Some(config) = self.core_origins.clone() {
+            self.core_origin_runtime = Some(crate::core_production::Runtime::register(
+                reg,
+                config,
+                families.clone(),
+                self.core_factory.clone(),
+            )?);
+        }
 
         let mut store = IndustryStore::default();
         store.set_licence(self.licence.clone());
@@ -654,12 +697,29 @@ impl GameModule for IndustryModule {
         let Some(families) = self.families.clone() else {
             return Err(ModError::msg("industry: register did not run"));
         };
+        if let Some(runtime) = &self.core_origin_runtime {
+            runtime.load(ctx, &data)?;
+        } else if data.kv.iter().any(|(key, _)| {
+            key.as_str() == crate::core_production::INDEX_KEY
+                || key.as_str() == crate::core_production::integration::records::INDEX_KEY
+        }) {
+            return Err(ModError::msg(
+                "certified Origin history requires its configured owner",
+            ));
+        }
         // The one conventional document, skipped LOUDLY on a wire failure and
         // its body marked — never silently defaulted.
         if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
             crate::store::hydrate(store, &data.kv);
         }
         crate::store::reconcile(ctx, &families, self.recipes.as_deref());
+        Ok(())
+    }
+
+    fn finalize_owner_composition(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        if let Some(runtime) = &self.core_origin_runtime {
+            runtime.finalize(ctx)?;
+        }
         Ok(())
     }
 }

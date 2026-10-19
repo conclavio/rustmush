@@ -52,6 +52,7 @@ pub(super) fn admission(
         start: artifact(&run.plan.start)?,
         maximum_unit_ms: budget.maximum_unit_ms(),
         cases,
+        measured_rejection: budget.measured_rejection,
         maximum_pages: u16::try_from(usize::from(cases).div_ceil(MAX_PAGE_ROWS))
             .map_err(|_| invalid("Registry page count"))?,
     };

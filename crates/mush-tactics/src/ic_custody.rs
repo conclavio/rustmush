@@ -171,6 +171,38 @@ pub struct IcCustodyView<'a> {
     record: &'a Record,
 }
 impl IcCustodyView<'_> {
+    /// Compare an immutable companion seal's captured hull to this actual
+    /// owner's retained opening document. This read grants no mutation or
+    /// custody and does not require today's hull to retain its old condition.
+    pub fn verify_open_unit(&self, unit: &TacticalUnit) -> Result<(), ParticipantError> {
+        let open = &self.record.open;
+        if unit.object() != open.unit
+            || unit.schema() != &open.definition
+            || unit.revision() != open.revision
+            || encode_unit_document(&open.record_schema, unit, None)
+                .map_err(refused)?
+                .1
+                != open.unit_digest
+        {
+            return Err(refused("captured opening hull differs"));
+        }
+        Ok(())
+    }
+    /// Pure close projection through this owner's actual condition vocabulary
+    /// and persisted unit codec. A digest is comparison data, never a mutation
+    /// capability; the real participant must still prepare the same result.
+    pub fn project_close_unit_digest(
+        &self,
+        unit: &TacticalUnit,
+        conditions: &UnitMutationPlan,
+        at: i64,
+    ) -> Result<DefinitionDigest, ParticipantError> {
+        self.verify_open_unit(unit)?;
+        let after = close_unit(unit, conditions, at)?;
+        encode_unit_document(&self.record.open.record_schema, &after, None)
+            .map(|v| v.1)
+            .map_err(refused)
+    }
     pub fn open(&self) -> CommitToken {
         self.record.open.operation
     }

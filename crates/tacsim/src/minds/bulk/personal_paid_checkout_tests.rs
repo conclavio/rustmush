@@ -67,7 +67,7 @@ impl GameModule for PlayerTacsim {
     }
 }
 
-fn content() -> TestResult<Box<dyn GameModule>> {
+pub(super) fn content() -> TestResult<Box<dyn GameModule>> {
     let mut appliers = mush_content::Appliers::new();
     mush_atlas::register_appliers(&mut appliers)?;
     mush_npc::content::register_appliers(&mut appliers)?;
@@ -84,6 +84,7 @@ fn content() -> TestResult<Box<dyn GameModule>> {
 }
 
 struct PlayerWorld {
+    minds_facts: Option<mush_roll::commerce::facts::MindsFactProvider>,
     engine: Engine,
     tasks: ArenaTasks,
     egress: tokio::sync::mpsc::Receiver<ArenaOut>,
@@ -200,6 +201,208 @@ impl PlayerWorld {
         owner_qualification: bool,
         qualification_short_parent: bool,
     ) -> TestResult<Self> {
+        Self::boot_options_with_attestation(
+            f,
+            saved,
+            authored_forks,
+            marked_registry,
+            dependent_owners,
+            entitlements,
+            renewals,
+            author_withdrawal,
+            renewal_service,
+            compatible_updates,
+            owner_qualification,
+            qualification_short_parent,
+            false,
+        )
+    }
+    fn boot_owner_attestation(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
+        Self::boot_options_with_attestation(
+            f, saved, true, true, true, true, false, false, false, true, true, false, true,
+        )
+    }
+    fn boot_updates_with_attestation(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
+        Self::boot_options_with_attestation(
+            f, saved, false, false, false, false, false, false, false, true, false, false, true,
+        )
+    }
+    fn boot_options_with_attestation(
+        f: &PurchaseFixture,
+        saved: &Durable,
+        authored_forks: bool,
+        marked_registry: bool,
+        dependent_owners: bool,
+        entitlements: bool,
+        renewals: bool,
+        author_withdrawal: bool,
+        renewal_service: bool,
+        compatible_updates: bool,
+        owner_qualification: bool,
+        qualification_short_parent: bool,
+        owner_attestations: bool,
+    ) -> TestResult<Self> {
+        Self::boot_options_with_recall(
+            f,
+            saved,
+            authored_forks,
+            marked_registry,
+            dependent_owners,
+            entitlements,
+            renewals,
+            author_withdrawal,
+            renewal_service,
+            compatible_updates,
+            owner_qualification,
+            qualification_short_parent,
+            owner_attestations,
+            None,
+        )
+    }
+    fn boot_recall(
+        f: &PurchaseFixture,
+        saved: &Durable,
+        policy: mush_roll::commerce::registry_recall::RegistryRecallPolicy,
+    ) -> TestResult<Self> {
+        Self::boot_options_with_recall(
+            f,
+            saved,
+            true,
+            true,
+            true,
+            true,
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some(policy),
+        )
+    }
+    fn boot_options_with_recall(
+        f: &PurchaseFixture,
+        saved: &Durable,
+        authored_forks: bool,
+        marked_registry: bool,
+        dependent_owners: bool,
+        entitlements: bool,
+        renewals: bool,
+        author_withdrawal: bool,
+        renewal_service: bool,
+        compatible_updates: bool,
+        owner_qualification: bool,
+        qualification_short_parent: bool,
+        owner_attestations: bool,
+        registry_recall: Option<mush_roll::commerce::registry_recall::RegistryRecallPolicy>,
+    ) -> TestResult<Self> {
+        Self::boot_options_with_registry(
+            f,
+            saved,
+            authored_forks,
+            marked_registry,
+            dependent_owners,
+            entitlements,
+            renewals,
+            author_withdrawal,
+            renewal_service,
+            compatible_updates,
+            owner_qualification,
+            qualification_short_parent,
+            owner_attestations,
+            registry_recall,
+            None,
+        )
+    }
+    fn boot_revocation(
+        f: &PurchaseFixture,
+        saved: &Durable,
+        policy: mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
+    ) -> TestResult<Self> {
+        Self::boot_options_with_registry(
+            f,
+            saved,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            false,
+            true,
+            true,
+            false,
+            true,
+            None,
+            Some(policy),
+        )
+    }
+    fn boot_options_with_registry(
+        f: &PurchaseFixture,
+        saved: &Durable,
+        authored_forks: bool,
+        marked_registry: bool,
+        dependent_owners: bool,
+        entitlements: bool,
+        renewals: bool,
+        author_withdrawal: bool,
+        renewal_service: bool,
+        compatible_updates: bool,
+        owner_qualification: bool,
+        qualification_short_parent: bool,
+        owner_attestations: bool,
+        registry_recall: Option<mush_roll::commerce::registry_recall::RegistryRecallPolicy>,
+        registry_revocation: Option<
+            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
+        >,
+    ) -> TestResult<Self> {
+        Self::boot_options_with_facts(
+            f,
+            saved,
+            authored_forks,
+            marked_registry,
+            dependent_owners,
+            entitlements,
+            renewals,
+            author_withdrawal,
+            renewal_service,
+            compatible_updates,
+            owner_qualification,
+            qualification_short_parent,
+            owner_attestations,
+            registry_recall,
+            registry_revocation,
+            false,
+        )
+    }
+    fn boot_minds_facts(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
+        Self::boot_options_with_facts(
+            f, saved, true, true, true, true, true, true, false, false, true, false, true, None,
+            None, true,
+        )
+    }
+    fn boot_options_with_facts(
+        f: &PurchaseFixture,
+        saved: &Durable,
+        authored_forks: bool,
+        marked_registry: bool,
+        dependent_owners: bool,
+        entitlements: bool,
+        renewals: bool,
+        author_withdrawal: bool,
+        renewal_service: bool,
+        compatible_updates: bool,
+        owner_qualification: bool,
+        qualification_short_parent: bool,
+        owner_attestations: bool,
+        registry_recall: Option<mush_roll::commerce::registry_recall::RegistryRecallPolicy>,
+        registry_revocation: Option<
+            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
+        >,
+        enable_facts: bool,
+    ) -> TestResult<Self> {
+        let minds_facts = enable_facts.then(mush_roll::commerce::facts::MindsFactProvider::new);
         let manifest = f
             .engine
             .registry
@@ -233,7 +436,14 @@ impl PlayerWorld {
             real.with_personal_filed_holdings(manifest.clone())
         };
         let modules: Vec<Box<dyn GameModule>> = vec![
-            Box::new(mush_org::OrgModule::new()),
+            Box::new(
+                if registry_recall.is_some() || registry_revocation.is_some() {
+                    mush_org::OrgModule::new()
+                        .with_capabilities(crate::composition::org_capability_vocabulary())
+                } else {
+                    mush_org::OrgModule::new()
+                },
+            ),
             Box::new(mush_comsys::ComsysModule::new()),
             Box::new(mush_sim::SimulationModule::new().with_accounts(f.accounts.clone())),
             Box::new(mush_atlas::AtlasModule::new()),
@@ -249,6 +459,7 @@ impl PlayerWorld {
                 shared: shared.clone(),
             }),
             Box::new(PurchaseRoll {
+                minds_facts: minds_facts.clone(),
                 source_forms: f.source_forms,
                 authored_forks,
                 marked_registry,
@@ -259,6 +470,9 @@ impl PlayerWorld {
                 author_withdrawal,
                 compatible_updates,
                 owner_qualification,
+                owner_attestations,
+                registry_recall,
+                registry_revocation,
                 qualification_short_parent,
                 shared: shared.clone(),
                 purchase: purchase.clone(),
@@ -311,6 +525,7 @@ impl PlayerWorld {
             .clone()
             .ok_or("actual Registry factory")?;
         let mut this = Self {
+            minds_facts,
             engine,
             tasks,
             egress,
@@ -333,6 +548,17 @@ impl PlayerWorld {
         }
         assert_eq!(this.state()?, MatchState::Idle);
         Ok(this)
+    }
+    fn transfer_charter(&mut self, charter: ObjId, buyer: ObjId, n: u128) -> TestResult {
+        let image = &mut self.image;
+        charter_transfer_fixture::sale(&mut self.engine, charter, buyer, n, |writes| {
+            mush_testkit::fold_module_ops_into(
+                image,
+                charter_transfer_fixture::module_writes(writes)?,
+            );
+            Ok(())
+        })?;
+        self.commit()
     }
     fn commit(&mut self) -> TestResult {
         // Preserve JSON, stream and ledger writes with the shared store-faithful

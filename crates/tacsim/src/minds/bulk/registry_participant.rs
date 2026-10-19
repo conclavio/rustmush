@@ -492,7 +492,7 @@ impl OwnerParticipant for ArtifactParticipant {
         if let Some(blob) = &blob {
             state.check_new(blob).map_err(refuse)?;
         }
-        let output = ArtifactOutput::observed(&quota, measured).map_err(refuse)?;
+        let output = ArtifactOutput::observed_result(&quota, measured).map_err(refuse)?;
         let mut writes = blob
             .as_ref()
             .map(|blob| {

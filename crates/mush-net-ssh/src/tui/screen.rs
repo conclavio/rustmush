@@ -24,7 +24,7 @@ use super::render::{PaneRows, RenderCtx};
 /// **16b cut Q.4** took the tenth: nine screens spent `1`–`9`, and the cockpit
 /// doc 16 §5 asks for had nowhere to go. `0` is the digit a keyboard puts after
 /// `9`, and the tab strip reads `1 … 9 0` for that reason.
-pub const MAX_SCREENS: usize = 10;
+pub const MAX_SCREENS: usize = 11;
 /// The most panes one screen may declare.
 pub const MAX_PANES_PER_SCREEN: usize = 8;
 
@@ -105,6 +105,9 @@ pub const RUN_ALLOWLIST: &[&str] = &[
     "scan",
     "range",
     "bearing",
+    // Doc 19 cut A.3b: the chart reads the sky and plans nothing.
+    "+chart",
+    "+chart/map",
 ];
 
 /// The body of a declared-but-unproduced pane (interface plan I8), two rows
@@ -122,6 +125,12 @@ pub struct ScreenId(pub u8);
 
 /// The cockpit screen's digit (16b cut Q.4; doc 16 §5).
 pub const COCKPIT_SCREEN: ScreenId = ScreenId(0);
+
+/// **The sky chart screen** (doc 19 cut A.3b): the first lettered screen. The ten
+/// digits are spent, so a screen past them is reached by `Alt+<letter>` — a
+/// letter the active screen does not bind itself — and its [`ScreenId`] is the
+/// letter's byte, which the tab strip prints as the letter.
+pub const CHART_SCREEN: ScreenId = ScreenId(b'c');
 
 /// A pane's stable name within its screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -349,8 +358,9 @@ impl Screen {
     }
 }
 
-/// The ten built-in screens: 1 scene, 2 sheet, 3 mail, 4 chan, 5 rolls,
-/// 6 intel, 7 actions, 8 damage, 9 unit, 0 cockpit.
+/// The eleven built-in screens: 1 scene, 2 sheet, 3 mail, 4 chan, 5 rolls,
+/// 6 intel, 7 actions, 8 damage, 9 unit, 0 cockpit, and (doc 19 cut A.3b) `c`
+/// chart on a letter.
 ///
 /// Screens 8 and 9 read one feed, `tactics.unit`, and name nothing in it:
 /// every label, id and word on them comes out of the frame, so a ruleset that
@@ -364,12 +374,13 @@ impl Screen {
 #[must_use]
 pub fn builtin_screens() -> Vec<Screen> {
     use super::render::{
-        render_actions_rows, render_cockpit_contacts_rows, render_cockpit_damage_rows,
-        render_cockpit_map_rows, render_cockpit_notices_rows, render_cockpit_status_rows,
-        render_cockpit_weapons_rows, render_intel_rows, render_mail_rows, render_map_rows,
-        render_scene_rows, render_unit_components_rows, render_unit_delta_rows,
-        render_unit_journal_rows, render_unit_plant_rows, render_unit_sections_compact_rows,
-        render_unit_sections_rows, render_view_rows,
+        CHART_FEED, render_actions_rows, render_chart_rows, render_chart_table_rows,
+        render_cockpit_contacts_rows, render_cockpit_damage_rows, render_cockpit_map_rows,
+        render_cockpit_notices_rows, render_cockpit_status_rows, render_cockpit_weapons_rows,
+        render_intel_rows, render_mail_rows, render_map_rows, render_scene_rows,
+        render_unit_components_rows, render_unit_delta_rows, render_unit_journal_rows,
+        render_unit_plant_rows, render_unit_sections_compact_rows, render_unit_sections_rows,
+        render_view_rows,
     };
     let unit_query = || vec![(UNIT_FEED, Value::Object(serde_json::Map::new()))];
     vec![
@@ -898,6 +909,68 @@ pub fn builtin_screens() -> Vec<Screen> {
             gate: None,
             alt_keys: None,
         },
+        // **The sky chart** (doc 19 cut A.3b; doc 19 §5), on the letter `c`, before
+        // the cockpit, which stays LAST (the strip reads `… 9 unit c chart 0 cockpit`):
+        // the server's flat render of the sky in the Main pane, windowed to the
+        // pane around the viewer's port, and the sky table, the passages and
+        // the window beside it as the server's own lines. Gated on `sky.chart`,
+        // so a world without the lane never grows the tab; `on_enter` asks for
+        // the frame, as the cockpit asks for its ground.
+        Screen {
+            id: CHART_SCREEN,
+            name: "chart",
+            panes: vec![
+                PaneSpec {
+                    id: PaneId("chart"),
+                    title: "sky chart",
+                    role: BorderRole::Neutral,
+                    slot: PaneSlot::Main,
+                    content: PaneContent::Panel {
+                        feed: CHART_FEED,
+                        render: render_chart_rows,
+                    },
+                    min_w: 40,
+                    min_h: 8,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("tables"),
+                    title: "passages",
+                    role: BorderRole::Neutral,
+                    slot: PaneSlot::Right,
+                    content: PaneContent::Panel {
+                        feed: CHART_FEED,
+                        render: render_chart_table_rows,
+                    },
+                    min_w: 40,
+                    min_h: 6,
+                    selectable: false,
+                },
+            ],
+            keys: vec![
+                KeyBinding {
+                    key: 'r',
+                    label: "refresh",
+                    action: KeyAction::Local(LocalAction::Refresh),
+                },
+                KeyBinding {
+                    key: 'w',
+                    label: "window",
+                    action: KeyAction::Prefill("+chart "),
+                },
+                KeyBinding {
+                    key: 'm',
+                    label: "flat map",
+                    action: KeyAction::Run("+chart/map"),
+                },
+            ],
+            degrade: vec![PaneId("tables")],
+            exits_are_keys: false,
+            on_enter: vec![(CHART_FEED, Value::Object(serde_json::Map::new()))],
+            right_shares_surplus: true,
+            gate: Some(CHART_FEED),
+            alt_keys: None,
+        },
         // 0 cockpit — doc 16 §5's full-screen surface (16b cut Q.4): the map
         // the pilot is flying over, what the platform is doing, what is left of
         // it, what it can shoot with and what it holds. Six panes over the one
@@ -1219,8 +1292,21 @@ pub fn validate_screens(screens: &[Screen]) -> Result<(), String> {
     }
     let mut seen_ids = Vec::new();
     for s in screens {
-        if !(0..=9).contains(&s.id.0) {
-            return Err(format!("screen {:?} is not a digit 0-9", s.name));
+        // A digit 0-9, or (doc 19 cut A.3b) a lowercase letter's byte for a
+        // lettered screen — never a global or jump letter, which Alt+letter
+        // would never reach.
+        let letter = s.id.0.is_ascii_lowercase();
+        if !(0..=9).contains(&s.id.0) && !letter {
+            return Err(format!(
+                "screen {:?} is not a digit 0-9 or a letter",
+                s.name
+            ));
+        }
+        if letter {
+            let c = char::from(s.id.0);
+            if GLOBAL_KEYS.contains(&c) || JUMP_KEYS.contains(&c) {
+                return Err(format!("screen {:?}: letter {c:?} is a global key", s.name));
+            }
         }
         if seen_ids.contains(&s.id) {
             return Err(format!("screen digit {} is used twice", s.id.0));
@@ -1329,8 +1415,12 @@ mod tests {
     #[test]
     fn ten_screens_validate_and_the_tactical_two_stay_inside_every_cap() {
         let screens = builtin_screens();
-        assert_eq!(screens.len(), 10);
-        validate_screens(&screens).expect("ten built-ins are valid");
+        assert_eq!(
+            screens.len(),
+            11,
+            "ten digits and the lettered chart (doc 19 cut A.3b)"
+        );
+        validate_screens(&screens).expect("eleven built-ins are valid");
         assert_eq!(
             screens.len(),
             MAX_SCREENS,
@@ -1436,6 +1526,8 @@ mod tests {
                 "inventory",
                 "+roll/last",
                 "+contacts",
+                // Doc 19 cut A.3b: the chart screen's flat map, before the cockpit's.
+                "+chart/map",
                 "contacts",
                 "status",
                 "weaponstatus",
@@ -1474,8 +1566,8 @@ mod tests {
         assert_eq!(cockpit.name, "cockpit");
         assert_eq!(cockpit.gate, Some(COCKPIT_FEED));
         assert!(
-            screens.iter().filter(|s| s.gate.is_some()).count() == 1,
-            "the cockpit is the one gated screen"
+            screens.iter().filter(|s| s.gate.is_some()).count() == 2,
+            "the cockpit and the chart (doc 19 cut A.3b) are the gated screens"
         );
         assert_eq!(
             cockpit.on_enter,

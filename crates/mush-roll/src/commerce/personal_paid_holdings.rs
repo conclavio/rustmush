@@ -168,6 +168,14 @@ fn project_paid_for(
     )?;
     let allocation = super::entitlement::history::current(ctx, families, ratings, licence, term)
         .map_err(|_| OwnerProjectionError::Integrity)?;
+    super::registry_revocation::current::require(
+        ctx,
+        families,
+        licence.id(),
+        term.generation(),
+        None,
+    )
+    .map_err(|_| OwnerProjectionError::NotHeld)?;
     let terminal = allocation.terminal();
     let now = WorldIcSeconds::from_stamp(&ctx.world().world_ic_now())
         .map_err(|_| OwnerProjectionError::Integrity)?;

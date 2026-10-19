@@ -95,9 +95,16 @@ pub struct IcAdmissionFacts {
     hull: TitleFence,
     charter: Option<TitleFence>,
     parent_window: Option<TermWindow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    charter_ownership: Option<super::super::charter_transfer::records::CharterOwnershipRef>,
     observed_ic: ClockStamp,
 }
 impl IcAdmissionFacts {
+    pub(crate) fn charter_ownership(
+        &self,
+    ) -> Option<&super::super::charter_transfer::records::CharterOwnershipRef> {
+        self.charter_ownership.as_ref()
+    }
     pub fn holding(&self) -> &PersonalFiledHolding {
         &self.holding
     }
@@ -116,6 +123,29 @@ impl IcAdmissionFacts {
             .map_or(Capacity::OwnedDispatch {}, |terms| Capacity::PaidSeats {
                 seats: terms.seats(),
             })
+    }
+    /// Stable immutable admission identity for the actual seal owner. This
+    /// calculation carries no authority; IcWriter compares it only with the
+    /// output of its exact typed participant preparation.
+    pub fn binding_digest(&self) -> Result<mush_core::DefinitionDigest, PublicationError> {
+        let h = self.holding();
+        let mut value = serde_json::json!({
+            "unit": self.unit(), "dispatcher": self.dispatcher(),
+            "hull_title_revision": self.hull_title_revision(),
+            "licence": h.licence(), "term": h.term(), "charter": h.charter(),
+            "line": h.line(), "filed": h.filed(), "revision": h.identity(),
+            "rating": h.rating(), "window": h.window(), "capacity": self.capacity()
+        });
+        if let Some(proof) = &self.charter_ownership {
+            value
+                .as_object_mut()
+                .ok_or(PublicationError::Invalid)?
+                .insert(
+                    "charter_ownership".into(),
+                    serde_json::to_value(proof).map_err(|_| PublicationError::Invalid)?,
+                );
+        }
+        super::records::admission_digest(&value)
     }
     pub(crate) fn check_fresh(
         &self,
@@ -242,7 +272,7 @@ impl OwnerReadService for IcAdmissionReader {
         let paid = ctx
             .action_state(&self.families.paid_licences, &request.licence.key())?
             .is_some();
-        let (holding, charter, parent_window) = match (owner, paid) {
+        let (holding, charter, parent_window, charter_ownership) = match (owner, paid) {
             (true, false) => {
                 let holding = project_owner_with_parent_for(
                     ctx,
@@ -262,10 +292,13 @@ impl OwnerReadService for IcAdmissionReader {
                 // Use the selected current qualification already proved by
                 // this owner projection; birth ancestry is a separate record.
                 let parent_window = holding.qualification().map(|q| q.window());
+                let charter_ownership =
+                    (holding.ownership().generation > 1).then(|| holding.ownership().clone());
                 (
                     PersonalFiledHolding::original(holding),
                     Some(charter),
                     parent_window,
+                    charter_ownership,
                 )
             }
             (false, true) => (
@@ -282,6 +315,7 @@ impl OwnerReadService for IcAdmissionReader {
                 ),
                 None,
                 None,
+                None,
             ),
             (false, false) => return Err(OwnerReadError::Refused),
             (true, true) => return Err(OwnerReadError::Integrity),
@@ -291,6 +325,7 @@ impl OwnerReadService for IcAdmissionReader {
             hull,
             charter,
             parent_window,
+            charter_ownership,
             observed_ic: ctx.world().world_ic_now(),
         })
     }

@@ -199,6 +199,7 @@ fn fixture(byte: u8) -> Result<Fixture, Box<dyn std::error::Error>> {
             operation: commit,
         },
         term: OwnerTerm {
+            attestation: None,
             parent: None,
             format: PUBLICATION_FORMAT,
             licence,

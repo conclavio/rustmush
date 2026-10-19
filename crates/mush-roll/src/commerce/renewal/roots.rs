@@ -1,9 +1,6 @@
 //! Only the paired Roll writer constructs renewal retention images. The
 //! operation and next-term roots are real ordinary Roll records before money.
-use super::super::{
-    records::{PublicationError, Record},
-    roots::RequiredRoot,
-};
+use super::super::{records::PublicationError, roots::RequiredRoot};
 use super::{RenewalOperationV1, protocol::Transition, reader::RenewalFacts};
 use mush_core::{
     CommitToken, DefinitionRef, Flags, ObjId, ObjKind, participant::OwnerPrepareContext,

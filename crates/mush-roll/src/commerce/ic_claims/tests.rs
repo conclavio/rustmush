@@ -55,6 +55,7 @@ fn row(number: u64, licence: u64, capacity: Capacity) -> TestResult<ClaimRecord>
         format: 1,
         closed: None,
         open: OpenClaim {
+            charter_ownership: None,
             operation: token(number)?,
             action: protocol.action(Transition::Open)?,
             protocol,
@@ -394,5 +395,74 @@ fn close_rejects_same_clock_rollback_but_allows_actual_new_generation() -> TestR
             .open_len(),
         0
     );
+    Ok(())
+}
+
+#[test]
+fn transferred_owned_claim_capture_is_strict_and_changes_both_immutable_digests() -> TestResult {
+    let old = row(1, 21, Capacity::OwnedDispatch {})?;
+    let bytes = serde_json::to_vec(&old)?;
+    let legacy: ClaimRecord = serde_json::from_slice(&bytes)?;
+    assert_eq!(serde_json::to_vec(&legacy)?, bytes);
+    assert!(
+        serde_json::to_value(&old.open)?
+            .get("charter_ownership")
+            .is_none()
+    );
+    let mut new = old.clone();
+    new.format = 2;
+    new.open.charter_ownership = Some(
+        super::super::charter_transfer::records::CharterOwnershipRef {
+            generation: 65537,
+            operation: token(50001)?,
+            digest: digest(9),
+        },
+    );
+    new.validate()?;
+    assert_ne!(new.open.digest()?, old.open.digest()?);
+    assert_ne!(new.open.admission_digest()?, old.open.admission_digest()?);
+    let held = ClaimInventory::reconstruct(vec![new.clone()])?;
+    let closed = held
+        .closing(close(&new, 10001)?)?
+        .ok_or("real close projection")?;
+    let retained = closed.claim(new.open.operation).ok_or("retained")?;
+    assert_eq!(retained.format, 2);
+    assert_eq!(retained.open, new.open);
+    ClaimInventory::reconstruct(vec![retained.clone()])?;
+    for mode in 0..6 {
+        let mut bad = new.clone();
+        match mode {
+            0 => bad.format = 1,
+            1 => bad.open.charter_ownership = None,
+            2 => bad.open.capacity = one_seat()?,
+            3 => {
+                bad.open
+                    .charter_ownership
+                    .as_mut()
+                    .ok_or("capture")?
+                    .generation = 1
+            }
+            4 => {
+                bad.open
+                    .charter_ownership
+                    .as_mut()
+                    .ok_or("capture")?
+                    .generation = 65538
+            }
+            _ => bad.format = 3,
+        }
+        assert!(bad.validate().is_err());
+    }
+    for corrupt in [
+        serde_json::Value::Null,
+        serde_json::json!({"generation":2,"operation":token(50001)?,"digest":digest(9),"authority":true}),
+    ] {
+        let mut bad = serde_json::to_value(&new)?;
+        bad.get_mut("open")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("open")?
+            .insert("charter_ownership".into(), corrupt);
+        assert!(serde_json::from_value::<ClaimRecord>(bad).is_err());
+    }
     Ok(())
 }

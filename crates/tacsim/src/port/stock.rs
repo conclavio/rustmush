@@ -537,6 +537,10 @@ pub(crate) fn stock_step(
     let Some((map, def)) = clerk_port(ctx.w, clerk) else {
         return Step::Idle;
     };
+    // Doc 19 cut A.4b: the emergency bids come first — life support before stock.
+    if let Some(step) = emergency_step(ctx, state, fire, clerk, &map, &def) {
+        return step;
+    }
     let Some(action) = state.stock_action.clone() else {
         return Step::Idle;
     };
@@ -828,6 +832,192 @@ fn bid_step(
         Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => Step::Deferred,
         Err(SwapRefused::God | SwapRefused::Gone) => Step::Refused,
     }
+}
+
+// ---- doc 19 cut A.4b: the emergency bids -----------------------------------------
+
+/// What the emergency reading calls for this fire.
+enum EmergencyAct {
+    /// Post the bid for `good`: `reference` under the premium's cap is `price`.
+    Post {
+        good: CanonicalId,
+        reference: u64,
+        price: Amount,
+    },
+    /// Withdraw the standing bid for `good`: the reach fell back.
+    Withdraw {
+        good: CanonicalId,
+        listing: ListingId,
+    },
+}
+
+/// **The clerk's emergency bids** (doc 19 §6, cut A.4b; D-19-14): once an hour
+/// ([`crate::port::price::EMERGENCY_CHECK_SECS`]; one IC day at rate 24) the clerk
+/// reads the port's reach for each emergency good against its synodic median. A
+/// good whose reach is at or past the port's ratio and has no standing emergency
+/// bid gets one — `emergency.org`'s vendor posts a Wanted for the authored intake
+/// at the premium's cap over the good's reference, as the clerk, signed as every
+/// bid is; a house that cannot fund one unit posts nothing and is warned once a
+/// boot; a bid gone before its recorded deadline (its intake taken) is not posted
+/// again until the deadline passes. A good whose reach fell back under the ratio
+/// while its bid stands has the bid withdrawn. One act a fire, authored order; the
+/// reading's hour is spent only when nothing was due. `None` when the port has no
+/// emergency block, no premium, no vendor row for the org, or the hour has not
+/// passed — the stock arm goes on.
+fn emergency_step(
+    ctx: &mut Ctx<'_>,
+    state: &mut PortTickState,
+    fire: &mut Fire,
+    clerk: ObjId,
+    map: &PortMap,
+    def: &PortDef,
+) -> Option<Step> {
+    let emergency = def.emergency.as_ref()?;
+    let premium = def.premium.as_ref()?;
+    let now = ctx.w.now();
+    if state
+        .emergency_checked
+        .get(&map.entry)
+        .is_some_and(|&at| now < at.saturating_add(crate::port::price::EMERGENCY_CHECK_SECS))
+    {
+        return None;
+    }
+    let row = map.vendors.get(&emergency.org)?;
+    let vendor = mush_market::VendorId(row.vendor?);
+    let vault = VaultId(row.vault);
+    // The readings, then the first act they call for.
+    let mut act: Option<EmergencyAct> = None;
+    {
+        let market = ctx.w.module_state::<MarketStore>()?;
+        let goods = ctx
+            .w
+            .module_state::<crate::store::TacsimStore>()
+            .and_then(crate::store::TacsimStore::goods);
+        for good in &emergency.goods {
+            let recorded = map.emergencies.get(good);
+            let standing = recorded.is_some_and(|r| market.listing(ListingId(r.listing)).is_some());
+            let crossed = crate::port::price::reach_for(ctx.w, def, good).is_some_and(|reach| {
+                crate::port::price::emergency_crossed(reach, emergency.ratio_permille)
+            });
+            if crossed && !standing {
+                if recorded.is_some_and(|r| now < r.expires) {
+                    continue;
+                }
+                let Some(reference) = goods.and_then(|goods| {
+                    crate::port::price::emergency_reference_major(def, goods, good)
+                }) else {
+                    continue;
+                };
+                let price_major = crate::port::price::priced(reference, premium.cap_permille);
+                let Some(price) = ask_price(ctx.w, price_major) else {
+                    continue;
+                };
+                if !crate::port::board::vendor_funds(ctx.w, market, vendor, price) {
+                    if state.bid_warned.insert((row.vault, good.clone())) {
+                        tracing::warn!(
+                            vault = row.vault, good = %good, price_major,
+                            "tacsim: a house cannot fund a unit of its emergency bid; it posts nothing"
+                        );
+                    }
+                    continue;
+                }
+                act = Some(EmergencyAct::Post {
+                    good: good.clone(),
+                    reference,
+                    price,
+                });
+                break;
+            }
+            if !crossed
+                && standing
+                && let Some(recorded) = recorded
+            {
+                act = Some(EmergencyAct::Withdraw {
+                    good: good.clone(),
+                    listing: ListingId(recorded.listing),
+                });
+                break;
+            }
+        }
+    }
+    let Some(act) = act else {
+        state.emergency_checked.insert(map.entry.clone(), now);
+        return None;
+    };
+    let step = match act {
+        EmergencyAct::Post {
+            good,
+            reference,
+            price,
+        } => {
+            let bid = crate::port::def::BidDef {
+                good: good.clone(),
+                price_major: reference,
+                intake: emergency.intake,
+                as_name: None,
+                boards: Vec::new(),
+            };
+            let spec = crate::port::vendor::wanted_spec(vendor, vault, &bid, price);
+            match fire.as_principal(ctx, clerk, clerk, |ctx| mush_market::post_wanted(ctx, spec)) {
+                Ok(Ok(listing)) => {
+                    let expires = ctx
+                        .w
+                        .module_state::<MarketStore>()
+                        .and_then(|s| s.listing(listing).map(|l| l.expires.at))
+                        .unwrap_or_else(|| now.saturating_add(mush_market::MAX_LISTING_TTL_SECS));
+                    let mut map = map.clone();
+                    map.emergencies.insert(
+                        good,
+                        crate::port::BidRow {
+                            listing: listing.0,
+                            price_major: reference,
+                            intake: emergency.intake,
+                            expires,
+                        },
+                    );
+                    crate::store::put_port_map(ctx, &map);
+                    Step::Worked
+                }
+                Ok(Err(error)) => {
+                    if state.bid_warned.insert((row.vault, good.clone())) {
+                        tracing::warn!(
+                            vault = row.vault, good = %good, ?error,
+                            "tacsim: the stock clerk could not post an emergency bid"
+                        );
+                    }
+                    Step::Refused
+                }
+                Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => {
+                    Step::Deferred
+                }
+                Err(SwapRefused::God | SwapRefused::Gone) => Step::Refused,
+            }
+        }
+        EmergencyAct::Withdraw { good, listing } => {
+            match fire.as_principal(ctx, clerk, clerk, |ctx| {
+                mush_market::withdraw_listing(ctx, listing)
+            }) {
+                Ok(Ok(())) => {
+                    let mut map = map.clone();
+                    map.emergencies.remove(&good);
+                    crate::store::put_port_map(ctx, &map);
+                    Step::Worked
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(
+                        listing = listing.0, good = %good, ?error,
+                        "tacsim: the stock clerk could not withdraw an emergency bid"
+                    );
+                    Step::Refused
+                }
+                Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => {
+                    Step::Deferred
+                }
+                Err(SwapRefused::God | SwapRefused::Gone) => Step::Refused,
+            }
+        }
+    };
+    Some(step)
 }
 
 // ---- the release arm ------------------------------------------------------------

@@ -75,7 +75,7 @@ fn registration<const ID: u8, const SLOT: u8>(
     Ok(())
 }
 #[test]
-fn eight_distinct_registered_slots_fit_and_ninth_refuses_without_changing_invocation_caps()
+fn nine_distinct_registered_slots_fit_and_tenth_refuses_without_changing_invocation_caps()
 -> TestResult {
     let owner = OwnerId::new("fixture")?;
     let action = reference(&owner, "action", "write")?;
@@ -88,13 +88,14 @@ fn eight_distinct_registered_slots_fit_and_ninth_refuses_without_changing_invoca
     registration::<5, 5>(&mut builder, &owner, &action)?;
     registration::<6, 6>(&mut builder, &owner, &action)?;
     registration::<7, 7>(&mut builder, &owner, &action)?;
-    assert_eq!(builder.registrations.len(), 8);
+    registration::<8, 8>(&mut builder, &owner, &action)?;
+    assert_eq!(builder.registrations.len(), 9);
     assert!(matches!(
         builder.register(
             owner.clone(),
-            reference(&owner, "owner_participant", "slot_8")?,
+            reference(&owner, "owner_participant", "slot_9")?,
             BTreeSet::from([action]),
-            Adapter::<8, 8>
+            Adapter::<9, 9>
         ),
         Err(ParticipantError::RegistrationLimit)
     ));

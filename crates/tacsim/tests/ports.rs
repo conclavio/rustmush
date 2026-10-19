@@ -710,7 +710,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{}: 0 create, 2 update, 0 retire, 18 unchanged",
+            "Plan for {LANE_PACK}@{}: 0 create, 2 update, 0 retire, 22 unchanged",
             LANE_VERSION + 1
         )),
         "{plan}"
@@ -724,7 +724,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     }
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 18 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 22 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -868,7 +868,7 @@ fn ic3_an_update_creates_a_new_org_and_keeps_every_recorded_row() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 18 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 22 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -996,7 +996,7 @@ fn ic3_a_map_that_stopped_part_way_is_completed() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 18 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 22 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -1510,7 +1510,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let plan = run(&mut next, GOD, &format!("@atlas/pack plan {LANE_PACK}"));
         assert!(
             plan.contains(&format!(
-                "Plan for {LANE_PACK}@{LANE_VERSION}: 2 create, 2 update, 0 retire, 16 unchanged"
+                "Plan for {LANE_PACK}@{LANE_VERSION}: 2 create, 2 update, 0 retire, 20 unchanged"
             )),
             "{plan}"
         );
@@ -1528,7 +1528,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let (_, apply) = plan_and_apply(&mut next);
         assert!(
             apply.contains(&format!(
-                "Applied {LANE_PACK}@{LANE_VERSION}: 2 created, 2 updated, 0 retired, 16 unchanged."
+                "Applied {LANE_PACK}@{LANE_VERSION}: 2 created, 2 updated, 0 retired, 20 unchanged."
             )),
             "{apply}"
         );
@@ -2126,11 +2126,13 @@ fn ic3_port_entries_refuse_what_the_applier_cannot_bind() {
     }
     // Doc 18 cut IC8 (lead ruling L23): the same reference in an entry that authors no
     // vendors loads — the rule is scoped to an entry with vendors, so the published v2
-    // (references, no vendors) keeps loading.
+    // (references, no vendors) keeps loading. Doc 19 cut A.4b: an emergency block needs
+    // a vendor to post from, so the v2 shape has none.
     assert_eq!(
         refusal(|doc| {
             if let Some(def) = doc["entries"]["ceres_port"]["def"].as_object_mut() {
                 def.remove("vendors");
+                def.remove("emergency");
             }
             doc["entries"]["ceres_port"]["def"]["programme"]["reference"]["metals"] =
                 json!("ceres_port/coop");

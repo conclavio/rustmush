@@ -250,6 +250,7 @@ async fn genuine_rating(
                     RatingJobState::Queued {} => "queued",
                     RatingJobState::Running { .. } => "running",
                     RatingJobState::Completed { .. } => "completed",
+                    RatingJobState::Nonconforming { .. } => "nonconforming",
                     RatingJobState::Failed { .. } => "failed",
                     RatingJobState::Interrupted {} => "interrupted",
                     RatingJobState::Cancelled {} => "cancelled",

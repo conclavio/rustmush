@@ -24,6 +24,8 @@ pub(crate) struct RootParticipant;
 /// The Registry variant is not registered for an action until its actual quota
 /// and artifact participants are available in the same composed invocation.
 pub(crate) enum RootRequest {
+    TermLapse(super::facts::publication::Lapse),
+    Ic(super::ic_claims::roots::IcRoots),
     InitialFiling(InitialRoots),
     CompatibleUpdate(super::line_update::publication::UpdateRoots),
     DependentFiling(super::dependent_filing::DependentRoots),
@@ -34,12 +36,18 @@ pub(crate) enum RootRequest {
     AuthoredFork(super::authored_fork::AuthoredFork),
     Retirement(super::authored_retirement::Retirement),
     Withdrawal(super::withdrawal::Withdrawal),
+    CharterTransfer(super::charter_transfer::TransferRoots),
+    RegistryRecall(super::registry_recall::Recall),
+    RegistryRevocation(super::registry_revocation::Revocation),
     OwnerQualification(super::owner_qualification::Qualification),
+    OwnerAttestation(super::owner_attestation::Attestation),
 }
 
 impl RootRequest {
     fn commit(&self) -> CommitToken {
         match self {
+            Self::TermLapse(request) => request.commit(),
+            Self::Ic(request) => request.commit(),
             Self::InitialFiling(request) => request.commit(),
             Self::CompatibleUpdate(request) => request.commit(),
             Self::DependentFiling(request) => request.commit(),
@@ -50,7 +58,11 @@ impl RootRequest {
             Self::AuthoredFork(request) => request.commit(),
             Self::Retirement(request) => request.commit(),
             Self::Withdrawal(request) => request.commit(),
+            Self::CharterTransfer(request) => request.commit(),
+            Self::RegistryRecall(request) => request.commit(),
+            Self::RegistryRevocation(request) => request.commit(),
             Self::OwnerQualification(request) => request.commit(),
+            Self::OwnerAttestation(request) => request.commit(),
         }
     }
 }
@@ -81,7 +93,9 @@ impl RootOutput {
 }
 
 pub(crate) struct RootPatch {
+    term_lapse: Option<super::facts::publication::LapseFence>,
     commit: CommitToken,
+    ic: Option<super::ic_claims::roots::IcFence>,
     change: PreparedChange,
     fresh_paid: Option<super::sale_reader::OriginalSaleFacts>,
     entitlement: Option<super::entitlement::roots::EntitlementFence>,
@@ -91,7 +105,11 @@ pub(crate) struct RootPatch {
     marked: Option<super::marked_rating::AdmissionFence>,
     retirement: Option<super::authored_retirement::RetirementFence>,
     withdrawal: Option<super::withdrawal::WithdrawalFence>,
+    charter_transfer: Option<super::charter_transfer::TransferFence>,
+    registry_recall: Option<super::registry_recall::RecallFence>,
+    registry_revocation: Option<super::registry_revocation::RevocationFence>,
     qualification: Option<super::owner_qualification::QualificationFence>,
+    attestation: Option<super::owner_attestation::AttestationFence>,
     fork: Option<(
         mush_core::DefinitionRef,
         super::parent_grant::CurrentParentGrant,
@@ -114,6 +132,26 @@ impl OwnerParticipant for RootParticipant {
         if request.commit() != context.commit_token() {
             return Err(ParticipantError::Authority);
         }
+        let term_lapse = match &request {
+            RootRequest::TermLapse(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
+        let ic = match &request {
+            RootRequest::Ic(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
         let dependent = match &request {
             RootRequest::DependentFiling(request) => {
                 request
@@ -190,8 +228,48 @@ impl OwnerParticipant for RootParticipant {
             }
             _ => None,
         };
+        let registry_recall = match &request {
+            RootRequest::RegistryRecall(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
+        let registry_revocation = match &request {
+            RootRequest::RegistryRevocation(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
+        let charter_transfer = match &request {
+            RootRequest::CharterTransfer(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
         let withdrawal = match &request {
             RootRequest::Withdrawal(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
+        let attestation = match &request {
+            RootRequest::OwnerAttestation(request) => {
                 request
                     .fence()
                     .check(context)
@@ -222,6 +300,14 @@ impl OwnerParticipant for RootParticipant {
         };
         let mut retired = None;
         let (change, selection) = match &request {
+            RootRequest::TermLapse(request) => (
+                state.prepare_term_lapse_root(request).map_err(refusal)?,
+                None,
+            ),
+            RootRequest::Ic(request) => (
+                state.prepare_ic_claim_roots(request).map_err(refusal)?,
+                None,
+            ),
             RootRequest::InitialFiling(request) => (
                 state.prepare_commercial_roots(request).map_err(refusal)?,
                 None,
@@ -249,9 +335,33 @@ impl OwnerParticipant for RootParticipant {
             RootRequest::Renewal(request) => {
                 (state.prepare_renewal_roots(request).map_err(refusal)?, None)
             }
+            RootRequest::OwnerAttestation(request) => (
+                state
+                    .prepare_owner_attestation_roots(request)
+                    .map_err(refusal)?,
+                None,
+            ),
             RootRequest::OwnerQualification(request) => (
                 state
                     .prepare_owner_qualification_root(request)
+                    .map_err(refusal)?,
+                None,
+            ),
+            RootRequest::RegistryRecall(request) => (
+                state
+                    .prepare_registry_recall_root(request)
+                    .map_err(refusal)?,
+                None,
+            ),
+            RootRequest::RegistryRevocation(request) => (
+                state
+                    .prepare_registry_revocation_root(request)
+                    .map_err(refusal)?,
+                None,
+            ),
+            RootRequest::CharterTransfer(request) => (
+                state
+                    .prepare_charter_transfer_root(request)
                     .map_err(refusal)?,
                 None,
             ),
@@ -306,7 +416,9 @@ impl OwnerParticipant for RootParticipant {
         Ok(OwnerPreparation::new(
             output,
             RootPatch {
+                term_lapse,
                 commit: request.commit(),
+                ic,
                 change,
                 fresh_paid,
                 entitlement,
@@ -316,7 +428,11 @@ impl OwnerParticipant for RootParticipant {
                 marked,
                 retirement,
                 withdrawal,
+                charter_transfer,
+                registry_recall,
+                registry_revocation,
                 qualification,
+                attestation,
                 fork,
             },
             writes,
@@ -331,6 +447,21 @@ impl OwnerParticipant for RootParticipant {
     ) -> Result<(), ParticipantError> {
         if patch.commit != context.commit_token() {
             return Err(ParticipantError::Authority);
+        }
+        if let Some(fence) = &patch.term_lapse {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
+        if let Some(fence) = &patch.ic {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
+        if let Some(fence) = &patch.attestation {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
         }
         if let Some(fence) = &patch.qualification {
             fence
@@ -366,6 +497,21 @@ impl OwnerParticipant for RootParticipant {
         }
         if let Some((action, grant)) = &patch.fork {
             super::authored_fork::check_action(action, patch.commit, grant, context)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
+        if let Some(fence) = &patch.registry_recall {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
+        if let Some(fence) = &patch.registry_revocation {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
+        if let Some(fence) = &patch.charter_transfer {
+            fence
+                .check(context)
                 .map_err(|_| ParticipantError::Authority)?;
         }
         if let Some(fence) = &patch.withdrawal {
@@ -486,8 +632,14 @@ impl OwnerParticipant for RootParticipant {
                     | RootAnchor::PaidOperation(_)
                     | RootAnchor::RenewalOperation(_)
                     | RootAnchor::DraftRetirement(_, _)
+                    | RootAnchor::CharterTransferOffer(_, _)
+                    | RootAnchor::CharterTransfer(_, _, _, _)
                     | RootAnchor::AuthorWithdrawal(_, _)
+                    | RootAnchor::RegistryRecall(_, _)
+                    | RootAnchor::RegistryRevocation(_, _)
                     | RootAnchor::OwnerQualification(_, _)
+                    | RootAnchor::OwnerAttestation(_, _)
+                    | RootAnchor::OwnerAttestationParent(_, _)
                     | RootAnchor::RatingJob(_)
                     | RootAnchor::RatingPending(_)
                     | RootAnchor::Rating { .. })

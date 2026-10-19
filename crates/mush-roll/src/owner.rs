@@ -94,6 +94,7 @@ pub struct PreparedChange {
     operations: Vec<ModuleOp>,
     sizes: Vec<(String, Option<usize>)>,
     usage: Option<UsageChange>,
+    ic_claims: Option<crate::commerce::ic_claims::ClaimInventory>,
 }
 
 /// Borrowed only after every composed owner has passed its final check. Dropping
@@ -188,6 +189,9 @@ pub struct RollStore {
     generation: u64,
     source_audit_epoch: u64,
     commerce: CommerceReadiness,
+    // Derived only by the mandatory full owner audit and same-ack closed
+    // writer. Default/unloaded absence is never an empty healthy inventory.
+    ic_claims: Option<crate::commerce::ic_claims::ClaimInventory>,
     libraries: BTreeMap<ObjId, Library>,
     minds: BTreeMap<(ObjId, u64), Mind>,
     revisions: BTreeMap<RevisionKey, Revision>,
@@ -1099,6 +1103,9 @@ impl RollStore {
     }
 
     fn apply_checked(&mut self, prepared: PreparedChange) {
+        if let Some(inventory) = prepared.ic_claims {
+            self.ic_claims = Some(inventory);
+        }
         for (key, size) in prepared.sizes {
             if let Some(size) = size {
                 self.sizes.insert(key, Some(size));
@@ -1213,6 +1220,110 @@ impl RollStore {
             store: self,
             change: prepared,
         })
+    }
+
+    /// Exact actual four-owner publication. The permanent root is precreated
+    /// on Open and republished unchanged on Close, requiring no fresh capacity.
+    pub(crate) fn prepare_ic_claim_roots(
+        &self,
+        request: &crate::commerce::ic_claims::roots::IcRoots,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        let inventory = self
+            .ic_claims
+            .as_ref()
+            .ok_or_else(|| invalid("IC claim", "final audit unavailable"))?;
+        let row = request.row();
+        let next = match request.before() {
+            None => inventory
+                .opening(row.clone())
+                .map_err(|_| invalid("IC claim", "admission capacity or identity"))?,
+            Some(before) => {
+                if inventory.claim(before.open.operation) != Some(before) {
+                    return Err(invalid("IC claim", "retained identity differs"));
+                }
+                inventory
+                    .closing(
+                        row.closed
+                            .clone()
+                            .ok_or_else(|| invalid("IC claim", "close missing"))?,
+                    )
+                    .map_err(|_| invalid("IC claim", "close identity"))?
+                    .ok_or_else(|| invalid("IC claim", "event already consumed"))?
+            }
+        };
+        let required = request
+            .required()
+            .map_err(|_| invalid("IC claim", "root identity"))?;
+        self.check_root_subject(&required)?;
+        let record = ReferenceRecord {
+            format: FORMAT,
+            key: required.anchor.key(),
+            revisions: vec![required.target()],
+        };
+        if request.before().is_some() {
+            self.check_required_root(&required)?;
+        } else if self.occupied.contains(&record.key.key()) {
+            return Err(invalid("IC claim", "root already occupied"));
+        }
+        let mut change = self.prepare(vec![Change::Reference(record)])?;
+        change.ic_claims = Some(next);
+        Ok(change)
+    }
+
+    /// Final actual commerce audit proves an absent IC book is disabled-empty.
+    /// Enabled inventory is complete, and both generation/transition are fenced.
+    pub(crate) fn charter_transfer_claim_stamp(
+        &self,
+        charter: crate::commerce::CharterId,
+    ) -> Result<Option<(u64, u64)>, RollError> {
+        self.commerce_ready()?;
+        match &self.ic_claims {
+            None => Ok(None),
+            Some(book) if !book.open_owned_charter(charter) => {
+                Ok(Some((book.generation(), book.next_transition())))
+            }
+            Some(_) => Err(invalid("charter transfer", "owned dispatch remains open")),
+        }
+    }
+    pub(crate) fn prepare_charter_transfer_root(
+        &self,
+        request: &crate::commerce::charter_transfer::TransferRoots,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        for root in request.old() {
+            self.check_required_root(root)?;
+        }
+        let required = request.added();
+        self.check_root_subject(required)?;
+        let row = ReferenceRecord {
+            format: FORMAT,
+            key: required.anchor.key(),
+            revisions: vec![required.target()],
+        };
+        if self.occupied.contains(&row.key.key()) {
+            return Err(invalid("charter transfer", "cause already retained"));
+        }
+        self.prepare(vec![Change::Reference(row)])
+    }
+    pub(crate) fn ic_claim_next_transition(&self) -> Result<u64, RollError> {
+        self.commerce_ready()?;
+        self.ic_claims
+            .as_ref()
+            .map(|book| book.next_transition())
+            .ok_or_else(|| invalid("IC claim", "actual composition audit missing"))
+    }
+
+    pub(crate) fn install_ic_claim_audit(
+        &mut self,
+        stamp: (u64, u64),
+        inventory: Option<crate::commerce::ic_claims::ClaimInventory>,
+    ) -> Result<(), RollError> {
+        if self.commerce_audit_base()? != stamp || self.commerce != CommerceReadiness::Closed {
+            return Err(invalid("IC claim", "stale final audit"));
+        }
+        self.ic_claims = inventory;
+        Ok(())
     }
 
     /// Only the closed registered Registry builder can construct this request.
@@ -1444,6 +1555,85 @@ impl RollStore {
         self.prepare(vec![Change::Reference(record)])
     }
 
+    /// New permanent metadata cause, retaining the exact immutable filed subject.
+    pub(crate) fn prepare_registry_recall_root(
+        &self,
+        request: &crate::commerce::registry_recall::Recall,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        self.check_required_root(&request.filed_root())?;
+        let required = request
+            .cause_root()
+            .map_err(|_| invalid("Registry recall retention", "invalid cause"))?;
+        self.check_root_subject(&required)?;
+        let record = ReferenceRecord {
+            format: FORMAT,
+            key: required.anchor.key(),
+            revisions: vec![required.target()],
+        };
+        if self.occupied.contains(&record.key.key()) {
+            return Err(invalid(
+                "Registry recall retention",
+                "cause already retained",
+            ));
+        }
+        self.prepare(vec![Change::Reference(record)])
+    }
+
+    /// New permanent metadata cause, retaining the exact immutable filed subject.
+    pub(crate) fn prepare_registry_revocation_root(
+        &self,
+        request: &crate::commerce::registry_revocation::Revocation,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        self.check_required_root(&request.filed_root())?;
+        let required = request
+            .cause_root()
+            .map_err(|_| invalid("Registry revocation retention", "invalid cause"))?;
+        self.check_root_subject(&required)?;
+        let record = ReferenceRecord {
+            format: FORMAT,
+            key: required.anchor.key(),
+            revisions: vec![required.target()],
+        };
+        if self.occupied.contains(&record.key.key()) {
+            return Err(invalid(
+                "Registry revocation retention",
+                "cause already retained",
+            ));
+        }
+        self.prepare(vec![Change::Reference(record)])
+    }
+
+    /// A new generation retains its exact child and selected-parent evidence
+    /// without changing any owned source, old term or existing custody root.
+    pub(crate) fn prepare_owner_attestation_roots(
+        &self,
+        request: &crate::commerce::owner_attestation::Attestation,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        for root in request.existing_roots() {
+            self.check_required_root(&root)?;
+        }
+        let mut changes = Vec::new();
+        for required in request
+            .roots()
+            .map_err(|_| invalid("owner attestation", "invalid cause"))?
+        {
+            self.check_root_subject(&required)?;
+            let record = ReferenceRecord {
+                format: FORMAT,
+                key: required.anchor.key(),
+                revisions: vec![required.target()],
+            };
+            if self.occupied.contains(&record.key.key()) {
+                return Err(invalid("owner attestation", "cause exists"));
+            }
+            changes.push(Change::Reference(record));
+        }
+        self.prepare(changes)
+    }
+
     /// A current qualification changes no owned source or old root. Its exact
     /// permanent cause retains the selected revision under normal owner limits.
     pub(crate) fn prepare_owner_qualification_root(
@@ -1465,6 +1655,41 @@ impl RollStore {
         };
         if self.occupied.contains(&record.key.key()) {
             return Err(invalid("owner qualification", "cause exists"));
+        }
+        self.prepare(vec![Change::Reference(record)])
+    }
+
+    /// Public historical fact only; the complete typed/E4/root audit has already
+    /// joined this exact Filed anchor. No source, current eligibility or scan.
+    pub(crate) fn require_public_filed_fact(
+        &self,
+        filed: crate::commerce::FiledRevisionId,
+    ) -> Result<(), RollError> {
+        self.commerce_ready()?;
+        let key = RootAnchor::Filed(filed).key();
+        let row = self.references.get(&key).ok_or(RollError::Missing)?;
+        let [reference] = row.revisions.as_slice() else {
+            return Err(invalid("filed fact", "invalid root"));
+        };
+        self.exact(*reference)?;
+        Ok(())
+    }
+    pub(crate) fn prepare_term_lapse_root(
+        &self,
+        request: &crate::commerce::facts::publication::Lapse,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        let required = request
+            .root()
+            .map_err(|_| invalid("term lapse", "invalid occurrence"))?;
+        self.check_root_subject(&required)?;
+        let record = ReferenceRecord {
+            format: FORMAT,
+            key: required.anchor.key(),
+            revisions: vec![required.target()],
+        };
+        if self.occupied.contains(&record.key.key()) {
+            return Err(invalid("term lapse", "occurrence exists"));
         }
         self.prepare(vec![Change::Reference(record)])
     }
@@ -1636,6 +1861,7 @@ impl RollStore {
             operations,
             sizes,
             usage,
+            ic_claims: None,
         })
     }
 

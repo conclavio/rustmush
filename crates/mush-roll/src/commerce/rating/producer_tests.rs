@@ -1,5 +1,12 @@
 //! Structural transition tests, not worker-conformance evidence.
 use super::*;
+fn resulting_job(
+    old: &RatingJob,
+    quota: &QuotaOutput,
+    receipt: Option<&RatingReceipt>,
+) -> Result<RatingJob, RatingError> {
+    super::resulting_job(old, quota, receipt, None)
+}
 use crate::commerce::rating::{
     RatingClass, RatingSubject, execution::ExecutionObservation, test_support,
 };

@@ -347,6 +347,7 @@ fn requires_cycle(
 
 /// The TacSim layer (`"tacsim"`).
 pub struct TacsimRuleset {
+    ic_minds: Option<minds::ic_sortie::registration::Registration>,
     registry_commerce: Option<minds::registry::composition::Registration>,
     fork_material: Option<mush_core::DefinitionRef>,
     marked_registry: Option<mush_core::DefinitionRef>,
@@ -378,7 +379,17 @@ pub struct TacsimRuleset {
     goods: Option<std::sync::Arc<crate::definitions::GoodsTable>>,
 }
 
+pub use minds::ic_sortie::{
+    CloseEvent as IcCloseEvent, IcHost, IcHostCompletion, IcHostTicket, IcRetainedExecution,
+    IcSubmissionState, IcUnadmittedOpen, StartPermit as IcStartPermit,
+};
 impl TacsimRuleset {
+    /// The actual host retains opaque transition capabilities. This handle
+    /// creates no start/event and ordinary compositions return None.
+    pub fn ic_host(&self) -> Option<IcHost> {
+        self.ic_minds.as_ref().map(|r| r.host.clone())
+    }
+
     /// The layer with an explicit configuration.
     ///
     /// Parses eagerly: `register` refuses the composition if the packs do not verify,
@@ -420,6 +431,7 @@ impl TacsimRuleset {
             }
         };
         TacsimRuleset {
+            ic_minds: None,
             registry_commerce: None,
             fork_material: None,
             marked_registry: None,
@@ -644,6 +656,8 @@ impl GameModule for TacsimRuleset {
              site, connection and room records the pack describes (doc 18 cut IC14 row 48)",
         )?;
         commands::register(reg)?;
+        // Doc 19 cut A.3b: the `sky.chart` panel feed and its query, with the port verbs.
+        port::chart_panel::register(reg)?;
         // 16b cut C.2 (C1): the game's definitions, through the C1 registry.
         // One validator per kind first — `Registrar::definition` admits nothing
         // whose kind has none — then the descriptors in dependency order.
@@ -722,11 +736,12 @@ impl GameModule for TacsimRuleset {
         // neighbours: the tick returns at once while the layer is off.
         // Doc 18 cut IC9: the departure burn's provider holds the drive table built
         // here from the fielded catalog and the layer's goods table (D-18-11).
-        port_tick::register(
+        port_tick::register_with_ic(
             reg,
             self.test_world,
             self.inventory.as_ref(),
             port::burn::burn_table(&catalog, self.goods.clone()),
+            self.ic_minds.as_ref(),
         )?;
         // Doc 18 cut IC6 (§4.2, 18a §3): the hull rooms' status line and
         // gauges. Registered unconditionally like its neighbours; the hook
@@ -736,7 +751,10 @@ impl GameModule for TacsimRuleset {
         // the boards. Registered unconditionally; silent while the layer is off.
         port::board::register_hooks(reg)?;
         if let Some(registry) = &self.registry_commerce {
-            registry.register(reg, &self.cfg, &catalog)?;
+            registry.register(reg, &self.cfg, &catalog, self.ic_minds.is_some())?;
+            if let Some(ic) = &self.ic_minds {
+                ic.register(reg, &self.cfg, registry.reference())?;
+            }
             if let Some(manifest) = &self.fork_material {
                 if manifest != registry.reference() {
                     return Err(ModError::msg("fork material Registry differs"));
@@ -753,7 +771,10 @@ impl GameModule for TacsimRuleset {
                 }
                 minds::bulk::registry_service::register_marked(reg, manifest)?;
             }
-        } else if self.fork_material.is_some() || self.marked_registry.is_some() {
+        } else if self.fork_material.is_some()
+            || self.marked_registry.is_some()
+            || self.ic_minds.is_some()
+        {
             return Err(ModError::msg(
                 "fork material requires actual Registry registration",
             ));
@@ -770,6 +791,7 @@ impl GameModule for TacsimRuleset {
             Ok(packs) => packs.clone(),
             Err(detail) => return Err(ModError::msg(detail.clone())),
         };
+        minds::ic_sortie::boot::load(ctx, &data, self.ic_minds.as_ref())?;
         let kv: Vec<(smol_str::SmolStr, serde_json::Value)> = data
             .kv
             .iter()

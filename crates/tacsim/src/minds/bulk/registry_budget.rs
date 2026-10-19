@@ -46,6 +46,11 @@ pub(crate) struct RegistryBudget {
     pub schedule: DefinitionDigest,
     cases: Vec<RegistryCase>,
     maximum_unit_ms: u64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub measured_rejection: bool,
+}
+fn is_false(value: &bool) -> bool {
+    !value
 }
 impl RegistryBudget {
     pub fn prepare(
@@ -64,6 +69,7 @@ impl RegistryBudget {
             schedule,
             cases,
             maximum_unit_ms,
+            measured_rejection: true,
         };
         value.validate()?;
         Ok(value)
@@ -181,6 +187,23 @@ impl RegistryBudget {
                     simulated_ms: 0,
                 })
             }
+            RegistryEnding::Rejected => {
+                if !self.measured_rejection
+                    || case.key.class() != mush_roll::commerce::rating::RatingClass::III
+                    || matches!(case.key.kind(), CaseKind::Kernel { .. })
+                    || self
+                        .cases
+                        .iter()
+                        .skip(next_index)
+                        .any(|next| next.key.class() > case.key.class())
+                {
+                    return Err(invalid("Registry has no admitted maximum-class rejection"));
+                }
+                Ok(RegistryCursor {
+                    simulated_ms,
+                    ..from
+                })
+            }
             RegistryEnding::Certified => {
                 if next.is_some_and(|next| next.key.class() == case.key.class()) {
                     return Err(invalid("Registry class coverage is not complete"));
@@ -206,6 +229,7 @@ pub(crate) enum RegistryEnding {
     CaseComplete,
     ClassBudget,
     Certified,
+    Rejected,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RegistryProgress {

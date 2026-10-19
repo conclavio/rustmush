@@ -71,6 +71,7 @@ pub struct InventoryFamilies {
     /// per endpoint (doc 18 §9 risk 19, cut IC14) without retiring a marker
     /// any read or replay could still need (E7c2 owner decision D1).
     pub marker_ring: StateFamilyHandle<EndpointRef, crate::record::MarkerRing>,
+    pub(crate) core_inputs: Option<crate::core_input::CoreInputHandle>,
 }
 
 /// The `ResourceRef` one `(endpoint, commodity)` pool is keyed by.
@@ -918,6 +919,10 @@ impl InventoryFamilies {
         if txn.get(&self.lots, &sale.buyer_lot)?.is_some() {
             return Err(InventoryError::AlreadyExists);
         }
+        self.require_new_lot(txn, sale.buyer_lot)?;
+        if remainder.is_some() {
+            self.require_new_lot(txn, sale.remainder_lot)?;
+        }
         if remainder.is_some() && txn.get(&self.lots, &sale.remainder_lot)?.is_some() {
             return Err(InventoryError::AlreadyExists);
         }
@@ -1093,6 +1098,8 @@ impl InventoryFamilies {
         if parent.endpoint() != endpoint {
             return Err(InventoryError::NoLot);
         }
+        self.require_unheld_lot(txn, lot)?;
+        self.require_new_lot(txn, child)?;
         if amount == 0 {
             return Err(InventoryError::Record(InventoryRecordError::ZeroQuantity));
         }
@@ -1176,6 +1183,7 @@ impl InventoryFamilies {
         if record.endpoint() != from {
             return Err(InventoryError::NoLot);
         }
+        self.require_unheld_lot(txn, lot)?;
         let moved = record.checked_relocate(record.revision(), to)?;
         txn.replace(&self.lots, &lot, moved.clone())?;
         self.move_lots(txn, from, -1)?;
@@ -1255,6 +1263,10 @@ impl InventoryFamilies {
             depth,
         )?;
         // Validate-then-mutate: every check above ran before the first write.
+        for id in &ordered {
+            self.require_unheld_lot(txn, *id)?;
+        }
+        self.require_new_lot(txn, child)?;
         let consumed = i64::try_from(ordered.len()).map_err(|_| InventoryError::Identity)?;
         self.move_lots(txn, endpoint, 1 - consumed)?;
         for id in &ordered {
@@ -1289,6 +1301,7 @@ impl InventoryFamilies {
         if record.endpoint() != endpoint {
             return Err(InventoryError::NoLot);
         }
+        self.require_unheld_lot(txn, lot)?;
         let commodity = record.commodity().clone();
         // One tranche per `(endpoint, commodity, generation)`, keyed
         // deterministically. That is what lets `crystallize` name a parent
@@ -1408,6 +1421,7 @@ impl InventoryFamilies {
         grade: Grade,
         child: LotId,
     ) -> Result<(Lot, Moved), InventoryError> {
+        self.require_new_lot(txn, child)?;
         let (tranche_id, tranche) = self
             .tranche_for(txn, endpoint, commodity)?
             .ok_or(InventoryError::NoTranche)?;
@@ -1473,6 +1487,7 @@ impl InventoryFamilies {
         source: mush_economy::ExternalRef,
         child: LotId,
     ) -> Result<Lot, InventoryError> {
+        self.require_new_lot(txn, child)?;
         if txn.get(&self.lots, &child)?.is_some() {
             return Err(InventoryError::AlreadyExists);
         }
@@ -1642,6 +1657,9 @@ pub fn project(
 /// partial write: `ActionTxn` discards the whole mutation set on any error.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum InventoryError {
+    /// A permanently retained exact-input head protects this physical identity.
+    #[error("that lot is reserved or its identity is retired")]
+    ExactInput,
     /// A record refused its own invariants.
     #[error(transparent)]
     Record(#[from] InventoryRecordError),

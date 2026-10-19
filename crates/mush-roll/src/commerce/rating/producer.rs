@@ -129,223 +129,282 @@ where
         txn: &mut ActionTxn<'_>,
         context: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, RatingError> {
-        let request = self.request(inv)?;
-        // Active composition and the all-loaded source/root audit are required
-        // for every transition. Initialize registers no producer or worker.
-        context
-            .world()
-            .map_err(invalid)?
-            .module_state::<RollStore>()
-            .ok_or(RatingError::Unavailable)?
-            .commerce_ready()
-            .map_err(invalid)?;
-        let deployment = txn
-            .get(&self.commerce.deployment, &"registry".to_owned())
-            .map_err(invalid)?
-            .ok_or(RatingError::Unavailable)?;
-        deployment.validate().map_err(invalid)?;
+        // Fixed phase names aid operator diagnostics without recording source,
+        // receipt data, subject identities or the underlying refusal payload.
+        let mut stage = "request";
+        let result = (|| {
+            let request = self.request(inv)?;
+            // Active composition and the all-loaded source/root audit are required
+            // for every transition. Initialize registers no producer or worker.
+            context
+                .world()
+                .map_err(invalid)?
+                .module_state::<RollStore>()
+                .ok_or(RatingError::Unavailable)?
+                .commerce_ready()
+                .map_err(invalid)?;
+            let deployment = txn
+                .get(&self.commerce.deployment, &"registry".to_owned())
+                .map_err(invalid)?
+                .ok_or(RatingError::Unavailable)?;
+            deployment.validate().map_err(invalid)?;
 
-        let (quota_request, old, marked) = match request {
-            Request::Admit { ticket, revision } => {
-                let exact = context
-                    .world()
-                    .map_err(invalid)?
-                    .module_state::<RollStore>()
-                    .ok_or(RatingError::Unavailable)?
-                    .revision(inv.actor(), revision.key)
-                    .map_err(invalid)?;
-                if exact.reference() != revision {
-                    return Err(RatingError::Identity);
-                }
-                let identity = RevisionIdentity::capture(exact).map_err(invalid)?;
-                let marked = if exact.require_original_access().is_ok() {
-                    None
-                } else {
-                    let handle = self.marked.as_ref().ok_or(RatingError::Unavailable)?;
-                    let access = context
-                        .read_owner_preimage(
-                            txn,
-                            handle,
-                            crate::commerce::marked_rating::MarkedRatingRequest::new(revision),
-                        )
+            let (quota_request, old, marked) = match request {
+                Request::Admit { ticket, revision } => {
+                    let exact = context
+                        .world()
+                        .map_err(invalid)?
+                        .module_state::<RollStore>()
+                        .ok_or(RatingError::Unavailable)?
+                        .revision(inv.actor(), revision.key)
                         .map_err(invalid)?;
-                    if access.actor() != inv.actor()
-                        || RevisionIdentity::capture(access.revision()).map_err(invalid)?
-                            != identity
+                    if exact.reference() != revision {
+                        return Err(RatingError::Identity);
+                    }
+                    let identity = RevisionIdentity::capture(exact).map_err(invalid)?;
+                    let marked = if exact.require_original_access().is_ok() {
+                        None
+                    } else {
+                        let handle = self.marked.as_ref().ok_or(RatingError::Unavailable)?;
+                        let access = context
+                            .read_owner_preimage(
+                                txn,
+                                handle,
+                                crate::commerce::marked_rating::MarkedRatingRequest::new(revision),
+                            )
+                            .map_err(invalid)?;
+                        if access.actor() != inv.actor()
+                            || RevisionIdentity::capture(access.revision()).map_err(invalid)?
+                                != identity
+                        {
+                            return Err(RatingError::Identity);
+                        }
+                        Some(access)
+                    };
+                    let proof = context.personal_account().map_err(invalid)?;
+                    (QuotaRequest::admit(ticket, identity, proof), None, marked)
+                }
+                Request::Existing { ticket, job } => {
+                    let old_job = txn
+                        .get(&self.ratings.jobs, &job)
+                        .map_err(invalid)?
+                        .cloned()
+                        .ok_or(RatingError::Unavailable)?;
+                    let execution = txn
+                        .get(&self.ratings.executions, &job)
+                        .map_err(invalid)?
+                        .cloned()
+                        .ok_or(RatingError::Unavailable)?;
+                    execution.matches_job(&old_job)?;
+                    if old_job.subject().revision().revision().key.character != inv.actor()
+                        || !accepts_compatibility(
+                            self.transition,
+                            &self.compatibility,
+                            old_job.compatibility().digest(),
+                        )
+                        || execution.observation().phase.terminal()
                     {
                         return Err(RatingError::Identity);
                     }
-                    Some(access)
-                };
-                let proof = context.personal_account().map_err(invalid)?;
-                (QuotaRequest::admit(ticket, identity, proof), None, marked)
+                    let request = match self.transition {
+                        Transition::Grant => QuotaRequest::grant(ticket, execution.clone()),
+                        Transition::Settle => QuotaRequest::settle(ticket, execution.clone()),
+                        Transition::Cancel => QuotaRequest::cancel(
+                            ticket,
+                            execution.clone(),
+                            context.personal_account().map_err(invalid)?,
+                        ),
+                        Transition::Recover => QuotaRequest::recover(ticket, execution.clone()),
+                        Transition::Admit => return Err(RatingError::Invalid),
+                    };
+                    (request, Some((old_job, execution)), None)
+                }
+            };
+            // These are capabilities for the actual registered slots. Structural
+            // constructors on an output type are not an alternate input to here.
+            stage = "quota";
+            let quota = context
+                .prepare_owner(&self.quota, quota_request)
+                .map_err(invalid)?;
+            if quota.operation() != context.commit_token()
+                || quota.transition() != self.transition
+                || quota.admission().character != inv.actor()
+                || !accepts_compatibility(
+                    self.transition,
+                    &self.compatibility,
+                    quota.admission().compatibility,
+                )
+            {
+                return Err(RatingError::Identity);
             }
-            Request::Existing { ticket, job } => {
-                let old_job = txn
-                    .get(&self.ratings.jobs, &job)
-                    .map_err(invalid)?
-                    .cloned()
-                    .ok_or(RatingError::Unavailable)?;
-                let execution = txn
-                    .get(&self.ratings.executions, &job)
-                    .map_err(invalid)?
-                    .cloned()
-                    .ok_or(RatingError::Unavailable)?;
-                execution.matches_job(&old_job)?;
-                if old_job.subject().revision().revision().key.character != inv.actor()
-                    || !accepts_compatibility(
-                        self.transition,
-                        &self.compatibility,
-                        old_job.compatibility().digest(),
-                    )
-                    || execution.observation().phase.terminal()
-                {
-                    return Err(RatingError::Identity);
-                }
-                let request = match self.transition {
-                    Transition::Grant => QuotaRequest::grant(ticket, execution.clone()),
-                    Transition::Settle => QuotaRequest::settle(ticket, execution.clone()),
-                    Transition::Cancel => QuotaRequest::cancel(
-                        ticket,
-                        execution.clone(),
-                        context.personal_account().map_err(invalid)?,
-                    ),
-                    Transition::Recover => QuotaRequest::recover(ticket, execution.clone()),
-                    Transition::Admit => return Err(RatingError::Invalid),
-                };
-                (request, Some((old_job, execution)), None)
+            stage = "artifact";
+            let artifacts = context
+                .prepare_owner(&self.artifacts, ArtifactRequest::from_quota(&quota))
+                .map_err(invalid)?;
+            if !artifacts.matches(&quota)? {
+                return Err(RatingError::Identity);
             }
-        };
-        // These are capabilities for the actual registered slots. Structural
-        // constructors on an output type are not an alternate input to here.
-        let quota = context
-            .prepare_owner(&self.quota, quota_request)
-            .map_err(invalid)?;
-        if quota.operation() != context.commit_token()
-            || quota.transition() != self.transition
-            || quota.admission().character != inv.actor()
-            || !accepts_compatibility(
-                self.transition,
-                &self.compatibility,
-                quota.admission().compatibility,
-            )
-        {
-            return Err(RatingError::Identity);
-        }
-        let artifacts = context
-            .prepare_owner(&self.artifacts, ArtifactRequest::from_quota(&quota))
-            .map_err(invalid)?;
-        if !artifacts.matches(&quota)? {
-            return Err(RatingError::Identity);
-        }
-        let commit = context.commit_token();
-        let (job, execution, roots) = match old {
-            None => {
-                if artifacts.into_measured().is_some() {
-                    return Err(RatingError::Identity);
-                }
-                let (subject, compatibility) = quota.subject().ok_or(RatingError::Incomplete)?;
-                let exact = context
-                    .world()
-                    .map_err(invalid)?
-                    .module_state::<RollStore>()
-                    .ok_or(RatingError::Unavailable)?
-                    .revision(inv.actor(), subject.revision().revision().key)
-                    .map_err(invalid)?;
-                let envelope = super::digest(
-                    "tacsim.registry.envelope.v1",
-                    exact.envelope(),
-                    crate::MAX_ENVELOPE_BYTES,
-                )?;
-                if quota.job() != commit
-                    || compatibility != &self.compatibility
-                    || subject.revision() != RevisionIdentity::capture(exact).map_err(invalid)?
-                    || subject.envelope() != envelope
-                    || subject.schema() != schema_line_digest(exact.envelope()).map_err(invalid)?
-                {
-                    return Err(RatingError::Identity);
-                }
-                let job = RatingJob::new(
-                    commit,
-                    subject.clone(),
-                    compatibility.clone(),
-                    quota.admission().plan,
-                );
-                let execution =
-                    RatingExecution::admit(&job, quota.admission().clone(), quota.after().clone())?;
-                txn.insert(&self.ratings.jobs, &commit, job.clone())
-                    .map_err(invalid)?;
-                txn.insert(&self.ratings.executions, &commit, execution.clone())
-                    .map_err(invalid)?;
-                let roots = match marked {
-                    Some(access) => {
-                        RatingRoots::admission_marked(&job, commit, self.action.clone(), access)?
+            let commit = context.commit_token();
+            let (job, execution, roots) = match old {
+                None => {
+                    if artifacts.into_measured().is_some() {
+                        return Err(RatingError::Identity);
                     }
-                    None => RatingRoots::admission(&job, commit)?,
-                };
-                context
-                    .reserve_registry_rating_completion(txn)
-                    .map_err(invalid)?;
-                (job, execution, roots)
-            }
-            Some((old_job, before)) => {
-                if quota.job() != old_job.job()
-                    || quota.admission() != before.admission()
-                    || quota.before() != Some(before.observation())
-                    || quota.subject().is_some()
-                {
-                    return Err(RatingError::Identity);
-                }
-                let completion = match artifacts.into_measured() {
-                    Some(measured) => {
-                        let issued = context.world().map_err(invalid)?.world_ic_now();
-                        Some(
-                            measured
-                                .publish_parts(RatingPublication::new(old_job.job(), issued)?)?,
-                        )
-                    }
-                    None => None,
-                };
-                let receipt = completion.as_ref().map(|(receipt, _)| receipt);
-                let job = resulting_job(&old_job, &quota, receipt)?;
-                let execution =
-                    before.observed(before.observation(), quota.after().clone(), &job, commit)?;
-                if let Some((receipt, pages)) = &completion {
-                    execution.verify_completion(&job, receipt, pages)?;
-                    self.stage_completion(txn, &execution, receipt, pages)?;
-                }
-                txn.replace(&self.ratings.jobs, &job.job(), job.clone())
-                    .map_err(invalid)?;
-                txn.replace(&self.ratings.executions, &job.job(), execution.clone())
-                    .map_err(invalid)?;
-                let roots = if job == old_job {
-                    RatingRoots::settled_progress(&job, commit)?
-                } else {
-                    RatingRoots::transition(&old_job, &job, receipt, commit)?
-                };
-                if quota.after().phase.terminal() {
-                    context
-                        .finish_registry_rating_completion(txn, job.job())
+                    let (subject, compatibility) =
+                        quota.subject().ok_or(RatingError::Incomplete)?;
+                    let exact = context
+                        .world()
+                        .map_err(invalid)?
+                        .module_state::<RollStore>()
+                        .ok_or(RatingError::Unavailable)?
+                        .revision(inv.actor(), subject.revision().revision().key)
                         .map_err(invalid)?;
+                    let envelope = super::digest(
+                        "tacsim.registry.envelope.v1",
+                        exact.envelope(),
+                        crate::MAX_ENVELOPE_BYTES,
+                    )?;
+                    if quota.job() != commit
+                        || compatibility != &self.compatibility
+                        || subject.revision()
+                            != RevisionIdentity::capture(exact).map_err(invalid)?
+                        || subject.envelope() != envelope
+                        || subject.schema()
+                            != schema_line_digest(exact.envelope()).map_err(invalid)?
+                    {
+                        return Err(RatingError::Identity);
+                    }
+                    let job = RatingJob::new(
+                        commit,
+                        subject.clone(),
+                        compatibility.clone(),
+                        quota.admission().plan,
+                    );
+                    let execution = RatingExecution::admit(
+                        &job,
+                        quota.admission().clone(),
+                        quota.after().clone(),
+                    )?;
+                    txn.insert(&self.ratings.jobs, &commit, job.clone())
+                        .map_err(invalid)?;
+                    txn.insert(&self.ratings.executions, &commit, execution.clone())
+                        .map_err(invalid)?;
+                    let roots = match marked {
+                        Some(access) => RatingRoots::admission_marked(
+                            &job,
+                            commit,
+                            self.action.clone(),
+                            access,
+                        )?,
+                        None => RatingRoots::admission(&job, commit)?,
+                    };
+                    context
+                        .reserve_registry_rating_completion(txn)
+                        .map_err(invalid)?;
+                    (job, execution, roots)
                 }
-                (job, execution, roots)
-            }
-        };
-        // Read through the exact typed post-images before asking the final
-        // participant to reserve/exchange source roots in the same commit.
-        exact(txn, &self.ratings.jobs, &job.job(), &job)?;
-        exact(txn, &self.ratings.executions, &job.job(), &execution)?;
-        context
-            .prepare_owner(&self.roots, RootRequest::Rating(roots))
-            .map_err(invalid)?;
-        let outcome = RulesValue::new(
+                Some((old_job, before)) => {
+                    if quota.job() != old_job.job()
+                        || quota.admission() != before.admission()
+                        || quota.before() != Some(before.observation())
+                        || quota.subject().is_some()
+                    {
+                        return Err(RatingError::Identity);
+                    }
+                    stage = "result-publication";
+                    let mut rejection = None;
+                    let completion =
+                        match artifacts.into_measured() {
+                            Some(super::nonconformance::MeasuredRegistryResult::Certified(
+                                measured,
+                            )) => {
+                                let issued = context.world().map_err(invalid)?.world_ic_now();
+                                Some(measured.publish_parts(RatingPublication::new(
+                                    old_job.job(),
+                                    issued,
+                                )?)?)
+                            }
+                            Some(super::nonconformance::MeasuredRegistryResult::Nonconforming(
+                                measured,
+                            )) => {
+                                let issued = context.world().map_err(invalid)?.world_ic_now();
+                                rejection = Some(measured.publish_parts(
+                                    RatingPublication::new(old_job.job(), issued)?,
+                                )?);
+                                None
+                            }
+                            None => None,
+                        };
+                    let receipt = completion.as_ref().map(|(receipt, _)| receipt);
+                    let rejected = rejection.as_ref().map(|(receipt, _)| receipt);
+                    stage = "job-transition";
+                    let job = resulting_job(&old_job, &quota, receipt, rejected)?;
+                    stage = "observation";
+                    let execution = before.observed(
+                        before.observation(),
+                        quota.after().clone(),
+                        &job,
+                        commit,
+                    )?;
+                    if let Some((receipt, pages)) = &completion {
+                        execution.verify_completion(&job, receipt, pages)?;
+                        self.stage_completion(txn, &execution, receipt, pages)?;
+                    }
+                    if let Some((receipt, pages)) = &rejection {
+                        stage = "rejection-verify";
+                        execution.verify_nonconformance(&job, receipt, pages)?;
+                        stage = "rejection-insert";
+                        txn.insert(&self.ratings.nonconformance, &job.job(), receipt.clone())
+                            .map_err(invalid)?;
+                        stage = "rejection-readback";
+                        exact(txn, &self.ratings.nonconformance, &job.job(), receipt)?;
+                        stage = "rejection-pages";
+                        for page in pages {
+                            let key = page.key();
+                            txn.insert(&self.ratings.pages, &key, page.clone())
+                                .map_err(invalid)?;
+                            exact(txn, &self.ratings.pages, &key, page)?;
+                        }
+                    }
+                    stage = "job-replace";
+                    txn.replace(&self.ratings.jobs, &job.job(), job.clone())
+                        .map_err(invalid)?;
+                    txn.replace(&self.ratings.executions, &job.job(), execution.clone())
+                        .map_err(invalid)?;
+                    stage = "root-delta";
+                    let roots = if job == old_job {
+                        RatingRoots::settled_progress(&job, commit)?
+                    } else {
+                        RatingRoots::transition(&old_job, &job, receipt, commit)?
+                    };
+                    stage = "capacity";
+                    if quota.after().phase.terminal() {
+                        context
+                            .finish_registry_rating_completion(txn, job.job())
+                            .map_err(invalid)?;
+                    }
+                    (job, execution, roots)
+                }
+            };
+            // Read through the exact typed post-images before asking the final
+            // participant to reserve/exchange source roots in the same commit.
+            stage = "readback";
+            exact(txn, &self.ratings.jobs, &job.job(), &job)?;
+            exact(txn, &self.ratings.executions, &job.job(), &execution)?;
+            stage = "root-owner";
+            context
+                .prepare_owner(&self.roots, RootRequest::Rating(roots))
+                .map_err(invalid)?;
+            let outcome = RulesValue::new(
             self.outcome.clone(),
             json!({"job":job.job(),"operation":commit,"transition":self.transition.action_id()}),
         )
         .map_err(invalid)?;
-        Ok(AuthoritativeActionOutput::new(outcome)
-            .with_definitions(vec![self.outcome.clone(), self.manifest.clone()])
-            .with_eligible_witnesses(vec![inv.principal().clone()]))
+            Ok(AuthoritativeActionOutput::new(outcome)
+                .with_definitions(vec![self.outcome.clone(), self.manifest.clone()])
+                .with_eligible_witnesses(vec![inv.principal().clone()]))
+        })();
+        result.inspect_err(|_| tracing::debug!(target: "registry_preparation", stage, "Registry preparation refused"))
     }
 
     fn stage_completion(
@@ -407,9 +466,12 @@ fn resulting_job(
     old: &RatingJob,
     quota: &QuotaOutput,
     receipt: Option<&RatingReceipt>,
+    rejected: Option<&super::nonconformance::RatingNonconformance>,
 ) -> Result<RatingJob, RatingError> {
     use ExecutionPhase as Phase;
-    if (quota.after().phase == Phase::Complete) != receipt.is_some() {
+    if (receipt.is_some() && rejected.is_some())
+        || (quota.after().phase == Phase::Complete) != (receipt.is_some() || rejected.is_some())
+    {
         return Err(RatingError::Incomplete);
     }
     let next = match (quota.transition(), quota.after().phase) {
@@ -426,8 +488,16 @@ fn resulting_job(
             }
             return Ok(old.clone());
         }
-        (Transition::Settle, Phase::Complete) => RatingJobState::Completed {
-            receipt: receipt.ok_or(RatingError::Incomplete)?.reference()?,
+        (Transition::Settle, Phase::Complete) => match (receipt, rejected) {
+            (Some(receipt), None) => RatingJobState::Completed {
+                receipt: receipt.reference()?,
+            },
+            (None, Some(receipt)) if quota.admission().measured_rejection => {
+                RatingJobState::Nonconforming {
+                    receipt: receipt.reference()?,
+                }
+            }
+            _ => return Err(RatingError::Incomplete),
         },
         (Transition::Settle, Phase::Failed) => RatingJobState::Failed {
             reason: RatingFailure::Execution,

@@ -82,12 +82,14 @@
 
 // E2a — the pure library.
 mod amount;
+pub mod core_integration;
 mod engine;
 mod hash;
 mod ids;
 pub mod managed_entitlement;
 pub mod managed_purchase;
 pub mod managed_renewal;
+mod managed_title;
 mod plan;
 mod record;
 pub mod registry_filing;
@@ -254,6 +256,7 @@ pub use contract_live::{
 
 // E4c — facts, events, evidence.
 pub use attest::{MAX_CANON_CONTRACTS_VISITED, MAX_OBSERVER_SETTLEMENTS_PER_EVENT};
+pub use facts::scoped::{ContractFactScope, FactPurpose, ScopedFactContext, contract_fact};
 pub use facts::{FactProvider, FactState, FactTable, WorldFacts, has_fact_provider};
 pub use module::CANON_TAIL;
 pub use observer::{EconomyObserver, MAX_OBSERVER_DEPTH, ObserverTable, observer_depth};

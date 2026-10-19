@@ -520,3 +520,123 @@ fn marked_registry_is_explicit_saved_admission_with_unchanged_rating_protocol() 
 
 #[path = "entitlement_tests.rs"]
 mod entitlement_tests;
+
+#[path = "ic_tests.rs"]
+mod ic;
+
+#[test]
+fn registry_recall_configuration_is_explicit_stable_and_active_only() -> TestResult {
+    use mush_roll::commerce::registry_recall::{REGISTRY_RECALL_CAPABILITY, RegistryRecallPolicy};
+    let policy = RegistryRecallPolicy::new(
+        issuer()?,
+        mush_org::OrgId(4),
+        mush_org::OrgScopeId(5),
+        vec![mush_core::ObjId(6)],
+    )?;
+    assert!(
+        prepare(CommerceMode::Initialize)?
+            .with_registry_recall(policy.clone())
+            .is_err()
+    );
+    let ordinary = prepare(CommerceMode::Active)?;
+    let plain = engine(&ordinary)?;
+    assert!(!has(&plain, "roll", "action", "registry_revision_recall"));
+    let configured = ordinary.with_registry_recall(policy.clone())?;
+    let actual = engine(&configured)?;
+    let definitions = actual.registry.definitions().ok_or("real definitions")?;
+    assert!(definitions.get_exact(&policy.action()?).is_ok());
+    assert!(
+        crate::composition::org_capability_vocabulary().contains(
+            &mush_org::CapabilityId::new(REGISTRY_RECALL_CAPABILITY).ok_or("capability")?
+        )
+    );
+    // Registration alone does not create an Org, scope, actor, grant or healthy
+    // commerce world. The genuine child supplies those through real producers.
+    assert!(actual.world.module_state::<mush_org::OrgStore>().is_none());
+    assert!(configured.with_registry_recall(policy).is_err());
+    Ok(())
+}
+
+#[test]
+fn registry_revocation_configuration_is_explicit_stable_and_active_only() -> TestResult {
+    use mush_roll::commerce::registry_revocation::{
+        REGISTRY_REVOCATION_CAPABILITY, RegistryRevocationPolicy,
+    };
+    let policy = RegistryRevocationPolicy::new(
+        issuer()?,
+        mush_org::OrgId(4),
+        mush_org::OrgScopeId(5),
+        vec![mush_core::ObjId(6)],
+    )?;
+    assert!(
+        prepare(CommerceMode::Initialize)?
+            .with_registry_revocation(policy.clone())
+            .is_err()
+    );
+    let ordinary = prepare(CommerceMode::Active)?;
+    let plain = engine(&ordinary)?;
+    assert!(!has(&plain, "roll", "action", "registry_term_revocation"));
+    let configured = ordinary.with_registry_revocation(policy.clone())?;
+    let actual = engine(&configured)?;
+    let definitions = actual.registry.definitions().ok_or("real definitions")?;
+    assert!(definitions.get_exact(&policy.action()?).is_ok());
+    assert!(crate::composition::org_capability_vocabulary().contains(
+        &mush_org::CapabilityId::new(REGISTRY_REVOCATION_CAPABILITY).ok_or("capability")?
+    ));
+    // Registration alone does not create an Org, scope, actor, grant or healthy
+    // commerce world. The genuine child supplies those through real producers.
+    assert!(actual.world.module_state::<mush_org::OrgStore>().is_none());
+    assert!(configured.with_registry_revocation(policy).is_err());
+    Ok(())
+}
+#[test]
+fn minds_facts_are_explicit_active_and_register_exact_service_and_action() -> TestResult {
+    assert!(
+        prepare(CommerceMode::Initialize)?
+            .with_minds_facts()
+            .is_err()
+    );
+    let ordinary = prepare(CommerceMode::Active)?;
+    let engine_without = engine(&ordinary)?;
+    assert!(!has(
+        &engine_without,
+        "roll",
+        "action",
+        "record_mind_term_lapse"
+    ));
+    assert!(!has(
+        &engine_without,
+        "roll",
+        "owner_read",
+        "minds_contract_facts"
+    ));
+    let selected = prepare(CommerceMode::Active)?.with_minds_facts()?;
+    let actual = engine(&selected)?;
+    assert!(has(&actual, "roll", "action", "record_mind_term_lapse"));
+    assert!(has(&actual, "roll", "owner_read", "minds_contract_facts"));
+    let count = actual
+        .registry
+        .definitions()
+        .ok_or("definitions")?
+        .iter()
+        .filter(|d| {
+            d.reference().key().owner.as_str() == "roll"
+                && d.reference().key().kind.as_str() == "action"
+                && d.reference().key().id.as_str() == "record_mind_term_lapse"
+        })
+        .count();
+    assert_eq!(
+        count, 1,
+        "the actual action is declared once and shared with its participant"
+    );
+    assert!(selected.with_minds_facts().is_err());
+    // Merely registering a fact provider cannot fabricate commercial readiness.
+    let provider = mush_roll::commerce::facts::MindsFactProvider::new();
+    use mush_economy::FactProvider;
+    assert!(
+        provider
+            .resolve(&actual.world, "filed", "filed/0000000000000001", Some(1))
+            .is_none()
+    );
+    Ok(())
+}

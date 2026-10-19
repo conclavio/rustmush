@@ -882,8 +882,8 @@ fn ic9_undock_flies_the_lane_and_docks_at_stickney() {
     assert_eq!(pool(&mut rig.tw, vault, "provisions"), 0, "19 -> 0");
     let t = ticket(&mut rig.tw, hull, 1).expect("ticket {hull, seq 1}");
     let secs: Vec<u32> = t.plan.legs.iter().map(|l| l.secs).collect();
-    assert_eq!(secs, vec![326_136, 1_274_245]);
-    assert_eq!(t.plan.total_s, 1_600_381);
+    assert_eq!(secs, vec![326_136, 1_274_226]);
+    assert_eq!(t.plan.total_s, 1_600_362);
     assert_eq!(t.seq, 1);
     assert_eq!(t.manifest.tank, 53);
     assert_eq!(t.manifest.locker, 19);
@@ -893,7 +893,7 @@ fn ic9_undock_flies_the_lane_and_docks_at_stickney() {
     let events = fire_quietly(&mut rig);
     let j = journey(&rig.tw, hull).expect("a journey");
     assert_eq!(j.route().id().as_str(), "ceres_stickney");
-    assert_eq!(j.leg_times(), Some(&[326_136_u32, 1_274_245][..]));
+    assert_eq!(j.leg_times(), Some(&[326_136_u32, 1_274_226][..]));
     assert_eq!(j.departed().at, t.plan.depart_ic);
     let heard = said(&rig.tw, &events, pilot);
     assert!(
@@ -958,7 +958,7 @@ fn ic9_undock_flies_the_lane_and_docks_at_stickney() {
     );
 
     // The docking.
-    let arrival = t.plan.depart_ic + 1_600_381;
+    let arrival = t.plan.depart_ic + 1_600_362;
     let events = to_ic(&mut rig, arrival - 3_600);
     assert!(!said(&rig.tw, &events, pilot).contains("docks at"));
     let events = to_ic(&mut rig, arrival);
@@ -1723,7 +1723,7 @@ fn ic9_an_absent_pilot_reads_the_passage_on_reconnect() {
     }
     assert!(journey(&rig.tw, hull).is_some(), "launched");
     let _ = to_ic(&mut rig, pending.plan.depart_ic + 326_136);
-    let _ = to_ic(&mut rig, pending.plan.depart_ic + 1_600_381);
+    let _ = to_ic(&mut rig, pending.plan.depart_ic + 1_600_362);
     let queued = pending_notices(rig.tw.world(), pilot);
     let has = |needle: &str| queued.iter().filter(|line| line.contains(needle)).count();
     assert_eq!(

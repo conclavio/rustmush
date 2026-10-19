@@ -1,4 +1,4 @@
-//! The two real owner-stamped read contexts share validation, not authority.
+//! The real owner-stamped read contexts share validation, not authority.
 //! No outside implementation, callback, writable handle or synthetic healthy
 //! view can implement this private adapter.
 

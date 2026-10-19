@@ -109,21 +109,32 @@ impl UpdateProvider {
             .map_err(bad)?
             .cloned()
             .ok_or(PublicationError::Missing)?;
-        let term = txn
-            .get(
-                &self.families.terms,
-                &OwnerTerm::encoded_key(birth.licence, licence.term),
-            )
-            .map_err(bad)?
-            .cloned()
-            .ok_or(PublicationError::Missing)?;
+        let term = super::super::owner_attestation::history::current_in_txn(
+            txn,
+            ctx.world().map_err(bad)?,
+            &self.families,
+            &licence,
+        )?;
         charter.validate()?;
         licence.validate()?;
         term.validate()?;
+        super::super::registry_revocation::current::require_in_txn(
+            txn,
+            &self.families,
+            licence.id,
+            term.generation,
+            None,
+        )?;
+        let ownership = super::super::charter_transfer::history::current_in_txn(
+            txn,
+            ctx.world().map_err(bad)?,
+            &self.families,
+            &birth,
+            inv.actor(),
+        )?;
         if birth.format != 1
             || birth.parent.is_some()
             || birth.economic.house.is_some()
-            || birth.requester != inv.actor()
             || birth.line != line.id
             || birth.charter != line.charter
             || charter.operation != birth.commit
@@ -131,11 +142,9 @@ impl UpdateProvider {
             || licence.operation != birth.commit
             || licence.charter != line.charter
             || licence.line != line.id
-            || licence.term != birth.term
-            || term.operation != birth.commit
             || term.licence != licence.id
             || term.generation != licence.term
-            || term.format != 1
+            || !matches!(term.format, 1 | 3)
             || term.parent.is_some()
             || term.revision != (RevisionPolicy::Follow { line: line.id })
         {
@@ -261,7 +270,14 @@ impl UpdateProvider {
             operation: commit,
         };
         let operation = UpdateOperation {
-            format: 1,
+            format: if ownership.generation > 1 {
+                3
+            } else if term.generation.get() == 1 {
+                1
+            } else {
+                2
+            },
+            charter_ownership: (ownership.generation > 1).then_some(ownership),
             commit,
             action: self.action.clone(),
             actor: inv.actor(),
@@ -281,6 +297,7 @@ impl UpdateProvider {
             economic: economic.subject().clone(),
         };
         operation.check_birth(&birth)?;
+        operation.check_owner_term(&term)?;
         operation.check_filed(&file)?;
         let position = UpdatePosition {
             format: 1,

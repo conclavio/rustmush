@@ -5,7 +5,7 @@ use super::*;
 use mush_core::submission_observation::{
     SubmissionDispositionReader, SubmissionRuntime, SubmissionRuntimeState,
 };
-use mush_core::{AuthoritativeSubmit, Inbound, OfferExecutionContext, OfferSubmission};
+use mush_core::{AuthoritativeSubmit, OfferExecutionContext, OfferSubmission};
 use mush_economy::managed_renewal::RenewalServiceCloseReason;
 use std::sync::atomic::{AtomicBool, Ordering};
 const SERVICE_CLOSE: &str = "close_mind_renewal_service";
@@ -327,6 +327,11 @@ pub(super) fn exercise(
         }
         fire(&mut close)?;
         let (request, proof) = next(&mut close, GOD, SERVICE_CLOSE)?;
+        assert_eq!(
+            request.parameters,
+            json!({}),
+            "service offer has no public parameters"
+        );
         let unchanged = balances(&close)?;
         for corrupt in 0..3 {
             let mut wrong = (*request).clone();

@@ -15,6 +15,7 @@ use super::{RevisionIdentity, WorldIcSeconds};
 
 pub mod execution;
 pub mod families;
+pub mod nonconformance;
 pub(crate) mod producer;
 pub mod protocol;
 pub mod registration;
@@ -1264,9 +1265,18 @@ fn required_option<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RatingJobState {
     Queued {},
-    Running { lease_sequence: u64 },
-    Completed { receipt: RatingRef },
-    Failed { reason: RatingFailure },
+    Running {
+        lease_sequence: u64,
+    },
+    Completed {
+        receipt: RatingRef,
+    },
+    Nonconforming {
+        receipt: nonconformance::NonconformanceRef,
+    },
+    Failed {
+        reason: RatingFailure,
+    },
     Interrupted {},
     Cancelled {},
 }
@@ -1335,6 +1345,16 @@ impl RatingJob {
             && receipt.plan() == self.plan
             && matches!(self.state(), RatingJobState::Completed { receipt: actual } if *actual == receipt.reference()?))
     }
+    pub(crate) fn matches_nonconformance(
+        &self,
+        receipt: &nonconformance::RatingNonconformance,
+    ) -> Result<bool, RatingError> {
+        Ok(receipt.publication().job() == self.job
+            && receipt.subject() == &self.subject
+            && receipt.compatibility() == &self.compatibility
+            && receipt.plan() == self.plan
+            && matches!(self.state(), RatingJobState::Nonconforming { receipt: actual } if *actual == receipt.reference()?))
+    }
     /// Closed owner mutation; the composed service still checks the real paid
     /// flight and immutable source before preparing this post-image.
     pub(crate) fn transition(&self, state: RatingJobState) -> Result<Self, RatingError> {
@@ -1357,6 +1377,7 @@ impl RatingJob {
             (
                 RatingJobState::Running { .. },
                 RatingJobState::Completed { .. }
+                | RatingJobState::Nonconforming { .. }
                 | RatingJobState::Failed { .. }
                 | RatingJobState::Interrupted {}
                 | RatingJobState::Cancelled {},

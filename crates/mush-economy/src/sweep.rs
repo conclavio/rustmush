@@ -1303,8 +1303,8 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             w: ctx.w,
             providers,
         };
-        let facts = crate::facts::WorldFacts {
-            w: ctx.w,
+        let facts = crate::facts::scoped::ContextualWorldFacts {
+            ctx,
             providers: store.facts(),
         };
         let world = api::WorldAuth { w: ctx.w };
@@ -1480,8 +1480,8 @@ fn stamp_observed_conditions(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             w: ctx.w,
             providers,
         };
-        let facts = crate::facts::WorldFacts {
-            w: ctx.w,
+        let facts = crate::facts::scoped::ContextualWorldFacts {
+            ctx,
             providers: store.facts(),
         };
         let world = api::WorldAuth { w: ctx.w };
@@ -2048,6 +2048,7 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
             // These exact terminal holds remain part of the permanent paired
             // purchase audit. Their funding already admitted that footprint.
             .filter(|h| !crate::managed_purchase::closed_namespace(h.holder.namespace.as_str()))
+            .filter(|h| !crate::core_integration::bridge::retained_hold(h))
             .filter(|h| {
                 // A terminal hold with no recorded terminal instant (a journal older
                 // than this store's bookkeeping) is kept: never collect on a guess.

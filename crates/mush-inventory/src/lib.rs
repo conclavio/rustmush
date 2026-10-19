@@ -56,6 +56,7 @@
 )]
 
 pub mod commands;
+pub mod core_input;
 pub mod facts;
 pub mod guard;
 pub mod module;

@@ -750,6 +750,7 @@ pub struct StateFamilyRegistryBuilder {
     entitlement_purchase: Option<terminal_capacity::EntitlementProtocol>,
     mind_renewal: Option<terminal_capacity::RenewalProtocol>,
     ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
+    core_integration: Option<terminal_capacity::CoreIntegrationProtocol>,
 }
 
 impl fmt::Debug for StateFamilyRegistryBuilder {
@@ -924,6 +925,19 @@ impl StateFamilyRegistryBuilder {
         Ok(())
     }
 
+    pub(crate) fn registry_reconformance_capacity(
+        &mut self,
+        owner: &OwnerId,
+        actions: [crate::DefinitionRef; 5],
+    ) -> Result<(), ActionStateError> {
+        self.registry_rating
+            .as_mut()
+            .ok_or(ActionStateError::TerminalCapacity(
+                "Registry rating declaration required",
+            ))?
+            .with_reconformance(owner, actions)
+    }
+
     pub(crate) fn original_mind_purchase_capacity(
         &mut self,
         owner: &OwnerId,
@@ -964,6 +978,25 @@ impl StateFamilyRegistryBuilder {
             participants,
             original_actions,
             derived_actions,
+        )?);
+        Ok(())
+    }
+
+    pub(crate) fn core_integration_capacity(
+        &mut self,
+        owner: &OwnerId,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 5],
+    ) -> Result<(), ActionStateError> {
+        if self.core_integration.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate core integration protocol",
+            ));
+        }
+        self.core_integration = Some(terminal_capacity::CoreIntegrationProtocol::new(
+            owner,
+            participants,
+            actions,
         )?);
         Ok(())
     }
@@ -1072,6 +1105,7 @@ impl StateFamilyRegistryBuilder {
             self.entitlement_purchase.as_ref(),
             self.mind_renewal.as_ref(),
             self.ic_mind_claim.as_ref(),
+            self.core_integration.as_ref(),
         )?;
         let registry = StateFamilyRegistry {
             entries: self.entries,
@@ -1082,6 +1116,7 @@ impl StateFamilyRegistryBuilder {
             entitlement_purchase: self.entitlement_purchase,
             mind_renewal: self.mind_renewal,
             ic_mind_claim: self.ic_mind_claim,
+            core_integration: self.core_integration,
             fingerprint,
             owner_readiness,
         };
@@ -1110,6 +1145,11 @@ impl StateFamilyRegistryBuilder {
                 .validate_families(&registry)
                 .map_err(|e| StateFamilyRegistryError::IcMindClaim(e.to_string()))?;
         }
+        if let Some(protocol) = &registry.core_integration {
+            protocol
+                .validate_families(&registry)
+                .map_err(|e| StateFamilyRegistryError::CoreIntegration(e.to_string()))?;
+        }
         Ok(registry)
     }
 }
@@ -1126,6 +1166,7 @@ pub struct StateFamilyRegistry {
     entitlement_purchase: Option<terminal_capacity::EntitlementProtocol>,
     mind_renewal: Option<terminal_capacity::RenewalProtocol>,
     ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
+    core_integration: Option<terminal_capacity::CoreIntegrationProtocol>,
     fingerprint: DefinitionDigest,
     owner_readiness: MechanicalOwnerReadiness,
 }
@@ -1156,6 +1197,9 @@ impl StateFamilyRegistry {
             protocol.validate_composition(definitions, providers, participants)?;
         }
         if let Some(protocol) = &self.mind_renewal {
+            protocol.validate_composition(definitions, providers, participants)?;
+        }
+        if let Some(protocol) = &self.core_integration {
             protocol.validate_composition(definitions, providers, participants)?;
         }
         if let Some(protocol) = &self.ic_mind_claim {
@@ -1269,6 +1313,7 @@ fn state_family_fingerprint<'a>(
     entitlement_purchase: Option<&terminal_capacity::EntitlementProtocol>,
     mind_renewal: Option<&terminal_capacity::RenewalProtocol>,
     ic_mind_claim: Option<&terminal_capacity::IcClaimProtocol>,
+    core_integration: Option<&terminal_capacity::CoreIntegrationProtocol>,
 ) -> Result<DefinitionDigest, CanonicalEncodingError> {
     let mut value = serde_json::Map::from_iter([
         (
@@ -1346,12 +1391,20 @@ fn state_family_fingerprint<'a>(
     } else {
         domain
     };
+    let domain = if let Some(protocol) = core_integration {
+        value.insert("core_integration".to_owned(), json!(protocol));
+        "state_family_registry.v9"
+    } else {
+        domain
+    };
     DefinitionDigest::for_canonical_value(domain, &Value::Object(value))
 }
 
 /// State-family registration failure.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum StateFamilyRegistryError {
+    #[error("Core integration capacity composition: {0}")]
+    CoreIntegration(String),
     #[error("IC mind claim capacity composition: {0}")]
     IcMindClaim(String),
     #[error("Mind renewal capacity composition: {0}")]
@@ -2518,6 +2571,26 @@ impl ActionTxn<'_> {
             protocol.require_owner_images(identity, images)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn core_integration_completion(
+        &mut self,
+        base: &ActionReadBase,
+        provider: &ProviderRegistrationOrdinal,
+        commit: crate::CommitToken,
+        order: u64,
+        admission: bool,
+    ) -> Result<(), ActionStateError> {
+        let result = (|| {
+            self.read_preimage(base, provider).map_err(|_| {
+                ActionStateError::TerminalCapacity("core integration transaction base differs")
+            })?;
+            terminal_capacity::core_integration_change(self, commit, order, admission)
+        })();
+        if let Err(error) = &result {
+            self.poison(error);
+        }
+        result
     }
 
     pub(crate) fn ic_mind_claim_completion(

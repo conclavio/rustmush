@@ -57,6 +57,7 @@ pub struct InventoryModule {
     delegates: Vec<SmolStr>,
     cell: Option<InventoryHandleCell>,
     salvage: Option<std::sync::Arc<dyn crate::salvage::SalvageSource>>,
+    core_inputs: Option<crate::core_input::CoreInputBinding>,
 }
 
 impl InventoryModule {
@@ -68,6 +69,7 @@ impl InventoryModule {
             delegates: Vec::new(),
             cell: None,
             salvage: None,
+            core_inputs: None,
         }
     }
 
@@ -98,6 +100,14 @@ impl InventoryModule {
     #[must_use]
     pub fn with_handle_cell(mut self, cell: InventoryHandleCell) -> Self {
         self.cell = Some(cell);
+        self
+    }
+
+    /// Closed optional exact-input protocol; normal pooled quantity behavior
+    /// and registration remain unchanged when absent.
+    #[must_use]
+    pub fn with_core_inputs(mut self, binding: crate::core_input::CoreInputBinding) -> Self {
+        self.core_inputs = Some(binding);
         self
     }
 
@@ -359,6 +369,18 @@ impl GameModule for InventoryModule {
             |value: &ReservationBookId| serde_json::to_value(value).map_err(|e| e.to_string()),
         )?;
 
+        let core_inputs = self
+            .core_inputs
+            .clone()
+            .map(|binding| {
+                crate::core_input::registration::register(
+                    reg,
+                    binding,
+                    lots.clone(),
+                    lot_census.clone(),
+                )
+            })
+            .transpose()?;
         let families = InventoryFamilies {
             pools,
             books: books.clone(),
@@ -369,6 +391,7 @@ impl GameModule for InventoryModule {
             lot_census,
             reservations: reservations.clone(),
             marker_ring,
+            core_inputs,
         };
 
         // ---- E7c2: B4 — the first `Reservation` validator on the tree ----

@@ -2455,9 +2455,21 @@ impl TuiApp {
                 self.line.set(&c.to_string());
             }
             Key::Alt(c @ '0'..='9') => self.switch_screen(c as u8 - b'0', r),
+            // Doc 19 cut A.3b: Alt+letter, bound by nothing on this screen, is a
+            // lettered screen's hotkey (`c`, the sky chart); bound, it is the
+            // screen's own key, as it always was.
+            Key::Alt(c @ 'a'..='z') if !self.binds(c) => self.switch_screen(c as u8, r),
             Key::Char(c) | Key::Alt(c) => self.screen_key(c, r),
             _ => r.redraw = false,
         }
+    }
+
+    /// Whether the active screen binds `c` itself — an exit on the scene
+    /// screen, or a key of its active table (doc 19 cut A.3b: what keeps a
+    /// lettered screen's hotkey from stealing the cockpit's `c`).
+    fn binds(&self, c: char) -> bool {
+        (self.screen().exits_are_keys && self.exit_keys.iter().any(|(k, _)| *k == c))
+            || self.keys().iter().any(|b| b.key == c)
     }
 
     /// A screen-level key: an exit on the scene screen, else the screen's
@@ -4069,6 +4081,9 @@ impl TuiApp {
                 "Enter type   \" : ; \\ speak   / palette   ^K palette   ^P mode   ^] leave",
             ),
             Line::from("In the box: Alt+key = the nav key   Esc keeps the draft   Enter stays"),
+            Line::from(
+                "Alt+letter opens a lettered screen where the server publishes one (c: the sky chart)",
+            ),
             Line::from("F10 or /minds: owned mind cards, ordered rules and read-only source"),
             Line::from(""),
         ];

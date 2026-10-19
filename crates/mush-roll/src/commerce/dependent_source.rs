@@ -159,7 +159,18 @@ impl OwnerReadService for DependentSourceReader {
                 &super::records::OwnerTerm::encoded_key(owner.id, owner.term),
             )?
             .ok_or(OwnerReadError::Integrity)?;
-        if term.parent.is_none() {
+        // Later dependent generations retain their parent qualification in the
+        // attestation evidence. The projection below still proves that cause,
+        // current selected parent grant, source identity and current window.
+        let dependent = match term.format {
+            2 => term.parent.is_some(),
+            4 => term
+                .attestation
+                .as_ref()
+                .is_some_and(|evidence| evidence.parent.is_some()),
+            _ => false,
+        };
+        if !dependent {
             return Err(OwnerReadError::Refused);
         }
         let holding = super::owner_holdings::project_owner_with_parent_for(

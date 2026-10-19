@@ -337,8 +337,9 @@ impl Record for OwnerLicence {
         self.id.key()
     }
     fn validate(&self) -> Result<(), PublicationError> {
-        version(self.format)?;
-        if self.term.get() != 1 {
+        if !matches!((self.format, self.term.get()), (1, 1))
+            && !(self.format == 2 && self.term.get() >= 2)
+        {
             return Err(PublicationError::Invalid);
         }
         Ok(())
@@ -357,9 +358,9 @@ pub enum RevisionPolicy {
     },
 }
 
-/// Immutable first owner term. Format one is original-only; format two must
-/// carry the exact owner-specific dependent qualification. Paid terms and
-/// renewals remain separate protocols.
+/// Immutable owner generation. Formats one/two retain original/dependent birth
+/// evidence; formats three/four carry an actual later attestation cause. Paid
+/// terms and their monetary renewals remain separate protocols.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "OwnerTermWire")]
 pub struct OwnerTerm {
@@ -371,6 +372,8 @@ pub struct OwnerTerm {
     pub(crate) operation: CommitToken,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) parent: Option<DependentParent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) attestation: Option<super::owner_attestation::records::AttestationEvidence>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -383,6 +386,8 @@ struct OwnerTermWire {
     operation: CommitToken,
     #[serde(default, deserialize_with = "present_parent")]
     parent: Option<DependentParent>,
+    #[serde(default, deserialize_with = "present_attestation")]
+    attestation: Option<super::owner_attestation::records::AttestationEvidence>,
 }
 impl TryFrom<OwnerTermWire> for OwnerTerm {
     type Error = PublicationError;
@@ -395,6 +400,7 @@ impl TryFrom<OwnerTermWire> for OwnerTerm {
             revision: w.revision,
             operation: w.operation,
             parent: w.parent,
+            attestation: w.attestation,
         };
         row.validate()?;
         Ok(row)
@@ -424,6 +430,21 @@ impl Record for OwnerTerm {
         Self::encoded_key(self.licence, self.generation)
     }
     fn validate(&self) -> Result<(), PublicationError> {
+        if let Some(evidence) = &self.attestation {
+            if self.parent.is_some()
+                || self.generation.get() < 2
+                || !matches!(
+                    (self.format, evidence.parent.is_some()),
+                    (3, false) | (4, true)
+                )
+                || !matches!(self.revision, RevisionPolicy::Follow { .. })
+                || self.window != evidence.window(self.window.issued_at())?
+                || self.window.grace_end() <= self.window.issued_at()
+            {
+                return Err(PublicationError::Invalid);
+            }
+            return Ok(());
+        }
         if !matches!((self.format, self.parent.is_some()), (1, false) | (2, true))
             || self.generation.get() != 1
         {
@@ -439,6 +460,12 @@ impl Record for OwnerTerm {
         }
         Ok(())
     }
+}
+
+fn present_attestation<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<super::owner_attestation::records::AttestationEvidence>, D::Error> {
+    super::owner_attestation::records::AttestationEvidence::deserialize(d).map(Some)
 }
 
 fn present_parent<'de, D: serde::Deserializer<'de>>(

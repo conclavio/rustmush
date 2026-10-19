@@ -831,8 +831,9 @@ pub struct ArenaRegistry {
     /// atlas on every look. One `Arc` per match, taken at check-out and dropped
     /// with the match.
     arenas: BTreeMap<MatchId, Arc<crate::arena::state::ArenaDefinition>>,
-    /// **16b cut N.2**: what each running match's squads have been told and when
-    /// each order runs out, in **world** milliseconds.
+    /// What each running match's squads have been told and when each order
+    /// runs out: ordinary offers use world time; resumed accepted orders use
+    /// the match's actually published arena time.
     ///
     /// The arena keeps the authoritative expiry in arena time and journals
     /// `order_expired`; this is the world's own copy, and it exists for exactly one
@@ -868,7 +869,7 @@ pub struct MatchDeliberation {
     /// [`crate::deliberation::MAX_IN_FLIGHT_PER_MATCH`] so a match whose provider
     /// has stopped answering cannot queue one per pulse for ever.
     in_flight: usize,
-    /// Per squad: when its order runs out in world time, and what it said.
+    /// Per squad: its explicit deadline clock and what the order said.
     orders: BTreeMap<crate::deliberation::SquadId, OrderWatch>,
     /// Orders issued, for `@arena/status` and the cost run.
     issued: u64,
@@ -890,25 +891,31 @@ impl MatchDeliberation {
     /// is exactly a seated pilot's order — its watch has an issuer, the pilot's own
     /// tank — while a leader's order is written in the commander's scope
     /// (`issuer: None`), so a persona's order never shields its own deliberation.
-    /// The body is unchanged; the name is a 16c candidate for M4.
+    /// Recovered watches compare the actual published arena clock; ordinary
+    /// watches retain the original world-clock policy.
     ///
     /// Read by both halves of the shield — [`on_deliberate`] spends no signal on
     /// such a squad and [`on_deliberation_reply`] drops an order for it — so a
     /// human's order stands until it runs out or the pilot replaces it, and the
     /// machine's commander asks again at the next signal after the expiry.
     #[must_use]
-    pub(crate) fn human_holds(&self, squad: crate::deliberation::SquadId, now_ms: i64) -> bool {
+    pub(crate) fn human_holds(
+        &self,
+        squad: crate::deliberation::SquadId,
+        now_ms: i64,
+        arena_ms: Option<i64>,
+    ) -> bool {
         self.orders
             .get(&squad)
-            .is_some_and(|watch| watch.issuer.is_some() && watch.expires_ms > now_ms)
+            .is_some_and(|watch| watch.issuer.is_some() && !watch.deadline.due(now_ms, arena_ms))
     }
 }
 
 /// One squad's order, as the world remembers it.
 #[derive(Clone, Debug)]
 struct OrderWatch {
-    /// The world millisecond the order stops standing at.
-    expires_ms: i64,
+    /// Existing offers use world time; recovered native orders use arena time.
+    deadline: OrderDeadline,
     /// The objective, by its word, for the sentence.
     objective: SmolStr,
     /// Whether the expiry has already been said. A notice is said once.
@@ -925,7 +932,48 @@ struct OrderWatch {
     by: CharacterRef,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OrderDeadline {
+    World(i64),
+    Arena(i64),
+}
+impl OrderDeadline {
+    fn due(self, world_ms: i64, arena_ms: Option<i64>) -> bool {
+        match self {
+            Self::World(end) => world_ms >= end,
+            Self::Arena(end) => arena_ms.is_some_and(|now| now >= end),
+        }
+    }
+}
+
 impl ArenaRegistry {
+    fn restore_order_watches(
+        &mut self,
+        match_id: MatchId,
+        recovered_orders: Vec<(
+            crate::deliberation::SquadId,
+            CharacterRef,
+            Option<ObjId>,
+            &'static str,
+            i64,
+        )>,
+    ) {
+        // Restore actual accepted attribution only: no command, counters, or requests.
+        let state = self.deliberation.entry(match_id).or_default();
+        for (squad, by, issuer, objective, expiry) in recovered_orders {
+            state.orders.insert(
+                squad,
+                OrderWatch {
+                    deadline: OrderDeadline::Arena(expiry),
+                    objective: SmolStr::new_static(objective),
+                    said: false,
+                    issuer,
+                    by,
+                },
+            );
+        }
+    }
+
     /// A registry over `tasks`, publishing frames on `frames` and (16b cut
     /// I.4) the staff picture on `observers`.
     #[must_use]
@@ -1005,7 +1053,7 @@ impl ArenaRegistry {
         state.orders.insert(
             squad,
             OrderWatch {
-                expires_ms,
+                deadline: OrderDeadline::World(expires_ms),
                 objective,
                 said: false,
                 issuer: Some(issuer),
@@ -1055,9 +1103,10 @@ impl ArenaRegistry {
 
     /// **The squads `issuer` holds a live order on** (16b cut Y.2; doc 16 §2
     /// W8's span of control): every squad of `match_id` whose world watch names
-    /// `issuer` and has not run out at world millisecond `now_ms`.
+    /// `issuer` and has not run out on its captured clock. `now_ms` applies to
+    /// ordinary watches; recovered watches read this match's published clock.
     ///
-    /// The watch is the world's own, in world time, and it runs its full time to
+    /// An ordinary watch keeps its original world deadline and runs its full time to
     /// live unless the pilot hands the squad back: the world never learns that
     /// the arena ended an order early (16b cut AA.1, `B-41`), and **16b cut Z.2**
     /// (16c Q44) gave `ORDER` a `RELEASE` whose
@@ -1077,7 +1126,12 @@ impl ArenaRegistry {
                 state
                     .orders
                     .iter()
-                    .filter(|(_, watch)| watch.issuer == Some(issuer) && watch.expires_ms > now_ms)
+                    .filter(|(_, watch)| {
+                        watch.issuer == Some(issuer)
+                            && !watch
+                                .deadline
+                                .due(now_ms, self.matches.get(&match_id).map(|m| m.now_ms))
+                    })
                     .map(|(squad, _)| *squad)
                     .collect()
             })
@@ -1836,6 +1890,7 @@ pub fn resume_match(
         .map(|(arena_cfg, _, _)| arena_cfg)
         .ok_or(OpenMatchError::Unavailable)?;
     // Everything the world keeps of the arena, read before the move.
+    let recovered_orders = arena.recovered_order_watches();
     let units: Vec<ObjId> = arena.units.iter().map(|unit| unit.id).collect();
     let epochs: Vec<((ObjId, Channel), u64)> = arena.epochs.rows().collect();
     let roster: Vec<(ObjId, ObjId)> = arena
@@ -1902,6 +1957,7 @@ pub fn resume_match(
         return Err(OpenMatchError::Unavailable);
     };
     registry.track(match_id);
+    registry.restore_order_watches(match_id, recovered_orders);
     registry.arenas.insert(match_id, ground);
     for unit in units {
         registry.bind_unit(unit, match_id);
@@ -2299,12 +2355,15 @@ pub(crate) fn authorise_seat(
 /// has no station anybody is focused on; [`forward_intent`]'s step 2 would refuse
 /// every squad order ever typed. Then the order is stamped and offered **per
 /// unit** with that unit's own `helm` epoch, exactly as [`send_order`] stamps the
-/// LLM seam's. The arena authorises each unit again at apply against its own
+/// LLM seam's. Each target must first pass [`send_order`]'s current per-unit
+/// admission; a refused target contributes no offer. The arena authorises each
+/// accepted unit again at apply against its own
 /// table: a unit a pilot has since boarded refuses `NotMachine` silently
 /// (`NotReflex` until 17b cut M4.6), as today.
 ///
-/// Answers how many units were offered; `Ok(0)` when every offer refused (the
-/// cockpit turns that into [`IntentRefusal::Busy`]).
+/// Answers how many units were offered; `Ok(0)` for an empty reach or when
+/// every target refuses admission (the cockpit turns either into
+/// [`IntentRefusal::Busy`]).
 ///
 /// # Errors
 ///
@@ -3647,6 +3706,7 @@ fn on_ended(
     // and final poses back through `apply` and `mush_sim::place`, the markers
     // cleared, the seats released, the match untracked and the result written,
     // all in this one re-entry's authoritative step.
+    say_due_orders(ctx, Some(match_id));
     let checked_in = crate::match_::finish(ctx, match_id, end, digest.clone(), units);
     notify_staff(
         ctx,
@@ -4571,15 +4631,13 @@ pub fn on_deliberate(
             continue;
         };
         {
-            let Some(state) = ctx
-                .w
-                .module_state_mut::<ArenaRegistry>()
-                .map(|registry| registry.deliberation.entry(match_id).or_default())
-            else {
+            let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() else {
                 return;
             };
+            let arena_ms = registry.matches.get(&match_id).map(|m| m.now_ms);
+            let state = registry.deliberation.entry(match_id).or_default();
             // 16b cut Y.1: a pilot's order stands; nothing is asked over it.
-            if state.human_holds(signal.squad, now_ms) {
+            if state.human_holds(signal.squad, now_ms, arena_ms) {
                 continue;
             }
             if state.in_flight >= crate::deliberation::MAX_IN_FLIGHT_PER_MATCH {
@@ -4685,8 +4743,15 @@ pub fn on_deliberation_reply(ctx: &mut Ctx<'_>, payload: &str) {
             if ctx
                 .w
                 .module_state::<ArenaRegistry>()
-                .and_then(|registry| registry.deliberation.get(&match_id))
-                .is_some_and(|state| state.human_holds(order.squad, now_ms))
+                .is_some_and(|registry| {
+                    registry.deliberation.get(&match_id).is_some_and(|state| {
+                        state.human_holds(
+                            order.squad,
+                            now_ms,
+                            registry.matches.get(&match_id).map(|m| m.now_ms),
+                        )
+                    })
+                })
             {
                 tracing::debug!(
                     %match_id, squad = %order.squad,
@@ -4755,7 +4820,7 @@ pub fn on_deliberation_reply(ctx: &mut Ctx<'_>, payload: &str) {
                 state.orders.insert(
                     squad,
                     OrderWatch {
-                        expires_ms,
+                        deadline: OrderDeadline::World(expires_ms),
                         objective: objective.clone(),
                         said: false,
                         issuer: None,
@@ -4984,12 +5049,25 @@ fn lapse_line(squad: crate::deliberation::SquadId, whose: &str, objective: &str)
 /// the object is gone). The squad's own tanks hear nothing — they have no pilots,
 /// which is why they have a leader.
 fn say_expired_orders(ctx: &mut Ctx<'_>) {
+    say_due_orders(ctx, None);
+}
+
+// Finish says only recovered watches due at the actual terminal arena clock.
+// Ordinary world watch behavior at finish remains unchanged.
+fn say_due_orders(ctx: &mut Ctx<'_>, terminal: Option<MatchId>) {
     let now_ms = ctx.w.now().saturating_mul(1_000);
     let mut due: Vec<(MatchId, crate::deliberation::SquadId, SmolStr, CharacterRef)> = Vec::new();
     if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
         for (match_id, state) in &mut registry.deliberation {
+            if terminal.is_some_and(|id| id != *match_id) {
+                continue;
+            }
+            let arena_ms = registry.matches.get(match_id).map(|m| m.now_ms);
             for (squad, watch) in &mut state.orders {
-                if !watch.said && now_ms >= watch.expires_ms {
+                if terminal.is_some() && !matches!(watch.deadline, OrderDeadline::Arena(_)) {
+                    continue;
+                }
+                if !watch.said && watch.deadline.due(now_ms, arena_ms) {
                     watch.said = true;
                     due.push((*match_id, *squad, watch.objective.clone(), watch.by.clone()));
                 }
@@ -5207,6 +5285,12 @@ fn say_mind_dropped(ctx: &mut Ctx<'_>, match_id: MatchId, events: &[LedgerEvent]
 
 #[cfg(test)]
 mod tests {
+    #[path = "leader_rows.rs"]
+    mod leader_rows;
+
+    #[path = "resume_watch.rs"]
+    mod resume_watch;
+
     use mush_core::{GOD, ObjId};
     use smol_str::SmolStr;
 

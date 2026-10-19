@@ -54,6 +54,9 @@ export interface KeyInput {
 /** What a key asks the shell to do. */
 export type NavIntent =
   | { kind: "screen"; digit: number }
+  /** A digitless screen's letter hotkey (doc 19 cut A.3b): Alt+letter, when
+   * the active screen does not bind the letter itself. */
+  | { kind: "screenKey"; key: string }
   | { kind: "compose"; prefill: string }
   | { kind: "palette" }
   | { kind: "help" }
@@ -153,6 +156,12 @@ function bareIntent(
   }
   if (bindings.has(key)) {
     return { kind: "binding", key };
+  }
+  // Doc 19 cut A.3b: Alt+letter, bound by nothing on this screen, is a
+  // digitless screen's hotkey — inert when no available screen has it
+  // (`GameApp.act` answers `false` and the key falls through).
+  if (fromBox && /^[a-z]$/.test(key) && !GLOBAL_KEYS.has(key) && !JUMP_KEYS.has(key)) {
+    return { kind: "screenKey", key };
   }
   return null;
 }

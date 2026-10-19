@@ -83,9 +83,10 @@ pub(crate) fn resolve(
     expected: &RatingCompatibility,
     binding: &OwnerParentBinding,
 ) -> Result<CurrentQualification, Error> {
-    if binding.parent.owner != holder {
-        return Err(Error::NotHeld);
-    }
+    let birth =
+        paid_history::read(ctx, &f.operations, binding.operation.to_hex()).map_err(integrity)?;
+    let ownership = super::super::charter_transfer::history::current(ctx, f, birth, holder)
+        .map_err(|_| Error::NotHeld)?;
     let roll = ctx
         .world()
         .module_state::<crate::RollStore>()
@@ -94,9 +95,15 @@ pub(crate) fn resolve(
     let replacement =
         super::history::selected(ctx, f, holder, binding.licence).map_err(integrity)?;
     let selected = match replacement {
-        None => binding.parent.licence,
+        None if ownership.generation == 1 => binding.parent.licence,
+        None => return Err(Error::NotHeld),
         Some(operation) => {
             super::history::verify(ctx, roll, f, ratings, operation).map_err(integrity)?;
+            if operation.charter_ownership.as_ref()
+                != (ownership.generation > 1).then_some(&ownership)
+            {
+                return Err(Error::NotHeld);
+            }
             operation.selected_parent.licence
         }
     };

@@ -95,7 +95,7 @@ impl GameModule for TacsimReader {
     }
 }
 
-fn observe(
+pub(super) fn observe(
     f: &mut PurchaseFixture,
     actor: ObjId,
     licence: u64,
@@ -132,7 +132,11 @@ fn observe(
     Ok(answer)
 }
 
-fn own(f: &mut PurchaseFixture, actor: ObjId, licence: u64) -> TestResult<PersonalFiledHolding> {
+pub(super) fn own(
+    f: &mut PurchaseFixture,
+    actor: ObjId,
+    licence: u64,
+) -> TestResult<PersonalFiledHolding> {
     Ok(observe(f, actor, licence, None)??)
 }
 
@@ -356,19 +360,11 @@ pub(super) fn exercise(
         );
     }
 
-    // Real ordinary E4 title transfer changes seller eligibility, not the
+    // Real signed native charter sale changes seller eligibility, not the
     // customer's already issued personal licence. No typed paid row is edited.
     let mut transferred = f.reboot(granted)?;
     let shell = holding.charter().object();
-    transferred.engine.step(
-        Inbound::Cmd {
-            conn: 1,
-            actor: GOD,
-            line: format!("@asset/transfer #{}=#{}", shell.0, BUYER.0),
-        },
-        &mut Outbox::new(),
-        &mut mush_core::engine::Effects::new(),
-    );
+    transferred.transfer_charter(shell, BUYER, 49_001_000)?;
     assert_eq!(
         transferred
             .economy()?

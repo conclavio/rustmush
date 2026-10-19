@@ -1,7 +1,7 @@
 //! Exact immutable F0/journal provenance. A terminal contract or decoded
 //! receipt is never substituted for the Economy owner's completed audit.
 
-use super::super::records::{PublicationError, Record};
+use super::super::records::PublicationError;
 use super::records::digest;
 use super::{RenewalAttemptV1, RenewalOperationV1, RenewalStateV1};
 use mush_economy::managed_renewal::{RenewalOffer, RenewalOfferView};

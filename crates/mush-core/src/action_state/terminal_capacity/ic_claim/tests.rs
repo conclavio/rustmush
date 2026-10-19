@@ -879,3 +879,75 @@ fn exact_registration_rejects_wrong_owner_swapped_actions_and_descriptor_drift()
     );
     Ok(())
 }
+
+#[test]
+fn transferred_owned_claim_keeps_exact_open_through_close_and_cold_hydration() -> TestResult {
+    let mut f = fixture(1, Config::default())?;
+    let mut row = open(&f.defs, token(1));
+    row["format"] = json!(2);
+    row["open"]["capacity"] = json!({"kind":"owned_dispatch"});
+    row["open"]["charter_ownership"] =
+        json!({"generation":2,"operation":token(17),"digest":dg(19)});
+    let claimed = Claim::parse(row.clone(), token(1))?;
+    let p = prepare(&mut f, 0, row.clone(), token(1), ObjId(7))?;
+    install(&mut f, p)?;
+    hydrate(&f, &f.disk)?;
+    let mut crossed = close(&f.defs, &row, token(2))?;
+    crossed["open"]["charter_ownership"]["generation"] = json!(3);
+    crossed["closed"]["open_digest"] = json!(open_digest(field(&crossed, "open")?)?);
+    assert!(prepare(&mut f, 1, crossed, token(2), ObjId(42)).is_err());
+    let closed = close(&f.defs, &row, token(2))?;
+    let closing = Claim::parse(closed.clone(), token(1))?;
+    assert_eq!(claimed.fingerprint, closing.fingerprint);
+    let p = prepare(&mut f, 1, closed, token(2), ObjId(42))?;
+    install(&mut f, p)?;
+    hydrate(&f, &f.disk)?;
+    Ok(())
+}
+
+#[test]
+fn charter_ownership_is_versioned_bounded_and_never_a_paid_claim_field() -> TestResult {
+    let f = fixture(1, Config::default())?;
+    let old = open(&f.defs, token(1));
+    Claim::parse(old.clone(), token(1))?;
+    let mut next = old.clone();
+    next["format"] = json!(2);
+    next["open"]["capacity"] = json!({"kind":"owned_dispatch"});
+    next["open"]["charter_ownership"] =
+        json!({"generation":65_537,"operation":token(17),"digest":dg(19)});
+    Claim::parse(next.clone(), token(1))?;
+    assert_ne!(
+        open_digest(field(&old, "open")?)?,
+        open_digest(field(&next, "open")?)?
+    );
+    for generation in [0, 1, 65_538, u64::MAX] {
+        let mut bad = next.clone();
+        bad["open"]["charter_ownership"]["generation"] = json!(generation);
+        assert!(Claim::parse(bad, token(1)).is_err());
+    }
+    for ownership in [
+        Value::Null,
+        json!({"generation":2,"operation":token(17)}),
+        json!({"generation":2,"operation":token(17),"digest":dg(19),"authority":true}),
+    ] {
+        let mut bad = next.clone();
+        bad["open"]["charter_ownership"] = ownership;
+        assert!(Claim::parse(bad, token(1)).is_err());
+    }
+    let mut bad = next.clone();
+    bad["format"] = json!(1);
+    assert!(Claim::parse(bad, token(1)).is_err());
+    let mut bad = next.clone();
+    bad["open"]["capacity"] = json!({"kind":"paid_seats","seats":1});
+    assert!(Claim::parse(bad, token(1)).is_err());
+    let mut bad = next;
+    bad["open"]
+        .as_object_mut()
+        .ok_or("open")?
+        .remove("charter_ownership");
+    assert!(Claim::parse(bad, token(1)).is_err());
+    let mut bad = old;
+    bad["open"]["charter_ownership"] = Value::Null;
+    assert!(Claim::parse(bad, token(1)).is_err());
+    Ok(())
+}

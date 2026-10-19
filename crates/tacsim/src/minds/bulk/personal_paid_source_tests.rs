@@ -103,7 +103,7 @@ async fn exercise_async(f: &PurchaseFixture, saved: &Durable, permitted: bool) -
         // term gap cannot revoke an already granted customer's source form.
         let licence: PersonalPaidLicence = serde_json::from_value(one(f.rows("roll", "roll_mind_personal_paid_licence"))?)?;
         let shell = licence.charter().object();
-        world.say(GOD, &format!("@asset/transfer #{}=#{}", shell.0, BUYER.0))?;
+        world.transfer_charter(shell, BUYER, 49_000_120)?;
         assert_eq!(world.engine.world.module_state::<EconomyStore>().ok_or("Economy")?.snapshot().asset(shell).ok_or("title")?.title_owner, EconomicOwner::Object(BUYER));
         world.engine.world.set_now(1000 + TERM_SECONDS + GRACE_SECONDS);
         assert!(world.engine.world.now() < term.window().grace_end().get());

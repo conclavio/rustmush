@@ -905,6 +905,11 @@ pub(crate) fn retire_listings(ctx: &mut Ctx<'_>, id: &CanonicalId, map: &mut Por
         row.bids.retain(|_, bid| !withdrawn.contains(&bid.listing));
         forgot |= row.bids.len() != before;
     }
+    // Doc 19 cut A.4b: the emergency bids this retire withdrew, the same way.
+    let before = map.emergencies.len();
+    map.emergencies
+        .retain(|_, bid| !withdrawn.contains(&bid.listing));
+    forgot |= map.emergencies.len() != before;
     if forgot {
         put_port_map(ctx, map);
     }

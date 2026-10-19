@@ -465,6 +465,10 @@ pub enum TypedCondition {
 /// exactly as a set would be.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsentSurface {
+    /// Exact attachment authorization retained in the frozen consent. Absence
+    /// preserves historical bytes and never authorizes a restricted fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fact_consent: Option<crate::facts::scoped::FactConsentV1>,
     /// Closed entitlement effect identity. Absent legacy surfaces retain their
     /// exact serialized and consent-hash bytes. Presence is not E4 authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1121,6 +1125,8 @@ pub fn canonical_visibility(v: &EconomicVisibility) -> EconomicVisibility {
 #[derive(Serialize)]
 struct CanonicalConsent<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
+    fact_consent: Option<&'a crate::facts::scoped::FactConsentV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     managed: Option<&'a managed::ManagedConsent>,
     issuer: &'a PrincipalId,
     parties: Vec<&'a PrincipalId>,
@@ -1229,6 +1235,7 @@ pub fn consent_hash(issuer: &PrincipalId, consent: &ConsentSurface) -> [u8; 32] 
     let mut parties: Vec<&PrincipalId> = consent.parties.iter().collect();
     parties.sort_by(|a, b| principal_key(a).cmp(&principal_key(b)));
     let canonical = CanonicalConsent {
+        fact_consent: consent.fact_consent.as_ref(),
         managed: consent.managed.as_ref(),
         issuer,
         parties,
@@ -2192,7 +2199,7 @@ pub fn condition_holds(
             // `None` (unknown) is unsatisfied, never a pass: the fact provider seam
             // is E4c and defaults to unknown, so a contract cannot settle on a fact
             // nobody can answer.
-            TypedCondition::Fact { fact } => env.facts.resolve(fact) == Some(true),
+            TypedCondition::Fact { fact } => env.facts.resolve_in_contract(c, fact) == Some(true),
             // Defence in depth for finding 10: `check_offerable` refuses a `Manual`
             // deadline outright, but a hand-built or migrated record could carry
             // one — so the manual position handed in here is `i64::MAX`, i.e. the
@@ -3503,6 +3510,7 @@ mod tests {
     fn golden_surface() -> (PrincipalId, ConsentSurface) {
         let issuer = PrincipalId::Organization(mush_org::OrgId(7));
         let consent = ConsentSurface {
+            fact_consent: None,
             managed: None,
             // Deliberately NOT in `principal_key` order: the sort is part of what
             // the pin freezes.
@@ -3569,6 +3577,7 @@ mod tests {
         let mut parties: Vec<&PrincipalId> = consent.parties.iter().collect();
         parties.sort_by(|a, b| principal_key(a).cmp(&principal_key(b)));
         let canonical = CanonicalConsent {
+            fact_consent: None,
             managed: consent.managed.as_ref(),
             issuer: &issuer,
             parties,
@@ -3597,6 +3606,7 @@ mod tests {
         let mut parties: Vec<&PrincipalId> = consent.parties.iter().collect();
         parties.sort_by(|a, b| principal_key(a).cmp(&principal_key(b)));
         let canonical = CanonicalConsent {
+            fact_consent: None,
             managed: consent.managed.as_ref(),
             issuer: &issuer,
             parties,

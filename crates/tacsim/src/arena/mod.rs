@@ -319,6 +319,7 @@ pub mod mind_seal;
 pub mod motion;
 pub mod motor;
 pub mod observer;
+pub(crate) mod order_watch;
 pub mod path;
 pub mod perception;
 pub mod profile_rules;

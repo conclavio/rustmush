@@ -3,6 +3,7 @@
 //! No persistence/authority or public statistics constructor lives here.
 use super::{plan::Schedule, subject::PreparedSubject};
 use mush_roll::commerce::rating::execution::MeasuredRating;
+use mush_roll::commerce::rating::nonconformance::{MeasuredNonconformance, MeasuredRegistryResult};
 use mush_roll::commerce::rating::{
     Applicability, CaseBinding, CaseKind, CaseOutcome, CaseResult, CertificateContent,
     ClassSummary, MAX_CASES, MAX_PAGE_ROWS, PageContent, ProbeName, RatingClass,
@@ -13,6 +14,7 @@ pub(super) enum CaseDisposition {
     Next,
     Promote,
     Certified,
+    Nonconforming,
 }
 pub(super) struct Evidence {
     rows: Vec<CaseResult>,
@@ -78,9 +80,16 @@ impl Evidence {
                     .enumerate()
                     .skip(next)
                     .find(|(_, case)| case.key.class() > expected.key.class())
-                    .map(|(index, _)| index)
-                    .ok_or(RatingError::Invalid)?;
-                (next, false, CaseDisposition::Promote)
+                    .map(|(index, _)| index);
+                match next {
+                    Some(next) => (next, false, CaseDisposition::Promote),
+                    None if expected.key.class() == RatingClass::III
+                        && !matches!(expected.key.kind(), CaseKind::Kernel { .. }) =>
+                    {
+                        (self.next, true, CaseDisposition::Nonconforming)
+                    }
+                    None => return Err(RatingError::Invalid),
+                }
             } else if schedule
                 .cases()
                 .get(next)
@@ -101,7 +110,7 @@ impl Evidence {
         subject: &PreparedSubject,
         compatibility: &RatingCompatibility,
         schedule: &Schedule,
-    ) -> Result<MeasuredRating, RatingError> {
+    ) -> Result<MeasuredRegistryResult, RatingError> {
         if !self.finished {
             return Err(RatingError::Incomplete);
         }
@@ -139,6 +148,19 @@ impl Evidence {
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
+        if self
+            .rows
+            .last()
+            .is_some_and(|row| matches!(row.outcome(), CaseOutcome::BudgetExceeded {}))
+        {
+            return MeasuredNonconformance::maximum_class_budget(
+                subject.subject().clone(),
+                compatibility.clone(),
+                schedule.digest()?,
+                contents,
+            )
+            .map(MeasuredRegistryResult::Nonconforming);
+        }
         let result = RatingResultRef::from_pages(&contents)?;
         let content = CertificateContent::new(
             subject.subject().clone(),
@@ -149,6 +171,6 @@ impl Evidence {
             minimum,
             result.clone(),
         )?;
-        MeasuredRating::new(content, contents)
+        MeasuredRating::new(content, contents).map(MeasuredRegistryResult::Certified)
     }
 }

@@ -72,14 +72,7 @@ async fn success(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         start(&mut world)?;
         // The issuer loses both title and its own original term while this
         // editor is open. The customer's independent paid term still governs.
-        world.say(
-            GOD,
-            &format!(
-                "@asset/transfer #{}=#{}",
-                licence.charter().object().0,
-                BUYER.0
-            ),
-        )?;
+        world.transfer_charter(licence.charter().object(), BUYER, 49_000_050)?;
         assert!(
             world
                 .engine

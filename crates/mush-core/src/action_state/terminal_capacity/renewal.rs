@@ -977,7 +977,12 @@ pub(super) fn validate_changes(
             }
         }
     }
-    if !touches && changes.progress.is_none() {
+    if !touches
+        && changes
+            .progress
+            .as_ref()
+            .is_none_or(|id| id.0.as_str() != "market")
+    {
         return Ok(());
     }
     let identity = identity.ok_or_else(|| refused("renewal write lacks actual invocation"))?;

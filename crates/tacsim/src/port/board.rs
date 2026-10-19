@@ -134,7 +134,19 @@ pub(crate) fn funds_one(w: &World, market: &MarketStore, listing: ListingId) -> 
     let Some(listing) = market.listing(listing) else {
         return false;
     };
-    let Some(vendor) = market.vendor(listing.vendor) else {
+    vendor_funds(w, market, listing.vendor, listing.price)
+}
+
+/// Whether `vendor`'s org can fund one unit at `price` from its own account
+/// (doc 19 cut A.4b: asked before an emergency bid is posted). Unreadable reads
+/// as not.
+pub(crate) fn vendor_funds(
+    w: &World,
+    market: &MarketStore,
+    vendor: mush_market::VendorId,
+    price: Amount,
+) -> bool {
+    let Some(vendor) = market.vendor(vendor) else {
         return false;
     };
     w.module_state::<EconomyStore>()
@@ -143,7 +155,7 @@ pub(crate) fn funds_one(w: &World, market: &MarketStore, listing: ListingId) -> 
             a.posted_balance
                 .minor()
                 .saturating_sub(a.held_amount.minor())
-                >= listing.price.minor()
+                >= price.minor()
         })
 }
 

@@ -112,6 +112,7 @@ fn fixture() -> Result<(EconomySnapshot, EconomicContract), Box<dyn std::error::
         revision: 1,
     });
     let consent = ConsentSurface {
+        fact_consent: None,
         managed: None,
         parties: vec![who(1), who(2), who(3)],
         terms: ContractTerms {
@@ -668,7 +669,7 @@ fn managed_actual_escrow_refuses_fresh_key_and_known_retry_before_key_gate() -> 
     use crate::engine::AllowAll;
     struct NeverKeys;
     impl KeyGate for NeverKeys {
-        fn verdict(&self, _: &EconomySnapshot, _: &IdempotencyKey) -> KeyVerdict {
+        fn verdict(&self, _: &EconomySnapshot, _: &IdempotencyKey) -> KeyVerdict<'_> {
             panic!("managed refusal must precede idempotency lookup")
         }
     }

@@ -273,6 +273,13 @@ pub fn admit(arena: &Arena) -> Result<SnapshotBudget, SnapshotError> {
             limit,
         )?;
     }
+    // Latest accepted groups can fill after admission. This complete bounded
+    // record allowance is in addition to the actual opening document.
+    budget.objective_events = sum(
+        budget.objective_events,
+        super::order_watch::SNAPSHOT_RESERVE,
+        limit,
+    )?;
     for bytes in [
         budget.opening,
         budget.catalog_growth,

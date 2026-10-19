@@ -49,7 +49,7 @@ const MDEG_TURN: i128 = 360_000;
 /// One body of the sky: a circular, coplanar orbit and where on it the body
 /// stood at its epoch — its own `epoch_ic` when it has one, else the campaign
 /// epoch.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Body {
     /// Orbit radius, micro-AU.
     pub orbit_uau: u64,
@@ -60,6 +60,10 @@ pub struct Body {
     /// **Doc 18 cut IC2 (§4.8, D-18-48)** — the IC instant the phase is at, or
     /// `None` for the configured campaign epoch.
     pub epoch_ic: Option<i64>,
+    /// **Doc 19 cut A.7 (Q-19-9)** — the body this one orbits, for a moon: its
+    /// three numbers above are then about the parent, and `Sky::position_km`
+    /// adds the parent's position. `None` for a body about the Sun.
+    pub parent: Option<CanonicalId>,
 }
 
 impl From<&BodyDef> for Body {
@@ -69,6 +73,7 @@ impl From<&BodyDef> for Body {
             period_mdays: def.period_mdays,
             phase_mdeg: def.phase_mdeg,
             epoch_ic: def.epoch_ic,
+            parent: def.parent.clone(),
         }
     }
 }
@@ -231,6 +236,7 @@ mod tests {
                 period_mdays: 365_250,
                 phase_mdeg: 300_000,
                 epoch_ic: None,
+                parent: None,
             },
         )
         .with_body(
@@ -240,6 +246,7 @@ mod tests {
                 period_mdays: 686_980,
                 phase_mdeg: 130_000,
                 epoch_ic: None,
+                parent: None,
             },
         )
         .with_body(
@@ -249,6 +256,7 @@ mod tests {
                 period_mdays: 1_681_600,
                 phase_mdeg: 140_000,
                 epoch_ic: None,
+                parent: None,
             },
         )
     }

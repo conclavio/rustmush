@@ -2887,6 +2887,53 @@ mod tests {
     }
 
     #[test]
+    fn l5_live_leaders_round_trip_and_missing_field_stays_leaderless() {
+        use crate::deliberation::{CharacterRef, LanceLeader, SquadId};
+        let mut live = af2_live();
+        let red = SquadId {
+            team: Team::Red,
+            index: 1,
+        };
+        let blue = SquadId {
+            team: Team::Blue,
+            index: 1,
+        };
+        live.record.leaders = vec![
+            LanceLeader {
+                squad: red,
+                by: CharacterRef::Persona { squad: red },
+            },
+            LanceLeader {
+                squad: blue,
+                by: CharacterRef::Character { id: ObjId(5) },
+            },
+        ];
+        let mut document = live.to_document().expect("a live leader record serializes");
+        let restored = LiveRecord::from_document(&document).expect("leaders restore");
+        assert_eq!(restored.record.leaders, live.record.leaders);
+
+        // Model the earlier shape within this supported live envelope. The
+        // absence means no named leader, not permission to mint one at decode.
+        let mut state: serde_json::Value =
+            serde_json::from_str(document["state"].as_str().expect("encoded live state"))
+                .expect("live state JSON");
+        assert!(
+            state["record"]
+                .as_object_mut()
+                .expect("record")
+                .remove("leaders")
+                .is_some()
+        );
+        let state = serde_json::to_string(&state).expect("old record shape");
+        document["state_digest"] = serde_json::json!(live_state_digest(&state));
+        document["state"] = serde_json::json!(state);
+        let restored = LiveRecord::from_document(&document).expect("supported missing field");
+        assert!(restored.record.leaders.is_empty());
+        assert_eq!(restored.record.squads, live.record.squads);
+        assert_eq!(restored.centre, live.centre);
+    }
+
+    #[test]
     fn m6_live_record_retains_the_leads_selected_class_cap() {
         let mut live = af2_live();
         let account = live.centre.leads[0].1;

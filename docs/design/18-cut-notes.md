@@ -7369,3 +7369,303 @@ deploy without the owner**.
 - **A.4b** the emergency Wanted bids (life-support goods at the cap when reach crosses
   `emergency_ratio`, funded from finite capital) and `+chart <port>` naming the premium; **A.3b**
   the chart panel.
+
+## A.4b
+
+**The emergency Wanted bids** ([doc 19](19-astronomy-engine.md) §6, cut A.4b; D-19-14; doc 18
+Q-18-39's second half; Q-19-5's defaults), built 2026-10-19 on main. One commit with the Fable
+trailer, pushed when green. Nothing here touches a running world until the next deploy, and **no
+deploy without the owner**.
+
+### What landed
+
+1. **The port entry's block** (`port/def.rs`): `PortDef.emergency: Option<EmergencyDef { org,
+   ratio_permille, goods, intake }>`, serde default and skipped when absent, `deny_unknown_fields`;
+   `PortDef::check` refuses an emergency without a `premium` (the cap comes from it), a ratio
+   outside `1000..=MAX_EMERGENCY_RATIO_PERMILLE` (100,000), no goods or more than
+   `MAX_EMERGENCY_GOODS` (16) or one named twice, an intake outside `1..=mush_market::MAX_QUANTITY`,
+   an `org` that is not one of the port's vendors, and an org that already asks or bids any of the
+   goods (a storefront holds one line per good; `post_wanted` would refuse the duplicate);
+   `check_ports` refuses a good the goods table does not know, as it does a vendor's. The types and
+   bounds are exported with the def types.
+2. **The clerk's emergency step** (`port/stock.rs` `emergency_step`, ahead of the stock steps:
+   life support before stock). Once a real hour per port (`EMERGENCY_CHECK_SECS` 3,600 — one IC day
+   at the shipped rate 24; `PortTickState.emergency_checked` by entry id, spent only when nothing
+   was due) the clerk reads each emergency good's reach against its synodic median
+   (`price::reach_for`, the A.4 reading). A good at or past the ratio (`emergency_crossed`:
+   `now·1000 ≥ median·ratio`, integer arithmetic) with no standing emergency bid gets one: the org's
+   vendor posts a Wanted for `intake` units at the premium's **cap** over the good's **reference**
+   (`emergency_reference_major`: the port's highest authored ask or bid for the good, else the goods
+   table's `reference_major`) — through the applier's own `wanted_spec`, as the clerk under
+   `Fire::as_principal`, signed as every bid is — and the row goes into `PortMap.emergencies` (good →
+   `BidRow`, the reference as `price_major`). A house that cannot fund one unit
+   (`board::vendor_funds`, factored out of `funds_one`) posts nothing and is warned once a boot; a
+   row gone before its recorded deadline (its intake taken) is not posted again until the deadline
+   passes. A good whose reach fell back under the ratio while its bid stands has it withdrawn
+   (`withdraw_listing` as the clerk) and the row forgotten. One act a fire, authored order; the
+   swap's refusals map exactly as the bid re-post's (a clerk with a mint in flight defers). A good no
+   other port supplies has no reach and no emergency — Ceres's volatiles, which nobody at Stickney
+   asks. A port retire withdraws the emergency bids with the standing bids and forgets their rows.
+3. **The readings** (`port/price.rs`): `EmergencyReading { good, reach, crossed, price_major }`,
+   `emergency_readings(w, def)` (authored order; empty without the block or a premium),
+   `reach_ratio_permille`; exported.
+4. **`+chart <port>`** (`port/chart.rs` `demand_lines`): after the "now" line, the destination's
+   demand side — each standing bid as `<org> bids <good>: list <authored>, posts <posted> (+<p>
+   permille; reach <now> now against a median of <median>).` (or `(no port supplies it)`), then
+   `emergency bids (at <ratio> permille of the median): none due; reach is <r> permille of the
+   median.` or `… : <good> at <price>, … — <intake> each, at the cap (+<cap> permille), posted by
+   <org>.`; a port without a premium says it posts its list prices whatever the season. Under the
+   constant sky the same lines print at a zero premium before "every day is today".
+5. **Lane v6** (`content/lane/ceres_phobos.json`, `LANE_VERSION` 6): both ports gain
+   `"emergency": { "org": …, "ratio_permille": 1500, "goods": ["provisions", "volatiles",
+   "propellant"], "intake": 100 }` — the Freeport Exchange at Ceres, Stickney Yards at Stickney (each
+   the port's one vendor that neither asks nor bids any of the three) — and nothing else moves;
+   signed, digest `f7f568f43ac917131c029c3cbffbcc4917448f6157a6486dce97142a5a4a8e15` pinned in
+   `tests/lane.rs`. The commerce suite's v2 rebuild drops `emergency` as it drops `premium`.
+6. **Docs and help**: doc 19 §6 "As built (cut A.4b)", §9's row landed, §10 Q-19-5; README; the
+   trade help's second season paragraph (the emergency bids, `+chart <port>` says whether they are
+   up).
+
+### Verified
+
+- **`tests/price.rs`** (7, the A.4 four plus three): both ports author the block as above and
+  `check` passes; the nine refusals (ratio 999 and 100,001, no goods, a good twice, intake 0, an org
+  that is not a vendor, Kasei — which asks propellant — as the org, an emergency without a premium,
+  `unobtainium` at load); under the constant sky four fires post nothing on either port, every
+  Stickney reading has a reach equal to its median and is not crossed, Ceres's volatiles has none,
+  and the prices the bids would post at are the port's own highest authored price under the cap
+  (Stickney volatiles 200 → 300, provisions 10 → 15, propellant 60 → 90; Ceres provisions 15,
+  propellant 60); **the clerk**: a lane at 1,000 ‰ booted as an operator seed under the moving sky
+  has Stickney's clerk post, one a fire, a Wanted of the Yards' vendor for each of the three goods —
+  100 units at `priced(reference, 500)` (propellant 40 → 60, provisions 10 → 15, volatiles 200 →
+  300), recorded in the map, the capital rows unchanged — and a reboot into a revision at
+  100,000 ‰ taken as an update has it withdraw all three and forget the rows. The rig lands no
+  authoritative submission, so the variant strips Stickney's stock rows and asks (and the Co-op's
+  margin references that read them): a clerk with a stock mint in flight defers every act, which is
+  what the first attempt measured (the readings crossed, the house funded, the vendor registered,
+  nothing posted) — the deferral is right in production, where mints land within a fire.
+- Unit tests in `price.rs` (4): the crossing at the ratio, a ratio of 1,000 always on, a zero
+  median never, the ratio for the chart.
+- **`tests/chart.rs`** (5): `+chart stickney` under the moving sky prints Kasei's metals and
+  volatiles lines with the premium and the reach against the median, and the emergency line "none
+  due; reach is … permille of the median"; under the constant sky the metals line posts 280 at
+  +0 permille and the emergency line reads 1000 permille before "every day is today".
+- `tests/lane.rs` (10) at v6; `tests/hulls.rs`, `ports.rs`, `commerce.rs`, `sale.rs` through the
+  version constant.
+- `cargo fmt --check` clean; `cargo clippy -p tacsim --all-targets -- -D warnings` clean; the whole
+  tacsim suite (`--no-fail-fast`, 49 suites, 2,666 passed) had one red — `ports.rs`'s
+  `ic3_port_entries_refuse_what_the_applier_cannot_bind`, twice: the emergency check ran before the
+  vendors' own rules, so a vendor's fault was named as the emergency's (the check now runs last), and
+  the suite's no-vendors acceptance case kept the emergency block (it now drops it, as the v2 shape
+  has none) — after which `ports` 21, `price` 7, `hulls` 15, `commerce` 24 and the lib (1,249) ran
+  green again; mush-server `boot_parity` 19 and the story `ic_slice_loop` 6 green (the story's
+  figures unchanged: the shipped ratio is not crossed, and a constant sky posts nothing); mush-config
+  `shipped_configs` 12 green.
+
+### What the owner decides
+
+- **The ratio and the depth** (Q-19-5): 1,500 ‰ of the median and 100 units, lane data on each
+  port. At Ceres–Mars's season (reach about 15–27 h empty, median near 21 h) the worst day runs to
+  about 1,300 ‰, so the shipped ratio never fires on the lane as authored — it is the Pallas-like
+  port's lever, and a lane edit brings it into the lane's own season if wanted.
+- **Which house posts them**: the Exchange and the Yards (the one vendor at each port with no line
+  for the three goods). A port with no such vendor needs a new one authored before it can carry the
+  block.
+
+### Deferred
+
+- **A.3b** the chart panel. The emergency bids on the room boards (they carry no `boards`;
+  `+market/list` shows them). Readiness has no line for them.
+
+## A.7
+
+**The moons** ([doc 19](19-astronomy-engine.md) §3.6, cut A.7; D-19-17; Q-19-9 ruled by the owner
+2026-10-19 — "Luna Phobos Deimos Titan are worth modeling … the moons are really where the commerce
+is going to happen" — and Q-19-1 through Q-19-8's defaults accepted as proposed), built 2026-10-19 on
+main. One commit with the Fable trailer, pushed when green. Nothing here touches a running world
+until the next deploy, and **no deploy without the owner**.
+
+### What landed
+
+1. **A body may orbit a body** (`pack.rs`): `BodyDef.parent: Option<CanonicalId>` (wire `parent`,
+   skipped when absent, so no fixture's re-encoding moves; `with_parent`, `is_moon`), the pack's
+   cross-entry rule that a parent is a `body` of the same pack about the Sun and not the moon itself
+   (`PackError::UnknownParent`; one level, so a position is a parent's plus its own), and a 150 km
+   floor on the element table's distance consistency rule (`ELEMENTS_DISTANCE_FLOOR_KM`: a moon's
+   authored distance is held in micro-AU, 75 km of quantization on Phobos's 9,376 km). `Body.parent`
+   on the circular model (`Body` is no longer `Copy`).
+2. **The sky composes** (`sky.rs`): `KeplerSky::position_f64` and `Sky::position_km` add the
+   parent's position to a moon's own, on both models; `Sky::parent_of`; `Sky::distance_km` measures
+   any pair with a moon in it between composed positions, never by the coplanar law (the slice's
+   fixtures, with no moons, keep their byte-identical law-of-cosines figures); `Sky::period_days`
+   answers a moon's **primary's** period — a moon's season is its planet's, so the reach premium's
+   synodic scan over a port on Phobos is Mars–Ceres's 1,162 days and not a 7.65-hour one; the
+   revision digest names the parent.
+3. **The element blend for moons** (`kepler.rs`): `blended_elements_position` interpolates a moon's
+   rows in element space — scalars and the node linearly in time, the mean longitude ω + M along
+   the shorter arc with each row's M first advanced to the instant (a near-circular orbit's
+   pericentre swings between rows while the longitude stays smooth; Deimos's e is 0.0002), the
+   blended row propagated over zero days (`propagate_dt`; an epoch interpolated in IC seconds lands
+   up to a real leap day off the instant, most of a turn for Deimos). Why: a moon's node and
+   pericentre precess in months (Phobos's node by 158° a year), two rows a half-year apart put it at
+   different phases of a small orbit, and the planets' position blend takes the chord's midpoint —
+   Phobos read 4,794 km from Mars, half its radius, before this. The planets keep the position blend
+   as measured and pinned in A.1.
+4. **The data** (`fetch_elements.py --moons`): the moons' ELEMENTS asked about the parent (Horizons
+   `CENTER` the planet's centre, the ecliptic frame), their golden VECTORS heliocentric like every
+   other body's, the measure composing the parent's table with the moon's; **Titan has no Horizons
+   ephemeris past 2250-01-05**, so its rows are the last decade Horizons knows (nineteen, 2240–2249)
+   and the last row propagates alone through the window — self-consistent rather than Horizons-true,
+   no golden rows, recorded in the pack's `extrapolated_from`. `golden.json` gains luna, phobos and
+   deimos (241 rows each).
+5. **Lane v7** (`content/lane/ceres_phobos.json`, `LANE_VERSION` 7): the four moon bodies —
+   `luna` about earth (0.00258 AU, 27.53 d), `phobos` (63 µAU, 0.319 d) and `deimos` (157 µAU,
+   1.263 d) about mars, `titan` about saturn (0.00793 AU, 15.95 d) — each with `parent` and its
+   planetocentric table; **Stickney Yards stands on `phobos`**; the Kirkwood–Stickney legs re-timed
+   to the derived 942,997 s (27 s inside the Kirkwood–Mars chord's 943,024); twenty-four entries;
+   signed, digest `11fb2c9228799918184cc872a01d683e85de91e830104f170b966c7311f23541` pinned in
+   `tests/lane.rs`. The commerce suite's v2 rebuild drops the moons and puts Stickney back on Mars.
+6. **`+chart`** rows a moon with "moon of mars" after its from-here column; every other surface
+   reads the composed position and needed nothing.
+7. **Docs**: doc 19 §3.6 (D-19-17), §9's A.7 row, §10 (Q-19-1..8 accepted, Q-19-9 ruled); README;
+   doc 18 §5's P-A row.
+
+### Verified
+
+- **`tests/sky.rs`** (8): the sixteen bodies all Keplerian, the four moons naming their parents and
+  Titan's table nineteen rows; Horizons tracking for fourteen bodies — the eleven as before and
+  Luna 150.23 (allowed 160), Phobos 8.84 (9), Deimos 2.41 (3) hundredths of a permille, every body's
+  worst printed; a moon stands its own orbit from its parent at the epoch and a year either side
+  (Luna 356,000–407,000 km, Phobos 9,200–9,600, Deimos 23,400–23,500, Titan 1,180,000–1,260,000);
+  the epoch consistency compares a moon planetocentrically within the 75 km quantization; a moon's
+  period is its primary's.
+- **`tests/lane.rs`** (10): twenty-four entries and sixteen epochs; Stickney on phobos; the legs
+  61,776 + 942,997 and the derived legs printed; the route chord Ceres–Phobos; the circular lane's
+  sixteen bodies agree with the Euclidean distance; 125 periods of phase hold to the milli-degree
+  (a whole number of seconds for a 319-milli-day period, where one period rounded 8 mdeg away).
+- **Pins moved by Stickney's 9,400 km** (every figure read from the planner, none by hand):
+  `passage.rs` outbound 321,547 + 1,256,295 = 1,577,842 (was 1,256,313 / 1,577,860), return
+  1,195,643 + 306,023 = 1,501,666 (was 1,195,660 / 1,501,683); `voyage.rs` the story's ticket
+  326,136 + 1,274,226 = 1,600,362 (was 1,274,245 / 1,600,381); `ports.rs` the plans' "22 unchanged"
+  and "20 unchanged" (twenty-four entries). Burns and crew-days unchanged.
+- `tests/chart.rs` (5): sixteen rows, phobos "moon of mars".
+- `cargo fmt --check` clean; `cargo clippy -p tacsim --all-targets -- -D warnings` clean (one red on the
+  way: `tests/ephemeris.rs` built a `Body` by hand without the new field); the whole tacsim suite
+  (`--no-fail-fast`): 49 suites, 2,668 passed, 0 failed; mush-server `boot_parity` 19 and the story
+  `ic_slice_loop` 6 green with no pin moved (the story reads its figures from the planner);
+  mush-config `shipped_configs` 12 green.
+
+### What the owner decides
+
+- **Ports on the moons** (P7's kind): the bodies are there; Luna, Deimos and Titan want a `location`
+  with `body`, a `port` entry and routes. Titan's is a long way out (Saturn at 9.4 AU: weeks at the
+  Dray's thrust).
+- **Titan's extrapolation**: a self-consistent orbit, not Horizons-true, until a later ephemeris
+  reaches 2340. A later `fetch_elements.py` run re-fits it when one does.
+
+### Deferred
+
+- **A.3b** the chart panel (next).
+
+## A.3b
+
+**The chart panel** ([doc 19](19-astronomy-engine.md) §5, cut A.3b; D-19-18; Q-19-7's default
+"text first, the panel after A.6"), built 2026-10-19 on main — the owner's "build out the chart panel
+for both web and tui (and a flat render of the tui chart for line-oriented)". One commit with the Fable
+trailer, pushed when green. **No deploy without the owner.**
+
+### What landed
+
+1. **One frame** (`crates/tacsim/src/port/chart_panel.rs`): the `sky.chart` panel feed, registered
+   with the port verbs (`port::chart_panel::register`: the feed handle dropped, as the arena map's is
+   — nothing pushes a chart; a `QueryHandler` answers a `PanelSubscribe` with one keyframe for the
+   asker's vantage). The frame is **grid-shaped** (`schema.shape == "grid"`, the shape `atlas.map` and
+   the arena map wear, so the one grid printer and the web's grid decoder already read it): its grid is
+   the server's **flat render** — 60 by 28, the Sun `*` at the centre, every orbit a ring dotted every
+   5° at a **logarithmic radial scale** (`radial_fraction` = `ln(1 + r/0.3 AU) / ln(1 + r_max/0.3 AU)`;
+   a square root packed the six inner orbits into seven rows), the bodies by letter (`LETTERS`: m v E M
+   J S C P j V H K L p d T, else the first free letter of the id; nearest the Sun first keeps a shared
+   cell — Kirkwood trails Ceres by 2°, one cell — and the vantage's body is drawn last over everything;
+   a moon shares its parent's cell and draws no letter), the listed routes' legs as `:` body to body
+   (`line_cells`, Bresenham), the vantage port as the viewer's `you` and a `units` entry `@`; the
+   legend names the Sun, each body (with its moons, "(here)"), the orbit and route glyphs. Beside it
+   a **`chart` block**: `date`, `ic_now`, `model`, `rate_permille`, the `vantage` (port, body, hull,
+   payload, souls), the `scale`, every body (`id`, `glyph`, `parent`, `r_au`, `lon_deg`, `lat_deg`,
+   `x/y/z_au`, `period_days`, `here`, `from_here_au`, `lag_s`, `cell`), the `routes` (each
+   destination's legs, the passage now at this load and empty, the direct chord), the `window` (now
+   and the fastest, cheapest and worst day of the next IC year when the sky moves), and `lines` — the
+   text `+chart` and `+chart <port>` print, for a renderer that composes nothing itself. A vantage
+   with no lane answers a frame with no grid and the reason as its title.
+2. **The vantage without a helm** (`chart.rs` `vantage_for_world(w, actor)`): the port whose room the
+   actor stands in, else the first lane port, planned with the port's programme hull empty — what
+   `+chart` does for a walker; `vantage(ctx)` keeps the docked charter's branch for `+chart` from a
+   helm. `sky_lines` and `window_lines_for` factored out of `chart_sky`/`chart_window` for the panel.
+3. **Line mode**: `+chart/map` prints the title, the legend, the whole grid north up with its blank
+   edge rows trimmed, and the scale line — the TUI's chart pane flattened for a line player.
+4. **The TUI** (`mush-net-ssh`): **the lettered-screen policy** — the ten digits are spent, so a screen
+   past them has a lowercase letter's byte for its `ScreenId`, reached by `Alt+<letter>` when the
+   active screen binds nothing to the letter (`TuiApp::binds`; the cockpit's `c` stays its
+   contacts), the tab strip printing the letter, `validate_screens` admitting `a`–`z` that are no
+   global or jump key, `MAX_SCREENS` 11. The **chart screen** `c`: gated on `sky.chart` (a world
+   without the lane never grows the tab), `on_enter` asking for the frame; its Main pane
+   (`render_chart_rows`) windows the grid to the pane around `you` (`mush_ansi::viewport` and
+   `window_rows`, the cockpit map's way) with the clipped title above and the legend wrapped below;
+   its Right pane (`render_chart_table_rows`) prints the server's lines, the window first; `r`
+   refresh, `w` prefills `+chart `, `m` runs `+chart/map`. The screen sits before the cockpit, which
+   stays last. The help card names Alt+letter.
+5. **The web**: the same policy (`ScreenDef.digit: number | null` with `hotkey`; `validateScreens`
+   holds a letter screen to one letter, no global key, no twins; `switchHotkey`; `keys.ts` answers
+   `screenKey` for an unbound Alt+letter, never a global or jump letter; the tab strip shows `⌥c`),
+   `CHART_SCREEN` as a `FeedScreen` on a `.chart` feed registered once per hello beside the unit
+   screen; `lib/chart.ts` (the wire type, a tolerant decoder over `parseMapFrame`, `radialFraction` —
+   the server's curve — `bodyPoints`, `orbitRadius`, `routePolyline`, and the pure table composers
+   `bodyLines`, `routeLines`, `windowLines`, `chartHeading`); `stores/chart.svelte.ts`; the hello
+   pass subscribes `sky.chart` last when the manifest carries it; `#routePanel` routes it;
+   `refreshChart` on `r`; `ChartScreen.svelte` draws an SVG picture (orbits, bodies with labels, the
+   routes' polylines, the vantage ringed, moons labelled small on their parents) with the tables
+   beside it and the flat map under a toggle. `+chart` and `+chart/map` joined `RUN_ALLOWLIST` in both
+   copies and the committed fixture (sorted).
+6. **The fixture**: `web/src/lib/fixtures/chart/sky_chart.json`, a frame the server made for a walker
+   at Ceres under the moving sky, blessed by `tests/chart.rs` (`TACSIM_BLESS=1`), decoded by the web
+   tests and drawn by the TUI test.
+7. **Docs and help**: doc 19 §5 "As built (cut A.3b)" (D-19-18), §9's row landed; README; the ships
+   help's `+chart/map`.
+
+### Verified
+
+- `tests/chart.rs` (7): the frame's shape, size, title, legend (the Sun, `C ceres (here)`, Mars with
+  its moons, the route glyph), `you`, the letters on the map and no moon letters, the chart block
+  (sixteen bodies, Phobos on Mars's cell, the one route's legs ceres → kirkwood → phobos, empty and
+  direct figures, the window's fastest and worst, the lines), `+chart/map`'s lines (title, legend,
+  the rows with the blank edge rows trimmed, the scale), the fixture byte for byte; a world without
+  a lane refuses with `CHART_NO_LANE`. Unit tests in `chart_panel.rs` (4): the scale, the raster
+  (rings, route, letters, no moon letter, the vantage over a neighbour, run lengths), the line, the
+  letters.
+- `mush-net-ssh/tests/chart_screen.rs` (2): eleven screens validate, the chart on `c`, gated and
+  asking on entry; Alt+c opens it where the feed is published — the frame draws the title, the Sun,
+  the legend's `ceres (here)`, the tables pane's window and `Stickney Yards` — and is inert without
+  the feed. The suite's own tests moved with the eleventh screen (count, the two gated screens, the
+  bound verbs, the lettered tab).
+- Web: `chart.test.ts` (9: decoder, tolerance, the committed fixture, the scale, points, polylines,
+  the tables, the constant sky), the hotkey screen and Alt+letter tests, the allowlist fixture;
+  `svelte-check` 0 errors.
+- `cargo fmt --check` clean; `cargo clippy -p tacsim -p mush-net-ssh -p mush-server --all-targets --
+  -D warnings` clean (three lints on the way: a reborrow artifact of the chart refactor, the
+  lettered-id range check, a negated float comparison); the whole tacsim suite (`--no-fail-fast`):
+  49 suites, 2,673 passed, one red — this cut's own raster unit test shadowing its grid text — fixed
+  and the lib (1,253) and `chart` (7) re-run green; `mush-net-ssh` 259 lib tests and every
+  integration suite green with the two new ones; mush-server `boot_parity` 19 (the manifest with
+  `sky.chart`) and the story `ic_slice_loop` 6 green; mush-config `shipped_configs` 12 green; the
+  web: 54 files, 621 tests green, `svelte-check` 0 errors, `npm run build` clean.
+
+### What the owner decides
+
+- **The picture's scale**: logarithmic past 0.3 AU (`R0_AU`), the edge at the farthest body plus
+  2 %. A linear inner zone wider than Mercury's orbit, or a square root, is one constant.
+- **A moon's place on the chart**: on its parent's cell, named in the legend and the table; a port on
+  a moon draws as its planet. Zooming the picture to a planet's system (Luna, the Martian moons,
+  Titan) is a later cut when a port stands there.
+
+### Deferred
+
+- The web picture's own zoom and the TUI pane's zoom; a `.chart` feed per vantage on a moving ship.

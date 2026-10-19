@@ -34,7 +34,7 @@ fn reference(owner: &str, descriptor: &DefinitionDescriptor) -> Result<Definitio
 struct Catalogue {
     owner: &'static str,
     descriptors: Vec<DefinitionDescriptor>,
-    provider: Option<(DefinitionRef, DefinitionRef, DefinitionRef)>,
+    provider: Option<(DefinitionRef, DefinitionRef, DefinitionRef, DefinitionRef)>,
 }
 impl GameModule for Catalogue {
     fn name(&self) -> &'static str {
@@ -67,7 +67,11 @@ impl GameModule for Catalogue {
         for descriptor in &self.descriptors {
             reg.definition(descriptor.clone())?;
         }
-        if let Some((open, wrong, outcome)) = &self.provider {
+        if let Some((open, close, wrong, outcome)) = &self.provider {
+            // Core freezes every action allowed by the real participant, even
+            // when this physical-only fixture exercises only Open. A declared
+            // Close without an actual provider is an invalid composition.
+            reg.action_provider(close.clone(), NoHostClose)?;
             let receipts = receipt_family(reg)?;
             let handle = reg.request_owner_participant::<IcExclusionParticipant>(open.clone())?;
             reg.action_provider(
@@ -88,6 +92,19 @@ impl GameModule for Catalogue {
             )?;
         }
         Ok(())
+    }
+}
+// This fixture has no genuine region transition. Register the exact allowed
+// action, but never manufacture a physical close event to make the roster fit.
+struct NoHostClose;
+impl ActionProvider for NoHostClose {
+    fn validate_invocation(&self, _: &ActionInvocation) -> std::result::Result<(), ActionError> {
+        Err(ActionError::new(
+            ActionErrorCode::ProviderRejected,
+            false,
+            "physical fixture has no IC host close event",
+        )
+        .expect("static error"))
     }
 }
 // Typed evidence for this physical adapter test only. It is derived from the
@@ -235,6 +252,7 @@ impl ActionProvider for Probe {
 struct Fixture {
     world: TestWorld,
     open: DefinitionRef,
+    close: DefinitionRef,
     wrong: DefinitionRef,
     unit: ObjId,
     base: ObjId,
@@ -320,6 +338,7 @@ fn setup(extra: Vec<(SmolStr, Value)>, enabled: bool, missing_placement: bool) -
     let open_desc = action("open")?;
     let close_desc = action("close")?;
     let open = reference("tacsim", &open_desc)?;
+    let close = reference("tacsim", &close_desc)?;
     let wrong_desc = descriptor("action", "wrong_ic_probe", json!({}))?;
     let wrong = reference("tacsim", &wrong_desc)?;
     let outcome_desc = descriptor("outcome", "ic_probe", json!({}))?;
@@ -362,7 +381,7 @@ fn setup(extra: Vec<(SmolStr, Value)>, enabled: bool, missing_placement: bool) -
                     // rather than by a deliberately broken definition graph.
                     vec![manifest_descriptor, seal, base_descriptor]
                 },
-                provider: enabled.then_some((open.clone(), wrong.clone(), outcome)),
+                provider: enabled.then_some((open.clone(), close.clone(), wrong.clone(), outcome)),
             }),
         ],
     )?;
@@ -413,9 +432,16 @@ fn setup(extra: Vec<(SmolStr, Value)>, enabled: bool, missing_placement: bool) -
         &mut Outbox::new(),
         &mut Effects::new(),
     )?;
+    // The ordinary fixture bootstrap precedes the composed-action lane. As
+    // with the real driver and the Tactics custody fixture, finish that legacy
+    // bookkeeping here; never clear effects produced by prepare/stage/take.
+    let mut world = TestWorld::from_engine(engine);
+    let _ = world.world_mut().take_dirty();
+    let _ = world.take_module_ops();
     Ok(Fixture {
-        world: TestWorld::from_engine(engine),
+        world,
         open,
+        close,
         wrong,
         unit,
         base,
@@ -437,7 +463,7 @@ fn invocation(f: &Fixture) -> Result<ActionInvocation> {
             IdempotencyScope {
                 principal,
                 owner: OwnerId::new("tacsim")?,
-                namespace: CanonicalId::new("ic-probe")?,
+                namespace: CanonicalId::new("ic_probe")?,
             },
             1,
             IdempotencyKey::Request(request),
@@ -568,6 +594,21 @@ fn row_writes(p: &mush_core::composed::PreparedComposedTxn) -> Result<Vec<(SmolS
 #[test]
 fn real_owner_is_inert_until_install_and_only_the_hull_is_excluded() -> Result {
     let mut f = setup(vec![], true, false)?;
+    let inv = invocation(&f)?;
+    let close = f.close.clone();
+    let refused = f
+        .world
+        .engine_mut()
+        .prepare_registered_composed_authoritative_action(
+            &close,
+            &inv,
+            CommitToken::from_bytes([8; 16]),
+        );
+    assert!(
+        matches!(refused, Err(mush_core::action::ActionProviderPrepareError::Provider{source,..})
+        if source.code() == ActionErrorCode::ProviderRejected)
+    );
+    assert!(identity_of(f.world.world(), f.unit).is_none());
     let (p, o, inv) = prepare(&mut f)?;
     let persisted = row_writes(&p)?;
     assert_eq!(persisted.len(), 1);

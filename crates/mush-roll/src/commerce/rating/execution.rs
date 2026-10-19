@@ -181,6 +181,12 @@ pub struct ExecutionAdmission {
     pub maximum_unit_ms: u64,
     pub cases: u16,
     pub maximum_pages: u16,
+    // Absent for historical admissions: their exact future-key promise is unchanged.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub measured_rejection: bool,
+}
+fn is_false(value: &bool) -> bool {
+    !value
 }
 impl ExecutionAdmission {
     pub fn validate(&self) -> Result<(), RatingError> {
@@ -323,6 +329,9 @@ impl RatingExecution {
             (RatingJobState::Completed { receipt }, ExecutionPhase::Complete) => {
                 receipt.job() == self.job
             }
+            (RatingJobState::Nonconforming { receipt }, ExecutionPhase::Complete) => {
+                self.admission.measured_rejection && receipt.job() == self.job
+            }
             (RatingJobState::Failed { .. }, ExecutionPhase::Failed)
             | (RatingJobState::Cancelled {}, ExecutionPhase::Cancelled)
             | (RatingJobState::Interrupted {}, ExecutionPhase::Interrupted) => true,
@@ -348,6 +357,30 @@ impl RatingExecution {
     pub fn digest(&self) -> Result<DefinitionDigest, RatingError> {
         self.validate()?;
         super::digest("roll.registry.execution.v1", self, EXECUTION_BYTES)
+    }
+
+    pub(crate) fn verify_nonconformance(
+        &self,
+        job: &RatingJob,
+        receipt: &super::nonconformance::RatingNonconformance,
+        pages: &[super::RatingPage],
+    ) -> Result<(), RatingError> {
+        self.validate()?;
+        self.matches_job(job)?;
+        if !self.admission.measured_rejection
+            || self.observation.phase != ExecutionPhase::Complete
+            || !job.matches_nonconformance(receipt)?
+            || receipt.result().cases() > self.admission.cases
+            || pages.len() > usize::from(self.admission.maximum_pages)
+            || self.observation.result.as_ref()
+                != Some(
+                    &super::nonconformance::MeasuredNonconformance::from_receipt(receipt, pages)?
+                        .artifact()?,
+                )
+        {
+            return Err(RatingError::Identity);
+        }
+        Ok(())
     }
 
     pub(crate) fn verify_completion(
@@ -758,7 +791,15 @@ impl RatingExecution {
             false,
         );
         target("rating_completions", job.clone(), 4096, false);
-        target("rating_status", job, 4096, false);
+        target("rating_status", job.clone(), 4096, false);
+        if self.admission.measured_rejection {
+            target(
+                "rating_nonconformance",
+                job,
+                super::MAX_RECEIPT_BYTES,
+                false,
+            );
+        }
         for ordinal in 0..self.admission.maximum_pages {
             target(
                 "rating_pages",
