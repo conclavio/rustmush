@@ -695,7 +695,7 @@ fn cargo_and_goods() -> (
 
 /// The outbound load of lens 7 (doc 18 cut IC8 re-derived it, D-18-39): the
 /// metals/ice load at both of the hold's limits, solved from the goods table, never
-/// typed — and 42 t propellant, 21 crew-days of provisions.
+/// typed — and 42 t propellant, 22 crew-days of provisions (lane v4; 21 at v3).
 fn outbound() -> (u64, u64) {
     let (cargo, goods) = cargo_and_goods();
     vertex::both_limits_vertex(&goods, &cargo, &cid("metals"), &cid("volatiles"))
@@ -708,7 +708,7 @@ fn seed_outbound(rig: &mut Rig, row: &HullRow) {
     seed_pool(rig, vault, "metals", metals, LotId(1));
     seed_pool(rig, vault, "volatiles", ice, LotId(2));
     seed_pool(rig, vault, "propellant", 42, LotId(3));
-    seed_pool(rig, vault, "provisions", 21, LotId(4));
+    seed_pool(rig, vault, "provisions", 22, LotId(4));
 }
 
 /// `{t} t · {m³} m³` for `qty` tonnes of `good`.
@@ -754,7 +754,7 @@ fn summary_body() -> Vec<String> {
              FULL: mass and packed volume"
         ),
         "  TANKAGE 42/80 t".to_owned(),
-        "  STORES 21/120 crew-days".to_owned(),
+        "  STORES 22/120 crew-days".to_owned(),
     ]
 }
 
@@ -1901,7 +1901,7 @@ fn ic6_the_gauges_read_the_hold_pools() {
             "crew",
             vec![
                 status,
-                "Locker tally: voyage provisions, 21 of 120 crew-days.",
+                "Locker tally: voyage provisions, 22 of 120 crew-days.",
             ],
         ),
         ("passage", "passage", Vec::new()),
@@ -1931,7 +1931,7 @@ fn ic6_the_gauges_read_the_hold_pools() {
             &out,
             &[
                 "Salt Moth (Dray): docked Ceres Freeport, Visiting Berth Gallery.",
-                "Hold: cargo 100/100 t · 120.0/120 m³ · tank 42/80 t · locker 21/120 crew-days.",
+                "Hold: cargo 100/100 t · 120.0/120 m³ · tank 42/80 t · locker 22/120 crew-days.",
                 "Programme: 0 sales; buyout 90000.00cr.",
             ]
         ),
@@ -1944,7 +1944,7 @@ fn ic6_the_gauges_read_the_hold_pools() {
     ];
     want.extend(load_cells("    "));
     want.push("  TANKAGE reaction mass, 42 of 80 t".to_owned());
-    want.push("  STORES voyage provisions, 21 of 120 crew-days".to_owned());
+    want.push("  STORES voyage provisions, 22 of 120 crew-days".to_owned());
     let want: Vec<&str> = want.iter().map(String::as_str).collect();
     assert!(has_block(&out, &want), "{out}");
 }
@@ -2016,7 +2016,7 @@ fn ic6_the_charter_survives_a_reboot() {
             &out,
             &[
                 "Salt Moth (Dray): docked Ceres Freeport, Visiting Berth Gallery.",
-                "Hold: cargo 100/100 t · 120.0/120 m³ · tank 42/80 t · locker 21/120 crew-days.",
+                "Hold: cargo 100/100 t · 120.0/120 m³ · tank 42/80 t · locker 22/120 crew-days.",
                 "Programme: the Co-op's books cannot be read.",
             ]
         ),

@@ -561,7 +561,10 @@ pub const EXTENSIONS_HAULER: [(&str, &str); 1] = [("tacsim/content/units/dray.js
 /// it, so cut IC3 publishes **v2** (the routes re-timed for the Dray's re-fitted
 /// 226 km/s cruise, and the two `port` entries) and cut IC8 publishes v3 (the
 /// vendors: v2's ten non-port entries and both ports' fields byte-for-byte, plus
-/// each port's `vendors` array). A world that latched v1 or v2 keeps that ledger
+/// each port's `vendors` array), and doc 19 cut A.1 publishes v4 (the astronomy
+/// engine's sky: eleven real bodies and Kirkwood with semi-annual element tables
+/// from JPL Horizons, 2340–2400; the two routes re-timed to the three-dimensional
+/// chords at the epoch). A world that latched v1, v2 or v3 keeps that ledger
 /// row and takes the shipped version by
 /// `@atlas/pack plan tacsim.lane.ceres_phobos` / `@atlas/pack apply` — the boot
 /// pass applies only never-latched packs (`mush-content/src/module.rs`). Address
@@ -571,10 +574,12 @@ pub const EXTENSIONS_HAULER: [(&str, &str); 1] = [("tacsim/content/units/dray.js
 /// fixtures. Only [`LANE_VERSION`] is a game source; v1's and v2's bytes are no longer
 /// compiled in.
 pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
-/// **The lane version this server ships** (doc 18 cut IC3; v3 since cut IC8). The port
-/// readiness report (`crate::port::readiness`) reads the latched version
-/// against it, and every test that names the lane's version reads it here.
-pub const LANE_VERSION: u32 = 3;
+/// **The lane version this server ships** (doc 18 cut IC3; v3 since cut IC8; **v4
+/// since doc 19 cut A.1**: the twelve bodies with element tables, the sky in three
+/// dimensions, the routes re-timed to the epoch's 3D chords). The port readiness
+/// report (`crate::port::readiness`) reads the latched version against it, and
+/// every test that names the lane's version reads it here.
+pub const LANE_VERSION: u32 = 4;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.

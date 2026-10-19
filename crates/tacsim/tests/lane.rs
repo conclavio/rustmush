@@ -48,9 +48,11 @@ use tacsim::{
 
 use support::ground::{UNSIGNED, sign};
 
-/// **The lane's pin**, v3 (doc 18 cut IC8): a new version beside the v1 and v2
-/// ledger rows, never an earlier version re-signed in place (lead ruling L0b).
-const LANE_DIGEST: &str = "8d20125693884a8c6739d6dd032d858e474c015726eab54b05dccb17164d0ad4";
+/// **The lane's pin**, v4 (doc 19 cut A.1: the twelve bodies with element tables,
+/// the legs re-timed to the three-dimensional chords): a new version beside the
+/// v1, v2 and v3 ledger rows, never an earlier version re-signed in place (lead
+/// ruling L0b).
+const LANE_DIGEST: &str = "7cd35e6fa0d7bbd629c9bcb3d1b1acb4d1b24aa099c5573dbd824be93fbb4d82";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -96,7 +98,7 @@ fn bodies(pack: &RulesPack) -> Vec<(CanonicalId, BodyDef)> {
     pack.entries()
         .iter()
         .filter_map(|(id, entry)| match entry {
-            PackEntry::Body(def) => Some((id.clone(), *def)),
+            PackEntry::Body(def) => Some((id.clone(), def.clone())),
             _ => None,
         })
         .collect()
@@ -146,11 +148,12 @@ fn coast_kms(class: &CanonicalId) -> u32 {
 // The pin
 // ---------------------------------------------------------------------------
 
-/// **The lane is pinned** (doc 18 cut IC2; R4; cut IC3, L0a/L0b): a campaign
-/// seed at version 2 requiring nothing, exactly the twelve entries — the `sol`
-/// region, four bodies, three places, two routes re-timed for 226 km/s and the
-/// two ports; every body carries the same `epoch_ic`, which is 2351-05-13 on the
-/// game calendar.
+/// **The lane is pinned** (doc 18 cut IC2; R4; cut IC3, L0a/L0b; doc 19 cut A.1):
+/// a campaign seed at version 4 requiring nothing, exactly the twenty entries —
+/// the `sol` region, twelve bodies on element tables, three places, two routes
+/// timed to the Kepler sky's three-dimensional chords at the epoch for 226 km/s
+/// and the two ports; every body carries the same `epoch_ic`, which is
+/// 2351-05-13 on the game calendar.
 #[test]
 fn ic2_the_lane_pack_is_pinned() {
     let relative = "lane/ceres_phobos.json";
@@ -176,7 +179,7 @@ fn ic2_the_lane_pack_is_pinned() {
     let manifest = pack.manifest();
     assert_eq!(manifest.id().as_str(), LANE_PACK);
     assert_eq!(manifest.version(), LANE_VERSION);
-    assert_eq!(manifest.version(), 3, "lane v3 since doc 18 cut IC8");
+    assert_eq!(manifest.version(), 4, "lane v4 since doc 19 cut A.1");
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
     assert!(manifest.requires().is_empty(), "the lane requires nothing");
     assert_eq!(
@@ -198,19 +201,27 @@ fn ic2_the_lane_pack_is_pinned() {
             ("ceres_freeport".to_owned(), "location".to_owned()),
             ("ceres_port".to_owned(), "port".to_owned()),
             ("ceres_stickney".to_owned(), "route".to_owned()),
+            ("earth".to_owned(), "body".to_owned()),
+            ("hygiea".to_owned(), "body".to_owned()),
+            ("juno".to_owned(), "body".to_owned()),
+            ("jupiter".to_owned(), "body".to_owned()),
             ("kirkwood".to_owned(), "body".to_owned()),
             ("kirkwood_depot".to_owned(), "location".to_owned()),
             ("mars".to_owned(), "body".to_owned()),
+            ("mercury".to_owned(), "body".to_owned()),
             ("pallas".to_owned(), "body".to_owned()),
+            ("saturn".to_owned(), "body".to_owned()),
             ("sol".to_owned(), "region".to_owned()),
             ("stickney_ceres".to_owned(), "route".to_owned()),
             ("stickney_port".to_owned(), "port".to_owned()),
             ("stickney_yards".to_owned(), "location".to_owned()),
+            ("venus".to_owned(), "body".to_owned()),
+            ("vesta".to_owned(), "body".to_owned()),
         ],
-        "the twelve entries: v1's ten and the two ports"
+        "the twenty entries: v3's twelve and doc 19's eight more bodies"
     );
     let epochs: Vec<Option<i64>> = bodies(&pack).iter().map(|(_, def)| def.epoch_ic).collect();
-    assert_eq!(epochs.len(), 4);
+    assert_eq!(epochs.len(), 12);
     let first = epochs
         .first()
         .copied()
@@ -254,8 +265,9 @@ fn ic2_the_lane_pack_is_pinned() {
             ),
         ]
     );
-    // The four leg seconds, `ceil(km / 226)` of IC2's chords at the epoch
-    // (doc 18 cut IC3, L0a).
+    // The four leg seconds, `ceil(km / 226)` of the Kepler sky's three-dimensional
+    // chords at the epoch (doc 19 cut A.1; doc 18 cut IC3, L0a): the 2° hop to
+    // Kirkwood and the Kirkwood–Mars chord.
     let seconds = |id: &str| -> Vec<(String, u32)> {
         route_of(&pack, id)
             .legs
@@ -266,15 +278,15 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(
         seconds(LANE_ROUTE_OUT),
         vec![
-            ("kirkwood_depot".to_owned(), 537_293),
-            ("stickney_yards".to_owned(), 411_975)
+            ("kirkwood_depot".to_owned(), 61_776),
+            ("stickney_yards".to_owned(), 943_024)
         ]
     );
     assert_eq!(
         seconds(LANE_ROUTE_BACK),
         vec![
-            ("kirkwood_depot".to_owned(), 411_975),
-            ("ceres_freeport".to_owned(), 537_293)
+            ("kirkwood_depot".to_owned(), 943_024),
+            ("ceres_freeport".to_owned(), 61_776)
         ]
     );
     for id in [LANE_ROUTE_OUT, LANE_ROUTE_BACK] {
@@ -296,11 +308,11 @@ fn ic2_the_lane_pack_is_pinned() {
 // The sky
 // ---------------------------------------------------------------------------
 
-/// **Every authored leg is the leg the sky derives** (doc 18 §4.8, D-18-42):
+/// **Every authored leg is the leg the sky derives** (doc 18 §4.8, D-18-42; doc
+/// 19 cut A.1 kept it: the sky is now Kepler's, the chords three-dimensional):
 /// both lane routes walked body to body at the origin's epoch, `ceil(km / kms)`
 /// with `kms` from the fielded drive table, within 100 s of the authored
-/// `base_s`; and a place without a body is refused by name. Retired with lane v1
-/// at P-A.
+/// `base_s`; and a place without a body is refused by name.
 #[test]
 fn lane_legs_derive_at_epoch() {
     let pack = lane();
@@ -329,17 +341,47 @@ fn lane_legs_derive_at_epoch() {
     assert!(refused.contains("kirkwood_depot"), "{refused}");
 }
 
-/// **The circular sky's two readings agree** (D-18-43): under rate 1000 and
-/// rate 0, a year either side of the lane's epoch and at it, the distance
-/// between every pair of the four bodies is the Euclidean distance between their
-/// positions to within 2 km, every `z` is 0, and so is one mixed-instant pair.
+/// The lane with every element table stripped: the slice's circular sky over
+/// the same twelve bodies (doc 19 cut A.1 keeps the circular model as the
+/// e = i = 0 case).
+fn circular_lane() -> RulesPack {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    for (_, entry) in doc["entries"].as_object_mut().expect("entries") {
+        if entry["kind"] == "body" {
+            entry["def"]
+                .as_object_mut()
+                .expect("a def")
+                .remove("elements");
+        }
+    }
+    doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    load_pack(&sign(
+        &serde_json::to_string_pretty(&doc).expect("serializes"),
+    ))
+    .expect("the circular lane verifies")
+}
+
+/// **The circular sky's two readings agree** (D-18-43): on the lane with its
+/// element tables stripped (the slice's sky; doc 19 keeps it as the e = i = 0
+/// case), under rate 1000 and rate 0, a year either side of the lane's epoch
+/// and at it, the distance between every pair of the twelve bodies is the
+/// Euclidean distance between their positions to within 2 km, every `z` is 0,
+/// and so is one mixed-instant pair. The shipped lane itself is the Kepler sky
+/// (`tests/sky.rs` carries its properties).
 #[test]
 fn sky_circular_agrees_with_the_law_of_cosines() {
-    let pack = lane();
+    assert_eq!(
+        Sky::from_pack(&lane(), &EphemerisConfig::default()).model(),
+        "kepler",
+        "the shipped lane moves on element tables"
+    );
+    let pack = circular_lane();
     let ids: Vec<CanonicalId> = bodies(&pack).into_iter().map(|(id, _)| id).collect();
+    assert_eq!(ids.len(), 12);
     let year = 365 * 86_400;
     for rate in [1_000, 0] {
         let sky = Sky::from_pack(&pack, &EphemerisConfig { epoch: 0, rate });
+        assert_eq!(sky.model(), "circular");
         let e = sky.epoch_of(&cid("ceres")).expect("ceres is in the sky");
         let euclid = |a: &CanonicalId, ta: i64, b: &CanonicalId, tb: i64| -> f64 {
             let (pa, pb) = (
@@ -579,7 +621,9 @@ fn ic2_an_operator_seed_cannot_claim_the_lane_id() {
     let refused = verify_sources_with(&cfg, &game_seed_sources())
         .expect_err("the operator file collides with the lane");
     assert!(
-        refused.starts_with("[tacsim] ops/lane.json: declares tacsim.lane.ceres_phobos@3, which "),
+        refused.starts_with(&format!(
+            "[tacsim] ops/lane.json: declares tacsim.lane.ceres_phobos@{LANE_VERSION}, which "
+        )),
         "{refused}"
     );
     assert!(
@@ -716,7 +760,7 @@ fn expected_lines(id: &str, placed: &BTreeMap<CanonicalId, ObjId>) -> Vec<String
 /// operator seeds: the content latch holds the lane at version 2 with three
 /// placed rooms (doc 18 cut IC3: the ports place no object); `@corridor/show` on both lane routes, as a player, prints two
 /// legs, the drive class and propellant, the chord line ending
-/// `constant sky at epoch 2351-05-13 (T17).` and each leg's authored seconds and
+/// `the kepler sky at epoch 2351-05-13 (doc 19).` and each leg's authored seconds and
 /// derived AU, and never "frozen"; GOD's `@tacsim/pack list` lists the lane
 /// beside the untouched fixtures; the lane route's pinned chord is the sky's
 /// chord at the lane epoch on this world and on one booted at rate 1000 (the pin
@@ -790,7 +834,7 @@ fn ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky() {
             "{out}"
         );
         assert!(
-            out.contains(&format!("; constant sky at epoch {LANE_DATE} (T17).")),
+            out.contains(&format!("; the kepler sky at epoch {LANE_DATE} (doc 19).")),
             "{out}"
         );
         // Whole lines: the header starts with its line (the holder follows), and
@@ -811,7 +855,7 @@ fn ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky() {
     let out = tw.seen_by(&events, GOD).join("\n");
     for (line, digest) in [
         (
-            "tacsim.lane.ceres_phobos@3 [seed]",
+            "tacsim.lane.ceres_phobos@4 [seed]",
             lane().manifest().digest().to_hex(),
         ),
         ("tacsim.core@1 [rules]", CORE_DIGEST.to_owned()),

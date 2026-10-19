@@ -3407,8 +3407,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             (real.tank, real.locker),
-            (37, 19),
-            "doc 18 §4.4's 37 t and 19 crew-days"
+            (37, 20),
+            "doc 18 §4.4's 37 t and 19 crew-days — 20 since doc 19 cut A.1 (lane v4)"
         );
         assert_eq!(real.cargo_t, 73);
     }

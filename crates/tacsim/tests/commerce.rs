@@ -39,7 +39,7 @@ use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, fold_module_ops, fold_module_ops_into};
 use smol_str::SmolStr;
 use tacsim::config::PackSource;
-use tacsim::definitions::content::{LANE_JSON, LANE_PACK};
+use tacsim::definitions::content::{LANE_JSON, LANE_PACK, LANE_VERSION};
 use tacsim::pack::{PackEntry, load_pack};
 use tacsim::port::apply::room_by_key;
 use tacsim::port::{
@@ -1369,7 +1369,7 @@ fn ic8_the_ship_presence_and_the_gate_refusals() {
 /// bid; P11 and P08 both show the Yard's fittings ask; P07 shows Kasei's two bids.
 #[test]
 fn ic8_the_board_counts_down_to_sold_out() {
-    let lane = lane_variant(3, |doc| {
+    let lane = lane_variant(LANE_VERSION, |doc| {
         doc["entries"]["ceres_port"]["def"]["vendors"][0]["stock"][0]["qty"] =
             serde_json::json!(30);
     });
@@ -2159,7 +2159,7 @@ fn ic8_wanted_bids_are_posted_and_render_not_buying_when_unfunded() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn ic8_retire_withdraws_draws_and_bids_and_a_later_apply_posts_the_bids_afresh() {
-    let retired = mush_content::load_pack(&lane_variant(4, |doc| {
+    let retired = mush_content::load_pack(&lane_variant(LANE_VERSION + 1, |doc| {
         doc["entries"]
             .as_object_mut()
             .expect("the entries")
@@ -2263,7 +2263,7 @@ fn ic8_retire_withdraws_draws_and_bids_and_a_later_apply_posts_the_bids_afresh()
     );
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@4")) && apply.contains("1 retired"),
+        apply.contains(&format!("Applied {LANE_PACK}@5")) && apply.contains("1 retired"),
         "{plan}\n{apply}"
     );
     for listing in draws.iter().chain(&bids) {
@@ -2340,6 +2340,37 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
                 def.remove("vendors");
             }
         }
+        // Doc 19 cut A.1 (lane v4) added eight bodies, the element tables and the
+        // three-dimensional legs; v2 had none of them.
+        let entries = doc["entries"].as_object_mut().expect("the entries");
+        for body in [
+            "mercury", "venus", "earth", "jupiter", "saturn", "juno", "vesta", "hygiea",
+        ] {
+            assert!(
+                entries.remove(body).is_some(),
+                "{body} is in the shipped lane"
+            );
+        }
+        for body in ["ceres", "mars", "pallas"] {
+            entries[body]["def"]
+                .as_object_mut()
+                .expect("a body")
+                .remove("elements");
+        }
+        // Kirkwood was a circular body at 2.06 AU on the chord, 1,080-day period.
+        entries["kirkwood"]["def"] = serde_json::json!({
+            "orbit_au": 2.06,
+            "period_days": 1080.0,
+            "phase_deg_at_epoch": 279.506,
+            "epoch_ic": 74_152_540_800_i64
+        });
+        for (route, first, second) in [
+            ("ceres_stickney", 537_293, 411_975),
+            ("stickney_ceres", 411_975, 537_293),
+        ] {
+            entries[route]["def"]["legs"][0]["base_s"] = serde_json::json!(first);
+            entries[route]["def"]["legs"][1]["base_s"] = serde_json::json!(second);
+        }
     });
     assert_eq!(
         mush_content::parse_pack(&v2)
@@ -2397,7 +2428,7 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
     with_offer_keys(&mut rig.tw);
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@3")),
+        apply.contains(&format!("Applied {LANE_PACK}@{LANE_VERSION}")),
         "{plan}\n{apply}"
     );
     for entry in ["ceres_port", "stickney_port"] {
@@ -2456,7 +2487,7 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
 /// old Draw listing, and the next arm visit lists it at 41.00cr.
 #[test]
 fn ic8_an_ask_reprice_withdraws_and_the_arm_relists() {
-    let v4_json = lane_variant(4, |doc| {
+    let v4_json = lane_variant(LANE_VERSION + 1, |doc| {
         doc["entries"]["ceres_port"]["def"]["vendors"][1]["asks"][1]["price_major"] =
             serde_json::json!(41);
     });
@@ -2474,7 +2505,7 @@ fn ic8_an_ask_reprice_withdraws_and_the_arm_relists() {
     );
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@4")),
+        apply.contains(&format!("Applied {LANE_PACK}@5")),
         "{plan}\n{apply}"
     );
     assert!(
@@ -2533,7 +2564,7 @@ fn fires(rig: &mut Rig, n: usize) {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn ic14_a_dropped_port_entrys_clerk_idles_while_the_lane_stays_latched() {
-    let retired = mush_content::load_pack(&lane_variant(4, |doc| {
+    let retired = mush_content::load_pack(&lane_variant(LANE_VERSION + 1, |doc| {
         doc["entries"]
             .as_object_mut()
             .expect("the entries")
@@ -2550,7 +2581,7 @@ fn ic14_a_dropped_port_entrys_clerk_idles_while_the_lane_stays_latched() {
     }
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@4")) && apply.contains("1 retired"),
+        apply.contains(&format!("Applied {LANE_PACK}@5")) && apply.contains("1 retired"),
         "{plan}\n{apply}"
     );
     for (org, good) in CERES_DRAWS {

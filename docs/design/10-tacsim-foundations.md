@@ -806,3 +806,9 @@ rejection of simulated ephemerides ("long non-opportunity" is doc 18 Q-18-35 by 
 knowingly). Travel time becomes the planner's output: the sky at departure, the drive's law (coasting at
 a cruise speed, or a constant-acceleration flip) and the departure mass. The epoch moves from server
 config to the pack's bodies (doc 18 D-18-48), which is what this addendum always said.
+
+**Superseded (2026-10-18; [doc 19](19-astronomy-engine.md), cut A.1).** The astronomy engine is
+built: every lane body moves on an element table from JPL Horizons behind `Sky::Kepler`, in three
+dimensions, within 0.07 ‰ of Horizons over 2340–2400; the circular model stays the e = i = 0 case
+every fixture pack still is. T17 now describes the fixtures' sky and the slice's history, nothing
+the lane relies on.

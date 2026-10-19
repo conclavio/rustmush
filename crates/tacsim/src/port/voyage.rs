@@ -2226,17 +2226,17 @@ mod tests {
             to: id("kirkwood_depot"),
             body: id("kirkwood"),
             dist_km: 1_000,
-            secs: 959_361,
+            secs: 110_305,
             t0: depart,
-            t1: depart + 959_361,
+            t1: depart + 110_305,
         };
         let b = crate::port::families::LegPlan {
             to: id("stickney_yards"),
             body: id("mars"),
             dist_km: 1_000,
-            secs: 735_600,
+            secs: 1_683_834,
             t0: a.t1,
-            t1: a.t1 + 735_600,
+            t1: a.t1 + 1_683_834,
         };
         let total = b.t1 - depart;
         PendingVoyage {

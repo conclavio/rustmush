@@ -370,10 +370,11 @@ fn content_pack(json: &str) -> mush_content::Pack {
     mush_content::load_pack(json).expect("the variant verifies")
 }
 
-/// Lane v4 (test-only data, one past the shipped v3 since doc 18 cut IC8): both port entries touched — `ceres_port`'s
-/// dormancy 8 days and `yard_commissary`'s faction `freeport`.
+/// The next lane (test-only data, one past the shipped version — v5 since doc 19 cut
+/// A.1 shipped v4): both port entries touched — `ceres_port`'s dormancy 8 days and
+/// `yard_commissary`'s faction `freeport`.
 fn lane_v4(edit: impl FnOnce(&mut serde_json::Value)) -> mush_content::Pack {
-    content_pack(&lane_variant(4, |doc| {
+    content_pack(&lane_variant(LANE_VERSION + 1, |doc| {
         doc["entries"]["ceres_port"]["def"]["programme"]["dormancy_real_days"] =
             serde_json::json!(8);
         doc["entries"]["stickney_port"]["def"]["orgs"][2]["faction"] =
@@ -709,7 +710,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@4: 0 create, 2 update, 0 retire, 10 unchanged"
+            "Plan for {LANE_PACK}@5: 0 create, 2 update, 0 retire, 18 unchanged"
         )),
         "{plan}"
     );
@@ -722,12 +723,12 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     }
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@4: 0 created, 2 updated, 0 retired, 10 unchanged."
+            "Applied {LANE_PACK}@5: 0 created, 2 updated, 0 retired, 18 unchanged."
         )),
         "{apply}\n{plan}"
     );
     assert!(!apply.contains("STOPPED"), "{apply}");
-    assert_eq!(lane_latch(&tw), Some(4));
+    assert_eq!(lane_latch(&tw), Some(5));
     assert_eq!(counts(&tw), snapshot_counts, "the update made nothing");
     assert_eq!(maps(&tw), snapshot_maps);
     let ops = tw.take_module_ops();
@@ -738,7 +739,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     let out = report(&mut tw);
     assert!(
         out.contains(&format!(
-            "lane: {LANE_PACK}@4 applied; this server ships @3 and does not load @4. [flagged]"
+            "lane: {LANE_PACK}@5 applied; this server ships @4 and does not load @5. [flagged]"
         )),
         "{out}"
     );
@@ -830,7 +831,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
             assert!(apply.contains(word), "{name}: {word}:\n{apply}");
         }
         assert!(!apply.contains("Applied "), "{name}:\n{apply}");
-        assert_eq!(lane_latch(&tw), Some(3), "{name}");
+        assert_eq!(lane_latch(&tw), Some(LANE_VERSION), "{name}");
         assert_eq!(counts(&tw), before, "{name}");
         assert_eq!(maps(&tw), before_maps, "{name}");
         assert_eq!(before_maps, snapshot_maps, "{name}");
@@ -865,7 +866,7 @@ fn ic3_an_update_creates_a_new_org_and_keeps_every_recorded_row() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@4: 0 created, 2 updated, 0 retired, 10 unchanged."
+            "Applied {LANE_PACK}@5: 0 created, 2 updated, 0 retired, 18 unchanged."
         )),
         "{apply}\n{plan}"
     );
@@ -992,7 +993,7 @@ fn ic3_a_map_that_stopped_part_way_is_completed() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@4: 0 created, 2 updated, 0 retired, 10 unchanged."
+            "Applied {LANE_PACK}@5: 0 created, 2 updated, 0 retired, 18 unchanged."
         )),
         "{apply}\n{plan}"
     );
@@ -1104,7 +1105,7 @@ fn ic3_a_corrupt_port_map_refuses_re_creation() {
     let (_plan, apply) = plan_and_apply(&mut tw);
     assert!(apply.contains(&key), "{apply}");
     assert!(apply.contains("never re-created"), "{apply}");
-    assert_eq!(lane_latch(&tw), Some(3));
+    assert_eq!(lane_latch(&tw), Some(LANE_VERSION));
     assert_eq!(counts(&tw), before, "nothing was made");
 
     // (b) A fresh store carrying only that corrupt document refuses the first
@@ -1126,7 +1127,9 @@ fn ic3_a_corrupt_port_map_refuses_re_creation() {
         .expect_err("the first boot of the lane is refused")
         .to_string();
     assert!(
-        refused.contains(&format!("content: first-boot pack {LANE_PACK}@3 refused: ")),
+        refused.contains(&format!(
+            "content: first-boot pack {LANE_PACK}@{LANE_VERSION} refused: "
+        )),
         "{refused}"
     );
     assert!(refused.contains(&key), "{refused}");
@@ -1216,7 +1219,9 @@ fn ic3_a_frozen_economy_refuses_the_lane_before_anything_is_made() {
         "the drifted projection froze the economy"
     );
     assert!(
-        refused.contains(&format!("content: first-boot pack {LANE_PACK}@3 refused: ")),
+        refused.contains(&format!(
+            "content: first-boot pack {LANE_PACK}@{LANE_VERSION} refused: "
+        )),
         "{refused}"
     );
     assert!(refused.contains("the economy is frozen"), "{refused}");
@@ -1469,7 +1474,11 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
             "the boot pass never upgrades a latch"
         );
         assert!(store(&next).published_digest(&lane_id(), 1).is_some());
-        assert!(store(&next).published_digest(&lane_id(), 3).is_some());
+        assert!(
+            store(&next)
+                .published_digest(&lane_id(), LANE_VERSION)
+                .is_some()
+        );
         for entry in ["ceres_port", "stickney_port"] {
             assert!(matches!(
                 store(&next).port_map(&lane_id(), &cid(entry)),
@@ -1479,7 +1488,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let out = report(&mut next);
         for line in [
             format!(
-                "lane: {LANE_PACK}@1 applied; this server ships @3. Take it with @atlas/pack \
+                "lane: {LANE_PACK}@1 applied; this server ships @4. Take it with @atlas/pack \
                  plan {LANE_PACK}. [flagged]"
             ),
             "  ceres_port: not applied. [missing]".to_owned(),
@@ -1498,7 +1507,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let plan = run(&mut next, GOD, &format!("@atlas/pack plan {LANE_PACK}"));
         assert!(
             plan.contains(&format!(
-                "Plan for {LANE_PACK}@3: 2 create, 2 update, 0 retire, 8 unchanged"
+                "Plan for {LANE_PACK}@{LANE_VERSION}: 2 create, 2 update, 0 retire, 16 unchanged"
             )),
             "{plan}"
         );
@@ -1516,11 +1525,11 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let (_, apply) = plan_and_apply(&mut next);
         assert!(
             apply.contains(&format!(
-                "Applied {LANE_PACK}@3: 2 created, 2 updated, 0 retired, 8 unchanged."
+                "Applied {LANE_PACK}@{LANE_VERSION}: 2 created, 2 updated, 0 retired, 16 unchanged."
             )),
             "{apply}"
         );
-        assert_eq!(lane_latch(&next), Some(3));
+        assert_eq!(lane_latch(&next), Some(LANE_VERSION));
         let placed_v2 = next
             .world()
             .module_state::<ContentState>()
@@ -1534,7 +1543,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let out = report(&mut next);
         assert!(
             out.contains(&format!(
-                "lane: {LANE_PACK}@3 applied; this server ships @3. [ready]"
+                "lane: {LANE_PACK}@4 applied; this server ships @4. [ready]"
             )),
             "{out}"
         );
@@ -1566,7 +1575,7 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
         .collect();
     let treasury = port_map(&tw, "ceres_port").treasury.expect("a treasury");
     let mut want = vec![
-        format!("lane: {LANE_PACK}@3 applied; this server ships @3. [ready]"),
+        format!("lane: {LANE_PACK}@4 applied; this server ships @4. [ready]"),
         format!("sky: constant (rate 0), epoch 2351-05-13, rev {rev} [ready]"),
         "world rate: 24 IC seconds per real second. [ready]".to_owned(),
         format!("treasury: system:tacsim.treasury, account #{treasury}. [ready]"),
@@ -2287,15 +2296,18 @@ fn with_stations(shelf: &[mush_content::Pack]) -> Vec<mush_content::Pack> {
 /// the Lane line, never the sky.
 #[test]
 fn ic12_a_moving_sky_with_a_body_lacking_epoch_ic_flags_and_pages_once() {
-    let json = lane_variant(4, |doc| {
+    let json = lane_variant(LANE_VERSION + 1, |doc| {
         doc["entries"]["ceres_port"]["def"]["programme"]["dormancy_real_days"] =
             serde_json::json!(8);
         doc["entries"]["stickney_port"]["def"]["orgs"][2]["faction"] =
             serde_json::json!("freeport");
-        doc["entries"]["pallas"]["def"]
+        // Doc 19 cut A.1: a body on an element table carries its epoch, so the
+        // table goes with it — Pallas is a circular body here, as in the slice.
+        let pallas = doc["entries"]["pallas"]["def"]
             .as_object_mut()
-            .expect("pallas is a body")
-            .remove("epoch_ic");
+            .expect("pallas is a body");
+        pallas.remove("epoch_ic");
+        pallas.remove("elements");
     });
     let roster = Roster::production().with_shelf(vec![content_pack(&json)]);
     let mut cfg = config();
@@ -2309,10 +2321,10 @@ fn ic12_a_moving_sky_with_a_body_lacking_epoch_ic_flags_and_pages_once() {
     sweep(&mut tw, 3_600);
     let (_plan, apply) = plan_and_apply(&mut tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@4: ")),
+        apply.contains(&format!("Applied {LANE_PACK}@5: ")),
         "{apply}"
     );
-    assert_eq!(lane_latch(&tw), Some(4));
+    assert_eq!(lane_latch(&tw), Some(5));
     set_rate(&mut tw, 24);
     let out = report(&mut tw);
     let sky = out
@@ -2328,7 +2340,7 @@ fn ic12_a_moving_sky_with_a_body_lacking_epoch_ic_flags_and_pages_once() {
     );
     assert!(
         out.contains(&format!(
-            "lane: {LANE_PACK}@4 applied; this server ships @{LANE_VERSION}. [flagged]"
+            "lane: {LANE_PACK}@5 applied; this server ships @{LANE_VERSION}. [flagged]"
         )),
         "{out}"
     );
@@ -2363,11 +2375,13 @@ fn ic12_a_moving_sky_with_a_body_lacking_epoch_ic_flags_and_pages_once() {
 /// never pages (doc 18 cut IC12 item 2.2: "Rate 0 is unchanged byte for byte").
 #[test]
 fn ic12_a_constant_sky_never_flags_a_body_lacking_epoch_ic() {
-    let json = lane_variant(4, |doc| {
-        doc["entries"]["pallas"]["def"]
+    let json = lane_variant(LANE_VERSION + 1, |doc| {
+        // Doc 19 cut A.1: the table goes with the epoch (see above).
+        let pallas = doc["entries"]["pallas"]["def"]
             .as_object_mut()
-            .expect("pallas is a body")
-            .remove("epoch_ic");
+            .expect("pallas is a body");
+        pallas.remove("epoch_ic");
+        pallas.remove("elements");
     });
     let roster = Roster::production().with_shelf(vec![content_pack(&json)]);
     let mut cfg = config();
@@ -2379,7 +2393,7 @@ fn ic12_a_constant_sky_never_flags_a_body_lacking_epoch_ic() {
     no_refused_writes(&tw);
     sweep(&mut tw, 3_600);
     let _ = plan_and_apply(&mut tw);
-    assert_eq!(lane_latch(&tw), Some(4));
+    assert_eq!(lane_latch(&tw), Some(5));
     let out = report(&mut tw);
     let sky = out
         .lines()

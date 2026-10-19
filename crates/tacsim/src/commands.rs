@@ -593,9 +593,13 @@ fn corridor_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .as_ref()
             .and_then(|sky| sky.epoch_of(a))
             .unwrap_or(store(ctx)?.config().time.ephemeris.epoch);
+        // Doc 19 cut A.1: the sky names its model (`kepler` for a lane whose
+        // bodies carry element tables, `circular` for a fixture) and the chord
+        // is the three-dimensional one.
+        let model = sky.as_ref().map_or("unknown", Sky::model);
         rows.push(format!(
-            "  direct chord at the epoch: {km} km ({} AU) between {a} and {b}; constant sky at \
-             epoch {} (T17).",
+            "  direct chord at the epoch: {km} km ({} AU) between {a} and {b}; the {model} sky \
+             at epoch {} (doc 19).",
             au_text(km),
             epoch_date(epoch)
         ));
@@ -934,10 +938,16 @@ fn pack_show(ctx: &mut Ctx<'_>, arg: &str, cursor: &str) -> Result<(), CmdError>
             ),
             // S7 (T17): the sky, as authored — an orbit, a period, a phase.
             PackEntry::Body(def) => format!(
-                "body — {:.3} AU, {:.2} days, {:.1}° at the epoch",
+                "body — {:.3} AU, {:.2} days, {:.1}° at the epoch{}",
                 def.orbit_uau as f64 / 1_000_000.0,
                 def.period_mdays as f64 / 1_000.0,
-                def.phase_mdeg as f64 / 1_000.0
+                def.phase_mdeg as f64 / 1_000.0,
+                // Doc 19 cut A.1: a body on an element table says so.
+                if def.is_keplerian() {
+                    format!("; kepler, {} element rows", def.elements.len())
+                } else {
+                    String::new()
+                }
             ),
             // 16b cut C.2: doc 16 §4's six. Each renders the shape a reviewer
             // checks a version bump against, and nothing a listing should not

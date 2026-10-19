@@ -6919,3 +6919,133 @@ smoke: no Redis on this box, and the cut is post-deploy by the ruling.
   fn port::readiness::unfunded_bids(&World) -> Vec<(CanonicalId, CanonicalId, CanonicalId)>`,
   `PortTickState.funds_pages: u32` (RAM), `pub fn port_tick::funds_pages(&World) -> u32`.
 - **Test rigs**: `tacsim/tests/orders.rs` `leave_kasei_under_a_tonne(&mut Rig) -> i64`.
+
+## A.1
+
+**The astronomy engine's data and model** ([doc 19](19-astronomy-engine.md) §3, cut A.1; doc 18
+§5's post-loop cut P-A, sub-cut 1; D-19-1 … D-19-7), built 2026-10-18 on main over `3160cdd0`. One
+commit with the Fable trailer, pushed when green. The owner's ask of the day: "an asteroid like
+Pallas being so off-ecliptic means there are optimal times to trade there and times when it's
+prohibitively expensive to reach it" — this cut gives the sky its third dimension and its motion;
+the laws that turn motion into time and fuel are A.2's.
+
+### What landed
+
+1. **`kepler.rs`** (`tacsim::kepler`, new): `ElementRow` — one row of osculating Keplerian elements
+   at a game-calendar epoch, eight integers of fixed scale (nano-AU, nano for `e`, micro-degrees,
+   nano-degrees per day; `from_authored` / `authored` round-trip the decimals exactly, the bounds
+   `e ≤ 0.99`, `0° ≤ i ≤ 180°`, a positive mean motion, a whole epoch in range); `julian_day(ic)` —
+   the Julian Day of an IC instant's **calendar label** plus the day fraction (D-19-3: the game's
+   2351-05-13 is the real 2351-05-13; the game calendar has no February 29, so every label is a
+   Gregorian date); `propagate(row, jd)` — sixteen Newton steps on Kepler's equation, the rotation
+   by ω, i, Ω, kilometres in `f64`; `table_position(rows, jd)` — the bracketing rows' propagations
+   blended linearly in time, exact at a row, the nearest end row alone outside the table;
+   `polar`. Five unit tests, among them Ceres's osculating row of 2351-05-13 landing on the slice's
+   authored 2.866568 AU / 281.654° and the exact J2000 and lane-epoch Julian Days.
+2. **`BodyDef.elements: Vec<ElementRow>`** (`pack.rs`): the wire gains `elements` as an array of
+   `[epoch_ic, a_au, e, i_deg, node_deg, peri_deg, mean_anomaly_deg, mean_motion_deg_day]` rows,
+   skipped when empty (no fixture's digest moves — `fixture_digests_unmoved_by_optional_sky_fields`
+   still holds); `BodyDef::with_elements` decodes and validates: `1..=MAX_ELEMENT_ROWS` (512) rows
+   strictly ascending by epoch, `epoch_ic` present, and **the consistency rule** (D-19-2): the table's
+   position at `epoch_ic` within 5 ‰ of the authored `orbit_au` and 0.5° of
+   `phase_deg_at_epoch`, `period_days` within 1 % of the nearest row's `360 / n` — a pack cannot
+   carry two skies that disagree. `BodyDef` is no longer `Copy`. `is_keplerian()`.
+3. **`Sky::Kepler(KeplerSky)`** (`sky.rs`; D-19-1, D-19-4, D-19-5): chosen by `Sky::from_pack`
+   whenever any body carries a table, else `Sky::Circular` exactly as before. A circular body inside
+   a Kepler sky keeps `Ephemeris::phase_mdeg_at`, and a circular **pair** keeps `separation_km` to
+   the bit (`a_circular_pair_in_a_kepler_sky_keeps_the_slices_arithmetic`). A Keplerian body's
+   position is its table's, rounded to the kilometre, with latitude; the rate keeps its meaning —
+   `0` holds the body at its epoch position (now three-dimensional), `1000` is real motion, any
+   other permille scales the elapsed interval about the body's epoch. `PosKm::distance_km` is the
+   `u128` integer square root over the integer differences (one rounding path, at the position);
+   `distance_km` takes it whenever either body is Keplerian. New: `Sky::ephemeris()`,
+   `is_keplerian`, `heliocentric` (r, λ, β for the chart), `light_lag_s` (A.5's seam, whole seconds
+   up), `KeplerSky::{circular, table, keplerian_bodies, position_f64}`. The revision digest keeps
+   the slice's value for a circular sky and, for a Kepler sky, adds each table's own digest (taken
+   once at construction under `tacsim.sky.table.v1`) to its body's entry, so `revision()` stays
+   cheap for the chart's scans and a changed row changes the sky.
+4. **`fetch_elements.py`** (`content/sky/`, new; D-19-7): stdlib only, one JSON object to stdout,
+   `--cache <dir>` for the raw rows, `--write-golden` for the table. Horizons `ELEMENTS` by `TLIST`
+   at January 1 and July 1 of 2340–2400 plus the lane's epoch (122 rows; chunks of forty, since
+   Horizons answered 80 of 122 and said nothing), `VECTORS` every 91 days for the golden; the gas
+   giants by barycentre (the planet-centre records end at 2200). It propagates exactly as the Rust
+   does and measures the table against the golden rows per body. **The measurement** (the reason
+   for the table, doc 19 §3.2): a single osculating set anchored at the epoch drifted 1.6–4.6 % for
+   the asteroids over the window; a single fitted set 0.6–5.6 %; the semi-annual table with the
+   blend holds mercury 0.056 ‰, venus 0.053, earth 1.014 (the Moon), mars 0.024, jupiter 0.003,
+   saturn 0.013, ceres 0.070, pallas 0.054, juno 0.059, vesta 0.047, hygiea 0.072 ‰ of heliocentric
+   distance — 241 rows each.
+5. **`golden.json`** (`content/sky/`, new, 131 KB): the eleven bodies' Horizons positions, km, every
+   91 days, each row keyed by the game calendar's IC second of its label.
+6. **Lane v4** (`content/lane/ceres_phobos.json`, 171 KB; `LANE_VERSION` 4): twelve `body` entries
+   — mercury, venus, earth, mars, jupiter, saturn, ceres, pallas, juno, vesta, hygiea from Horizons
+   and **kirkwood on Ceres's rows trailing by 2° of mean anomaly** (D-19-6; doc 18 Q-18-36's
+   recommended default, 0.0933 AU astern at the epoch, 0.07–0.13 AU through the window, always
+   behind) — each with its 122-row table, the slice's circular numbers of ceres, mars and pallas
+   **unchanged** (the Kepler sky reproduces them to the kilometre and the milli-degree at the epoch:
+   `a1_sky_kepler_is_the_circular_sky_at_the_epoch`). The two routes' `base_s` re-timed to the
+   three-dimensional chords at the epoch at 226 km/s: Ceres–Kirkwood **61,776 s** (0.0933 AU),
+   Kirkwood–Mars **943,024 s** (1.4246 AU); lane v3's were 537,293 and 411,975 on the circular
+   Kirkwood at 2.06 AU. Digest `7cd35e6fa0d7bbd629c9bcb3d1b1acb4d1b24aa099c5573dbd824be93fbb4d82`,
+   pinned in `tests/lane.rs`; v1, v2 and v3 ledger rows stand (the in-place rule of IC3).
+7. **`@corridor/show`** names the model: `…; the kepler sky at epoch 2351-05-13 (doc 19).` (a
+   fixture corridor says `the circular sky`); `@tacsim/pack show` appends `; kepler, 122 element
+   rows` to a body on a table. The readiness Sky line is **unchanged in form** this cut (its pins in
+   `ports.rs` and the mush-server story test stand); the model word arrives with A.6, which touches
+   the templates and that test anyway.
+8. **Tests.** `tests/sky.rs` (new, seven): the lane sky is Keplerian and the fixtures are not;
+   **`a1_sky_kepler_tracks_horizons`** (every golden row within the recorded per-body tolerance, in
+   hundredths of a permille: mercury 6, venus 6, earth 110, mars 3, jupiter 1, saturn 2, ceres 8,
+   pallas 6, juno 6, vesta 5, hygiea 8); the epoch identity; the integer distance is the Euclidean
+   one for every pair at three instants and one mixed pair; the calendar by its label (Mars half a
+   turn, Ceres 69° of true longitude in a game year — the equation of the centre spreads its 78° of
+   mean motion); Kirkwood trails Ceres through the window; the epoch legs printed. `tests/lane.rs`:
+   v4, twenty entries, twelve epochs, the new legs, `sky_circular_agrees_with_the_law_of_cosines`
+   now on the lane with its tables stripped (the circular model is the e = i = 0 case) and asserting
+   the shipped lane is `kepler`, the corridor wording, `@4`. `tests/passage.rs`: lane v4's figures.
+   The one-past-the-shipped lane variants in `ports.rs` and `commerce.rs` move to `LANE_VERSION + 1`
+   (v5; `18 unchanged` with the eight new bodies), the moving-sky tests strip Pallas's table with
+   its epoch. `orders.rs` and the story test: 22 crew-days.
+
+### The figures that moved (the latitude term, D-19-6)
+
+The Kepler sky is the slice's sky at the epoch in longitude and distance; it differs by the
+ecliptic latitude the slice flattened (Ceres β −4.73°, Mars −1.35°, Kirkwood −4.42°, Pallas
++14.07°) and by Kirkwood's new place. Ceres–Mars at the epoch: circular 214,534,234 km, Kepler
+215,278,226 km (+0.35 %). The Dray's passage at the epoch sky, laden (lane v3 → v4): outbound
+959,361 + 735,600 s (19.6 h at rate 24, 21 crew-days, 142,184 kg) → **110,305 + 1,683,834 s
+(20.8 h, 22 crew-days, 142,188 kg — the extra crew-day weighs 4 kg)**; return 653,642 + 852,473 s (17.4 h, 18) → **1,496,209 + 98,014 s (18.5 h, 20)**; burns
+41 t / 37 t unchanged (the coast law's burn is a fraction of mass). The 2° hop costs a whole
+crew-day each way under the whole-days-per-leg rule (D-18-30) — the price of Kirkwood as Ceres's
+outer harbour; A.2's flip law re-states every figure.
+
+### Lead rulings taken (owner may override, each by data)
+
+- **The table, not a fitted set** (D-19-2 as built): measured, two hundred times more accurate;
+  150 KB in the lane pack against tacsim's 512 KiB bound.
+- **Semi-annual rows**: yearly would hold the asteroids to 0.25 ‰ but Earth only to 7.6 ‰.
+- **Kirkwood trails by 2°** (Q-19-2; Q-18-36's default): under four hours brimmed at the Dray's
+  cruise; 1° or 3° is a lane edit.
+- **The readiness Sky line is untouched** until A.6, so no pin in the story test moves twice.
+- **No new crate**: the engine is `tacsim::kepler` and `tacsim::sky`; mush-sim stays sky-free.
+
+### Verified
+
+`cargo fmt`; `cargo clippy -p tacsim --all-targets -- -D warnings` clean; the whole tacsim suite
+(47 binaries) and mush-server's `ic_slice_loop` (the production root, three restarts, now 22
+crew-days) and `boot_parity`: **2,668 passed, 0 failed, 13 ignored** at -j 8 on the owner's box.
+Pins re-blessed: the lane digest; `passage.rs` (the story load is 142,188 kg since the twenty-second
+crew-day weighs 4 kg: 110,305 + 1,683,834 s out, 1,496,209 + 98,014 s back at 106,176 kg);
+`voyage.rs`, `orders.rs`, `coop.rs`, `sale.rs`, `commerce.rs`, `ports.rs`, `hulls.rs`,
+`stations.rs` (the one-past-the-shipped variants at `LANE_VERSION + 1`, the v2 rebuild stripping
+A.1's sky, the plan counts with eight more bodies); `executor.rs`'s fill fixed point (37 t, 20
+crew-days). The readiness Sky line and its pins are untouched.
+
+### Deferred
+
+- **A.2** the laws (Flip, the throttle, the keep-out, the policy, `via=`, Dray v3, lane v5);
+  **A.3** `+chart`; **A.4** prices; **A.5** doc 15 R5 on `light_lag_s`; **A.6** the flip (templates
+  at rate 1000, the readiness model word, the migration tests).
+- Moons (Phobos, Luna, Titan) as bodies (Q-19-9); the window past 2400 (Q-19-8).
+- The `Ephemeris` type's doc comment still describes itself as the sky; it is the circular model
+  under the seam (one sentence in A.6's docs pass).

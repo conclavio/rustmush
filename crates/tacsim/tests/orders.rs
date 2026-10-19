@@ -11,7 +11,7 @@
 //! pull. Every money and tonnage figure is computed here from the posted prices,
 //! the goods table, the hull and the planner (the `ic_slice_loop.rs` discipline),
 //! except where the §5 row gives the literal and the tree reproduces it (36 t, 37 t,
-//! 19 crew-days, 73 t, 20 t "funds" at lane v3).
+//! 20 crew-days, 73 t, 20 t "funds" at lane v4; 19 crew-days at v3).
 //!
 //! Composed on the composition root (`server_modules_with_tacsim` and the wired
 //! test-world layer with game content: `sale.rs`'s `Roster`, with the sky rate a
@@ -38,7 +38,7 @@ use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, fold_module_ops_into};
 use smol_str::SmolStr;
 use tacsim::config::PackSource;
-use tacsim::definitions::content::{LANE_JSON, LANE_PACK};
+use tacsim::definitions::content::{LANE_JSON, LANE_PACK, LANE_VERSION};
 use tacsim::pack::{PackEntry, load_pack};
 use tacsim::port::apply::room_by_key;
 use tacsim::port::executor::{
@@ -1591,9 +1591,10 @@ fn ic11_the_queue_runs_the_day_unattended() {
         metals,
     );
     ceres += buy_from(&mut rig, pilot, "ceres_port", "occator", "volatiles", ice);
-    // Doc 18 §2 step 7's 42 t and 21 crew-days.
+    // Doc 18 §2 step 7's 42 t and 21 crew-days — 22 since doc 19 cut A.1 (the 2°
+    // hop to Kirkwood is a second whole day, lane v4).
     ceres += buy_from(&mut rig, pilot, "ceres_port", "occator", "propellant", 42);
-    ceres += buy_from(&mut rig, pilot, "ceres_port", "coop", "provisions", 21);
+    ceres += buy_from(&mut rig, pilot, "ceres_port", "coop", "provisions", 22);
     swept_drawn(&mut rig, pilot);
     let hand_quotes = market(&rig.tw)
         .quotes_of_buyer(&PrincipalId::Object(pilot))
@@ -1635,7 +1636,7 @@ fn ic11_the_queue_runs_the_day_unattended() {
     assert_eq!((out_ticket.order, out_ticket.attempt), (Some(1), 1));
     // §2 step 7: the tank and the locker cover the outbound with a tonne to spare.
     assert_eq!(42 - out_ticket.plan.burn_t, 1, "tank 1 after the outbound");
-    assert_eq!(21 - u64::from(out_ticket.plan.crew_days), 0);
+    assert_eq!(22 - u64::from(out_ticket.plan.crew_days), 0);
     let arrival = out_ticket.plan.depart_ic + out_ticket.plan.total_s;
     landed.extend(to_ic(&mut rig, arrival - 3_600));
     landed.extend(to_ic(&mut rig, arrival + 60));
@@ -1679,7 +1680,7 @@ fn ic11_the_queue_runs_the_day_unattended() {
     assert_eq!(pool(&mut rig.tw, hold, "metals"), 0);
     assert_eq!(pool(&mut rig.tw, hold, "volatiles"), 0);
     assert_eq!(pool(&mut rig.tw, hold, "propellant"), 37);
-    assert_eq!(pool(&mut rig.tw, hold, "provisions"), 19);
+    assert_eq!(pool(&mut rig.tw, hold, "provisions"), 20);
     assert_eq!(pool(&mut rig.tw, hold, "industrial_parts"), 49);
     assert_eq!(pool(&mut rig.tw, hold, "structural_alloys"), 20);
     // The funds path, from journals: the stake less Ceres, plus the two nets, less
@@ -1805,8 +1806,8 @@ fn ic11_the_queue_runs_the_day_unattended() {
     assert_eq!(
         log[4],
         BOUGHT_FILL_LOCKER
-            .replace("{qty}", "19")
-            .replace("{total}", &cr(19 * food))
+            .replace("{qty}", "20")
+            .replace("{total}", &cr(20 * food))
     );
     assert_eq!(
         log[5],
@@ -2584,7 +2585,7 @@ fn ic11_a_long_downtime_raises_no_false_second_miss() {
 /// buys the five and is done, the stock named.
 #[test]
 fn ic11_a_sold_out_buy_goes_partial() {
-    let lane = lane_variant(3, |doc| {
+    let lane = lane_variant(LANE_VERSION, |doc| {
         vendor(doc, "ceres_port", "freeport_exchange")["stock"][0]["qty"] = serde_json::json!(5);
     });
     let mut rig = stocked_with(Roster::seeded(lane));
@@ -3248,7 +3249,7 @@ fn ic11_the_clamp_logs_every_bound_that_bit() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn fill_and_clamp_plan_at_the_depart_instant() {
-    let lane = lane_variant(3, |doc| {
+    let lane = lane_variant(LANE_VERSION, |doc| {
         let exchange = vendor(doc, "ceres_port", "freeport_exchange");
         exchange["asks"][0]["price_major"] = serde_json::json!(1_000);
     });
@@ -3770,7 +3771,7 @@ fn ic11_the_plan_dry_runs_the_queue() {
     );
     let a0 = pilot_available(&rig.tw, pilot);
     let fill_t = 37 - tank;
-    let fill_d = 19 - locker;
+    let fill_d = 20 - locker;
     let k = (a0
         - i64::try_from(fill_t).expect("t") * fuel
         - i64::try_from(fill_d).expect("d") * food
@@ -3785,7 +3786,7 @@ fn ic11_the_plan_dry_runs_the_queue() {
             "  Order 1, buy reaction mass, fill: {fill_t} t, tank 37/80, for the 73 t your orders can load."
         ),
         format!(
-            "  Order 2, buy voyage provisions, fill: {fill_d} crew-days, locker 19/120, for the 73 t your orders can load."
+            "  Order 2, buy voyage provisions, fill: {fill_d} crew-days, locker 20/120, for the 73 t your orders can load."
         ),
         format!(
             "  Order 3, buy yard fittings, crated: 49 t at {}/t.",
@@ -3830,7 +3831,7 @@ fn ic11_the_plan_dry_runs_the_queue() {
     let planner = lane_planner(0, "stickney_port", "ceres");
     let plan = planner(payload, 1, ic_now(&rig.tw)).expect("the return plans");
     assert!(
-        plan.burn_t <= 37 && u64::from(plan.crew_days) <= 19,
+        plan.burn_t <= 37 && u64::from(plan.crew_days) <= 20,
         "{plan:?}"
     );
     let tenths = (payload + 50) / 100;
@@ -3846,7 +3847,7 @@ fn ic11_the_plan_dry_runs_the_queue() {
         "missing {depart:?}:\n{out}"
     );
     // The affordable tonnage at this board: the pilot's funds now, less the next
-    // departure's unmet fuel and stores (the fills' targets, 37 t and 19 crew-days),
+    // departure's unmet fuel and stores (the fills' targets, 37 t and 20 crew-days),
     // over every ask on the board at its lowest live price, in the board's order.
     let ask = |good: &str| lowest_ask(&rig, "stickney_port", &cid(good)).expect("an ask");
     let reserve = i64::try_from(fill_t).expect("t") * ask("propellant")

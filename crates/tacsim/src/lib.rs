@@ -118,6 +118,9 @@ pub mod economy;
 pub mod ephemeris;
 pub mod fixture;
 pub mod ic_return;
+/// Doc 19 cut A.1: **the Kepler propagation** behind the moving sky — element
+/// tables, the calendar's Julian Day, the two-body solver (D-19-2 … D-19-4).
+pub mod kepler;
 /// 16b cut T.3: **the match** — doc 16 §3.8's lifecycle, the persisted match-id
 /// counter, the RAM record of a match while it runs, the two custody transitions
 /// (`Boarding → Running` and the one check-in at `Ended | Aborted | Void`), the
@@ -167,6 +170,7 @@ pub use config::{
 pub use content::{CORRIDOR_MODE, GM_PER_KM, SITE_HALF_GM, register_appliers};
 pub use economy::{CREDIT, CREDIT_CODE, CREDIT_SCALE, GameEconomyConfig};
 pub use ephemeris::{AU_KM, Body, Ephemeris, MAX_ORBIT_UAU, MAX_PERIOD_MDAYS, separation_km};
+pub use kepler::{ElementRow, MAX_ELEMENT_ROWS, ROW_FIELDS, julian_day};
 pub use pack::BodyDef;
 pub use pack::{
     CommodityDef, FacilityDef, FormationKindDef, FormationRoleDef, LocationDef,
@@ -179,7 +183,7 @@ pub use pack::{
 };
 pub use record::{PackRecord, PinRecord, SeedApplication};
 pub use seed::{PlannedObject, SeedError, SeedOutcome, SeedPlan};
-pub use sky::{PosKm, Sky, SkyError, epoch_date};
+pub use sky::{KeplerSky, PosKm, Sky, SkyError, epoch_date};
 // 16b cut R-b (R4). The sheet ruleset is deliberately NOT re-exported as
 // `TacsimRuleset`: that name is this crate's packs-and-seed layer, and the two
 // are different modules with different namespaces (see [`sheet`]).
