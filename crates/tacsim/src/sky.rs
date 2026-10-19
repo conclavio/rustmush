@@ -155,20 +155,42 @@ impl KeplerSky {
     }
 
     /// A body's position at IC time `t`, kilometres in `f64`, or `None` for a
-    /// body the sky does not know.
+    /// body the sky does not know. **A moon's is its parent's plus its own**
+    /// (doc 19 cut A.7): the table or the circular numbers of a moon are about
+    /// its parent, so the parent's position is added — one level, the pack's
+    /// rule.
     #[must_use]
     pub fn position_f64(&self, body: &CanonicalId, t: i64) -> Option<[f64; 3]> {
         let def = self.circular.body(body)?;
-        match self.tables.get(body) {
+        let own = match self.tables.get(body) {
             Some(rows) => {
                 let at = self.effective_ic(def, t);
-                kepler::table_position(rows, kepler::julian_day(at))
+                let jd = kepler::julian_day(at);
+                // A moon's rows are blended in element space (its node and
+                // pericentre precess in months); a planet's positions, as
+                // measured and pinned (doc 19 cut A.7; `kepler::blended_elements_position`).
+                if def.parent.is_some() {
+                    kepler::blended_elements_position(rows, jd)?
+                } else {
+                    kepler::table_position(rows, jd)?
+                }
             }
             None => {
                 let at = circular_position(&self.circular, body, t)?;
                 #[allow(clippy::cast_precision_loss)]
-                Some([at.x as f64, at.y as f64, at.z as f64])
+                [at.x as f64, at.y as f64, at.z as f64]
             }
+        };
+        match &def.parent {
+            Some(parent) if parent != body => {
+                let primary = self.position_f64(parent, t)?;
+                Some([
+                    own[0] + primary[0],
+                    own[1] + primary[1],
+                    own[2] + primary[2],
+                ])
+            }
+            _ => Some(own),
         }
     }
 }
@@ -273,13 +295,20 @@ impl Sky {
         }
     }
 
-    /// **A body's orbital period, days, at IC time `t_ic`** (doc 19 cut A.4, for
-    /// the synodic scan): on a table, `360 / n` of the row nearest `t_ic`; on the
-    /// circular model, the authored `period_mdays`; `None` for a body the sky
-    /// does not know.
+    /// **A body's orbital period about the Sun, days, at IC time `t_ic`** (doc
+    /// 19 cut A.4, for the synodic scan): on a table, `360 / n` of the row
+    /// nearest `t_ic`; on the circular model, the authored `period_mdays`; **for a
+    /// moon, its parent's** (doc 19 cut A.7: a moon's season is its primary's —
+    /// Phobos's 7.65 hours about Mars are not Mars's year about the Sun); `None`
+    /// for a body the sky does not know.
     #[must_use]
     #[allow(clippy::cast_precision_loss)]
     pub fn period_days(&self, body: &CanonicalId, t_ic: i64) -> Option<f64> {
+        if let Some(parent) = self.parent_of(body)
+            && parent != body
+        {
+            return self.period_days(parent, t_ic);
+        }
         if let Sky::Kepler(sky) = self
             && let Some(rows) = sky.table(body)
         {
@@ -300,15 +329,30 @@ impl Sky {
     #[must_use]
     pub fn position_km(&self, body: &CanonicalId, t_ic: i64) -> Option<PosKm> {
         match self {
-            Sky::Circular(sky) => circular_position(sky, body, t_ic),
-            Sky::Kepler(sky) => {
-                if sky.table(body).is_some() {
-                    sky.position_f64(body, t_ic).map(rounded)
-                } else {
-                    circular_position(sky.circular(), body, t_ic)
+            Sky::Circular(sky) => {
+                let own = circular_position(sky, body, t_ic)?;
+                match sky.body(body).and_then(|b| b.parent.as_ref()) {
+                    // Doc 19 cut A.7: a moon's parent's position plus its own.
+                    Some(parent) if parent != body => {
+                        let primary = self.position_km(parent, t_ic)?;
+                        Some(PosKm {
+                            x: own.x.saturating_add(primary.x),
+                            y: own.y.saturating_add(primary.y),
+                            z: own.z.saturating_add(primary.z),
+                        })
+                    }
+                    _ => Some(own),
                 }
             }
+            Sky::Kepler(sky) => sky.position_f64(body, t_ic).map(rounded),
         }
+    }
+
+    /// **A body's parent**, for a moon (doc 19 cut A.7); `None` for a body
+    /// about the Sun or one the sky does not know.
+    #[must_use]
+    pub fn parent_of(&self, body: &CanonicalId) -> Option<&CanonicalId> {
+        self.ephemeris().body(body)?.parent.as_ref()
     }
 
     /// A body's heliocentric distance (km), ecliptic longitude and latitude
@@ -329,12 +373,15 @@ impl Sky {
     /// ([`PosKm::distance_km`]).
     #[must_use]
     pub fn distance_km(&self, a: &CanonicalId, ta: i64, b: &CanonicalId, tb: i64) -> Option<u64> {
+        // Doc 19 cut A.7: a moon's distance is between composed positions, on
+        // either model — the coplanar law knows nothing of a parent.
+        let moon = self.parent_of(a).is_some() || self.parent_of(b).is_some();
         match self {
-            Sky::Circular(sky) => circular_distance(sky, a, ta, b, tb),
-            Sky::Kepler(sky) => {
-                if sky.table(a).is_none() && sky.table(b).is_none() {
-                    return circular_distance(sky.circular(), a, ta, b, tb);
-                }
+            Sky::Circular(sky) if !moon => circular_distance(sky, a, ta, b, tb),
+            Sky::Kepler(sky) if !moon && sky.table(a).is_none() && sky.table(b).is_none() => {
+                circular_distance(sky.circular(), a, ta, b, tb)
+            }
+            Sky::Circular(_) | Sky::Kepler(_) => {
                 let (pa, pb) = (self.position_km(a, ta)?, self.position_km(b, tb)?);
                 Some(pa.distance_km(pb))
             }
@@ -371,6 +418,7 @@ impl Sky {
                         "period_mdays": body.period_mdays,
                         "phase_mdeg": body.phase_mdeg,
                         "epoch_ic": body.epoch_ic,
+                        "parent": body.parent.as_ref().map(ToString::to_string),
                     }),
                 )
             })
@@ -442,6 +490,7 @@ mod tests {
                     period_mdays: 1_681_861,
                     phase_mdeg: 281_654,
                     epoch_ic: ceres_epoch,
+                    parent: None,
                 },
             )
             .with_body(
@@ -451,6 +500,7 @@ mod tests {
                     period_mdays: 687_034,
                     phase_mdeg: 276_240,
                     epoch_ic: mars_epoch,
+                    parent: None,
                 },
             )
     }
@@ -590,6 +640,7 @@ mod tests {
                     period_mdays: 1_681_861,
                     phase_mdeg: 281_654,
                     epoch_ic: Some(e),
+                    parent: None,
                 },
             ),
             tables,

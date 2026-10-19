@@ -637,6 +637,13 @@ pub struct BodyDef {
     /// the wire's bounds and the table consistent with the four numbers above at
     /// `epoch_ic` ([`BodyDef::with_elements`]).
     pub elements: Vec<ElementRow>,
+    /// **Doc 19 cut A.7 (Q-19-9; D-19-17)** — the body this one orbits, for a
+    /// moon: a `body` entry of the same pack that is itself no moon. Then the
+    /// four numbers above and the element table are **about the parent**
+    /// (planetocentric, the ecliptic frame), and the sky places the moon at
+    /// its parent's position plus its own. `None` for a body about the Sun.
+    /// Skipped on the wire when absent, so no fixture's re-encoding moves.
+    pub parent: Option<CanonicalId>,
 }
 
 /// The largest orbit a pack may author, micro-AU (100 000 AU).
@@ -661,6 +668,9 @@ struct BodyDefWire {
     /// node_deg, peri_deg, mean_anomaly_deg, mean_motion_deg_day]` per row.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     elements: Vec<[f64; ROW_FIELDS]>,
+    /// Doc 19 cut A.7: the parent body of a moon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent: Option<CanonicalId>,
 }
 
 impl Serialize for BodyDef {
@@ -673,6 +683,7 @@ impl Serialize for BodyDef {
             // Written only when present (`skip_serializing_if`).
             epoch_ic: self.epoch_ic,
             elements: self.elements.iter().map(ElementRow::authored).collect(),
+            parent: self.parent.clone(),
         };
         wire.serialize(serializer)
     }
@@ -688,9 +699,17 @@ impl<'de> Deserialize<'de> for BodyDef {
             wire.epoch_ic,
         )
         .and_then(|def| def.with_elements(&wire.elements))
+        .map(|def| def.with_parent(wire.parent))
         .map_err(serde::de::Error::custom)
     }
 }
+
+/// The least a body's element table may disagree with its authored distance at
+/// `epoch_ic` by, kilometres, whatever the permille rule says (doc 19 cut A.7):
+/// the authored distance is held in micro-AU, so a moon's few thousand
+/// kilometres are quantized to within half a micro-AU — 75 km — and the permille
+/// of so small a radius would be less than that.
+pub const ELEMENTS_DISTANCE_FLOOR_KM: f64 = 150.0;
 
 /// How far a body's element table may disagree with its authored heliocentric
 /// distance at `epoch_ic`, permille (doc 19 D-19-2's consistency rule).
@@ -747,7 +766,24 @@ impl BodyDef {
             phase_mdeg: mdeg as i64,
             epoch_ic,
             elements: Vec::new(),
+            parent: None,
         })
+    }
+
+    /// **The same body about `parent`** (doc 19 cut A.7; Q-19-9): a moon, its
+    /// numbers planetocentric. That the parent is a body of the pack and no moon
+    /// itself is the pack's cross-entry rule ([`RulesPack::new`]), as a place's
+    /// body is.
+    #[must_use]
+    pub fn with_parent(mut self, parent: Option<CanonicalId>) -> BodyDef {
+        self.parent = parent;
+        self
+    }
+
+    /// Whether the body orbits another body of the pack.
+    #[must_use]
+    pub fn is_moon(&self) -> bool {
+        self.parent.is_some()
     }
 
     /// **The same body with an element table** (doc 19 cut A.1, D-19-2): each
@@ -800,7 +836,8 @@ impl BodyDef {
         let (r_km, longitude, _) = crate::kepler::polar(position);
         let au = crate::ephemeris::AU_KM as f64;
         let authored_km = self.orbit_uau as f64 * au / 1_000_000.0;
-        let tolerance_km = authored_km * ELEMENTS_DISTANCE_TOLERANCE_PERMILLE as f64 / 1_000.0;
+        let tolerance_km = (authored_km * ELEMENTS_DISTANCE_TOLERANCE_PERMILLE as f64 / 1_000.0)
+            .max(ELEMENTS_DISTANCE_FLOOR_KM);
         if (r_km - authored_km).abs() > tolerance_km {
             return Err(format!(
                 "a body's element table puts it at {:.6} AU at its epoch, not the authored {:.6} AU",
@@ -1368,6 +1405,21 @@ impl RulesPack {
                         place: id.to_string(),
                         body: body.to_string(),
                     });
+                }
+            }
+            // Doc 19 cut A.7 (Q-19-9): a moon's parent is a body of this pack and
+            // no moon itself — one level, so a position is a parent's plus its own.
+            if let PackEntry::Body(moon) = entry
+                && let Some(parent) = &moon.parent
+            {
+                match entries.get(parent) {
+                    Some(PackEntry::Body(primary)) if !primary.is_moon() && parent != id => {}
+                    _ => {
+                        return Err(PackError::UnknownParent {
+                            moon: id.to_string(),
+                            parent: parent.to_string(),
+                        });
+                    }
                 }
             }
             if let PackEntry::Route(route) = entry {
@@ -1938,6 +1990,17 @@ pub enum PackError {
         place: String,
         /// The body it named.
         body: String,
+    },
+    /// **Doc 19 cut A.7** — a moon named a parent that is not a body of its pack
+    /// about the Sun.
+    #[error(
+        "body {moon} orbits {parent}, which this pack does not declare as a body about the Sun"
+    )]
+    UnknownParent {
+        /// The moon.
+        moon: String,
+        /// The parent it named.
+        parent: String,
     },
     /// An entry on the wrong side of Q6A's rules/seed distinction.
     #[error("entry {id} is a {entry}, which a {kind} pack may not declare")]

@@ -278,9 +278,14 @@ fn chart_sky(ctx: &mut Ctx<'_>) -> Result<Vec<String>, CmdError> {
                 _ => "unplaced".to_owned(),
             }
         };
+        // Doc 19 cut A.7: a moon says whose it is.
+        let moon = v
+            .sky
+            .parent_of(id)
+            .map_or_else(String::new, |parent| format!("  moon of {parent}"));
         #[allow(clippy::cast_precision_loss)]
         lines.push(format!(
-            "  {id:<9} r {:>6.3} AU  lon {:>6.1}  lat {:>+5.1}  {from_here}",
+            "  {id:<9} r {:>6.3} AU  lon {:>6.1}  lat {:>+5.1}  {from_here}{moon}",
             r / AU_KM as f64,
             lon,
             lat

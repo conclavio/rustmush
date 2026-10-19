@@ -88,7 +88,16 @@ fn a3_chart_reads_the_sky_from_the_first_port_for_a_walker() {
         .iter()
         .filter(|l| l.starts_with("  ") && l.contains(" r ") && l.contains(" lat "))
         .collect();
-    assert_eq!(rows.len(), 12, "twelve lane bodies:\n{out}");
+    assert_eq!(
+        rows.len(),
+        16,
+        "sixteen lane bodies, the four moons among them:\n{out}"
+    );
+    assert!(
+        rows.iter()
+            .any(|l| l.trim_start().starts_with("phobos") && l.contains("moon of mars")),
+        "{out}"
+    );
     assert!(
         rows.iter()
             .any(|l| l.trim_start().starts_with("ceres") && l.ends_with("here")),

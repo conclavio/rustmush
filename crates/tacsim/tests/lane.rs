@@ -52,7 +52,7 @@ use support::ground::{UNSIGNED, sign};
 /// the legs re-timed to the three-dimensional chords): a new version beside the
 /// v1, v2 and v3 ledger rows, never an earlier version re-signed in place (lead
 /// ruling L0b).
-const LANE_DIGEST: &str = "f7f568f43ac917131c029c3cbffbcc4917448f6157a6486dce97142a5a4a8e15";
+const LANE_DIGEST: &str = "11fb2c9228799918184cc872a01d683e85de91e830104f170b966c7311f23541";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -155,7 +155,7 @@ fn coast_kms(class: &CanonicalId) -> u32 {
 // ---------------------------------------------------------------------------
 
 /// **The lane is pinned** (doc 18 cut IC2; R4; cut IC3, L0a/L0b; doc 19 cut A.1):
-/// a campaign seed at version 6 requiring nothing, exactly the twenty entries —
+/// a campaign seed at version 7 requiring nothing, exactly the twenty-four entries —
 /// the `sol` region, twelve bodies on element tables, three places, two routes
 /// timed to the Kepler sky's three-dimensional chords at the epoch for 226 km/s
 /// and the two ports; every body carries the same `epoch_ic`, which is
@@ -187,8 +187,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        6,
-        "lane v6 since doc 19 cut A.4b (v5 at A.4, v4 at A.1)"
+        7,
+        "lane v7 since doc 19 cut A.7 (v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
     assert!(manifest.requires().is_empty(), "the lane requires nothing");
@@ -211,27 +211,31 @@ fn ic2_the_lane_pack_is_pinned() {
             ("ceres_freeport".to_owned(), "location".to_owned()),
             ("ceres_port".to_owned(), "port".to_owned()),
             ("ceres_stickney".to_owned(), "route".to_owned()),
+            ("deimos".to_owned(), "body".to_owned()),
             ("earth".to_owned(), "body".to_owned()),
             ("hygiea".to_owned(), "body".to_owned()),
             ("juno".to_owned(), "body".to_owned()),
             ("jupiter".to_owned(), "body".to_owned()),
             ("kirkwood".to_owned(), "body".to_owned()),
             ("kirkwood_depot".to_owned(), "location".to_owned()),
+            ("luna".to_owned(), "body".to_owned()),
             ("mars".to_owned(), "body".to_owned()),
             ("mercury".to_owned(), "body".to_owned()),
             ("pallas".to_owned(), "body".to_owned()),
+            ("phobos".to_owned(), "body".to_owned()),
             ("saturn".to_owned(), "body".to_owned()),
             ("sol".to_owned(), "region".to_owned()),
             ("stickney_ceres".to_owned(), "route".to_owned()),
             ("stickney_port".to_owned(), "port".to_owned()),
             ("stickney_yards".to_owned(), "location".to_owned()),
+            ("titan".to_owned(), "body".to_owned()),
             ("venus".to_owned(), "body".to_owned()),
             ("vesta".to_owned(), "body".to_owned()),
         ],
-        "the twenty entries: v3's twelve and doc 19's eight more bodies"
+        "the twenty-four entries: v3's twelve, doc 19 cut A.1's eight more bodies and cut A.7's four moons"
     );
     let epochs: Vec<Option<i64>> = bodies(&pack).iter().map(|(_, def)| def.epoch_ic).collect();
-    assert_eq!(epochs.len(), 12);
+    assert_eq!(epochs.len(), 16);
     let first = epochs
         .first()
         .copied()
@@ -271,13 +275,14 @@ fn ic2_the_lane_pack_is_pinned() {
                 "stickney_yards".into(),
                 "Stickney Yards".into(),
                 "port".into(),
-                Some("mars".into())
+                Some("phobos".into())
             ),
         ]
     );
     // The four leg seconds, `ceil(km / 226)` of the Kepler sky's three-dimensional
     // chords at the epoch (doc 19 cut A.1; doc 18 cut IC3, L0a): the 2° hop to
-    // Kirkwood and the Kirkwood–Mars chord.
+    // Kirkwood and the Kirkwood–Phobos chord (doc 19 cut A.7: Stickney on Phobos,
+    // 27 s inside the Kirkwood–Mars chord).
     let seconds = |id: &str| -> Vec<(String, u32)> {
         route_of(&pack, id)
             .legs
@@ -289,13 +294,13 @@ fn ic2_the_lane_pack_is_pinned() {
         seconds(LANE_ROUTE_OUT),
         vec![
             ("kirkwood_depot".to_owned(), 61_776),
-            ("stickney_yards".to_owned(), 943_024)
+            ("stickney_yards".to_owned(), 942_997)
         ]
     );
     assert_eq!(
         seconds(LANE_ROUTE_BACK),
         vec![
-            ("kirkwood_depot".to_owned(), 943_024),
+            ("kirkwood_depot".to_owned(), 942_997),
             ("ceres_freeport".to_owned(), 61_776)
         ]
     );
@@ -331,6 +336,10 @@ fn lane_legs_derive_at_epoch() {
         let kms = coast_kms(&route.drive_class);
         let derived = derived_legs(&pack, route, kms).unwrap_or_else(|why| panic!("{id}: {why}"));
         assert_eq!(derived.len(), route.legs.len());
+        println!(
+            "{id}: authored {:?}, derived {derived:?}",
+            route.legs.iter().map(|leg| leg.base_s).collect::<Vec<_>>()
+        );
         for (leg, want) in route.legs.iter().zip(&derived) {
             assert!(
                 u64::from(leg.base_s).abs_diff(*want) <= 100,
@@ -387,7 +396,7 @@ fn sky_circular_agrees_with_the_law_of_cosines() {
     );
     let pack = circular_lane();
     let ids: Vec<CanonicalId> = bodies(&pack).into_iter().map(|(id, _)| id).collect();
-    assert_eq!(ids.len(), 12);
+    assert_eq!(ids.len(), 16, "the twelve bodies and the four moons");
     let year = 365 * 86_400;
     for rate in [1_000, 0] {
         let sky = Sky::from_pack(&pack, &EphemerisConfig { epoch: 0, rate });
@@ -442,12 +451,15 @@ fn body_epoch_holds_its_phase_at_that_instant() {
             Some(def.phase_mdeg),
             "{id} at its own epoch"
         );
-        let period_s = i64::try_from(def.period_mdays * 86_400 / 1_000).expect("in range");
+        // 125 periods on: a whole number of seconds for any milli-day period
+        // (86,400 / 1,000 × 125 = 10,800), so a moon's 319-milli-day period
+        // (doc 19 cut A.7) rounds nothing away.
+        let period_s = i64::try_from(def.period_mdays * 10_800).expect("in range");
         let later = sky.phase_mdeg_at(&id, epoch + period_s).expect("a phase");
         let off = (later - def.phase_mdeg).rem_euclid(turn);
         assert!(
             off.min(turn - off) <= 1,
-            "{id} one period on: {later} against {}",
+            "{id} 125 periods on: {later} against {}",
             def.phase_mdeg
         );
     }
@@ -709,9 +721,11 @@ fn store(tw: &TestWorld) -> &TacsimStore {
 /// The chord the lane's sky derives between Ceres and Mars at the lane epoch.
 fn lane_chord() -> u64 {
     let sky = Sky::from_pack(&lane(), &EphemerisConfig::default());
-    let (ceres, mars) = (cid("ceres"), cid("mars"));
+    // Doc 19 cut A.7: Stickney Yards stands on Phobos, so the route's chord is
+    // Ceres to Phobos (Mars plus the moon's own 9,400 km).
+    let (ceres, phobos) = (cid("ceres"), cid("phobos"));
     let e = sky.epoch_of(&ceres).expect("ceres");
-    sky.distance_km(&ceres, e, &mars, e).expect("a chord")
+    sky.distance_km(&ceres, e, &phobos, e).expect("a chord")
 }
 
 fn latches(tw: &TestWorld) -> BTreeMap<String, (u32, String)> {
@@ -805,7 +819,7 @@ fn ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky() {
     assert_eq!(route.distance_km(), Some(chord));
     assert_eq!(
         route.bodies(),
-        Some(&(cid("ceres"), cid("mars"))),
+        Some(&(cid("ceres"), cid("phobos"))),
         "the chord's body pair"
     );
 

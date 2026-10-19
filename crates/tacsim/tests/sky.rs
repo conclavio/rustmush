@@ -23,7 +23,7 @@ const EPOCH_IC: i64 = 74_152_540_800;
 /// the body's heliocentric distance, rounded up to the next hundredth: the
 /// element table against Horizons every 91 days over sixty years. Earth's is the
 /// Moon's wobble on its osculating elements; a looser fit fails the cut.
-const TOLERANCE_PERMILLE_HUNDREDTHS: [(&str, u64); 11] = [
+const TOLERANCE_PERMILLE_HUNDREDTHS: [(&str, u64); 14] = [
     ("mercury", 6),
     ("venus", 6),
     ("earth", 110),
@@ -35,6 +35,22 @@ const TOLERANCE_PERMILLE_HUNDREDTHS: [(&str, u64); 11] = [
     ("juno", 6),
     ("vesta", 5),
     ("hygiea", 8),
+    // Doc 19 cut A.7: the moons, composed as the parent's table plus their own
+    // planetocentric one, blended in element space. Luna's is Earth's 1.0 ‰ plus
+    // the Sun's pull on a two-body lunar orbit over a half-year row (measured
+    // 1.50 ‰); Phobos and Deimos ride Mars's 0.03 ‰, their node precession the
+    // straight line the element blend draws.
+    ("luna", 160),
+    ("phobos", 9),
+    ("deimos", 3),
+];
+
+/// The moons (doc 19 cut A.7; Q-19-9) and their parents, lane v7.
+const MOONS: [(&str, &str); 4] = [
+    ("luna", "earth"),
+    ("phobos", "mars"),
+    ("deimos", "mars"),
+    ("titan", "saturn"),
 ];
 
 #[derive(Deserialize)]
@@ -72,9 +88,10 @@ fn as_f64(at: PosKm) -> [f64; 3] {
 }
 
 /// **The sky is Kepler's, and every lane body moves on a table** (D-19-1): the
-/// lane's twelve bodies all carry element tables, so the sky's model is `kepler`
-/// and each body answers a position with latitude; a fixture pack without tables
-/// is still the circular sky.
+/// lane's sixteen bodies all carry element tables, so the sky's model is `kepler`
+/// and each body answers a position with latitude; the four moons (doc 19 cut
+/// A.7) name their parents and Titan's table is the decade Horizons knows; a
+/// fixture pack without tables is still the circular sky.
 #[test]
 fn a1_the_lane_sky_is_keplerian_and_the_fixtures_are_not() {
     let sky = sky();
@@ -89,13 +106,48 @@ fn a1_the_lane_sky_is_keplerian_and_the_fixtures_are_not() {
         .map(|(id, def)| {
             assert!(def.is_keplerian(), "{id} carries an element table");
             assert_eq!(def.epoch_ic, Some(EPOCH_IC), "{id}'s epoch");
-            assert!(def.elements.len() >= 100, "{id} has a sixty-year table");
+            let parent = MOONS.iter().find(|(moon, _)| *moon == id.as_str());
+            match parent {
+                Some((_, parent)) => {
+                    assert_eq!(
+                        def.parent.as_ref().map(CanonicalId::as_str),
+                        Some(*parent),
+                        "{id}"
+                    );
+                    assert!(def.is_moon(), "{id}");
+                }
+                None => assert!(!def.is_moon(), "{id} is about the Sun"),
+            }
+            if id.as_str() == "titan" {
+                assert!(
+                    (19..100).contains(&def.elements.len()),
+                    "Titan's table is Horizons' last decade: {} rows",
+                    def.elements.len()
+                );
+            } else {
+                assert!(def.elements.len() >= 100, "{id} has a sixty-year table");
+            }
             id
         })
         .collect();
-    assert_eq!(bodies.len(), 12, "{bodies:?}");
+    assert_eq!(bodies.len(), 16, "{bodies:?}");
     for body in &bodies {
         assert!(sky.is_keplerian(body), "{body}");
+    }
+    for (moon, parent) in MOONS {
+        assert_eq!(
+            sky.parent_of(&cid(moon)).map(CanonicalId::as_str),
+            Some(parent),
+            "{moon}"
+        );
+        // A moon's season is its primary's (doc 19 cut A.7): the period the
+        // synodic scan reads is the parent's year, not the moon's days.
+        let own = sky.period_days(&cid(moon), EPOCH_IC).expect("a period");
+        let primary = sky.period_days(&cid(parent), EPOCH_IC).expect("a period");
+        assert!(
+            (own - primary).abs() < 1e-9,
+            "{moon}: {own} against {primary}"
+        );
     }
     let corridor = load_pack(tacsim::fixture::CORRIDOR_JSON).expect("the corridor verifies");
     let fixture = Sky::from_pack(&corridor, &EphemerisConfig::default());
@@ -134,12 +186,46 @@ fn a1_sky_kepler_tracks_horizons() {
         }
         #[allow(clippy::cast_precision_loss)]
         let allowed_f = allowed as f64;
+        println!("{name}: worst {worst:.2} hundredths of a permille (allowed {allowed})");
         assert!(
             worst <= allowed_f,
             "{name}: worst {worst:.2} hundredths of a permille, allowed {allowed}"
         );
     }
-    assert_eq!(checked, 11 * 241);
+    assert_eq!(
+        checked,
+        14 * 241,
+        "eleven bodies and three moons; Titan has no golden"
+    );
+}
+
+/// **A moon stands a moon's distance from its parent** (doc 19 cut A.7; Q-19-9):
+/// at the epoch and a year either side, Luna is 356,000–407,000 km from Earth,
+/// Phobos 9,200–9,600 km and Deimos 23,400–23,500 km from Mars, Titan
+/// 1,180,000–1,260,000 km from Saturn — the composed position is the parent's
+/// plus the planetocentric one, so the separation is the moon's own orbit and
+/// never the parent's heliocentric distance.
+#[test]
+fn a7_a_moon_stands_its_own_orbit_from_its_parent() {
+    let sky = sky();
+    let year = 365 * 86_400;
+    let bands: [(&str, &str, u64, u64); 4] = [
+        ("luna", "earth", 356_000, 407_000),
+        ("phobos", "mars", 9_200, 9_600),
+        ("deimos", "mars", 23_400, 23_500),
+        ("titan", "saturn", 1_180_000, 1_260_000),
+    ];
+    for t in [EPOCH_IC - year, EPOCH_IC, EPOCH_IC + year] {
+        for (moon, parent, low, high) in bands {
+            let km = sky
+                .distance_km(&cid(moon), t, &cid(parent), t)
+                .expect("a separation");
+            assert!(
+                (low..=high).contains(&km),
+                "{moon} is {km} km from {parent} at {t}, outside {low}..={high}"
+            );
+        }
+    }
 }
 
 /// **The real sky is the slice's sky at the epoch** (D-19-6; doc 18 D-18-48): at
@@ -159,11 +245,33 @@ fn a1_sky_kepler_is_the_circular_sky_at_the_epoch() {
         },
     );
     for (id, body) in circular.bodies() {
-        let (r, lon, lat) = sky.heliocentric(id, EPOCH_IC).expect("a position");
+        // Doc 19 cut A.7: a moon's four numbers are about its parent, so the
+        // position compared is the planetocentric one — the parent's taken off.
+        let (r, lon, lat) = match &body.parent {
+            Some(parent) => {
+                let own = sky.position_km(id, EPOCH_IC).expect("a position");
+                let primary = sky.position_km(parent, EPOCH_IC).expect("a position");
+                #[allow(clippy::cast_precision_loss)]
+                let relative = [
+                    (own.x - primary.x) as f64,
+                    (own.y - primary.y) as f64,
+                    (own.z - primary.z) as f64,
+                ];
+                tacsim::kepler::polar(relative)
+            }
+            None => sky.heliocentric(id, EPOCH_IC).expect("a position"),
+        };
         #[allow(clippy::cast_precision_loss)]
         let authored_km = body.orbit_uau as f64 * AU_KM as f64 / 1_000_000.0;
+        // A moon's authored distance is quantized to the micro-AU (75 km), the
+        // pack's floor (doc 19 cut A.7).
+        let tolerance_km = if body.parent.is_some() {
+            75.0
+        } else {
+            authored_km * 1e-6 + 1.0
+        };
         assert!(
-            (r - authored_km).abs() <= authored_km * 1e-6 + 1.0,
+            (r - authored_km).abs() <= tolerance_km,
             "{id}: r {r} km against the authored {authored_km}"
         );
         #[allow(clippy::cast_precision_loss)]

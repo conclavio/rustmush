@@ -152,8 +152,8 @@ fn plan_passage_reproduces_the_slice_figures() {
         depart,
     )
     .expect("the outbound plan");
-    assert_eq!(secs(&out), vec![321_547, 1_256_313]);
-    assert_eq!(out.total_s, 1_577_860);
+    assert_eq!(secs(&out), vec![321_547, 1_256_295]);
+    assert_eq!(out.total_s, 1_577_842);
     assert_eq!(out.burn_t, 51);
     assert_eq!(out.crew_days, 19);
     assert_eq!(out.law.as_str(), "flip");
@@ -181,8 +181,8 @@ fn plan_passage_reproduces_the_slice_figures() {
         depart,
     )
     .expect("the return plan");
-    assert_eq!(secs(&back), vec![1_195_660, 306_023]);
-    assert_eq!(back.total_s, 1_501_683);
+    assert_eq!(secs(&back), vec![1_195_643, 306_023]);
+    assert_eq!(back.total_s, 1_501_666);
     assert_eq!(back.burn_t, 48);
     assert_eq!(back.crew_days, 18);
 

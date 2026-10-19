@@ -185,7 +185,15 @@ pub fn julian_day(ic: i64) -> f64 {
 #[must_use]
 #[allow(clippy::cast_precision_loss, clippy::many_single_char_names)]
 pub fn propagate(row: &ElementRow, jd: f64) -> [f64; 3] {
-    let dt_days = jd - row.julian_day();
+    propagate_dt(row, jd - row.julian_day())
+}
+
+/// [] over  from the row's own epoch — the body of the
+/// solver, so a row whose epoch is an instant with no calendar label (a blended
+/// row, doc 19 cut A.7) can be propagated over exactly zero days.
+#[must_use]
+#[allow(clippy::cast_precision_loss, clippy::many_single_char_names)]
+pub fn propagate_dt(row: &ElementRow, dt_days: f64) -> [f64; 3] {
     let a = row.a_nau as f64 / NANO;
     let e = (row.e_nano as f64 / NANO).clamp(0.0, 0.99);
     let inc = (row.i_udeg as f64 / MICRO).to_radians();
@@ -240,6 +248,101 @@ pub fn table_position(rows: &[ElementRow], jd: f64) -> Option<[f64; 3]> {
         (1.0 - u) * p0[1] + u * p1[1],
         (1.0 - u) * p0[2] + u * p1[2],
     ])
+}
+
+/// **A table's position at `jd` with the elements blended, not the positions**
+/// (doc 19 cut A.7, for a moon): between two rows, each element is interpolated
+/// linearly in time — the angles unwrapped to the nearer turn, each row's mean
+/// anomaly first advanced to `jd` by its own mean motion — and the blended row
+/// propagated once; at or past an end, that row alone, as [`table_position`].
+///
+/// Why a second blend: a moon's node and pericentre precess fast (Phobos's node
+/// by 158° a year), so two rows a half-year apart put it at different phases of
+/// the same small orbit, and the midpoint of two points on a circle is inside
+/// it — [`table_position`]'s blend halves Phobos's radius at the worst instant.
+/// A planet's rows agree to a part in ten thousand, which is why its blend
+/// stands as measured; a moon's blend is in element space, where precession is
+/// the straight line the interpolation draws.
+#[must_use]
+pub fn blended_elements_position(rows: &[ElementRow], jd: f64) -> Option<[f64; 3]> {
+    let (first, last) = (rows.first()?, rows.last()?);
+    if jd <= first.julian_day() {
+        return Some(propagate(first, jd));
+    }
+    if jd >= last.julian_day() {
+        return Some(propagate(last, jd));
+    }
+    let index = rows.partition_point(|row| row.julian_day() <= jd);
+    let lower = rows.get(index.checked_sub(1)?)?;
+    let upper = rows.get(index)?;
+    let (jd0, jd1) = (lower.julian_day(), upper.julian_day());
+    if jd1 <= jd0 {
+        return Some(propagate(lower, jd));
+    }
+    let u = (jd - jd0) / (jd1 - jd0);
+    // The blended row is AT jd (its mean anomaly was advanced there), so it is
+    // propagated over zero days: its `epoch_ic` carries no calendar label of
+    // its own — an IC second interpolated between two labels lands up to a
+    // leap day off the real `jd`, which for Deimos's 1.26-day orbit is most of
+    // a turn.
+    Some(propagate_dt(&blend_rows(lower, upper, jd, u), 0.0))
+}
+
+/// The row between `lower` and `upper` at `jd`, `u` of the way from the first
+/// to the second: scalars interpolated, angles interpolated along the shorter
+/// arc, the mean anomaly of each row advanced to `jd` before the blend and the
+/// blended row stamped with `jd` as its epoch so a propagation from it is a
+/// propagation over zero days.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn blend_rows(lower: &ElementRow, upper: &ElementRow, jd: f64, u: f64) -> ElementRow {
+    let lerp = |a: f64, b: f64| a + (b - a) * u;
+    let lerp_angle = |a: f64, b: f64| {
+        let diff = (b - a).rem_euclid(360.0);
+        let diff = if diff > 180.0 { diff - 360.0 } else { diff };
+        (a + diff * u).rem_euclid(360.0)
+    };
+    let advanced = |row: &ElementRow| {
+        let n = row.n_ndeg_day as f64 / NANO;
+        (row.ma_udeg as f64 / MICRO + n * (jd - row.julian_day())).rem_euclid(360.0)
+    };
+    let a_nau = lerp(lower.a_nau as f64, upper.a_nau as f64).round();
+    let e_nano = lerp(lower.e_nano as f64, upper.e_nano as f64).round();
+    let n_ndeg_day = lerp(lower.n_ndeg_day as f64, upper.n_ndeg_day as f64).round();
+    let i_udeg = lerp(lower.i_udeg as f64, upper.i_udeg as f64).round();
+    let node_udeg = (lerp_angle(
+        lower.node_udeg as f64 / MICRO,
+        upper.node_udeg as f64 / MICRO,
+    ) * MICRO)
+        .round();
+    // The pericentre of a near-circular orbit swings between rows while the
+    // mean longitude ω + M stays smooth (Deimos's e is 0.0002), so the longitude
+    // is what is blended and the mean anomaly is what is left of it.
+    let peri = lerp_angle(
+        lower.peri_udeg as f64 / MICRO,
+        upper.peri_udeg as f64 / MICRO,
+    );
+    let longitude = lerp_angle(
+        (lower.peri_udeg as f64 / MICRO + advanced(lower)).rem_euclid(360.0),
+        (upper.peri_udeg as f64 / MICRO + advanced(upper)).rem_euclid(360.0),
+    );
+    let peri_udeg = (peri * MICRO).round();
+    let ma_udeg = ((longitude - peri).rem_euclid(360.0) * MICRO).round();
+    // The blended row's epoch is nominal — the lower row's — and never read:
+    // the caller propagates it over zero days (see `blended_elements_position`).
+    ElementRow {
+        epoch_ic: lower.epoch_ic,
+        a_nau: a_nau as u64,
+        e_nano: e_nano as u64,
+        i_udeg: i_udeg as i64,
+        node_udeg: node_udeg as i64,
+        peri_udeg: peri_udeg as i64,
+        ma_udeg: ma_udeg as i64,
+        n_ndeg_day: n_ndeg_day as i64,
+    }
 }
 
 /// Heliocentric distance, longitude and latitude (km, degrees in `0..360`,

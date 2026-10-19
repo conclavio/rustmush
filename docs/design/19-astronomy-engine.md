@@ -149,12 +149,37 @@ from Horizons at the lane's epoch 2351-05-13 (the date dev1's fresh store opened
 **kirkwood** on Ceres's elements trailing by 2° of mean anomaly (Q-18-36's default: the
 Ceres–Kirkwood leg is a constant short hop, Kirkwood–Mars the seasonal chord, every Ceres-bound ship
 passes it, and the depot cannot drift off the lane in a lifetime, which an independent 2.06 AU orbit
-would do in a decade). Moons are not bodies yet: Stickney keeps naming `mars` (Phobos's 9,376 km is
-nothing a passage reads), Luna and Titan wait for a port. The circular numbers of ceres, mars and
+would do in a decade). The circular numbers of ceres, mars and
 pallas are **unchanged** from lane v3 — the Kepler set is exact at the epoch, so the engine's sky and
 the slice's sky agree there in longitude and distance; they differ by the **ecliptic latitude** the
 slice flattened (Ceres at i ≈ 10.6°, Pallas at 34.8°), which moves the pinned chords and the legs'
 seconds once, measured in the cut note.
+
+**The moons — D-19-17 (cut A.7, 2026-10-19; Q-19-9 ruled by the owner: "the moons are really where
+the commerce is going to happen").** A `body` may name a **`parent`**: a body of the same pack about
+the Sun (one level). Its four circular numbers and its element table are then **planetocentric** —
+Horizons ELEMENTS with `CENTER` the planet, the ecliptic J2000 frame — and the sky places it at its
+parent's position plus its own (`Sky::position_km`, both models; `Sky::distance_km` measures a moon
+between composed positions, never by the coplanar law). Lane **v7** carries **luna** (about earth),
+**phobos** and **deimos** (about mars) and **titan** (about saturn), and **Stickney Yards stands on
+phobos** — the crater is Phobos's — so the Kirkwood–Stickney leg is 27 s shorter than the
+Kirkwood–Mars chord was. A moon's rows are blended **in element space** (`kepler::blended_elements_position`:
+scalars and the node interpolated linearly in time, the mean longitude ω + M interpolated along the
+shorter arc with each row's M first advanced to the instant, the blended row propagated over zero
+days), because a moon's node and pericentre precess in months (Phobos's node by 158° a year) and the
+planets' position blend puts the midpoint of two phases of a small orbit inside it — Phobos's radius
+halved at the worst instant; the planets keep the position blend as measured and pinned. Measured
+against Horizons' heliocentric positions every 91 days over 2340–2400: Luna within 1.50 ‰ (Earth's
+own 1.01 ‰ and the Sun's pull on a two-body lunar row), Phobos 0.088 ‰, Deimos 0.024 ‰. **Titan has
+no Horizons ephemeris past 2250-01-05**: its table is the last decade Horizons knows (nineteen rows,
+2240–2249), the last row propagated alone through the window — a near-circular 15.9-day orbit whose
+plane precesses in centuries, self-consistent rather than Horizons-true, with no golden rows. A moon's
+authored distance is quantized to the micro-AU (75 km), so the element table's consistency rule has a
+150 km floor (`ELEMENTS_DISTANCE_FLOOR_KM`). **A moon's season is its primary's**: `Sky::period_days`
+answers the parent's year for a moon, so the reach premium's synodic scan (§6) over a port on Phobos
+is Mars's and Ceres's, not a 7.65-hour one. `+chart` rows a moon under the sky with "moon of mars";
+`+chart/body phobos` shows its planetocentric row. Ports on Luna, Deimos and Titan are later content
+(P7's kind); the bodies are there for them.
 
 ### 3.7 The data pipeline — D-19-7
 
@@ -351,6 +376,7 @@ within rounding, the latitude term measured) and the drift per IC year recorded 
 | **A.3** chart (**landed 2026-10-18**; the cut note "A.3") | `+chart` (the sky table, each port's passage now at this load and empty, the direct chord priced beside the listed route), `+chart <port>` (the window: fastest, cheapest, worst day of the next IC year against now), `+chart/body`, the `+ship/plan` window line; the direct comparison computed from the sky, so lane v5 stays uncut | S | `tests/chart.rs`: the scan ≤ 365 evaluations, the worst day no shorter than the fastest; 120 columns |
 | **A.3b** chart panel | the web cockpit panel and the TUI screen on the OutputEvent/Panel protocol | M | later |
 | **A.4** prices (**landed 2026-10-18**; the cut note "A.4") | `port/price.rs`: reach (`choose_route`, the Dray empty, the least over the suppliers), the synodic median (`Sky::period_days`, `synodic_days`, `scan_days`, `median_of`; ≤ 400 samples; one under the constant sky), `premium_permille`, `priced`, `bid_price_major`; read at posting by the applier and the stock clerk; `PortDef.premium { k_permille, cap_permille }` with bounds; lane **v5** (both ports at 300 / 500); the trade help | M | `tests/price.rs`: both ports carry the block; rate 0 posts 280 / 520 (reach now = median); rate 1000 posts `priced(authored, premium(reach))` for every bid, never below authored, never above the cap; a port without the block posts authored prices; k past the bound refused; Ceres–Mars synodic ≈ 1,162 days, Ceres–Kirkwood capped |
+| **A.7** moons (**landed 2026-10-19**; the cut note "A.7"; Q-19-9, D-19-17) | `BodyDef.parent` (wire, the pack's one-level rule `UnknownParent`), `Body.parent`, the sky composing a moon's position with its parent's on both models, `Sky::parent_of`, `period_days` as the primary's, `distance_km` between composed positions for a moon; `kepler::blended_elements_position` (the element blend for moons; `propagate_dt`); the 150 km distance floor; `fetch_elements.py --moons` (planet-centred ELEMENTS, heliocentric golden; Titan's last decade); lane **v7** (luna, phobos, deimos, titan; Stickney Yards on phobos; the Kirkwood–Stickney leg 942,997 s); `+chart` "moon of"; pins re-blessed (lane digest, legs, passage 321,547 + 1,256,295 / 1,195,643 + 306,023, the story's 326,136 + 1,274,226) | M | `tests/sky.rs`: sixteen bodies, the four moons' parents, a moon's period its primary's; Horizons tracking for fourteen bodies (Luna ≤ 1.60 ‰, Phobos ≤ 0.09 ‰, Deimos ≤ 0.03 ‰); a moon stands its own orbit from its parent at the epoch and a year either side (Luna 356,000–407,000 km, Phobos 9,200–9,600, Deimos 23,400–23,500, Titan 1,180,000–1,260,000); the epoch consistency planetocentric for moons; `tests/lane.rs` twenty-four entries, the chord Ceres–Phobos, 125 periods of phase; `tests/chart.rs` sixteen rows with "moon of mars" |
 | **A.4b** emergency bids (**landed 2026-10-19**; the cut note "A.4b") | `PortDef.emergency { org, ratio_permille, goods, intake }` with bounds; the stock clerk's emergency step (once an hour; post at the cap over the reference when the reach crosses the ratio, withdraw when it falls back, one act a fire; funded or nothing); `PortMap.emergencies`; `emergency_readings` and the `+chart <port>` demand-side lines; lane **v6** (both ports at 1,500 ‰, provisions / volatiles / propellant, 100 units); the trade help | S | `tests/price.rs`: the block and its refusals; rate 0 posts none (reach = median); a revision at 1,000 ‰ posts a Wanted per supplied good (the org's vendor, 100 units, `priced(reference, 500)`), the capital rows unchanged; a revision at 100,000 ‰ after a reboot withdraws them; `tests/chart.rs`: the demand-side and emergency lines under both skies |
 | **A.5** comms (**closed 2026-10-18 as a seam**) | `Sky::light_lag_s` shipped in A.1 and read by `+chart` in A.3; doc 15 §3.5 amended — the backbone (R1–R10) is not started, so there is no live lag table yet; R5 consumes the seam when built | S | `tests/sky.rs`: the lag is `distance / c` rounded up; `tests/chart.rs`: every body's lag from Ceres |
 | **A.6** flip (**landed 2026-10-18**; the cut note "A.6") | templates at rate 1000 (real motion; the Rust default stays 0); the readiness Sky line names the motion and the model; the migration tests of IC9/IC14 stand; docs 10/18/README amended; a drive-by: the stale dev1 clock pin in `shipped_configs.rs` | S | the two voyage tests; `shipped_configs` parity (12) |
@@ -381,6 +407,11 @@ file), pushed when green. No deploy without the owner.
 - **Q-19-8 Re-fitting the elements.** Default: one set per body for 2340–2400; a second era is a lane
   data change when the campaign nears 2400 (about 2,000 real days at rate 24 from 2351).
 - **Q-19-9 Moons as bodies.** Default: not yet (Stickney names `mars`); Luna and Titan with a port.
+  **Ruled by the owner 2026-10-19**: Luna, Phobos, Deimos and Titan are bodies — "the moons are
+  really where the commerce is going to happen" — built as cut A.7 (§3.6, D-19-17); Stickney stands
+  on Phobos.
+
+**Q-19-1 through Q-19-8: the defaults above were accepted as proposed by the owner on 2026-10-19.**
 
 ---
 

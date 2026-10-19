@@ -7476,3 +7476,93 @@ deploy without the owner**.
 
 - **A.3b** the chart panel. The emergency bids on the room boards (they carry no `boards`;
   `+market/list` shows them). Readiness has no line for them.
+
+## A.7
+
+**The moons** ([doc 19](19-astronomy-engine.md) §3.6, cut A.7; D-19-17; Q-19-9 ruled by the owner
+2026-10-19 — "Luna Phobos Deimos Titan are worth modeling … the moons are really where the commerce
+is going to happen" — and Q-19-1 through Q-19-8's defaults accepted as proposed), built 2026-10-19 on
+main. One commit with the Fable trailer, pushed when green. Nothing here touches a running world
+until the next deploy, and **no deploy without the owner**.
+
+### What landed
+
+1. **A body may orbit a body** (`pack.rs`): `BodyDef.parent: Option<CanonicalId>` (wire `parent`,
+   skipped when absent, so no fixture's re-encoding moves; `with_parent`, `is_moon`), the pack's
+   cross-entry rule that a parent is a `body` of the same pack about the Sun and not the moon itself
+   (`PackError::UnknownParent`; one level, so a position is a parent's plus its own), and a 150 km
+   floor on the element table's distance consistency rule (`ELEMENTS_DISTANCE_FLOOR_KM`: a moon's
+   authored distance is held in micro-AU, 75 km of quantization on Phobos's 9,376 km). `Body.parent`
+   on the circular model (`Body` is no longer `Copy`).
+2. **The sky composes** (`sky.rs`): `KeplerSky::position_f64` and `Sky::position_km` add the
+   parent's position to a moon's own, on both models; `Sky::parent_of`; `Sky::distance_km` measures
+   any pair with a moon in it between composed positions, never by the coplanar law (the slice's
+   fixtures, with no moons, keep their byte-identical law-of-cosines figures); `Sky::period_days`
+   answers a moon's **primary's** period — a moon's season is its planet's, so the reach premium's
+   synodic scan over a port on Phobos is Mars–Ceres's 1,162 days and not a 7.65-hour one; the
+   revision digest names the parent.
+3. **The element blend for moons** (`kepler.rs`): `blended_elements_position` interpolates a moon's
+   rows in element space — scalars and the node linearly in time, the mean longitude ω + M along
+   the shorter arc with each row's M first advanced to the instant (a near-circular orbit's
+   pericentre swings between rows while the longitude stays smooth; Deimos's e is 0.0002), the
+   blended row propagated over zero days (`propagate_dt`; an epoch interpolated in IC seconds lands
+   up to a real leap day off the instant, most of a turn for Deimos). Why: a moon's node and
+   pericentre precess in months (Phobos's node by 158° a year), two rows a half-year apart put it at
+   different phases of a small orbit, and the planets' position blend takes the chord's midpoint —
+   Phobos read 4,794 km from Mars, half its radius, before this. The planets keep the position blend
+   as measured and pinned in A.1.
+4. **The data** (`fetch_elements.py --moons`): the moons' ELEMENTS asked about the parent (Horizons
+   `CENTER` the planet's centre, the ecliptic frame), their golden VECTORS heliocentric like every
+   other body's, the measure composing the parent's table with the moon's; **Titan has no Horizons
+   ephemeris past 2250-01-05**, so its rows are the last decade Horizons knows (nineteen, 2240–2249)
+   and the last row propagates alone through the window — self-consistent rather than Horizons-true,
+   no golden rows, recorded in the pack's `extrapolated_from`. `golden.json` gains luna, phobos and
+   deimos (241 rows each).
+5. **Lane v7** (`content/lane/ceres_phobos.json`, `LANE_VERSION` 7): the four moon bodies —
+   `luna` about earth (0.00258 AU, 27.53 d), `phobos` (63 µAU, 0.319 d) and `deimos` (157 µAU,
+   1.263 d) about mars, `titan` about saturn (0.00793 AU, 15.95 d) — each with `parent` and its
+   planetocentric table; **Stickney Yards stands on `phobos`**; the Kirkwood–Stickney legs re-timed
+   to the derived 942,997 s (27 s inside the Kirkwood–Mars chord's 943,024); twenty-four entries;
+   signed, digest `11fb2c9228799918184cc872a01d683e85de91e830104f170b966c7311f23541` pinned in
+   `tests/lane.rs`. The commerce suite's v2 rebuild drops the moons and puts Stickney back on Mars.
+6. **`+chart`** rows a moon with "moon of mars" after its from-here column; every other surface
+   reads the composed position and needed nothing.
+7. **Docs**: doc 19 §3.6 (D-19-17), §9's A.7 row, §10 (Q-19-1..8 accepted, Q-19-9 ruled); README;
+   doc 18 §5's P-A row.
+
+### Verified
+
+- **`tests/sky.rs`** (8): the sixteen bodies all Keplerian, the four moons naming their parents and
+  Titan's table nineteen rows; Horizons tracking for fourteen bodies — the eleven as before and
+  Luna 150.23 (allowed 160), Phobos 8.84 (9), Deimos 2.41 (3) hundredths of a permille, every body's
+  worst printed; a moon stands its own orbit from its parent at the epoch and a year either side
+  (Luna 356,000–407,000 km, Phobos 9,200–9,600, Deimos 23,400–23,500, Titan 1,180,000–1,260,000);
+  the epoch consistency compares a moon planetocentrically within the 75 km quantization; a moon's
+  period is its primary's.
+- **`tests/lane.rs`** (10): twenty-four entries and sixteen epochs; Stickney on phobos; the legs
+  61,776 + 942,997 and the derived legs printed; the route chord Ceres–Phobos; the circular lane's
+  sixteen bodies agree with the Euclidean distance; 125 periods of phase hold to the milli-degree
+  (a whole number of seconds for a 319-milli-day period, where one period rounded 8 mdeg away).
+- **Pins moved by Stickney's 9,400 km** (every figure read from the planner, none by hand):
+  `passage.rs` outbound 321,547 + 1,256,295 = 1,577,842 (was 1,256,313 / 1,577,860), return
+  1,195,643 + 306,023 = 1,501,666 (was 1,195,660 / 1,501,683); `voyage.rs` the story's ticket
+  326,136 + 1,274,226 = 1,600,362 (was 1,274,245 / 1,600,381); `ports.rs` the plans' "22 unchanged"
+  and "20 unchanged" (twenty-four entries). Burns and crew-days unchanged.
+- `tests/chart.rs` (5): sixteen rows, phobos "moon of mars".
+- `cargo fmt --check` clean; `cargo clippy -p tacsim --all-targets -- -D warnings` clean (one red on the
+  way: `tests/ephemeris.rs` built a `Body` by hand without the new field); the whole tacsim suite
+  (`--no-fail-fast`): 49 suites, 2,668 passed, 0 failed; mush-server `boot_parity` 19 and the story
+  `ic_slice_loop` 6 green with no pin moved (the story reads its figures from the planner);
+  mush-config `shipped_configs` 12 green.
+
+### What the owner decides
+
+- **Ports on the moons** (P7's kind): the bodies are there; Luna, Deimos and Titan want a `location`
+  with `body`, a `port` entry and routes. Titan's is a long way out (Saturn at 9.4 AU: weeks at the
+  Dray's thrust).
+- **Titan's extrapolation**: a self-consistent orbit, not Horizons-true, until a later ephemeris
+  reaches 2340. A later `fetch_elements.py` run re-fits it when one does.
+
+### Deferred
+
+- **A.3b** the chart panel (next).
