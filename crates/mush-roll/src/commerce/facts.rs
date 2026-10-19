@@ -13,6 +13,7 @@ use mush_core::mechanics::{DefinitionRegistry, OwnerId};
 use mush_core::read_service::OwnerReadHandle;
 use mush_core::{ModError, ModuleCtx, Registrar, World};
 use mush_economy::{ExternalRef, FactProvider, FactState, ScopedFactContext};
+pub(crate) use service::guard_current;
 use std::sync::{Arc, OnceLock};
 fn invalid<T>(_: T) -> PublicationError {
     PublicationError::Invalid

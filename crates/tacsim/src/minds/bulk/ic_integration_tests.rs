@@ -73,6 +73,8 @@ struct IcWorld {
     base: ObjId,
     field: ObjId,
     hulls: [ObjId; 2],
+    pending_charters: bool,
+    registry_revocation: Option<mush_roll::commerce::registry_revocation::RegistryRevocationPolicy>,
     tasks: crate::arena_bridge::ArenaTasks,
 }
 impl Drop for IcWorld {
@@ -127,6 +129,21 @@ impl IcWorld {
         hulls: [ObjId; 2],
         enabled: bool,
     ) -> TestResult<Self> {
+        Self::boot_options(f, saved, base, field, hulls, enabled, false, None)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn boot_options(
+        f: &PurchaseFixture,
+        saved: &Durable,
+        base: ObjId,
+        field: ObjId,
+        hulls: [ObjId; 2],
+        enabled: bool,
+        pending_charters: bool,
+        registry_revocation: Option<
+            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
+        >,
+    ) -> TestResult<Self> {
         let mut cfg = f.resources.config();
         cfg.enabled = true;
         let layer = crate::TacsimRuleset::with_config(cfg);
@@ -138,6 +155,18 @@ impl IcWorld {
         )?
         .with_original_purchases(policy()?)?
         .with_charter_transfers()?;
+        let composition = if let Some(policy) = &registry_revocation {
+            composition.with_registry_revocation(policy.clone())?
+        } else {
+            composition
+        };
+        let composition = if pending_charters {
+            composition.with_pending_charter_transfers(
+                mush_roll::commerce::PendingCharterTransferConfig::new(GOD, 60)?,
+            )?
+        } else {
+            composition
+        };
         // This is the production preparation path, never cfg(test) Resources::register.
         let old_manifest = f
             .engine
@@ -216,6 +245,8 @@ impl IcWorld {
             base,
             field,
             hulls,
+            pending_charters,
+            registry_revocation,
             tasks,
         };
         result.persist_setup()?;
@@ -338,7 +369,16 @@ impl IcWorld {
         Durable::capture(&self.engine, &self.disk)
     }
     fn reboot(&self, f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot(f, saved, self.base, self.field, self.hulls, true)
+        Self::boot_options(
+            f,
+            saved,
+            self.base,
+            self.field,
+            self.hulls,
+            true,
+            self.pending_charters,
+            self.registry_revocation.clone(),
+        )
     }
     fn ticket(&self, actor: ObjId, hull: ObjId, licence: u64) -> TestResult<IcHostTicket> {
         Ok(self.host.enqueue_start(
@@ -559,6 +599,7 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
     let first = *actual.hulls.first().ok_or("first hull")?;
     let second = *actual.hulls.get(1).ok_or("second hull")?;
     let seeded = actual.snapshot();
+    pending::exercise(f, &actual, &seeded)?;
     expiry_fences(f, &actual, &seeded)?;
     observed_submission(f, &actual, &seeded)?;
     let start = actual.ticket(BUYER, first, 2)?;
@@ -1114,3 +1155,6 @@ fn observed_submission(f: &PurchaseFixture, actual: &IcWorld, seeded: &Durable) 
     absent.land_key(&close, 12_000_031, hull, true, Some(close_request.key))?;
     Ok(())
 }
+
+#[path = "charter_pending_integration_tests.rs"]
+mod pending;

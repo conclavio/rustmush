@@ -286,7 +286,7 @@ fn digest(domain: &str, value: &Value) -> Result<DefinitionDigest, ActionStateEr
 }
 fn key(family: &str, encoded: String) -> Result<Key, ActionStateError> {
     Ok(Key {
-        owner: OwnerId::new(if matches!(family, MARKET | RECEIPT) {
+        owner: OwnerId::new(if family.starts_with("market_") {
             "market"
         } else {
             "roll"
@@ -361,6 +361,8 @@ pub(super) fn require_disjoint_operation(
         "roll_mind_paid_purchase",
         "roll_mind_entitlement_purchase",
         "roll_mind_house_purchase",
+        "roll_house_mind_renewal_operation",
+        "market_house_mind_renewal_operation",
     ] {
         if optional_family_value(view, family, operation)?.is_some() {
             return Err(refused("renewal operation has another purchase recipe"));
@@ -981,12 +983,12 @@ pub(super) fn validate_changes(
             }
         }
     }
-    if !touches
-        && changes
-            .progress
-            .as_ref()
-            .is_none_or(|id| id.0.as_str() != "market")
-    {
+    let progressing_here = changes
+        .progress
+        .as_ref()
+        .and_then(|id| store.capacity.records.get(id))
+        .is_some_and(|r| protocol.recognizes_historical(&r.record.effect));
+    if !touches && !progressing_here {
         return Ok(());
     }
     let identity = identity.ok_or_else(|| refused("renewal write lacks actual invocation"))?;
@@ -1449,4 +1451,4 @@ pub(super) fn audit_boot(
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

@@ -16,6 +16,12 @@ pub struct CommerceFamilies {
         StateFamilyHandle<String, super::rating::reconformance::recall::records::MeasuredRecall>,
     pub(crate) reconformance_heads:
         StateFamilyHandle<String, super::rating::reconformance::ReconformanceHead>,
+    pub(crate) charter_pending_offers:
+        StateFamilyHandle<String, super::charter_pending::records::PendingOffer>,
+    pub(crate) charter_pending:
+        StateFamilyHandle<String, super::charter_pending::records::PendingRecord>,
+    pub(crate) charter_pending_heads:
+        StateFamilyHandle<String, super::charter_pending::records::PendingHead>,
     pub(crate) charter_transfer_offers:
         StateFamilyHandle<String, super::charter_transfer::records::CharterOffer>,
     pub(crate) charter_transfers:
@@ -79,6 +85,9 @@ impl CommerceFamilies {
         Ok(Self {
             measured_recalls: register(reg)?,
             reconformance_heads: register(reg)?,
+            charter_pending_offers: register(reg)?,
+            charter_pending: register(reg)?,
+            charter_pending_heads: register(reg)?,
             charter_transfer_offers: register(reg)?,
             charter_transfers: register(reg)?,
             charter_ownership: register(reg)?,
@@ -184,7 +193,9 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
                 && parts.next().is_none()
         }
         "roll_mind_commerce" => head == "registry" && parts.next().is_none(),
-        "roll_mind_charter_transfer_offers"
+        "roll_mind_charter_pending_offers"
+        | "roll_mind_charter_pending"
+        | "roll_mind_charter_transfer_offers"
         | "roll_mind_ic_claim"
         | "roll_mind_line_update"
         | "roll_mind_initial_filing"
@@ -241,7 +252,7 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
                 })
                 && parts.next().is_none()
         }
-        "roll_mind_charter" | "roll_mind_charter_ownership" => {
+        "roll_mind_charter" | "roll_mind_charter_ownership" | "roll_mind_charter_pending_head" => {
             head == "charter"
                 && parts.next().is_some_and(|v| {
                     hex(v, 16, true)

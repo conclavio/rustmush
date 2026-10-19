@@ -594,9 +594,7 @@ fn outputs(view: &View<'_>, id: CommitToken, pair: &Pair) -> Result<(), ActionSt
         return Err(refused("house granted economics differs"));
     }
     let current = current.ok_or_else(|| refused("purchase paid licence missing"))?;
-    if token(field(&current, "operation")?)? != id || text(&current, "term")? != "1" {
-        return Err(refused("house paid birth cannot claim personal renewal"));
-    }
+    house_renewal::validate_current_birth(view, &current, id)?;
     let term = term.ok_or_else(|| refused("purchase paid term missing"))?;
     for name in ["charter", "line", "holder"] {
         if field(&current, name)? != field(&pair.allocation, name)? {
@@ -769,6 +767,9 @@ pub(super) fn shared_output_is_house(
     )?;
     let operation = token(field(&row, "operation")?)?;
     if !allocation_present(view, ALLOCATION, operation)? {
+        if house_renewal::shared_output_is_renewal(view, state_key)? {
+            return Ok(false);
+        }
         if renewal::shared_output_is_renewal(view, state_key)? {
             return Ok(false);
         }
@@ -797,6 +798,7 @@ fn require_disjoint_operation(
     operation: CommitToken,
 ) -> Result<(), ActionStateError> {
     renewal::reject_other_operation(view, operation)?;
+    house_renewal::reject_other_operation(view, operation)?;
     for family in ["roll_mind_paid_purchase", "roll_mind_entitlement_purchase"] {
         if allocation_present(view, family, operation)? {
             return Err(refused("house operation has another purchase allocation"));
@@ -859,6 +861,9 @@ pub(super) fn audit_boot(
     }
     let mut operations = BTreeSet::new();
     for key in view.records.keys().filter(|key| protected(key)) {
+        if house_renewal::shared_output_is_renewal(view, key)? {
+            continue;
+        }
         if matches!(key.family.as_str(), LICENCE | TERM) && !shared_output_is_house(view, key)? {
             continue;
         }
@@ -905,6 +910,11 @@ pub(super) fn validate_changes(
     };
     let mut operations = BTreeSet::new();
     for key in mutations.keys().filter(|key| protected(key)) {
+        if house_renewal::shared_output_is_renewal(&after, key)?
+            || house_renewal::owns_licence_change(&after, key, identity, changes)?
+        {
+            continue;
+        }
         if matches!(key.family.as_str(), LICENCE | TERM) && !shared_output_is_house(&after, key)? {
             continue;
         }
@@ -1031,4 +1041,4 @@ fn pair_fn(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionStateError> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

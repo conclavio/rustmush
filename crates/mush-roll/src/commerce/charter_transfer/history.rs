@@ -73,16 +73,14 @@ fn proved(
     if &row.ownership()? != reference || row.birth != birth.commit || row.charter != birth.charter {
         return Err(PublicationError::Mismatch);
     }
-    e.charter_transfer_receipt_audit()
-        .verify(&row.economic)
-        .map_err(bad)?;
+    row.economic.verify(e)?;
     let roll = world
         .module_state::<crate::RollStore>()
         .ok_or(PublicationError::Unavailable)?;
     roll.check_required_root(&offer_root(offer)?).map_err(bad)?;
     roll.check_required_root(&transfer_root(row, offer)?)
         .map_err(bad)?;
-    Ok(row.economic.buyer)
+    Ok(row.economic.facts()?.buyer)
 }
 /// Historical proof does not consult a current title, term or person object.
 /// Complete chain reconstruction is mandatory before Roll enables consumers.
@@ -102,6 +100,11 @@ pub(crate) fn historical(
         )
         .map_err(bad)?
         .ok_or(PublicationError::Missing)?;
+    if row.format == 2 {
+        return crate::commerce::charter_pending::history::historical(
+            ctx, f, birth, reference, row,
+        );
+    }
     let offer = ctx
         .get(&f.charter_transfer_offers, &row.offer.to_hex())
         .map_err(bad)?
@@ -126,6 +129,11 @@ pub(crate) fn historical_in_txn(
         .map_err(bad)?
         .cloned()
         .ok_or(PublicationError::Missing)?;
+    if row.format == 2 {
+        return crate::commerce::charter_pending::history::historical_in_txn(
+            txn, world, f, birth, reference, &row,
+        );
+    }
     let offer = txn
         .get(&f.charter_transfer_offers, &row.offer.to_hex())
         .map_err(bad)?

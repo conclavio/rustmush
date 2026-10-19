@@ -13,6 +13,7 @@ use crate::commerce::{
 };
 use mush_core::mechanics::{DefinitionRegistry, OwnerId};
 use mush_core::{ModError, ModuleCtx, Registrar, World};
+pub(crate) use service::guard_current;
 use std::sync::{Arc, OnceLock};
 fn bad<T>(_: T) -> PublicationError {
     PublicationError::Invalid

@@ -283,6 +283,12 @@ impl OwnerReadService for IcAdmissionReader {
                     &self.expected,
                 )
                 .map_err(refusal)?;
+                super::super::charter_pending::current::require_clear(
+                    ctx,
+                    &self.families,
+                    holding.charter(),
+                )
+                .map_err(|_| OwnerReadError::Refused)?;
                 let charter =
                     TitleFence::capture(ctx.world(), ObjId(holding.charter().get()), ctx.actor())
                         .map_err(|_| OwnerReadError::Integrity)?;

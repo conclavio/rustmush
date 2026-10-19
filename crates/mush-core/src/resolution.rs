@@ -397,6 +397,13 @@ impl<'a> PrepareCtx<'a> {
         self.mind_renewal_completion(txn, None)
     }
 
+    pub fn reserve_house_mind_renewal_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.house_mind_renewal_completion(txn, None)
+    }
+
     /// Advance an acknowledged renewal using the actual registered action.
     /// Fund retains its reservation; Grant, Refund and Close consume it once.
     pub fn advance_mind_renewal_completion(
@@ -407,6 +414,14 @@ impl<'a> PrepareCtx<'a> {
         self.mind_renewal_completion(txn, Some(operation))
     }
 
+    pub fn advance_house_mind_renewal_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        operation: CommitToken,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.house_mind_renewal_completion(txn, Some(operation))
+    }
+
     fn mind_renewal_completion(
         &mut self,
         txn: &mut crate::action_state::ActionTxn<'_>,
@@ -415,6 +430,27 @@ impl<'a> PrepareCtx<'a> {
         let result = match (self.owner_error.is_none(), self.registered_transaction) {
             (true, Some((base, provider))) => {
                 txn.mind_renewal_completion(base, provider, self.commit_token, operation)
+            }
+            _ => Err(crate::action_state::ActionStateError::TerminalCapacity(
+                "renewal preparation unavailable",
+            )),
+        };
+        if result.is_err() {
+            txn.poison_owner_read();
+            self.owner_error
+                .get_or_insert(crate::participant::ParticipantError::Authority);
+        }
+        result
+    }
+
+    fn house_mind_renewal_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        operation: Option<CommitToken>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        let result = match (self.owner_error.is_none(), self.registered_transaction) {
+            (true, Some((base, provider))) => {
+                txn.house_mind_renewal_completion(base, provider, self.commit_token, operation)
             }
             _ => Err(crate::action_state::ActionStateError::TerminalCapacity(
                 "renewal preparation unavailable",

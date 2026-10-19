@@ -158,6 +158,8 @@ pub mod sheet;
 /// (doc 18 §4.8, D-18-43, D-18-48).
 pub mod sky;
 pub mod store;
+/// Bounded Safe Conduct underwriting terms; owner services opt in separately.
+pub mod underwriting;
 
 use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registrar};
 

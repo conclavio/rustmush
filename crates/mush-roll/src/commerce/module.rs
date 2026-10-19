@@ -37,6 +37,7 @@ pub struct CommerceConfig {
     original_market_quotes: bool,
     author_withdrawal: bool,
     charter_transfers: bool,
+    pending_charters: Option<PendingRegistration>,
     minds_facts: Option<super::facts::MindsFactProvider>,
     registry_recall: Option<super::registry_recall::RegistryRecallPolicy>,
     registry_revocation: Option<super::registry_revocation::RegistryRevocationPolicy>,
@@ -53,6 +54,11 @@ pub struct CommerceConfig {
     house_purchases: Option<HouseRegistration>,
     renewals: Option<RenewalRegistration>,
     ic: Option<std::sync::Arc<dyn super::ic_claims::registration::Installer>>,
+}
+#[derive(Clone, Debug)]
+struct PendingRegistration {
+    config: super::charter_pending::PendingCharterTransferConfig,
+    participants: super::purchase::PurchaseParticipants,
 }
 #[derive(Clone, Debug)]
 struct PurchaseRegistration {
@@ -107,6 +113,7 @@ impl CommerceConfig {
             original_market_quotes: false,
             author_withdrawal: false,
             charter_transfers: false,
+            pending_charters: None,
             minds_facts: None,
             registry_recall: None,
             registry_revocation: None,
@@ -255,7 +262,7 @@ impl CommerceConfig {
     }
 
     /// Enable source-free personal charter offers and native immediate settlement.
-    /// Pending transfers and paid-licence resale remain unavailable.
+    /// Pending escrow requires its separate explicit configuration.
     pub fn with_charter_transfers(
         mut self,
         _config: super::charter_transfer::CharterTransferConfig,
@@ -264,6 +271,29 @@ impl CommerceConfig {
             return Err(error("charter transfer requires one Active configuration"));
         }
         self.charter_transfers = true;
+        Ok(self)
+    }
+
+    /// Explicit personal pending escrow. This never funds on the buyer's behalf;
+    /// the configured actor receives only private retained terminal intents.
+    pub fn with_pending_charter_transfers(
+        mut self,
+        config: super::charter_pending::PendingCharterTransferConfig,
+        participants: super::purchase::PurchaseParticipants,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active
+            || !self.charter_transfers
+            || self.pending_charters.is_some()
+        {
+            return Err(error(
+                "pending charter transfers require one Active immediate-transfer composition",
+            ));
+        }
+        participants.validate().map_err(error)?;
+        self.pending_charters = Some(PendingRegistration {
+            config,
+            participants,
+        });
         Ok(self)
     }
 
@@ -606,6 +636,9 @@ impl CommerceConfig {
         if self.charter_transfers {
             definitions.extend(super::charter_transfer::protocol::definitions()?);
         }
+        if self.pending_charters.is_some() {
+            definitions.extend(super::charter_pending::protocol::definitions()?);
+        }
         if self.author_withdrawal {
             let [action, outcome] = super::withdrawal::definitions()?;
             definitions.extend([action, outcome]);
@@ -693,6 +726,7 @@ pub(crate) struct CommerceRegistration {
     ic: Option<std::sync::Arc<dyn super::ic_claims::registration::Installer>>,
     withdrawal: Option<super::withdrawal::EconomyReadiness>,
     charter_transfer: Option<super::charter_transfer::Readiness>,
+    pending_charters: Option<super::charter_pending::Readiness>,
     facts_readiness: Option<super::facts::MindsFactProvider>,
     registry_recall: Option<super::registry_recall::Readiness>,
     registry_revocation: Option<super::registry_revocation::Readiness>,
@@ -1231,6 +1265,32 @@ pub(crate) fn register(
     } else {
         None
     };
+    let pending_registration = if let Some(pending) = &config.pending_charters {
+        if pending.participants.retention() != &root_definition {
+            return Err(error("pending charter retention definition differs"));
+        }
+        let descriptors = super::charter_pending::protocol::definitions()?;
+        let references = descriptors
+            .into_iter()
+            .map(|d| reg.definition(d))
+            .collect::<Result<Vec<_>, _>>()?;
+        let definitions: [DefinitionRef; 8] = references
+            .try_into()
+            .map_err(|_| error("pending charter declarations differ"))?;
+        root_actions.extend(definitions[..4].iter().cloned());
+        reg.charter_pending_capacity(
+            pending.participants.ordered(),
+            pending.config.actions()?,
+            config
+                .registry_revocation
+                .as_ref()
+                .map(|p| p.action())
+                .transpose()?,
+        )?;
+        Some((pending.config.clone(), definitions))
+    } else {
+        None
+    };
     let withdrawal_registration = if config.author_withdrawal {
         let [action, outcome] = super::withdrawal::definitions()?;
         let action = reg.definition(action)?;
@@ -1270,6 +1330,11 @@ pub(crate) fn register(
             super::registry_recall::register(reg, families.clone(), policy, definitions)
         })
         .transpose()?;
+    let pending_charters = pending_registration
+        .map(|(config, definitions)| {
+            super::charter_pending::register(reg, families.clone(), definitions, config)
+        })
+        .transpose()?;
     let registry_revocation = revocation_registration
         .map(|(policy, definitions)| {
             super::registry_revocation::register(
@@ -1278,6 +1343,7 @@ pub(crate) fn register(
                 ratings.clone(),
                 policy,
                 definitions,
+                pending_charters.clone(),
             )
         })
         .transpose()?;
@@ -1464,6 +1530,9 @@ pub(crate) fn register(
             shells.clone(),
         )?;
     }
+    if facts_readiness.is_some() || measured_recall.is_some() || pending_charters.is_some() {
+        super::service_guards::register(reg)?;
+    }
     let recall_readback = (config.mode == CommerceMode::Active)
         .then(|| super::registry_recall::notice::register(reg, families.clone(), ratings.clone()))
         .transpose()?;
@@ -1478,6 +1547,7 @@ pub(crate) fn register(
         ic: config.ic.clone(),
         withdrawal,
         charter_transfer,
+        pending_charters,
         facts_readiness,
         registry_recall,
         registry_revocation,
@@ -1518,6 +1588,9 @@ impl CommerceRegistration {
         if let Some(readiness) = &self.charter_transfer {
             readiness.capture(ctx)?;
         }
+        if let Some(readiness) = &self.pending_charters {
+            readiness.capture(ctx)?;
+        }
         if let Some(readiness) = &self.withdrawal {
             readiness.capture(ctx)?;
         }
@@ -1540,11 +1613,12 @@ impl CommerceRegistration {
                 ctx,
                 &self.families,
                 self.charter_transfer.is_some(),
+                self.pending_charters.is_some(),
             )
             .map_err(error)?;
         }
         match self.mode {
-            CommerceMode::Active => super::audit::audit_and_open_house_configured(
+            CommerceMode::Active => super::audit::audit_and_open_pending_configured(
                 ctx,
                 &self.families,
                 &self.ratings,
@@ -1560,6 +1634,7 @@ impl CommerceRegistration {
                 self.ic.as_deref(),
                 self.house_purchases,
                 registry,
+                self.pending_charters.is_some(),
             )
             .map_err(error),
             // Explicit setup remains Closed. The operator provider repeats its

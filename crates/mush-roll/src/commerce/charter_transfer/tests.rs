@@ -72,7 +72,8 @@ fn transfer(offer: &CharterOffer) -> TestResult<CharterTransfer> {
             instrument: offer.instrument.clone(),
             issuer: mush_org::SystemPrincipalId::new("registry").ok_or("issuer")?,
             title,
-        },
+        }
+        .into(),
     };
     row.matches_offer(offer)?;
     Ok(row)
@@ -163,15 +164,18 @@ fn native_and_seller_terms_must_match_without_netting_or_substitution() -> TestR
     }
     for mode in 0..4 {
         let mut bad = row.clone();
+        let economic::TransferEconomic::Immediate(native) = &mut bad.economic else {
+            return Err("expected exact immediate native fixture".into());
+        };
         match mode {
-            0 => bad.economic.posted_at_utc = offer.offered_at_utc - 1,
-            1 => bad.economic.posted_at_utc = offer.expires_at_utc,
+            0 => native.posted_at_utc = offer.offered_at_utc - 1,
+            1 => native.posted_at_utc = offer.expires_at_utc,
             2 => bad.accepted_at_ic.at = offer.offered_at_ic.at - 1,
             _ => bad.accepted_at_ic.clock = mush_core::ClockRef::WorldIc { generation: 1 },
         }
         // Preserve native acquisition consistency when testing the offer window.
-        if let Some(acquisition) = &mut bad.economic.title.acquisition {
-            acquisition.at = bad.economic.posted_at_utc;
+        if let Some(acquisition) = &mut native.title.acquisition {
+            acquisition.at = native.posted_at_utc;
         }
         assert!(bad.matches_offer(&offer).is_err());
     }
@@ -365,5 +369,29 @@ fn actual_registration_requires_matching_native_owner_and_preserves_default_abse
             }
         }
     }
+    Ok(())
+}
+
+#[test]
+fn immediate_native_wire_and_v1_ownership_digest_remain_exact() -> TestResult {
+    let offer = offer()?;
+    let row = transfer(&offer)?;
+    let economic::TransferEconomic::Immediate(native) = &row.economic else {
+        return Err("actual immediate fixture variant".into());
+    };
+    assert_eq!(
+        serde_json::to_vec(&row.economic)?,
+        serde_json::to_vec(native)?
+    );
+    let legacy = json!({"format":1,"operation":row.operation,"action":row.action,
+        "charter":row.charter,"generation":row.generation,"birth":row.birth,
+        "predecessor":row.predecessor,"offer":row.offer,"offer_digest":row.offer_digest,
+        "accepted_at_ic":row.accepted_at_ic,"economic":native});
+    assert_eq!(serde_json::to_value(&row)?, legacy);
+    assert_eq!(
+        row.ownership()?.digest,
+        DefinitionDigest::for_canonical_value("roll.charter_ownership.transfer.v1", &legacy)?
+    );
+    assert_eq!(serde_json::from_value::<CharterTransfer>(legacy)?, row);
     Ok(())
 }

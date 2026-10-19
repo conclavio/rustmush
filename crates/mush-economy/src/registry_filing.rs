@@ -61,6 +61,10 @@ impl InitialFilingPolicy {
     pub fn issuer(&self) -> &SystemPrincipalId {
         &self.issuer
     }
+    /// Exact inert catalogue selected by the same trusted filing configuration.
+    pub fn catalog(&self) -> &CatalogRef {
+        &self.catalog
+    }
     pub fn new(
         issuer: SystemPrincipalId,
         sink: AccountId,

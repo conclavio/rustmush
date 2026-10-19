@@ -751,6 +751,7 @@ pub struct StateFamilyRegistryBuilder {
     house_purchase: Option<terminal_capacity::HouseProtocol>,
     charter_pending: Option<terminal_capacity::CharterPendingProtocol>,
     mind_renewal: Option<terminal_capacity::RenewalProtocol>,
+    house_mind_renewal: Option<terminal_capacity::HouseRenewalProtocol>,
     ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
     core_integration: Option<terminal_capacity::CoreIntegrationProtocol>,
 }
@@ -1106,6 +1107,27 @@ impl StateFamilyRegistryBuilder {
         Ok(())
     }
 
+    pub(crate) fn house_mind_renewal_capacity(
+        &mut self,
+        owner: &OwnerId,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 5],
+    ) -> Result<(), ActionStateError> {
+        if self.house_mind_renewal.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate renewal protocol",
+            ));
+        }
+        self.house_mind_renewal = Some(terminal_capacity::HouseRenewalProtocol::new(
+            owner,
+            manifest,
+            participants,
+            actions,
+        )?);
+        Ok(())
+    }
+
     pub(crate) fn mind_renewal_capacity_with_service(
         &mut self,
         owner: &OwnerId,
@@ -1120,6 +1142,29 @@ impl StateFamilyRegistryBuilder {
             ));
         }
         self.mind_renewal = Some(terminal_capacity::RenewalProtocol::with_service(
+            owner,
+            manifest,
+            participants,
+            actions,
+            service_close,
+        )?);
+        Ok(())
+    }
+
+    pub(crate) fn house_mind_renewal_capacity_with_service(
+        &mut self,
+        owner: &OwnerId,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 5],
+        service_close: crate::DefinitionRef,
+    ) -> Result<(), ActionStateError> {
+        if self.house_mind_renewal.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate renewal protocol",
+            ));
+        }
+        self.house_mind_renewal = Some(terminal_capacity::HouseRenewalProtocol::with_service(
             owner,
             manifest,
             participants,
@@ -1171,6 +1216,7 @@ impl StateFamilyRegistryBuilder {
             self.core_integration.as_ref(),
             self.house_purchase.as_ref(),
             self.charter_pending.as_ref(),
+            self.house_mind_renewal.as_ref(),
         )?;
         let registry = StateFamilyRegistry {
             entries: self.entries,
@@ -1180,6 +1226,7 @@ impl StateFamilyRegistryBuilder {
             original_purchase: self.original_purchase,
             entitlement_purchase: self.entitlement_purchase,
             mind_renewal: self.mind_renewal,
+            house_mind_renewal: self.house_mind_renewal,
             ic_mind_claim: self.ic_mind_claim,
             core_integration: self.core_integration,
             house_purchase: self.house_purchase,
@@ -1217,6 +1264,11 @@ impl StateFamilyRegistryBuilder {
                 .validate_families(&registry)
                 .map_err(|e| StateFamilyRegistryError::MindRenewal(e.to_string()))?;
         }
+        if let Some(protocol) = &registry.house_mind_renewal {
+            protocol
+                .validate_families(&registry)
+                .map_err(|e| StateFamilyRegistryError::HouseMindRenewal(e.to_string()))?;
+        }
         if let Some(protocol) = &registry.ic_mind_claim {
             protocol
                 .validate_families(&registry)
@@ -1244,6 +1296,7 @@ pub struct StateFamilyRegistry {
     house_purchase: Option<terminal_capacity::HouseProtocol>,
     charter_pending: Option<terminal_capacity::CharterPendingProtocol>,
     mind_renewal: Option<terminal_capacity::RenewalProtocol>,
+    house_mind_renewal: Option<terminal_capacity::HouseRenewalProtocol>,
     ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
     core_integration: Option<terminal_capacity::CoreIntegrationProtocol>,
     fingerprint: DefinitionDigest,
@@ -1282,6 +1335,9 @@ impl StateFamilyRegistry {
             protocol.validate_composition(definitions, providers, participants)?;
         }
         if let Some(protocol) = &self.mind_renewal {
+            protocol.validate_composition(definitions, providers, participants)?;
+        }
+        if let Some(protocol) = &self.house_mind_renewal {
             protocol.validate_composition(definitions, providers, participants)?;
         }
         if let Some(protocol) = &self.core_integration {
@@ -1401,6 +1457,7 @@ fn state_family_fingerprint<'a>(
     core_integration: Option<&terminal_capacity::CoreIntegrationProtocol>,
     house_purchase: Option<&terminal_capacity::HouseProtocol>,
     charter_pending: Option<&terminal_capacity::CharterPendingProtocol>,
+    house_mind_renewal: Option<&terminal_capacity::HouseRenewalProtocol>,
 ) -> Result<DefinitionDigest, CanonicalEncodingError> {
     let mut value = serde_json::Map::from_iter([
         (
@@ -1496,6 +1553,16 @@ fn state_family_fingerprint<'a>(
     } else {
         domain
     };
+    let domain = if let Some(protocol) = house_mind_renewal {
+        value.insert("house_mind_renewal".to_owned(), json!(protocol));
+        if protocol.has_service() {
+            "state_family_registry.v13"
+        } else {
+            "state_family_registry.v12"
+        }
+    } else {
+        domain
+    };
     DefinitionDigest::for_canonical_value(domain, &Value::Object(value))
 }
 
@@ -1504,6 +1571,8 @@ fn state_family_fingerprint<'a>(
 pub enum StateFamilyRegistryError {
     #[error("Pending charter capacity composition: {0}")]
     CharterPending(String),
+    #[error("House renewal capacity composition: {0}")]
+    HouseMindRenewal(String),
     #[error("House purchase capacity composition: {0}")]
     HousePurchase(String),
     #[error("Core integration capacity composition: {0}")]
@@ -2764,6 +2833,25 @@ impl ActionTxn<'_> {
                 ActionStateError::TerminalCapacity("renewal transaction base differs")
             })?;
             terminal_capacity::renewal_change(self, commit, operation)
+        })();
+        if let Err(error) = &result {
+            self.poison(error);
+        }
+        result
+    }
+
+    pub(crate) fn house_mind_renewal_completion(
+        &mut self,
+        base: &ActionReadBase,
+        provider: &ProviderRegistrationOrdinal,
+        commit: crate::CommitToken,
+        operation: Option<crate::CommitToken>,
+    ) -> Result<(), ActionStateError> {
+        let result = (|| {
+            self.read_preimage(base, provider).map_err(|_| {
+                ActionStateError::TerminalCapacity("renewal transaction base differs")
+            })?;
+            terminal_capacity::house_renewal_change(self, commit, operation)
         })();
         if let Err(error) = &result {
             self.poison(error);

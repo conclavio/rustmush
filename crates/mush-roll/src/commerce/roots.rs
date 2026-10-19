@@ -38,6 +38,9 @@ pub(crate) enum RootAnchor {
     RenewalOperation(CommitToken),
     DraftRetirement(CommitToken, mush_core::DefinitionDigest),
     AuthorWithdrawal(CommitToken, mush_core::DefinitionDigest),
+    CharterPendingOffer(CommitToken, mush_core::DefinitionDigest),
+    CharterPendingFunding(CommitToken, mush_core::DefinitionDigest),
+    CharterPendingTerminal(CommitToken, mush_core::DefinitionDigest),
     CharterTransferOffer(CommitToken, mush_core::DefinitionDigest),
     CharterTransfer(
         super::CharterId,
@@ -93,6 +96,15 @@ impl RootAnchor {
             }
             Self::RegistryRevocation(token, digest) => {
                 format!("v1/registry_revocation/{token}/{digest}")
+            }
+            Self::CharterPendingOffer(token, digest) => {
+                format!("v1/charter_pending_offer/{token}/{digest}")
+            }
+            Self::CharterPendingFunding(token, digest) => {
+                format!("v1/charter_pending_funding/{token}/{digest}")
+            }
+            Self::CharterPendingTerminal(token, digest) => {
+                format!("v1/charter_pending_terminal/{token}/{digest}")
             }
             Self::CharterTransferOffer(token, digest) => {
                 format!("v1/charter_transfer_offer/{token}/{digest}")
@@ -199,6 +211,27 @@ impl RootAnchor {
                 .map_err(|_| PublicationError::Invalid)?,
             ),
             "owner_qualification" => Self::OwnerQualification(
+                CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
+                mush_core::DefinitionDigest::from_hex(
+                    parts.next().ok_or(PublicationError::Invalid)?,
+                )
+                .map_err(|_| PublicationError::Invalid)?,
+            ),
+            "charter_pending_offer" => Self::CharterPendingOffer(
+                CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
+                mush_core::DefinitionDigest::from_hex(
+                    parts.next().ok_or(PublicationError::Invalid)?,
+                )
+                .map_err(|_| PublicationError::Invalid)?,
+            ),
+            "charter_pending_funding" => Self::CharterPendingFunding(
+                CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
+                mush_core::DefinitionDigest::from_hex(
+                    parts.next().ok_or(PublicationError::Invalid)?,
+                )
+                .map_err(|_| PublicationError::Invalid)?,
+            ),
+            "charter_pending_terminal" => Self::CharterPendingTerminal(
                 CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
                 mush_core::DefinitionDigest::from_hex(
                     parts.next().ok_or(PublicationError::Invalid)?,

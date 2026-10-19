@@ -38,6 +38,7 @@ pub(crate) enum RootRequest {
     Retirement(super::authored_retirement::Retirement),
     Withdrawal(super::withdrawal::Withdrawal),
     CharterTransfer(super::charter_transfer::TransferRoots),
+    CharterPending(super::charter_pending::publication::PendingRoots),
     RegistryRecall(super::registry_recall::Recall),
     MeasuredRecall(super::rating::reconformance::recall::publication::Recall),
     RegistryRevocation(super::registry_revocation::Revocation),
@@ -62,6 +63,7 @@ impl RootRequest {
             Self::Retirement(request) => request.commit(),
             Self::Withdrawal(request) => request.commit(),
             Self::CharterTransfer(request) => request.commit(),
+            Self::CharterPending(request) => request.commit(),
             Self::RegistryRecall(request) => request.commit(),
             Self::MeasuredRecall(request) => request.commit(),
             Self::RegistryRevocation(request) => request.commit(),
@@ -112,6 +114,7 @@ pub(crate) struct RootPatch {
     retirement: Option<super::authored_retirement::RetirementFence>,
     withdrawal: Option<super::withdrawal::WithdrawalFence>,
     charter_transfer: Option<super::charter_transfer::TransferFence>,
+    charter_pending: Option<super::charter_pending::publication::PendingFence>,
     registry_recall: Option<super::registry_recall::RecallFence>,
     measured_recall: Option<super::rating::reconformance::recall::publication::RecallFence>,
     registry_revocation: Option<super::registry_revocation::RevocationFence>,
@@ -284,6 +287,25 @@ impl OwnerParticipant for RootParticipant {
             }
             _ => None,
         };
+        let charter_pending = match &request {
+            RootRequest::RegistryRevocation(request) => request
+                .pending()
+                .map(|p| {
+                    p.fence()
+                        .check(context)
+                        .map_err(|_| ParticipantError::Authority)?;
+                    Ok(p.fence().clone())
+                })
+                .transpose()?,
+            RootRequest::CharterPending(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
         let charter_transfer = match &request {
             RootRequest::CharterTransfer(request) => {
                 request
@@ -404,6 +426,12 @@ impl OwnerParticipant for RootParticipant {
                     .map_err(refusal)?,
                 None,
             ),
+            RootRequest::CharterPending(request) => (
+                state
+                    .prepare_charter_pending_roots(request)
+                    .map_err(refusal)?,
+                None,
+            ),
             RootRequest::CharterTransfer(request) => (
                 state
                     .prepare_charter_transfer_root(request)
@@ -476,6 +504,7 @@ impl OwnerParticipant for RootParticipant {
                 retirement,
                 withdrawal,
                 charter_transfer,
+                charter_pending,
                 registry_recall,
                 measured_recall,
                 registry_revocation,
@@ -568,6 +597,11 @@ impl OwnerParticipant for RootParticipant {
                 .map_err(|_| ParticipantError::Authority)?;
         }
         if let Some(fence) = &patch.registry_revocation {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
+        if let Some(fence) = &patch.charter_pending {
             fence
                 .check(context)
                 .map_err(|_| ParticipantError::Authority)?;
@@ -695,6 +729,9 @@ impl OwnerParticipant for RootParticipant {
                     | RootAnchor::PaidOperation(_)
                     | RootAnchor::RenewalOperation(_)
                     | RootAnchor::DraftRetirement(_, _)
+                    | RootAnchor::CharterPendingOffer(_, _)
+                    | RootAnchor::CharterPendingFunding(_, _)
+                    | RootAnchor::CharterPendingTerminal(_, _)
                     | RootAnchor::CharterTransferOffer(_, _)
                     | RootAnchor::CharterTransfer(_, _, _, _)
                     | RootAnchor::AuthorWithdrawal(_, _)

@@ -135,7 +135,7 @@ impl Claim {
     fn parse(raw: Value, operation: CommitToken) -> Result<Self, ActionStateError> {
         strict(&raw, &["format", "open", "closed"])?;
         let format = number(&raw, "format")?;
-        if !matches!(format, 1 | 2) {
+        if !matches!(format, 1 | 2 | 3) {
             return Err(refused("IC claim format"));
         }
         let open = field(&raw, "open")?.clone();
@@ -161,12 +161,19 @@ impl Claim {
             "custody_digest",
             "exclusion_digest",
         ];
-        if format == 2 {
-            fields.push("charter_ownership");
-            let ownership = field(&open, "charter_ownership")?;
+        // Each new capture has its own exact wire form. Old format-one bytes
+        // remain unchanged; a paid holder chain never becomes charter title.
+        if format == 2 || format == 3 {
+            let name = if format == 2 {
+                "charter_ownership"
+            } else {
+                "paid_ownership"
+            };
+            fields.push(name);
+            let ownership = field(&open, name)?;
             strict(ownership, &["generation", "operation", "digest"])?;
             if !(2..=65_537).contains(&number(ownership, "generation")?) {
-                return Err(refused("IC charter ownership generation"));
+                return Err(refused("IC captured ownership generation"));
             }
             parsed::<CommitToken>(field(ownership, "operation")?)?;
             parsed::<DefinitionDigest>(field(ownership, "digest")?)?;
@@ -229,9 +236,14 @@ impl Claim {
         }
         let capacity = field(&open, "capacity")?;
         match field(capacity, "kind")?.as_str() {
-            Some("owned_dispatch") => strict(capacity, &["kind"])?,
+            Some("owned_dispatch") => {
+                if format == 3 {
+                    return Err(refused("IC owned claim cannot carry paid ownership"));
+                }
+                strict(capacity, &["kind"])?;
+            }
             Some("paid_seats") => {
-                if format != 1 {
+                if format == 2 {
                     return Err(refused("IC paid claim cannot carry charter ownership"));
                 }
                 strict(capacity, &["kind", "seats"])?;

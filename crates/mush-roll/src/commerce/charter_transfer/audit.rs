@@ -12,6 +12,7 @@ pub(crate) fn audit(
     ctx: &ModuleCtx<'_>,
     f: &CommerceFamilies,
     enabled: bool,
+    pending_enabled: bool,
 ) -> Result<(), PublicationError> {
     let e = ctx
         .w
@@ -24,6 +25,7 @@ pub(crate) fn audit(
     let mut offers = BTreeSet::new();
     let mut chains = BTreeMap::<CharterId, BTreeMap<u64, mush_core::CommitToken>>::new();
     let mut commits = BTreeSet::new();
+    let mut immediate_commits = BTreeSet::new();
     scan(ctx, &f.charter_transfer_offers, |offer| {
         if !enabled || offers.len() >= crate::MAX_RECORDS || !offers.insert(offer.operation) {
             return Err(PublicationError::Mismatch);
@@ -43,6 +45,13 @@ pub(crate) fn audit(
         {
             return Err(PublicationError::Mismatch);
         }
+        match &row.economic {
+            economic::TransferEconomic::Immediate(_) => {
+                immediate_commits.insert(row.operation);
+            }
+            economic::TransferEconomic::Pending(_) if pending_enabled => {}
+            _ => return Err(PublicationError::Mismatch),
+        }
         Ok(())
     })?;
     for (charter, chain) in &chains {
@@ -58,27 +67,45 @@ pub(crate) fn audit(
                 &f.charter_transfers,
                 CharterTransfer::key_for(*charter, *generation),
             )?;
-            if row.operation != *operation || !offers.contains(&row.offer) {
+            if row.operation != *operation {
                 return Err(PublicationError::Mismatch);
             }
-            let offer = read(ctx, &f.charter_transfer_offers, row.offer.to_hex())?;
-            offer.matches_birth(birth)?;
-            row.matches_offer(offer)?;
+            let required = match &row.economic {
+                economic::TransferEconomic::Immediate(_) => {
+                    if !offers.contains(&row.offer) {
+                        return Err(PublicationError::Mismatch);
+                    }
+                    let offer = read(ctx, &f.charter_transfer_offers, row.offer.to_hex())?;
+                    offer.matches_birth(birth)?;
+                    history::transfer_root(row, offer)?
+                }
+                economic::TransferEconomic::Pending(native) => {
+                    let offer = read(ctx, &f.charter_pending_offers, row.offer.to_hex())?;
+                    let pending = read(
+                        ctx,
+                        &f.charter_pending,
+                        native.pending.consent().operation.to_hex(),
+                    )?;
+                    offer.matches_birth(birth)?;
+                    super::super::charter_pending::history::transfer_root(row, offer, pending)?
+                }
+            };
+            let facts = row.economic.facts()?;
             if row.predecessor != previous
-                || row.economic.seller != holder
-                || row.economic.journal_seq <= seq
+                || facts.seller != holder
+                || facts.journal_seq <= seq
                 || !used_offers.insert(row.offer)
             {
                 return Err(PublicationError::Mismatch);
             }
-            native.verify(&row.economic).map_err(bad)?;
+            row.economic.verify(e)?;
             previous = row.ownership()?;
-            holder = row.economic.buyer;
-            seq = row.economic.journal_seq;
+            holder = facts.buyer;
+            seq = facts.journal_seq;
             ctx.w
                 .module_state::<crate::RollStore>()
                 .ok_or(PublicationError::Unavailable)?
-                .check_required_root(&history::transfer_root(row, offer)?)
+                .check_required_root(&required)
                 .map_err(bad)?;
         }
         let head = read(ctx, &f.charter_ownership, charter.key())?;
@@ -131,7 +158,7 @@ pub(crate) fn audit(
             if predecessor.operation != *operation {
                 return Err(PublicationError::Mismatch);
             }
-            if offer.offered_at_utc < predecessor.economic.posted_at_utc {
+            if offer.offered_at_utc < predecessor.economic.facts()?.posted_at_utc {
                 return Err(PublicationError::Mismatch);
             }
         }
@@ -142,11 +169,11 @@ pub(crate) fn audit(
             .map_err(bad)?;
     }
     let actual = native.receipts().map_err(bad)?;
-    if actual.len() != commits.len() {
+    if actual.len() != immediate_commits.len() {
         return Err(PublicationError::Mismatch);
     }
     for receipt in actual {
-        if !commits.remove(&receipt.commit) {
+        if !immediate_commits.remove(&receipt.commit) {
             return Err(PublicationError::Mismatch);
         }
     }
@@ -172,10 +199,23 @@ pub(crate) fn root(
             if row.operation != *commit {
                 return Err(PublicationError::Mismatch);
             }
-            history::transfer_root(
-                row,
-                read(ctx, &f.charter_transfer_offers, row.offer.to_hex())?,
-            )
+            match &row.economic {
+                economic::TransferEconomic::Immediate(_) => history::transfer_root(
+                    row,
+                    read(ctx, &f.charter_transfer_offers, row.offer.to_hex())?,
+                ),
+                economic::TransferEconomic::Pending(native) => {
+                    super::super::charter_pending::history::transfer_root(
+                        row,
+                        read(ctx, &f.charter_pending_offers, row.offer.to_hex())?,
+                        read(
+                            ctx,
+                            &f.charter_pending,
+                            native.pending.consent().operation.to_hex(),
+                        )?,
+                    )
+                }
+            }
         }
         _ => Err(PublicationError::Mismatch),
     }

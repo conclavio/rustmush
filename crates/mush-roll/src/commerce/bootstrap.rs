@@ -78,6 +78,14 @@ fn initialization_generation(world: &World) -> Result<u64, PublicationError> {
     {
         return Err(PublicationError::Mismatch);
     }
+    if economy
+        .pending_charter_histories()
+        .map_err(record_error)?
+        .next()
+        .is_some()
+    {
+        return Err(PublicationError::Mismatch);
+    }
     let god = world.get(GOD).ok_or(PublicationError::Unavailable)?;
     if god.kind != mush_core::ObjKind::Player || god.flags.contains(mush_core::Flags::GOING) {
         return Err(PublicationError::Mismatch);
@@ -97,6 +105,9 @@ fn empty_in_txn(
             }
         };
     }
+    empty!(&f.charter_pending_offers);
+    empty!(&f.charter_pending);
+    empty!(&f.charter_pending_heads);
     empty!(&f.charter_transfer_offers);
     empty!(&f.charter_transfers);
     empty!(&f.charter_ownership);
@@ -165,6 +176,9 @@ fn validate_setup_boot(
             }
         };
     }
+    empty!(&f.charter_pending_offers);
+    empty!(&f.charter_pending);
+    empty!(&f.charter_pending_heads);
     empty!(&f.charter_transfer_offers);
     empty!(&f.charter_transfers);
     empty!(&f.charter_ownership);

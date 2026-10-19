@@ -40,6 +40,11 @@ pub struct MindCommerce {
     filing_action: DefinitionRef,
     compatible_update_action: Option<DefinitionRef>,
     charter_transfer_action: Option<DefinitionRef>,
+    registry_revocation_action: Option<DefinitionRef>,
+    pending_charters: Option<(
+        mush_roll::commerce::PendingCharterTransferConfig,
+        mush_economy::managed_charter_transfer::CharterPendingConfig,
+    )>,
     house_filing_action: Option<DefinitionRef>,
     house_purchases: Option<mush_market::mind_house::HouseConfig>,
     house_purchase_actions: Option<[DefinitionRef; 3]>,
@@ -85,6 +90,8 @@ impl MindCommerce {
             filing_action,
             compatible_update_action: None,
             charter_transfer_action: None,
+            registry_revocation_action: None,
+            pending_charters: None,
             house_filing_action: None,
             house_purchases: None,
             house_purchase_actions: None,
@@ -161,6 +168,51 @@ impl MindCommerce {
         let [_, accept] = config.actions()?;
         self.roll = self.roll.with_charter_transfers(config)?;
         self.charter_transfer_action = Some(accept);
+        Ok(self)
+    }
+
+    /// Explicit named-buyer escrow and trusted terminal processing. Existing
+    /// claims retain their original warrants; this never accepts or debits for a buyer.
+    pub fn with_pending_charter_transfers(
+        mut self,
+        config: mush_roll::commerce::PendingCharterTransferConfig,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active
+            || self.pending_charters.is_some()
+            || self.charter_transfer_action.is_none()
+        {
+            return Err(ModError::msg(
+                "pending charters require one Active charter composition",
+            ));
+        }
+        let economy = DefinitionRegistryBuilder::new()
+            .register(
+                OwnerId::new("economy").map_err(error)?,
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("owner_participant").map_err(error)?,
+                    DefinitionId::new("initial_filing").map_err(error)?,
+                    1,
+                    self.filing.definition_payload(),
+                )
+                .map_err(error)?,
+            )
+            .map_err(error)?;
+        let retention = DefinitionRegistryBuilder::new()
+            .register(
+                OwnerId::new("roll").map_err(error)?,
+                commercial_roots_descriptor()?,
+            )
+            .map_err(error)?;
+        let participants = PurchaseParticipants::new(economy, retention).map_err(error)?;
+        let native = config.economy_config(
+            self.filing.issuer().clone(),
+            self.filing.catalog().clone(),
+            self.registry_revocation_action.clone(),
+        )?;
+        self.roll = self
+            .roll
+            .with_pending_charter_transfers(config.clone(), participants)?;
+        self.pending_charters = Some((config, native));
         Ok(self)
     }
 
@@ -317,6 +369,15 @@ impl MindCommerce {
         mut self,
         policy: mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
     ) -> Result<Self, ModError> {
+        let action = policy.action()?;
+        if let Some((config, native)) = &mut self.pending_charters {
+            *native = config.economy_config(
+                self.filing.issuer().clone(),
+                self.filing.catalog().clone(),
+                Some(action.clone()),
+            )?;
+        }
+        self.registry_revocation_action = Some(action);
         self.roll = self.roll.with_registry_revocation(policy)?;
         Ok(self)
     }
@@ -465,6 +526,10 @@ impl MindCommerce {
         let module = module.with_initial_filing(self.filing.clone(), self.filing_action.clone());
         let module = match &self.charter_transfer_action {
             Some(action) => module.with_mind_charter_transfers(action.clone()),
+            None => module,
+        };
+        let module = match &self.pending_charters {
+            Some((_, config)) => module.with_mind_charter_pending(config.clone()),
             None => module,
         };
         let module = match &self.compatible_update_action {

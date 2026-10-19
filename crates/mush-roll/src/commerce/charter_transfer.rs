@@ -1,5 +1,6 @@
 //! Closed personal charter title consideration. No term or source mutation.
 pub(crate) mod audit;
+pub(crate) mod economic;
 pub(crate) mod history;
 pub(crate) mod protocol;
 mod provider;
@@ -28,7 +29,7 @@ impl Readiness {
             .set(defs.clone())
             .map_err(|_| ModError::msg("charter transfer readiness already captured"))
     }
-    fn check(&self) -> Result<(), PublicationError> {
+    pub(crate) fn check(&self) -> Result<(), PublicationError> {
         let defs = self.0.get().ok_or(PublicationError::Unavailable)?;
         for owner in ["roll", "economy"] {
             defs.require_owner_ready(&OwnerId::new(owner).map_err(bad)?)

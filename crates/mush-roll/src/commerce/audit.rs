@@ -248,6 +248,45 @@ pub(crate) fn audit_and_open_house_configured(
     houses: bool,
     registry: Option<&dyn super::rating::registration::Installer>,
 ) -> Result<(), PublicationError> {
+    audit_and_open_pending_configured(
+        ctx,
+        families,
+        ratings,
+        shells,
+        paid,
+        forks,
+        dependent_owners,
+        entitlements,
+        renewals,
+        update,
+        owner_qualification,
+        owner_attestations,
+        ic,
+        houses,
+        registry,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn audit_and_open_pending_configured(
+    ctx: &mut ModuleCtx<'_>,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    shells: &ShellReservations,
+    paid: bool,
+    forks: bool,
+    dependent_owners: bool,
+    entitlements: bool,
+    renewals: bool,
+    update: Option<&mush_core::DefinitionRef>,
+    owner_qualification: bool,
+    owner_attestations: bool,
+    ic: Option<&dyn super::ic_claims::registration::Installer>,
+    houses: bool,
+    registry: Option<&dyn super::rating::registration::Installer>,
+    pending_charters: bool,
+) -> Result<(), PublicationError> {
     ctx.state_mut::<RollStore>()
         .ok_or(PublicationError::Unavailable)?
         .close_commerce_for_audit()
@@ -300,6 +339,12 @@ pub(crate) fn audit_and_open_house_configured(
                 None
             }
         };
+        super::charter_pending::audit::audit(
+            ctx,
+            families,
+            pending_charters,
+            ic_inventory.as_ref(),
+        )?;
         (stamp, ic_inventory)
     };
     ctx.state_mut::<RollStore>()
@@ -693,6 +738,15 @@ fn audit(
             }
             RootAnchor::CharterTransferOffer(_, _) | RootAnchor::CharterTransfer(_, _, _, _) => {
                 let actual = super::charter_transfer::audit::root(ctx, f, &anchor)?;
+                if actual.anchor != anchor {
+                    return Err(PublicationError::Mismatch);
+                }
+                actual.identity
+            }
+            RootAnchor::CharterPendingOffer(..)
+            | RootAnchor::CharterPendingFunding(..)
+            | RootAnchor::CharterPendingTerminal(..) => {
+                let actual = super::charter_pending::audit::root(ctx, f, &anchor)?;
                 if actual.anchor != anchor {
                     return Err(PublicationError::Mismatch);
                 }

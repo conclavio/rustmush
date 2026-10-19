@@ -1,8 +1,8 @@
 //! Exact title consideration and historical ownership; never source authority.
+use super::economic::TransferEconomic;
 use crate::commerce::records::{InitialFilingOperation, PublicationError, Record};
 use crate::commerce::{CharterId, FiledRevisionId, LineId, RevisionIdentity};
 use mush_core::{ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId};
-use mush_economy::registry_filing::charter_transfer::CharterTransferAuditSubject;
 use mush_economy::{AccountId, Amount, InstrumentId};
 use serde::{Deserialize, Serialize};
 
@@ -214,7 +214,7 @@ pub(crate) struct CharterTransfer {
     pub(crate) offer: CommitToken,
     pub(crate) offer_digest: DefinitionDigest,
     pub(crate) accepted_at_ic: ClockStamp,
-    pub(crate) economic: CharterTransferAuditSubject,
+    pub(crate) economic: TransferEconomic,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -229,7 +229,7 @@ struct TransferWire {
     offer: CommitToken,
     offer_digest: DefinitionDigest,
     accepted_at_ic: ClockStamp,
-    economic: CharterTransferAuditSubject,
+    economic: TransferEconomic,
 }
 impl TryFrom<TransferWire> for CharterTransfer {
     type Error = PublicationError;
@@ -253,22 +253,30 @@ impl TryFrom<TransferWire> for CharterTransfer {
 }
 impl Record for CharterTransfer {
     const FAMILY: &'static str = "roll_mind_charter_transfers";
-    const MAX_BYTES: usize = 24576;
+    const MAX_BYTES: usize = 40960;
     fn key(&self) -> String {
         Self::key_for(self.charter, self.generation)
     }
     fn validate(&self) -> Result<(), PublicationError> {
         self.predecessor.validate()?;
-        self.economic.validate().map_err(bad)?;
+        self.economic.validate()?;
+        let economic = self.economic.facts()?;
         crate::commerce::WorldIcSeconds::from_stamp(&self.accepted_at_ic).map_err(bad)?;
-        if self.format != 1
-            || self.action != super::protocol::accept_action().map_err(bad)?
+        if self.format != self.economic.format()
+            || self.action
+                != match self.format {
+                    1 => super::protocol::accept_action().map_err(bad)?,
+                    2 => {
+                        crate::commerce::charter_pending::protocol::settle_action().map_err(bad)?
+                    }
+                    _ => return Err(PublicationError::Invalid),
+                }
             || !(2..=MAX_TRANSFERS + 1).contains(&self.generation)
             || self.predecessor.generation.checked_add(1) != Some(self.generation)
-            || self.economic.commit != self.operation
-            || self.economic.charter != self.charter.object()
-            || self.economic.offer != self.offer
-            || self.economic.offer_digest != self.offer_digest
+            || economic.operation != self.operation
+            || economic.charter != self.charter.object()
+            || economic.offer != self.offer
+            || economic.offer_digest != self.offer_digest
             || self.operation == self.birth
             || self.operation == self.predecessor.operation
             || self.offer == self.birth
@@ -277,7 +285,33 @@ impl Record for CharterTransfer {
         {
             return Err(PublicationError::Invalid);
         }
-        bounded(self, Self::MAX_BYTES)
+        if let TransferEconomic::Pending(native) = &self.economic {
+            let c = native.pending.consent();
+            let terminal = native
+                .pending
+                .terminal()
+                .ok_or(PublicationError::Mismatch)?;
+            if self.birth != c.terms.birth
+                || self.predecessor.generation != c.terms.ownership.generation
+                || self.predecessor.operation != c.terms.ownership.operation
+                || self.predecessor.digest != c.terms.ownership.digest
+                || self.accepted_at_ic != c.accepted_at_ic
+                || self.action != terminal.decision().action
+            {
+                return Err(PublicationError::Mismatch);
+            }
+        }
+        if self.format == 2 {
+            crate::commerce::charter_pending::records::envelope(self)?;
+        }
+        bounded(
+            self,
+            if self.format == 1 {
+                24576
+            } else {
+                Self::MAX_BYTES
+            },
+        )
     }
 }
 impl CharterTransfer {
@@ -290,7 +324,11 @@ impl CharterTransfer {
             generation: self.generation,
             operation: self.operation,
             digest: DefinitionDigest::for_canonical_value(
-                "roll.charter_ownership.transfer.v1",
+                if self.format == 1 {
+                    "roll.charter_ownership.transfer.v1"
+                } else {
+                    "roll.charter_ownership.transfer.v2"
+                },
                 &serde_json::to_value(self).map_err(bad)?,
             )
             .map_err(bad)?,
@@ -299,21 +337,54 @@ impl CharterTransfer {
     pub(crate) fn matches_offer(&self, offer: &CharterOffer) -> Result<(), PublicationError> {
         self.validate()?;
         offer.validate()?;
-        if self.offer != offer.operation
+        let economic = self.economic.facts()?;
+        if self.format != 1
+            || self.offer != offer.operation
             || self.offer_digest != offer.digest()?
             || self.charter != offer.charter
             || self.birth != offer.birth
             || self.predecessor != offer.ownership
-            || self.economic.seller != offer.seller
-            || self.economic.buyer != offer.buyer
-            || self.economic.seller_account != offer.seller_account
-            || self.economic.instrument != offer.instrument
-            || self.economic.price != offer.price
-            || self.economic.title_revision != offer.title_revision
-            || self.economic.posted_at_utc < offer.offered_at_utc
-            || self.economic.posted_at_utc >= offer.expires_at_utc
+            || economic.seller != offer.seller
+            || economic.buyer != offer.buyer
+            || economic.seller_account != offer.seller_account
+            || economic.instrument != &offer.instrument
+            || economic.price != offer.price
+            || economic.title_revision != offer.title_revision
+            || economic.posted_at_utc < offer.offered_at_utc
+            || economic.posted_at_utc >= offer.expires_at_utc
             || self.accepted_at_ic.clock != offer.offered_at_ic.clock
             || self.accepted_at_ic.at < offer.offered_at_ic.at
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        Ok(())
+    }
+    pub(crate) fn matches_pending(
+        &self,
+        offer: &crate::commerce::charter_pending::records::PendingOffer,
+        pending: &crate::commerce::charter_pending::records::PendingRecord,
+    ) -> Result<(), PublicationError> {
+        use crate::commerce::charter_pending::records::PendingState;
+        self.validate()?;
+        pending.matches_offer(offer)?;
+        let TransferEconomic::Pending(economic) = &self.economic else {
+            return Err(PublicationError::Mismatch);
+        };
+        let terminal = economic
+            .pending
+            .terminal()
+            .ok_or(PublicationError::Mismatch)?;
+        if self.format != 2
+            || economic.pending != pending.economic
+            || self.offer != offer.operation
+            || self.offer_digest != offer.digest()?
+            || self.charter != offer.charter
+            || self.birth != offer.birth
+            || self.predecessor != offer.ownership
+            || self.accepted_at_ic != pending.accepted_at_ic
+            || self.action != terminal.decision().action
+            || !matches!(&pending.state, PendingState::Settled { terminal, transfer }
+                if *terminal == self.operation && transfer == &self.ownership()?)
         {
             return Err(PublicationError::Mismatch);
         }

@@ -13,6 +13,7 @@ use mush_roll::commerce::house_purchase::{
     HouseAllocationV1, HouseProtocol, writer::HousePurchaseWriter,
 };
 use mush_roll::commerce::{LicenceId, purchase::PurchasePhase};
+use std::collections::BTreeSet;
 
 const FIRST: u128 = 19_000_000;
 type HouseShared = Arc<Mutex<Option<HouseConfig>>>;

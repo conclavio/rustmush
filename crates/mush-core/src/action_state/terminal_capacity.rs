@@ -8,6 +8,7 @@ mod charter_pending;
 mod core_integration;
 mod entitlement;
 mod house;
+mod house_renewal;
 mod ic_claim;
 mod paid;
 mod registry;
@@ -17,6 +18,9 @@ pub(super) use charter_pending::{Protocol as CharterPendingProtocol, charter_pen
 pub(super) use core_integration::{Protocol as CoreIntegrationProtocol, core_integration_change};
 pub(super) use entitlement::{Protocol as EntitlementProtocol, entitlement_change};
 pub(super) use house::{Protocol as HouseProtocol, house_change};
+pub(super) use house_renewal::{
+    Protocol as HouseRenewalProtocol, renewal_change as house_renewal_change,
+};
 pub(super) use ic_claim::{Protocol as IcClaimProtocol, ic_claim_change};
 pub(super) use paid::{Protocol as PurchaseProtocol, purchase_change};
 pub(super) use registry::registry_change;
@@ -221,6 +225,12 @@ impl Verifiers {
                 verify: renewal::verify,
             });
         }
+        if let Some(protocol) = &registry.house_mind_renewal {
+            rows.push(Verifier {
+                effect: protocol.admission_action().clone(),
+                verify: house_renewal::verify,
+            });
+        }
         if let Some(protocol) = &registry.ic_mind_claim {
             rows.push(Verifier {
                 effect: protocol.admission_action().clone(),
@@ -277,6 +287,10 @@ impl Verifiers {
                     })
                     || registry.core_integration.as_ref().is_some_and(|protocol| { v.effect == *protocol.admission_action() && protocol.recognizes_historical(&reservation.effect) })
                     || registry.mind_renewal.as_ref().is_some_and(|protocol| {
+                        v.effect == *protocol.admission_action()
+                            && protocol.recognizes_historical(&reservation.effect)
+                    })
+                    || registry.house_mind_renewal.as_ref().is_some_and(|protocol| {
                         v.effect == *protocol.admission_action()
                             && protocol.recognizes_historical(&reservation.effect)
                     })
@@ -487,6 +501,7 @@ pub(super) fn hydrate(
     house::audit_boot(&view, &records)?;
     charter_pending::audit_boot(&view, &records)?;
     renewal::audit_boot(&view, &records)?;
+    house_renewal::audit_boot(&view, &records)?;
     ic_claim::audit_boot(&view, &records)?;
     core_integration::audit_boot(&view, &records)?;
     let state = CapacityState::rebuild(registry, records, &view)?;
@@ -550,6 +565,7 @@ pub(super) fn prepare(
     house::validate_changes(store, mutations, &changes, identity)?;
     charter_pending::validate_changes(store, mutations, &changes, identity)?;
     renewal::validate_changes(store, mutations, &changes, identity)?;
+    house_renewal::validate_changes(store, mutations, &changes, identity)?;
     ic_claim::validate_changes(store, mutations, &changes, identity)?;
     core_integration::validate_changes(store, mutations, &changes, identity)?;
     let mut replacement = None;

@@ -77,6 +77,12 @@ impl Provider {
             .map_err(invalid)?
             .cloned()
             .ok_or(PublicationError::Missing)?;
+        super::super::charter_pending::current::require_clear_in_txn(
+            txn,
+            ctx.world().map_err(invalid)?,
+            &self.families,
+            licence.charter,
+        )?;
         let old =
             history::current_in_txn(txn, ctx.world().map_err(invalid)?, &self.families, &licence)?;
         super::super::registry_revocation::current::require_in_txn(

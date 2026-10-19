@@ -723,6 +723,9 @@ pub(super) fn audit_boot(
         if house::shared_output_is_house(view, key)? {
             continue;
         }
+        if house_renewal::shared_output_is_renewal(view, key)? {
+            continue;
+        }
         if renewal::shared_output_is_renewal(view, key)? {
             continue;
         }
@@ -769,6 +772,9 @@ pub(super) fn validate_changes(
     let mut operations = BTreeSet::new();
     for key in mutations.keys().filter(|key| protected(key)) {
         if house::shared_output_is_house(&after, key)? {
+            continue;
+        }
+        if house_renewal::shared_output_is_renewal(&after, key)? {
             continue;
         }
         if renewal::shared_output_is_renewal(&after, key)?

@@ -805,3 +805,6 @@ fn house_and_historical_personal_purchases_register_without_replacing_protocols(
     );
     Ok(())
 }
+
+#[path = "pending_tests.rs"]
+mod pending;

@@ -529,6 +529,21 @@ fn reboot(f: &Fixture) -> TestResult<ActionStateStore> {
     hydrate(f, &f.disk)
 }
 
+// Acknowledged actual coordinator birth for the separate House renewal tests.
+// Business rows are inert fixture data, not native E4 receipts or paid authority.
+pub(in crate::action_state::terminal_capacity) fn renewal_birth_seed() -> TestResult<(
+    ActionStateStore,
+    BTreeMap<String, Handle>,
+    BTreeMap<(SmolStr, SmolStr), Value>,
+)> {
+    let mut f = fixture(1, 1)?;
+    let p = fund(&mut f, Mode::House, FundFault::default())?;
+    install(&mut f, p)?;
+    let p = finish(&mut f, Mode::House, true, FinishFault::None)?;
+    install(&mut f, p)?;
+    Ok((f.store, f.handles, f.disk))
+}
+
 #[test]
 fn house_reserve_exact_six_targets_then_grant_and_hydrate() -> TestResult {
     for mode in [Mode::House] {

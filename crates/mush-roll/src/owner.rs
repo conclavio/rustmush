@@ -1286,6 +1286,58 @@ impl RollStore {
             Some(_) => Err(invalid("charter transfer", "owned dispatch remains open")),
         }
     }
+    pub(crate) fn charter_pending_claims(
+        &self,
+        charter: crate::commerce::CharterId,
+    ) -> Result<crate::commerce::charter_pending::records::ClaimObservation, RollError> {
+        self.commerce_ready()?;
+        let (generation, next_transition, open_owned) = match &self.ic_claims {
+            Some(book) => (
+                book.generation(),
+                book.next_transition(),
+                book.owned_charter_now(charter)
+                    .map_err(|_| invalid("pending charter", "claim census differs"))?,
+            ),
+            // Actual final IC audit proves this absent book is disabled-empty.
+            None => (0, 1, 0),
+        };
+        Ok(
+            crate::commerce::charter_pending::records::ClaimObservation {
+                generation,
+                next_transition,
+                open_owned,
+            },
+        )
+    }
+
+    pub(crate) fn prepare_charter_pending_roots(
+        &self,
+        request: &crate::commerce::charter_pending::publication::PendingRoots,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        if request.added().is_empty() || request.added().len() > 3 || request.old().len() > 6 {
+            return Err(invalid("pending charter", "closed root dimensions"));
+        }
+        for root in request.old() {
+            self.check_required_root(root)?;
+        }
+        let mut changes = Vec::with_capacity(request.added().len());
+        let mut keys = BTreeSet::new();
+        for required in request.added() {
+            self.check_root_subject(required)?;
+            let row = ReferenceRecord {
+                format: FORMAT,
+                key: required.anchor.key(),
+                revisions: vec![required.target()],
+            };
+            if self.occupied.contains(&row.key.key()) || !keys.insert(row.key.key()) {
+                return Err(invalid("pending charter", "cause already retained"));
+            }
+            changes.push(Change::Reference(row));
+        }
+        self.prepare(changes)
+    }
+
     pub(crate) fn prepare_charter_transfer_root(
         &self,
         request: &crate::commerce::charter_transfer::TransferRoots,
@@ -1653,22 +1705,44 @@ impl RollStore {
     ) -> Result<PreparedChange, RollError> {
         self.commerce_ready()?;
         self.check_required_root(&request.filed_root())?;
-        let required = request
-            .cause_root()
-            .map_err(|_| invalid("Registry revocation retention", "invalid cause"))?;
-        self.check_root_subject(&required)?;
-        let record = ReferenceRecord {
-            format: FORMAT,
-            key: required.anchor.key(),
-            revisions: vec![required.target()],
-        };
-        if self.occupied.contains(&record.key.key()) {
-            return Err(invalid(
-                "Registry revocation retention",
-                "cause already retained",
-            ));
+        let mut added = vec![
+            request
+                .cause_root()
+                .map_err(|_| invalid("Registry revocation retention", "invalid cause"))?,
+        ];
+        if let Some(pending) = request.pending() {
+            if pending.commit() != request.commit()
+                || pending.added().len() != 1
+                || pending.old().len() != 2
+            {
+                return Err(invalid(
+                    "Registry revocation retention",
+                    "invalid compound refund",
+                ));
+            }
+            for root in pending.old() {
+                self.check_required_root(root)?;
+            }
+            added.extend_from_slice(pending.added());
         }
-        self.prepare(vec![Change::Reference(record)])
+        let mut changes = Vec::with_capacity(added.len());
+        let mut keys = BTreeSet::new();
+        for required in added {
+            self.check_root_subject(&required)?;
+            let record = ReferenceRecord {
+                format: FORMAT,
+                key: required.anchor.key(),
+                revisions: vec![required.target()],
+            };
+            if self.occupied.contains(&record.key.key()) || !keys.insert(record.key.key()) {
+                return Err(invalid(
+                    "Registry revocation retention",
+                    "cause already retained",
+                ));
+            }
+            changes.push(Change::Reference(record));
+        }
+        self.prepare(changes)
     }
 
     /// A new generation retains its exact child and selected-parent evidence

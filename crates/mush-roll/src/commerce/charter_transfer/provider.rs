@@ -122,6 +122,7 @@ impl Provider {
         {
             return Err(PublicationError::Mismatch);
         }
+        super::super::charter_pending::current::require_clear_in_txn(txn, world, &self.f, charter)?;
         let ownership = history::current_in_txn(txn, world, &self.f, &b, seller)?;
         roll.check_required_root(&RequiredRoot {
             anchor: crate::commerce::roots::RootAnchor::Filed(filed.content.id()),
@@ -228,7 +229,7 @@ impl Provider {
                     .map_err(bad)?
                     .ok_or(PublicationError::Missing)?;
                 if predecessor.ownership()? != ownership
-                    || world.now() < predecessor.economic.posted_at_utc
+                    || world.now() < predecessor.economic.facts()?.posted_at_utc
                 {
                     return Err(PublicationError::Mismatch);
                 }
@@ -347,7 +348,7 @@ impl Provider {
                 offer: offer.operation,
                 offer_digest: offer.digest()?,
                 accepted_at_ic: fence.at_ic.clone(),
-                economic: native.subject().clone(),
+                economic: native.subject().clone().into(),
             };
             row.matches_offer(&offer)?;
             (offer, ownership, fence, Some(row))

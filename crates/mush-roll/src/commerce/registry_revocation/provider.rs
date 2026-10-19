@@ -18,6 +18,10 @@ struct Provider {
     ratings: super::super::rating::RatingFamilies,
     roots: ParticipantHandle<RootParticipant>,
     readiness: Readiness,
+    pending: Option<(
+        super::super::charter_pending::Readiness,
+        ParticipantHandle<mush_economy::registry_filing::InitialFilingParticipant>,
+    )>,
     refusal: ActionError,
 }
 impl Provider {
@@ -108,11 +112,30 @@ impl Provider {
             operation: operation.clone(),
             readiness: self.readiness.clone(),
         };
+        let pending = self
+            .pending
+            .as_ref()
+            .map(|(ready, economy)| {
+                super::super::charter_pending::compound::prepare(
+                    &self.families,
+                    ready,
+                    economy,
+                    inv,
+                    txn,
+                    ctx,
+                    &operation,
+                    fence.clone(),
+                )
+            })
+            .transpose()?
+            .flatten();
+        let funding = pending.as_ref().map(|(funding, _)| *funding);
         ctx.prepare_owner(
             &self.roots,
             RootRequest::RegistryRevocation(Revocation {
                 operation: operation.clone(),
                 fence,
+                pending: pending.map(|(_, roots)| roots),
             }),
         )
         .map_err(bad)?;
@@ -135,6 +158,10 @@ impl Provider {
                 != Some(&status)
         {
             return Err(PublicationError::Mismatch);
+        }
+        if let Some(funding) = funding {
+            ctx.close_charter_pending_completion(txn, funding)
+                .map_err(bad)?;
         }
         Ok(AuthoritativeActionOutput::new(
             RulesValue::new(
@@ -215,6 +242,7 @@ pub(crate) fn register(
     ratings: super::super::rating::RatingFamilies,
     policy: RegistryRevocationPolicy,
     definitions: [DefinitionRef; 3],
+    pending: Option<super::super::charter_pending::Readiness>,
 ) -> Result<Readiness, ModError> {
     let [authority, action, outcome] = definitions;
     if reg.module() != crate::NS || action != policy.action()? {
@@ -222,6 +250,10 @@ pub(crate) fn register(
     }
     let roots = reg.request_owner_participant::<RootParticipant>(action.clone())?;
     let readiness = Readiness::default();
+    let pending = pending.map(|ready| {
+        reg.request_owner_participant::<mush_economy::registry_filing::InitialFilingParticipant>(
+            action.clone()).map(|economy| (ready, economy))
+    }).transpose()?;
     reg.action_provider(
         action.clone(),
         Provider {
@@ -234,6 +266,7 @@ pub(crate) fn register(
             ratings,
             roots,
             readiness: readiness.clone(),
+            pending,
             refusal: ActionError::new(
                 ActionErrorCode::ProviderRejected,
                 false,

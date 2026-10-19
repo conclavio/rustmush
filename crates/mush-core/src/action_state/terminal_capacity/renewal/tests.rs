@@ -660,3 +660,10 @@ fn retry_links_and_current_head_are_required_in_cold_history() -> TestResult {
 }
 
 mod service_tests;
+
+// Reuse the real family declaration of the historical personal protocol when
+// exercising independent House transactions. This does not copy native state.
+pub(in crate::action_state::terminal_capacity) fn coexistence_registry_seed()
+-> TestResult<StateFamilyRegistry> {
+    Ok(fixture()?.store.registry.clone())
+}

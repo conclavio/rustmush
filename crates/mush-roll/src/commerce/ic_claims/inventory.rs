@@ -137,6 +137,41 @@ impl ClaimInventory {
             })
         })
     }
+    /// Count at an actual retained transition boundary. The complete audited
+    /// history is bounded; no clock ordering or current ownership is inferred.
+    /// `next` names the first transition not yet accepted at that observation.
+    pub(crate) fn owned_charter_at(
+        &self,
+        charter: super::super::CharterId,
+        next: u64,
+    ) -> Result<u32, PublicationError> {
+        if next == 0 || next > self.next_transition {
+            return Err(PublicationError::Mismatch);
+        }
+        let count = self
+            .history
+            .values()
+            .filter(|row| {
+                row.open.charter == charter
+                    && matches!(row.open.capacity, Capacity::OwnedDispatch {})
+                    && row.open.sortie.get() < next
+                    && row
+                        .closed
+                        .as_ref()
+                        .is_none_or(|close| close.transition >= next)
+            })
+            .count();
+        if count > MAX_OPEN_IC_CLAIMS {
+            return Err(PublicationError::Mismatch);
+        }
+        u32::try_from(count).map_err(|_| PublicationError::Capacity)
+    }
+    pub(crate) fn owned_charter_now(
+        &self,
+        charter: super::super::CharterId,
+    ) -> Result<u32, PublicationError> {
+        self.owned_charter_at(charter, self.next_transition)
+    }
     pub(crate) fn paid_open(&self, licence: LicenceId) -> usize {
         self.open_paid.get(&licence).copied().unwrap_or(0)
     }

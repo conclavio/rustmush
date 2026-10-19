@@ -62,8 +62,12 @@ impl Request {
 pub(crate) struct Revocation {
     operation: records::RevocationOperation,
     fence: RevocationFence,
+    pending: Option<super::charter_pending::publication::PendingRoots>,
 }
 impl Revocation {
+    pub(crate) fn pending(&self) -> Option<&super::charter_pending::publication::PendingRoots> {
+        self.pending.as_ref()
+    }
     pub(crate) fn commit(&self) -> CommitToken {
         self.operation.operation
     }

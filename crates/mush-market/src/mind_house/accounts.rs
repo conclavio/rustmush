@@ -29,12 +29,10 @@ pub(super) fn personal<'a>(
     {
         return Err("instrument unavailable".into());
     }
-    let mut candidates = e
-        .snapshot()
-        .accounts_of(&mush_org::PrincipalId::Object(actor))
-        .filter(|a| {
-            a.instrument == *instrument && a.scope.is_none() && a.status == AccountStatus::Active
-        });
+    let principal = mush_org::PrincipalId::Object(actor);
+    let mut candidates = e.snapshot().accounts_of(&principal).filter(|a| {
+        a.instrument == *instrument && a.scope.is_none() && a.status == AccountStatus::Active
+    });
     let account = candidates.next().ok_or("personal account unavailable")?;
     if candidates.next().is_some() {
         return Err("ambiguous personal account".into());

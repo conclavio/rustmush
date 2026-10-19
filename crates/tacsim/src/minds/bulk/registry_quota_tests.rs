@@ -655,7 +655,7 @@ fn partial_maximum_class_rejection_finishes_and_recovers_actual_quota_without_ce
     assert_eq!(row.registry, Some(cursor));
     assert_eq!(row.charged_unit_ms, 250);
     assert!(row.flight.is_none());
-    let observed = super::registry_projection::observation(row)?;
+    let observed = crate::minds::bulk::registry_projection::observation(row)?;
     assert_eq!(
         observed.phase,
         mush_roll::commerce::rating::execution::ExecutionPhase::Complete

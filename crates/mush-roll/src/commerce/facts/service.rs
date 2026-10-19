@@ -3,8 +3,8 @@
 use super::super::{LicenceId, TermGeneration, families::CommerceFamilies, rating::RatingFamilies};
 use super::*;
 use mush_core::action::{
-    ActionError, ActionInvocation, AuthorityGuard, AuthorityGuardContext, AuthorityGuardKind,
-    AuthorityGuardValidator, IdempotencyKey, IdempotencyKeyText, PerceivedRef,
+    ActionError, ActionInvocation, AuthorityGuard, AuthorityGuardContext, AuthorityGuardValidator,
+    IdempotencyKey, IdempotencyKeyText, PerceivedRef,
 };
 use mush_core::mechanics::CanonicalId;
 use mush_core::submission_observation::SubmissionObservation;
@@ -134,6 +134,28 @@ pub(super) fn live(world: &World) -> bool {
     world.get(GOD).is_some_and(|o| {
         o.kind == mush_core::ObjKind::Player && !o.flags.contains(mush_core::Flags::GOING)
     })
+}
+// The single Roll Capability dispatcher reads this actual registered service.
+// No caller can supply a runtime or turn a public selector into an intent.
+pub(crate) fn guard_current(
+    ctx: &AuthorityGuardContext<'_>,
+    guard: &AuthorityGuard,
+) -> Result<bool, ActionError> {
+    if ctx
+        .world()
+        .module_state_owner(std::any::TypeId::of::<Service>())
+        .is_none_or(|owner| owner.as_str() != crate::NS)
+    {
+        return Ok(false);
+    }
+    let Some(service) = ctx.world().module_state::<Service>() else {
+        return Ok(false);
+    };
+    Guard {
+        runtime: service.runtime.clone(),
+        ready: service.ready.clone(),
+    }
+    .is_current(ctx, guard)
 }
 struct Guard {
     runtime: Runtime,
@@ -338,7 +360,6 @@ pub(super) fn register(
         continuation,
     };
     reg.state(service.clone());
-    reg.authority_guard_validator(AuthorityGuardKind::Capability, Guard { runtime, ready })?;
     reg.tick(
         "personal_mind_term_lapses",
         TickCadence::Coarse(Duration::from_secs(1)),

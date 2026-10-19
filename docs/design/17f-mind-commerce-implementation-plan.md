@@ -534,12 +534,35 @@ Reviewed Industry delivery now uses the actual paid manufacture order, original
 capacity reservation, real title and custody checks, and Core's prebuilt carry
 images and permanent receipt. Core Install/Replace mechanics also preserve exact
 ordinary object images with two native owner images. Actual refit consumption
-and production activation remain required. Pending charter funding has its native
-Economy owner and a reviewed four-target Core completion recipe; actual Roll
-service settlement and compound Registry revocation are still being integrated.
+and production activation remain required. Pending charter funding now connects
+the native Economy owner, four-target Core completion recipe and actual Roll
+service, including last-close/deadline settlement and compound Registry refund.
+Its combined runtime and genuine-story checks have not yet passed.
 Personal renewal terminal holds are retained through the actual garbage collector
 because cold recovery requires their native evidence. New boundary tests for this
 retention, full WorkOrderId values and pending-transfer capacity are queued.
+
+Further verification through N81 is retained as **compile-only failure evidence**,
+not runtime acceptance. All three immutable archives were downloaded, hash-checked
+against every log and the input/source census, and confirmed source-unchanged:
+
+| Run | Exact tree | Terminal result | Evidence archive SHA-256 |
+| --- | --- | --- | --- |
+| N79 | `aaa731af4cd1a7e0719e4edb6fa3b911aaf447b6` | One House account iterator lifetime error; subsequently repaired with a retained principal binding | `136bbce1fc874ed36c2938aaa78b52860a8c5bbcc21433b8a03e8ec8afaf8aca` |
+| N80 | `9297d2e33ed8e4b1f2eb0391e820fde16e125584` | Four Tacsim fixture import/path/helper-shadow errors; subsequently repaired without changing assertions | `5ad9a21de05aae4eef9d2f21caeab42ce8baf54bd3db888d13ee31ac2c08d268` |
+| N81 | `233abcbeceed1855f31bdccbc39b60e83cb12c58` | Two House renewal Core fixture visibility/owned-registry clone errors; reviewed repairs await the next run | `eee121da8147f0dcd1e56428d035fccab210530c5f88783102f53aa4f22331b6` |
+
+Reviewed additions reserve seven exact House renewal targets (81,920 bytes) with
+personal/House coexistence and independent service closure. The pure Safe Conduct
+financial layer now has strict versioned terms, checked minor-unit arithmetic and
+same-generation WorldIc term/claim-delay calculations. Its dual price illustration
+is conditional; it is not an eligibility proof, quote acceptance, premium, policy,
+liability reservation or claim service. Five new tests are prepared, not yet run.
+Paid-resale IC capture has a separate exact format 3 carrying only paid ownership;
+format 2 remains charter ownership and format 1 remains unchanged. This Core
+shape and its prepared tests do not substitute for actual resale issuance/history.
+The full House renewal owner path, paid resale and actual Industry refit remain
+under implementation/review. None of N79–N81 ran their runtime stages.
 
 The L R4 release-notice correction passes in N56: a side lead's fully offered
 whole-squad RELEASE also removes the persona commander's watch, preventing a
@@ -579,8 +602,8 @@ Registry recall/revocation and production IC claim/close are implemented with
 focused checks; their combined genuine-story and final acceptance gates remain.
 Automatic re-conformance, current certificate selection and the scoped house
 catalogue reader now have reviewed implementations awaiting their combined
-runtime evidence. Remaining implementation includes pending charter settlement,
-paid licence resale, House renewal and underwriting, actual governed refit and
+runtime evidence. Remaining implementation includes paid licence resale,
+House renewal and underwriting, actual governed refit and
 production activation. Reviewed checkout and delivery need their combined runtime
 and genuine-story acceptance.
 The acknowledged Core output reservation and certified Origin producer are
@@ -589,9 +612,8 @@ prerequisites, not completed manufacturing or usable installed hardware.
 These are M7 obligations. Only integration with an unavailable live IC sortie
 or convoy driver is conditional; its production services remain required.
 M8's contraband and NPC procurement programme remains separate. Current parallel
-work covers durable IC claim/close with real physical exclusion, exact Inventory
-input holds and actual factory composition, and saved-order recovery followed by
-Registry control. The absent region caller does not waive its claim, capacity
+work covers actual House renewal, paid-licence holder transfer and Industry
+refit, alongside underwriting and combined verification. The absent region caller does not waive its claim, capacity
 or custody owner services. Scoped fact consumers, generated client bindings,
 operator surfaces and final complete acceptance still follow their actual
 implementation. Existing partial passes and source review do not substitute
