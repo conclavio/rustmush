@@ -7280,3 +7280,92 @@ and are untouched here.
 ### Deferred
 
 - **A.3b** the chart panel; **A.4** prices; **A.5** doc 15 R5 on `light_lag_s`.
+
+## A.4
+
+**Prices — the reach premium** ([doc 19](19-astronomy-engine.md) §6, cut A.4; D-19-14; doc 18
+Q-18-39 ruled by doc 19 §2's default; Q-19-5's caps), built 2026-10-18 on main. One commit with the
+Fable trailer, pushed when green. Nothing here touches a running world until the next deploy, and **no
+deploy without the owner**.
+
+### What landed
+
+1. **`crates/tacsim/src/port/price.rs`** — the pure arithmetic and the one read. `Reach { now_s,
+   median_s }`; `premium_permille(k, cap, reach)` = `min(cap, k · (now / median − 1))`, never below
+   zero, i128 arithmetic with the ratio in permille first; `priced(authored, premium)` =
+   `authored × (1000 + premium) / 1000` in whole major units, floor, saturating. **Reach** for a good
+   is `choose_route` (`Fastest`, no `via`) for the lane's Dray **empty with one soul at full
+   throttle** over each supplier's listed routes to this venue, the least over the suppliers — a
+   supplier is another lane port whose vendors **ask** the good and that lists a route here; both
+   must have a body. The **synodic median** is the lower median of that reach sampled from now over
+   the synodic period of the port's body and the supplier's (the longest over the suppliers):
+   `Sky::period_days` (new; the table row nearest now, `360 / n`; the circular `period_mdays`
+   otherwise), `synodic_days` (`1 / |1/P₁ − 1/P₂|`; `None` for the same orbit), `scan_days` (rounded
+   up, `1..=MAX_SCAN_DAYS` 2,000 — Ceres–Kirkwood never closes and takes the cap, so does an unknown
+   body), at most `MAX_SCAN_SAMPLES` 400 samples (Ceres–Mars's 1,162-day season every three days);
+   **one sample under the constant sky** (rate 0), so every bid posts at its authored price and the
+   pinned worlds are untouched. `bid_price_major(w, def, bid)` is the authored price when the port
+   has no `premium` block or no reach.
+2. **Read at posting** (the as-built deviation from §6's once-per-IC-day re-write, recorded there):
+   the applier's bid loop (`vendor.rs`, "(e).8 The standing bids") and the stock clerk's re-post of a
+   lapsed bid (`stock.rs` `bid_step`) both price the bid through `bid_price_major` — the posting path
+   already carries the officer's signature (11 §2), and a bid's TTL is the cadence the board
+   re-prices on; the season turns over years. `MarketStore` holds the posted price; the port map's
+   `BidRow.price_major` stays the authored figure (the map is the authored record, as before). The
+   median is computed at each posting, not cached per boot: at most 400 plans per bid.
+3. **The port entry's block** (`def.rs`): `PortDef.premium: Option<ReachPremiumDef { k_permille,
+   cap_permille }>`, serde default + skipped when absent, `deny_unknown_fields`, each
+   `0..=MAX_PREMIUM_PERMILLE` (10,000) in `PortDef::check`; exported with the def types.
+4. **Lane v5** (`content/lane/ceres_phobos.json`, `LANE_VERSION` 5): both ports gain
+   `"premium": { "k_permille": 300, "cap_permille": 500 }` (Q-19-5's defaults) and nothing else moves;
+   signed, digest `319aa8a0d273dc6980937d7b8ec7682eab25c37be964ceaaef687bff3562744e` pinned in
+   `tests/lane.rs`. The suites' remaining lane-version literals (`@4`, `@5`, `Some(5)`,
+   `lane_variant(5, …)` in `ports.rs`, `commerce.rs`, `lane.rs`) now read `LANE_VERSION` /
+   `LANE_VERSION + 1`, so the next bump moves one constant and one digest; the commerce suite's v2
+   rebuild drops `premium` as it drops `vendors`.
+5. **Docs and help**: doc 19 §6 "As built", §9's A.4 row landed and an **A.4b** row (the emergency
+   Wanted bids and `emergency_ratio`, `+chart <port>` naming the premium), §10 Q-19-5; README; the
+   trade help's new paragraph ("A port's bids follow its season …", pointing at `+chart <port>`).
+
+### Verified
+
+- **`tests/price.rs`** (new, 4): both ports carry the block at 300 / 500; at rate 0 Kasei's metals
+  bid posts 280 and the Exchange's alloys bid 520 with reach now = median; at rate 1000 every bid
+  of the four (metals, volatiles, alloys, parts) posts exactly `priced(authored, premium(reach))` for
+  the reach `reach_for` reports — at the test world's instant Stickney's reach 1,758,164 s against a
+  median of 1,730,327 s (+4 ‰: 280 → 281, 200 → 200) and Ceres's 1,903,004 s against 1,796,755 s
+  (+17 ‰: 520 → 528, 560 → 569) — never below the authored price, never above the cap; a port without
+  the block posts authored prices; `k_permille 10001` is refused by `check`; Ceres's and Mars's
+  periods from the tables (1,681.6 / 687 days within the asserted bands), their synodic period about
+  1,162 days = the scan, Ceres–Kirkwood and an unknown body at the cap, the lower median.
+- Unit tests in `price.rs` (3): the premium's cases (equal, better season, +80 % → 240 ‰, the cap,
+  k 0, a zero median), `priced` (280 → 347 at 240 ‰; saturation), `synodic_days` and `median_of`.
+- The suites that pin the lane: lib 1,248 passed / 0 failed (1 ignored); `chart` 4; `commerce` 24;
+  `content` 29; `lane` 10; `ports` 21; `price` 4; `sale` 16 — all green.
+- **The hull suite** (`tests/hulls.rs`, 15) had built its update variant at the literal version 4 ("one
+  past the shipped v3" when IC8 wrote it; equal to the shipped v4 since A.1), which the bump to v5 made
+  an older pack — three tests red; its `lane_v4` helper and the two "Applied @4" pins now read
+  `LANE_VERSION`, and the suite is green.
+- `cargo fmt --check` clean; `cargo clippy -p tacsim --all-targets -- -D warnings` clean; the whole
+  tacsim suite green across two runs at this source state (the first stopped at the hull suite's three
+  reds after 1,955 passed over the 24 suites before it; the second, `--no-fail-fast` after the fix,
+  ran every suite from `content` on and the hull suite with 0 failed); mush-server `boot_parity` 19 and
+  the story `ic_slice_loop` 6 green (the story's figures unchanged: the premium reads at posting under a
+  constant sky, so every pinned world posts its authored prices); mush-config `shipped_configs` 12
+  green.
+
+### What the owner decides
+
+- **The caps** (Q-19-5): 300 ‰ per unit of reach ratio, capped at 500 ‰ — a lane data edit on each
+  port. At Ceres–Mars's season (reach about 15–27 h empty, median near 21 h) the worst day carries
+  roughly +90 ‰ at k 300; a Pallas-like port's swing is the point and would run to the cap.
+- **The baseline**: the synodic median as designed (the authored price is the mid-season price;
+  good seasons pay no less). The alternative — the lane's epoch reach, the chord minimum, as the
+  baseline, making the authored price the best-season floor and the swing about 2.5× larger — is a
+  one-line change in `reach_for` and was not taken without the owner.
+
+### Deferred
+
+- **A.4b** the emergency Wanted bids (life-support goods at the cap when reach crosses
+  `emergency_ratio`, funded from finite capital) and `+chart <port>` naming the premium; **A.3b**
+  the chart panel.

@@ -2263,7 +2263,8 @@ fn ic8_retire_withdraws_draws_and_bids_and_a_later_apply_posts_the_bids_afresh()
     );
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@5")) && apply.contains("1 retired"),
+        apply.contains(&format!("Applied {LANE_PACK}@{}", LANE_VERSION + 1))
+            && apply.contains("1 retired"),
         "{plan}\n{apply}"
     );
     for listing in draws.iter().chain(&bids) {
@@ -2284,12 +2285,13 @@ fn ic8_retire_withdraws_draws_and_bids_and_a_later_apply_posts_the_bids_afresh()
         after.vendors
     );
     // A later version brings the port back: the bids are posted afresh.
-    let back = mush_content::load_pack(&lane_variant(5, |_| {})).expect("the variant verifies");
+    let back = mush_content::load_pack(&lane_variant(LANE_VERSION + 1, |_| {}))
+        .expect("the variant verifies");
     rig.roster.shelf = Some(vec![back]);
     let mut rig = reboot(rig);
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@5")),
+        apply.contains(&format!("Applied {LANE_PACK}@{}", LANE_VERSION + 1)),
         "{plan}\n{apply}"
     );
     let now = port_map(&rig.tw, "ceres_port");
@@ -2338,6 +2340,8 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
         for entry in ["ceres_port", "stickney_port"] {
             if let Some(def) = doc["entries"][entry]["def"].as_object_mut() {
                 def.remove("vendors");
+                // Doc 19 cut A.4 (lane v5) added the premium block.
+                def.remove("premium");
             }
         }
         // Doc 19 cut A.1 (lane v4) added eight bodies, the element tables and the
@@ -2505,7 +2509,7 @@ fn ic8_an_ask_reprice_withdraws_and_the_arm_relists() {
     );
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@5")),
+        apply.contains(&format!("Applied {LANE_PACK}@{}", LANE_VERSION + 1)),
         "{plan}\n{apply}"
     );
     assert!(
@@ -2581,7 +2585,8 @@ fn ic14_a_dropped_port_entrys_clerk_idles_while_the_lane_stays_latched() {
     }
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@5")) && apply.contains("1 retired"),
+        apply.contains(&format!("Applied {LANE_PACK}@{}", LANE_VERSION + 1))
+            && apply.contains("1 retired"),
         "{plan}\n{apply}"
     );
     for (org, good) in CERES_DRAWS {
@@ -2613,12 +2618,13 @@ fn ic14_a_dropped_port_entrys_clerk_idles_while_the_lane_stays_latched() {
         "Stickney's clerk still lists"
     );
     // A later version brings the port back; its clerk lists again.
-    let back = mush_content::load_pack(&lane_variant(5, |_| {})).expect("the variant verifies");
+    let back = mush_content::load_pack(&lane_variant(LANE_VERSION + 1, |_| {}))
+        .expect("the variant verifies");
     rig.roster.shelf = Some(vec![back]);
     let mut rig = reboot(rig);
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@5")),
+        apply.contains(&format!("Applied {LANE_PACK}@{}", LANE_VERSION + 1)),
         "{plan}\n{apply}"
     );
     fires(&mut rig, 12);

@@ -794,7 +794,9 @@ fn bid_step(
     let Some((org, bid, vault, vendor)) = due else {
         return Step::Idle;
     };
-    let Some(price) = ask_price(ctx.w, bid.price_major) else {
+    // Doc 19 cut A.4 (D-19-14): the re-post reads the port's reach premium.
+    let Some(price) = ask_price(ctx.w, crate::port::price::bid_price_major(ctx.w, def, &bid))
+    else {
         return Step::Refused;
     };
     let spec = crate::port::vendor::wanted_spec(vendor, vault, &bid, price);

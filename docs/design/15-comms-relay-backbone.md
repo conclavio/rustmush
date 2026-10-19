@@ -121,6 +121,14 @@ Earth is a little worse off than Luna by design: the network is Luna's (§4).
 D-18-46): at P-A, R5 takes the route's light distance from the plan and the end bodies' `Sky`
 positions.
 
+**As built (doc 19 cut A.5, 2026-10-18):** the sky side of this table is live — `Sky::light_lag_s(a,
+ta, b, tb)` (cut A.1; one-way, whole seconds up, over the Kepler positions) and `+chart`'s lag column
+(cut A.3: every lane body's light lag from the port you stand at, e.g. Pallas from Ceres), so the
+"fallback" column's ranges are now read off the moving sky rather than authored. The backbone itself
+(R1–R10, the coverage, queues and node hops of the "in coverage" column) is not started; when R5 is
+built it reads a ship's lag from `light_lag_s` at the end bodies and the ticket's frozen legs, as
+D-15-11 says, and nothing in doc 19 forecloses it.
+
 ## 4. Topology at world start: the Luna star (D-15-6)
 
 Every world-start link terminates at **Malapert**, the Luna hub next door to the Concord Executive

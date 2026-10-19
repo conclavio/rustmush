@@ -273,6 +273,27 @@ impl Sky {
         }
     }
 
+    /// **A body's orbital period, days, at IC time `t_ic`** (doc 19 cut A.4, for
+    /// the synodic scan): on a table, `360 / n` of the row nearest `t_ic`; on the
+    /// circular model, the authored `period_mdays`; `None` for a body the sky
+    /// does not know.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn period_days(&self, body: &CanonicalId, t_ic: i64) -> Option<f64> {
+        if let Sky::Kepler(sky) = self
+            && let Some(rows) = sky.table(body)
+        {
+            let nearest = rows.iter().min_by_key(|row| row.epoch_ic.abs_diff(t_ic))?;
+            if nearest.n_ndeg_day <= 0 {
+                return None;
+            }
+            return Some(360.0 * 1e9 / nearest.n_ndeg_day as f64);
+        }
+        self.ephemeris()
+            .body(body)
+            .map(|b| b.period_mdays as f64 / 1_000.0)
+    }
+
     /// A body's position at IC time `t_ic`, rounded to the kilometre: on the
     /// circular model `r = orbit`, `θ = phase at t`, `z = 0`; on a table, its
     /// Kepler propagation (D-19-4).

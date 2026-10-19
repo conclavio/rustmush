@@ -52,7 +52,7 @@ use support::ground::{UNSIGNED, sign};
 /// the legs re-timed to the three-dimensional chords): a new version beside the
 /// v1, v2 and v3 ledger rows, never an earlier version re-signed in place (lead
 /// ruling L0b).
-const LANE_DIGEST: &str = "7cd35e6fa0d7bbd629c9bcb3d1b1acb4d1b24aa099c5573dbd824be93fbb4d82";
+const LANE_DIGEST: &str = "319aa8a0d273dc6980937d7b8ec7682eab25c37be964ceaaef687bff3562744e";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -155,7 +155,7 @@ fn coast_kms(class: &CanonicalId) -> u32 {
 // ---------------------------------------------------------------------------
 
 /// **The lane is pinned** (doc 18 cut IC2; R4; cut IC3, L0a/L0b; doc 19 cut A.1):
-/// a campaign seed at version 4 requiring nothing, exactly the twenty entries —
+/// a campaign seed at version 5 requiring nothing, exactly the twenty entries —
 /// the `sol` region, twelve bodies on element tables, three places, two routes
 /// timed to the Kepler sky's three-dimensional chords at the epoch for 226 km/s
 /// and the two ports; every body carries the same `epoch_ic`, which is
@@ -185,7 +185,11 @@ fn ic2_the_lane_pack_is_pinned() {
     let manifest = pack.manifest();
     assert_eq!(manifest.id().as_str(), LANE_PACK);
     assert_eq!(manifest.version(), LANE_VERSION);
-    assert_eq!(manifest.version(), 4, "lane v4 since doc 19 cut A.1");
+    assert_eq!(
+        manifest.version(),
+        5,
+        "lane v5 since doc 19 cut A.4 (v4 at A.1)"
+    );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
     assert!(manifest.requires().is_empty(), "the lane requires nothing");
     assert_eq!(
@@ -860,11 +864,9 @@ fn ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky() {
     // The pack list, as staff.
     let events = tw.run(GOD, "@tacsim/pack list");
     let out = tw.seen_by(&events, GOD).join("\n");
+    let lane_line = format!("tacsim.lane.ceres_phobos@{LANE_VERSION} [seed]");
     for (line, digest) in [
-        (
-            "tacsim.lane.ceres_phobos@4 [seed]",
-            lane().manifest().digest().to_hex(),
-        ),
+        (lane_line.as_str(), lane().manifest().digest().to_hex()),
         ("tacsim.core@1 [rules]", CORE_DIGEST.to_owned()),
         ("tacsim.corridor@1 [seed]", CORRIDOR_DIGEST.to_owned()),
         ("tacsim.corridor@2 [seed]", CORRIDOR_V2_DIGEST.to_owned()),

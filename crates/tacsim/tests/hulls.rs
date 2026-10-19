@@ -311,10 +311,11 @@ fn lane_variant(version: u32, edit: impl FnOnce(&mut serde_json::Value)) -> Stri
     sign(&serde_json::to_string_pretty(&doc).expect("serializes"))
 }
 
-/// Lane v4 (test-only data, one past the shipped v3 since doc 18 cut IC8), `ports.rs`'s
-/// base edit plus `edit`.
+/// The lane at the shipped version with test-only edits (`ports.rs`'s base edit plus
+/// `edit`), re-signed — it was "one past the shipped v3" at doc 18 cut IC8 and has read
+/// `LANE_VERSION` since doc 19 cut A.4 bumped the lane past it.
 fn lane_v4(edit: impl FnOnce(&mut serde_json::Value)) -> mush_content::Pack {
-    mush_content::load_pack(&lane_variant(4, |doc| {
+    mush_content::load_pack(&lane_variant(LANE_VERSION, |doc| {
         doc["entries"]["ceres_port"]["def"]["programme"]["dormancy_real_days"] =
             serde_json::json!(8);
         doc["entries"]["stickney_port"]["def"]["orgs"][2]["faction"] =
@@ -834,7 +835,7 @@ fn ic4_an_update_creates_only_the_new_hull() {
         .collect();
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@4")),
+        apply.contains(&format!("Applied {LANE_PACK}@{LANE_VERSION}")),
         "{apply}\n{plan}"
     );
     let after = ceres_map(&tw);
@@ -927,7 +928,7 @@ fn ic4_a_held_hull_document_is_skipped_not_refused() {
         .expect("a held unit record");
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@4")),
+        apply.contains(&format!("Applied {LANE_PACK}@{LANE_VERSION}")),
         "{apply}\n{plan}"
     );
     let after = ceres_map(&tw);

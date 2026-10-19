@@ -2534,10 +2534,13 @@ refinery work orders, Ceres deposits, a construction sink) before a second cohor
 **P7** Pallas as a port (data); **P8** delete the legacy seed latch (M); **P9** the net share with a run
 book and carried deficit (M); **P-A** the astronomy engine (§4.8; L in six sub-cuts: data and model M,
 laws M, chart S+M, price policy M, comms S, flip S; after IC12, with P5 for its prices and P7 for its
-showcase) — **designed as [doc 19](19-astronomy-engine.md) (2026-10-18) and built as its cuts A.1–A.6;
-A.1 (the element tables, `Sky::Kepler`, lane v4) landed 2026-10-18**, the cut note in
-[18-cut-notes.md](18-cut-notes.md) "A.1"; Q-18-35..41 are ruled by doc 19 §2's defaults, the owner
-overriding by data.
+showcase) — **designed as [doc 19](19-astronomy-engine.md) (2026-10-18) and built as its cuts A.1–A.6,
+all landed 2026-10-18: A.1 (the element tables, `Sky::Kepler`, lane v4), A.2 (the flip law, the
+throttle, the keep-out, route policies, Dray v3), A.3 (`+chart`, the plan's window line), A.4 (the
+reach premium on demand-side bids against the synodic median, lane v5), A.6 (the shipped sky at real
+motion); A.5 closed as a seam**, the cut notes in [18-cut-notes.md](18-cut-notes.md) "A.1"–"A.6";
+A.3b (the chart panel) and A.4b (the emergency bids) open; Q-18-35..41 are ruled by doc 19 §2's
+defaults, the owner overriding by data.
 
 **IC0.** As recorded in [18-cut-notes.md](18-cut-notes.md). `spacecraft` out of `SELF_MODES`
 (`travel.rs:90`) and `options_from_corridor_room` is IC1's, with its test (Q-18-6, binding).
@@ -3141,6 +3144,11 @@ recommended" builds §5 as written):
   clamp and bound; the captain strikes the balance. Alternatives: `+ship/plan best` as printed advice;
   a `buy <a>,<b> balance` order the clamp solves. Why: the owner calls the balance "part of the trick";
   a solver turns it into a button; an advisor fits a later NPC or unit-mind product.
+**Q-18-35 to Q-18-41 below are ruled by [doc 19](19-astronomy-engine.md) §2's defaults** (2026-10-18;
+built as its cuts A.1–A.6 — the flip law, Kirkwood trailing 2°, rate 1000 in the templates, element
+tables, the reach premium against the synodic median with the emergency bids left to A.4b, the keep-out
+as a cost), the owner overriding each by data; the text below is the question as it was put.
+
 - **Q-18-35 R3 against R9: how does the daily passage survive a moving sky?** At nominal cruise a coast
   Dray makes the full Ceres–Stickney outbound in under 24 h only while Ceres–Mars ≤ ~1.6 AU, about 16 %
   of the 3.18-yr synodic cycle; at the worst season ~65 h. Default (at P-A, a data change behind the

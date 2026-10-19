@@ -119,6 +119,8 @@ pub mod map;
 pub mod market;
 pub mod orders;
 pub mod passage;
+/// Doc 19 cut A.4: the reach premium on a port's demand-side bids (doc 19 §6).
+pub mod price;
 pub mod proceeds;
 pub mod readiness;
 pub mod recall;
@@ -138,8 +140,9 @@ pub use coop::{
     charter_tenant, enrol_gate, gated, helm_holder, helm_of, live_charter, programme_port, shuts,
 };
 pub use def::{
-    AskDef, BidDef, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES, PortDef, PortOrgDef,
-    ProgrammeDef, StockRowDef, VendorDef, check_ports, room_key, tranches,
+    AskDef, BidDef, MAX_PREMIUM_PERMILLE, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES,
+    PortDef, PortOrgDef, ProgrammeDef, ReachPremiumDef, StockRowDef, VendorDef, check_ports,
+    room_key, tranches,
 };
 pub use executor::{
     Ask, Bid, Bound, FILL_ITERATIONS, FillError, FillTargets, MAX_ORDER_ATTEMPTS,
@@ -171,6 +174,10 @@ pub use passage::{
     INTERCEPT_PASSES, KEEP_OUT_AU, MAX_THROTTLE_PERMILLE, MIN_THROTTLE_PERMILLE, PlanError,
     RoutePolicy, choose_route, crew_days, detour_km, flip_accel_mps2, flip_profile,
     intercept_passes, leg_distance_km, leg_seconds, passage_burn, payload_kg, plan_passage,
+};
+pub use price::{
+    DAY_S, MAX_SCAN_DAYS, MAX_SCAN_SAMPLES, Reach, bid_price_major, median_of, premium_permille,
+    priced, reach_for, scan_days, synodic_days,
 };
 pub use proceeds::{
     BASELINE_MEMO, CoopProceeds, REFERENCE_DARK, SALE_BOOKS_DARK, SALE_LINE, SALE_LINE_NO_SHARE,

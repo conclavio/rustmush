@@ -710,7 +710,8 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@5: 0 create, 2 update, 0 retire, 18 unchanged"
+            "Plan for {LANE_PACK}@{}: 0 create, 2 update, 0 retire, 18 unchanged",
+            LANE_VERSION + 1
         )),
         "{plan}"
     );
@@ -723,12 +724,13 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     }
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@5: 0 created, 2 updated, 0 retired, 18 unchanged."
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 18 unchanged.",
+            LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
     );
     assert!(!apply.contains("STOPPED"), "{apply}");
-    assert_eq!(lane_latch(&tw), Some(5));
+    assert_eq!(lane_latch(&tw), Some(LANE_VERSION + 1));
     assert_eq!(counts(&tw), snapshot_counts, "the update made nothing");
     assert_eq!(maps(&tw), snapshot_maps);
     let ops = tw.take_module_ops();
@@ -739,7 +741,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     let out = report(&mut tw);
     assert!(
         out.contains(&format!(
-            "lane: {LANE_PACK}@5 applied; this server ships @4 and does not load @5. [flagged]"
+            "lane: {LANE_PACK}@{next} applied; this server ships @{LANE_VERSION} and does not load @{next}. [flagged]", next = LANE_VERSION + 1
         )),
         "{out}"
     );
@@ -866,7 +868,8 @@ fn ic3_an_update_creates_a_new_org_and_keeps_every_recorded_row() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@5: 0 created, 2 updated, 0 retired, 18 unchanged."
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 18 unchanged.",
+            LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
     );
@@ -993,7 +996,8 @@ fn ic3_a_map_that_stopped_part_way_is_completed() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@5: 0 created, 2 updated, 0 retired, 18 unchanged."
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 18 unchanged.",
+            LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
     );
@@ -1488,7 +1492,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let out = report(&mut next);
         for line in [
             format!(
-                "lane: {LANE_PACK}@1 applied; this server ships @4. Take it with @atlas/pack \
+                "lane: {LANE_PACK}@1 applied; this server ships @{LANE_VERSION}. Take it with @atlas/pack \
                  plan {LANE_PACK}. [flagged]"
             ),
             "  ceres_port: not applied. [missing]".to_owned(),
@@ -1542,7 +1546,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let out = report(&mut next);
         assert!(
             out.contains(&format!(
-                "lane: {LANE_PACK}@4 applied; this server ships @4. [ready]"
+                "lane: {LANE_PACK}@{LANE_VERSION} applied; this server ships @{LANE_VERSION}. [ready]"
             )),
             "{out}"
         );
@@ -1574,7 +1578,9 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
         .collect();
     let treasury = port_map(&tw, "ceres_port").treasury.expect("a treasury");
     let mut want = vec![
-        format!("lane: {LANE_PACK}@4 applied; this server ships @4. [ready]"),
+        format!(
+            "lane: {LANE_PACK}@{LANE_VERSION} applied; this server ships @{LANE_VERSION}. [ready]"
+        ),
         format!("sky: constant (rate 0), kepler, epoch 2351-05-13, rev {rev} [ready]"),
         "world rate: 24 IC seconds per real second. [ready]".to_owned(),
         format!("treasury: system:tacsim.treasury, account #{treasury}. [ready]"),
@@ -2320,10 +2326,10 @@ fn ic12_a_moving_sky_with_a_body_lacking_epoch_ic_flags_and_pages_once() {
     sweep(&mut tw, 3_600);
     let (_plan, apply) = plan_and_apply(&mut tw);
     assert!(
-        apply.contains(&format!("Applied {LANE_PACK}@5: ")),
+        apply.contains(&format!("Applied {LANE_PACK}@{}: ", LANE_VERSION + 1)),
         "{apply}"
     );
-    assert_eq!(lane_latch(&tw), Some(5));
+    assert_eq!(lane_latch(&tw), Some(LANE_VERSION + 1));
     set_rate(&mut tw, 24);
     let out = report(&mut tw);
     let sky = out
@@ -2339,7 +2345,8 @@ fn ic12_a_moving_sky_with_a_body_lacking_epoch_ic_flags_and_pages_once() {
     );
     assert!(
         out.contains(&format!(
-            "lane: {LANE_PACK}@5 applied; this server ships @{LANE_VERSION}. [flagged]"
+            "lane: {LANE_PACK}@{next} applied; this server ships @{LANE_VERSION}. [flagged]",
+            next = LANE_VERSION + 1
         )),
         "{out}"
     );
@@ -2392,7 +2399,7 @@ fn ic12_a_constant_sky_never_flags_a_body_lacking_epoch_ic() {
     no_refused_writes(&tw);
     sweep(&mut tw, 3_600);
     let _ = plan_and_apply(&mut tw);
-    assert_eq!(lane_latch(&tw), Some(5));
+    assert_eq!(lane_latch(&tw), Some(LANE_VERSION + 1));
     let out = report(&mut tw);
     let sky = out
         .lines()

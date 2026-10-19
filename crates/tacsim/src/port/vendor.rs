@@ -661,7 +661,8 @@ pub(crate) fn put(
         }
         // (e).8 The standing bids.
         for bid in &vendor.bids {
-            let price = minor_of(bid.price_major, scale)
+            // Doc 19 cut A.4 (D-19-14): the port's reach premium rides the posting.
+            let price = minor_of(crate::port::price::bid_price_major(ctx.w, def, bid), scale)
                 .map(Amount::from_minor)
                 .ok_or_else(|| {
                     format!("{id}: vendor {org} bid {}: the price overflows", bid.good)
