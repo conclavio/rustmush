@@ -2,9 +2,10 @@
 //! table" and "The validator"; D-18-13 as amended by R7, D-18-28 as replaced by
 //! R7, D-18-39, D-18-40).
 //!
-//! Six sale items in one tacsim-owned compiled-in document,
-//! `crates/tacsim/content/market/goods.json`: five from doc 10 S4A's ten
-//! families and one aggregate (`provisions`, class `ship_supply`, no family;
+//! Eight sale items in one tacsim-owned compiled-in document,
+//! `crates/tacsim/content/market/goods.json`: seven from doc 10 S4A's ten
+//! families (doc 19 cut A.8 added `instrument_boards` and `carbon_feedstock`, the
+//! moon ports' goods; v2) and one aggregate (`provisions`, class `ship_supply`, no family;
 //! Q-18-3). A top-level `measures` registry (`si.mass_kg` → kg, `si.volume_l` →
 //! L) names doc 06 D3's measures, and every row carries its binding mass **and**
 //! packed volume per unit, so a later measure is a data key on both sides and

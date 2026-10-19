@@ -733,6 +733,9 @@ fn load_cells(indent: &str) -> Vec<String> {
         format!("{indent}water ice: {}", cell("volatiles", ice)),
         format!("{indent}structural alloy stock: 0 t · 0.0 m³"),
         format!("{indent}yard fittings, crated: 0 t · 0.0 m³"),
+        // Doc 19 cut A.8: the moon goods, two more zero cells.
+        format!("{indent}instrument boards, crated: 0 t · 0.0 m³"),
+        format!("{indent}carbon billet, pressed: 0 t · 0.0 m³"),
         format!("{indent}TOTAL: 100 t · 120.0 m³"),
         format!("{indent}LIMIT: 100 t · 120 m³"),
         format!("{indent}FULL: mass and packed volume"),

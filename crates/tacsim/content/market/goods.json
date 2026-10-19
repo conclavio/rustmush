@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "measures": [
     { "id": "si.mass_kg", "unit": "kg", "word": "mass" },
     { "id": "si.volume_l", "unit": "L", "word": "packed volume" }
@@ -82,6 +82,32 @@
       "consumable": "provisions",
       "reference_major": 10,
       "note": "One crew-day a unit, 4 kg and 10 L, ten to the case; a passage burns its occupants times each leg's whole IC days."
+    },
+    {
+      "id": "instrument_boards",
+      "label": "instrument boards, crated",
+      "family": "electronics",
+      "class": "trade",
+      "ledger_unit": "t",
+      "quote_unit": "t",
+      "measures": { "si.mass_kg": 1000, "si.volume_l": 2550 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 900,
+      "note": "Boards from the chartered Earth-basin fabs, forwarded through Luna in shock crates at about 0.39 t to the cubic metre: the bulky, dear partner of lunar alloy stock, 2,550 L a tonne, so it cubes out at 47 t. Not tacsim.electronics, which doc 17 keeps for the die lots."
+    },
+    {
+      "id": "carbon_feedstock",
+      "label": "carbon billet, pressed",
+      "family": "carbon_feedstock",
+      "class": "trade",
+      "ledger_unit": "t",
+      "quote_unit": "t",
+      "measures": { "si.mass_kg": 1000, "si.volume_l": 600 },
+      "stowage": "stow.bulk",
+      "consumable": null,
+      "reference_major": 250,
+      "note": "Titan's tholins and paraffins pyrolysed and pressed to graphite billet at about 1.67 t to the cubic metre: the dense Titan cargo, 600 L a tonne, the partner of the lifters' overburden ice; feedstock for Luna's closed loops and Mars's soil."
     }
   ]
 }

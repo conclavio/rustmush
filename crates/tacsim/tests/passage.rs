@@ -25,7 +25,7 @@ use tacsim::definitions::content::{DRAY, LANE_JSON, LANE_ROUTE_BACK, LANE_ROUTE_
 use tacsim::pack::{PackEntry, RulesPack, rules_pack_of};
 use tacsim::port::{
     HullDrive, INTERCEPT_PASSES, PlanError, PortDef, RoutePolicy, choose_route, intercept_passes,
-    plan_passage,
+    leg_distance_km, plan_passage,
 };
 use tacsim::{EphemerisConfig, Sky};
 
@@ -392,6 +392,139 @@ fn moving_circular_sky_moves_the_plan_and_converges() {
             "{a} -> {b}: {s:?}: one more pass moves the leg more than a minute or 2 %"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 5b. Sibling moons in the parent's frame (doc 19 cut A.8, D-19-21)
+// ---------------------------------------------------------------------------
+
+/// The lane with a place on Deimos and the hop down to Stickney, re-signed: the
+/// leg's `base_s` is the same-instant chord at 226 km/s, as the lane's are.
+fn lane_with_the_hop() -> RulesPack {
+    let base = {
+        let pack = lane();
+        let sky = sky_at(&pack, 0);
+        let epoch = lane_epoch(&pack);
+        sky.distance_km(&cid("deimos"), epoch, &cid("phobos"), epoch)
+            .expect("a chord")
+            .div_ceil(226)
+    };
+    let mut doc: Value = serde_json::from_str(LANE_JSON).expect("the lane is json");
+    let entries = doc["entries"].as_object_mut().expect("entries");
+    entries.insert(
+        "voltaire_roads".to_owned(),
+        serde_json::json!({
+            "kind": "location",
+            "def": { "label": "Voltaire Roads", "role": "port", "body": "deimos" }
+        }),
+    );
+    entries.insert(
+        "hop".to_owned(),
+        serde_json::json!({
+            "kind": "route",
+            "def": {
+                "from": "voltaire_roads",
+                "to": "stickney_yards",
+                "legs": [{ "to": "stickney_yards", "base_s": base }],
+                "drive_class": "coast_hauler",
+                "propellant": 0
+            }
+        }),
+    );
+    doc["manifest"]["digest"] = Value::String(UNSIGNED.to_owned());
+    let signed = sign(&serde_json::to_string(&doc).expect("json"));
+    rules_pack_of(mush_content::parse_pack(&signed).expect("the test pack parses"))
+        .expect("the test pack decodes")
+}
+
+/// **Two moons of one parent are measured in the parent's frame** (doc 19 cut
+/// A.8, D-19-21): the same-instant chord is frame-invariant (the authored
+/// `base_s` stands), and under the moving sky the Deimos–Phobos hop plans in
+/// hours and a tonne both ways, where the Sun's frame would count Mars's day of
+/// orbital motion as distance; five passes and twenty agree within 600 s (the
+/// §4.4 bound is a minute on a lane leg, where the target barely moves — Phobos
+/// turns half its orbit during the hop); and the shipped figures do not move.
+#[test]
+fn a8_sibling_moons_are_measured_in_the_parents_frame() {
+    let pack = lane_with_the_hop();
+    let drive = dray();
+    let epoch = lane_epoch(&pack);
+    let (deimos, phobos) = (cid("deimos"), cid("phobos"));
+    let still = sky_at(&pack, 0);
+    let moving = sky_at(&pack, 1_000);
+    let chord = still
+        .distance_km(&deimos, epoch, &phobos, epoch)
+        .expect("a chord");
+    assert_eq!(
+        leg_distance_km(&still, &deimos, epoch, &phobos, epoch),
+        Some(chord),
+        "a same-instant chord is frame-invariant"
+    );
+    assert!((20_000..=40_000).contains(&chord), "{chord} km");
+    let day = 86_400_i64;
+    for k in 0..=10_i64 {
+        let t0 = epoch + k * 4 * day;
+        let plan = plan_passage(
+            &moving,
+            &pack,
+            &cid("hop"),
+            &drive,
+            DRY_KG,
+            OUT_PAYLOAD,
+            1,
+            t0,
+        )
+        .expect("the hop plans");
+        assert!(
+            plan.total_s < 6 * 3_600,
+            "day {k}: the hop takes {} s",
+            plan.total_s
+        );
+        assert!(plan.burn_t <= 2, "day {k}: {} t", plan.burn_t);
+        assert_eq!(plan.crew_days, 1, "day {k}");
+        for (a, b) in [(&deimos, &phobos), (&phobos, &deimos)] {
+            let passes = intercept_passes(&moving, a, b, t0, &drive, DRY_KG, OUT_PAYLOAD, 20)
+                .expect("passes");
+            let (km, s5) = passes[INTERCEPT_PASSES - 1];
+            let s20 = passes[19].1;
+            assert!(km < 40_000, "{a} -> {b} day {k}: {km} km");
+            assert!(
+                i64::from(s20).abs_diff(i64::from(s5)) <= 600,
+                "{a} -> {b} day {k}: pass {INTERCEPT_PASSES} {s5} s, pass 20 {s20} s"
+            );
+        }
+    }
+    // For the record: in the Sun's frame the composed positions drift apart by a
+    // planet's hours of motion over the hop.
+    let plan = plan_passage(
+        &moving,
+        &pack,
+        &cid("hop"),
+        &drive,
+        DRY_KG,
+        OUT_PAYLOAD,
+        1,
+        epoch,
+    )
+    .expect("plans");
+    let sun_frame = moving
+        .distance_km(&deimos, epoch, &phobos, epoch + plan.total_s)
+        .expect("a chord");
+    assert!(sun_frame > 200_000, "{sun_frame} km");
+    // The shipped figures do not move.
+    let out = plan_passage(
+        &still,
+        &pack,
+        &cid(LANE_ROUTE_OUT),
+        &drive,
+        DRY_KG,
+        OUT_PAYLOAD,
+        1,
+        epoch,
+    )
+    .expect("the outbound plan");
+    assert_eq!(secs(&out), vec![321_547, 1_256_295]);
+    assert_eq!(out.burn_t, 51);
 }
 
 // ---------------------------------------------------------------------------

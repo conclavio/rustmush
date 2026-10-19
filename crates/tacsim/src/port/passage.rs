@@ -371,6 +371,13 @@ pub fn detour_km(a: PosKm, b: PosKm, radius_km: f64) -> u64 {
 /// **One leg's distance** (D-19-12): the chord from `a` at `ta` to `b` at `tb`
 /// through the one sky query, or the keep-out detour when the chord passes
 /// inside [`KEEP_OUT_AU`]. `None` for a body the sky does not know.
+///
+/// **Two moons of one parent are measured in the parent's frame** (doc 19 cut
+/// A.8, D-19-21): each body less its primary at its own instant, no keep-out.
+/// Both ride with the planet, so in the Sun's frame Mars's 24 km/s of orbital
+/// motion would turn the 29,500 km Deimos–Phobos hop into a day and a half and
+/// five tonnes; in Mars's frame it is the hours doc 10 1A gives a nearby moon.
+/// A same-instant chord is frame-invariant, so every authored `base_s` stands.
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
 pub fn leg_distance_km(
@@ -380,6 +387,19 @@ pub fn leg_distance_km(
     b: &CanonicalId,
     tb: i64,
 ) -> Option<u64> {
+    if let (Some(pa), Some(pb)) = (sky.parent_of(a), sky.parent_of(b))
+        && pa == pb
+    {
+        let primary = pa.clone();
+        let rel = |body: PosKm, parent: PosKm| PosKm {
+            x: body.x.saturating_sub(parent.x),
+            y: body.y.saturating_sub(parent.y),
+            z: body.z.saturating_sub(parent.z),
+        };
+        let from = rel(sky.position_km(a, ta)?, sky.position_km(&primary, ta)?);
+        let to = rel(sky.position_km(b, tb)?, sky.position_km(&primary, tb)?);
+        return Some(from.distance_km(to));
+    }
     let chord = sky.distance_km(a, ta, b, tb)?;
     let (pa, pb) = (sky.position_km(a, ta)?, sky.position_km(b, tb)?);
     let detour = detour_km(pa, pb, KEEP_OUT_AU * AU_KM as f64);

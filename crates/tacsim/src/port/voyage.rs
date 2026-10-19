@@ -298,6 +298,14 @@ pub const OVERLOADED: &str = "The {name} carries {payload} t against a rated {ce
 pub const TANK_SHORT: &str = "The plan for {port} burns {burn} t of reaction mass; the tank holds {tank} t. Nothing was burned.";
 /// The locker below the crew-days: `{port}`, `{days}`, `{have}`.
 pub const STORES_SHORT: &str = "The passage to {port} needs {days} crew-days of stores; the locker holds {have}. Nothing was burned.";
+/// **`+ship/plan`'s `Throttle:` line** (doc 19 cut A.8, D-19-22): the highest
+/// throttle that fits the tank and the locker with both filled to capacity, printed
+/// only when the plan at the asked throttle does not — the line never starts with
+/// `Burn ` or `Stores `, so every reader of those lines stands.
+pub const THROTTLE_FITS: &str = "Throttle: with the tank and locker full, throttle={throttle} fits: burn {burn} t, {days} crew-days, {passage} IC days.";
+/// The same line when no throttle in the band fits.
+pub const THROTTLE_NONE: &str =
+    "Throttle: no throttle from {min} permille fits this load even with the tank and locker full.";
 /// The planner could not answer: `{name}` (`+ship/plan` without the last sentence).
 pub const PLAN_DARK: &str = "The {name}'s passage cannot be planned right now. Nothing was burned.";
 /// `+ship/plan` under way: `{name}`.
@@ -1519,6 +1527,11 @@ fn plan_block(
         "Stores {} crew-days (locker {}; {locker}).",
         plan.crew_days, basis.locker
     ));
+    // Doc 19 cut A.8 (D-19-22): the throttle that would fit, when the asked one
+    // does not even with the tank and the locker full.
+    if let Some(hint) = throttle_hint(w, goods, basis, &readings, &dest.routes) {
+        lines.push(hint);
+    }
     let icdays = ic_days(plan.total_s);
     let arrival = plan.depart_ic.saturating_add(plan.total_s);
     lines.push(match (real_until(w, arrival), eta(w, arrival)) {
@@ -1534,6 +1547,105 @@ fn plan_block(
         lines.push(window);
     }
     Ok(lines)
+}
+
+/// **The `Throttle:` line** ([`THROTTLE_FITS`], [`THROTTLE_NONE`]; doc 19 cut A.8,
+/// D-19-22): the plan is re-based with the tank and the locker filled to their
+/// capacities (today's pools swapped for the compartments' limits); when the plan
+/// at the asked throttle still burns more than the tank holds or needs more
+/// crew-days than the locker holds, the highest throttle in the band whose burn
+/// fits is found by bisection ([`highest_fitting`]; the flip law's burn grows with
+/// the throttle) and its burn, crew-days and passage are printed — or the line
+/// says no throttle fits (the band's floor burns over the tank, or the fitting
+/// throttle's passage outlasts the locker). `None` when the plan fits as asked,
+/// or when nothing can be read.
+fn throttle_hint(
+    w: &World,
+    goods: &crate::definitions::GoodsTable,
+    basis: &Basis,
+    readings: &[gauges::Reading],
+    routes: &[CanonicalId],
+) -> Option<String> {
+    use crate::port::passage::{MAX_THROTTLE_PERMILLE, MIN_THROTTLE_PERMILLE};
+    let mass = CanonicalId::new(MASS_KG).ok()?;
+    let tank_row = goods.good(&consumable_good(goods, Consumable::Propellant)?)?;
+    let locker_row = goods.good(&consumable_good(goods, Consumable::Provisions)?)?;
+    let compartment = |stowage: &CanonicalId| -> Option<&Compartment> {
+        readings
+            .iter()
+            .find(|(_, comp, _)| comp.accepts.contains(stowage))
+            .map(|(_, comp, _)| comp)
+    };
+    // A compartment's capacity in units of its good: the tightest limit.
+    let capacity = |comp: &Compartment, row: &crate::definitions::GoodDef| -> Option<u64> {
+        comp.limits
+            .iter()
+            .filter_map(|(measure, limit)| {
+                let per_unit = *row.measures.get(measure)?;
+                (per_unit > 0).then(|| limit / per_unit)
+            })
+            .min()
+    };
+    let tank_cap = capacity(compartment(&tank_row.stowage)?, tank_row)?;
+    let locker_cap = capacity(compartment(&locker_row.stowage)?, locker_row)?;
+    let tank_kg = *tank_row.measures.get(&mass)?;
+    let locker_kg = *locker_row.measures.get(&mass)?;
+    // The payload with both full: today's pools swapped for the capacities.
+    let payload = basis
+        .payload
+        .checked_sub(basis.tank.checked_mul(tank_kg)?)?
+        .checked_sub(basis.locker.checked_mul(locker_kg)?)?
+        .checked_add(tank_cap.checked_mul(tank_kg)?)?
+        .checked_add(locker_cap.checked_mul(locker_kg)?)?;
+    let at = |throttle: u32| -> Option<PassagePlan> {
+        let mut full = basis.clone();
+        full.payload = payload;
+        full.spec.drive.throttle_permille = throttle;
+        plan_on(w, &full, routes).ok()
+    };
+    let asked = at(basis.spec.drive.throttle_permille)?;
+    if asked.burn_t <= tank_cap && u64::from(asked.crew_days) <= locker_cap {
+        return None;
+    }
+    let none = || THROTTLE_NONE.replace("{min}", &MIN_THROTTLE_PERMILLE.to_string());
+    let Some(throttle) = highest_fitting(MIN_THROTTLE_PERMILLE, MAX_THROTTLE_PERMILLE, |t| {
+        at(t).is_some_and(|plan| plan.burn_t <= tank_cap)
+    }) else {
+        return Some(none());
+    };
+    let plan = at(throttle)?;
+    if u64::from(plan.crew_days) > locker_cap {
+        return Some(none());
+    }
+    Some(
+        THROTTLE_FITS
+            .replace("{throttle}", &throttle.to_string())
+            .replace("{burn}", &plan.burn_t.to_string())
+            .replace("{days}", &plan.crew_days.to_string())
+            .replace("{passage}", &ic_days(plan.total_s)),
+    )
+}
+
+/// The highest value in `lo..=hi` that `fits`, by bisection over a predicate
+/// that is true up to some value and false past it; `None` when `lo` itself
+/// does not fit.
+fn highest_fitting(lo: u32, hi: u32, mut fits: impl FnMut(u32) -> bool) -> Option<u32> {
+    if !fits(lo) {
+        return None;
+    }
+    if fits(hi) {
+        return Some(hi);
+    }
+    let (mut lo, mut hi) = (lo, hi);
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if fits(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Some(lo)
 }
 
 // ---- +ship/undock ------------------------------------------------------------------
@@ -2632,5 +2744,25 @@ mod tests {
         assert_eq!(tonnes_over(181_000, 181_000), "181.0");
         assert_eq!(tonnes_over(142_184, 181_000), tonnes_one_decimal(142_184));
         assert_eq!(tonnes_over(181_101, 181_000), "181.2");
+    }
+
+    /// Doc 19 cut A.8 (D-19-22): the bisection finds the last throttle that fits.
+    #[test]
+    fn a8_the_highest_fitting_throttle_is_found_by_bisection() {
+        assert_eq!(highest_fitting(250, 1_000, |t| t <= 450), Some(450));
+        assert_eq!(highest_fitting(250, 1_000, |t| t <= 999), Some(999));
+        assert_eq!(highest_fitting(250, 1_000, |t| t <= 251), Some(251));
+        assert_eq!(highest_fitting(250, 1_000, |t| t <= 250), Some(250));
+        assert_eq!(highest_fitting(250, 1_000, |_| true), Some(1_000));
+        assert_eq!(highest_fitting(250, 1_000, |_| false), None);
+        let mut calls = 0;
+        assert_eq!(
+            highest_fitting(250, 1_000, |t| {
+                calls += 1;
+                t <= 466
+            }),
+            Some(466)
+        );
+        assert!(calls <= 12, "{calls} plans");
     }
 }
