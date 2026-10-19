@@ -1590,6 +1590,7 @@ pub struct EconomyModule {
         mush_core::mechanics::DefinitionRef,
     )>,
     original_purchases: Option<[mush_core::mechanics::DefinitionRef; 3]>,
+    house_purchases: Option<[mush_core::DefinitionRef; 3]>,
     entitlement_purchases: Option<[[mush_core::mechanics::DefinitionRef; 3]; 2]>,
     mind_renewals: Option<crate::managed_renewal::bridge::Configuration>,
     house_initial_filing: Option<mush_core::mechanics::DefinitionRef>,
@@ -1697,6 +1698,11 @@ impl EconomyModule {
     /// Grant only the fixed original-v3 and derived-v1 entitlement actions
     /// access to this existing owner slot. Market/Roll retain their own audits.
     #[must_use]
+    pub fn with_house_mind_purchases(mut self, actions: [mush_core::DefinitionRef; 3]) -> Self {
+        self.house_purchases = Some(actions);
+        self
+    }
+
     pub fn with_mind_entitlement_purchases(
         mut self,
         original: [mush_core::mechanics::DefinitionRef; 3],
@@ -1995,7 +2001,7 @@ impl GameModule for EconomyModule {
                     "initial filing issuer is not in the composition title-issuer table",
                 ));
             }
-            crate::registry_filing::register_with_pending(
+            crate::registry_filing::register_with_house_purchases(
                 reg,
                 policy.clone(),
                 action.clone(),
@@ -2008,9 +2014,11 @@ impl GameModule for EconomyModule {
                 self.charter_transfer.as_ref(),
                 self.core_integration.as_ref(),
                 self.charter_pending.as_ref(),
+                self.house_purchases.as_ref(),
             )?;
         }
-        if (self.original_purchases.is_some()
+        if (self.house_purchases.is_some()
+            || self.original_purchases.is_some()
             || self.entitlement_purchases.is_some()
             || self.house_initial_filing.is_some()
             || self.dependent_initial_filing.is_some()
@@ -2022,6 +2030,11 @@ impl GameModule for EconomyModule {
         {
             return Err(ModError::msg(
                 "original purchases require the existing filing EconomyStore participant",
+            ));
+        }
+        if self.house_purchases.is_some() && self.house_initial_filing.is_none() {
+            return Err(ModError::msg(
+                "house purchases require actual house filing composition",
             ));
         }
         if self.mind_renewals.is_some()
@@ -2121,7 +2134,9 @@ impl GameModule for EconomyModule {
             tail_max,
             self.config.idempotency_window_secs,
             self.initial_filing.is_some(),
-            self.original_purchases.is_some() || self.entitlement_purchases.is_some(),
+            self.original_purchases.is_some()
+                || self.entitlement_purchases.is_some()
+                || self.house_purchases.is_some(),
             self.mind_renewals.is_some(),
             self.compatible_update.is_some(),
             self.charter_transfer.is_some(),

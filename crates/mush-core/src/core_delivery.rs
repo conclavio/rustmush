@@ -23,6 +23,7 @@ pub(crate) struct CarryCheck {
     actor: ObjId,
     object: ObjId,
     destination: ObjId,
+    exchange: Option<Arc<crate::core_exchange::ExchangeCarryAttempt>>,
 }
 impl CarryCheck {
     pub(crate) fn capture(
@@ -38,6 +39,27 @@ impl CarryCheck {
             actor,
             object,
             destination,
+            exchange: None,
+        };
+        result.recheck(world, lens)?;
+        Ok(result)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture_exchange(
+        hooks: Arc<[HookReg]>,
+        world: &World,
+        lens: TypedStateLens<'_>,
+        actor: ObjId,
+        object: ObjId,
+        destination: ObjId,
+        exchange: Arc<crate::core_exchange::ExchangeCarryAttempt>,
+    ) -> Result<Self, ParticipantError> {
+        let result = Self {
+            hooks,
+            actor,
+            object,
+            destination,
+            exchange: Some(exchange),
         };
         result.recheck(world, lens)?;
         Ok(result)
@@ -50,8 +72,16 @@ impl CarryCheck {
         if !lens.is_live() {
             return Err(ParticipantError::Unavailable);
         }
+        if let Some(attempt) = &self.exchange {
+            attempt.require_move(self.actor, self.object, self.destination)?;
+        }
         for hook in self.hooks.iter() {
             let context = HookReadContext::for_module(world, lens, &hook.module);
+            let context = if let Some(attempt) = &self.exchange {
+                context.with_core_exchange_attempt(attempt)
+            } else {
+                context
+            };
             hook.hook
                 .carry_attempt(&context, self.actor, self.object, self.destination)
                 .map_err(|_| ParticipantError::Authority)?;

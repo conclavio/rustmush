@@ -227,6 +227,37 @@ pub(crate) fn register_with_pending(
     core_integration: Option<&crate::core_integration::CoreIntegrationConfig>,
     charter_pending: Option<&crate::managed_charter_transfer::CharterPendingConfig>,
 ) -> Result<(), mush_core::ModError> {
+    register_with_house_purchases(
+        reg,
+        policy,
+        action,
+        purchases,
+        entitlements,
+        house_action,
+        dependent_action,
+        renewals,
+        compatible_update,
+        charter_transfer,
+        core_integration,
+        charter_pending,
+        None,
+    )
+}
+pub(crate) fn register_with_house_purchases(
+    reg: &mut mush_core::Registrar<'_>,
+    policy: InitialFilingPolicy,
+    action: mush_core::mechanics::DefinitionRef,
+    purchases: Option<&[mush_core::mechanics::DefinitionRef; 3]>,
+    entitlements: Option<&[[mush_core::mechanics::DefinitionRef; 3]; 2]>,
+    house_action: Option<&mush_core::mechanics::DefinitionRef>,
+    dependent_action: Option<&mush_core::mechanics::DefinitionRef>,
+    renewals: Option<&crate::managed_renewal::bridge::Configuration>,
+    compatible_update: Option<&mush_core::DefinitionRef>,
+    charter_transfer: Option<&mush_core::DefinitionRef>,
+    core_integration: Option<&crate::core_integration::CoreIntegrationConfig>,
+    charter_pending: Option<&crate::managed_charter_transfer::CharterPendingConfig>,
+    house_purchases: Option<&[mush_core::DefinitionRef; 3]>,
+) -> Result<(), mush_core::ModError> {
     use mush_core::mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionValidationContext,
     };
@@ -341,6 +372,24 @@ pub(crate) fn register_with_pending(
                 }
                 actions.insert(reference.clone());
             }
+        }
+    }
+    if let Some(references) = house_purchases {
+        for (reference, id) in references.iter().zip([
+            "purchase_house_mind",
+            "settle_house_mind",
+            "refund_house_mind",
+        ]) {
+            if reference.key().owner.as_str() != "market"
+                || reference.key().kind.as_str() != "action"
+                || reference.key().id.as_str() != id
+                || reference.version() != 1
+            {
+                return Err(mush_core::ModError::msg(
+                    "house purchase requires the exact ordered Market actions",
+                ));
+            }
+            actions.insert(reference.clone());
         }
     }
     if let Some(renewals) = renewals {
@@ -902,6 +951,9 @@ impl InitialFilingParticipant {
 /// original filing request/output wrappers avoids sharing money authority
 /// through a second adapter or generic plan callback.
 pub enum EconomyRequest {
+    HouseFunding(crate::managed_house_purchase::HousePurchase),
+    HouseGrant(crate::managed_house_purchase::HouseTerminal),
+    HouseRefund(crate::managed_house_purchase::HouseTerminal),
     CharterPendingFunding(crate::managed_charter_transfer::CharterPendingFundingRequest),
     CharterPendingTerminal(crate::managed_charter_transfer::CharterPendingTerminalRequest),
     CharterTransfer(charter_transfer::RegistryCharterTransfer),
@@ -941,6 +993,8 @@ impl From<RegistryInitialFiling> for EconomyRequest {
     }
 }
 pub enum EconomyOutput {
+    HouseFunding(crate::managed_house_purchase::HouseFundingOutput),
+    HouseTerminal(crate::managed_house_purchase::HouseTerminalOutput),
     CharterPending(crate::managed_charter_transfer::CharterPendingOutput),
     CharterTransfer(charter_transfer::CharterTransferOutput),
     CoreFunding(crate::core_integration::CoreFundingOutput),
@@ -956,6 +1010,22 @@ pub enum EconomyOutput {
     RenewalTerminal(crate::managed_renewal::RenewalTerminalOutput),
 }
 impl EconomyOutput {
+    pub fn house_funding(
+        self,
+    ) -> Result<crate::managed_house_purchase::HouseFundingOutput, ParticipantError> {
+        match self {
+            Self::HouseFunding(output) => Ok(output),
+            _ => Err(refused()),
+        }
+    }
+    pub fn house_terminal(
+        self,
+    ) -> Result<crate::managed_house_purchase::HouseTerminalOutput, ParticipantError> {
+        match self {
+            Self::HouseTerminal(output) => Ok(output),
+            _ => Err(refused()),
+        }
+    }
     pub fn charter_pending(
         self,
     ) -> Result<crate::managed_charter_transfer::CharterPendingOutput, ParticipantError> {
@@ -1438,6 +1508,41 @@ impl OwnerParticipant for InitialFilingParticipant {
                 Ok(OwnerPreparation::new(
                     EconomyOutput::InitialFiling(output),
                     patch.into(),
+                    writes,
+                ))
+            }
+            EconomyRequest::HouseFunding(request) => {
+                let (output, patch, writes) =
+                    crate::managed_house_purchase::prepare_funding(state, context, request)?;
+                Ok(OwnerPreparation::new(
+                    EconomyOutput::HouseFunding(output),
+                    EconomyPatch::Purchase(Box::new(patch)),
+                    writes,
+                ))
+            }
+            EconomyRequest::HouseGrant(request) => {
+                let (output, patch, writes) = crate::managed_house_purchase::prepare_terminal(
+                    state,
+                    context,
+                    request,
+                    PurchaseOutcome::Granted,
+                )?;
+                Ok(OwnerPreparation::new(
+                    EconomyOutput::HouseTerminal(output),
+                    EconomyPatch::Purchase(Box::new(patch)),
+                    writes,
+                ))
+            }
+            EconomyRequest::HouseRefund(request) => {
+                let (output, patch, writes) = crate::managed_house_purchase::prepare_terminal(
+                    state,
+                    context,
+                    request,
+                    PurchaseOutcome::Refunded,
+                )?;
+                Ok(OwnerPreparation::new(
+                    EconomyOutput::HouseTerminal(output),
+                    EconomyPatch::Purchase(Box::new(patch)),
                     writes,
                 ))
             }

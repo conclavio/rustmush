@@ -749,6 +749,7 @@ pub struct StateFamilyRegistryBuilder {
     original_purchase: Option<terminal_capacity::PurchaseProtocol>,
     entitlement_purchase: Option<terminal_capacity::EntitlementProtocol>,
     house_purchase: Option<terminal_capacity::HouseProtocol>,
+    charter_pending: Option<terminal_capacity::CharterPendingProtocol>,
     mind_renewal: Option<terminal_capacity::RenewalProtocol>,
     ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
     core_integration: Option<terminal_capacity::CoreIntegrationProtocol>,
@@ -960,6 +961,27 @@ impl StateFamilyRegistryBuilder {
         Ok(())
     }
 
+    pub(crate) fn charter_pending_capacity(
+        &mut self,
+        owner: &OwnerId,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 4],
+        registry_revocation: Option<crate::DefinitionRef>,
+    ) -> Result<(), ActionStateError> {
+        if self.charter_pending.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate pending charter protocol",
+            ));
+        }
+        self.charter_pending = Some(terminal_capacity::CharterPendingProtocol::new(
+            owner,
+            participants,
+            actions,
+            registry_revocation,
+        )?);
+        Ok(())
+    }
+
     pub(crate) fn house_mind_purchase_capacity(
         &mut self,
         owner: &OwnerId,
@@ -1148,6 +1170,7 @@ impl StateFamilyRegistryBuilder {
             self.ic_mind_claim.as_ref(),
             self.core_integration.as_ref(),
             self.house_purchase.as_ref(),
+            self.charter_pending.as_ref(),
         )?;
         let registry = StateFamilyRegistry {
             entries: self.entries,
@@ -1160,6 +1183,7 @@ impl StateFamilyRegistryBuilder {
             ic_mind_claim: self.ic_mind_claim,
             core_integration: self.core_integration,
             house_purchase: self.house_purchase,
+            charter_pending: self.charter_pending,
             fingerprint,
             owner_readiness,
         };
@@ -1177,6 +1201,11 @@ impl StateFamilyRegistryBuilder {
             protocol
                 .validate_families(&registry)
                 .map_err(|e| StateFamilyRegistryError::EntitlementPurchase(e.to_string()))?;
+        }
+        if let Some(protocol) = &registry.charter_pending {
+            protocol
+                .validate_families(&registry)
+                .map_err(|e| StateFamilyRegistryError::CharterPending(e.to_string()))?;
         }
         if let Some(protocol) = &registry.house_purchase {
             protocol
@@ -1213,6 +1242,7 @@ pub struct StateFamilyRegistry {
     original_purchase: Option<terminal_capacity::PurchaseProtocol>,
     entitlement_purchase: Option<terminal_capacity::EntitlementProtocol>,
     house_purchase: Option<terminal_capacity::HouseProtocol>,
+    charter_pending: Option<terminal_capacity::CharterPendingProtocol>,
     mind_renewal: Option<terminal_capacity::RenewalProtocol>,
     ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
     core_integration: Option<terminal_capacity::CoreIntegrationProtocol>,
@@ -1243,6 +1273,9 @@ impl StateFamilyRegistry {
             protocol.validate_composition(definitions, providers, participants)?;
         }
         if let Some(protocol) = &self.entitlement_purchase {
+            protocol.validate_composition(definitions, providers, participants)?;
+        }
+        if let Some(protocol) = &self.charter_pending {
             protocol.validate_composition(definitions, providers, participants)?;
         }
         if let Some(protocol) = &self.house_purchase {
@@ -1367,6 +1400,7 @@ fn state_family_fingerprint<'a>(
     ic_mind_claim: Option<&terminal_capacity::IcClaimProtocol>,
     core_integration: Option<&terminal_capacity::CoreIntegrationProtocol>,
     house_purchase: Option<&terminal_capacity::HouseProtocol>,
+    charter_pending: Option<&terminal_capacity::CharterPendingProtocol>,
 ) -> Result<DefinitionDigest, CanonicalEncodingError> {
     let mut value = serde_json::Map::from_iter([
         (
@@ -1456,12 +1490,20 @@ fn state_family_fingerprint<'a>(
     } else {
         domain
     };
+    let domain = if let Some(protocol) = charter_pending {
+        value.insert("charter_pending".to_owned(), json!(protocol));
+        "state_family_registry.v11"
+    } else {
+        domain
+    };
     DefinitionDigest::for_canonical_value(domain, &Value::Object(value))
 }
 
 /// State-family registration failure.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum StateFamilyRegistryError {
+    #[error("Pending charter capacity composition: {0}")]
+    CharterPending(String),
     #[error("House purchase capacity composition: {0}")]
     HousePurchase(String),
     #[error("Core integration capacity composition: {0}")]
@@ -2620,6 +2662,25 @@ impl ActionTxn<'_> {
         }
         result
     }
+    pub(crate) fn charter_pending_completion(
+        &mut self,
+        base: &ActionReadBase,
+        provider: &ProviderRegistrationOrdinal,
+        commit: crate::CommitToken,
+        terminal: Option<crate::CommitToken>,
+    ) -> Result<(), ActionStateError> {
+        let result = (|| {
+            self.read_preimage(base, provider).map_err(|_| {
+                ActionStateError::TerminalCapacity("pending charter transaction base differs")
+            })?;
+            terminal_capacity::charter_pending_change(self, commit, terminal)
+        })();
+        if let Err(error) = &result {
+            self.poison(error);
+        }
+        result
+    }
+
     pub(crate) fn house_mind_purchase_completion(
         &mut self,
         base: &ActionReadBase,

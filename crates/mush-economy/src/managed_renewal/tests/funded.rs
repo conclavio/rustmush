@@ -836,3 +836,107 @@ mod reoffer;
 
 #[path = "funded/service.rs"]
 mod service;
+
+/// Native owner history is permanent even when the ordinary hold-GC window
+/// elapses. The actual owner images are placed in the actual registered Economy
+/// slot solely to run its real tick; this does not claim a paired licence boot.
+#[test]
+fn renewal_terminal_holds_survive_actual_sweep_and_complete_cold_reconstruction() -> TestResult {
+    for transition in [Transition::Grant, Transition::Refund] {
+        let (mut r, req, docs) = funded(false)?;
+        let prep = prepared(&r, req.clone(), transition, 5)?;
+        install_money(&mut r, prep)?;
+        let actual = r.state.fold.renewal_receipts.get(req.operation)?.clone();
+        let hold = actual.funding().hold();
+        let terminal_at = r
+            .state
+            .hold_terminal_at(hold)
+            .ok_or("actual terminal timestamp")?;
+        assert!(
+            !r.state
+                .snapshot
+                .hold(hold)
+                .ok_or("actual terminal hold")?
+                .status
+                .is_held()
+        );
+        let mut entries = r.state.transactions.values().cloned().collect::<Vec<_>>();
+        entries.sort_by_key(|tx| tx.journal_seq);
+        let now = terminal_at
+            .checked_add(crate::HOLD_GC_AFTER_SECS + 60)
+            .ok_or("gc time")?;
+        let mut engine = mush_core::Engine::with_modules(
+            r.world,
+            mush_core::Registry::new(),
+            vec![
+                Box::new(mush_org::OrgModule::new()),
+                Box::new(crate::EconomyModule::new()),
+            ],
+        )?;
+        engine.modules_loaded(
+            Default::default(),
+            &mut mush_core::Outbox::new(),
+            &mut mush_core::Effects::new(),
+        )?;
+        *engine
+            .world
+            .module_state_mut::<EconomyStore>()
+            .ok_or("actual Economy slot")? = r.state;
+        let mut world = mush_testkit::TestWorld::from_engine(engine);
+        let _ = world.take_module_ops();
+        world.set_now(now);
+        let _ = world.fire_due(now.checked_mul(1000).ok_or("gc milliseconds")?);
+        let state = world
+            .world()
+            .module_state::<EconomyStore>()
+            .ok_or("actual store")?;
+        assert_eq!(state.last_sweep().0, now, "actual registered sweep ran");
+        assert!(!state.frozen);
+        assert!(
+            state.snapshot.hold(hold).is_some(),
+            "renewal audit hold must remain"
+        );
+        assert!(state.fold.journal_holds.contains_key(&hold));
+        actual.verify_documents(
+            state.snapshot.contract(req.contract).ok_or("contract")?,
+            state.snapshot.hold(hold).ok_or("hold")?,
+        )?;
+        let mut replay = crate::fold::FoldState::default();
+        for tx in &entries {
+            replay.fold_entry(tx.journal_seq, tx);
+        }
+        let mut snapshot = state.snapshot.clone();
+        let mut contracts = state
+            .snapshot
+            .contracts()
+            .map(|c| (c.id, c.clone()))
+            .collect();
+        let holds = state.snapshot.holds().map(|h| (h.id, h.clone())).collect();
+        let book = crate::managed_renewal::bridge::recover(
+            &mut replay,
+            &mut snapshot,
+            &mut contracts,
+            &holds,
+            &docs,
+            true,
+        )?;
+        assert!(book.combined_verified());
+        assert!(replay.renewal_receipts.get(req.operation)? == &actual);
+        let retained = state.snapshot.hold(hold).ok_or("hold")?.clone();
+        let mut missing = holds.clone();
+        assert_eq!(missing.remove(&hold), Some(retained));
+        assert!(
+            crate::managed_renewal::bridge::recover(
+                &mut replay,
+                &mut snapshot,
+                &mut contracts,
+                &missing,
+                &docs,
+                true
+            )
+            .is_err(),
+            "cold audit requires exact retained hold"
+        );
+    }
+    Ok(())
+}

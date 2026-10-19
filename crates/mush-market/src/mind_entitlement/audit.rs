@@ -98,6 +98,15 @@ impl Families {
         config: &EntitlementConfig,
         original_enabled: bool,
     ) -> Result<(), ModError> {
+        self.audit_with_house(ctx, config, original_enabled, false)
+    }
+    pub(crate) fn audit_with_house(
+        &self,
+        ctx: &ModuleCtx<'_>,
+        config: &EntitlementConfig,
+        original_enabled: bool,
+        house_enabled: bool,
+    ) -> Result<(), ModError> {
         let e = ctx
             .state::<EconomyStore>()
             .ok_or_else(|| error("economy unavailable"))?;
@@ -158,6 +167,12 @@ impl Families {
         })?;
         // Reverse history is mandatory even if all new Market families are empty.
         for actual in audit.receipts().map_err(error)? {
+            if actual.house().map_err(error)?.is_some() {
+                if !house_enabled {
+                    return Err(error("house economic history is not configured"));
+                }
+                continue;
+            }
             if actual.entitlement().map_err(error)?.is_some() {
                 operation(ctx, self, actual.operation())?
                     .verify_history(actual)

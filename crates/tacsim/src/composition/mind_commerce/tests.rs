@@ -685,3 +685,123 @@ fn reconformance_requires_active_opt_in_and_exact_real_services() -> TestResult 
     }
     Ok(())
 }
+
+fn house_policy() -> Result<mush_market::mind_house::HousePolicy, ModError> {
+    use mush_economy::managed_entitlement::{GrossRecipientCut, Recipient};
+    Ok(mush_market::mind_house::HousePolicy {
+        price: Amount::from_minor(400),
+        instrument: InstrumentId::new("cr").ok_or_else(|| ModError::msg("currency"))?,
+        registry: GrossRecipientCut {
+            permille: 100,
+            recipient: Some(Recipient {
+                account: AccountId(1),
+                owner: PrincipalId::System(issuer()?),
+            }),
+        },
+        venue_name: MarketId::new("registry").ok_or_else(|| ModError::msg("venue"))?,
+        venue: GrossRecipientCut {
+            permille: 0,
+            recipient: None,
+        },
+        transferable: false,
+        term_seconds: 90 * 86400,
+        grace_seconds: 3 * 86400,
+        quote_seconds: 600,
+        renewal_price: Amount::from_minor(300),
+        renewal_term_seconds: 60 * 86400,
+        renewal_grace_seconds: 86400,
+    })
+}
+fn house_engine(c: &MindCommerce, market: bool) -> Result<Engine, ModError> {
+    let mut modules: Vec<Box<dyn GameModule>> = vec![
+        Box::new(mush_org::OrgModule::new()),
+        Box::new(c.configure_economy(EconomyModule::new().with_title_issuers(vec![issuer()?]))),
+        Box::new(c.configure_roll(RollModule::with_writers([crate::NS]))),
+        Box::new(c.configure_tacsim(layer())?),
+    ];
+    if market {
+        modules.insert(
+            1,
+            Box::new(
+                c.configure_market(
+                    MarketModule::new()
+                        .with_venue_gate(std::sync::Arc::new(crate::port::market::PortVenueGate)),
+                ),
+            ),
+        );
+    }
+    Engine::with_modules(World::new_minimal(), Registry::new(), modules)
+}
+#[test]
+fn house_purchase_requires_explicit_active_house_and_all_actual_owners() -> TestResult {
+    assert!(
+        prepare(CommerceMode::Active)?
+            .with_house_minds(house_policy()?)
+            .is_err()
+    );
+    assert!(
+        prepare(CommerceMode::Initialize)?
+            .with_house_minds(house_policy()?)
+            .is_err()
+    );
+    let ordinary = prepare(CommerceMode::Active)?.with_house_filings()?;
+    assert!(!has(
+        &house_engine(&ordinary, true)?,
+        "market",
+        "action",
+        "purchase_house_mind"
+    ));
+    let selected = ordinary.with_house_minds(house_policy()?)?;
+    assert!(
+        house_engine(&selected, false).is_err(),
+        "actual provider is mandatory"
+    );
+    let actual = house_engine(&selected, true)?;
+    for id in [
+        "list_house_mind",
+        "quote_house_mind",
+        "purchase_house_mind",
+        "settle_house_mind",
+        "refund_house_mind",
+    ] {
+        assert!(has(&actual, "market", "action", id));
+    }
+    assert!(has(&actual, "roll", "owner_read", "personal_house_holding"));
+    assert!(!has(
+        &actual,
+        "roll",
+        "owner_read",
+        "personal_entitlement_holding"
+    ));
+    assert!(selected.with_house_minds(house_policy()?).is_err());
+    Ok(())
+}
+#[test]
+fn house_and_historical_personal_purchases_register_without_replacing_protocols() -> TestResult {
+    let configured = prepare(CommerceMode::Active)?
+        .with_original_purchases(quotes()?)?
+        .with_house_filings()?
+        .with_house_minds(house_policy()?)?;
+    let actual = house_engine(&configured, true)?;
+    assert!(has(&actual, "market", "action", "purchase_original_mind"));
+    assert!(has(&actual, "market", "action", "purchase_house_mind"));
+    let definitions = actual.registry.definitions().ok_or("definitions")?;
+    let old = configured.purchases.as_ref().ok_or("original config")?;
+    let house = configured.house_purchases.as_ref().ok_or("house config")?;
+    assert_eq!(old.participants(), house.participants());
+    for reference in old
+        .actions()?
+        .into_iter()
+        .chain(house.purchase_actions(mush_roll::commerce::house_purchase::HouseProtocol::HouseV1)?)
+    {
+        assert!(definitions.get_exact(&reference).is_ok());
+    }
+    assert_eq!(
+        definitions
+            .iter()
+            .filter(|d| d.reference() == house.participants().economy())
+            .count(),
+        1
+    );
+    Ok(())
+}

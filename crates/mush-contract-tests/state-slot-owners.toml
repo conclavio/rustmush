@@ -1148,3 +1148,15 @@ The cfg(test) house catalogue admin adapter uses the actual policy allocator and
 Org submit service to revoke a curator grant and install an explicit scoped Deny.
 No filing, title, rating, balance or catalogue authority is manufactured.
 """
+
+[[site]]
+path = "crates/tacsim/src/minds/bulk/house_purchase_integration_tests.rs"
+accessor = "World::module_state_mut"
+slot = "OrgStore"
+owner = "org"
+reason = """
+The cfg(test) house purchase admin adapter submits a real scoped curator-grant
+revocation through mush_org::submit. This tests publication-authority loss while
+retaining the actual house issuer; it does not manufacture title, money, filing,
+rating, paid rights or readiness state.
+"""

@@ -35,7 +35,12 @@ const MAX_PAYOUTS: usize = 3;
 pub(crate) mod subject;
 use subject::{PurchaseSubject, SubjectTerminal};
 pub(crate) fn closed_namespace(namespace: &str) -> bool {
-    matches!(namespace, NAMESPACE | crate::managed_entitlement::NAMESPACE)
+    matches!(
+        namespace,
+        NAMESPACE
+            | crate::managed_entitlement::NAMESPACE
+            | crate::managed_house_purchase::NAMESPACE
+    )
 }
 
 /// A private, exact plan carrier. No public authorization callback or caller
@@ -209,29 +214,6 @@ impl OriginalPurchase {
             {
                 return Err(refused());
             }
-        }
-        Ok(())
-    }
-
-    fn check_contract_capacity(&self, state: &EconomyStore) -> Result<(), ParticipantError> {
-        // A terminal transition does not admit another contract. Keep the
-        // admission ceiling out of current-fact checks used to release a slot.
-        let snapshot = &state.snapshot;
-        let buyer = PrincipalId::Object(self.buyer);
-        if snapshot
-            .contracts()
-            .filter(|contract| contract.issuer == buyer && !contract.state.is_terminal())
-            .count()
-            >= crate::contract::MAX_OPEN_CONTRACTS_PER_ISSUER
-            || snapshot
-                .contracts()
-                .filter(|contract| {
-                    !contract.state.is_terminal() && contract.consent.parties.contains(&buyer)
-                })
-                .count()
-                >= crate::contract::MAX_LIVE_CONTRACTS_PER_PARTY
-        {
-            return Err(refused());
         }
         Ok(())
     }

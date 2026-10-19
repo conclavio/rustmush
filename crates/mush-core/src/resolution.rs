@@ -471,6 +471,46 @@ impl<'a> PrepareCtx<'a> {
         result
     }
 
+    /// Reserve the closed pending charter transfer's exact future completion keys. The operation
+    /// and validated post-images must belong to this invocation and transaction.
+    pub fn reserve_charter_pending_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.charter_pending_completion(txn, None)
+    }
+
+    /// Retire this pending charter transfer's reservation with its exact terminal images in
+    /// the same acknowledgement. This does not accept caller-defined targets.
+    pub fn close_charter_pending_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        operation: CommitToken,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.charter_pending_completion(txn, Some(operation))
+    }
+
+    fn charter_pending_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        terminal: Option<CommitToken>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        let result = match (self.owner_error.is_none(), self.registered_transaction) {
+            (true, Some((base, provider))) => {
+                txn.charter_pending_completion(base, provider, self.commit_token, terminal)
+            }
+            _ => Err(crate::action_state::ActionStateError::TerminalCapacity(
+                "pending charter transfer preparation unavailable",
+            )),
+        };
+        if result.is_err() {
+            txn.poison_owner_read();
+            self.owner_error
+                .get_or_insert(crate::participant::ParticipantError::Authority);
+        }
+        result
+    }
+
     /// Reserve the closed house purchase's exact future completion keys. The job
     /// and validated post-images must belong to this invocation and transaction.
     pub fn reserve_house_mind_purchase_completion(
@@ -770,6 +810,44 @@ impl<'a> PrepareCtx<'a> {
                 .map_err(|_| crate::participant::ParticipantError::Authority)?;
             self.with_shell(|p, c| {
                 p.deliver_core_output(service, txn, c, order, facts, hooks, base, provider)
+            })
+        })();
+        if let Err(error) = &result {
+            txn.poison_owner_read();
+            self.owner_error.get_or_insert_with(|| error.clone());
+        }
+        result
+    }
+
+    /// Exchange one incoming and optional displaced core only with the exact
+    /// already-prepared Economy and Tactics owners. Core owns physical images.
+    pub fn exchange_core_component<P: crate::core_exchange::CoreExchangePolicy>(
+        &mut self,
+        service: &crate::core_exchange::CoreComponentExchanges<P>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        order: u64,
+    ) -> Result<crate::core_exchange::ExchangedCoreComponent, crate::participant::ParticipantError>
+    {
+        let result = (|| {
+            if let Some(error) = &self.owner_error {
+                return Err(error.clone());
+            }
+            let (base, provider) = self
+                .registered_transaction
+                .ok_or(crate::participant::ParticipantError::Unavailable)?;
+            let hooks = std::sync::Arc::from(
+                self.carry_hooks
+                    .ok_or(crate::participant::ParticipantError::Unavailable)?,
+            );
+            let facts = self
+                .read_owner_preimage(
+                    txn,
+                    service.reader(),
+                    crate::core_exchange::ExchangeRequest { order },
+                )
+                .map_err(|_| crate::participant::ParticipantError::Authority)?;
+            self.with_shell(|p, c| {
+                p.exchange_core_component(service, txn, c, order, facts, hooks, base, provider)
             })
         })();
         if let Err(error) = &result {

@@ -473,3 +473,5 @@ mod bootstrap_tests;
 
 #[cfg(test)]
 mod filing_tests;
+
+pub mod house_purchase;

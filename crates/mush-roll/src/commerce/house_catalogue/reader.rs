@@ -387,3 +387,46 @@ impl OwnerReadService for HouseSaleReader {
         })
     }
 }
+
+impl HouseSaleFacts {
+    pub(crate) fn check_fresh(
+        &self,
+        ctx: &mush_core::participant::OwnerPrepareContext<'_>,
+        publication: bool,
+    ) -> Result<(), crate::commerce::records::PublicationError> {
+        use crate::commerce::records::PublicationError as E;
+        let bad = |_| E::Mismatch;
+        let world = ctx.world();
+        let now = world.world_ic_now();
+        if ctx.invocation().actor() != self.requester
+            || ctx.invocation().principal() != &(PrincipalId::Object { id: self.requester })
+            || now.clock != self.observed_ic.clock
+            || now.at < self.observed_ic.at
+            || !matches!(
+                self.owner_window
+                    .phase_at(WorldIcSeconds::from_stamp(&now).map_err(|_| E::Mismatch)?),
+                TermPhase::Active | TermPhase::Grace
+            )
+        {
+            return Err(E::Mismatch);
+        }
+        authority::player(world, self.requester).map_err(bad)?;
+        if self.issuer.live(world).map_err(bad)?
+            != (self.organization_revision, self.scope_revision)
+            || self
+                .issuer
+                .title(world, self.charter)
+                .map_err(bad)?
+                .revision
+                != self.title_revision
+        {
+            return Err(E::Mismatch);
+        }
+        if publication {
+            self.issuer
+                .publication(world, self.requester)
+                .map_err(bad)?;
+        }
+        Ok(())
+    }
+}

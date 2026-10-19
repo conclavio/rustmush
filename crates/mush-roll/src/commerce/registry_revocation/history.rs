@@ -154,9 +154,14 @@ fn paid_current(
         .get(&f.entitlement_allocations, &licence.operation().to_hex())
         .map_err(bad)?
         .cloned();
-    let (rating, birth_generation, revision, class) = match (&old, &new) {
-        (Some(a), None) => (a.rating(), a.term(), a.revision(), a.terms().class()),
-        (None, Some(a)) => (a.rating(), a.term(), a.revision(), a.terms().class()),
+    let house = txn
+        .get(&f.house_allocations, &licence.operation().to_hex())
+        .map_err(bad)?
+        .cloned();
+    let (rating, birth_generation, revision, class) = match (&old, &new, &house) {
+        (Some(a), None, None) => (a.rating(), a.term(), a.revision(), a.terms().class()),
+        (None, Some(a), None) => (a.rating(), a.term(), a.revision(), a.terms().class()),
+        (None, None, Some(a)) => (a.rating(), a.term(), a.revision(), a.terms().class()),
         _ => return Err(PublicationError::Mismatch),
     };
     let receipt = txn
@@ -184,19 +189,36 @@ fn paid_current(
         .get(&f.term_economics, &birth_term.key())
         .map_err(bad)?
         .cloned();
-    match (&old, &new) {
-        (Some(row), None) => {
+    let house_economics = txn
+        .get(&f.house_economics, &birth_term.key())
+        .map_err(bad)?
+        .cloned();
+    if (house.is_some() && birth_economics.is_some())
+        || (house.is_none() && house_economics.is_some())
+    {
+        return Err(PublicationError::Mismatch);
+    }
+    match (&old, &new, &house) {
+        (Some(row), None, None) => {
             if birth_economics.is_some() || actual.entitlement().map_err(bad)?.is_some() {
                 return Err(PublicationError::Mismatch);
             }
             h::verify_legacy_history(row, actual, receipt.compatibility().digest())?;
             super::super::paid_audit::verify_granted(row, licence, &birth_term, actual)?;
         }
-        (None, Some(row)) => h::verify_entitlement_grant(
+        (None, Some(row), None) => h::verify_entitlement_grant(
             row,
             licence,
             &birth_term,
             birth_economics.as_ref().ok_or(PublicationError::Missing)?,
+            actual,
+            receipt.compatibility().digest(),
+        )?,
+        (None, None, Some(row)) => super::super::house_purchase::history::verify_grant(
+            row,
+            licence,
+            &birth_term,
+            house_economics.as_ref().ok_or(PublicationError::Missing)?,
             actual,
             receipt.compatibility().digest(),
         )?,

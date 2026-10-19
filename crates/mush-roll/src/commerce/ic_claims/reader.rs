@@ -303,7 +303,7 @@ impl OwnerReadService for IcAdmissionReader {
             }
             (false, true) => (
                 PersonalFiledHolding::paid(
-                    project_entitlement_paid_for(
+                    paid_projection(
                         ctx,
                         ctx.actor(),
                         &self.families,
@@ -328,5 +328,29 @@ impl OwnerReadService for IcAdmissionReader {
             charter_ownership,
             observed_ic: ctx.world().world_ic_now(),
         })
+    }
+}
+
+// The IC reader already owns closed paid-seat admission. Select its actual
+// immutable birth protocol, then invoke that protocol's full current proof.
+fn paid_projection(
+    ctx: &OwnerReadContext<'_>,
+    holder: ObjId,
+    f: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    licence: LicenceId,
+    expected: &RatingCompatibility,
+) -> Result<
+    super::super::personal_paid_holdings::PersonalPaidHolding,
+    super::super::owner_holdings::OwnerProjectionError,
+> {
+    use super::super::entitlement::history::{Birth, read, resolve};
+    use super::super::owner_holdings::OwnerProjectionError as E;
+    let paid = read(ctx, &f.paid_licences, licence.key()).map_err(|_| E::Integrity)?;
+    match resolve(ctx, f, paid.operation()).map_err(|_| E::Integrity)? {
+        Birth::House(_) => super::super::personal_paid_holdings::project_house_paid_for(
+            ctx, holder, f, ratings, licence, expected,
+        ),
+        _ => project_entitlement_paid_for(ctx, holder, f, ratings, licence, expected),
     }
 }

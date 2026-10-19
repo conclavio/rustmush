@@ -4,6 +4,7 @@
 
 use super::*;
 
+mod charter_pending;
 mod core_integration;
 mod entitlement;
 mod house;
@@ -12,6 +13,7 @@ mod paid;
 mod registry;
 mod renewal;
 use crate::{CommitToken, DefinitionRef};
+pub(super) use charter_pending::{Protocol as CharterPendingProtocol, charter_pending_change};
 pub(super) use core_integration::{Protocol as CoreIntegrationProtocol, core_integration_change};
 pub(super) use entitlement::{Protocol as EntitlementProtocol, entitlement_change};
 pub(super) use house::{Protocol as HouseProtocol, house_change};
@@ -198,6 +200,12 @@ impl Verifiers {
                     verify: entitlement::verify,
                 });
             }
+        }
+        if let Some(protocol) = &registry.charter_pending {
+            rows.push(Verifier {
+                effect: protocol.admission_action().clone(),
+                verify: charter_pending::verify,
+            });
         }
         if let Some(protocol) = &registry.house_purchase {
             for action in protocol.admission_actions() {
@@ -477,6 +485,7 @@ pub(super) fn hydrate(
     paid::audit_boot(&view, &records)?;
     entitlement::audit_boot(&view, &records)?;
     house::audit_boot(&view, &records)?;
+    charter_pending::audit_boot(&view, &records)?;
     renewal::audit_boot(&view, &records)?;
     ic_claim::audit_boot(&view, &records)?;
     core_integration::audit_boot(&view, &records)?;
@@ -539,6 +548,7 @@ pub(super) fn prepare(
     paid::validate_changes(store, mutations, &changes, identity)?;
     entitlement::validate_changes(store, mutations, &changes, identity)?;
     house::validate_changes(store, mutations, &changes, identity)?;
+    charter_pending::validate_changes(store, mutations, &changes, identity)?;
     renewal::validate_changes(store, mutations, &changes, identity)?;
     ic_claim::validate_changes(store, mutations, &changes, identity)?;
     core_integration::validate_changes(store, mutations, &changes, identity)?;
@@ -660,9 +670,21 @@ pub(super) fn prepare(
             .map(|t| Ok((t.key.resolve(&store.registry)?, t)))
             .collect::<Result<_, ActionStateError>>()?;
         for (key, mutation) in mutations {
-            let target = admitted
-                .get(key)
-                .ok_or_else(|| refused("unreserved terminal key"))?;
+            let Some(target) = admitted.get(key) else {
+                // Only the configured Registry compound refund may add its
+                // two exact new cause/status rows. Ordinary typed accounting
+                // still charges them before custody; they were never reserved.
+                if charter_pending::extra_terminal_key(
+                    store,
+                    mutations,
+                    &stored.record,
+                    identity,
+                    key,
+                )? {
+                    continue;
+                }
+                return Err(refused("unreserved terminal key"));
+            };
             if let TxnMutation::Put { canonical, .. } = mutation {
                 if canonical.len() > target.ceiling {
                     return Err(refused("terminal ceiling exceeded"));

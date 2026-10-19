@@ -1445,6 +1445,48 @@ impl RollStore {
 
     /// The closed entitlement request validates listing or funding/terminal
     /// facts. Preserve ordinary root accounting and generation fences.
+    pub(crate) fn prepare_house_roots(
+        &self,
+        request: &crate::commerce::house_purchase::roots::HouseRoots,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        let mut changes = Vec::new();
+        if request.before().is_empty() {
+            for required in request.after() {
+                self.check_root_subject(required)?;
+                let record = ReferenceRecord {
+                    format: FORMAT,
+                    key: required.anchor.key(),
+                    revisions: vec![required.target()],
+                };
+                if self.occupied.contains(&record.key.key()) {
+                    return Err(invalid("house retention", "obligation already exists"));
+                }
+                changes.push(Change::Reference(record));
+            }
+        } else {
+            if request.before().len() != request.after().len() {
+                return Err(invalid("house retention", "terminal roots differ"));
+            }
+            for (before, after) in request.before().iter().zip(request.after()) {
+                if before.anchor != after.anchor || before.identity != after.identity {
+                    return Err(invalid("house retention", "terminal target differs"));
+                }
+                self.check_required_root(before)?;
+                // The participant remains part of the same acknowledged
+                // owner union. Re-publish the identical retained image rather
+                // than add a generic zero-write owner bypass. Both keys and
+                // their complete byte footprint were admitted at funding.
+                changes.push(Change::Reference(ReferenceRecord {
+                    format: FORMAT,
+                    key: before.anchor.key(),
+                    revisions: vec![before.target()],
+                }));
+            }
+        }
+        self.prepare(changes)
+    }
+
     pub(crate) fn prepare_entitlement_roots(
         &self,
         request: &crate::commerce::entitlement::roots::EntitlementRoots,

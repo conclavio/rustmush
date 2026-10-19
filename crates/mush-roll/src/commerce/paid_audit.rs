@@ -55,11 +55,36 @@ pub(super) fn audit_with_renewals(
     enabled: bool,
     entitlements: bool,
     renewals: bool,
+    allocated: impl FnMut(u64) -> Result<(), PublicationError>,
+) -> Result<BTreeMap<RootAnchor, RevisionIdentity>, PublicationError> {
+    audit_with_houses(
+        ctx,
+        roll,
+        f,
+        ratings,
+        enabled,
+        entitlements,
+        renewals,
+        false,
+        allocated,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn audit_with_houses(
+    ctx: &ModuleCtx<'_>,
+    roll: &RollStore,
+    f: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    enabled: bool,
+    entitlements: bool,
+    renewals: bool,
+    houses: bool,
     mut allocated: impl FnMut(u64) -> Result<(), PublicationError>,
 ) -> Result<BTreeMap<RootAnchor, RevisionIdentity>, PublicationError> {
     use super::entitlement::history::{self, Birth};
     let mut roots = BTreeMap::new();
-    if !enabled {
+    if !enabled && !houses {
         if scan(ctx, &f.paid_allocations, |_| Ok(()))? != 0
             || scan(ctx, &f.paid_licences, |_| Ok(()))? != 0
             || scan(ctx, &f.paid_terms, |_| Ok(()))? != 0
@@ -78,7 +103,16 @@ pub(super) fn audit_with_renewals(
             &mut allocated,
         )?;
         super::renewal::audit::audit(ctx, roll, f, ratings, false)?;
-        if entitlements || renewals {
+        super::house_purchase::audit::audit(
+            ctx,
+            roll,
+            f,
+            ratings,
+            false,
+            &mut BTreeSet::new(),
+            &mut allocated,
+        )?;
+        if entitlements || renewals || houses {
             return Err(PublicationError::Unavailable);
         }
         return Ok(roots);
@@ -95,6 +129,9 @@ pub(super) fn audit_with_renewals(
         .map_err(|_| PublicationError::Unavailable)?;
     let mut ids = BTreeSet::new();
     scan(ctx, &f.paid_allocations, |row| {
+        if !enabled {
+            return Err(PublicationError::Unavailable);
+        }
         if !ids.insert(row.licence)
             || ctx
                 .action_state(&f.licences, &row.licence.key())
@@ -165,12 +202,41 @@ pub(super) fn audit_with_renewals(
             return Err(PublicationError::Mismatch);
         }
     }
+    for (anchor, identity) in super::house_purchase::audit::audit(
+        ctx,
+        roll,
+        f,
+        ratings,
+        houses,
+        &mut ids,
+        &mut allocated,
+    )? {
+        if roots.insert(anchor, identity).is_some() {
+            return Err(PublicationError::Mismatch);
+        }
+    }
     for actual in history
         .receipts()
         .map_err(|_| PublicationError::Unavailable)?
     {
         match history::resolve(ctx, f, actual.operation())? {
+            Birth::House(row) => {
+                if !houses {
+                    return Err(PublicationError::Unavailable);
+                }
+                let rated = ratings
+                    .resolve_receipt(ctx, &row.rating)
+                    .map_err(|_| PublicationError::Unavailable)?;
+                super::house_purchase::history::verify_history(
+                    row,
+                    actual,
+                    rated.compatibility().digest(),
+                )?;
+            }
             Birth::Legacy(row) => {
+                if !enabled {
+                    return Err(PublicationError::Unavailable);
+                }
                 if actual
                     .entitlement()
                     .map_err(|_| PublicationError::Mismatch)?

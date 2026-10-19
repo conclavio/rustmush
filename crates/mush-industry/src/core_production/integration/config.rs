@@ -51,10 +51,13 @@ impl CoreFactoryConfig {
         &self,
         origin: &OriginPolicy,
     ) -> Result<DefinitionDescriptor, Error> {
-        let actions = super::ACTIONS
+        let mut actions = super::ACTIONS
             .iter()
             .map(|name| self.action(name))
             .collect::<Result<Vec<_>, _>>()?;
+        if self.payment.delivery.is_some() {
+            actions.push(self.action(super::delivery::ACTION)?);
+        }
         let origin_actions = [
             origin.action(true).map_err(bad)?,
             origin.action(false).map_err(bad)?,

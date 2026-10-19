@@ -353,6 +353,15 @@ impl ActionProvider for Provider {
         Ok(AuthoritativeActionOutput::new(result).with_definitions(vec![self.outcome.clone()]))
     }
 }
+// The actual Economy pending configuration retains the immediate-transfer
+// prerequisite grant. This owner-only fixture never exercises that action;
+// register its exact provider while keeping it unavailable to invocations.
+struct ImmediateUnavailable;
+impl ActionProvider for ImmediateUnavailable {
+    fn validate_invocation(&self, _: &ActionInvocation) -> std::result::Result<(), ActionError> {
+        Err(error())
+    }
+}
 impl GameModule for Rules {
     fn name(&self) -> &'static str {
         "roll"
@@ -384,6 +393,7 @@ impl GameModule for Rules {
         for d in &self.declarations {
             reg.definition(d.clone())?;
         }
+        reg.action_provider(self.immediate.clone(), ImmediateUnavailable)?;
         let receipts = receipts(reg, self)?;
         let fund_handle =
             reg.request_owner_participant::<InitialFilingParticipant>(self.fund.clone())?;

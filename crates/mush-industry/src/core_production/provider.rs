@@ -167,6 +167,9 @@ impl Runtime {
                     .map(|(_, a)| a.clone()),
             );
         }
+        if let Some(d) = integration.as_ref().and_then(|r| r.delivery.as_ref()) {
+            allowed.insert(d.action.clone());
+        }
         reg.owner_participant(
             participant.clone(),
             allowed,
@@ -184,6 +187,12 @@ impl Runtime {
         if let Some(r) = &integration {
             reads
                 .push(super::integration::runtime::output_binding(&r.config)?.policy_descriptor()?);
+        }
+        if let Some(d) = integration.as_ref().and_then(|r| r.delivery.as_ref()) {
+            reads.push(mush_core::core_delivery::CoreOutputDeliveries::<
+                super::integration::output_policy::Policy,
+                super::integration::delivery::Policy,
+            >::policy_descriptor(&d.action)?);
         }
         exact(reg, "owner_read", &reads)?;
         let rd = reg.definition(rd)?;
@@ -228,16 +237,30 @@ impl Runtime {
             )?;
         }
         if let Some(r) = &runtime.integration {
-            reg.core_integration_capacity(
-                [participant, r.config.economy_owner.clone()],
-                [
-                    r.actions[2].clone(),
-                    r.actions[3].clone(),
-                    r.actions[4].clone(),
-                    r.actions[5].clone(),
-                    r.actions[6].clone(),
-                ],
-            )?;
+            if let Some(delivery) = &r.delivery {
+                reg.core_integration_delivery_capacity(
+                    [participant, r.config.economy_owner.clone()],
+                    [
+                        r.actions[2].clone(),
+                        r.actions[3].clone(),
+                        r.actions[4].clone(),
+                        r.actions[5].clone(),
+                        r.actions[6].clone(),
+                        delivery.action.clone(),
+                    ],
+                )?;
+            } else {
+                reg.core_integration_capacity(
+                    [participant, r.config.economy_owner.clone()],
+                    [
+                        r.actions[2].clone(),
+                        r.actions[3].clone(),
+                        r.actions[4].clone(),
+                        r.actions[5].clone(),
+                        r.actions[6].clone(),
+                    ],
+                )?;
+            }
             super::integration::provider::register(reg, r.clone(), readiness)?;
             super::integration::schedule::register(reg, r.clone())?;
         }
@@ -274,6 +297,18 @@ impl Runtime {
             .transpose()
             .map_err(mod_error)?;
         let integration_index = super::integration::audit::load_index(data).map_err(mod_error)?;
+        let delivery_index = super::integration::delivery::audit::load(data).map_err(mod_error)?;
+        if delivery_index.is_some()
+            && self
+                .integration
+                .as_ref()
+                .and_then(|r| r.delivery.as_ref())
+                .is_none()
+        {
+            return Err(mod_error(
+                "Core delivery history requires its configured owner",
+            ));
+        }
         if self.integration.is_none() && integration_index.is_some() {
             return Err(mod_error(
                 "Core integration history requires its configured owner",
@@ -291,6 +326,7 @@ impl Runtime {
                 .as_ref()
                 .map(|_| super::integration::state::Projection {
                     index: integration_index,
+                    delivery_index,
                     ..Default::default()
                 });
         Ok(())

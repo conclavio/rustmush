@@ -98,6 +98,7 @@ impl PurchaseWire {
 enum SubjectWire {
     Original(PurchaseWire),
     Entitlement(EntitlementSubjectWire),
+    House(HouseSubjectWire),
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -106,12 +107,22 @@ enum EntitlementSubjectWire {
         purchase: crate::managed_entitlement::subject::EntitlementWire,
     },
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum HouseSubjectWire {
+    HouseMind {
+        purchase: crate::managed_house_purchase::subject::HouseWire,
+    },
+}
 impl SubjectWire {
     fn capture(p: &PurchaseSubject) -> Self {
-        match p.entitlement() {
-            None => Self::Original(PurchaseWire::capture(p.common())),
-            Some(p) => {
+        match p.recipe() {
+            super::subject::Recipe::Original(p) => Self::Original(PurchaseWire::capture(p)),
+            super::subject::Recipe::Entitlement(p) => {
                 Self::Entitlement(EntitlementSubjectWire::MindEntitlement { purchase: p.into() })
+            }
+            super::subject::Recipe::House(p) => {
+                Self::House(HouseSubjectWire::HouseMind { purchase: p.into() })
             }
         }
     }
@@ -122,12 +133,17 @@ impl SubjectWire {
                 .data()
                 .and_then(PurchaseSubject::try_from)
                 .map_err(|_| PurchaseAuditError::Refused),
+            Self::House(HouseSubjectWire::HouseMind { purchase }) => purchase
+                .data()
+                .and_then(PurchaseSubject::try_from)
+                .map_err(|_| PurchaseAuditError::Refused),
         }
     }
     fn namespace(&self) -> &'static str {
         match self {
             Self::Original(_) => NAMESPACE,
             Self::Entitlement(_) => crate::managed_entitlement::NAMESPACE,
+            Self::House(_) => crate::managed_house_purchase::NAMESPACE,
         }
     }
 }
@@ -271,16 +287,24 @@ impl PurchaseHistory {
     /// an entitlement recipe is never exposed as an original purchase.
     pub fn original(&self) -> Result<Option<OriginalPurchase>, PurchaseAuditError> {
         let subject = self.purchase.data()?;
-        Ok(if subject.entitlement().is_none() {
-            Some(subject.common().clone())
-        } else {
-            None
-        })
+        Ok(subject.original().cloned())
     }
     pub fn entitlement(
         &self,
     ) -> Result<Option<crate::managed_entitlement::EntitlementPurchase>, PurchaseAuditError> {
         Ok(self.purchase.data()?.entitlement().cloned())
+    }
+    pub fn house(
+        &self,
+    ) -> Result<Option<crate::managed_house_purchase::HousePurchase>, PurchaseAuditError> {
+        Ok(self.purchase.data()?.house().cloned())
+    }
+    pub fn matches_house(
+        &self,
+        p: &crate::managed_house_purchase::HousePurchase,
+        funding: &FundingReceipt,
+    ) -> bool {
+        PurchaseSubject::try_from(p.clone()).is_ok_and(|s| self.matches_subject(&s, funding))
     }
     pub(super) fn matches_subject(&self, p: &PurchaseSubject, funding: &FundingReceipt) -> bool {
         self.purchase == SubjectWire::capture(p) && &self.funding == funding

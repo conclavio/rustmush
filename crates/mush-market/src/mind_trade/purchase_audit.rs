@@ -126,6 +126,16 @@ impl PurchaseFamilies {
         offers: &Families,
         entitlements_enabled: bool,
     ) -> Result<(), ModError> {
+        self.audit_with_houses(ctx, config, offers, entitlements_enabled, false)
+    }
+    pub(crate) fn audit_with_houses(
+        &self,
+        ctx: &ModuleCtx<'_>,
+        config: &OriginalPurchaseConfig,
+        offers: &Families,
+        entitlements_enabled: bool,
+        houses_enabled: bool,
+    ) -> Result<(), ModError> {
         let economy = ctx
             .state::<EconomyStore>()
             .ok_or_else(|| error("economy is unavailable"))?;
@@ -145,6 +155,12 @@ impl PurchaseFamilies {
         // Independent E4 history is mandatory even when every Market row is
         // missing or an old typed counter/map was restored as a plausible empty.
         for proof in audit.receipts().map_err(error)? {
+            if proof.house().map_err(error)?.is_some() {
+                if !houses_enabled {
+                    return Err(error("house economic history is not configured"));
+                }
+                continue;
+            }
             if proof.entitlement().map_err(error)?.is_some() {
                 if !entitlements_enabled {
                     return Err(error("entitlement history is not configured"));

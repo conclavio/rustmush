@@ -37,6 +37,14 @@ enum ManagedWire {
         protocol: crate::managed_entitlement::EntitlementProtocol,
         economic_digest: DefinitionDigest,
     },
+    HouseMind {
+        operation: CommitToken,
+        effect: DefinitionRef,
+        quote: CommitToken,
+        quote_digest: DefinitionDigest,
+        product_digest: DefinitionDigest,
+        economic_digest: DefinitionDigest,
+    },
     MindRenewalOfferV1 {
         renewal: RenewalMarkerV1,
     },
@@ -74,6 +82,18 @@ impl TryFrom<ManagedWire> for ManagedConsent {
                     return Err("invalid mind entitlement managed consent");
                 }
             }
+            ManagedWire::HouseMind {
+                operation,
+                effect,
+                quote,
+                ..
+            } => {
+                if !crate::managed_house_purchase::subject::matches_action(effect, "fund")
+                    || operation == quote
+                {
+                    return Err("invalid house purchase managed consent");
+                }
+            }
             ManagedWire::MindCharterTransferV1 { pending } => {
                 pending
                     .validate()
@@ -94,6 +114,32 @@ impl From<ManagedConsent> for ManagedWire {
     }
 }
 impl ManagedConsent {
+    pub(crate) fn house_purchase(
+        operation: CommitToken,
+        effect: DefinitionRef,
+        quote: CommitToken,
+        quote_digest: DefinitionDigest,
+        product_digest: DefinitionDigest,
+        economic_digest: DefinitionDigest,
+    ) -> Result<Self, mush_core::participant::ParticipantError> {
+        Self::try_from(ManagedWire::HouseMind {
+            operation,
+            effect,
+            quote,
+            quote_digest,
+            product_digest,
+            economic_digest,
+        })
+        .map_err(mush_core::participant::ParticipantError::refused)
+    }
+    pub fn house_economic_digest(&self) -> Option<DefinitionDigest> {
+        match &self.wire {
+            ManagedWire::HouseMind {
+                economic_digest, ..
+            } => Some(*economic_digest),
+            _ => None,
+        }
+    }
     pub(crate) fn entitlement_purchase(
         operation: CommitToken,
         effect: DefinitionRef,
@@ -174,7 +220,8 @@ impl ManagedConsent {
     pub const fn operation(&self) -> CommitToken {
         match &self.wire {
             ManagedWire::OriginalPersonal { operation, .. }
-            | ManagedWire::MindEntitlement { operation, .. } => *operation,
+            | ManagedWire::MindEntitlement { operation, .. }
+            | ManagedWire::HouseMind { operation, .. } => *operation,
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.operation(),
             ManagedWire::MindCharterTransferV1 { pending } => pending.operation(),
         }
@@ -183,7 +230,8 @@ impl ManagedConsent {
     pub fn effect(&self) -> &DefinitionRef {
         match &self.wire {
             ManagedWire::OriginalPersonal { effect, .. }
-            | ManagedWire::MindEntitlement { effect, .. } => effect,
+            | ManagedWire::MindEntitlement { effect, .. }
+            | ManagedWire::HouseMind { effect, .. } => effect,
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.effect(),
             ManagedWire::MindCharterTransferV1 { pending } => pending.effect(),
         }
@@ -194,7 +242,8 @@ impl ManagedConsent {
     pub const fn quote(&self) -> CommitToken {
         match &self.wire {
             ManagedWire::OriginalPersonal { quote, .. }
-            | ManagedWire::MindEntitlement { quote, .. } => *quote,
+            | ManagedWire::MindEntitlement { quote, .. }
+            | ManagedWire::HouseMind { quote, .. } => *quote,
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.basis().prior_quote,
             ManagedWire::MindCharterTransferV1 { pending } => pending.offer(),
         }
@@ -203,7 +252,8 @@ impl ManagedConsent {
     pub const fn quote_digest(&self) -> DefinitionDigest {
         match &self.wire {
             ManagedWire::OriginalPersonal { quote_digest, .. }
-            | ManagedWire::MindEntitlement { quote_digest, .. } => *quote_digest,
+            | ManagedWire::MindEntitlement { quote_digest, .. }
+            | ManagedWire::HouseMind { quote_digest, .. } => *quote_digest,
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.basis().prior_quote_digest,
             ManagedWire::MindCharterTransferV1 { pending } => pending.offer_digest(),
         }
@@ -212,7 +262,8 @@ impl ManagedConsent {
     pub const fn product_digest(&self) -> DefinitionDigest {
         match &self.wire {
             ManagedWire::OriginalPersonal { product_digest, .. }
-            | ManagedWire::MindEntitlement { product_digest, .. } => *product_digest,
+            | ManagedWire::MindEntitlement { product_digest, .. }
+            | ManagedWire::HouseMind { product_digest, .. } => *product_digest,
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.basis().product_digest,
             ManagedWire::MindCharterTransferV1 { pending } => pending.terms_digest(),
         }

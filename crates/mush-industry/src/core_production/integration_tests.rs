@@ -73,6 +73,7 @@ impl GameModule for FactoryContent {
             .map_err(|e| ModError::msg(e.to_string()))?;
         provider::exact(reg, "recipe", std::slice::from_ref(&d))?;
         reg.definition(d)?;
+        delivery_tests::register_controls(reg)?;
         Ok(())
     }
 }
@@ -197,6 +198,9 @@ struct FactoryRig {
 }
 impl FactoryRig {
     fn new(reverse: bool) -> Result<Self> {
+        Self::new_delivery(reverse, false)
+    }
+    fn new_delivery(reverse: bool, delivery: bool) -> Result<Self> {
         let mut r = Rig::new(true)?;
         let operator = r.policy.agents[1].actor;
         let certificate = r.issue(operator, 2, DieClass::I)?;
@@ -295,6 +299,8 @@ impl FactoryRig {
             )?,
         )?;
         let policy = CorePaymentPolicy {
+            delivery: delivery
+                .then_some(mush_economy::core_integration::CoreDeliveryPromise::PersonalCustodyV1),
             issuer,
             instrument: InstrumentId::new("cr").ok_or("instrument")?,
             supplier: ScopedCoreAccount {
@@ -397,8 +403,21 @@ impl FactoryRig {
             .clone();
         Ok(())
     }
+    fn phase_action(&self, phase: usize) -> Result<DefinitionRef> {
+        let runtime = self.runtime()?;
+        if phase == 7 {
+            Ok(runtime
+                .delivery
+                .as_ref()
+                .ok_or("delivery disabled")?
+                .action
+                .clone())
+        } else {
+            Ok(runtime.actions.get(phase).ok_or("phase")?.clone())
+        }
+    }
     fn prepare_inv(&mut self, phase: usize, inv: &ActionInvocation, n: u8) -> Result<Prepared> {
-        let a = self.runtime()?.actions.get(phase).ok_or("phase")?.clone();
+        let a = self.phase_action(phase)?;
         Ok(self
             .r
             .w
@@ -415,7 +434,7 @@ impl FactoryRig {
         self.prepare_inv(phase, &invocation(actor, n, parameters), n)
     }
     fn stage_inv(&mut self, phase: usize, inv: &ActionInvocation, n: u8, p: Prepared) -> Result {
-        let action = self.runtime()?.actions.get(phase).ok_or("phase")?.clone();
+        let action = self.phase_action(phase)?;
         let (
             outcome,
             resolution,
@@ -549,7 +568,10 @@ impl FactoryRig {
     fn order_parameters(id: crate::workorder::WorkOrderId) -> Value {
         json!({"order":id.to_string()})
     }
-    fn advance(&mut self, id: crate::workorder::WorkOrderId, n: u8) -> Result {
+    fn advance_invocation(
+        &mut self,
+        id: crate::workorder::WorkOrderId,
+    ) -> Result<ActionInvocation> {
         let before = self.order(id)?;
         let due = before.progress.cursor().next_due().at;
         self.r.w.world_mut().set_now(due);
@@ -574,6 +596,10 @@ impl FactoryRig {
             parameters: json!({"order":id,"observed":at,"restart":false}),
             idempotency: ingress.idempotency().clone(),
         })?;
+        Ok(inv)
+    }
+    fn advance(&mut self, id: crate::workorder::WorkOrderId, n: u8) -> Result {
+        let inv = self.advance_invocation(id)?;
         let p = self.prepare_inv(4, &inv, n)?;
         self.stage_inv(4, &inv, n, p)?;
         self.take_install()?;
@@ -1089,4 +1115,121 @@ fn projected_class_values_enter_actual_origin_and_factory_providers() -> Result 
     }
     f.restart(CoreOriginMode::Active)?;
     Ok(())
+}
+
+#[path = "integration_delivery_tests.rs"]
+mod delivery_tests;
+
+#[test]
+fn scheduled_progress_preserves_actual_ingress_and_all_dependency_custody_fences() -> Result {
+    for wrong_request in [false, true] {
+        let mut f = FactoryRig::new(false)?;
+        let id = f.accepted()?;
+        let actual = f.advance_invocation(id)?;
+        let before = f.order(id)?;
+        let balance = f.balance(f.payer)?;
+        let revision = f.r.w.engine().action_state().revision();
+        let forged = if wrong_request {
+            ActionInvocation::new(ActionInvocationDraft {
+                request: RequestUid::from_bytes([99; 16]),
+                principal: actual.principal().clone(),
+                actor: actual.actor(),
+                offered_action: ActionOfferId(CanonicalHash::from_bytes([2; 32])),
+                subject: PerceivedRef::SelfActor,
+                targets: vec![],
+                parameters: actual.parameters().clone(),
+                idempotency: actual.idempotency().clone(),
+            })?
+        } else {
+            invocation(f.buyer, 24, actual.parameters().clone())
+        };
+        assert!(
+            f.prepare_inv(4, &forged, 24).is_err(),
+            "wrong scheduler ingress accepted"
+        );
+        assert!(
+            f.order(id)? == before,
+            "refused scheduler changed the order"
+        );
+        assert_eq!(f.balance(f.payer)?, balance);
+        assert_eq!(f.r.w.engine().action_state().revision(), revision);
+        // The identical actual K ingress remains admissible after refusal.
+        let p = f.prepare_inv(4, &actual, 24)?;
+        f.stage_inv(4, &actual, 24, p)?;
+        f.take_install()?;
+        assert_ne!(f.order(id)?.progress, before.progress);
+    }
+    for dependency in ["industry", "org", "economy", "inventory", "tacsim"] {
+        for phase in 0..3 {
+            let mut f = FactoryRig::new(false)?;
+            let id = f.accepted()?;
+            let inv = f.advance_invocation(id)?;
+            let before = f.order(id)?;
+            let balance = f.balance(f.payer)?;
+            let revision = f.r.w.engine().action_state().revision();
+            let disk = f.r.boot.clone();
+            let p = if phase > 0 {
+                Some(f.prepare_inv(4, &inv, 24)?)
+            } else {
+                None
+            };
+            let p = if phase == 2 {
+                f.stage_inv(4, &inv, 24, p.ok_or("scheduled prepared image")?)?;
+                None
+            } else {
+                p
+            };
+            f.r.w.engine().registry.freeze_mechanics_owner(
+                &OwnerId::new(dependency)?,
+                mush_core::mechanics::IncidentId(1),
+                mush_core::mechanics::RecoveryReason::IntegrityViolation {
+                    code: super::id("factory_schedule_fixture")?,
+                },
+            )?;
+            match phase {
+                0 => assert!(
+                    f.prepare_inv(4, &inv, 24).is_err(),
+                    "frozen dependency prepared"
+                ),
+                1 => assert!(
+                    f.stage_inv(4, &inv, 24, p.ok_or("scheduled prepared image")?)
+                        .is_err(),
+                    "frozen dependency staged"
+                ),
+                _ => assert!(
+                    f.r.w.engine_mut().take_staged_action().is_err(),
+                    "frozen dependency reached custody"
+                ),
+            }
+            assert_eq!(f.r.w.engine().action_state().revision(), revision);
+            assert_eq!(f.balance(f.payer)?, balance);
+            // Owner reads correctly refuse a frozen owner; the durable image is
+            // compared directly without granting a post-freeze read capability.
+            assert!(
+                factory_boot_image(&f.r.boot) == factory_boot_image(&disk),
+                "refusal changed persistence"
+            );
+            assert!(
+                before.terminal.is_none(),
+                "fixture must retain unfinished work"
+            );
+        }
+    }
+    Ok(())
+}
+
+// Preserve all ModuleBootData fields and ordered document/ledger/stream tails.
+// Equality failures report only the fixed message above.
+fn factory_boot_image(boot: &Boot) -> std::collections::BTreeMap<&str, Value> {
+    boot.iter()
+        .map(|(namespace, data)| {
+            (
+                namespace.as_str(),
+                json!({
+                    "kv":data.kv, "ledger":data.ledger, "streams":data.streams,
+                    "fetch_ms":data.fetch_ms, "omitted":data.omitted,
+                }),
+            )
+        })
+        .collect()
 }

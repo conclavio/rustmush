@@ -211,6 +211,43 @@ pub(crate) fn audit_and_open_ic_configured(
     ic: Option<&dyn super::ic_claims::registration::Installer>,
     registry: Option<&dyn super::rating::registration::Installer>,
 ) -> Result<(), PublicationError> {
+    audit_and_open_house_configured(
+        ctx,
+        families,
+        ratings,
+        shells,
+        paid,
+        forks,
+        dependent_owners,
+        entitlements,
+        renewals,
+        update,
+        owner_qualification,
+        owner_attestations,
+        ic,
+        false,
+        registry,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn audit_and_open_house_configured(
+    ctx: &mut ModuleCtx<'_>,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    shells: &ShellReservations,
+    paid: bool,
+    forks: bool,
+    dependent_owners: bool,
+    entitlements: bool,
+    renewals: bool,
+    update: Option<&mush_core::DefinitionRef>,
+    owner_qualification: bool,
+    owner_attestations: bool,
+    ic: Option<&dyn super::ic_claims::registration::Installer>,
+    houses: bool,
+    registry: Option<&dyn super::rating::registration::Installer>,
+) -> Result<(), PublicationError> {
     ctx.state_mut::<RollStore>()
         .ok_or(PublicationError::Unavailable)?
         .close_commerce_for_audit()
@@ -234,6 +271,7 @@ pub(crate) fn audit_and_open_ic_configured(
             renewals,
             update,
             owner_attestations,
+            houses,
         )?;
         super::owner_qualification::history::audit(
             ctx,
@@ -374,6 +412,7 @@ fn audit(
     renewals: bool,
     update: Option<&mush_core::DefinitionRef>,
     owner_attestations: bool,
+    houses: bool,
 ) -> Result<(), PublicationError> {
     let deployment = read(ctx, &f.deployment, "registry".into())?;
     if scan(ctx, &f.deployment, |_| Ok(()))? != 1 {
@@ -545,7 +584,7 @@ fn audit(
         Ok(())
     })?;
     let owner_licences = licences.count;
-    let paid_roots = super::paid_audit::audit_with_renewals(
+    let paid_roots = super::paid_audit::audit_with_houses(
         ctx,
         roll,
         f,
@@ -553,6 +592,7 @@ fn audit(
         paid,
         entitlements,
         renewals,
+        houses,
         |id| licences.observe(id),
     )?;
     lines.verify(deployment.next_line)?;

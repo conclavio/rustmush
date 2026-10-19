@@ -2050,6 +2050,7 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
             .filter(|h| !crate::managed_purchase::closed_namespace(h.holder.namespace.as_str()))
             .filter(|h| !crate::core_integration::bridge::retained_hold(h))
             .filter(|h| h.holder.namespace.as_str() != crate::managed_charter_transfer::NAMESPACE)
+            .filter(|h| h.holder.namespace.as_str() != crate::managed_renewal::NAMESPACE)
             .filter(|h| {
                 // A terminal hold with no recorded terminal instant (a journal older
                 // than this store's bookkeeping) is kept: never collect on a guess.

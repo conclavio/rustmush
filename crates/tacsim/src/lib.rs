@@ -356,6 +356,7 @@ pub struct TacsimRuleset {
     personal_source_forms: bool,
     dependent_owner_holdings: bool,
     entitlement_holdings: bool,
+    house_holdings: Option<mush_core::DefinitionRef>,
     cfg: TacsimConfig,
     /// The verified packs, or the host-facing message that names the failing file.
     loaded: Result<Vec<LoadedPack>, String>,
@@ -440,6 +441,7 @@ impl TacsimRuleset {
             personal_source_forms: false,
             dependent_owner_holdings: false,
             entitlement_holdings: false,
+            house_holdings: None,
             cfg,
             loaded,
             test_world: false,
@@ -517,6 +519,13 @@ impl TacsimRuleset {
         let mut layer = self.with_dependent_owner_holdings(manifest);
         layer.entitlement_holdings = true;
         layer
+    }
+
+    /// Add the distinct sealed House customer route. Existing personal owner
+    /// and paid routes retain their own exact family and eligibility contracts.
+    pub fn with_house_mind_holdings(mut self, manifest: mush_core::DefinitionRef) -> Self {
+        self.house_holdings = Some(manifest);
+        self
     }
 
     /// The layer, off.
@@ -627,6 +636,16 @@ impl GameModule for TacsimRuleset {
             } else {
                 match_::original_access::register(reg, manifest)?;
             }
+        }
+        if let Some(manifest) = &self.house_holdings {
+            if self
+                .original_holdings
+                .as_ref()
+                .is_some_and(|old| old != manifest)
+            {
+                return Err(ModError::msg("House and personal holding manifests differ"));
+            }
+            match_::original_access::register_house(reg, manifest)?;
         }
         // Doc 18 cut IC4 (lead ruling L14): hull rooms are not atlas rooms, so
         // their details live on tacsim's own attribute shelf, and `look

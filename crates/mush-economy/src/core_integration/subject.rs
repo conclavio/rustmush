@@ -50,6 +50,13 @@ pub struct ScopedCoreAccount {
     pub scope: OrgScopeId,
 }
 
+/// Closed paid promise selected only by trusted factory composition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoreDeliveryPromise {
+    PersonalCustodyV1,
+}
+
 /// Frozen by trusted module composition, not accepted as action parameters.
 /// Current account/org/scope/issuer/recipe readiness is checked separately.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -64,6 +71,8 @@ pub struct CorePaymentPolicy {
     pub output_container: ObjId,
     pub recipe: DefinitionRef,
     pub catalogs: [CatalogRef; 3],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<CoreDeliveryPromise>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -83,6 +92,13 @@ struct PolicyWire {
     output_container: ObjId,
     recipe: DefinitionRef,
     catalogs: [CatalogWire; 3],
+    #[serde(default, deserialize_with = "present_delivery")]
+    delivery: Option<CoreDeliveryPromise>,
+}
+fn present_delivery<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<CoreDeliveryPromise>, D::Error> {
+    CoreDeliveryPromise::deserialize(d).map(Some)
 }
 impl<'de> Deserialize<'de> for CorePaymentPolicy {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
@@ -96,6 +112,7 @@ impl<'de> Deserialize<'de> for CorePaymentPolicy {
             factory: w.factory,
             output_container: w.output_container,
             recipe: w.recipe,
+            delivery: w.delivery,
             catalogs: w.catalogs.map(|c| CatalogRef {
                 ruleset: c.ruleset,
                 code: c.code,
@@ -152,6 +169,16 @@ impl CorePaymentPolicy {
         // Cleanup drains the exact acknowledged hold/input even after the current
         // recipe or factory configuration changes. This separately closed action
         // has stable bytes and accepts only the retained order identity.
+        if action == "deliver_core_output" {
+            if self.delivery.is_none() {
+                return Err(Error::Invalid);
+            }
+            return mush_core::DefinitionDescriptor::new(
+                mush_core::DefinitionKind::new("action").map_err(|_| Error::Invalid)?,
+                mush_core::DefinitionId::new(action).map_err(|_| Error::Invalid)?, 1,
+                serde_json::json!({"format":1,"protocol":"certified_core_delivery_v1","authority":"actual_completed_requester","effect":"ordinary_personal_custody","current_recipe_required":false,"core_receipt_bytes":16384,"industry_receipt_bytes":4096}),
+            ).map_err(|_| Error::Invalid);
+        }
         if action == "cancel_core_integration" {
             return mush_core::DefinitionDescriptor::new(
                 mush_core::DefinitionKind::new("action").map_err(|_| Error::Invalid)?,
@@ -180,7 +207,7 @@ impl CorePaymentPolicy {
             1,
             serde_json::json!({
                 "format": 1,
-                "protocol": "certified_core_integration_v1",
+                "protocol": if self.delivery.is_some() { "certified_core_integration_delivery_v2" } else { "certified_core_integration_v1" },
                 "policy": self,
                 "reservation_ic_seconds": RESERVATION_SECONDS,
                 "supplier_consent": "acknowledged_exact_offer_v1",

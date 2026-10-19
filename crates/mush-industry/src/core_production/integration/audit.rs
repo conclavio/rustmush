@@ -161,8 +161,18 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, runtime: &Runtime) -> Result<Projection
     if inputs.len() != orders.len() || payments.len() != orders.len() {
         return Err(Error::Integrity);
     }
+    let deliveries = super::delivery::audit::audit(
+        ctx,
+        runtime,
+        typed,
+        loaded.delivery_index.as_ref(),
+        &orders,
+    )?;
     match typed {
         None => {
+            if let Some(d) = &runtime.delivery {
+                d.outputs.require_no_deliveries(ctx).map_err(bad)?;
+            }
             if runtime.config.mode != CoreOriginMode::Initialize
                 || !offers.is_empty()
                 || !orders.is_empty()
@@ -188,31 +198,57 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, runtime: &Runtime) -> Result<Projection
                 .verify_deployment(ctx, index.initialized)
                 .map_err(bad)?;
             let mut seen = BTreeSet::new();
-            runtime
-                .outputs
-                .audit(ctx, |h| {
-                    let fail = || {
-                        mush_core::participant::ParticipantError::refused(
-                            "Core output/order recovery differs",
-                        )
-                    };
-                    let row = orders
-                        .get(&crate::workorder::WorkOrderId(h.order().id()))
-                        .ok_or_else(fail)?;
-                    let output = row.output.as_ref().ok_or_else(fail)?;
-                    output
-                        .matches_history(&h, &row.intent)
-                        .map_err(|_| fail())?;
-                    let terminal = row.terminal.as_ref().and_then(|t| {
-                        matches!(t.result(), CoreTerminalResult::Completed { .. })
-                            .then_some((t.commit(), t.action()))
-                    });
-                    if h.completion() != terminal || !seen.insert(row.intent.order) {
-                        return Err(fail());
-                    }
-                    Ok(())
-                })
-                .map_err(bad)?;
+            let mut output_visitor = |h: mush_core::core_output::CoreOutputHistory| {
+                let fail = || {
+                    mush_core::participant::ParticipantError::refused(
+                        "Core output/order recovery differs",
+                    )
+                };
+                let row = orders
+                    .get(&crate::workorder::WorkOrderId(h.order().id()))
+                    .ok_or_else(fail)?;
+                let output = row.output.as_ref().ok_or_else(fail)?;
+                output
+                    .matches_history(&h, &row.intent)
+                    .map_err(|_| fail())?;
+                let terminal = row.terminal.as_ref().and_then(|t| {
+                    matches!(t.result(), CoreTerminalResult::Completed { .. })
+                        .then_some((t.commit(), t.action()))
+                });
+                if h.completion() != terminal || !seen.insert(row.intent.order) {
+                    return Err(fail());
+                }
+                Ok(())
+            };
+            if let Some(d) = &runtime.delivery {
+                let mut delivered_seen = BTreeSet::new();
+                d.outputs
+                    .audit(ctx, &mut output_visitor, |h| {
+                        let output = h.receipt();
+                        let id = crate::workorder::WorkOrderId(output.order().id());
+                        let fail = || {
+                            mush_core::participant::ParticipantError::refused(
+                                "Core delivery counterparts disagree",
+                            )
+                        };
+                        let row = deliveries.get(&id).ok_or_else(fail)?;
+                        row.matches_core(output, orders.get(&id).ok_or_else(fail)?)
+                            .map_err(|_| fail())?;
+                        if !delivered_seen.insert(id) {
+                            return Err(fail());
+                        }
+                        Ok(())
+                    })
+                    .map_err(bad)?;
+                if delivered_seen.len() != deliveries.len() {
+                    return Err(Error::Integrity);
+                }
+            } else {
+                runtime
+                    .outputs
+                    .audit(ctx, &mut output_visitor)
+                    .map_err(bad)?;
+            }
             if seen.len() != orders.values().filter(|o| o.output.is_some()).count() {
                 return Err(Error::Integrity);
             }
@@ -267,6 +303,8 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, runtime: &Runtime) -> Result<Projection
     Ok(Projection {
         ready: true,
         index: typed.cloned(),
+        delivery_index: loaded.delivery_index.clone(),
+        deliveries,
         offers,
         orders: orders
             .into_iter()

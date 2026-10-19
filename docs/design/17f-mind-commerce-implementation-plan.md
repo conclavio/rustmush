@@ -482,46 +482,64 @@ enabled by default. Factory orders, payment/title and consumption are now queued
 for N70 validation. Production activation, delivery and installation are still required.
 
 
-N71 through N74 stopped at compilation and executed zero runtime tests.
-Their terminal evidence archives verify unchanged source. The repairs correct
-the Economy plan field, the Core delivery read-error adapter, the actual
-Economy participant and borrowed input APIs, and generic Roll receipt readers.
-They preserve the existing checks rather than relaxing failed gates. N74,
-tree `42f6a3f6032ce7f442948e309bde7188a0d1bdc8` with 330 reviewed packages,
-reached the house-catalogue fixture and found one missing explicit nested-module
-path. Its narrow repair is queued for the next run. N74 includes the real
-re-conformance service and current
-certificate selector, the scoped house catalogue reader, and Core's paid
-manufacture-to-delivery capacity handoff. None of these runs is acceptance.
+N71 through N75 stopped at compilation and executed zero runtime tests.
+Their repairs preserve the existing checks and correct actual owner API,
+registration and fixture module boundaries. N76 compiled successfully on exact
+tree `2d15c68e499ed1e755da226cef0740e743a7b5f4` (335 reviewed packages), then
+completed its runtime roster with unchanged source. Its evidence archive is
+`ae10dcb2894067fd5c29732e531187b7810688f489f5fb7305ebfb1fea8ad0f9`.
 
-The implementation branch already merged current main `4465bf06` normally at
-`03ce517e`; a fresh fetch on 2026-10-19 found no newer main commit. N71–N73
-archive SHA-256 values are respectively
-`76cd0661bf7bd7e76c97237ef7d834fe0bfcdedbeb30a205db844472132dcc53`,
-`7b7f0b0538e595d4536b13791f09f850fca5cca1cadc545eadcba1e688af872f`,
-and `325704a7416ff9d732d3deab2dd81cda91893ab43d3e64ae2730860374a12a37`.
-N74's archive is
-`0d3baecc04250d4f99f1ad95acfc1efc8df83cc5d0a832a2825f15aaf04afb19`.
+N76 passed all 244 Roll tests, 80 Market tests, 340 selected Economy E4 tests,
+103 Inventory tests, 15 commerce-composition tests and 27 commerce-roster tests.
+Its focused L leader, admission, release, deliberation, resume/watch, presentation
+and expiry producer checks passed, as did the actual IC custody/composition,
+wire, snapshot, shipped-configuration and state-owner contract checks. The Roll
+runner itself failed because four exact prefix counts were stale after adding
+the ownership-capture tests; those counts are corrected in the successor.
+
+N76 still failed seven Core delivery-capacity tests, five Industry integration
+tests, the measured-rejection worker and eleven Economy pending-transfer tests.
+Bounded diagnostics isolated the closed delivery guard, scheduled readiness,
+terminal quota charge and missing immediate-transfer fixture provider respectively.
+Reviewed repairs are included in N78; they require fresh runtime verification.
+N77 was frozen but never launched and was superseded by N78 after the last two
+N76 findings. No N77 result is claimed.
+
+N78, exact tree `e944b3b8dda208f9178a555093f30f547d512ae3` with 347 reviewed
+packages, stopped at compilation and executed zero runtime tests. The compiler
+found two Core test API mismatches and a missing serialization implementation
+on the House customer read result. The terminal archive verifies unchanged source:
+`6be282c15d0419d5346d7975891c9d65b1ebd8ab9d4b6438f3cf8c6169e86c27`.
+The narrow fixes are prepared for the next candidate. These are progress
+checkpoints, not M7 acceptance or public paid-service activation.
+
+Current main `f3df3205` was merged normally at `31c3e561`; another fetch on
+2026-10-19 found no newer main commit. N78 includes that exact main ancestry.
 
 The re-conformance implementation preserves the filed version, uses actual paid
 Registry work, and selects a current certificate only after successful completion.
-An actual measured nonconformance publishes permanent evidence and a separate
-automatic recall. Its genuine purchase/re-conformance story still requires
-execution. The original measured-rejection settlement failure from N69 also
-remains open until the bounded phase diagnostic identifies its cause.
+Measured nonconformance publishes permanent evidence and a separate automatic
+recall. Its genuine purchase/re-conformance story and the repaired terminal quota
+path still require combined execution.
 
-The house catalogue uses actual organization and scope identities and current
-scoped publishing authority. House policy preserves listings after curator departure;
-personal customers still pay for their own licence. The separately reviewed
-house capacity prerequisite now preserves independently accepted future renewal
-terms. Actual House Market/Economy/Roll checkout and renewal are still in progress.
+The house catalogue uses actual organization and scope identities and scoped
+publishing authority. House policy preserves listings after curator departure;
+personal customers pay for their own licence. Reviewed House checkout now connects
+actual Market, Economy and Roll owners, with Org treasury recipients and personal
+payers. Its disclosed future renewal terms may differ from the initial term.
+House renewal and default catalogue activation remain in progress; checkout's
+prepared tests have not yet run successfully in the combined candidate.
 
-Core delivery now has exact prebuilt ordinary carry images and a permanent
-delivery receipt. The optional paid delivery profile reserves its complete future
-receipts at purchase, shrinks the same reservation after manufacture, then consumes
-the remainder at delivery. Actual Industry delivery, component installation,
-pending charter settlement, SafeConduct underwriting and final release acceptance
-remain required; these prerequisites do not activate those public services.
+Reviewed Industry delivery now uses the actual paid manufacture order, original
+capacity reservation, real title and custody checks, and Core's prebuilt carry
+images and permanent receipt. Core Install/Replace mechanics also preserve exact
+ordinary object images with two native owner images. Actual refit consumption
+and production activation remain required. Pending charter funding has its native
+Economy owner and a reviewed four-target Core completion recipe; actual Roll
+service settlement and compound Registry revocation are still being integrated.
+Personal renewal terminal holds are retained through the actual garbage collector
+because cold recovery requires their native evidence. New boundary tests for this
+retention, full WorkOrderId values and pending-transfer capacity are queued.
 
 The L R4 release-notice correction passes in N56: a side lead's fully offered
 whole-squad RELEASE also removes the persona commander's watch, preventing a
@@ -562,8 +580,9 @@ focused checks; their combined genuine-story and final acceptance gates remain.
 Automatic re-conformance, current certificate selection and the scoped house
 catalogue reader now have reviewed implementations awaiting their combined
 runtime evidence. Remaining implementation includes pending charter settlement,
-paid resale, full house checkout/renewal and underwriting, and completion of
-governed Core manufacture, delivery and refit.
+paid licence resale, House renewal and underwriting, actual governed refit and
+production activation. Reviewed checkout and delivery need their combined runtime
+and genuine-story acceptance.
 The acknowledged Core output reservation and certified Origin producer are
 prerequisites, not completed manufacturing or usable installed hardware.
 

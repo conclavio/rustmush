@@ -592,3 +592,88 @@ fn maximum_class_rejection_is_new_admission_only_and_old_budget_bytes_stay_exact
     assert!(kernel.advance(from, 250, RegistryEnding::Rejected).is_err());
     Ok(())
 }
+
+#[test]
+fn partial_maximum_class_rejection_finishes_and_recovers_actual_quota_without_certifying()
+-> TestResult {
+    let id = AccountId::mint("registry-rejection-terminal", 1)?;
+    let actor = ObjId(7);
+    let job = CommitToken::from_bytes([41; 16]);
+    let hash = DefinitionDigest::from_bytes([42; 32]);
+    let cases = (0..2)
+        .map(|pair| {
+            Ok(RegistryCase {
+                key: CaseKey::new(
+                    RatingClass::III,
+                    CaseKind::Probe {
+                        pair,
+                        name: ProbeName::EmptyArmed,
+                    },
+                )?,
+                units: 1,
+                native_ms: 250,
+                maximum_ms: 1000,
+            })
+        })
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    let budget = RegistryBudget::prepare(hash, hash, hash, cases)?;
+    let cursor = RegistryCursor {
+        index: 0,
+        simulated_ms: 250,
+    };
+    assert!(!budget.can_certify(cursor)?, "partial class cannot certify");
+    assert!(budget.can_reject(cursor)?);
+    let mut admitted_plan = plan()?;
+    admitted_plan.registry = Some(budget);
+    let mut store = BulkStore::new(BulkConfig::default())?;
+    let (run, admitted) = store.prepare_registry_admit(id, actor, 1, admitted_plan, job, 0)?;
+    publish(&mut store, admitted)?;
+    let granted = store.prepare_grant(id, run, 0, 2000)?;
+    let lease = publish(&mut store, granted)?.ok_or("actual paid lease")?;
+    let before = store.account_run(id, run)?.clone();
+    let finished = store.prepare_finish(
+        Receipt {
+            registry: Some(RegistryProgress {
+                cursor,
+                ending: RegistryEnding::Rejected,
+            }),
+            lease,
+            actual_unit_ms: 250,
+            result: Some(Artifact {
+                sha256: [43; 32],
+                bytes: 100,
+            }),
+            terminal: Some(Status::Complete),
+        },
+        1,
+    )?;
+    assert_eq!(store.account_run(id, run)?, &before, "prepare stays inert");
+    let bytes = finished.bytes().to_vec();
+    publish(&mut store, finished)?;
+    let row = store.account_run(id, run)?;
+    assert_eq!(row.status, Status::Complete);
+    assert_eq!(row.registry, Some(cursor));
+    assert_eq!(row.charged_unit_ms, 250);
+    assert!(row.flight.is_none());
+    let observed = super::registry_projection::observation(row)?;
+    assert_eq!(
+        observed.phase,
+        mush_roll::commerce::rating::execution::ExecutionPhase::Complete
+    );
+    assert!(observed.result.is_some());
+    assert_eq!(store.account(id)?.reserved_unit_ms, 0);
+    let mut recovered = BulkStore::new(BulkConfig::default())?;
+    recovered.load(id, &bytes)?;
+    assert_eq!(recovered.account_run(id, run)?, row);
+    // Historical admissions never promised rejection. Removing the opt-in
+    // must still reject this partial-class terminal state during native load.
+    let mut old: serde_json::Value = serde_json::from_slice(&bytes)?;
+    old["runs"][run.0.to_string()]["plan"]["registry"]
+        .as_object_mut()
+        .ok_or("budget")?
+        .remove("measured_rejection");
+    let mut denied = BulkStore::new(BulkConfig::default())?;
+    assert!(denied.load(id, &serde_json::to_vec(&old)?).is_err());
+    assert!(denied.accounts.is_empty());
+    Ok(())
+}

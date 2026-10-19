@@ -108,7 +108,15 @@ pub(crate) fn project_personal_paid_for(
     licence_id: LicenceId,
     expected: &RatingCompatibility,
 ) -> Result<PersonalPaidHolding, OwnerProjectionError> {
-    project_paid_for(ctx, holder, families, ratings, licence_id, expected, false)
+    project_paid_for(
+        ctx,
+        holder,
+        families,
+        ratings,
+        licence_id,
+        expected,
+        Scope::Original,
+    )
 }
 
 /// Only separately registered entitlement readers select this path. Existing
@@ -121,7 +129,40 @@ pub(crate) fn project_entitlement_paid_for(
     licence_id: LicenceId,
     expected: &RatingCompatibility,
 ) -> Result<PersonalPaidHolding, OwnerProjectionError> {
-    project_paid_for(ctx, holder, families, ratings, licence_id, expected, true)
+    project_paid_for(
+        ctx,
+        holder,
+        families,
+        ratings,
+        licence_id,
+        expected,
+        Scope::Entitlement,
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    Original,
+    Entitlement,
+    House,
+}
+pub(crate) fn project_house_paid_for(
+    ctx: &impl CommerceRead,
+    holder: ObjId,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    licence_id: LicenceId,
+    expected: &RatingCompatibility,
+) -> Result<PersonalPaidHolding, OwnerProjectionError> {
+    project_paid_for(
+        ctx,
+        holder,
+        families,
+        ratings,
+        licence_id,
+        expected,
+        Scope::House,
+    )
 }
 
 fn project_paid_for(
@@ -131,7 +172,7 @@ fn project_paid_for(
     ratings: &RatingFamilies,
     licence_id: LicenceId,
     expected: &RatingCompatibility,
-    dependent: bool,
+    scope: Scope,
 ) -> Result<PersonalPaidHolding, OwnerProjectionError> {
     let roll = ctx
         .world()
@@ -176,6 +217,13 @@ fn project_paid_for(
         None,
     )
     .map_err(|_| OwnerProjectionError::NotHeld)?;
+    if matches!(
+        allocation.birth(),
+        super::entitlement::history::Birth::House(_)
+    ) != (scope == Scope::House)
+    {
+        return Err(OwnerProjectionError::NotHeld);
+    }
     let terminal = allocation.terminal();
     let now = WorldIcSeconds::from_stamp(&ctx.world().world_ic_now())
         .map_err(|_| OwnerProjectionError::Integrity)?;
@@ -198,7 +246,7 @@ fn project_paid_for(
     let line = read(ctx, &families.lines, licence.line().key())?;
     let filed = read(ctx, &families.filed, filed_id.key())?;
     let status = read(ctx, &families.status, filed_id.key())?;
-    if (!dependent && filed.content.parent().is_some())
+    if (scope != Scope::Entitlement && filed.content.parent().is_some())
         || status.filed != filed_id
         || charter.line != line.id
         || line.charter != charter.id
@@ -209,6 +257,8 @@ fn project_paid_for(
         return Err(OwnerProjectionError::Integrity);
     }
     match allocation.birth() {
+        super::entitlement::history::Birth::House(_)
+            if scope == Scope::House && filed.content.parent().is_none() => {}
         super::entitlement::history::Birth::Legacy(_) if filed.content.parent().is_none() => {}
         super::entitlement::history::Birth::Entitlement(row) => {
             let original = row.protocol()

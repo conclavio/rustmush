@@ -693,6 +693,49 @@ impl<'a> ParticipantPreparation<'a> {
         Ok(output)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn exchange_core_component<P: crate::core_exchange::CoreExchangePolicy>(
+        &mut self,
+        service: &crate::core_exchange::CoreComponentExchanges<P>,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        commit: CommitToken,
+        order: u64,
+        facts: crate::core_exchange::ExchangeFacts,
+        hooks: std::sync::Arc<[crate::module::HookReg]>,
+        base: &crate::action_state::ActionReadBase,
+        provider: &crate::action::ProviderRegistrationOrdinal,
+    ) -> Result<crate::core_exchange::ExchangedCoreComponent, ParticipantError> {
+        if self.shell.is_some() {
+            return Err(ParticipantError::Authority);
+        }
+        self.images.require_exact_exchange(
+            service.participants(),
+            self.provider.action(),
+            commit,
+        )?;
+        if service.participants().iter().any(|p| {
+            !self
+                .registry
+                .grants_exact(p, self.provider.owner(), self.provider.action())
+        }) {
+            return Err(ParticipantError::Authority);
+        }
+        let (output, image) = service.prepare(
+            self.world,
+            self.invocation,
+            self.provider.action(),
+            commit,
+            txn,
+            order,
+            facts,
+            hooks,
+            base,
+            provider,
+        )?;
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::Exchange(image));
+        Ok(output)
+    }
+
     pub(crate) fn reserve_shell(
         &mut self,
         service: &crate::reserved_shell::ShellReservations,
@@ -935,6 +978,29 @@ impl fmt::Debug for OwnerImages {
 }
 
 impl OwnerImages {
+    pub(crate) fn require_exact_exchange(
+        &self,
+        participants: &[DefinitionRef; 2],
+        action: &DefinitionRef,
+        commit: CommitToken,
+    ) -> Result<(), ParticipantError> {
+        if self.0.len() != 2
+            || self
+                .0
+                .iter()
+                .any(|image| image.action != *action || image.commit_token != commit)
+            || participants.iter().any(|reference| {
+                self.0
+                    .iter()
+                    .filter(|image| &image.definition == reference)
+                    .count()
+                    != 1
+            })
+        {
+            return Err(ParticipantError::Authority);
+        }
+        Ok(())
+    }
     pub(crate) fn require_exact_ic(
         &self,
         participants: &[DefinitionRef; 4],

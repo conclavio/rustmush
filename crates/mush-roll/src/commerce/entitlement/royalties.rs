@@ -216,6 +216,7 @@ fn prepare_depth(
         creates,
     )?;
     let (royalty_permille, basis) = match birth.birth() {
+        Birth::House(_) => return Err(PublicationError::Mismatch),
         Birth::Legacy(row) => {
             if row.format != 2 || parent_row.content.parent().is_some() {
                 return Err(PublicationError::Mismatch);

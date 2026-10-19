@@ -69,6 +69,7 @@ pub mod contact;
 pub mod continuation;
 pub mod control;
 pub mod core_delivery;
+pub mod core_exchange;
 pub mod core_output;
 pub mod decision;
 pub mod decision_source;

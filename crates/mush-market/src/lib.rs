@@ -184,3 +184,5 @@ pub use trade::{
     WANTED_IS_A_BID, accept, accept_at, accept_into, artefact_stamp, is_current, quote,
     restage_deliver, restage_draw, sell, sell_into_bid,
 };
+
+pub mod mind_house;

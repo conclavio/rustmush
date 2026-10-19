@@ -387,6 +387,8 @@ pub struct MarketModule {
     original_mind_purchases: Option<crate::mind_trade::OriginalPurchaseConfig>,
     original_purchase_families: Option<crate::mind_trade::PurchaseFamilies>,
     mind_entitlements: Option<crate::mind_entitlement::EntitlementConfig>,
+    house_minds: Option<crate::mind_house::HouseConfig>,
+    house_families: Option<crate::mind_house::Families>,
     entitlement_families: Option<crate::mind_entitlement::Families>,
     mind_renewals: Option<crate::mind_renewal::RenewalConfig>,
     renewal_families: Option<crate::mind_renewal::Families>,
@@ -433,6 +435,11 @@ impl MarketModule {
     /// Explicit original-v3 / derived-v1 personal Pin commerce. The host must
     /// supply the matching Roll writer, Economy actions and current manifest.
     #[must_use]
+    pub fn with_house_minds(mut self, config: crate::mind_house::HouseConfig) -> Self {
+        self.house_minds = Some(config);
+        self
+    }
+
     pub fn with_mind_entitlements(
         mut self,
         config: crate::mind_entitlement::EntitlementConfig,
@@ -655,6 +662,12 @@ impl GameModule for MarketModule {
             .map(crate::mind_entitlement::EntitlementConfig::declarations)
             .transpose()?
             .unwrap_or_default();
+        let house_definitions = self
+            .house_minds
+            .as_ref()
+            .map(crate::mind_house::HouseConfig::declarations)
+            .transpose()?
+            .unwrap_or_default();
         let renewal_definitions = self
             .mind_renewals
             .as_ref()
@@ -675,12 +688,14 @@ impl GameModule for MarketModule {
         }
         let mut purchase_definitions = purchase_definitions;
         purchase_definitions.extend(entitlement_definitions.iter().cloned());
+        purchase_definitions.extend(house_definitions.iter().cloned());
         purchase_definitions.extend(renewal_definitions.iter().cloned());
         quote_definitions.extend(purchase_definitions.iter().cloned());
-        crate::mind_entitlement::register_capabilities(
+        crate::mind_entitlement::register_capabilities_with_house(
             reg,
             self.original_mind_purchases.as_ref(),
             self.mind_entitlements.as_ref(),
+            self.house_minds.as_ref(),
             self.venue_gate.clone(),
         )?;
         if let Some(purchase) = &self.original_mind_purchases {
@@ -732,11 +747,28 @@ impl GameModule for MarketModule {
                 .venue_gate
                 .clone()
                 .ok_or_else(|| ModError::msg("entitlements require the actual venue gate"))?;
-            self.entitlement_families = Some(crate::mind_entitlement::register(
+            self.entitlement_families =
+                Some(crate::mind_entitlement::register_with_house_definitions(
+                    reg,
+                    config,
+                    gate,
+                    lot_registered || self.original_mind_quotes.is_some(),
+                    &house_definitions,
+                )?);
+        }
+        if let Some(config) = &self.house_minds {
+            let gate = self
+                .venue_gate
+                .clone()
+                .ok_or_else(|| ModError::msg("house purchase requires the actual venue gate"))?;
+            self.house_families = Some(crate::mind_house::register(
                 reg,
                 config,
                 gate,
-                lot_registered || self.original_mind_quotes.is_some(),
+                lot_registered
+                    || self.original_mind_quotes.is_some()
+                    || self.mind_entitlements.is_some(),
+                self.mind_entitlements.is_some(),
             )?);
         }
         if let Some(config) = &self.mind_renewals {
@@ -780,11 +812,12 @@ impl GameModule for MarketModule {
                 .original_mind_families
                 .as_ref()
                 .ok_or_else(|| ModError::msg("purchase quote families are unavailable"))?;
-            families.audit_with_entitlements(
+            families.audit_with_houses(
                 ctx,
                 config,
                 offers,
                 self.mind_entitlements.is_some(),
+                self.house_minds.is_some(),
             )?;
             crate::mind_trade::enable_purchase_service(ctx)?;
         }
@@ -792,7 +825,23 @@ impl GameModule for MarketModule {
             self.entitlement_families
                 .as_ref()
                 .ok_or_else(|| ModError::msg("entitlement families unavailable"))?
-                .audit(ctx, config, self.original_mind_purchases.is_some())?;
+                .audit_with_house(
+                    ctx,
+                    config,
+                    self.original_mind_purchases.is_some(),
+                    self.house_minds.is_some(),
+                )?;
+        }
+        if let Some(config) = &self.house_minds {
+            self.house_families
+                .as_ref()
+                .ok_or_else(|| ModError::msg("house families unavailable"))?
+                .audit(
+                    ctx,
+                    config,
+                    self.original_mind_purchases.is_some(),
+                    self.mind_entitlements.is_some(),
+                )?;
         }
         if let Some(config) = &self.mind_renewals {
             self.renewal_families

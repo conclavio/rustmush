@@ -19,6 +19,7 @@ pub(crate) struct Runtime {
     pub(crate) inputs: RegisteredCoreInputs,
     pub(crate) outputs: CoreOutputReservations<Policy>,
     pub(crate) actions: [DefinitionRef; 7],
+    pub(crate) delivery: Option<super::delivery::Runtime>,
     pub(crate) outcome: DefinitionRef,
 }
 fn err(e: impl std::fmt::Display) -> ModError {
@@ -74,6 +75,13 @@ impl Runtime {
             },
             deps,
         )?;
+        let delivery = config
+            .payment
+            .delivery
+            .map(|_| {
+                super::delivery::Runtime::register(reg, &config, &definitions, &families, &outputs)
+            })
+            .transpose()?;
         Ok(Self {
             config,
             families,
@@ -84,10 +92,18 @@ impl Runtime {
             inputs,
             outputs,
             actions,
+            delivery,
             outcome,
         })
     }
     pub(crate) fn action(&self, name: &str) -> Result<&DefinitionRef, Error> {
+        if name == super::delivery::ACTION {
+            return self
+                .delivery
+                .as_ref()
+                .map(|d| &d.action)
+                .ok_or(Error::Unavailable);
+        }
         self.actions
             .iter()
             .find(|a| a.key().id.as_str() == name)

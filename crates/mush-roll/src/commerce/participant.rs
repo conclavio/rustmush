@@ -32,6 +32,7 @@ pub(crate) enum RootRequest {
     Rating(RatingRoots),
     Paid(PaidRoots),
     Entitlement(super::entitlement::roots::EntitlementRoots),
+    House(super::house_purchase::roots::HouseRoots),
     Renewal(super::renewal::roots::RenewalRoots),
     AuthoredFork(super::authored_fork::AuthoredFork),
     Retirement(super::authored_retirement::Retirement),
@@ -55,6 +56,7 @@ impl RootRequest {
             Self::Rating(request) => request.commit(),
             Self::Paid(request) => request.commit(),
             Self::Entitlement(request) => request.commit(),
+            Self::House(request) => request.commit(),
             Self::Renewal(request) => request.commit(),
             Self::AuthoredFork(request) => request.commit(),
             Self::Retirement(request) => request.commit(),
@@ -101,6 +103,7 @@ pub(crate) struct RootPatch {
     change: PreparedChange,
     fresh_paid: Option<super::sale_reader::OriginalSaleFacts>,
     entitlement: Option<super::entitlement::roots::EntitlementFence>,
+    house: Option<super::house_purchase::roots::HouseFence>,
     renewal: Option<super::renewal::roots::RenewalFence>,
     dependent: Option<super::dependent_filing::FilingFence>,
     update: Option<super::line_update::publication::UpdateFence>,
@@ -223,6 +226,16 @@ impl OwnerParticipant for RootParticipant {
         };
         let entitlement = match &request {
             RootRequest::Entitlement(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
+        let house = match &request {
+            RootRequest::House(request) => {
                 request
                     .fence()
                     .check(context)
@@ -355,6 +368,9 @@ impl OwnerParticipant for RootParticipant {
                 state.prepare_entitlement_roots(request).map_err(refusal)?,
                 None,
             ),
+            RootRequest::House(request) => {
+                (state.prepare_house_roots(request).map_err(refusal)?, None)
+            }
             RootRequest::Renewal(request) => {
                 (state.prepare_renewal_roots(request).map_err(refusal)?, None)
             }
@@ -451,6 +467,7 @@ impl OwnerParticipant for RootParticipant {
                 change,
                 fresh_paid,
                 entitlement,
+                house,
                 renewal,
                 dependent,
                 update,
@@ -510,6 +527,11 @@ impl OwnerParticipant for RootParticipant {
                 .map_err(|_| ParticipantError::Authority)?;
         }
         if let Some(fence) = &patch.entitlement {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
+        if let Some(fence) = &patch.house {
             fence
                 .check(context)
                 .map_err(|_| ParticipantError::Authority)?;

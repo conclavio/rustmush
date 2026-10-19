@@ -26,6 +26,8 @@ impl OrderView {
 pub(crate) struct Projection {
     pub(crate) ready: bool,
     pub(crate) index: Option<IntegrationIndex>,
+    pub(crate) delivery_index: Option<super::delivery::Index>,
+    pub(crate) deliveries: BTreeMap<crate::workorder::WorkOrderId, Arc<super::delivery::Record>>,
     pub(crate) offers: BTreeMap<CommitToken, Arc<FactoryOffer>>,
     pub(crate) orders: BTreeMap<crate::workorder::WorkOrderId, Arc<OrderView>>,
 }

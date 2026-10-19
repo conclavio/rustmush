@@ -110,6 +110,23 @@ pub(crate) fn register_entitlements(
     Ok(())
 }
 
+#[derive(Clone)]
+struct HouseAccessSeam {
+    reader: OwnerReadHandle<mush_roll::commerce::house_purchase::customer::HouseHoldingReader>,
+}
+pub(crate) fn register_house(
+    reg: &mut Registrar<'_>,
+    manifest: &DefinitionRef,
+) -> Result<(), ModError> {
+    if reg.module() != crate::NS {
+        return Err(ModError::msg("house holdings belong to Tacsim"));
+    }
+    let reader =
+        mush_roll::commerce::house_purchase::customer::HouseHoldingReader::request(reg, manifest)?;
+    reg.state(HouseAccessSeam { reader });
+    Ok(())
+}
+
 pub(super) struct HoldingAccess<'a> {
     context: HookReadContext<'a>,
 }
@@ -131,6 +148,7 @@ impl<'a> HoldingAccess<'a> {
     }
     pub(super) fn enabled(&self) -> bool {
         self.world().module_state::<OriginalAccessSeam>().is_some()
+            || self.world().module_state::<HouseAccessSeam>().is_some()
     }
     fn read(&self, request: OriginalReadRequest) -> Result<OriginalReadResult, OwnerReadError> {
         let seam = self
@@ -144,6 +162,19 @@ impl<'a> HoldingAccess<'a> {
         holder: Option<ObjId>,
         licence: LicenceId,
     ) -> Result<PersonalFiledHolding, OwnerReadError> {
+        if let Some(house) = self.world().module_state::<HouseAccessSeam>() {
+            use mush_roll::commerce::house_purchase::customer::{
+                HouseHoldingRequest, HouseHoldingResult,
+            };
+            let request = match holder {
+                Some(holder) => HouseHoldingRequest::admission(holder, licence),
+                None => HouseHoldingRequest::own(licence),
+            };
+            match self.context.read_owner(&house.reader, request)? {
+                HouseHoldingResult::Holding(holding) => return Ok(holding),
+                HouseHoldingResult::Other => {}
+            }
+        }
         let seam = self
             .world()
             .module_state::<OriginalAccessSeam>()

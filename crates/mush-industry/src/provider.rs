@@ -3376,6 +3376,14 @@ pub(crate) fn register_with_core_origins(
         action_shapes.extend([config.policy.action(true)?, config.policy.action(false)?]);
     }
     if let Some(config) = factory {
+        if config.payment().delivery.is_some() {
+            action_shapes.push(
+                config
+                    .payment()
+                    .action_descriptor(crate::core_production::integration::delivery::ACTION)
+                    .map_err(|e| ModError::msg(e.to_string()))?,
+            );
+        }
         for name in crate::core_production::integration::ACTIONS {
             action_shapes.push(
                 config

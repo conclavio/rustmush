@@ -369,7 +369,10 @@ impl Account {
             let (units, native, remaining) = run.charge()?;
             if run.status == Status::Complete {
                 if let (Some(budget), Some(cursor)) = (&run.plan.registry, run.registry) {
-                    if !budget.can_certify(cursor)? {
+                    // Complete is a quota-terminal result. Certification and
+                    // measured rejection are distinguished by the actual
+                    // artifact/Registry owners, including on paired recovery.
+                    if !budget.can_certify(cursor)? && !budget.can_reject(cursor)? {
                         return Err(invalid("Registry completion at a partial class cursor"));
                     }
                 }

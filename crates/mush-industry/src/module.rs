@@ -702,6 +702,7 @@ impl GameModule for IndustryModule {
         } else if data.kv.iter().any(|(key, _)| {
             key.as_str() == crate::core_production::INDEX_KEY
                 || key.as_str() == crate::core_production::integration::records::INDEX_KEY
+                || key.as_str() == crate::core_production::integration::delivery::INDEX_KEY
         }) {
             return Err(ModError::msg(
                 "certified Origin history requires its configured owner",

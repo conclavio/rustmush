@@ -267,6 +267,17 @@ impl HouseFixture {
 pub(super) fn exercise(registry: &Fixture, rating: &RatingRef) -> TestResult {
     let saved = Durable::capture(&registry.engine, &registry.disk);
     let mut f = HouseFixture::boot(registry, &saved)?;
+    assert_eq!(
+        f.engine
+            .world
+            .create(ObjKind::Player, "House customer", GOD, Some(ROOM))?,
+        BUYER
+    );
+    {
+        let mut accounts = registry.accounts.values.lock().map_err(module_error)?;
+        registry.accounts.epoch.invalidate();
+        accounts.insert(BUYER, AccountId::mint("house-customer", 2)?);
+    }
     // Real operator setup: no hand-written organization, account balance or
     // grant rows. The real bounded faucet transaction funds this exact scope.
     for line in [
@@ -400,6 +411,7 @@ pub(super) fn exercise(registry: &Fixture, rating: &RatingRef) -> TestResult {
     assert_eq!(operation.pointer("/rating/job"), Some(&json!(rating.job())));
     let committed = f.snapshot();
     catalogue::exercise(registry, &committed, organization, scope, other)?;
+    paid_checkout::exercise_house(registry, &committed, organization, scope)?;
     let restarted = HouseFixture::boot(registry, &committed)?;
     assert_eq!(restarted.economy()?.snapshot().asset(shell), Some(title));
     assert_eq!(

@@ -147,6 +147,20 @@ impl RegistryBudget {
             .get(usize::from(cursor.index) + 1)
             .is_none_or(|next| next.key.class() != case.key.class()))
     }
+    /// Quota completion may retain a measured maximum-class rejection before
+    /// the rest of that class runs. This is not permission to issue a certificate:
+    /// the registered artifact and Roll owners verify the actual rejection.
+    pub fn can_reject(&self, cursor: RegistryCursor) -> Result<bool, BulkError> {
+        let case = self.case(cursor)?;
+        Ok(self.measured_rejection
+            && case.key.class() == mush_roll::commerce::rating::RatingClass::III
+            && !matches!(case.key.kind(), CaseKind::Kernel { .. })
+            && !self
+                .cases
+                .iter()
+                .skip(usize::from(cursor.index) + 1)
+                .any(|next| next.key.class() > case.key.class()))
+    }
     /// Computes the sole allowed post-cursor, before refund or owner mutation.
     /// A promotion skips only the current class's remaining cases; measured
     /// budget-fault evidence remains required by the closed result producer.
@@ -205,15 +219,7 @@ impl RegistryBudget {
                 })
             }
             RegistryEnding::Rejected => {
-                if !self.measured_rejection
-                    || case.key.class() != mush_roll::commerce::rating::RatingClass::III
-                    || matches!(case.key.kind(), CaseKind::Kernel { .. })
-                    || self
-                        .cases
-                        .iter()
-                        .skip(next_index)
-                        .any(|next| next.key.class() > case.key.class())
-                {
+                if !self.can_reject(from)? {
                     return Err(invalid("Registry has no admitted maximum-class rejection"));
                 }
                 Ok(RegistryCursor {

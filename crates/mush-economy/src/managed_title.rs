@@ -59,6 +59,14 @@ impl ManagedTitleIndex {
             Self::Unavailable => None,
         }
     }
+    pub(crate) fn core(&self, object: ObjId) -> Option<&TitleBirth> {
+        match self {
+            Self::Ready(rows) => rows
+                .get(&object)
+                .filter(|birth| birth.kind == TitleBirthKind::Core),
+            Self::Unavailable => None,
+        }
+    }
     pub(crate) fn contains(&self, object: ObjId) -> bool {
         match self {
             Self::Ready(rows) => rows.contains_key(&object),

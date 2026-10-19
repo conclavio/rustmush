@@ -5,6 +5,8 @@
 mod authority;
 pub(crate) mod bridge;
 mod consent;
+mod delivery;
+pub use delivery::require_core_delivery;
 mod fold;
 pub(crate) mod install;
 pub(crate) mod money;
@@ -17,7 +19,9 @@ pub use plans::CoreOutputBirth;
 pub use receipt::{
     CoreFundingReceipt, CorePaymentHistory, CoreTerminalReceipt, CoreTerminalResult,
 };
-pub use subject::{CoreClass, CoreFundingSubject, CorePaymentPolicy, ScopedCoreAccount};
+pub use subject::{
+    CoreClass, CoreDeliveryPromise, CoreFundingSubject, CorePaymentPolicy, ScopedCoreAccount,
+};
 
 use mush_core::CommitToken;
 use mush_core::participant::ParticipantError;

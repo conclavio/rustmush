@@ -18,10 +18,20 @@ pub(crate) fn register(
     gate: Arc<dyn crate::VenueGate>,
     validators_registered: bool,
 ) -> Result<Families, ModError> {
+    register_with_house_definitions(reg, config, gate, validators_registered, &[])
+}
+pub(crate) fn register_with_house_definitions(
+    reg: &mut Registrar<'_>,
+    config: &EntitlementConfig,
+    gate: Arc<dyn crate::VenueGate>,
+    validators_registered: bool,
+    house: &[mush_core::mechanics::DefinitionDescriptor],
+) -> Result<Families, ModError> {
     if reg.module() != crate::NS {
         return Err(error("entitlement providers are Market owned"));
     }
-    let declarations = config.declarations()?;
+    let mut declarations = config.declarations()?;
+    declarations.extend_from_slice(house);
     for kind in ["action", "outcome", "entitlement_policy"] {
         if validators_registered && kind != "entitlement_policy" {
             continue;

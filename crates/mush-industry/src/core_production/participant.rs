@@ -289,6 +289,7 @@ impl OwnerParticipant for OriginParticipant {
                     ctx,
                     config,
                     &self.definitions,
+                    &self.config.policy.content,
                     inputs,
                     request,
                 )?;
@@ -318,7 +319,14 @@ impl OwnerParticipant for OriginParticipant {
             Patch::Origin(p) => self.recheck_origin(state, ctx, p),
             Patch::Integration(p) => {
                 let (config, inputs) = self.integration.as_ref().ok_or_else(refused)?;
-                p.recheck(state, ctx, config, &self.definitions, inputs)
+                p.recheck(
+                    state,
+                    ctx,
+                    config,
+                    &self.definitions,
+                    &self.config.policy.content,
+                    inputs,
+                )
             }
         }
     }
@@ -339,6 +347,33 @@ impl OwnerParticipant for OriginParticipant {
         if OriginParticipant::accepts_write(self, w) {
             return true;
         }
-        match w{ReplayWrite::ModuleJsonSet{namespace,key,value}if self.integration.is_some()&&namespace.as_str()==crate::NS&&key.as_str()==super::integration::records::INDEX_KEY=>super::integration::records::decode::<super::integration::records::IntegrationIndex>(value,super::integration::records::INDEX_BYTES).is_ok_and(|r|r.validate().is_ok()),_=>false}
+        match w {
+            ReplayWrite::ModuleJsonSet {
+                namespace,
+                key,
+                value,
+            } if self.integration.is_some() && namespace.as_str() == crate::NS => {
+                if key.as_str() == super::integration::records::INDEX_KEY {
+                    super::integration::records::decode::<
+                        super::integration::records::IntegrationIndex,
+                    >(value, super::integration::records::INDEX_BYTES)
+                    .is_ok_and(|r| r.validate().is_ok())
+                } else if key.as_str() == super::integration::delivery::INDEX_KEY
+                    && self
+                        .integration
+                        .as_ref()
+                        .is_some_and(|(c, _)| c.payment().delivery.is_some())
+                {
+                    super::integration::records::decode::<super::integration::delivery::Index>(
+                        value,
+                        super::integration::delivery::INDEX_BYTES,
+                    )
+                    .is_ok_and(|r| r.validate().is_ok())
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
     }
 }

@@ -3,6 +3,17 @@
 //! certificate, seat, seal or arena is used here. Like the parent, persistence
 //! is an in-process installation boundary, not server writer/Unknown evidence.
 use super::*;
+#[path = "house_purchase_integration_tests.rs"]
+mod house_purchase;
+pub(super) fn exercise_house(
+    registry: &Fixture,
+    saved: &Durable,
+    organization: mush_org::OrgId,
+    scope: mush_org::OrgScopeId,
+) -> TestResult {
+    house_purchase::exercise(registry, saved, organization, scope)
+}
+
 #[path = "reconformance_lifecycle_integration_tests.rs"]
 mod reconformance_lifecycle;
 pub(super) fn exercise_reconformance(f: &PurchaseFixture, saved: &Durable) -> TestResult {

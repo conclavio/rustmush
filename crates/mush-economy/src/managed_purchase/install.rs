@@ -189,7 +189,7 @@ impl PatchRequest {
             Self::Terminal(request, _) => &request.purchase,
         }
     }
-    fn purchase(&self) -> &OriginalPurchase {
+    fn purchase(&self) -> &super::subject::MonetaryPurchase {
         self.subject().common()
     }
     fn sale(&self) -> bool {

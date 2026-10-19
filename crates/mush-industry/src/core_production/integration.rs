@@ -3,9 +3,10 @@
 pub(crate) mod audit;
 mod authority;
 mod config;
+pub(crate) mod delivery;
 mod families;
 mod offer;
-mod output_policy;
+pub(super) mod output_policy;
 pub(crate) mod owner;
 pub(crate) mod records;
 pub(crate) mod runtime;

@@ -195,8 +195,9 @@ pub(in crate::action_state::terminal_capacity) fn validate_changes(
 ) -> Result<(), ActionStateError> {
     let touches = mutations.keys().any(|k| {
         k.owner.as_str() == "industry"
-            && ([ORDER, delivery::CORE, delivery::INDUSTRY].contains(&k.family.as_str())
-                || (k.family.as_str() == OUTPUT && store.registry.core_integration.is_some()))
+            && ([ORDER, delivery::INDUSTRY].contains(&k.family.as_str())
+                || ([OUTPUT, delivery::CORE].contains(&k.family.as_str())
+                    && store.registry.core_integration.is_some()))
     });
     if !touches {
         return Ok(());

@@ -18,6 +18,10 @@ use std::sync::Arc;
 
 pub(crate) enum Request {
     Initialize,
+    Deliver {
+        before: CoreIntegrationOrder,
+        output: mush_core::core_delivery::DeliveredCoreOutput,
+    },
     Offer(FactoryOffer),
     Accept {
         order: CoreIntegrationOrder,
@@ -36,6 +40,7 @@ pub(crate) struct Output {
     pub(crate) index: IntegrationIndex,
     pub(crate) order: Option<CoreIntegrationOrder>,
     pub(crate) input: Option<Arc<CoreInputWitness>>,
+    pub(crate) delivered: Option<super::delivery::Record>,
 }
 enum Fence {
     Initialize,
@@ -44,6 +49,7 @@ enum Fence {
     Advance(AcceptedIntent, mush_core::ScheduleAdvance),
     Complete(AcceptedIntent, Live),
     Cancel,
+    Deliver(CoreIntegrationOrder),
 }
 pub(crate) struct Patch {
     pub(crate) after: Projection,
@@ -51,6 +57,7 @@ pub(crate) struct Patch {
     pub(crate) next_generation: u64,
     binding: OwnerPreparationBinding,
     before_index: Option<IntegrationIndex>,
+    before_delivery: Option<super::delivery::Index>,
     fence: Fence,
     input: Option<Arc<CoreInputWitness>>,
 }
@@ -83,6 +90,27 @@ fn identity(
     }
     Ok(())
 }
+// Same dependencies as the personal Readiness service, resolved from the
+// immutable actual Origin adapter configuration. This creates no actor or
+// service capability and does not substitute an Object principal for K.
+fn scheduled_readiness(
+    ctx: &OwnerPrepareContext<'_>,
+    defs: &Definitions,
+    content: &mush_core::DefinitionRef,
+) -> Result<(), ParticipantError> {
+    if ctx.world().get(ctx.invocation().actor()).is_none() {
+        return Err(refused());
+    }
+    let registry = defs.0.get().ok_or_else(refused)?;
+    for name in ["industry", "org", "economy", "inventory"] {
+        registry
+            .require_owner_ready(&mush_core::OwnerId::new(name).map_err(|_| refused())?)
+            .map_err(|_| refused())?;
+    }
+    registry
+        .require_owner_ready(&content.key().owner)
+        .map_err(|_| refused())
+}
 fn current_order(
     projection: &Projection,
     before: &CoreIntegrationOrder,
@@ -105,6 +133,7 @@ pub(crate) fn prepare(
     ctx: &OwnerPrepareContext<'_>,
     config: &CoreFactoryConfig,
     defs: &Definitions,
+    content: &mush_core::DefinitionRef,
     inputs: &RegisteredCoreInputs,
     request: Request,
 ) -> Result<(Output, Patch, Vec<ReplayWrite>), ParticipantError> {
@@ -126,12 +155,15 @@ pub(crate) fn prepare(
     let mut after = projection.clone();
     let mut order_output = None;
     let mut input = None;
+    let mut delivered = None;
     let fence = match request {
         Request::Initialize => {
             if config.mode != CoreOriginMode::Initialize
                 || ctx.invocation().actor() != GOD
                 || ctx.action() != &config.action(super::INITIALIZE).map_err(|_| refused())?
                 || projection.index.is_some()
+                || projection.delivery_index.is_some()
+                || !projection.deliveries.is_empty()
                 || !projection.offers.is_empty()
                 || !projection.orders.is_empty()
             {
@@ -142,11 +174,55 @@ pub(crate) fn prepare(
                 IntegrationIndex::new(ctx.commit_token(), config.payment.clone())
                     .map_err(|_| refused())?,
             );
+            if config.payment.delivery.is_some() {
+                after.delivery_index =
+                    Some(super::delivery::Index::new(ctx.commit_token()).map_err(|_| refused())?);
+            }
             Fence::Initialize
+        }
+        Request::Deliver { before, output } => {
+            before.validate().map_err(|_| refused())?;
+            if config.mode != CoreOriginMode::Active
+                || config.payment.delivery.is_none()
+                || before.intent.requester != ctx.invocation().actor()
+                || output.commit() != ctx.commit_token()
+                || output.action() != ctx.action()
+                || ctx.action()
+                    != &config
+                        .action(super::delivery::ACTION)
+                        .map_err(|_| refused())?
+                || projection
+                    .orders
+                    .get(&before.intent.order)
+                    .is_none_or(|r| r.as_ref() != &OrderView::capture(&before))
+                || projection.deliveries.contains_key(&before.intent.order)
+            {
+                return Err(refused());
+            }
+            authority::cleanup(ctx.world(), defs).map_err(|_| refused())?;
+            let h =
+                mush_economy::core_integration::require_core_delivery(ctx.world(), before.accepted)
+                    .map_err(|_| refused())?;
+            before.verify_payment(h).map_err(|_| refused())?;
+            let index = projection.delivery_index.as_ref().ok_or_else(refused)?;
+            let record = super::delivery::Record::capture(
+                index.delivered.checked_add(1).ok_or_else(refused)?,
+                &before,
+                &output,
+            )
+            .map_err(|_| refused())?;
+            after.delivery_index = Some(index.append(&record).map_err(|_| refused())?);
+            after
+                .deliveries
+                .insert(before.intent.order, Arc::new(record.clone()));
+            delivered = Some(record);
+            order_output = Some(before.clone());
+            Fence::Deliver(before)
         }
         Request::Offer(row) => {
             row.validate().map_err(|_| refused())?;
             if config.mode != CoreOriginMode::Active
+                || (config.payment.delivery.is_some() && projection.delivery_index.is_none())
                 || row.policy != config.payment
                 || row.operation != ctx.commit_token()
                 || row.action != *ctx.action()
@@ -186,6 +262,7 @@ pub(crate) fn prepare(
         Request::Accept { order, payment } => {
             order.validate().map_err(|_| refused())?;
             if config.mode != CoreOriginMode::Active
+                || (config.payment.delivery.is_some() && projection.delivery_index.is_none())
                 || order.accepted != ctx.commit_token()
                 || order.action != *ctx.action()
                 || order.intent.requester != ctx.invocation().actor()
@@ -251,6 +328,7 @@ pub(crate) fn prepare(
             fence
         }
         Request::Advance { before, advance } => {
+            scheduled_readiness(ctx, defs, content)?;
             current_order(projection, &before, ctx)?;
             if config.mode != CoreOriginMode::Active
                 || ctx.action() != &config.action(super::ADVANCE).map_err(|_| refused())?
@@ -335,15 +413,25 @@ pub(crate) fn prepare(
         }
     };
     let index = after.index.clone().ok_or_else(refused)?;
-    let writes = vec![ReplayWrite::ModuleJsonSet {
+    let mut writes = vec![ReplayWrite::ModuleJsonSet {
         namespace: mush_core::OwnerId::new(crate::NS).map_err(|_| refused())?,
         key: mush_core::AuthoritativeKey::parse_canonical(INDEX_KEY).map_err(|_| refused())?,
         value: encode(&index, INDEX_BYTES).map_err(|_| refused())?,
     }];
+    if after.delivery_index != projection.delivery_index {
+        let delivery = after.delivery_index.as_ref().ok_or_else(refused)?;
+        writes.push(ReplayWrite::ModuleJsonSet {
+            namespace: mush_core::OwnerId::new(crate::NS).map_err(|_| refused())?,
+            key: mush_core::AuthoritativeKey::parse_canonical(super::delivery::INDEX_KEY)
+                .map_err(|_| refused())?,
+            value: encode(delivery, super::delivery::INDEX_BYTES).map_err(|_| refused())?,
+        });
+    }
     let output = Output {
         index,
         order: order_output,
         input: input.clone(),
+        delivered,
     };
     let patch = Patch {
         after,
@@ -351,6 +439,7 @@ pub(crate) fn prepare(
         next_generation: state.generation.checked_add(1).ok_or_else(refused)?,
         binding: ctx.preparation_binding(),
         before_index: projection.index.clone(),
+        before_delivery: projection.delivery_index.clone(),
         fence,
         input,
     };
@@ -360,10 +449,9 @@ impl Patch {
     pub(crate) fn check_local(&self, state: &CoreProductionState) -> Result<(), ParticipantError> {
         if !state.ready
             || state.generation != self.generation
-            || state
-                .integration
-                .as_ref()
-                .is_none_or(|p| !p.ready || p.index != self.before_index)
+            || state.integration.as_ref().is_none_or(|p| {
+                !p.ready || p.index != self.before_index || p.delivery_index != self.before_delivery
+            })
         {
             return Err(refused());
         }
@@ -375,6 +463,7 @@ impl Patch {
         ctx: &OwnerPrepareContext<'_>,
         config: &CoreFactoryConfig,
         defs: &Definitions,
+        content: &mush_core::DefinitionRef,
         inputs: &RegisteredCoreInputs,
     ) -> Result<(), ParticipantError> {
         self.check_local(state)?;
@@ -422,6 +511,7 @@ impl Patch {
                 mapped(authority::unchanged(old, &now))?;
             }
             Fence::Advance(intent, _) => {
+                scheduled_readiness(ctx, defs, content)?;
                 mapped(authority::cleanup(ctx.world(), defs))?;
                 let now = ctx.world().world_ic_now();
                 if config.mode != CoreOriginMode::Active
@@ -441,6 +531,25 @@ impl Patch {
                 mapped(authority::unchanged(old, &now))?;
             }
             Fence::Cancel => mapped(authority::cleanup(ctx.world(), defs))?,
+            Fence::Deliver(order) => {
+                if config.mode != CoreOriginMode::Active
+                    || config.payment.delivery.is_none()
+                    || ctx.invocation().actor() != order.intent.requester
+                    || ctx.action()
+                        != &config
+                            .action(super::delivery::ACTION)
+                            .map_err(|_| refused())?
+                {
+                    return Err(refused());
+                }
+                mapped(authority::cleanup(ctx.world(), defs))?;
+                let history = mush_economy::core_integration::require_core_delivery(
+                    ctx.world(),
+                    order.accepted,
+                )
+                .map_err(|_| refused())?;
+                mapped(order.verify_payment(history))?;
+            }
         }
         if let Some(input) = &self.input {
             inputs.recheck(ctx, input).map_err(|_| refused())?;

@@ -492,6 +492,7 @@ pub struct HookReadContext<'a> {
     typed_state: crate::action_state::ModuleActionState<'a>,
     registry: Option<&'a Registry>,
     read_caller: Option<crate::read_service::OwnerReadCaller>,
+    exchange_attempt: Option<&'a crate::core_exchange::ExchangeCarryAttempt>,
 }
 
 impl<'a> HookReadContext<'a> {
@@ -522,7 +523,25 @@ impl<'a> HookReadContext<'a> {
             typed_state: crate::action_state::ModuleActionState::for_module(lens, Some(module)),
             registry: None,
             read_caller: None,
+            exchange_attempt: None,
         }
+    }
+
+    /// Exact fixed Core exchange currently evaluating this carry. Ordinary
+    /// carries, deliveries and detached contexts return None. This borrowed
+    /// identity is not permission: hooks must verify their actual owner records.
+    pub const fn core_exchange_attempt(
+        &self,
+    ) -> Option<&'a crate::core_exchange::ExchangeCarryAttempt> {
+        self.exchange_attempt
+    }
+
+    pub(crate) fn with_core_exchange_attempt(
+        mut self,
+        attempt: &'a crate::core_exchange::ExchangeCarryAttempt,
+    ) -> Self {
+        self.exchange_attempt = Some(attempt);
+        self
     }
 
     /// Actual dispatch attribution, never taken from service request data.
@@ -3325,6 +3344,28 @@ impl<'a> Registrar<'a> {
         self.reg
             .state_family_builder
             .original_mind_purchase_capacity(&owner, manifest, participants, actions)
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
+    /// Declare the closed personal-charter pending escrow and four future rows.
+    /// Order: Economy/Roll participants; Offer/Fund/Settle/Refund actions.
+    pub fn charter_pending_capacity(
+        &mut self,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 4],
+        registry_revocation: Option<crate::DefinitionRef>,
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "roll" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "pending charter capacity requires the unfrozen Roll registrar",
+            ));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str())
+            .map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .charter_pending_capacity(&owner, participants, actions, registry_revocation)
             .map_err(|e| ModError::msg(e.to_string()))
     }
 

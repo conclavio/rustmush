@@ -41,6 +41,8 @@ pub struct MindCommerce {
     compatible_update_action: Option<DefinitionRef>,
     charter_transfer_action: Option<DefinitionRef>,
     house_filing_action: Option<DefinitionRef>,
+    house_purchases: Option<mush_market::mind_house::HouseConfig>,
+    house_purchase_actions: Option<[DefinitionRef; 3]>,
     dependent_filing_action: Option<DefinitionRef>,
     purchases: Option<OriginalPurchaseConfig>,
     entitlements: Option<mush_market::mind_entitlement::EntitlementConfig>,
@@ -84,6 +86,8 @@ impl MindCommerce {
             compatible_update_action: None,
             charter_transfer_action: None,
             house_filing_action: None,
+            house_purchases: None,
+            house_purchase_actions: None,
             dependent_filing_action: None,
             purchases: None,
             entitlements: None,
@@ -214,6 +218,59 @@ impl MindCommerce {
         Ok(self)
     }
 
+    /// Explicit organization-issued sealed personal purchases. Curator publication
+    /// and the organization's title/treasury remain distinct from buyer rights.
+    /// No default catalogue, account, grant or renewal activation is created.
+    pub fn with_house_minds(
+        mut self,
+        policy: mush_market::mind_house::HousePolicy,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active
+            || self.house_filing_action.is_none()
+            || self.house_purchases.is_some()
+        {
+            return Err(ModError::msg(
+                "house purchases require one Active house filing composition",
+            ));
+        }
+        let economy = DefinitionRegistryBuilder::new()
+            .register(
+                OwnerId::new("economy").map_err(error)?,
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("owner_participant").map_err(error)?,
+                    DefinitionId::new("initial_filing").map_err(error)?,
+                    1,
+                    self.filing.definition_payload(),
+                )
+                .map_err(error)?,
+            )
+            .map_err(error)?;
+        let retention = DefinitionRegistryBuilder::new()
+            .register(
+                OwnerId::new("roll").map_err(error)?,
+                commercial_roots_descriptor()?,
+            )
+            .map_err(error)?;
+        let participants = PurchaseParticipants::new(economy, retention).map_err(error)?;
+        let writer = mush_roll::commerce::house_purchase::writer::HousePurchaseWriter::new();
+        let config = mush_market::mind_house::HouseConfig::new(
+            policy,
+            self.manifest().clone(),
+            participants.clone(),
+            writer.clone(),
+        )?;
+        self.roll = self.roll.with_house_mind_purchases(
+            writer,
+            participants,
+            config.owner_actions(mush_roll::commerce::house_purchase::HouseProtocol::HouseV1)?,
+        )?;
+        self.house_purchase_actions = Some(
+            config.purchase_actions(mush_roll::commerce::house_purchase::HouseProtocol::HouseV1)?,
+        );
+        self.house_purchases = Some(config);
+        Ok(self)
+    }
+
     /// Explicit personal Pin entitlement issuance. Existing original protocol
     /// remains installed for its own receipts and historical recovery.
     pub fn with_mind_entitlements(
@@ -334,7 +391,10 @@ impl MindCommerce {
     /// Preserve the actual layer and all its boot hooks. A stale configuration
     /// or a different loaded catalog refuses instead of silently recapturing.
     pub fn configure_tacsim(&self, mut layer: TacsimRuleset) -> Result<TacsimRuleset, ModError> {
-        if layer.registry_commerce.is_some() || layer.original_holdings.is_some() {
+        if layer.registry_commerce.is_some()
+            || layer.original_holdings.is_some()
+            || layer.house_holdings.is_some()
+        {
             return Err(ModError::msg(
                 "Tacsim already has explicit Registry or filed holdings configuration",
             ));
@@ -360,6 +420,9 @@ impl MindCommerce {
             } else {
                 layer.with_original_holdings(self.manifest().clone())
             };
+        }
+        if self.house_purchases.is_some() {
+            layer = layer.with_house_mind_holdings(self.manifest().clone());
         }
         if self.authored_forks {
             layer.fork_material = Some(self.manifest().clone());
@@ -420,10 +483,14 @@ impl MindCommerce {
             Some(actions) => module.with_original_mind_purchases(actions.clone()),
             None => module,
         };
-        match &self.entitlement_actions {
+        let module = match &self.entitlement_actions {
             Some([original, derived]) => {
                 module.with_mind_entitlement_purchases(original.clone(), derived.clone())
             }
+            None => module,
+        };
+        match &self.house_purchase_actions {
+            Some(actions) => module.with_house_mind_purchases(actions.clone()),
             None => module,
         }
     }
@@ -436,8 +503,12 @@ impl MindCommerce {
             Some(config) => module.with_original_mind_purchases(config.clone()),
             None => module,
         };
-        match &self.entitlements {
+        let module = match &self.entitlements {
             Some(config) => module.with_mind_entitlements(config.clone()),
+            None => module,
+        };
+        match &self.house_purchases {
+            Some(config) => module.with_house_minds(config.clone()),
             None => module,
         }
     }

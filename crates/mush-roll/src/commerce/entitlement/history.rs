@@ -31,78 +31,91 @@ fn invalid(_: impl std::fmt::Display) -> PublicationError {
 pub(crate) enum Birth<'a> {
     Legacy(&'a PaidAllocation),
     Entitlement(&'a EntitlementAllocationV1),
+    House(&'a super::super::house_purchase::HouseAllocationV1),
 }
 impl Birth<'_> {
     pub(crate) fn operation(&self) -> CommitToken {
         match self {
             Self::Legacy(a) => a.operation(),
             Self::Entitlement(a) => a.operation(),
+            Self::House(a) => a.operation(),
         }
     }
     pub(crate) fn rating(&self) -> super::super::rating::RatingRef {
         match self {
             Self::Legacy(a) => a.rating(),
             Self::Entitlement(a) => a.rating(),
+            Self::House(a) => a.rating(),
         }
     }
     pub(crate) fn phase(&self) -> PurchasePhase {
         match self {
             Self::Legacy(a) => a.phase(),
             Self::Entitlement(a) => a.phase(),
+            Self::House(a) => a.phase(),
         }
     }
     pub(crate) fn licence(&self) -> super::super::LicenceId {
         match self {
             Self::Legacy(a) => a.licence(),
             Self::Entitlement(a) => a.licence(),
+            Self::House(a) => a.licence(),
         }
     }
     pub(crate) fn term(&self) -> super::super::TermGeneration {
         match self {
             Self::Legacy(a) => a.term(),
             Self::Entitlement(a) => a.term(),
+            Self::House(a) => a.term(),
         }
     }
     pub(crate) fn holder(&self) -> mush_core::ObjId {
         match self {
             Self::Legacy(a) => a.holder(),
             Self::Entitlement(a) => a.holder(),
+            Self::House(a) => a.holder(),
         }
     }
     pub(crate) fn charter(&self) -> super::super::CharterId {
         match self {
             Self::Legacy(a) => a.charter(),
             Self::Entitlement(a) => a.charter(),
+            Self::House(a) => a.charter(),
         }
     }
     pub(crate) fn line(&self) -> super::super::LineId {
         match self {
             Self::Legacy(a) => a.line(),
             Self::Entitlement(a) => a.line(),
+            Self::House(a) => a.line(),
         }
     }
     pub(crate) fn filed(&self) -> super::super::FiledRevisionId {
         match self {
             Self::Legacy(a) => a.filed(),
             Self::Entitlement(a) => a.filed(),
+            Self::House(a) => a.filed(),
         }
     }
     pub(crate) fn revision(&self) -> super::super::RevisionIdentity {
         match self {
             Self::Legacy(a) => a.revision(),
             Self::Entitlement(a) => a.revision(),
+            Self::House(a) => a.revision(),
         }
     }
     pub(crate) fn terms(&self) -> super::super::paid::PaidTerms {
         match self {
             Self::Legacy(a) => a.terms(),
             Self::Entitlement(a) => a.terms(),
+            Self::House(a) => a.terms(),
         }
     }
     pub(crate) fn product_digest(&self) -> DefinitionDigest {
         match self {
             Self::Legacy(a) => a.product_digest(),
             Self::Entitlement(a) => a.product_digest(),
+            Self::House(a) => a.product_digest(),
         }
     }
 }
@@ -137,11 +150,13 @@ pub(crate) fn resolve<'a>(
 ) -> Result<Birth<'a>, PublicationError> {
     let legacy = optional(ctx, &f.paid_allocations, operation.to_hex())?;
     let entitlement = optional(ctx, &f.entitlement_allocations, operation.to_hex())?;
-    match (legacy, entitlement) {
-        (Some(row), None) => Ok(Birth::Legacy(row)),
-        (None, Some(row)) => Ok(Birth::Entitlement(row)),
-        (None, None) => Err(PublicationError::Missing),
-        (Some(_), Some(_)) => Err(PublicationError::Mismatch),
+    let house = optional(ctx, &f.house_allocations, operation.to_hex())?;
+    match (legacy, entitlement, house) {
+        (Some(row), None, None) => Ok(Birth::Legacy(row)),
+        (None, Some(row), None) => Ok(Birth::Entitlement(row)),
+        (None, None, Some(row)) => Ok(Birth::House(row)),
+        (None, None, None) => Err(PublicationError::Missing),
+        _ => Err(PublicationError::Mismatch),
     }
 }
 
@@ -419,6 +434,11 @@ pub(crate) fn granted<'a>(
         read(ctx, &f.paid_terms, birth_key.clone())?
     };
     let birth_economics = optional(ctx, &f.term_economics, birth_key)?;
+    if !matches!(birth, Birth::House(_))
+        && optional(ctx, &f.house_economics, birth_term.key())?.is_some()
+    {
+        return Err(PublicationError::Mismatch);
+    }
     match birth {
         Birth::Legacy(row) => {
             if birth_economics.is_some()
@@ -430,6 +450,23 @@ pub(crate) fn granted<'a>(
             }
             verify_legacy_history(row, actual, receipt.compatibility().digest())?;
             super::super::paid_audit::verify_granted(row, licence, birth_term, actual)?;
+        }
+        Birth::House(row) => {
+            if birth_economics.is_some()
+                || term.generation() != row.term
+                || licence.term() != row.term
+            {
+                return Err(PublicationError::Mismatch);
+            }
+            let economics = read(ctx, &f.house_economics, birth_term.key())?;
+            super::super::house_purchase::history::verify_grant(
+                row,
+                licence,
+                birth_term,
+                economics,
+                actual,
+                receipt.compatibility().digest(),
+            )?;
         }
         Birth::Entitlement(row) => verify_entitlement_grant(
             row,

@@ -121,7 +121,7 @@ fn validate(inv: &ActionInvocation, index: usize) -> Result<(), Error> {
         4 => {
             decode::<AdvanceSelector>(inv.parameters())?;
         }
-        3 | 5 | 6 => {
+        3 | 5 | 6 | 7 => {
             parse_order_id(&decode::<OrderSelector>(inv.parameters())?.order)?;
         }
         _ => return Err(Error::Invalid),
@@ -137,6 +137,17 @@ pub(crate) struct Provider {
     refusal: ActionError,
 }
 impl Provider {
+    fn action(&self) -> Result<&DefinitionRef, Error> {
+        if self.index == 7 {
+            self.runtime
+                .delivery
+                .as_ref()
+                .map(|d| &d.action)
+                .ok_or(Error::Unavailable)
+        } else {
+            self.runtime.actions.get(self.index).ok_or(Error::Integrity)
+        }
+    }
     fn owner(
         &self,
         ctx: &mut PrepareCtx<'_>,
@@ -199,10 +210,15 @@ impl Provider {
         if self.index != 0 && self.index != 6 && r.config.mode != CoreOriginMode::Active {
             return Err(Error::Unavailable);
         }
-        ctx.read_owner_preimage(txn, &self.readiness, ())
-            .map_err(bad)?;
+        // K uses its actual scoped scheduler principal. Its owner preparation
+        // checks the same readiness dependencies and retains them through custody;
+        // the personal owner-read contract cannot authorize that principal.
+        if self.index != 4 {
+            ctx.read_owner_preimage(txn, &self.readiness, ())
+                .map_err(bad)?;
+        }
         let commit = ctx.commit_token();
-        let action = r.actions.get(self.index).ok_or(Error::Integrity)?;
+        let action = self.action()?;
         let mut offer_id = None;
         let mut order_id = None;
         let mut object = None;
@@ -522,6 +538,48 @@ impl Provider {
                     "cancelled"
                 }
             }
+            7 => {
+                let delivery = r.delivery.as_ref().ok_or(Error::Unavailable)?;
+                let id = parse_order_id(&decode::<OrderSelector>(inv.parameters())?.order)?;
+                let before = txn
+                    .get(&r.families.orders, &id)
+                    .map_err(bad)?
+                    .cloned()
+                    .ok_or(Error::Unavailable)?;
+                before.validate()?;
+                if before.intent.requester != inv.actor()
+                    || txn.get(&delivery.records, &id).map_err(bad)?.is_some()
+                {
+                    return Err(Error::Unavailable);
+                }
+                let output = ctx
+                    .deliver_core_output(&delivery.outputs, txn, id.0)
+                    .map_err(bad)?;
+                object = Some(output.object());
+                let after = self.owner(
+                    ctx,
+                    owner::Request::Deliver {
+                        before: before.clone(),
+                        output,
+                    },
+                )?;
+                let delivered = after.delivered.ok_or(Error::Integrity)?;
+                if after.order.as_ref() != Some(&before) || after.input.is_some() {
+                    return Err(Error::Integrity);
+                }
+                delivered.matches_order(&before)?;
+                if delivered.operation != commit || &delivered.action != action {
+                    return Err(Error::Integrity);
+                }
+                txn.insert(&delivery.records, &id, delivered).map_err(bad)?;
+                // Fixed v2 terminal validation requires the exact unchanged sponsor
+                // alongside both new delivery rows; the birth order is immutable.
+                txn.replace(&r.families.orders, &id, before).map_err(bad)?;
+                ctx.advance_core_integration_completion(txn, id.0)
+                    .map_err(bad)?;
+                order_id = Some(id);
+                "delivered"
+            }
             _ => return Err(Error::Invalid),
         };
         Ok(AuthoritativeActionOutput::new(RulesValue::new(r.outcome.clone(),json!({"operation":commit,"offer":offer_id,"order":order_id,"object":object,"state":state})).map_err(bad)?).with_definitions(vec![action.clone(),r.outcome.clone()]).with_eligible_witnesses(vec![inv.principal().clone()]))
@@ -548,7 +606,7 @@ impl ActionProvider for Provider {
     ) -> Result<Option<mush_core::ProviderOfferDraft>, ActionError> {
         use mush_core::{ProjectedParameter, ProjectedParameterKind as Kind};
         let r = &self.runtime;
-        if Some(action) != r.actions.get(self.index)
+        if self.action().ok() != Some(action)
             || self.index == 4
             || query.truth_subject() != &(mush_core::SubjectKey::Object { id: query.actor() })
             || query.projected_subject() != &PerceivedRef::SelfActor
@@ -568,6 +626,12 @@ impl ActionProvider for Provider {
             return Ok(None);
         }
         if self.index != 0 && self.index != 6 && r.config.mode != CoreOriginMode::Active {
+            return Ok(None);
+        }
+        if matches!(self.index, 1 | 2)
+            && r.config.payment.delivery.is_some()
+            && projection.delivery_index.is_none()
+        {
             return Ok(None);
         }
         let fail = || self.refusal.clone();
@@ -745,6 +809,56 @@ impl ActionProvider for Provider {
                 }
                 parameters.push(parameter("order", true, Kind::Choice { choices: orders })?);
             }
+            7 => {
+                let Some(delivery) = &r.delivery else {
+                    return Ok(None);
+                };
+                if projection.delivery_index.is_none() {
+                    return Ok(None);
+                }
+                let mut orders = Vec::new();
+                for (id, view) in &projection.orders {
+                    if view.intent.requester != query.actor()
+                        || projection.deliveries.contains_key(id)
+                    {
+                        continue;
+                    }
+                    let Some(row) = engine
+                        .action_state()
+                        .get(&r.families.orders, id)
+                        .map_err(|_| fail())?
+                    else {
+                        return Err(fail());
+                    };
+                    if super::state::OrderView::capture(row) != **view {
+                        return Err(fail());
+                    }
+                    if engine
+                        .action_state()
+                        .get(&delivery.records, id)
+                        .map_err(|_| fail())?
+                        .is_some()
+                    {
+                        return Err(fail());
+                    }
+                    if mush_economy::core_integration::require_core_delivery(
+                        &engine.world,
+                        row.accepted,
+                    )
+                    .is_err()
+                    {
+                        continue;
+                    }
+                    orders.push(id.to_string());
+                    if orders.len() == 64 {
+                        break;
+                    }
+                }
+                if orders.is_empty() {
+                    return Ok(None);
+                }
+                parameters.push(parameter("order", true, Kind::Choice { choices: orders })?);
+            }
             _ => return Ok(None),
         }
         let definitions = engine.registry.definitions().ok_or_else(fail)?;
@@ -755,7 +869,7 @@ impl ActionProvider for Provider {
         guards
             .add_definition(action.clone(), definitions)
             .map_err(|_| fail())?;
-        if self.index != 6 {
+        if self.index != 6 && self.index != 7 {
             guards
                 .add_definition(r.config.payment.recipe.clone(), definitions)
                 .map_err(|_| fail())?;
@@ -767,6 +881,7 @@ impl ActionProvider for Provider {
             3 => ("reserve-core-output", "Reserve core output"),
             5 => ("complete-core-work", "Complete core integration"),
             6 => ("cancel-core-work", "Cancel core integration"),
+            7 => ("deliver-core-output", "Collect completed core"),
             _ => return Ok(None),
         };
         Ok(Some(mush_core::ProviderOfferDraft {
@@ -792,8 +907,21 @@ pub(crate) fn register(
 ) -> Result<(), ModError> {
     let error = |e| ModError::msg(format!("core integration registration: {e}"));
     let runtime = Arc::new(runtime);
-    for index in 0..super::ACTIONS.len() {
-        let action = runtime.actions[index].clone();
+    for index in 0..(super::ACTIONS.len() + usize::from(runtime.delivery.is_some())) {
+        let action = if index == 7 {
+            runtime
+                .delivery
+                .as_ref()
+                .ok_or_else(|| ModError::msg("delivery registration"))?
+                .action
+                .clone()
+        } else {
+            runtime
+                .actions
+                .get(index)
+                .ok_or_else(|| ModError::msg("action registration"))?
+                .clone()
+        };
         let owner = if index == 3 {
             None
         } else {

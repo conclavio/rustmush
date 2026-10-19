@@ -49,6 +49,9 @@ impl PreparedComposedTxn {
         if shell.as_ref().is_some_and(|shell| shell.creates_object()) && !owners.is_empty() {
             return Err(ParticipantError::Authority.into());
         }
+        if let Some(shell) = &shell {
+            shell.require_owner_images(&owners)?;
+        }
         owners.order();
         let mut writes = typed.authoritative_replay_writes();
         writes.extend(owners.writes().cloned());

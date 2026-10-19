@@ -88,6 +88,7 @@ mod hash;
 mod ids;
 pub mod managed_charter_transfer;
 pub mod managed_entitlement;
+pub mod managed_house_purchase;
 pub mod managed_purchase;
 pub mod managed_renewal;
 mod managed_title;

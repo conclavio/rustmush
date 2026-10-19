@@ -50,6 +50,7 @@ pub struct CommerceConfig {
     dependent_owners: bool,
     original_purchases: Option<PurchaseRegistration>,
     entitlements: Option<EntitlementRegistration>,
+    house_purchases: Option<HouseRegistration>,
     renewals: Option<RenewalRegistration>,
     ic: Option<std::sync::Arc<dyn super::ic_claims::registration::Installer>>,
 }
@@ -65,6 +66,12 @@ struct EntitlementRegistration {
     participants: super::purchase::PurchaseParticipants,
     original: [DefinitionRef; 4],
     derived: [DefinitionRef; 4],
+}
+#[derive(Clone, Debug)]
+struct HouseRegistration {
+    writer: super::house_purchase::writer::HousePurchaseWriter,
+    participants: super::purchase::PurchaseParticipants,
+    actions: [DefinitionRef; 4],
 }
 #[derive(Clone, Debug)]
 struct RenewalRegistration {
@@ -113,6 +120,7 @@ impl CommerceConfig {
             dependent_owners: false,
             original_purchases: None,
             entitlements: None,
+            house_purchases: None,
             renewals: None,
             ic: None,
         })
@@ -416,6 +424,30 @@ impl CommerceConfig {
         Ok(self)
     }
 
+    /// Explicit organization-issued, sealed personal customer composition.
+    pub fn with_house_mind_purchases(
+        mut self,
+        writer: super::house_purchase::writer::HousePurchaseWriter,
+        participants: super::purchase::PurchaseParticipants,
+        actions: [DefinitionRef; 4],
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active
+            || !self.house_filings
+            || self.house_purchases.is_some()
+        {
+            return Err(ModError::msg(
+                "house purchases require one Active house filing composition",
+            ));
+        }
+        super::house_purchase::writer::validate_refs(&self.manifest, &participants, &actions)?;
+        self.house_purchases = Some(HouseRegistration {
+            writer,
+            participants,
+            actions,
+        });
+        Ok(self)
+    }
+
     /// Explicit same-slot renewal composition. Exact Market and Economy
     /// providers and all final audits are required; no default activation.
     pub fn with_mind_renewals(
@@ -676,6 +708,7 @@ pub(crate) struct CommerceRegistration {
     pub(crate) mode: CommerceMode,
     paid: bool,
     entitlements: bool,
+    house_purchases: bool,
     renewals: bool,
     forks: bool,
     dependent_owners: bool,
@@ -815,6 +848,11 @@ pub(crate) fn register(
                 declarations.push(super::paid_source_reader::descriptor(&config.manifest)?);
             }
         }
+        if config.house_purchases.is_some() {
+            declarations.push(super::house_purchase::customer::holding_descriptor(
+                &config.manifest,
+            )?);
+        }
         if config.entitlements.is_some() {
             declarations.push(super::entitlement::reader::descriptor(&config.manifest)?);
             declarations.push(super::entitlement::customer::holding_descriptor(
@@ -898,6 +936,15 @@ pub(crate) fn register(
         }
         if config.dependent_owners {
             super::dependent_source::register(
+                reg,
+                families.clone(),
+                ratings.clone(),
+                &config.manifest,
+                config.compatibility.clone(),
+            )?;
+        }
+        if config.house_purchases.is_some() {
+            super::house_purchase::customer::register(
                 reg,
                 families.clone(),
                 ratings.clone(),
@@ -1059,6 +1106,20 @@ pub(crate) fn register(
             entitlement.participants.clone(),
             entitlement.original.clone(),
             entitlement.derived.clone(),
+        )?;
+    }
+    if let Some(house) = &config.house_purchases {
+        if house.participants.retention() != &root_definition {
+            return Err(ModError::msg("house retention definition differs"));
+        }
+        root_actions.extend(house.actions.iter().cloned());
+        house.writer.install(
+            reg,
+            families.clone(),
+            ratings.clone(),
+            config.manifest.clone(),
+            house.participants.clone(),
+            house.actions.clone(),
         )?;
     }
     if let Some(renewal) = &config.renewals {
@@ -1432,6 +1493,7 @@ pub(crate) fn register(
         mode: config.mode,
         paid: config.original_purchases.is_some(),
         entitlements: config.entitlements.is_some(),
+        house_purchases: config.house_purchases.is_some(),
         renewals: config.renewals.is_some(),
         forks: fork.is_some(),
         dependent_owners: config.dependent_owners,
@@ -1482,7 +1544,7 @@ impl CommerceRegistration {
             .map_err(error)?;
         }
         match self.mode {
-            CommerceMode::Active => super::audit::audit_and_open_ic_configured(
+            CommerceMode::Active => super::audit::audit_and_open_house_configured(
                 ctx,
                 &self.families,
                 &self.ratings,
@@ -1496,6 +1558,7 @@ impl CommerceRegistration {
                 self.owner_qualification,
                 self.owner_attestations,
                 self.ic.as_deref(),
+                self.house_purchases,
                 registry,
             )
             .map_err(error),

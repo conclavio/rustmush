@@ -9,6 +9,7 @@ use std::sync::Arc;
 struct Capabilities {
     original: Option<crate::mind_trade::PurchaseGuard>,
     entitlement: Option<EntitlementGuard>,
+    house: Option<crate::mind_house::HouseGuard>,
 }
 impl AuthorityGuardValidator for Capabilities {
     fn is_current(
@@ -26,6 +27,11 @@ impl AuthorityGuardValidator for Capabilities {
                 return Ok(true);
             }
         }
+        if let Some(house) = &self.house {
+            if house.is_current(ctx, guard)? {
+                return Ok(true);
+            }
+        }
         if crate::mind_renewal::service_guard_current(ctx, guard) {
             return Ok(true);
         }
@@ -38,7 +44,16 @@ pub(crate) fn register(
     entitlement: Option<&super::EntitlementConfig>,
     gate: Option<Arc<dyn crate::VenueGate>>,
 ) -> Result<(), ModError> {
-    if original.is_none() && entitlement.is_none() {
+    register_with_house(reg, original, entitlement, None, gate)
+}
+pub(crate) fn register_with_house(
+    reg: &mut Registrar<'_>,
+    original: Option<&crate::mind_trade::OriginalPurchaseConfig>,
+    entitlement: Option<&super::EntitlementConfig>,
+    house: Option<&crate::mind_house::HouseConfig>,
+    gate: Option<Arc<dyn crate::VenueGate>>,
+) -> Result<(), ModError> {
+    if original.is_none() && entitlement.is_none() && house.is_none() {
         return Ok(());
     }
     let gate = gate.ok_or_else(|| super::error("mind purchases require the actual venue gate"))?;
@@ -48,11 +63,15 @@ pub(crate) fn register(
     let entitlement = entitlement
         .map(|c| EntitlementGuard::new(c.clone(), gate.clone()))
         .transpose()?;
+    let house = house
+        .map(|c| crate::mind_house::HouseGuard::new(c.clone(), gate.clone()))
+        .transpose()?;
     reg.authority_guard_validator(
         AuthorityGuardKind::Capability,
         Capabilities {
             original,
             entitlement,
+            house,
         },
     )
 }

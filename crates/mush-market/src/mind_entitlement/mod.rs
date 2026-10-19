@@ -16,10 +16,12 @@ mod purchase;
 mod records;
 mod registration;
 
-pub(crate) use capabilities::register as register_capabilities;
+pub(crate) use capabilities::{
+    register as register_capabilities, register_with_house as register_capabilities_with_house,
+};
 pub use config::{EntitlementConfig, EntitlementPolicy};
 pub(crate) use families::Families;
-pub(crate) use registration::register;
+pub(crate) use registration::{register, register_with_house_definitions};
 
 fn error(e: impl std::fmt::Display) -> mush_core::ModError {
     mush_core::ModError::msg(e.to_string())
