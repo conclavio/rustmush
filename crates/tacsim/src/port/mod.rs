@@ -105,6 +105,9 @@ pub mod board;
 pub mod burn;
 pub mod buyout;
 pub mod capacity;
+/// Doc 19 cut A.3: `+chart` — the sky from where you stand, the passages now and
+/// the window over the next IC year (doc 19 §5).
+pub mod chart;
 pub mod coop;
 pub mod credit;
 pub mod def;
@@ -126,6 +129,10 @@ pub mod voyage;
 pub mod when;
 
 pub use burn::{BURN_ACTION, BURN_KEY_PREFIX, BURN_OUTCOME};
+pub use chart::{
+    CHART_HELP, CHART_NO_BODY, CHART_NO_LANE, CHART_NO_ROUTE, CHART_NOWHERE, CHART_VERB,
+    PLAN_WINDOW_DAYS, WINDOW_DAYS,
+};
 pub use coop::{
     Charter, EndCause, Enrolment, EnrolmentState, EnrolmentStatus, Helm, ProgrammePort, Standing,
     charter_tenant, enrol_gate, gated, helm_holder, helm_of, live_charter, programme_port, shuts,

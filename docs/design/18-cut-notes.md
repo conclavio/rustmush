@@ -7160,3 +7160,68 @@ copy edits `accel_mg`), `content.rs` (Dray v3's digest and law), the executor's 
   tests, the help's "later, the season" → now).
 - The Engineering gauge and the help still describe the burn in the coast law's words where they
   do; A.6's docs pass.
+
+## A.3
+
+**`+chart` and the plan's window line** ([doc 19](19-astronomy-engine.md) §5, cut A.3; D-19-16),
+built 2026-10-18 on main over `153a267a` (cut A.2). One commit with the Fable trailer, pushed when
+green. This is the surface the owner asked for in words — "there are optimal times to trade there
+and times when it's prohibitively expensive" — read as text at the 120-column floor; the web and
+TUI panel is A.3b.
+
+### What landed
+
+1. **`port/chart.rs`** (new): the `+chart` verb, a pure read in `+credit`'s ReadOnly bracket
+   (`commands.rs`), on the one sky seam and the one planner.
+   - **`+chart`**: the header names the date, the sky's model and motion, and the vantage — the
+     port the actor's charter is docked at, else the port whose domain host or gallery the actor
+     stands in (the port map's rooms), else the lane's first port; without a charter the port's
+     programme hull (the Dray) is planned **empty**, so a walker on the concourse reads the same
+     sky a captain does. Then every lane body by heliocentric distance — `r` in AU, ecliptic
+     longitude and latitude, the distance from here in AU and the one-way light lag — and, for
+     each port this one clears for, the passage **now** at this load and empty (hours at the world
+     rate, burn, crew-days) and **the direct chord beside the listed route** (its AU, hours and
+     tonnes: the depot's detour priced, computed from the sky — no direct route entry is needed,
+     so lane v5 is not cut).
+   - **`+chart <port>`**: the **window** — `plan_passage` once per IC day over the next year
+     (`WINDOW_DAYS` 365 evaluations, a few milliseconds): now, then the fastest day, the cheapest
+     day (when it differs) and the worst, each dated, "in N IC days", with its hours and burn and
+     the difference against now. Under the constant sky the line says every day is today.
+   - **`+chart/body <body>`**: the body's row, its distance and light lag from here, and the
+     osculating element row it moves on now (`a`, `e`, `i`, Ω, ω, `M`, the period; the table's
+     row count and span); a circular body says so.
+   - Refusals: `CHART_NO_LANE`, `CHART_NOWHERE`, `CHART_NO_ROUTE` (with the list),
+     `CHART_NO_BODY` (with the list); TacSim off answers `NOT_ENABLED`.
+2. **`+ship/plan`'s window line** (`voyage.rs` `plan_block`, after the Passage line; D-19-16):
+   when the sky moves, the best departure in the next `PLAN_WINDOW_DAYS` (30) IC days against
+   today's — "Window: the best departure in the next 30 IC days is 2351-06-02 (in 20 IC days):
+   17 h 40 m and 48 t, 1 h 10 m and 4 t less than today." — or "today is the best departure";
+   under the constant sky no line (every day is today, and the slice's pinned plan output is
+   unchanged). The scan's core, `chart::best_day`, is pure and unit-tested; the basis is cloned
+   per day with its `depart_ic` moved.
+3. **Seams opened** (`voyage.rs`): `Basis` and its fields, `basis`, `plan_on`, `Destination`,
+   `destinations`, `match_destination` and `occupants` are `pub(crate)` for the chart; nothing
+   else moved. `docs/help/ships.md` carries the three `+chart` lines and the window line.
+4. **Tests**: `tests/chart.rs` (four, on the production composition with the lane, as a walker):
+   the sky table (twelve rows, Ceres "here", Pallas's light lag, the Stickney line with the empty
+   figure and the direct chord); the constant sky's window and the refused port; the moving sky's
+   fastest and worst days (the worst no shorter than the fastest); `+chart/body pallas` (latitude
+   +14.07°, the 122-row table, `i 35.`) and the refused body. Unit tests for `best_day` and the
+   formatters.
+
+### Lead rulings taken
+
+- **The direct comparison is computed, not authored**: the chord from the vantage's body to the
+  destination's, through `leg_distance_km`, `leg_seconds` and `passage_burn`; lane v5's direct
+  route entries are not needed for the chart and stay out (Q-19-3's default).
+- **The window is one IC day at a time** (365 and 30 evaluations); a finer scan is a knob for
+  later, not a need now.
+- **The vantage falls back to the lane's first port** for a player standing nowhere the lane
+  knows, so `+chart` always answers something on a lane server.
+
+### Deferred
+
+- **A.3b** the web cockpit panel and the TUI screen (top-down XY, z-exaggeration, ships under way
+  along their tickets' frozen legs); **A.4** prices; **A.5** doc 15 R5 on `light_lag_s`; **A.6**
+  the flip (templates at rate 1000, the readiness model word, the migration tests).
+- Lane v5 (direct routes as routes a captain can fly) when the fiction wants them.

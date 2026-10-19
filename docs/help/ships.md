@@ -68,7 +68,16 @@ itself, the stores — counts; the stores are crew-days for the souls aboard.
   +ship/plan <port> via=<place>           a route that calls at that place
                                           (Kirkwood Depot, for one)
 
-`+ship/undock` takes the same three.
+`+ship/undock` takes the same three. `+ship/plan` ends with a window line when the
+sky moves: the best departure in the next thirty IC days against today's.
+
+  +chart                  the sky now from the port you stand at: every body's
+                          distance, longitude and latitude, the light lag, and
+                          each port's passage now (this load, empty, and the
+                          direct chord beside the listed route)
+  +chart <port>           the window: that passage planned on every IC day of
+                          the next year — the fastest, the cheapest, the worst
+  +chart/body <body>      one body and the elements it moves on
 
 `+ship/undock` files a clearance: the port checks the plan, the tank and the
 locker, and on its next tick the burn is committed and the ship launches. If the

@@ -1016,14 +1016,14 @@ fn apply_options(mut basis: Basis, options: &PassageOptions) -> Basis {
 /// One destination a berth clears for: its venue word, its port name and its
 /// route list (D-18-47).
 #[derive(Clone, Debug)]
-struct Destination {
-    venue: CanonicalId,
-    port: String,
-    routes: Vec<CanonicalId>,
+pub(crate) struct Destination {
+    pub(crate) venue: CanonicalId,
+    pub(crate) port: String,
+    pub(crate) routes: Vec<CanonicalId>,
 }
 
 /// The destinations `def` clears for, in its `routes` map order.
-fn destinations(w: &World, def: &PortDef) -> Vec<Destination> {
+pub(crate) fn destinations(w: &World, def: &PortDef) -> Vec<Destination> {
     def.routes
         .iter()
         .map(|(venue, routes)| Destination {
@@ -1036,7 +1036,10 @@ fn destinations(w: &World, def: &PortDef) -> Vec<Destination> {
 
 /// The destination `word` names: a routes key, case-insensitively, or a
 /// case-insensitive prefix of its port's name.
-fn match_destination<'d>(dests: &'d [Destination], word: &str) -> Option<&'d Destination> {
+pub(crate) fn match_destination<'d>(
+    dests: &'d [Destination],
+    word: &str,
+) -> Option<&'d Destination> {
     let word = word.trim().to_lowercase();
     if word.is_empty() {
         return None;
@@ -1069,7 +1072,7 @@ fn no_route(here: &str, dests: &[Destination]) -> String {
 }
 
 /// The persons `Interior`-placed in `airlock` (lead ruling L12).
-fn occupants(w: &World, airlock: ObjId) -> u32 {
+pub(crate) fn occupants(w: &World, airlock: ObjId) -> u32 {
     u32::try_from(souls_aboard(w, airlock).len()).unwrap_or(u32::MAX)
 }
 
@@ -1108,33 +1111,33 @@ pub(crate) fn aboard(w: &World, hull: ObjId, person: ObjId) -> bool {
 
 /// What a passage is planned on: everything read from the world at the berth.
 #[derive(Clone, Debug)]
-struct Basis {
+pub(crate) struct Basis {
     /// The latched lane version.
-    version: u32,
+    pub(crate) version: u32,
     /// The hull's unit definition digest (L34).
-    digest: DefinitionDigest,
+    pub(crate) digest: DefinitionDigest,
     /// The hull spec (drive, dry mass, allowance, accepted goods).
-    spec: HullSpec,
+    pub(crate) spec: HullSpec,
     /// The hold vault.
-    vault: VaultId,
+    pub(crate) vault: VaultId,
     /// Souls aboard.
-    occupants: u32,
+    pub(crate) occupants: u32,
     /// The payload, kilograms.
-    payload: u64,
+    pub(crate) payload: u64,
     /// The propellant pool, tonnes.
-    tank: u64,
+    pub(crate) tank: u64,
     /// The provisions pool, crew-days.
-    locker: u64,
+    pub(crate) locker: u64,
     /// The IC second the plan departs at.
-    depart_ic: i64,
+    pub(crate) depart_ic: i64,
     /// Which listed route to keep (doc 19 cut A.2, D-19-13).
-    policy: RoutePolicy,
+    pub(crate) policy: RoutePolicy,
     /// A waypoint the route must call at, when the captain named one.
-    via: Option<CanonicalId>,
+    pub(crate) via: Option<CanonicalId>,
 }
 
 /// Read the basis of a passage for `view`'s hull, `occupants` souls aboard.
-fn basis(ctx: &Ctx<'_>, view: &HullView<'_>, occupants: u32) -> Result<Basis, String> {
+pub(crate) fn basis(ctx: &Ctx<'_>, view: &HullView<'_>, occupants: u32) -> Result<Basis, String> {
     let w: &World = ctx.w;
     let store = w
         .module_state::<TacsimStore>()
@@ -1179,7 +1182,11 @@ fn basis(ctx: &Ctx<'_>, view: &HullView<'_>, occupants: u32) -> Result<Basis, St
 /// Plan the fastest listed route on `basis` over the latched lane's sky (§4.4:
 /// one planner over the sky at departure; lead ruling L23: the lane addressed by
 /// its latched `(pack, version)`).
-fn plan_on(w: &World, basis: &Basis, routes: &[CanonicalId]) -> Result<PassagePlan, PlanError> {
+pub(crate) fn plan_on(
+    w: &World,
+    basis: &Basis,
+    routes: &[CanonicalId],
+) -> Result<PassagePlan, PlanError> {
     let store = w
         .module_state::<TacsimStore>()
         .ok_or_else(|| PlanError::Unreadable {
@@ -1521,6 +1528,11 @@ fn plan_block(
         ),
         _ => format!("Passage {icdays} IC days; the clock is stopped."),
     });
+    // Doc 19 cut A.3 (§5): the window — the best departure in the next thirty IC
+    // days against today's, when the sky moves.
+    if let Some(window) = crate::port::chart::plan_window_line(w, basis, &dest.routes, &plan) {
+        lines.push(window);
+    }
     Ok(lines)
 }
 
