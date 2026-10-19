@@ -309,10 +309,12 @@ pub fn readiness(w: &World) -> Readiness {
             let epoch = body
                 .and_then(|body| sky.epoch_of(&body))
                 .unwrap_or_else(|| sky.config_epoch());
-            let motion = if ephemeris.rate == 0 {
-                "constant (rate 0)".to_owned()
-            } else {
-                format!("moving (rate {})", ephemeris.rate)
+            // Doc 19 cut A.6 (§8): the motion and the model, so an operator reads
+            // "real motion" and "kepler" where the slice read "constant".
+            let motion = match ephemeris.rate {
+                0 => "constant (rate 0)".to_owned(),
+                1_000 => "moving (rate 1000, real motion)".to_owned(),
+                rate => format!("moving (rate {rate})"),
             };
             let (state, revision) = match sky.revision() {
                 Ok(digest) => (
@@ -321,7 +323,11 @@ pub fn readiness(w: &World) -> Readiness {
                 ),
                 Err(_) => (LineState::Flagged, "unavailable".to_owned()),
             };
-            let text = format!("sky: {motion}, epoch {}, rev {revision}", epoch_date(epoch));
+            let text = format!(
+                "sky: {motion}, {}, epoch {}, rev {revision}",
+                sky.model(),
+                epoch_date(epoch)
+            );
             // Doc 18 cut IC12 (§4.8 "pages if the sky rate is non-zero while any
             // lane body lacks `epoch_ic`"): a moving sky moves such a body from the
             // server's epoch, not the date its numbers were read for — flagged here,

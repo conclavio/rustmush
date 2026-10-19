@@ -7225,3 +7225,58 @@ TUI panel is A.3b.
   along their tickets' frozen legs); **A.4** prices; **A.5** doc 15 R5 on `light_lag_s`; **A.6**
   the flip (templates at rate 1000, the readiness model word, the migration tests).
 - Lane v5 (direct routes as routes a captain can fly) when the fiction wants them.
+
+## A.6
+
+**The flip** ([doc 19](19-astronomy-engine.md) §8, cut A.6; D-19-16; doc 18 Q-18-37 ruled by doc
+19 §2's default), built 2026-10-18 on main. One commit with the Fable trailer, pushed when green.
+The sky moves on the next deploy — and only then: nothing here touches a running world, and **no
+deploy without the owner**.
+
+### What landed
+
+1. **The shipped templates say real motion** (`mushd.toml.example`,
+   `deploy/instance/mushd.toml.tmpl`): `[tacsim.time.ephemeris] rate = 1000` with the stanza's
+   comment rewritten — the sky's date is the IC date, which the lane's Horizons element tables
+   (2340–2400) require; `0` is the first slice's constant sky and stays the Rust default, so
+   every pinned figure in the tree is still the epoch's; the knob stays a permille (a slower sky
+   is one line of config, Q-18-37's alternative). `shipped_configs.rs` parity held.
+2. **The readiness Sky line names the model and the motion** (`port/readiness.rs`): `sky: moving
+   (rate 1000, real motion), kepler, epoch 2351-05-13, rev {12 hex}` / `sky: constant (rate 0),
+   kepler, epoch …`; a fixture lane says `circular`. Its pins in `tests/ports.rs` and the
+   mush-server story test moved once, as A.1 and A.2 promised. The flagged form (a moving sky
+   over a body without `epoch_ic`) and the once-per-boot page are unchanged.
+3. **The migration tests stand as written** (`tests/voyage.rs`, since IC9/IC14):
+   `journey_arrives_at_its_frozen_instant_across_a_reboot_with_a_new_sky` (a mid-passage journey
+   keeps its frozen `leg_s` across a reboot into rate 1000) and
+   `ticket_freezes_the_plan_across_a_sky_change` (a burned ticket's plan and `sky_rev` read back
+   identical; a fresh plan under the new sky differs) — nothing to rewrite (D-19-16: in-flight
+   journeys, burned tickets, orders and quotes all carry what they froze).
+4. **Docs**: doc 10 §22 already superseded (A.1); doc 18 §4.8's readiness sentence and the
+   `+ship/plan` help; doc 19 §9's A.6 row.
+5. **A drive-by**: `mush-config`'s `shipped_configs.rs` pinned dev1's clock at rate 4 from the
+   September epoch, while `deploy/dev1/instance.env` has run at rate 24 from `0987-04-20 06:00`
+   since the 2026-10-18 deploy (commit `29230ff5`) — the test had been red since; its pin now reads
+   the box as it is. The same test's "every shipped config says the sky rate explicitly" now
+   expects 1000.
+
+### Verified
+
+`cargo fmt --all -- --check`; `cargo clippy -p tacsim --all-targets -- -D warnings` clean;
+`tests/ports.rs` (21) and `tests/chart.rs` (4) green on the new line; `mush-config`'s
+`shipped_configs.rs` 12 of 12 (both drive-bys); mush-server's `ic_slice_loop` and `boot_parity`
+green with the moved prefix. The voyage migration tests ran green in A.2's and A.3's full sweeps
+and are untouched here.
+
+### What the owner decides
+
+- **When to redeploy dev1.** The playtest world sits at the lane's epoch date (2351-05-13 on
+  2026-10-19); the next deploy turns the sky on from there, so the trade run's season starts at
+  the chord minimum and worsens over the following real weeks (Ceres–Mars opens about 0.05 AU a
+  real day at rate 24; the full cycle is about 48 real days). A redeploy also takes lane v4 and
+  the Dray v3 (the flip law: 53 t bunkered where the slice bunkered 42) — the figures in doc 18
+  §2's story change under the pilot's feet, and `+ship/plan` says so.
+
+### Deferred
+
+- **A.3b** the chart panel; **A.4** prices; **A.5** doc 15 R5 on `light_lag_s`.

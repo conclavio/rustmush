@@ -312,7 +312,7 @@ within rounding, the latitude term measured) and the drift per IC year recorded 
 | **A.3b** chart panel | the web cockpit panel and the TUI screen on the OutputEvent/Panel protocol | M | later |
 | **A.4** prices | the price arm, reach, the synodic median, premiums, emergency bids; port-entry caps | M | a Pallas-like port's bid rises as its reach rises; nothing minted; a frozen quote unmoved |
 | **A.5** comms | `light_lag_s`; doc 15 R5 live | S | the lag table equals `distance / c` for every pair |
-| **A.6** flip | templates at rate 1000; the migration tests; docs 10/18/README amended | S | the two boot tests; `shipped_configs` parity |
+| **A.6** flip (**landed 2026-10-18**; the cut note "A.6") | templates at rate 1000 (real motion; the Rust default stays 0); the readiness Sky line names the motion and the model; the migration tests of IC9/IC14 stand; docs 10/18/README amended; a drive-by: the stale dev1 clock pin in `shipped_configs.rs` | S | the two voyage tests; `shipped_configs` parity (12) |
 
 Each cut is one commit on main with the Fable trailer and a `## A.n` heading in
 [18-cut-notes.md](18-cut-notes.md) (the astronomy engine is doc 18's cut; the notes stay in one

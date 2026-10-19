@@ -1059,7 +1059,7 @@ fn assert_sky_line(report: &str) {
         .find(|l| l.starts_with("sky: "))
         .unwrap_or_else(|| panic!("a sky line:\n{report}"));
     let rev = sky
-        .strip_prefix("sky: constant (rate 0), epoch 2351-05-13, rev ")
+        .strip_prefix("sky: constant (rate 0), kepler, epoch 2351-05-13, rev ")
         .and_then(|rest| rest.strip_suffix(" [ready]"))
         .unwrap_or_else(|| panic!("the sky line's form: {sky}"));
     assert_eq!(rev.len(), 12, "{sky}");

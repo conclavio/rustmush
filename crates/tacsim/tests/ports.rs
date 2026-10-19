@@ -1497,10 +1497,9 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
             assert!(out.lines().any(|l| l == line), "{line}\n{out}");
         }
         assert!(
-            out.lines().any(
-                |l| l.starts_with("sky: constant (rate 0), epoch 2351-05-13, rev ")
-                    && l.ends_with(" [ready]")
-            ),
+            out.lines().any(|l| l
+                .starts_with("sky: constant (rate 0), kepler, epoch 2351-05-13, rev ")
+                && l.ends_with(" [ready]")),
             "{out}"
         );
         assert!(out.lines().any(|l| l.starts_with("Not ready: ")), "{out}");
@@ -1576,7 +1575,7 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
     let treasury = port_map(&tw, "ceres_port").treasury.expect("a treasury");
     let mut want = vec![
         format!("lane: {LANE_PACK}@4 applied; this server ships @4. [ready]"),
-        format!("sky: constant (rate 0), epoch 2351-05-13, rev {rev} [ready]"),
+        format!("sky: constant (rate 0), kepler, epoch 2351-05-13, rev {rev} [ready]"),
         "world rate: 24 IC seconds per real second. [ready]".to_owned(),
         format!("treasury: system:tacsim.treasury, account #{treasury}. [ready]"),
         // Doc 18 cut IC8: the market facts line follows the treasury.
@@ -2332,7 +2331,7 @@ fn ic12_a_moving_sky_with_a_body_lacking_epoch_ic_flags_and_pages_once() {
         .find(|line| line.starts_with("sky: "))
         .expect("a sky line");
     assert!(
-        sky.starts_with("sky: moving (rate 1000), epoch ")
+        sky.starts_with("sky: moving (rate 1000, real motion), kepler, epoch ")
             && sky.ends_with(
                 "; pallas has no epoch_ic, so it moves from the server's epoch. [flagged]"
             ),
@@ -2400,7 +2399,7 @@ fn ic12_a_constant_sky_never_flags_a_body_lacking_epoch_ic() {
         .find(|line| line.starts_with("sky: "))
         .expect("a sky line");
     assert!(
-        sky.starts_with("sky: constant (rate 0), epoch ") && sky.ends_with(" [ready]"),
+        sky.starts_with("sky: constant (rate 0), kepler, epoch ") && sky.ends_with(" [ready]"),
         "{out}"
     );
     assert!(!sky.contains("epoch_ic"), "{out}");

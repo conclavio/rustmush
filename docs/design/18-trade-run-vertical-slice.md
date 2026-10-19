@@ -2318,7 +2318,10 @@ body changes together (`ephemeris.rs:11-15`) — is preserved by having one quer
 The readiness sky line and its promise are built (IC12): "sky: constant (rate 0), epoch 2351-05-13, rev
 {12 hex}" at rate 0; at a non-zero sky rate with a lane body lacking `epoch_ic` the line is **flagged**
 and the port tick **pages once per boot** (`tacsim/src/port/readiness.rs:816`,
-`tacsim/src/port_tick.rs:461`) — never a gate (D-18-50).
+`tacsim/src/port_tick.rs:461`) — never a gate (D-18-50). **Since doc 19 cut A.6** the line names the
+sky's model and motion — "sky: moving (rate 1000, real motion), kepler, epoch 2351-05-13, rev {12 hex}"
+on a shipped server, "sky: constant (rate 0), kepler, …" at rate 0 — and the shipped templates set
+`rate = 1000` (Q-18-37's default; the Rust default stays 0 for the pins).
 
 **The calendar, in one place.** The IC clock is Unix seconds, continuous across rate generations
 (`clock.rs:214-218,335`), so JD = ic_s / 86,400 + 2,440,587.5 and `2350-01-01T00:00Z` = 11,991,628,800.
