@@ -23,7 +23,8 @@ last lines of its log, each signed with your name.
   del <n> | move <n>=<pos> | clear | pause | resume | skip <n>
 
 A good is named by its id (metals, volatiles, propellant, provisions,
-industrial_parts, structural_alloys) or by the start of its name. Each order
+industrial_parts, structural_alloys, instrument_boards, carbon_feedstock) or by
+the start of its name. Each order
 gets a number that never changes; the plan's revision goes up with every edit.
 
   min= / max=     a sale's floor and a buy's ceiling, in credits per unit
@@ -43,7 +44,9 @@ gets a number that never changes; the plan's revision goes up with every edit.
 A departure plans its passage at its hour, over the load the plan will make, and
 burns nothing until it is cleared. It takes the fastest listed route, by way of a
 place you name (`via=kirkwood`), at the throttle you set (`throttle=500` is half
-thrust: longer and thriftier; 250 to 1000); `+ship/orders` shows both.
+thrust: longer and thriftier; 250 to 1000); `+ship/orders` shows both. Titan's
+lanes fit the tank only throttled (`help trade`): a departure for Ligeia, or
+from it, wants its throttle filed with it.
 
 Put the fuel and the stores **before** the cargo buys of a leg: the port keeps
 back enough of your money for the next departure's reaction mass and stores, and

@@ -1,0 +1,82 @@
+{
+  "manifest": {
+    "id": "region.ligeia_terminal",
+    "version": 1,
+    "kind": "region",
+    "digest": "73123abe208afc43b9dff7424fd3d3d004c35698025db3f8b71ed09d107861fe",
+    "requires": []
+  },
+  "brief": {
+    "prose": "Ligeia Terminal is the Titan Concession Company's orbital terminal, a long unspun spar in low Titan orbit named for the methane sea the Company's lifters climb from. The Company governs the Saturn system as proprietor under the Concord's Saturn Charter of 2291, a grant recorded at the Registry that lapses in 2390, and clears through Luna, months from anyone who could overrule it. The lifters bring carbon billet and the overburden ice up out of the orange haze; the Selk Townships Board keeps the one counter the Company does not own and buys the alloy and boards that keep its rigs working at ninety-four kelvin. No Dray leaves Titan's surface, and few reach the spar except slowly: the passage fits the tank only at half throttle, and most arrivals are single-handed. The station is authored as a surface region on Titan, the tested path, though the spar itself is in orbit."
+  },
+  "entries": {
+    "region.ligeia_terminal": {
+      "kind": "region",
+      "def": {
+        "name": "Titan",
+        "kind": "surface",
+        "body": "titan",
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            400
+          ]
+        ],
+        "datum_m": 0,
+        "background": {
+          "surface": "regolith",
+          "mix": [],
+          "relief_cm": 0,
+          "relief_period_cm": 1000,
+          "seed": 2350
+        },
+        "ground_resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350",
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "locality.ligeia_terminal": {
+      "kind": "locality",
+      "def": {
+        "region": "region.ligeia_terminal",
+        "name": "Ligeia Terminal",
+        "kind": "port",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            0
+          ],
+          [
+            400,
+            400
+          ],
+          [
+            0,
+            400
+          ]
+        ]
+      }
+    }
+  }
+}

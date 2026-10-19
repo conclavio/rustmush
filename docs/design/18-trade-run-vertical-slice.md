@@ -119,10 +119,14 @@ ephemeris already has bodies `ceres`, `mars` and `earth` as pure data
 **What "Tycho" and "Pallas" are in the setting.** Tycho is **Tycho Mutual Assurance & Salvage**, a Luna
 insurer with agents at Ceres, Kirkwood, Phobos and Isidis that owns the wrecks it pays out on and runs
 the Re-float Program, leasing a Dray or a Cairn under `Encumbrance::Lease` (11 §4.7). It is an
-institution, not a place. A Tycho port on Luna is unplaceable today: the ephemeris is heliocentric,
-circular and coplanar with no parent bodies (`crates/tacsim/src/ephemeris.rs:1-10,44-52`), so a Luna
-port sits on Earth's point, and doc 11 §5 keeps Earth/Luna "strategic map only in E7". **Pallas** is a
-one-line off-corridor stub, the Pallas Syndicate (11 §4.10), with no body in any pack and no relay node
+institution, not a place. A port on Luna was unplaceable when this section was written (the ephemeris
+was heliocentric, circular and coplanar with no parent bodies, so a Luna port sat on Earth's point);
+[doc 19](19-astronomy-engine.md) cut A.7 made each moon a body about its parent, and **cut A.8
+(2026-10-19) placed the first moon ports**: Aitken Highport on Luna (Concord Orbital Access's civil
+drum in low polar orbit), Voltaire Anchorage on Deimos and Ligeia Terminal on Titan (doc 19 §3.8,
+D-19-19). Tycho stays an institution there too: its underwriters drink in Aitken's Cold Trap, and no
+port is Tycho's. **Pallas** is a one-line off-corridor stub, the Pallas Syndicate (11 §4.10), with no
+body in any pack and no relay node
 under doc 15's recommended topology (`15-comms-relay-backbone.md:319-322` is an open question whose
 option A reads "none at Venus, Titan, Pallas or Vesta", so "months away" is a recommendation, not a
 settled fact).
@@ -140,6 +144,13 @@ a thread: a `pallas` body entry (orbit 2.773 AU) so distances exist, a Syndicate
 exchange speaking the outer-claim lore 11 §5 already seeds, and "Ceres–Pallas" named as the first
 off-corridor extension. Swapping port B to Pallas later costs one location, one station pack and one
 route pair, all data.
+
+**As built (doc 19 cut A.8, 2026-10-19):** a station costs **two** packs, not one — a region pack
+(`region.<location>`, one surface region on the body) and a neighborhood pack that requires it — and
+a port beside them costs its location, its routes and its `port` entry in the lane, plus two
+compiled-in registrations (the packs' sources in `tacsim/src/definitions/content.rs` and the port's
+row in `ic_return::PORTS`), so a new port is data and a small code change. A.8's three ports cost
+three locations, six station packs, six routes and three port entries.
 
 ---
 
@@ -1370,6 +1381,8 @@ tonnes (the integrality rule: (V − M·v_dense)/(v_bulky − v_dense) is an int
 | `industrial_parts` yard fittings, crated | industrial_parts | t | 1,000 kg; **2,300 L** (pressure fittings, ducting, tank sections for the Co-op fleet and the Kirkwood tank farm, crated with dunnage, ~0.43 t/m³) | `stow.bulk` | the bulky return cargo (new) | **Co-op** bid 560.00cr/t | **Stickney Yards** ask 400.00cr/t |
 | `propellant` reaction mass | propellant | t | 1,000 kg; 1,000 L (tank-rated: the tank limits mass only, so never summed) | `stow.propellant` (tank only) | burned at departure | **Occator** ask 40.00cr/t | **Kasei** ask 60.00cr/t |
 | `provisions` voyage provisions | none (class `ship_supply`) | crew_day | 4 kg; 10 L (ten crew-days to the case, 18a C08) | `stow.provisions` | `occupants × ceil(days)` burned per leg | **Co-op chandlery** ask 10.00cr | **Yard Commissary** ask 10.00cr |
+| `instrument_boards` instrument boards, crated (A.8) | electronics | t | 1,000 kg; **2,550 L** (the Earth-basin fabs' boards in shock crates, ~0.39 t/m³: cubes out at 47 t) | `stow.bulk` | Luna's export to Deimos and Titan, the bulky partner of lunar alloy stock; reference 900 | — (not listed) | — (not listed) |
+| `carbon_feedstock` carbon billet, pressed (A.8) | carbon_feedstock | t | 1,000 kg; **600 L** (pyrolysed tholins pressed to graphite billet, ~1.67 t/m³) | `stow.bulk` | Titan's export to Luna and Deimos, the dense partner of the lifters' ice; reference 250 | — (not listed) | — (not listed) |
 
 Provisions stay an opaque inventory commodity with no instrument; `FAMILIES` stays ten
 (`tacsim/src/definitions/resources.rs:34-45,94-104`); Q-18-3 is binding. **The price chain, read
@@ -1386,6 +1399,21 @@ the Stickney prices, not the chain. **One price moves under R7**: Kasei's concen
 280 because Draft 0.2's margins tied at 100/t on both goods and a tie is no balance (Q-18-33); the lore
 is that Kasei's refinery is water-starved, so it bids concentrate down and pays the same 200 for ice.
 The reference for the share stays the Ceres ask, read live at settlement (200 today). 40/60/100/200 are unchanged.
+
+**As built (doc 19 cut A.8, 2026-10-19; D-19-20):** `goods.json` is at **v2**, eight rows: the two
+above join the six, seven of the ten families and one aggregate; no 11th family, and `FAMILIES` stays
+ten. **The integrality finding:** among the six shipped hold goods only {metals, volatiles} (80 t of
+ice) and {alloys, parts} (45 t of fittings) give a whole-tonne vertex, and those are the reference
+loop's two directions, so a moon port trading the six would be a second Ceres or Stickney or fly
+empty; two rows suffice because each pairs with a *shipped* good on whole tonnes: boards at 2,550 L
+pair with structural alloys at 300 L, (120,000 − 30,000)/2,250 = **40 t of boards + 60 t of alloys**,
+and carbon billet at 600 L pairs with water ice at 1,400 L, (120,000 − 60,000)/800 = **75 t of ice +
+25 t of billet**. Ceres and Stickney list neither new good; they trade only at the moon ports (§4.7
+as built), and every listed trading pair's vertex is in D-18-39's amendment. **The id is not `electronics`:**
+`tacsim.electronics` stays doc 17's die lots (doc 17 §16; 17f M7.9 — quantity-one certified lots graded
+die.c1..c3), because `goods.json` carries one `mass_kg` per good and a 1,000 kg bulk row under that id
+would make a die lot weigh a tonne; crated instrument boards are Luna's high-end manufacture shipped
+as tonnage, a different good from the die lots.
 
 **Why you carry both (the captain's arithmetic).** Each leg is a small linear programme: earn Σ margin
 × tonnes, under Σ tonnes ≤ 100, Σ packed volume ≤ 120 m³ and, early on, Σ cost ≤ cash. Outbound the
@@ -1593,6 +1621,10 @@ receipts (a listing cannot carry 0, `record.rs:634-636`); an unfunded or exhaust
 buying". Restock is P5, by production only, and must land before a second cohort; money pools in the
 Yard and the pilots while the Co-op and Freeport Works drain, so risk 9 matters twice over. `fund_from_faucet` is never used (a 60 s drip, `api.rs:556-590`); capitalization settles on the
 next sweep, so the readiness report lists unfunded buyers until it does.
+
+**As built (doc 19 cut A.8, 2026-10-19; D-19-25):** Ceres's recorded stock now serves two buyers and
+is not topped up (a recorded row never changes, IC8 (2)); the moon basis and the shortfall it leaves
+are D-18-27's amendment (§7).
 
 **Presence (D-18-12 kept, extended).** `MarketModule::with_venue_gate(Arc<dyn VenueGate>)`, consulted at
 quote, accept and sell with (actor, venue, endpoint) and a presence mode: `Presence::Here` (the actor in
@@ -1959,6 +1991,30 @@ IC12 list). The validator now reports a room's `short_desc` over 256 bytes and a
 over 24 lines, blank or over 512 bytes as `budget.text` errors, and `topology.unreachable`'s hint names
 `port.dock` (`mush-atlas/src/validate.rs`; IC12).
 
+**As built (doc 19 cut A.8, 2026-10-19): five stations.** Three more ship, each a region pack and a
+neighborhood pack at v1 that requires it, appended to `STATION_SOURCES` after Stickney, each region
+before its neighborhood (room by room in [18a](18a-trade-run-stations-and-ship.md) §5–§7):
+
+| Station (neighborhood pack) | body | rooms | decks | `+ic` lands in |
+|---|---|---|---|---|
+| Aitken Highport (`neighborhood.aitken_highport`, structure Aitken Drum) | `luna` | 12 | Hub Deck 0 (zero-g, z 0), Drum Deck 1 (spun to a sixth of a g, z 6), by the spoke ladder and a public stair | L03 Orbital Access Arrivals |
+| Voltaire Anchorage (`neighborhood.voltaire_anchorage`, structure Moorings Block) | `deimos` | 11 | Tank Deck 0 (z 0), Roads Deck 1 (z 7) — the Stickney boxes, deliberately | D01 Visiting Berth Gallery |
+| Ligeia Terminal (`neighborhood.ligeia_terminal`, structure Ligeia Spar) | `titan` | 12 | Cargo Deck 0 (z 0), Company Deck 1 (z 7) | T03 Company Arrivals |
+
+What the three share is the shipped pair's shape: the gallery is the "Visiting Berth Gallery" with
+`port.dock`; one restricted spine per station, reached by one `lock: staff` hidden hatch, holds the
+storefront items, the clerk and the principals `enabled:false`; every exitless seam between public
+rooms is a `wall`; a social room per station on the Slack Line / Shift Board precedent, named for the
+place (the Cold Trap, the Long Straw, the Ninety-Four), its keeper drawing the port's lore pool; every
+exit's names on the Stickney pattern, drawn from the two shipped stations' alias set plus each
+station's own nouns and codes, no alias twice among one room's exits (dispatch takes the first match)
+and none a kernel word or a module verb — forty exits (15 + 11 + 14), gated by
+`mush-contract-tests`' `exit_command_words`. Aitken's drum and Ligeia's spar are orbital in fiction (a
+Dray at a twentieth of a gravity lifts from neither Luna nor Titan) and are authored, like Voltaire,
+as a surface region on their body, the tested path. The cast: Luna nine and four principals, Deimos
+six and three, Titan six and two; nine new signatories (four, two, three), every listing still signed
+by an officer of its own org. The `ic_return::PORTS` table has five rows.
+
 **What the packs declare.** Each station is a surface region on its body plus one neighborhood (the tested
 path; no orbital region), one site, one structure with floors rising in index and z
 (`validate.rs:1679-1715`): Freight Deck 0 at z 0, Public Deck 1 at z 6 (Ceres) / 7 (Stickney), Ceres' Office
@@ -2147,6 +2203,69 @@ harbourmaster, exchange, receiving, commissary, **yard** (P11) and spine, and `r
 **As built (IC3, IC8, IC10, IC11):** the entry ships as written at lane v3. The reference is read **at
 contract build**, not "live at settlement" (IC10 (6); §4.1 as built). `routes` is planned at departure
 by `choose_route` over the port's list (IC9); `via=` is refused "not yet" (`VIA_NOT_YET`).
+
+**As built (doc 19 cut A.8, 2026-10-19): the moon port entries, lane v8.** `luna_port` (Aitken
+Highport, venue `luna`), `deimos_port` (Voltaire Anchorage, `deimos`) and `titan_port` (Ligeia
+Terminal, `titan`) take the shape the shipped two have after doc 19's A.4 and A.4b, not the Draft 0.3
+entry above:
+
+- **One clerk per port.** Every vendor's `agent` is the port's one stock clerk (`luna_port.clerk`,
+  `deimos_port.clerk`, `titan_port.clerk`), as Ceres's and Stickney's are since IC8 L2
+  (`ceres_port.clerk`; the entry above's per-vendor `freeport_exchange.clerk` is Draft 0.3's spelling);
+  no per-vendor clerk. Three new clerks.
+- **Boards.** Every listing names the rooms by role whose board renders it (`"boards": ["exchange",
+  "clearing"]`), as the shipped listings do.
+- **Premium and emergency.** Each port carries the reach `premium` block (`k_permille` 300,
+  `cap_permille` 500) and an `emergency` block (ratio 1,500 ‰, intake 100) on an org that neither asks
+  nor bids its goods: Crisium Instruments at Aitken and Syrtis Bonded Imports at Voltaire over
+  provisions, volatiles and propellant; the Selk Townships Board at Ligeia over provisions alone (a
+  Wanted for ice or reaction mass at a methane-and-ice world would be absurd). No moon pair's reach
+  peaks near 1.5 times its median, so the blocks are the levers A.4b meant, inert as authored
+  (D-19-23).
+- **Bid-only vendors with no stock.** Three vendors carry neither `stock` nor `asks` (both
+  `serde(default)`): the Lunar Habitat Board (ice 195, intake 4,100 t; carbon billet 380, 300 t),
+  Syrtis Bonded Imports (structural alloys 460, 2,400 t; instrument boards 1,100, 1,600 t) and the Selk
+  Townships Board (alloys 760, 720 t; boards 1,500, 480 t) — the first in any shipped pack. Each reads
+  Pools ready at 0 of 0 rows and Bids ready once its capital funds one unit, and the clerk's stock arm
+  meets an empty vendor here first (`tests/commerce.rs`'s `a8_the_moon_ports_stock_list_and_bid`
+  names the three one by one). The sellers:
+  Cabeus Works (alloys 400 from 3,120 t; it bids concentrate 270, intake 800 t), Crisium Instruments (boards 900 from 2,080 t), the Highport Victualling Office
+  and the Republic Strategic Reserve (reaction mass 60 and provisions 10 each; the Reserve also bids
+  ice 190, 900 t, and billet 380, 300 t), the Titan Concession Company (billet 250 from 600 t, ice 40
+  from 1,800 t, reaction mass 30 from 5,000 t) and Concession Stores (provisions 20). Concord Orbital
+  Access and the Voltaire Bond Authority are operator orgs with no vendor (the Ceres Clearing
+  precedent).
+- **Routes and capital.** Luna lists `deimos` and `titan`, Deimos `stickney` (the hop, declared empty),
+  Titan `deimos` and `luna`; Ceres gains `luna` beside `stickney`; Stickney is untouched (no route to
+  Deimos; no moon route is Ceres-bound). Eleven new orgs (twenty in all), 6,300,000 cr of new capital
+  in sixteen tranches of at most 800,000 (Aitken 1,400,000, Voltaire 3,450,000, Ligeia 1,450,000;
+  14,500,000 minted across the lane), each pure buyer capitalised over its exposure so its bids stay
+  funded at their reach peak (the Freeport Works pattern), sellers with no bid and operators at
+  50,000, and a seller that also bids capitalised over its bid exposure (Cabeus 250,000, the Reserve
+  300,000).
+- **Two programme reference rows** — `instrument_boards` → `luna_port/crisium_instruments` and
+  `carbon_feedstock` → `titan_port/titan_concession` — are the one edit to an old port entry beyond its
+  `routes` key: an argued exception to the cut's routes-only rule for the old entries (A.8 L9).
+  Without them `proceeds.rs::reference_of` warns "a sale's reference listing is gone" and stamps the
+  baseline memo whenever no live row exists, including when no row exists at all, so every enrolled
+  pilot's sale of a new good would log a false warning; two rows cure it with content (`check_ports`
+  accepts a row naming a port and org of the pack whose vendor asks the good). Every moon ask of an old
+  good is at the reference (Cabeus's alloy 400 is Kasei's), so the old rows measure a moon-bought load
+  truthfully; Ligeia's ice asked at 40 bills the share against Ceres's live 100, in the pilot's favour,
+  and `trade.md` says so.
+- **The kept world takes them.** `PortApplier::drift` (`tacsim/src/port/apply.rs:396-600`) compares the
+  presentation, the domain, the treasury account, each org's existence, account, obligations, name and
+  capital, and the vendor rows — **never the programme block** (`programme` is read in `apply.rs` only
+  for the office reference and the hull lay-up), so v8 applies over a v7-latched world with the three
+  ports created and Ceres's entry updated, the reference rows with it, and no drift refusal
+  (`tests/commerce.rs`, `a8_a_world_on_lane_v7_takes_v8_by_the_shelf`).
+
+The readiness report grows by 45 lines, 85 in all, 63 of them not ready before the first sweep (the three
+bid-only houses read Ready at once);
+on a kept world the new ports' lines hold `+coop/enrol` shut until one sweep settles the tranches and a
+few fires stock the three new clerks' ten rows, and the desk then opens again (the new bidders each
+fund one unit, so no Bids line holds it). The boot pass's "four station packs" are ten since A.8 (each station's region before its
+neighborhood), still ahead of `tacsim.lane.ceres_phobos`.
 
 **The `PortApplier`** (tacsim/src/content.rs, phase 11, on the `ArenaApplier` pattern). Create, in order,
 all as normal-lane writes and **submitting nothing**: (a) `open_passive_domain(location room, gallery)`
@@ -2531,18 +2650,21 @@ spec, `+ship/helm`, `request_seat_activation` and the `movement` channel for a s
 hold of a sim hull, the Customs Assertion front (M); **P5** production restock with conservation (Kasei
 refinery work orders, Ceres deposits, a construction sink) before a second cohort (L); **P6** the
 `LotCensus` quantity index only (S; its volume half is in the slice under R7 and is withdrawn here);
-**P7** Pallas as a port (data); **P8** delete the legacy seed latch (M); **P9** the net share with a run
+**P7** Pallas as a port (data; the moon ports — Aitken Highport, Voltaire Anchorage, Ligeia Terminal —
+landed as doc 19 cut A.8 beside P7 on 2026-10-19, and Pallas remains the named next Belt port);
+**P8** delete the legacy seed latch (M); **P9** the net share with a run
 book and carried deficit (M); **P-A** the astronomy engine (§4.8; L in six sub-cuts: data and model M,
 laws M, chart S+M, price policy M, comms S, flip S; after IC12, with P5 for its prices and P7 for its
-showcase) — **designed as [doc 19](19-astronomy-engine.md) (2026-10-18) and built as its cuts A.1–A.6,
-all landed 2026-10-18: A.1 (the element tables, `Sky::Kepler`, lane v4), A.2 (the flip law, the
+showcase) — **designed as [doc 19](19-astronomy-engine.md) (2026-10-18) and built as its cuts A.1–A.8
+(A.1–A.6 landed 2026-10-18, A.7, A.3b and A.8 on 2026-10-19): A.1 (the element tables, `Sky::Kepler`, lane v4), A.2 (the flip law, the
 throttle, the keep-out, route policies, Dray v3), A.3 (`+chart`, the plan's window line), A.4 (the
 reach premium on demand-side bids against the synodic median, lane v5), A.4b (the emergency Wanted
 bids, lane v6), A.6 (the shipped sky at real motion), A.7 (the moons — Luna, Phobos, Deimos and
 Titan as bodies about their parents, Stickney Yards on Phobos, lane v7; 2026-10-19), A.3b (the
 `sky.chart` panel — one frame, three renders: `+chart/map`, the TUI's lettered screen `c`, the web's
-chart tab; 2026-10-19); A.5 closed as a seam**, the cut notes in [18-cut-notes.md](18-cut-notes.md)
-"A.1"–"A.7"; every A-cut is in; Q-18-35..41 are ruled by doc 19 §2's defaults, the owner overriding
+chart tab; 2026-10-19), A.8 (the first ports on Luna, Deimos and Titan, goods v2, the sibling-moon
+hop and the plan's `Throttle:` line, lane v8; 2026-10-19); A.5 closed as a seam**, the cut notes in
+[18-cut-notes.md](18-cut-notes.md) "A.1"–"A.8"; every A-cut is in; Q-18-35..41 are ruled by doc 19 §2's defaults, the owner overriding
 by data.
 
 **IC0.** As recorded in [18-cut-notes.md](18-cut-notes.md). `spacecraft` out of `SELF_MODES`
@@ -2806,10 +2928,20 @@ records the owner's ruling of 2026-10-15 and points at the decision that takes i
 every decision below that rested on a Draft 0.2 question is now binding (owner, 2026-10-15)**; the
 "(Rests on …)" notes are kept so the reader can see which ruling closed what. D-18-28 is replaced by R7;
 D-18-39 to D-18-51 are new; D-18-13, 25, 27, 29, 30 and the §4.2 ticket (D-18-11) are amended as marked.
+[Doc 19](19-astronomy-engine.md) cut A.8 (2026-10-19; the first moon ports, D-19-19..25) amends D-18-1,
+27, 35, 36 and 39, each marked **(amended, cut A.8)**; the decision as written stands above its note.
 
 - **D-18-1 Ports.** Stands, confirmed by the owner (Q-18-1 closed): Ceres Freeport → Kirkwood Depot →
   Stickney Yards; Pallas a body, a lore thread and the named next port. Tycho is an insurer's agency at
   both ports, no longer the ship desk.
+  **(amended, cut A.8)** The corridor now has **five ports**: Ceres Freeport and Stickney Yards, joined
+  by Aitken Highport (Luna), Voltaire Anchorage (Deimos) and Ligeia Terminal (Titan); Kirkwood Depot
+  stays a lane place on the reference legs, not a port. The six new routes are all moon-bound or
+  moon-born (Ceres → Luna, Luna → Deimos, Luna ↔ Titan, Titan → Deimos, and the Deimos → Stickney hop),
+  and the way home to Ceres from the moons is the reference return, by the hop; Stickney lists no route to Deimos and Luna
+  none to Ceres, a political fact and a commercial one (D-19-19). Pallas remains the named next Belt
+  port (P7). Tycho is an agency still: at Aitken it is its underwriters in the Cold Trap and in speech,
+  never a port or an org of the moon entries.
 - **D-18-2 Blockers first.** Stands; IC0 landed unchanged as `c87d78f7`.
 - **D-18-3 The IC door.** Amended: an **unlocked** Limbo exit (the `OnboardingGate` already bars
   unapproved characters, so no approval marker and no P9) plus an **IC-return rule** (`tacsim.last_port`,
@@ -2919,6 +3051,22 @@ New decisions:
   **As built (IC8, IC10):** the intakes are 4,000 t metals and 9,600 t volatiles as written (IC8 (1));
   an exhausted bid stands at quantity 0 and a lapsed one is re-posted at its **full** authored intake
   under "no restock" (IC10 (4); the remainder is P5).
+  **(amended, cut A.8)** The basis gains the moons: **40 loads per Concord pair** (Ceres → Luna, Luna →
+  Deimos) and **12 per Titan pair** each way, every moon seller's stock the sum of its reachable buyers'
+  intakes at those vertices — Cabeus's alloys 3,120 t (Voltaire 2,400 + Ligeia 720), Crisium's boards
+  2,080 t (1,600 + 480), Ligeia's billet 600 t (Aitken 300 + Voltaire 300) and ice 1,800 t (900 + 900),
+  reaction mass 5,000 t and provisions 2,600 per port as before. A good with two sellers splits its
+  buyer's intake by the basis and nothing enforces the split: the Lunar Habitat Board's 4,100 t of ice
+  is Ceres's 3,200 (40 × 80) and Titan's 900 (12 × 75), so a busy Ceres cohort can land 51 loads there.
+  **Ceres's recorded stock now serves two buyers and is not topped up** (a recorded row never changes,
+  IC8 (2), so a top-up is impossible on a kept world): Occator's 9,600 t of ice faces 12,800 t of
+  intakes by the basis (Kasei 9,600 + Luna's 3,200 share) and 13,700 t by the authored rows (the
+  Board's whole 4,100), a shortfall of 3,200–4,100 t; the Freeport Exchange's 4,000 t of concentrate
+  faces 4,800 t (Kasei 4,000 + Cabeus 800), a shortfall of 800 t. Honest SOLD OUT arrives earlier in a
+  busy cohort; only a fresh-store resize (Occator 12,800 or 13,700 t, the Exchange 4,800 t) restores
+  stock = intakes, and that is the owner's call (D-19-25). The Reserve's ice bid at Voltaire (190) is
+  an authored floor: Titan's Deimos-side ice sells at Kasei by the hop, up to 900 t, inside the slack
+  Luna's draw on Occator leaves Kasei's intake. The moon capital is §4.7's as-built note.
 - **D-18-28 Units and capacity.** **Replaced by R7.** Ledger units stay tonnes for bulk goods and
   reaction mass and crew-days for provisions, in a tacsim-owned `goods.json` with its own digest pin
   deriving the market catalog; every good carries integer measures `si.mass_kg` and `si.volume_l` per
@@ -2976,10 +3124,20 @@ New decisions:
 - **D-18-35 The stations.** Ceres 13 rooms on three decks, Stickney 12 on two, as 18a; the six freight
   rooms pruned to P-F; one staff-locked spine per station holding the storefront items; principals placed
   `enabled:false`; wall features on every exitless partition; hydration off. (Rests on Q-18-23.)
+  **(amended, cut A.8)** **Five stations**: beside Ceres and Stickney, Aitken Highport 12 rooms on two
+  decks (the zero-g Hub Deck and the spun Drum Deck), Voltaire Anchorage 11 on two and Ligeia Terminal
+  12 on two, each a region pack and a neighborhood pack at v1 (§4.5 as built; 18a §5–§7); one
+  staff-locked spine per station holding the storefront items, the clerk and the principals
+  `enabled:false`; a social room each; wall features on every exitless partition.
 - **D-18-36 The lane pack id** is `tacsim.lane.ceres_phobos` v1; the `tacsim.corridor` fixtures are
   untouched.
   **As built (IC2, IC3, IC8):** published at v1 (IC2), v2 (IC3) and v3 (IC8), each a new version with
   its digest pin, never edited in place (`LANE_VERSION`, `tacsim/src/definitions/content.rs:577`).
+  **(amended, cut A.8)** The id is **kept over five ports**: it names the pack, not its reach, and a
+  kept world has latched it. Doc 19's cuts published v4 (A.1), v5 (A.4), v6 (A.4b), v7 (A.7) and **v8
+  (A.8)**, each a new version with its digest pin, never edited in place; v8 adds three locations, six
+  routes and three ports (36 entries), Ceres's `luna` route key and the programme's two reference rows
+  (digest `be733686…`).
 - **D-18-37 Locality on every inventory path and the under-way quantity seal** are deferred to P-H,
   because the pilot holds one vault and only staff create vaults; the venue gate covers the market; when
   built, the filter sits in offer projection (`world_task.rs:3187-3210`).
@@ -2994,6 +3152,22 @@ New in Draft 0.3 (R7, R9; the owner's second-round rulings):
   1 < margin_bulky/margin_dense < volume_bulky/volume_dense is the design invariant, a band. No code,
   fixture, NPC line or test stores the best mix: IC8's LP test derives it from `goods.json`, the hull and
   the posted prices (the R9 guard). (Rests on Q-18-33.)
+  **(amended, cut A.8)** The rule **holds on all seven listed trading pairs**, each one dense good
+  against one bulky good with a unique whole-tonne vertex inside its band: Ceres → Stickney 80 t ice +
+  20 t metals (9,600; 1.25 in (1, 3.5)); Stickney → Ceres 45 t fittings + 55 t alloys (13,800; 1.333 in
+  (1, 7.67)); Ceres → Luna 80 t ice + 20 t metals (9,000; 1.357 in (1, 3.5)); Luna → Deimos 40 t boards
+  + 60 t alloys (11,600; 3.333 in (1, 8.5)); Luna → Titan the same 40 + 60 (45,600; 1.667 in (1, 8.5));
+  Titan → Luna 75 t ice + 25 t billet (14,875; 1.192 in (1, 2.33)); Titan → Deimos 75 + 25 (14,500;
+  1.154 in (1, 2.33)) — gross margins at the authored prices, each beating either good alone. **The
+  Deimos → Stickney hop is declared empty**: Deimos asks no hold good Stickney bids, and the leg before
+  it (Luna's or Titan's cargo sold at Deimos) and the leg after (the reference return) pay for its 1 t.
+  Two Deimos bids sit under a better price for their good on purpose: Syrtis's alloy 460 under Freeport
+  Works' 520 is not dominated (keeping Luna's alloys past Deimos displaces Kasei's from the same hold at
+  the same +120 a tonne), and the Reserve's ice 190 under Kasei's 200 is a floor (D-18-27's amendment).
+  Still no code, fixture, NPC line or test stores a vertex: `tests/capacity.rs`'s LP test
+  (`ic8_the_posted_prices_make_the_both_limits_load_optimal`) builds its pairs from every port's
+  listed routes — eight, the five new ones among them — derives the seven that trade, and asserts
+  the Deimos → Stickney hop has no tradeable pair (D-19-19, D-19-20).
 - **D-18-40 The return export.** `industrial_parts` "yard fittings, crated" at 2,300 L/t: the Stickney
   Yards ask 400 from `item.yard_spares`, signed by the service clerk at P11; the Co-op's bid 560 at Ceres
   (intake 5,400 t; capital 3,100,000). The return is a three-limit balance: mass, volume and, early on,
@@ -3507,8 +3681,10 @@ every open ruling in this document and in 16c §5; recorded here, binding):
   canon locations and names (R9; D-18-42..51).
 - Capacity or locality checked only on the market leg as the final shape (P-H); rewriting exit locks per
   crew change (D-E5-4).
-- Reusing the `tacsim.corridor` id or editing the corridor fixtures or the starter packs; a Luna port, a
-  Pallas station, Earth/Luna on the map.
+- Reusing the `tacsim.corridor` id or editing the corridor fixtures or the starter packs. (Doc 19 cut
+  A.8, 2026-10-19, struck the clause's tail, "a Luna port, a Pallas station, Earth/Luna on the map": the
+  Luna port stands as Aitken Highport, Earth and Luna are on the chart since A.3 and A.7, and a Pallas
+  station is P7's, the named next Belt port.)
 - An 11th family, a thrust mobility mode, a `drive` rules kind, a `lift` portal mode.
 - Redeploying dev1 without the owner's ask.
 

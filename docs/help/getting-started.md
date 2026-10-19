@@ -27,8 +27,8 @@ takes you back to it.
 The trade run: at Ceres Freeport the Belt Carriers' Cooperative stakes new
 captains with a Dray on charter and working cash. `+coop` at the Registry desk
 reads the terms; "help coop" covers signing, "help trade" the loop of buying at
-one port and selling at the other, "help ships" the Dray, "help orders" the
-sailing plan that runs while you are away, and "help ports" the two ports.
+one port and selling at another, "help ships" the Dray, "help orders" the
+sailing plan that runs while you are away, and "help ports" the five ports.
 Cargo is real stock: every tonne you buy was seeded at a port, in lots, and is
 on record from the board to your hold.
 

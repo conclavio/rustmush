@@ -1182,7 +1182,7 @@ fn ic11_the_verbs_edit_the_plan() {
             "depart stickney via=nowhere",
             VIA_UNKNOWN
                 .replace("{via}", "nowhere")
-                .replace("{list}", "Ceres Freeport, Kirkwood Depot, Stickney Yards"),
+                .replace("{list}", "Aitken Highport, Ceres Freeport, Kirkwood Depot, Ligeia Terminal, Stickney Yards, Voltaire Anchorage"),
         ),
         (
             "depart stickney throttle=100",
@@ -1203,7 +1203,10 @@ fn ic11_the_verbs_edit_the_plan() {
         ),
         (
             "depart mars",
-            UNKNOWN_PORT.replace("{list}", "Ceres Freeport, Stickney Yards"),
+            UNKNOWN_PORT.replace(
+                "{list}",
+                "Ceres Freeport, Voltaire Anchorage, Aitken Highport, Stickney Yards, Ligeia Terminal",
+            ),
         ),
     ] {
         let out = order(&mut rig, pilot, line);
@@ -2916,7 +2919,7 @@ fn ic11_a_depart_with_no_route_holds_until_edited() {
         "{reason}",
         &NO_ROUTE
             .replace("{here}", "Ceres Freeport")
-            .replace("{list}", "Stickney Yards"),
+            .replace("{list}", "Aitken Highport, Stickney Yards"),
     );
     let doc = orders(&rig.tw, hull);
     assert_eq!(doc.state, PlanState::Held);
@@ -4175,7 +4178,7 @@ fn ic14_a_queued_depart_never_resolves_by_prefix() {
         "{reason}",
         &NO_ROUTE
             .replace("{here}", "Ceres Freeport")
-            .replace("{list}", "Stickney Yards"),
+            .replace("{list}", "Aitken Highport, Stickney Yards"),
     );
     let doc = orders(&rig.tw, hull);
     assert_eq!(doc.state, PlanState::Held, "{:#?}", doc.log);

@@ -1,0 +1,1418 @@
+{
+  "manifest": {
+    "id": "neighborhood.ligeia_terminal",
+    "version": 1,
+    "kind": "neighborhood",
+    "digest": "7ef48113fdf50c208c62c102228da9f017f4ae7e8deecb4871000bb2de9436c0",
+    "requires": [
+      {
+        "id": "region.ligeia_terminal",
+        "version": 1
+      }
+    ]
+  },
+  "brief": {
+    "prose": "The Terminal is laid out along an unspun spar in two decks. The visiting berths cross the spar's head on the Company Deck; the pressure lobby opens on Company Arrivals and the Spar Concourse, and every public desk opens off the concourse: the dockmaster, the Company Sales Floor (with its public stair down to Townships Receiving on the Cargo Deck), the Ninety-Four and the lifter gallery under the long window, the Company Store reached from arrivals and from the bar. On the Cargo Deck the townships' counter, the one the Company does not own, opens on the Bunkering Yard, and a staff-locked hidden hatch off the yard leads to the Spar Service Spine, which holds the storefront cages that back the counters and the two dark offices where the Chief Factor and the Speaker keep their offices."
+  },
+  "entries": {
+    "neighborhood": {
+      "kind": "neighborhood",
+      "def": {
+        "region": "region.ligeia_terminal",
+        "locality": "locality.ligeia_terminal",
+        "name": "Ligeia Terminal",
+        "setting": "station",
+        "representation": "authored",
+        "footprint": [
+          [
+            100,
+            80
+          ],
+          [
+            220,
+            80
+          ],
+          [
+            220,
+            200
+          ],
+          [
+            100,
+            200
+          ]
+        ],
+        "room_budget": {
+          "target": 12,
+          "maximum": 16
+        },
+        "hydration": {
+          "enabled": false,
+          "max_player_sites": 0
+        },
+        "resolution_cm": 100,
+        "theme": {
+          "name": "TacSim 2350: the Terminal",
+          "style_guide": "Present tense, no second person, no named NPCs in a room desc. Each room is distinct in sound, light and smell before it is distinct in furniture. The spar is unspun and weightless (no artificial gravity beyond thrust and rotation): decks are painted conventions, handlines run everywhere, benches have tether loops, and everything loose is netted or corded. It is cold: frost on the pressure seals, breath showing near the berths, heaters ticking. The air smells of naphtha and ammonia the scrubbers never quite take out, and of bitter almond near the billet locks. Saturn is huge and banded in the long window, the Sun a hard white star, Titan a featureless orange ball until a lifter's plume punches through. The Company sounds like a company town: orange lettering, posted notices, the Company's book, everything at the Company's price. The townships sound plain: hand-painted placards, their own heaters, petitions under film. News from Luna is always over an hour old. Desc length medium (60-120 words); details are one or two sentences, dry, with a fact in them. Exit aliases avoid the kernel words.",
+          "vocabulary": [
+            "spar",
+            "Terminal",
+            "the Company",
+            "the Company's price",
+            "the Company's book",
+            "Chief Factor",
+            "Charter",
+            "Saturn Charter",
+            "townships",
+            "Selk",
+            "the Board",
+            "petition",
+            "Shackleton",
+            "lifter",
+            "lifter window",
+            "Ligeia",
+            "haze",
+            "overburden",
+            "carbon billet",
+            "billet lock",
+            "water ice",
+            "reaction mass",
+            "ninety-four kelvin",
+            "handline",
+            "tether loop",
+            "frost",
+            "pressure seal",
+            "collar",
+            "berth",
+            "clearance",
+            "sailing plan",
+            "light lag",
+            "Luna's board",
+            "throttled",
+            "single-handed",
+            "crew-day",
+            "tonne"
+          ],
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "shields",
+            "stardate",
+            "hangar bay",
+            "you see"
+          ]
+        },
+        "ambience": [
+          "A lock cycles toward the berths, and a breath of frost drifts down the concourse after it.",
+          "The spar ticks and groans as it passes into Titan's shadow, and the heaters come on together.",
+          "The approach channel reads out a Dray's callsign, a range and the words one soul aboard, then goes back to static.",
+          "A lifter's plume breaks through the orange haze far below and climbs toward the spar on a thin white line.",
+          "Luna's prices arrive by light, over an hour old, and the Luna board on the sales floor turns over line by line.",
+          "A pump in the bunkering yard thuds, holds, and settles back into its sequence.",
+          "A new name goes up in chalk on the dockmaster's slow board, and the circled one at the top stays where it is.",
+          "A bulb of tea drifts loose from the Ninety-Four's hatch and is caught by the nearest hand without comment.",
+          "The scrubbers cycle, and for a minute the naphtha in the air is almost gone.",
+          "Saturn's rings cut the long window in a hard bright line as the spar comes round into sunlight.",
+          "A Company notice lifts at one corner in the air plant's draught and is pressed flat again by a passing glove.",
+          "Frost creeps a finger's width along a pressure seal and stops."
+        ]
+      }
+    },
+    "site.ligeia_spar": {
+      "kind": "site",
+      "def": {
+        "name": "Ligeia Spar",
+        "site_kind": "site.transit",
+        "footprint": [
+          [
+            110,
+            90
+          ],
+          [
+            210,
+            90
+          ],
+          [
+            210,
+            190
+          ],
+          [
+            110,
+            190
+          ]
+        ]
+      }
+    },
+    "structure.ligeia_spar": {
+      "kind": "structure",
+      "def": {
+        "site": "site.ligeia_spar",
+        "footprint": [
+          [
+            110,
+            90
+          ],
+          [
+            210,
+            90
+          ],
+          [
+            210,
+            190
+          ],
+          [
+            110,
+            190
+          ]
+        ],
+        "floors": [
+          {
+            "index": 0,
+            "z_offset_m": 0,
+            "height_m": 7,
+            "name": "Cargo Deck"
+          },
+          {
+            "index": 1,
+            "z_offset_m": 7,
+            "height_m": 4.5,
+            "name": "Company Deck"
+          }
+        ]
+      }
+    },
+    "room.t01_berth_gallery": {
+      "kind": "room",
+      "def": {
+        "name": "Visiting Berth Gallery",
+        "short_desc": "A long cold gallery across the head of the spar, handlines strung the length of it and frost on every seal.",
+        "desc": "The gallery runs across the head of the spar behind a row of small thick ports, each framing a docking collar, a boarding tube and a berth number stencilled in Company orange. Nothing here is spun: handlines run the full length at shoulder height, and the deck is a convention of painted arrows pointing toward the lobby. Frost rims every pressure seal, and the air is cold enough to show breath. The structure ticks and groans as the spar passes from sunlight into Titan's shadow. A faint smell of naphtha comes in with every cycle of a lock. A berth board lists each collar, its hull and its standing. The pressure lobby is inward.",
+        "site": "site.ligeia_spar",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              100
+            ],
+            [
+              210,
+              115
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "markers": [
+          "port.dock"
+        ],
+        "details": {
+          "berth board": "Collar by collar: the hull, its registry, its agent of record, and CLEARED or HELD in Company orange. A docked hull's name lights when a pilot is aboard.",
+          "ports": "Small, triple-glazed against the cold, each with a Company inspection tag dated in Luna time. Through them the spar's truss runs away to a point, and a berthed hull hangs on its collar with frost on its radiators.",
+          "handlines": "Braided line with a clip point every two metres, stiff with cold. The gloves on the rail by the lobby door are there for a reason, and the sign over them says which reason.",
+          "frost": "A white rime on every seal and frame, scraped back where hands go. The Company's maintenance card says that frost on a seal is normal and a seal without frost is worth reporting."
+        }
+      }
+    },
+    "room.t02_pressure": {
+      "kind": "room",
+      "def": {
+        "name": "Pressure Lobby",
+        "short_desc": "A square chamber of pressure doors between the berths and the spar, nothing in it but tether clips.",
+        "desc": "A square chamber between pressure doors, the berth-side door rimed with frost and the inner doors warm enough to sweat. A cycle counter glows over each. Nothing is sold here; the room exists so that nobody aboard is ever one door from vacuum, and its inner doors open on the arrivals desk and the concourse. Tether clips hang from a rail beside them, and a placard in Company typeface gives the order of operations if the gallery door fails to seal. The air is still and a little over-pressured, and it smells of door grease and of the ammonia the scrubbers have not yet caught. The berth gallery is outward.",
+        "site": "site.ligeia_spar",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              115
+            ],
+            [
+              140,
+              140
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "placard": "IN THE EVENT OF SEAL FAILURE: close the inner doors, clip on, wait for the Company. A diagram shows a figure on a tether doing all three.",
+          "cycle counter": "Six digits over each door. The berth side reads higher than the others by a wide margin; hulls cycle the collars more often than crews walk the spar.",
+          "inspection tag": "Titan Concession Company, Safety of the Spar: a date in Luna time, a stamp and an initial."
+        }
+      }
+    },
+    "room.t03_arrivals": {
+      "kind": "room",
+      "def": {
+        "name": "Company Arrivals",
+        "short_desc": "A low hall of queue rails ending at a single Company desk under the posted Charter notice.",
+        "desc": "Queue rails with tether loops divide a low hall into three lanes that end at a single desk under a posted notice: the Titan Concession Company, proprietor and government of the Saturn system under the Concord's Saturn Charter of 2291. Form pads float on short cords so they cannot drift away. A board behind the desk shows the next lifter windows over Ligeia, some days full and some weeks blank. The light is warm, the heaters tick, and it is the first room aboard where breath does not show. The hall smells of printer toner and stewed tea. The lobby is out; the concourse and the Company Store open off the hall.",
+        "site": "site.ligeia_spar",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              140
+            ],
+            [
+              140,
+              165
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "charter notice": "Framed under clear film: the Company is proprietor and government of the Saturn system by the Concord's Saturn Charter of 2291, recorded at the Registry, ninety-nine years. The lapsing year is printed smaller than the rest.",
+          "forms": "Arrivals declaration, crew roster, and a waiver for the billet locks, each pad on a cord. The roster asks for every soul aboard and the hull's agent of record.",
+          "lifter board": "The Company's lifter windows, orbit by orbit: a run of passes over Ligeia each Titan day, then nothing for about a fortnight while the spar crosses other ground.",
+          "desk": "One desk, one chair with a lap belt, one Company mark. The arrivals desk is staffed by the Lift Marshal's office, which also schedules the lifters."
+        }
+      }
+    },
+    "room.t04_concourse": {
+      "kind": "room",
+      "def": {
+        "name": "Spar Concourse",
+        "short_desc": "The spar's widest corridor, handlines both ways and Company notices pinned flat under film.",
+        "desc": "The concourse is the widest space on the spar, a square-sectioned hall with handlines strung both ways down the middle and Company notices pinned flat under clear film so that they will not lift in the draught. There is no advertising; on its own deck the Company has no need of it. A cold white strip of light runs the length of the overhead. Fans roar at either end, and under them the spar ticks as it cools in Titan's shadow. Naphtha and ammonia hang in air the scrubbers never quite clear. Doors open to the dockmaster, the sales floor, the Ninety-Four and the lifter gallery; the lobby and arrivals are back toward the locks.",
+        "site": "site.ligeia_spar",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              140,
+              115
+            ],
+            [
+              185,
+              165
+            ]
+          ]
+        },
+        "kind": "circulation",
+        "details": {
+          "notices": "Company notices in orange type: lifter windows, a frost advisory, a reminder that the Company Store keeps the only book on the spar. A clean rectangle of film marks where a townships notice hung.",
+          "station map": "A plan of the Terminal in two decks. The Company Deck is drawn in full; the Cargo Deck shows the bunkering yard and townships receiving, and a grey band marked COMPANY PERSONNEL.",
+          "handlines": "Two lines, inbound and outbound, with a painted arrow every five metres. Traffic keeps right by habit, and newcomers hold both.",
+          "fans": "Big ducted fans at either end, run hard because air does not move on its own without weight. The scrubber cartridges behind them are dated and initialled."
+        }
+      }
+    },
+    "room.t05_dockmaster": {
+      "kind": "room",
+      "def": {
+        "name": "Dockmaster's Office",
+        "short_desc": "A narrow office behind a half-door, its back wall a hand-lettered board that reads COME SLOW OR DON'T COME.",
+        "desc": "A narrow office behind a half-door, its back wall a single board lettered by hand across the top: COME SLOW OR DON'T COME. Under the motto the berth list runs collar by collar, and beside it a second board ranks the slowest arrivals by their days in passage, the names chalked and the longest circled. A clock reads Luna time with a card under it giving the light lag, which changes by the week. Clearance stamps sit in a clipped tray, and a sailing-plan pad hangs open on a tether. The office is warm and smells of hot electronics and stamp ink. The approach channel mutters, just short of words. The concourse is out.",
+        "site": "site.ligeia_spar",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              185,
+              115
+            ],
+            [
+              210,
+              140
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "motto board": "COME SLOW OR DON'T COME, in the dockmaster's own hand. Under it, smaller: half throttle, one soul aboard, every listed leg.",
+          "slow board": "A chalked list of hulls and their passage days, longest at the top. Every hull on it came in throttled, and most of the names have only one soul written beside them.",
+          "clock": "Luna time, with a card for the light lag: over an hour, and up to an hour and a half when Saturn is far round the Sun. The card is re-chalked every week.",
+          "sailing plan pad": "Departure at, destination, throttle, souls aboard, agent of record, SIGNED. The throttle line is ruled twice as wide as the rest.",
+          "radio": "Approach control, a Dray's callsign, a range and a closing rate that barely moves. Then static, which is most of it."
+        }
+      }
+    },
+    "room.t06_lifter": {
+      "kind": "room",
+      "def": {
+        "name": "Lifter Gallery",
+        "short_desc": "A dark gallery along the long window, Saturn huge and banded above and Titan orange below.",
+        "desc": "The long window runs the whole outer wall, rimed at its edges, and the gallery is kept dark so that the view reads. Saturn hangs in the upper half of it, huge and banded, three fingers' width at arm's length, its rings a hard bright line seen edge-on; the Sun is a small white star beside it that throws sharp shadows and no warmth. Below, Titan is a featureless orange ball. Now and then a lifter's plume punches up through the haze over the sea and climbs toward the spar. Benches with tether loops face the glass. The only sound is the air plant and the tick of the frame contracting. The concourse and the sales floor open off the gallery.",
+        "site": "site.ligeia_spar",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              175,
+              165
+            ],
+            [
+              210,
+              190
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "Saturn": "Banded cream and ochre, a hundred times the breadth of the Sun beside it. The rings show as a line because Titan orbits in their plane, and their shadow lies in a dark stripe across the planet.",
+          "Titan": "An orange ball with no feature on it, the haze too thick to see through. Ligeia lies somewhere under the northern limb; the spar crosses it for a run of orbits and then not for a fortnight.",
+          "lifter plume": "A white thread out of the haze, then a point of light that grows into a lifter. It comes up with billet and ice and goes back down with the inbound.",
+          "window": "One strip of glass the length of the room, rimed at the frame. A placard asks that hands stay off it, and the glass is clean except at the height of a hand.",
+          "Sun": "A hard white star, small enough to cover with a thumbnail. It lights the frost on the frame and warms nothing."
+        }
+      }
+    },
+    "room.t07_exchange": {
+      "kind": "room",
+      "def": {
+        "name": "Company Sales Floor",
+        "short_desc": "A bare trading floor with the Company's prices on the long wall and a stair well down to receiving.",
+        "desc": "The Company's prices fill the long wall in orange lettering: carbon billet, pressed; water ice; reaction mass; each line with a quantity left beside it. A smaller board in the corner carries the Selk Townships' bids for alloy stock and instrument boards. Opposite hangs a third board, Luna's prices as they arrived by light, each line with its hour of arrival chalked beside it. A railed stair well drops through the deck to the receiving counter below. The floor is cold, the air dry, and a trace of bitter almond rises up the well from the billet locks. The concourse and the lifter gallery are through the doors; receiving is down the stair.",
+        "site": "site.ligeia_spar",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              185,
+              140
+            ],
+            [
+              210,
+              165
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "price board": "CARBON BILLET, PRESSED. WATER ICE. REACTION MASS. Per tonne, with the quantity left; the figures are the Company's and change when the Company says so. The ice is overburden and the board does not pretend otherwise.",
+          "townships board": "SELK TOWNSHIPS BOARD BUYS: structural alloy stock and instrument boards, crated, the bid per tonne beside each line with the intake left. Signed at the receiving counter, not up here.",
+          "Luna board": "Luna's prices as the light brought them, over an hour stale and sometimes an hour and a half. There is no relay half at Titan, so nothing on this board is ever current.",
+          "stair well": "A rung stair in a railed well, seven metres down to the Cargo Deck, with a handline beside the rungs for those who float it. TOWNSHIPS RECEIVING, the arrow green.",
+          "almond notice": "A Company notice by the well: the bitter almond near the billet locks is a handling trace and harmless at the levels shown. A meter beside it shows the levels."
+        }
+      }
+    },
+    "room.t09_commissary": {
+      "kind": "room",
+      "def": {
+        "name": "Company Store",
+        "short_desc": "A stores counter under the Company's posting, crew-day crates netted to the racks behind.",
+        "desc": "Racks of crew-day crates run back from a counter under the Company's posting, one figure per crew-day and a line beneath it that reads AT THE COMPANY'S PRICE. Netting holds every crate to its shelf, and the shelves are labelled by the day rather than by the item. A cage over the counter is half drawn. The store is warm and lit yellow, and it smells of cardboard and the sweet tang of ration bars; a cold-locker at the back hums, the only cold thing in the room. A ledger on a tether hangs by the till. Arrivals is through one door and the Ninety-Four through the other.",
+        "site": "site.ligeia_spar",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              165
+            ],
+            [
+              140,
+              190
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "price posting": "VOYAGE PROVISIONS, per crew-day, AT THE COMPANY'S PRICE, signed for Concession Stores and dated. There is no second figure, and on this spar there is no second store.",
+          "crates": "Sealed crew-day crates of four kilos: food, potable stores, scrubber cartridges. They are the dearest stores in the system, and the netting makes sure none of them drifts off unpaid.",
+          "ledger": "The store's book: crew accounts by the crew-day, in one currency, settled through Luna. The tether is long enough to reach the counter and no further.",
+          "cage": "A grille that rolls down over the counter, half drawn at all hours. The sign on it gives no hours at all."
+        }
+      }
+    },
+    "room.t10_ninety_four": {
+      "kind": "room",
+      "def": {
+        "name": "The Ninety-Four",
+        "short_desc": "A padded low room with a hatch bar, a huge thermometer and crews keeping to their own sides.",
+        "desc": "A low room of padded walls and tether rails where the Company's crews and the townships' meet and mostly keep to their own sides. Drinks come in bulbs from a hatch with a heat lamp over it, and a thermometer the size of a door hangs behind the bar, its scale running down to a red line marked at ninety-four kelvin. The walls carry the notices nobody else will pin up: crew wanted, a berth share, a townships meeting with no time given. It is the loudest room on the spar and the warmest, and it smells of hot fat, tea and wet wool. The concourse and the Company Store open off it.",
+        "site": "site.ligeia_spar",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              140,
+              165
+            ],
+            [
+              175,
+              190
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "thermometer": "A dial the size of a door with its scale running down past anything a person survives. The red line is the surface below: ninety-four kelvin, at which everything breaks.",
+          "notice wall": "CREW WANTED, DRAY, LUNA RUN, ONE SOUL. BERTH SHARE, QUIET. A townships card with a meeting and no time on it, which the regulars read as a time.",
+          "bulbs": "Squeeze bulbs with valve caps, tea or something stronger, settled on a tally sheet at the hatch. A loose bulb is caught by the nearest hand and handed back.",
+          "sides": "By custom the townships' crews take the rails by the far wall and the Company's the ones by the hatch. Captains drift between and are left alone by both.",
+          "name": "The room is named for the surface temperature. The townships say it is the one thing on the spar the Company did not name."
+        }
+      }
+    },
+    "room.t08_receiving": {
+      "kind": "room",
+      "def": {
+        "name": "Townships Receiving",
+        "short_desc": "A scarred bench at the foot of the stair, the one counter on the spar the Company does not own.",
+        "desc": "The one counter on the spar the Company does not own stands at the foot of the stair: a scarred alloy bench with a manifest reader, a mass gauge and a placard in the Selk Townships' plain lettering stating what the Board buys and how much more it will take. Behind it a wire screen fronts the receiving lockers, where crated alloy and boards wait for the next lifter down. The heaters on this deck are the Board's, smaller and louder. Frost has crept along the floor seams. The room smells of machine oil and naphtha. The stair goes up to the sales floor; the bunkering yard is through the side door.",
+        "site": "site.ligeia_spar",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              175,
+              140
+            ],
+            [
+              210,
+              165
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "intake placard": "SELK TOWNSHIPS BOARD BUYS: STRUCTURAL ALLOY STOCK and INSTRUMENT BOARDS, CRATED, the bid per tonne and the intake remaining on each line. Under it, painted by hand: EVERYTHING BREAKS AT NINETY-FOUR KELVIN.",
+          "mass gauge": "A crate gauge that shakes each crate on a spring and reads its mass. Alloy is paid by the tonne the gauge reads; boards are opened, counted and closed again before anyone signs.",
+          "lockers": "Wire-fronted lockers stacked to the overhead, each tagged with a township's name and a lifter window. Selk's are the most numerous and the fullest.",
+          "heaters": "Two small heaters with the Board's plate on them, louder than the Company's on the deck above. The Board pays for its own heat on this side of the stair.",
+          "petition notice": "Pinned under film: the Board's petition to Shackleton for a charter of the townships' own, with a line for crews to sign. The notice says the copies are lodged at the Registry at Luna."
+        }
+      }
+    },
+    "room.t11_bunkering": {
+      "kind": "room",
+      "def": {
+        "name": "Bunkering Yard",
+        "short_desc": "A frosted tank gallery of lagged transfer lines, thudding pumps and the billet locks at its far end.",
+        "desc": "A long tank gallery on the Cargo Deck, where the lifters' ice and reaction mass come up in transfer lines lagged thick against the cold and run to the visiting collars overhead. Pumps thud in sequence; relief valves hiss and frost the air around them. At the far end the billet locks open onto the cargo spaces, and near them the air carries a faint bitter almond under the naphtha. Work lamps throw hard pools of white across the frosted lagging and leave the corners dark. A hatch in the back wall is stencilled COMPANY PERSONNEL. Townships receiving is through the side door.",
+        "site": "site.ligeia_spar",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              140,
+              140
+            ],
+            [
+              175,
+              165
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "transfer lines": "Lagged lines as thick as a body, tagged REACTION MASS and WATER ICE, running up through the overhead to the collars. The reaction mass here is the cheapest in the system, and the tags do not say so.",
+          "billet locks": "Two square locks onto the cargo spaces, where pressed carbon billet comes up from the lifters in sealed cases. A gas meter on each frame reads in parts per billion.",
+          "pumps": "Four pumps on a sequencer, each with a frost cuff where its line leaves it. One is always down for service, and its card says which.",
+          "hatch": "An alloy hatch with a card reader and no handle on this side. COMPANY PERSONNEL ONLY, stencilled twice."
+        }
+      }
+    },
+    "room.t15_spine": {
+      "kind": "room",
+      "def": {
+        "name": "Spar Service Spine",
+        "short_desc": "A service corridor of cable trays and storefront cages, two offices facing each other at its end.",
+        "desc": "A service corridor runs behind the tank gallery, cable trays overhead and pump manifolds along one wall, with three wire cages holding the manifold, the locker and the receiving cage that feed the counters on both decks. Beyond the cages two offices face each other across the corridor, one under the Company's mark and one under the townships' plain lettering, each with a dark terminal and a nameplate turned face down. The air is cold and loud with pumps and smells of hydraulic fluid and naphtha. COMPANY PERSONNEL ONLY is stencilled every ten metres. The bunkering hatch is the way out.",
+        "site": "site.ligeia_spar",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              140,
+              165
+            ],
+            [
+              175,
+              190
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "access": "restricted",
+        "details": {
+          "cages": "CONCESSION EXPORT. COMPANY STORE. TOWNSHIPS RECEIVING. Each cage has a manifest clipped to it, and the manifests are the spar's real stock, not the boards upstairs.",
+          "offices": "Two glassed offices across the corridor from each other. The Company's has the larger desk; the Board's has a heater of its own and a door that does not quite close.",
+          "common services clause": "The plate on the Board's door gives a clause of the Saturn Charter and nothing else: the townships' office sits on the Company's service deck because the Charter puts it here.",
+          "manifolds": "Reaction mass from the transfer lines, water from the ice tanks, air from the plant, each valve tagged with a date and an initial."
+        }
+      }
+    },
+    "exit.t01_t02": {
+      "kind": "exit",
+      "def": {
+        "from": "room.t01_berth_gallery",
+        "to": "room.t02_pressure",
+        "names": [
+          "Pressure Lobby <PL>;pl;lobby;in",
+          "Berth Gallery <BG>;bg;gallery;berths;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.t02_t03": {
+      "kind": "exit",
+      "def": {
+        "from": "room.t02_pressure",
+        "to": "room.t03_arrivals",
+        "names": [
+          "Arrivals <AR>;ar;arrivals;company",
+          "Pressure Lobby <PL>;pl;lobby;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.t02_t04": {
+      "kind": "exit",
+      "def": {
+        "from": "room.t02_pressure",
+        "to": "room.t04_concourse",
+        "names": [
+          "Concourse <C>;c;concourse;spar;in",
+          "Pressure Lobby <PL>;pl;lobby;locks"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.t03_t04": {
+      "kind": "exit",
+      "def": {
+        "from": "room.t03_arrivals",
+        "to": "room.t04_concourse",
+        "names": [
+          "Concourse <C>;c;concourse;spar;in",
+          "Arrivals <AR>;ar;arrivals;desk"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.t04_t05": {
+      "kind": "exit",
+      "def": {
+        "from": "room.t04_concourse",
+        "to": "room.t05_dockmaster",
+        "names": [
+          "Dockmaster <DM>;dm;dockmaster;office",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.t04_t07": {
+      "kind": "exit",
+      "def": {
+        "from": "room.t04_concourse",
+        "to": "room.t07_exchange",
+        "names": [
+          "Sales Floor <X>;x;exchange;sales;market",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.t03_t09": {
+      "kind": "exit",
+      "def": {
+        "from": "room.t03_arrivals",
+        "to": "room.t09_commissary",
+        "names": [
+          "Company Store <CM>;cm;commissary;store;stores",
+          "Arrivals <AR>;ar;arrivals"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.t04_t10": {
+      "kind": "exit",
+      "def": {
+        "from": "room.t04_concourse",
+        "to": "room.t10_ninety_four",
+        "names": [
+          "Ninety-Four <NF>;nf;ninety;commons;bar",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.t04_t06": {
+      "kind": "exit",
+      "def": {
+        "from": "room.t04_concourse",
+        "to": "room.t06_lifter",
+        "names": [
+          "Lifter Gallery <LG>;lg;lifter;windows",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.t07_t06": {
+      "kind": "exit",
+      "def": {
+        "from": "room.t07_exchange",
+        "to": "room.t06_lifter",
+        "names": [
+          "Lifter Gallery <LG>;lg;lifter;windows",
+          "Sales Floor <X>;x;exchange;sales"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.t09_t10": {
+      "kind": "exit",
+      "def": {
+        "from": "room.t09_commissary",
+        "to": "room.t10_ninety_four",
+        "names": [
+          "Ninety-Four <NF>;nf;ninety;commons;bar",
+          "Company Store <CM>;cm;commissary;store"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.t08_t11": {
+      "kind": "exit",
+      "def": {
+        "from": "room.t08_receiving",
+        "to": "room.t11_bunkering",
+        "names": [
+          "Bunkering Yard <BY>;by;bunkering;tanks",
+          "Receiving <RC>;rc;receiving;townships"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.t07_t08": {
+      "kind": "exit",
+      "def": {
+        "from": "room.t07_exchange",
+        "to": "room.t08_receiving",
+        "names": [
+          "Receiving Stair <RS>;rs;receiving;townships;down;d",
+          "Sales Stair <ES>;es;exchange;sales;up;u"
+        ],
+        "portal": {
+          "mode": "stair",
+          "at": [
+            [
+              195,
+              152,
+              7
+            ],
+            [
+              195,
+              152,
+              0
+            ]
+          ],
+          "dz_m": -7
+        }
+      }
+    },
+    "exit.t11_t15": {
+      "kind": "exit",
+      "def": {
+        "from": "room.t11_bunkering",
+        "to": "room.t15_spine",
+        "names": [
+          "Service Spine <SS>;ss;spine;hatch",
+          "Bunkering Hatch <RH>;rh;bunkering;out"
+        ],
+        "portal": {
+          "mode": "hatch",
+          "visibility": "hidden"
+        },
+        "lock": "staff"
+      }
+    },
+    "feature.wall_t01_t04": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "wall",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            140,
+            115
+          ],
+          [
+            185,
+            115
+          ]
+        ],
+        "z_range": [
+          0,
+          4.5
+        ],
+        "blocks": {
+          "movement": true,
+          "sight": true
+        }
+      }
+    },
+    "feature.wall_t01_t05": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "wall",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            185,
+            115
+          ],
+          [
+            210,
+            115
+          ]
+        ],
+        "z_range": [
+          0,
+          4.5
+        ],
+        "blocks": {
+          "movement": true,
+          "sight": true
+        }
+      }
+    },
+    "feature.wall_t05_t07": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "wall",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            185,
+            140
+          ],
+          [
+            210,
+            140
+          ]
+        ],
+        "z_range": [
+          0,
+          4.5
+        ],
+        "blocks": {
+          "movement": true,
+          "sight": true
+        }
+      }
+    },
+    "feature.wall_t10_t06": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "wall",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            175,
+            165
+          ],
+          [
+            175,
+            190
+          ]
+        ],
+        "z_range": [
+          0,
+          4.5
+        ],
+        "blocks": {
+          "movement": true,
+          "sight": true
+        }
+      }
+    },
+    "feature.counter_t03": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "counter",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            112,
+            163
+          ],
+          [
+            138,
+            163
+          ]
+        ],
+        "z_range": [
+          0,
+          1.1
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "room": "room.t03_arrivals"
+      }
+    },
+    "feature.counter_t05": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "counter",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            187,
+            117
+          ],
+          [
+            187,
+            138
+          ]
+        ],
+        "z_range": [
+          0,
+          1.1
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "room": "room.t05_dockmaster"
+      }
+    },
+    "feature.counter_t08": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "counter",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            0
+          ]
+        },
+        "polyline": [
+          [
+            178,
+            162
+          ],
+          [
+            208,
+            162
+          ]
+        ],
+        "z_range": [
+          0,
+          1.1
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "room": "room.t08_receiving"
+      }
+    },
+    "feature.counter_t09": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "counter",
+        "surface": {
+          "floor": [
+            "structure.ligeia_spar",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            112,
+            167
+          ],
+          [
+            138,
+            167
+          ]
+        ],
+        "z_range": [
+          0,
+          1.1
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "room": "room.t09_commissary"
+      }
+    },
+    "item.concession_manifold": {
+      "kind": "item",
+      "def": {
+        "name": "Concession export manifold",
+        "desc": "A cage of valved manifolds and sealed billet cases under a Company tag: CONCESSION EXPORT, carbon billet, water ice, reaction mass. The manifest clipped to it is the Company's real stock, line by line, and it is initialled at every shift.",
+        "room": "room.t15_spine"
+      }
+    },
+    "item.stores_locker": {
+      "kind": "item",
+      "def": {
+        "name": "Company Store locker",
+        "desc": "A wire locker stacked with crew-day crates under a Concession Stores tag. The manifest on its door counts the crates by the day, and the count is the store's, not the posting's.",
+        "room": "room.t15_spine"
+      }
+    },
+    "item.townships_cage": {
+      "kind": "item",
+      "def": {
+        "name": "Townships receiving cage",
+        "desc": "A wire cage of crated alloy and instrument boards under the Selk Townships Board's plain tag, each crate marked with a township and a lifter window. The manifest is in the Board's hand and the padlock is the Company's.",
+        "room": "room.t15_spine"
+      }
+    },
+    "npc.marangoni_teague": {
+      "kind": "npc",
+      "def": {
+        "name": "Ysolde Marangoni-Teague",
+        "room": "room.t07_exchange",
+        "tier": "minor",
+        "profile": {
+          "persona": "the Company's sales clerk, polished and patient, who has sold billet and ice off this floor long enough to quote the board without turning to look at it. Loyal to the Company in the way of someone whose whole life is on its book; courteous to captains because a captain who came this far came slowly and deserves it.",
+          "background": "Sales Clerk of the Titan Concession Company on the Company Sales Floor; the Warrant signatory of the Company's asks for carbon billet, water ice and reaction mass.",
+          "speech_style": "smooth and exact; gives the good, then the quantity left, then the Company's price as a phrase rather than a number; calls the ice \"overburden\" without apology.",
+          "knows": [
+            "the Company's asks as the board posts them: carbon billet, pressed; water ice; reaction mass; each with the quantity left, at the Company's price",
+            "that the ice is the lifters' overburden, quarried to reach the organics and sold at its handling cost, and that Occator would call that dumping if it were nearer",
+            "that the Terminal's reaction mass is the cheapest in the system and a captain going home should fill the tank here",
+            "that the Selk Townships buy alloy stock and instrument boards at their own counter at the foot of the stair, which the Company does not own",
+            "the Terminal's layout: the concourse, the arrivals desk, the dockmaster, the store, the Ninety-Four, the lifter gallery and the stair down to receiving"
+          ],
+          "does_not_know": [
+            "what the Company Store's margin pays for",
+            "the Chief Factor's correspondence or the Company's dealings at Shackleton",
+            "the Townships Board's funds or what it will bid next",
+            "Luna's prices beyond the stale board on the far wall"
+          ],
+          "fallback": [
+            "Billet, ice, reaction mass. The board says what is left and what the Company asks; I sign for what goes out.",
+            "The ice is overburden. We sell it for what it costs to handle, and Occator may say what it likes.",
+            "Going home? Fill the tank here. Nowhere else in the system sells reaction mass for less.",
+            "Alloy and boards are the townships' business, down the stair. Their counter, their board."
+          ],
+          "interfaces": [
+            "market",
+            "atlas"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_ligeia"
+        ]
+      }
+    },
+    "npc.oyelowo_krauss": {
+      "kind": "npc",
+      "def": {
+        "name": "Barnabas Oyelowo-Krauss",
+        "room": "room.t09_commissary",
+        "tier": "minor",
+        "profile": {
+          "persona": "a heavy, unhurried storekeeper who has heard every complaint about the Company's price and answers all of them with the same shrug. Not unkind: will tell a single-handed captain exactly how many crew-days the passage needs and sell no more than that. Considers the margin none of his business and says so before anyone asks.",
+          "background": "Storekeeper of the Company Store for Concession Stores; the Warrant signatory of the store's provisions ask.",
+          "speech_style": "slow, plain, a little weary; counts in crew-days; ends most answers with \"at the Company's price\" as if it were a full stop.",
+          "knows": [
+            "the posted price per crew-day, its date, and that it is the Company's price and the only one on the spar",
+            "the crates remaining, which he counts and signs for every shift",
+            "that two aboard need twice the days, and that most captains who reach the Terminal came single-handed",
+            "that the store keeps a book in one currency, settled through Luna",
+            "that the Company Store's stores are the dearest in the system, and the Terminal's reaction mass the cheapest"
+          ],
+          "does_not_know": [
+            "what the Company Store's margin pays for, which he says is not his to know",
+            "the Townships Board's business",
+            "the Company's dealings at Luna or Shackleton"
+          ],
+          "fallback": [
+            "Crew-days, how many? The posting says the price. At the Company's price.",
+            "One soul, one crate a day, and a few over if the passage runs long. I would not sell you less.",
+            "Dear? Yes. It is the only store for a long way in any direction."
+          ],
+          "interfaces": [
+            "market"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_ligeia"
+        ]
+      }
+    },
+    "npc.tupou_lindahl": {
+      "kind": "npc",
+      "def": {
+        "name": "Saoirse Tupou-Lindahl",
+        "room": "room.t08_receiving",
+        "tier": "minor",
+        "profile": {
+          "persona": "the townships' purchasing delegate, sharp and tired and proud of the one counter on the spar the Company does not own. Grew up on a Selk rig and still checks a crate's seals with bare fingers. Pays frontier prices without complaint, because the alternative is a rig that stops working at ninety-four kelvin; complains about everything else.",
+          "background": "Purchasing Delegate of the Selk Townships Board at Townships Receiving; the Warrant signatory of the Board's bids for structural alloy stock and instrument boards.",
+          "speech_style": "brisk, direct, a township's flat vowels; says \"the Board\" and \"the Company\" as two different weathers; quotes the placard: \"everything breaks at ninety-four kelvin\".",
+          "knows": [
+            "the Board's bids as the placard posts them: structural alloy stock and instrument boards, crated, by the tonne, with the intake left",
+            "why the townships pay frontier prices: everything breaks at ninety-four kelvin, and the rigs need alloy and boards to keep working",
+            "that this is the one counter on the spar the Company does not own, and the heaters on this side are the Board's",
+            "that Selk was the first township and the Board petitions Shackleton for a Concord charter of the townships' own, the petitions lodged at the Registry",
+            "that the Board's office sits on the Company's service deck by the Charter's common-services clause, which the Speaker calls the leash",
+            "that alloy and boards come out to Titan from Luna, two months by hull for a captain who comes slow"
+          ],
+          "does_not_know": [
+            "what becomes of a petition between this spar and Shackleton",
+            "the Company's books or the Company Store's margin",
+            "Luna's prices beyond the stale board upstairs"
+          ],
+          "fallback": [
+            "Alloy and boards, crated. The placard says what the Board pays and how much more it will take.",
+            "Everything breaks at ninety-four kelvin. That is why we pay what we pay.",
+            "This counter is ours. The heat on this side of the stair is ours. Mind the frost on the seams.",
+            "Sign the petition on the wall if you like. It goes to the Registry, the same as the rest."
+          ],
+          "interfaces": [
+            "market",
+            "help"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_ligeia"
+        ]
+      }
+    },
+    "npc.abara_vos": {
+      "kind": "npc",
+      "def": {
+        "name": "Kenji Abara-Vos",
+        "room": "room.t05_dockmaster",
+        "tier": "minor",
+        "profile": {
+          "persona": "the dockmaster, lean and dry, who lettered the motto on the board himself and keeps the slow board as a kind of roll of honour. Has watched captains come in on the last tonne of their tank and treats every arrival as a small survival. Gives the same advice to everyone, in the same words, because the words are what keep people alive.",
+          "background": "Dockmaster of Ligeia Terminal: berths, clearances, sailing plans and the board of the slowest arrivals.",
+          "speech_style": "quiet, unhurried, repeats himself on purpose; \"come slow or don't come\"; gives the hour in Luna time and then the light lag.",
+          "knows": [
+            "the motto and why: the passage from Luna, or home to Luna or Mars, fits an eighty-tonne tank only at half throttle, and his word for every listed leg is throttle=450 with one soul aboard",
+            "that most arrivals are single-handed, and that two aboard is for a good season only",
+            "which collars are occupied, cleared or held, and that a hull with no sailing plan sits idle",
+            "the slow board: every hull on it came in throttled, the longest passages at the top",
+            "that the Terminal has no relay half, so news from Luna comes by light over an hour stale and up to an hour and a half",
+            "that the Terminal's reaction mass is the cheapest in the system, and a hull should leave with its tank full"
+          ],
+          "does_not_know": [
+            "what any hull carries beyond its sailing plan",
+            "the Company's politics, which he says are not his deck",
+            "Luna's prices or the townships' bids"
+          ],
+          "fallback": [
+            "Come slow or don't come: throttle=450, one soul aboard, every leg we list.",
+            "Your hull is on the board if it is on a collar. File a plan before you think about leaving.",
+            "Fill the tank before you go. It is the cheapest reaction mass you will ever buy.",
+            "Luna is over an hour away by light. Anything it told us is already old."
+          ],
+          "interfaces": [
+            "atlas",
+            "travel"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_ligeia"
+        ]
+      }
+    },
+    "npc.adichie_brun": {
+      "kind": "npc",
+      "def": {
+        "name": "Noor Adichie-Brun",
+        "room": "room.t03_arrivals",
+        "tier": "extra",
+        "profile": {
+          "persona": "the Lift Marshal, who runs the arrivals desk and the lifter schedule from the same chair and does both briskly. Knows the windows over Ligeia by heart and resents any question that could have been answered by the board behind her. Company-born and Company-schooled, and not ashamed of either.",
+          "background": "Lift Marshal of the Titan Concession Company: the arrivals desk and the schedule of the lifters between Ligeia and the spar.",
+          "speech_style": "quick and procedural; points at the board before she speaks; says \"window\", \"pass\" and \"the Company\" more than anything else.",
+          "knows": [
+            "the arrivals forms and what each asks: the declaration, the crew roster, the billet-lock waiver",
+            "the lifter windows: the spar crosses Ligeia for a run of orbits each Titan day and then not for about a fortnight",
+            "that the lifters come up out of the haze with billet and ice and go back down with the inbound",
+            "the Charter notice over the desk: the Company is proprietor and government of the Saturn system under the Concord's Saturn Charter of 2291",
+            "the Terminal's layout and which desk does what"
+          ],
+          "does_not_know": [
+            "the townships' business",
+            "the Company's prices beyond what the sales floor posts",
+            "anything the Chief Factor has not put on a notice"
+          ],
+          "fallback": [
+            "Declaration, roster, waiver. Clip them to the desk. The concourse is through the far door.",
+            "The lifter board is behind me. Passes over Ligeia, then a long gap. It says so.",
+            "The Company is proprietor here. The notice above my head says how and since when."
+          ],
+          "interfaces": [
+            "atlas",
+            "help"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_ligeia"
+        ]
+      }
+    },
+    "npc.quayle_ibekwe": {
+      "kind": "npc",
+      "def": {
+        "name": "Ottoline Quayle-Ibekwe",
+        "room": "room.t10_ninety_four",
+        "tier": "extra",
+        "profile": {
+          "persona": "keeps the Ninety-Four, and keeps it neutral: serves the Company's crews at the hatch end and the townships' at the far wall and lets nobody start anything in between. Talkative, wry, a collector of opinions on the Charter's renewal, which she rates like vintages. Knows everyone's tally and nobody's secrets, or says so.",
+          "background": "Keeper of the Ninety-Four, the Terminal's bar and crew commons.",
+          "speech_style": "warm and amused, fond of a question back; calls every captain \"slow one\" as a compliment; tells the room's name like a joke she never tires of.",
+          "knows": [
+            "the Saturn Charter of 2291 as everyone tells it: the Concord granted the Saturn system to a consortium of habitat houses under the Outbound's mandate, and it lapses in 2390",
+            "that every Titan captain has an opinion on renewal, and most of the opinions she has heard",
+            "the custom of the sides: townships by the far wall, the Company by the hatch, captains wherever they like",
+            "why the bar is named for ninety-four kelvin, and that everything breaks at it",
+            "that the Malapert Exchange quotes for a relay half every decade and the Company declines every decade",
+            "which notices on the wall are current and which are a year old"
+          ],
+          "does_not_know": [
+            "what the Speaker and the Chief Factor say to each other in private",
+            "what the Company Store's margin pays for",
+            "anything she has been asked to forget, which she says is most of it"
+          ],
+          "fallback": [
+            "Sit anywhere, slow one. Townships by the wall, Company by the hatch, captains wherever they like.",
+            "Ninety-four kelvin. Everything breaks at it. We named the bar so nobody forgets.",
+            "Renewal? Ask anyone in here. Ask twice and the answers change."
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_ligeia"
+        ]
+      }
+    },
+    "npc.varela_nwosu": {
+      "kind": "npc",
+      "def": {
+        "name": "Augustin Varela-Nwosu",
+        "room": "room.t15_spine",
+        "tier": "major",
+        "profile": {
+          "persona": "courteous, patient and certain; governs the Saturn system as a proprietor governs a property, months from anyone who could overrule him",
+          "background": "Chief Factor of the Titan Concession Company, proprietor and government under the Concord's Saturn Charter of 2291",
+          "enabled": false
+        }
+      }
+    },
+    "npc.asante_pryce": {
+      "kind": "npc",
+      "def": {
+        "name": "Hallgerd Asante-Pryce",
+        "room": "room.t15_spine",
+        "tier": "major",
+        "profile": {
+          "persona": "the townships' voice; files petition after petition to Shackleton and expects the answer to outlast her",
+          "background": "Speaker of the Selk Townships; the Board's office is on the Company's service deck by the Charter's common-services clause, which the Speaker calls the leash",
+          "enabled": false
+        }
+      }
+    },
+    "lore.port_ligeia": {
+      "kind": "lore",
+      "def": {
+        "tag": "port_ligeia",
+        "entries": [
+          {
+            "tier": "public",
+            "subject": "The Saturn Charter",
+            "fact": "the Concord's Saturn Charter of 2291 granted the Saturn system to a consortium of habitat houses under the Outbound's mandate: a ninety-nine-year grant recorded at the Registry, lapsing in 2390. The Titan Concession Company governs by it as proprietor, headed by its Chief Factor, clears through Luna and is months from anyone who could overrule it. Every Titan captain has an opinion on renewal."
+          },
+          {
+            "tier": "public",
+            "subject": "Ligeia Terminal",
+            "fact": "the Company's orbital terminal, a long unspun spar in low Titan orbit named for the methane sea the lifters climb from. The spar crosses the sea for a run of orbits each Titan day and then not for a fortnight, never standing over it; the lifters come up out of the orange haze with billet and ice and take the inbound down. No Dray could leave Titan's surface at its thrust."
+          },
+          {
+            "tier": "public",
+            "subject": "The Company and the townships",
+            "fact": "Selk, the first township, wants a Concord charter of its own; the Selk Townships Board petitions Shackleton, the Concord Executive whose charters these are, and the petitions are lodged at the Registry, a notary and not a grantor. A petition takes over an hour by light and two months by ship, and the Chief Factor reads them first."
+          },
+          {
+            "tier": "public",
+            "subject": "No relay half",
+            "fact": "the Terminal has no relay half. The sales floor posts Luna's prices an hour and more old, and the light lag runs up to an hour and a half; the Company prices for the two months it takes a hull. The Malapert Exchange quotes for a half every decade, and the Company declines every decade."
+          },
+          {
+            "tier": "public",
+            "subject": "Ninety-four kelvin",
+            "fact": "\"everything breaks at ninety-four kelvin\", the surface temperature below; it is why the townships pay frontier prices for alloy stock and instrument boards, far above what those fetch at Luna, to keep their rigs working. The Terminal's bar is named for it."
+          },
+          {
+            "tier": "public",
+            "subject": "The Company's price",
+            "fact": "the Terminal sells the cheapest reaction mass in the system and the dearest stores in the system, both at the Company's price, in the one currency the system settles in. A captain going home fills the tank here and buys no more crew-days than the passage needs."
+          },
+          {
+            "tier": "public",
+            "subject": "The overburden",
+            "fact": "the lifters quarry water-ammonia ice to reach the organics underneath, and the Company sells that ice at its handling cost. Occator would call that dumping if it were nearer. The organics come up as carbon billet, pressed, the dense Titan cargo."
+          },
+          {
+            "tier": "public",
+            "subject": "Come slow or don't come",
+            "fact": "the dockmaster's board reads \"come slow or don't come\": the passage from Luna, or home to Luna or Mars, fits an eighty-tonne tank only at half throttle, and the dockmaster's word for every listed leg is throttle=450 with one soul aboard. Every Dray that reaches the Terminal was throttled and most were single-handed; the dockmaster keeps a board of the slowest arrivals."
+          },
+          {
+            "tier": "public",
+            "subject": "A company town",
+            "fact": "the Terminal is a company town: the Company's arrivals desk, the Company's sales floor, the Company's store and the Company's book. The one counter the Company does not own is Townships Receiving at the foot of the stair, where the Selk Townships Board buys alloy and boards."
+          },
+          {
+            "tier": "guarded",
+            "subject": "The store's margin",
+            "fact": "the Company Store's prices are the dearest in the system, and nobody on the spar will say what the margin pays for; the store's book clears through Luna, and the storekeeper says it is not his to know."
+          },
+          {
+            "tier": "guarded",
+            "subject": "Luna's board price",
+            "fact": "for all that it prices everything on the spar as it likes, the Company pays Luna's board price for what it buys there without arguing, which on Titan is remarked on."
+          },
+          {
+            "tier": "guarded",
+            "subject": "The leash",
+            "fact": "the Board's office is on the Company's service deck, not in a township, by the Charter's common-services clause; the Speaker calls the clause the leash."
+          }
+        ]
+      }
+    },
+    "secret.retainer": {
+      "kind": "secret",
+      "def": {
+        "truth": "The Company Store's margin funds the Company's retainer at Shackleton against the townships' petition; the Speaker's petitions are read, copied and delayed in this spine.",
+        "reveal": "staff",
+        "about": [
+          "npc.varela_nwosu"
+        ]
+      }
+    }
+  }
+}

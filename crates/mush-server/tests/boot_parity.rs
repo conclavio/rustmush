@@ -676,7 +676,10 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
             .state()
             .orgs()
             .count();
-        assert_eq!(orgs, 9, "the nine port institutions");
+        assert_eq!(
+            orgs, 20,
+            "the twenty port institutions: the corridor's nine and the moons' eleven (doc 19 cut A.8)"
+        );
         assert!(
             !store.test_world(),
             "the production roster is no test world"
@@ -753,7 +756,7 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
         Some(LANE_VERSION),
         "{LANE_PACK}: {after:?}"
     );
-    assert_eq!(after.len(), 10);
+    assert_eq!(after.len(), 16, "five, ten station packs and the lane");
     lane_resolves(&on.engine);
     let atlas = on
         .engine

@@ -198,6 +198,13 @@ evade an interception → manufacture or refit a ground unit → load it aboard 
 Mars → complete a ground operation that changes control or access → salvage, repair, pay, repeat.
 If that loop is fun, the rest of the system is content and variation.
 
+**As built (doc 18; [doc 19](19-astronomy-engine.md) cut A.8, 2026-10-19):** the trade run's deep
+implementation now spans **five ports** on lane v8: Ceres Freeport and Stickney Yards on the
+corridor, and the first ports on the moons — Aitken Highport (Luna), Voltaire Anchorage (Deimos) and
+Ligeia Terminal (Titan) — with six direct routes from or to them (doc 19 §3.8, D-19-19; doc 11
+§4.13–§4.23; 18a §5–§7). The Mars ground theater, the refinery recipe, the open market and the units
+stay as this section scopes them; every other body is still the strategic map.
+
 ---
 
 ## 12. Foundational survey — decisions (owner, 2026-09-03, binding)

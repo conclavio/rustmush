@@ -464,14 +464,36 @@ fn lane_ports() -> BTreeMap<String, tacsim::port::PortDef> {
 /// both-limits vertex of the dense and the bulky good, strictly beats every
 /// single-good load, and sits inside the band where that is so: the bulky good earns
 /// more a tonne, and less a litre. **No quantity of a vertex is typed in this file.**
+///
+/// The pairs are the ones the lane's ports list (doc 19 cut A.8): every origin
+/// port's `routes` key, its destination found by venue — so a route added to a
+/// port is checked with no edit here. The one listed pair declared empty is the
+/// Deimos → Phobos hop (`voltaire_stickney`), which trades no hold good; every
+/// other pair trades exactly two.
 #[test]
 fn ic8_the_posted_prices_make_the_both_limits_load_optimal() {
     let (goods, cargo) = (table(), compartment("cargo"));
     let ports = lane_ports();
-    for (from, to) in [
-        ("ceres_port", "stickney_port"),
-        ("stickney_port", "ceres_port"),
-    ] {
+    let pairs: Vec<(&str, &str)> = ports
+        .iter()
+        .flat_map(|(from, origin)| {
+            let ports = &ports;
+            origin.routes.keys().map(move |venue| {
+                let to = ports
+                    .iter()
+                    .find(|(_, def)| &def.venue == venue)
+                    .map(|(id, _)| id.as_str())
+                    .unwrap_or_else(|| panic!("{from} lists {venue}, which no port is"));
+                (from.as_str(), to)
+            })
+        })
+        .collect();
+    // The two shipped pairs, the five moon pairs that carry two hold goods, and
+    // the hop.
+    assert_eq!(pairs.len(), 8, "the listed pairs: {pairs:?}");
+    let mut trading = 0;
+    let mut empty = Vec::new();
+    for (from, to) in pairs {
         let origin = ports.get(from).expect("the origin port");
         let destination = ports.get(to).expect("the destination port");
         let mut margins: Vec<(CanonicalId, i64)> = Vec::new();
@@ -490,11 +512,20 @@ fn ic8_the_posted_prices_make_the_both_limits_load_optimal() {
                 margins.push((ask.good.clone(), margin));
             }
         }
+        if (from, to) == ("deimos_port", "stickney_port") {
+            assert!(
+                margins.is_empty(),
+                "{from} → {to}, the hop, trades no hold good: {margins:?}"
+            );
+            empty.push((from, to));
+            continue;
+        }
         assert_eq!(
             margins.len(),
             2,
             "{from} → {to} trades two hold goods: {margins:?}"
         );
+        trading += 1;
         let litres = |good: &CanonicalId| {
             goods
                 .good(good)
@@ -582,6 +613,12 @@ fn ic8_the_posted_prices_make_the_both_limits_load_optimal() {
             "{from}: the mixed load beats either good alone"
         );
     }
+    assert_eq!(trading, 7, "seven listed pairs trade two hold goods");
+    assert_eq!(
+        empty,
+        vec![("deimos_port", "stickney_port")],
+        "the hop is listed"
+    );
 }
 
 /// **`compartment_for` maps each good to its one compartment** (doc 18 §4.3; cut IC8):

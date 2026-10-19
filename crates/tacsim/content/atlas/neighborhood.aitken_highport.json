@@ -1,0 +1,1537 @@
+{
+  "manifest": {
+    "id": "neighborhood.aitken_highport",
+    "version": 1,
+    "kind": "neighborhood",
+    "digest": "7835fd46cb5d2e6fb6c8110e3e17ff3173fc2abf7c16e9a2ff257eebbaf42eaa",
+    "requires": [
+      {
+        "id": "region.aitken_highport",
+        "version": 1
+      }
+    ]
+  },
+  "brief": {
+    "prose": "The station is two decks of one structure. The Hub Deck stands still and holds nothing down: the Visiting Berth Gallery along the hub cradles, the Pressure Lobby at the spoke ladder's hub end, the Dockmaster's Office with the sailing board, and Habitat Board Receiving, where the landers mate and the Belt's ice and concentrate are sold. The Drum Deck spins at a sixth of a g: Orbital Access Arrivals at the ladder's drum end, the Drum Concourse, the Registry Annex where export permits are stamped, the Clearing House Window, the Cabeus Exchange where lunar alloy and crated instrument boards are sold, the Victualling Office for reaction mass and stores, and the Cold Trap, the social room. A public stair runs a second spoke from the exchange to receiving. One restricted room, the Rim Service Spine, is staff-locked and hidden off receiving on the staff-lobby precedent; it holds the storefront items that back the counters and the dark desks where the houses' principals sit enabled:false until the faction cut binds them."
+  },
+  "entries": {
+    "neighborhood": {
+      "kind": "neighborhood",
+      "def": {
+        "region": "region.aitken_highport",
+        "locality": "locality.aitken_highport",
+        "name": "Aitken Highport",
+        "setting": "station",
+        "representation": "authored",
+        "footprint": [
+          [
+            100,
+            80
+          ],
+          [
+            220,
+            80
+          ],
+          [
+            220,
+            200
+          ],
+          [
+            100,
+            200
+          ]
+        ],
+        "room_budget": {
+          "target": 12,
+          "maximum": 16
+        },
+        "hydration": {
+          "enabled": false,
+          "max_player_sites": 0
+        },
+        "resolution_cm": 100,
+        "theme": {
+          "name": "TacSim 2350: the Highport",
+          "style_guide": "Present tense, no second person, no named NPCs in a room desc. Each room is distinct in sound, light and smell before it is distinct in furniture. The Highport has two physics and says so (doc 10 §3: no artificial gravity beyond thrust and rotation): the hub stands still and holds nothing down, so the Hub Deck is handlines, hook pads and tether clips; the drum spins at the Moon's own sixth of a g, so the Drum Deck is long slow strides, slow pours and a floor that curves up ahead and behind. The Concord sounds institutional and old: seals, brass plates, Shackleton time, the Registry's patience, habitat discipline in every poster. The houses sound like houses: Cabeus and Crisium price lines, the Habitat Board's conservation slogans, permit sleeves. Power shows as paperwork, as hooded lamps in the yards' slips and as who may open the service hatch. Earth comes past the viewports once a turn and the basin wheels below. Desc length medium (60-120 words); details are one or two sentences, dry, with a fact in them. Exit aliases avoid the kernel words.",
+          "vocabulary": [
+            "hub",
+            "drum",
+            "spoke",
+            "spoke ladder",
+            "spin",
+            "bearing race",
+            "handline",
+            "hook pad",
+            "tether clip",
+            "cradle",
+            "boarding collar",
+            "pressure door",
+            "sailing board",
+            "Orbital Access",
+            "the Concord",
+            "Shackleton",
+            "Malapert",
+            "Aitken",
+            "basin",
+            "cold trap",
+            "regolith",
+            "closed loop",
+            "habitat discipline",
+            "Habitat Board",
+            "lander",
+            "freight collar",
+            "intake",
+            "receiving",
+            "assay",
+            "Cabeus",
+            "lunar alloy",
+            "Crisium",
+            "instrument boards",
+            "crated",
+            "export permit",
+            "Registry",
+            "annex",
+            "clearing",
+            "dry money",
+            "victualling",
+            "reaction mass",
+            "crew-day",
+            "tonne",
+            "in a good season"
+          ],
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "shields",
+            "stardate",
+            "hangar bay",
+            "you see"
+          ]
+        },
+        "ambience": [
+          "The drum's bearing note drops half a tone as a lander mates at the hub, then climbs back.",
+          "Earth comes past the concourse viewports, blue and small, and goes.",
+          "A dropped stylus takes its time reaching the deck, and someone catches it on the way down.",
+          "The grow lamps over the hydroponic racks step down to their dusk setting.",
+          "The sailing board clicks over: a cradle goes from HELD to CLEARED, Titan beside it.",
+          "A pressure door cycles at the hub, and a breath of colder air comes along the spoke.",
+          "The polar Sun clears the basin rim, and a bar of hard light crosses the hub ports.",
+          "A clearing lamp blinks behind the window glass, then a whole row of them together.",
+          "Laughter in the Cold Trap carries a long way along the curve of the deck.",
+          "A stream of water from a drinking tap bends a finger's width in the spin before it lands.",
+          "A conservation notice on the concourse wall updates the carbon the loops recovered this cycle.",
+          "The lamps of Shackleton slide under the hub ports, and the yards' hooded slips trail after them."
+        ]
+      }
+    },
+    "site.aitken_drum": {
+      "kind": "site",
+      "def": {
+        "name": "Aitken Drum",
+        "site_kind": "site.transit",
+        "footprint": [
+          [
+            110,
+            90
+          ],
+          [
+            210,
+            90
+          ],
+          [
+            210,
+            190
+          ],
+          [
+            110,
+            190
+          ]
+        ]
+      }
+    },
+    "structure.aitken_drum": {
+      "kind": "structure",
+      "def": {
+        "site": "site.aitken_drum",
+        "footprint": [
+          [
+            110,
+            90
+          ],
+          [
+            210,
+            90
+          ],
+          [
+            210,
+            190
+          ],
+          [
+            110,
+            190
+          ]
+        ],
+        "floors": [
+          {
+            "index": 0,
+            "z_offset_m": 0,
+            "height_m": 6,
+            "name": "Hub Deck"
+          },
+          {
+            "index": 1,
+            "z_offset_m": 6,
+            "height_m": 4.5,
+            "name": "Drum Deck"
+          }
+        ]
+      }
+    },
+    "room.l01_berth_gallery": {
+      "kind": "room",
+      "def": {
+        "name": "Visiting Berth Gallery",
+        "short_desc": "A long weightless gallery along the hub's visiting cradles, handlines strung the length of it.",
+        "desc": "The gallery runs the length of the hub's visiting cradles, a long tube with a port at every berth and a boarding collar under each port. Nothing turns here: the hub stands still, and beyond the far bulkhead the drum wheels past as a seam of moving light in the inspection slots. Handlines run the full length at shoulder height, and crews pull along them hand over hand. The polar Sun comes in low through the ports, skimming the basin rim far below. The air is cold and filtered and smells of lock grease. A sailing board lists each cradle and the hull in it. The pressure lobby is inward.",
+        "site": "site.aitken_drum",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              100
+            ],
+            [
+              210,
+              115
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "markers": [
+          "port.dock"
+        ],
+        "details": {
+          "sailing board": "Cradle by cradle: the hull, its registry, its agent of record, CLEARED or HELD. A docked hull's name lights when a pilot is aboard.",
+          "ports": "Thick laminated glass with an Orbital Access inspection seal in each corner, dated. Beyond them the boarding collars, and far below the long rim of the South Pole-Aitken basin.",
+          "handlines": "Braided line at shoulder height with a clip point every two metres. Traffic keeps to the right, and the sign says so in Concord typeface.",
+          "inspection slots": "Narrow windows in the far bulkhead onto the bearing race where the drum meets the hub. The drum's inner face goes past in them at walking pace, lamp after lamp.",
+          "boarding collars": "Each collar ends at a lock plate and a cycle counter. The collars are the station's; a ship's own lock is on the other side of the counter."
+        }
+      }
+    },
+    "room.l02_pressure": {
+      "kind": "room",
+      "def": {
+        "name": "Pressure Lobby",
+        "short_desc": "A round weightless chamber between two pressure doors, the spoke ladder's well at its centre.",
+        "desc": "A round chamber between two pressure doors, each with an Orbital Access seal on its frame and a cycle counter glowing above it. At the centre the spoke opens, a ladder well lit in green that runs out toward the drum; weight begins somewhere along it and not here, where everything floats. A rail of tether clips rings the well. A placard in Concord typeface gives the order of operations if the gallery door fails to seal, and a smaller one beside it reads COME UP THE SPOKE SLOWLY. The air is still, a little over-pressured, and smells of door grease. The berth gallery is outward and the dockmaster's office beside.",
+        "site": "site.aitken_drum",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              115
+            ],
+            [
+              140,
+              140
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "placard": "IN THE EVENT OF SEAL FAILURE: do not open the inner door, clip on, wait. Initialled by three inspectors, the last one this month.",
+          "spoke well": "A ladder in a lit well with a handline beside the rungs, running from the hub out to the drum's arrivals hall. Weight comes on gradually along it, and the rungs are spaced closer at the drum end for that reason.",
+          "small placard": "COME UP THE SPOKE SLOWLY, and the rest of the station's saying under it in smaller letters. Someone has added a tally of sprained ankles in pencil, and it is short.",
+          "cycle counter": "Six digits over each door. The gallery side runs well ahead of the inner side, because cargo comes and goes more than people do."
+        }
+      }
+    },
+    "room.l12_dockmaster": {
+      "kind": "room",
+      "def": {
+        "name": "Dockmaster's Office",
+        "short_desc": "A cramped weightless office with the sailing board on its back wall and the yards' slips in its window.",
+        "desc": "A cramped office where every surface is faced with hook pads, so that styluses, stamps and tea bulbs stay where they are put. The back wall is the sailing board: every hub cradle, its hull, CLEARED or HELD, and the next filed departure with its destination. A window gives onto the cradles and, beyond them on the same truss, the restricted slips of the lunar yards with their lamps hooded. The Orbital Access seal hangs over the desk on a tether. A clock reads Shackleton time and nothing else. The office smells of stamp ink and warm electronics. The pressure lobby is out, and receiving is through the inner door.",
+        "site": "site.aitken_drum",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              140,
+              115
+            ],
+            [
+              185,
+              140
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "sailing board": "Cradle, hull, CLEARED or HELD, and the hour of the next filed departure. The destination column reads Deimos or Titan and nothing else, because those are the only ways a Dray leaves this port.",
+          "window": "The hub cradles, and past them the yards' slips trailing on the same truss. Hulls lie in them under hooded lamps; the slips are Concord Fleet's and closed to the trade.",
+          "clock": "Shackleton time, the Concord's own, kept by the seat below. No second clock; the office does not apologise for it.",
+          "passage card": "Pinned beside the board: TITAN, ONE SOUL, THROTTLED. The dockmaster gives the throttle word at the desk."
+        }
+      }
+    },
+    "room.l08_receiving": {
+      "kind": "room",
+      "def": {
+        "name": "Habitat Board Receiving",
+        "short_desc": "A long weightless freight hall where the Habitat Board's landers mate to the hub.",
+        "desc": "Receiving is the hub's working end: a long hall where the Habitat Board's landers mate to a freight collar and the Belt's water ice and concentrate go aboard them in netted lots. A counter faces the collar with an assay rig and a manifest reader strapped to it, and a board above it lists what the Board and Cabeus Works buy and how much intake each has left. The air is cold and dry and smells of frost and hydraulic fluid; a lander's pumps knock somewhere beyond the collar. A railed stair runs a spoke to the exchange, the dockmaster's office is out, and a hatch in the far bulkhead is stencilled STATION SERVICE.",
+        "site": "site.aitken_drum",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              140,
+              140
+            ],
+            [
+              210,
+              165
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "intake board": "WATER ICE and CARBON BILLET at the Habitat Board's bids per tonne and METAL CONCENTRATE at Cabeus Works', each with the intake left. The figures are the board's own and change when the houses say so.",
+          "freight collar": "A docking ring sized for a lunar lander, with netted lots staged against it. The landers take the ice down to Shackleton's loops and the concentrate to the Cabeus lines, and they do not come back up full.",
+          "assay rig": "Grade scales and a core sampler strapped to the counter so they do not drift. A lot is priced by the tonne of what the rig says, not what the seller says.",
+          "service hatch": "An alloy hatch with a card reader and no handle on this side. STATION SERVICE, ORBITAL ACCESS PERSONNEL ONLY.",
+          "stair": "A railed stair in a spoke, signed by deck number: the Hub Deck is nought and the Drum Deck one. Weight comes on step by step toward the exchange."
+        }
+      }
+    },
+    "room.l15_spine": {
+      "kind": "room",
+      "def": {
+        "name": "Rim Service Spine",
+        "short_desc": "A weightless service trunk of cable trays and storefront cages, a glassed office at its inner end.",
+        "desc": "A service trunk runs from the hub toward the drum's bearings, cable trays on every face and four wire cages strapped along it: Cabeus's stock, the Board's intake manifold, Crisium's bonded cage and the victualling stores. Each cage carries a manifest, and the manifests are the station's real stock, not the boards in the public rooms. At the inner end a glassed office holds four desks with dark terminals and nameplates turned face down. The bearing hum is loud and constant, and the air smells of lubricant and cold cable. ORBITAL ACCESS PERSONNEL is stencilled every ten metres. The receiving hatch is the way out.",
+        "site": "site.aitken_drum",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              140,
+              165
+            ],
+            [
+              185,
+              190
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "access": "restricted",
+        "details": {
+          "cages": "Four plates: CABEUS WORKS, STOCK; HABITAT BOARD, INTAKE; CRISIUM INSTRUMENTS, BONDED; VICTUALLING, STORES. Each manifest is signed by the house's clerk of record.",
+          "office": "Four desks: Orbital Access's director, the Habitat Board's chair, Crisium's managing director and the Cabeus works director. The terminals are dark and the nameplates face down on purpose.",
+          "bearings": "The race where the drum turns on the hub, felt here as a hum in the cable trays. A maintenance log hangs by the access plate, every entry initialled."
+        }
+      }
+    },
+    "room.l03_arrivals": {
+      "kind": "room",
+      "def": {
+        "name": "Orbital Access Arrivals",
+        "short_desc": "The first room in spin, padded and railed for people who have just remembered they have weight.",
+        "desc": "Arrivals is the first room in spin, and it is built for people who have just remembered they have weight: a padded floor, rails at waist height, benches facing a wall of Orbital Access placards. A sixth of a g holds everything down gently, and a dropped stylus falls slowly enough to catch. A viewport strip in the outer wall shows the lunar south wheeling past, crater rims and the black of the cold traps, and once a turn the blue crescent of Earth. The air is cool and filtered and smells faintly of new carpet. The spoke ladder comes in through the ceiling; the concourse and the registry annex open off the hall.",
+        "site": "site.aitken_drum",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              115
+            ],
+            [
+              140,
+              140
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "placards": "WELCOME TO THE CONCORD OF EARTH AND LUNA. Under it, the five pooled functions in a column, and under those the station's rules on tethers, spin and the spoke.",
+          "viewport strip": "A band of glass at eye height in the outer wall. Because the drum turns, the view turns with it: basin, stars, Earth, basin.",
+          "benches": "Padded, bolted, low. Newcomers sit on them for a minute after the ladder, and nobody hurries them.",
+          "ladder foot": "The spoke ladder ends in a railed well in the ceiling, its last rungs closest together. A sign at the foot reads WEIGHT RETURNS HERE."
+        }
+      }
+    },
+    "room.l04_concourse": {
+      "kind": "room",
+      "def": {
+        "name": "Drum Concourse",
+        "short_desc": "The drum's one wide hall, its floor curving up ahead and behind, hydroponic racks down the middle.",
+        "desc": "The concourse is the drum's one wide hall, its floor curving gently up ahead and behind, so that the far end is always a little above eye level. Crews walk it in the long, slow strides of a sixth of a g, and newcomers bounce. The inner wall carries Orbital Access notices and Habitat Board conservation posters; the outer wall is viewports, and Earth comes past them once a turn. Hydroponic racks run down the middle under grow lamps, and the air is green and damp with them. Doors open to arrivals, the registry annex, the exchange and the victualling office.",
+        "site": "site.aitken_drum",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              140,
+              115
+            ],
+            [
+              185,
+              160
+            ]
+          ]
+        },
+        "kind": "circulation",
+        "details": {
+          "hydroponic racks": "Leaf crops and algae columns under grow lamps, tended by the Habitat Board. A tag on each rack gives the carbon it holds in the loop.",
+          "conservation posters": "EVERY GRAM COMES BACK. A Habitat Board poster showing the loop as a circle with one small arrow leaving it, labelled LOSS.",
+          "viewports": "Round, thick, a metre apart. Through them the lunar south goes past, and Earth once a turn.",
+          "notices": "Orbital Access notices in Concord typeface: berthing rules, the spoke's hours of maintenance, a list of ports a Dray may file for from this hub, Deimos and Titan.",
+          "floor": "The deck curves with the drum. A ball set down rolls a little to one side as it goes, because the drum turns under it."
+        }
+      }
+    },
+    "room.l05_registry": {
+      "kind": "room",
+      "def": {
+        "name": "Registry Annex",
+        "short_desc": "A quiet panelled annex of numbered windows, the Registry's seal above the counter.",
+        "desc": "The annex is quiet in the way of a building that expects to outlast its visitors: pale panelling, a long counter with numbered windows, and behind it racks of sealed registers on spun shelving. The Registry's seal is set into the wall above, smaller and older than the Concord's. A permit press stands at the end of the counter, where export permits are stamped onto crate manifests one at a time. The light is even and white, and the air smells of paper and warm toner. A brass plate names the annex as Luna's highport annex of the Registry, with the Ceres mirror beneath. Arrivals, the concourse and the clearing house window are each a door away.",
+        "site": "site.aitken_drum",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              140
+            ],
+            [
+              140,
+              160
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "seal": "The Registry's seal, founded at Luna about 2140 as the notary of last resort for the habitats' claims. The Concord's seal hangs elsewhere in the station; this one is older, and the annex keeps it higher.",
+          "permit press": "An export permit is Registry paper: a stamped sheet bound to a crate's manifest. The press counts its strokes, and the count is entered in a register at the end of every shift.",
+          "registers": "Sealed volumes on rotating shelves, each spine dated. Claims, charters and licences, notarised, never granted; the Registry records what others grant.",
+          "brass plate": "THE REGISTRY, HIGHPORT ANNEX, LUNA. Below it: MIRRORED AT CERES BY TREATY."
+        }
+      }
+    },
+    "room.l06_clearing": {
+      "kind": "room",
+      "def": {
+        "name": "Clearing House Window",
+        "short_desc": "A long glass window onto racked clearing machines, a counter and a slot on the near side.",
+        "desc": "A single long window of glass faces a back room of racked machines, each with a lamp that blinks when a balance clears. On the near side stand a counter, two stools and a slot; on the far side clerks watch the lamps more than the customers. A board lists the hours the clearing runs and the houses it clears for, Belt houses among them, and a brass plate gives the Concordat's five pooled functions with currency clearing last. The room is warm with machine heat and smells of instrument dust and new carpet, which the Belt calls the smell of dry money. The registry annex and the exchange are each a door away.",
+        "site": "site.aitken_drum",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              160
+            ],
+            [
+              140,
+              190
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "machines": "Racked clearing units behind the glass, one lamp to a balance. Every credit in the corridor clears through Luna sooner or later, and these lamps are where it does.",
+          "brass plate": "THE CONCORDAT OF 2268: the Adaptation Fund, migration, orbital access and the fleet, the Registry, currency clearing. Five functions pooled, and nothing else.",
+          "board": "Hours of clearing in Shackleton time, and the houses cleared: Concord houses, Ceres Clearing, Belt correspondents. Ceres Clearing's line has a small note beside it, OWES LUNA, in the clerks' own hand.",
+          "slot": "A brass slot for paper instruments. Most business is by account now, and the slot is polished from habit."
+        }
+      }
+    },
+    "room.l07_exchange": {
+      "kind": "room",
+      "def": {
+        "name": "Cabeus Exchange",
+        "short_desc": "A broad spun trading room, the Cabeus and Crisium asks on one wall and the receiving bids on the other.",
+        "desc": "The exchange is a broad spun room with its asks on one wall: Cabeus Works' alloy stock by the tonne and Crisium Instruments' crated boards by the tonne, each line with a quantity beside it that goes down. The opposite wall repeats the bids from receiving for anyone who will not take the stair. Sample billets of lunar alloy sit in a rack under the Cabeus line, grey and light in the hand, and a crate of boards stands open under Crisium's with its shock foam showing. A railed stair runs a spoke to receiving at the hub. The room smells of machine oil and foam. The concourse, the clearing house and the Cold Trap open off it.",
+        "site": "site.aitken_drum",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              140,
+              160
+            ],
+            [
+              185,
+              190
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "ask board": "LUNAR ALLOY STOCK, STRUCTURAL, and INSTRUMENT BOARDS, CRATED, each per tonne with the stock remaining. The figures are the houses' own and change when the houses say so.",
+          "sample billets": "Aluminium-titanium alloy from the Cabeus regolith lines, lighter than the ferrous stock Kasei rolls at Phobos. A card under them reads DENSE CARGO, PAIRS WITH BOARDS.",
+          "open crate": "Instrument boards from the chartered Earth-basin fabs, nested in shock foam. A chalked note on the lid: CUBES OUT BEFORE IT WEIGHS OUT.",
+          "permit label": "Every Crisium crate carries a Registry export permit under a clear sleeve. No permit, no crate leaves the hub.",
+          "stair": "A railed stair in a spoke, signed DOWN by the deck numbers though every step of it is a step out of weight."
+        }
+      }
+    },
+    "room.l09_chandlery": {
+      "kind": "room",
+      "def": {
+        "name": "Victualling Office",
+        "short_desc": "A stores counter with ration crates racked behind it and a bunkering panel beside the till.",
+        "desc": "A stores counter stands under the Highport Victualling Office's board, crates of voyage provisions racked behind it by the crew-day and a bunkering panel beside the till that meters reaction mass out to the hub cradles. One price a line, posted and dated, and no haggling column. A cold-locker hums at the back, and the racks smell of cardboard and sweet protein bars. The counter is clean, the ledger open and the stamp on its chain. A card on the panel lists the fills a Dray takes for the Deimos and Titan passages, in crew-days and tonnes. The concourse is out; the Cold Trap is through the side door.",
+        "site": "site.aitken_drum",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              185,
+              115
+            ],
+            [
+              210,
+              160
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "board": "REACTION MASS per tonne, metered to the cradle; VOYAGE PROVISIONS per crew-day. Posted by the Highport Victualling Office, dated, and the only figures in the room.",
+          "bunkering panel": "A meter and a valve schedule for every hub cradle. Reaction mass goes up the station's lines to the hull; nobody carries it.",
+          "crates": "Sealed crew-day crates, four kilos a day: food, potable stores, scrubber cartridges. Packed under Habitat Board rules, so the wrappers come back.",
+          "fill card": "DEIMOS, a week or two in a good season; TITAN, nearer two months in a good season, one soul and a full locker. The card says ASK THE DOCKMASTER under both."
+        }
+      }
+    },
+    "room.l10_cold_trap": {
+      "kind": "room",
+      "def": {
+        "name": "The Cold Trap",
+        "short_desc": "A blue-lit bar on the drum's curve, named for the shadowed craters at the pole.",
+        "desc": "The Cold Trap is named for the shadowed craters at the pole where ice has lain since before there were people to want it, and it keeps the joke cold: blue lamps, frosted tumblers, a bar of lunar basalt polished black. Tables stand on the drum's gentle curve, and drinks pour slowly in a sixth of a g, which the regulars watch the way other ports watch a fire. One corner table carries a small Tycho Mutual card and is seldom empty. The back wall is a noticeboard of crew wanted, berths shared and a Titan run seeking one hand. It smells of beer and cold stone. The exchange and the victualling office open off it.",
+        "site": "site.aitken_drum",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              185,
+              160
+            ],
+            [
+              210,
+              190
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "bar": "Lunar basalt from the basin rim, cut and polished. The top is cold to the touch whatever the room does.",
+          "corner table": "A folded card, TYCHO MUTUAL ASSURANCE AND SALVAGE, and a ledger that never leaves the table. Luna's insurer underwrites most of what moves in the corridor, and its underwriters drink here.",
+          "noticeboard": "CREW WANTED, DRAY, DEIMOS RUN; BERTH SHARED TO TITAN, ONE HAND ONLY. And a card in a neat hand: THE TERMINAL'S PRICES ARE AN HOUR OLD BEFORE THEY GET HERE.",
+          "pour": "Beer leaves the tap slowly and bends a finger's width in the spin before it lands. The keeper allows for it without looking.",
+          "tumblers": "Frosted glass, heavy-bottomed for the low weight. The Cold Trap's mark is etched on each: a crater rim with a single star of ice in its shadow."
+        }
+      }
+    },
+    "exit.l01_l02": {
+      "kind": "exit",
+      "def": {
+        "from": "room.l01_berth_gallery",
+        "to": "room.l02_pressure",
+        "names": [
+          "Pressure Lobby <PL>;pl;lobby;in",
+          "Berth Gallery <BG>;bg;gallery;berths;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.l02_l12": {
+      "kind": "exit",
+      "def": {
+        "from": "room.l02_pressure",
+        "to": "room.l12_dockmaster",
+        "names": [
+          "Dockmaster <DM>;dm;dockmaster;office",
+          "Pressure Lobby <PL>;pl;lobby;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.l12_l08": {
+      "kind": "exit",
+      "def": {
+        "from": "room.l12_dockmaster",
+        "to": "room.l08_receiving",
+        "names": [
+          "Receiving <RC>;rc;receiving;habitat",
+          "Dockmaster <DM>;dm;dockmaster;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.l02_l03": {
+      "kind": "exit",
+      "def": {
+        "from": "room.l02_pressure",
+        "to": "room.l03_arrivals",
+        "names": [
+          "Spoke Ladder <SL>;sl;spoke;ladder;drum",
+          "Spoke Ladder <SL>;sl;spoke;ladder;hub"
+        ],
+        "portal": {
+          "mode": "ladder",
+          "at": [
+            [
+              125,
+              128,
+              0
+            ],
+            [
+              125,
+              128,
+              6
+            ]
+          ],
+          "dz_m": 6
+        }
+      }
+    },
+    "exit.l03_l04": {
+      "kind": "exit",
+      "def": {
+        "from": "room.l03_arrivals",
+        "to": "room.l04_concourse",
+        "names": [
+          "Concourse <C>;c;concourse;drum;in",
+          "Arrivals <AR>;ar;arrivals;access"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.l03_l05": {
+      "kind": "exit",
+      "def": {
+        "from": "room.l03_arrivals",
+        "to": "room.l05_registry",
+        "names": [
+          "Registry Annex <RA>;ra;registry;annex",
+          "Arrivals <AR>;ar;arrivals"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.l05_l04": {
+      "kind": "exit",
+      "def": {
+        "from": "room.l05_registry",
+        "to": "room.l04_concourse",
+        "names": [
+          "Concourse <C>;c;concourse;out",
+          "Registry Annex <RA>;ra;registry;annex"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.l05_l06": {
+      "kind": "exit",
+      "def": {
+        "from": "room.l05_registry",
+        "to": "room.l06_clearing",
+        "names": [
+          "Clearing House <CL>;cl;clearing;window",
+          "Registry Annex <RA>;ra;registry;annex"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.l06_l07": {
+      "kind": "exit",
+      "def": {
+        "from": "room.l06_clearing",
+        "to": "room.l07_exchange",
+        "names": [
+          "Exchange <X>;x;exchange;cabeus;market",
+          "Clearing House <CL>;cl;clearing;window"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.l04_l07": {
+      "kind": "exit",
+      "def": {
+        "from": "room.l04_concourse",
+        "to": "room.l07_exchange",
+        "names": [
+          "Exchange <X>;x;exchange;cabeus;market",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.l04_l09": {
+      "kind": "exit",
+      "def": {
+        "from": "room.l04_concourse",
+        "to": "room.l09_chandlery",
+        "names": [
+          "Victualling <VO>;vo;victualling;chandlery;stores",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.l07_l10": {
+      "kind": "exit",
+      "def": {
+        "from": "room.l07_exchange",
+        "to": "room.l10_cold_trap",
+        "names": [
+          "Cold Trap <CT>;ct;trap;commons;bar",
+          "Exchange <X>;x;exchange;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.l09_l10": {
+      "kind": "exit",
+      "def": {
+        "from": "room.l09_chandlery",
+        "to": "room.l10_cold_trap",
+        "names": [
+          "Cold Trap <CT>;ct;trap;commons;bar",
+          "Victualling <VO>;vo;victualling;stores"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.l07_l08": {
+      "kind": "exit",
+      "def": {
+        "from": "room.l07_exchange",
+        "to": "room.l08_receiving",
+        "names": [
+          "Receiving Stair <RS>;rs;receiving;habitat;down;d",
+          "Exchange Stair <ES>;es;exchange;up;u"
+        ],
+        "portal": {
+          "mode": "stair",
+          "at": [
+            [
+              165,
+              162,
+              6
+            ],
+            [
+              165,
+              162,
+              0
+            ]
+          ],
+          "dz_m": -6
+        }
+      }
+    },
+    "exit.l08_l15": {
+      "kind": "exit",
+      "def": {
+        "from": "room.l08_receiving",
+        "to": "room.l15_spine",
+        "names": [
+          "Service Spine <SS>;ss;spine;hatch",
+          "Receiving Hatch <RH>;rh;receiving;out"
+        ],
+        "portal": {
+          "mode": "hatch",
+          "visibility": "hidden"
+        },
+        "lock": "staff"
+      }
+    },
+    "feature.wall_l01_l12": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "wall",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            0
+          ]
+        },
+        "polyline": [
+          [
+            140,
+            115
+          ],
+          [
+            185,
+            115
+          ]
+        ],
+        "z_range": [
+          0,
+          6
+        ],
+        "blocks": {
+          "movement": true,
+          "sight": true
+        }
+      }
+    },
+    "feature.counter_l08": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "counter",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            0
+          ]
+        },
+        "polyline": [
+          [
+            145,
+            160
+          ],
+          [
+            175,
+            160
+          ]
+        ],
+        "z_range": [
+          0,
+          1.1
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "room": "room.l08_receiving"
+      }
+    },
+    "feature.counter_l12": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "counter",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            0
+          ]
+        },
+        "polyline": [
+          [
+            150,
+            135
+          ],
+          [
+            175,
+            135
+          ]
+        ],
+        "z_range": [
+          0,
+          1.1
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "room": "room.l12_dockmaster"
+      }
+    },
+    "feature.counter_l05": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "counter",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            112,
+            150
+          ],
+          [
+            138,
+            150
+          ]
+        ],
+        "z_range": [
+          0,
+          1.1
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "room": "room.l05_registry"
+      }
+    },
+    "feature.counter_l06": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "counter",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            112,
+            175
+          ],
+          [
+            138,
+            175
+          ]
+        ],
+        "z_range": [
+          0,
+          1.1
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "room": "room.l06_clearing"
+      }
+    },
+    "feature.counter_l09": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "counter",
+        "surface": {
+          "floor": [
+            "structure.aitken_drum",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            205,
+            120
+          ],
+          [
+            205,
+            155
+          ]
+        ],
+        "z_range": [
+          0,
+          1.1
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "room": "room.l09_chandlery"
+      }
+    },
+    "item.cabeus_cage": {
+      "kind": "item",
+      "def": {
+        "name": "Cabeus Works stock cage",
+        "desc": "A wire cage of lunar alloy stock in strapped billets, CABEUS WORKS: STOCK on its plate. The manifest clipped to it is the stock the exchange board sells from.",
+        "room": "room.l15_spine"
+      }
+    },
+    "item.habitat_manifold": {
+      "kind": "item",
+      "def": {
+        "name": "Habitat Board intake manifold",
+        "desc": "An intake manifold of tagged valves and netted bins, HABITAT BOARD: INTAKE on its plate. Ice and carbon billet bought at receiving are entered here before the landers take them down.",
+        "room": "room.l15_spine"
+      }
+    },
+    "item.crisium_cage": {
+      "kind": "item",
+      "def": {
+        "name": "Crisium bonded cage",
+        "desc": "A sealed cage of crated instrument boards under Registry permit sleeves, CRISIUM INSTRUMENTS: BONDED on its plate. Nothing leaves it without a stamped permit.",
+        "room": "room.l15_spine"
+      }
+    },
+    "item.victualling_locker": {
+      "kind": "item",
+      "def": {
+        "name": "Victualling Office stores locker",
+        "desc": "A stores locker of crew-day crates beside the reaction mass valve schedule, VICTUALLING: STORES on its plate. Its manifest is the count the counter sells from.",
+        "room": "room.l15_spine"
+      }
+    },
+    "npc.mwangi_eriksen": {
+      "kind": "npc",
+      "def": {
+        "name": "Lorcan Mwangi-Eriksen",
+        "room": "room.l07_exchange",
+        "tier": "minor",
+        "profile": {
+          "persona": "a sales agent who talks about alloy the way other people talk about weather, as something that simply arrives and must be dealt with. Courteous, exact, a little bored by anyone who has not done the arithmetic of a hold. Proud of the Cabeus lines and quietly certain that lunar alloy is better than anything rolled at Phobos.",
+          "background": "Sales Agent of Cabeus Works, the regolith alloy house; the Warrant signatory of Cabeus's alloy ask and its concentrate bid.",
+          "speech_style": "measured, courteous, numbers in the tonne; says \"stock\", \"remaining\", \"dense\"; finishes a sentence and waits.",
+          "knows": [
+            "Cabeus Works' ask for lunar alloy stock and its bid for Belt metal concentrate, as the boards post them, and the stock and intake remaining",
+            "that the alloy is the aluminium-titanium stock of the regolith lines, which no Martian line makes, and that it is the dense partner of Crisium's bulky boards in one hold",
+            "that the stock is sold toward Deimos and Titan, and that nothing of it goes to Ceres because Kasei already fills the Freeport's alloy intake",
+            "that a docked hull's hold is loaded from the exchange board and sold into from the receiving board",
+            "that the stock is finite and goes down; it is never topped up."
+          ],
+          "does_not_know": [
+            "what the Selk Townships or the Republic's importers will pay on any given day",
+            "the Habitat Board's books",
+            "anything about the yards' slips beyond the lamps."
+          ],
+          "fallback": [
+            "Lunar alloy, by the tonne, from the Cabeus lines. The board has the figure and the stock left.",
+            "Pair it with the boards. The alloy fills the rating, the boards fill the bay.",
+            "Concentrate we buy at receiving. Bring it up from Ceres; the board says how much more we take.",
+            "Not to Ceres. Kasei has that intake. Deimos or Titan."
+          ],
+          "interfaces": [
+            "market",
+            "atlas"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ]
+      }
+    },
+    "npc.albrecht_sato": {
+      "kind": "npc",
+      "def": {
+        "name": "Thandiwe Albrecht-Sato",
+        "room": "room.l08_receiving",
+        "tier": "minor",
+        "profile": {
+          "persona": "the Habitat Board's commissioner at the freight collar, who thinks in grams of carbon and litres of water and says so. Patient, practical, unsentimental about the landers and sentimental about the loops. Signs for every lot that goes down to Shackleton and keeps a tally of the loss on a card in her pocket.",
+          "background": "Receiving Commissioner of the Lunar Habitat Board; the Warrant signatory of the Board's ice and carbon billet bids.",
+          "speech_style": "warm but brisk; counts aloud; says \"the loops\", \"intake\", \"every gram\"; ends with a figure from the board, never one of her own.",
+          "knows": [
+            "the Board's bids for water ice and carbon billet as the receiving board posts them, and the intake and funds remaining",
+            "that the habitats' closed loops lose carbon every year and Luna has none to spare, so the Board tops them up with Titan billet",
+            "that the Board's landers take the ice and billet down from the hub, and that the Belt's bulk comes up no further than this",
+            "that a docked hull sells into the receiving board from its hold",
+            "that Cabeus Works shares the receiving board for its concentrate bid."
+          ],
+          "does_not_know": [
+            "the Chair's reasons for the size of the ice intake",
+            "what the Fleet's slips next door are doing",
+            "prices at Titan or Deimos."
+          ],
+          "fallback": [
+            "Water ice and carbon billet, by the tonne. The board says the bid and the intake left.",
+            "Every gram comes back, except the ones that do not. That is what the billet is for.",
+            "The landers go down full. Bring the ice; the Board pays at the board."
+          ],
+          "interfaces": [
+            "market",
+            "atlas"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ]
+      }
+    },
+    "npc.okafor_thistlewood": {
+      "kind": "npc",
+      "def": {
+        "name": "Anneliese Okafor-Thistlewood",
+        "room": "room.l07_exchange",
+        "tier": "minor",
+        "profile": {
+          "persona": "an export factor with a permit for everything and a crate for every permit. Precise, dry, faintly amused by captains who discover how much room a tonne of boards takes. Respects the Registry's stamp the way a sailor respects a tide.",
+          "background": "Export Factor of Crisium Instruments, the forwarder for the chartered Earth-basin fabs; the Warrant signatory of Crisium's instrument boards ask.",
+          "speech_style": "dry, exact, a factor's patter; says \"crated\", \"permitted\", \"cubes out\"; gives the rule first and the reason after.",
+          "knows": [
+            "Crisium's ask for crated instrument boards as the exchange board posts it, and the stock remaining",
+            "that the boards come from the chartered Earth-basin fabs and are forwarded through Luna in shock crates, so they cube out before they weigh out",
+            "that every crate leaves under a Registry export permit stamped at the annex",
+            "that nothing at Ceres bids a board, and the Belt's share goes by the importers' own agents and other carriers",
+            "that the boards sell at Deimos to the Republic's importers and at Titan to the Townships, and pair with lunar alloy in one hold."
+          ],
+          "does_not_know": [
+            "the fabs' charters beyond their names",
+            "what any mind licence says",
+            "the Habitat Board's business."
+          ],
+          "fallback": [
+            "Instrument boards, crated, by the tonne. The board has the figure.",
+            "They cube out before they weigh out. Put alloy under them.",
+            "Every crate carries its permit. The annex stamps it; I only count them.",
+            "Ceres buys none. Deimos does, and Titan pays better, if a hull can get there."
+          ],
+          "interfaces": [
+            "market",
+            "help"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ]
+      }
+    },
+    "npc.batista_okeke": {
+      "kind": "npc",
+      "def": {
+        "name": "Imogen Batista-Okeke",
+        "room": "room.l09_chandlery",
+        "tier": "extra",
+        "profile": {
+          "persona": "a purser who runs the stores counter like a ship's books: one posted figure, a dated stamp, a ledger that balances at the end of every shift. Friendly to captains who plan and stern with ones who do not. Has strong views about two souls on a Titan run.",
+          "background": "Purser of the Highport Victualling Office; the Warrant signatory of its reaction mass and provisions asks.",
+          "speech_style": "cheerful and firm; counts in crew-days and tonnes; says \"posted\", \"metered\", \"one soul\".",
+          "knows": [
+            "the posted prices for reaction mass and voyage provisions, and the stock remaining",
+            "that reaction mass is metered up the station's lines to the hull's cradle",
+            "that two aboard need twice the days, and that the plan's fill buys the passage's days",
+            "that Deimos is a week or two in a good season and Titan nearer two months in a good season, single-handed, with a full locker."
+          ],
+          "does_not_know": [
+            "the Board's bids",
+            "Titan's prices",
+            "anything about the yards."
+          ],
+          "fallback": [
+            "Reaction mass by the tonne, stores by the crew-day. Posted and dated.",
+            "Two aboard eat twice. For Titan, go alone and go full.",
+            "Ask the dockmaster for the passage. I sell you the days."
+          ],
+          "interfaces": [
+            "market"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ]
+      }
+    },
+    "npc.kowalczyk_amadi": {
+      "kind": "npc",
+      "def": {
+        "name": "Dockmaster Aurelio Kowalczyk-Amadi",
+        "room": "room.l12_dockmaster",
+        "tier": "minor",
+        "profile": {
+          "persona": "the Highport's dockmaster, unhurried and thorough, who has watched a great many captains learn what a long passage costs. Courteous to everyone, precise about the board, and immovable on the one thing the board cannot show: how far a Dray can carry its own crew.",
+          "background": "Dockmaster for Concord Orbital Access at Aitken Highport: berths, sailing plans and the passage advice.",
+          "speech_style": "calm, even, procedural; says \"filed\", \"cleared\", \"in a good season\"; repeats the one word that matters once, slowly.",
+          "knows": [
+            "which hub cradles are occupied, cleared or held",
+            "that a Dray from this hub files for Deimos or for Titan and for nowhere else",
+            "that Deimos is a week or two in a good season and Titan about two months, in a good season",
+            "that Titan is reachable only throttled: throttle=450, one soul, on every listed Titan leg",
+            "that Malapert's relay coverage reaches the drum, and that Titan is more than an hour away by light, up to an hour and a half",
+            "the station's layout, the spoke and the drum, and which desk does what."
+          ],
+          "does_not_know": [
+            "what any hull carries",
+            "what the Fleet does in the slips beyond the window",
+            "the houses' prices."
+          ],
+          "fallback": [
+            "Deimos or Titan. Those are the ways out of this hub.",
+            "Titan: throttle=450, one soul. I will say it again if you like.",
+            "File it, then fly it. The board shows your cradle once you are in one.",
+            "The spoke takes you to the drum. Come up slowly."
+          ],
+          "interfaces": [
+            "atlas",
+            "travel"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ]
+      }
+    },
+    "npc.holt_iversen": {
+      "kind": "npc",
+      "def": {
+        "name": "Deputy Registrar Kwabena Holt-Iversen",
+        "room": "room.l05_registry",
+        "tier": "extra",
+        "profile": {
+          "persona": "a deputy registrar who believes the Registry is the one thing in the system older than its arguments. Mild, scholarly, unhurried, quietly proud that the annex outranks nothing and outlasts everything. Answers every question with what is recorded and stops there.",
+          "background": "Deputy Registrar of the Registry's highport annex at Luna.",
+          "speech_style": "soft, careful, precise; says \"recorded\", \"notarised\", \"of record\"; never says \"granted\" of the Registry.",
+          "knows": [
+            "that the Registry was founded at Luna about 2140 as the notary of last resort, older than the Concord, and mirrored at Ceres by treaty",
+            "that export permits are Registry paper and are stamped at this annex",
+            "that the Registry records charters and notarises petitions but grants none; the grants are the Concord Executive's at Shackleton",
+            "that the Saturn Charter of 2291 is recorded here, a ninety-nine-year grant to the Titan Concession Company lapsing in 2390, and that the Selk Townships' petitions are lodged here too",
+            "the station's layout and which desk does what."
+          ],
+          "does_not_know": [
+            "how any petition will be decided",
+            "the Registrar's mind",
+            "anything not on the record."
+          ],
+          "fallback": [
+            "The annex records. It does not grant. Shackleton grants.",
+            "Export permits are stamped at the press. The clerk at the end will see to it.",
+            "The Registry is older than the Concord, and the Concord knows it."
+          ],
+          "interfaces": [
+            "atlas",
+            "help"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ]
+      }
+    },
+    "npc.devereux_anand": {
+      "kind": "npc",
+      "def": {
+        "name": "Mireille Devereux-Anand",
+        "room": "room.l06_clearing",
+        "tier": "extra",
+        "profile": {
+          "persona": "a clearing clerk who sees money only as lamps and finds that restful. Precise, polite, faintly ironic about the Belt's phrase for her trade. Will explain clearing to anyone who asks and will never discuss a balance.",
+          "background": "Clearing Clerk at the highport window of Concord currency clearing.",
+          "speech_style": "polite and level; says \"cleared\", \"correspondent\", \"of account\"; smiles at the phrase dry money.",
+          "knows": [
+            "that currency clearing is one of the Concordat's five pooled functions",
+            "that every credit in the corridor clears through Luna sooner or later, and that there is one currency, the same at Titan as at Ceres",
+            "that Ceres Clearing and the Republic both owe Luna",
+            "the clearing hours, in Shackleton time."
+          ],
+          "does_not_know": [
+            "any account's balance",
+            "the Concord treasury's commitments",
+            "the houses' prices."
+          ],
+          "fallback": [
+            "Every credit clears through Luna, sooner or later. The lamps show when.",
+            "Dry money, the Belt says. It is only accounts.",
+            "Balances are not discussed at the window. The hours are on the board."
+          ],
+          "interfaces": [
+            "help"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ]
+      }
+    },
+    "npc.ferro_wainwright": {
+      "kind": "npc",
+      "def": {
+        "name": "Maren Ferro-Wainwright",
+        "room": "room.l05_registry",
+        "tier": "extra",
+        "profile": {
+          "persona": "the annex's export clerk, who works the permit press and knows every crate by its permit number. Brisk, cheerful, intolerant of a missing manifest. Counts strokes of the press the way a bell-ringer counts changes.",
+          "background": "Registry Export Clerk at the highport annex: the export permit stamp on Crisium's crates.",
+          "speech_style": "quick and cheerful; says \"stamped\", \"sleeved\", \"bound to the manifest\"; reads permit numbers aloud.",
+          "knows": [
+            "that every crate of boards leaves the hub under a Registry export permit bound to its manifest",
+            "that the press counts its strokes and the count is entered at every shift's end",
+            "that the permit is Registry paper, notarised, and the annex grants nothing."
+          ],
+          "does_not_know": [
+            "what the boards are for",
+            "the houses' prices",
+            "anything about the Fleet."
+          ],
+          "fallback": [
+            "No permit, no crate. The press does the rest.",
+            "Bound to the manifest, sleeved, stamped. That is all a permit is.",
+            "The Deputy Registrar is at the window if it is a question of record."
+          ],
+          "interfaces": [
+            "help"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_aitken"
+        ]
+      }
+    },
+    "npc.rasmussen_oto": {
+      "kind": "npc",
+      "def": {
+        "name": "Ngozi Rasmussen-Oto",
+        "room": "room.l10_cold_trap",
+        "tier": "extra",
+        "profile": {
+          "persona": "keeps the Cold Trap and the station's memory with it. Dry, generous, a little theatrical with a pour in the spin. Listens more than she talks and knows which corner the underwriters sit in and which captains they have stopped writing for.",
+          "background": "Keeper of the Cold Trap, the Highport's bar; port lore and guarded talk.",
+          "speech_style": "low and dry; calls everyone \"captain\" whether they are or not; tells a story in three lines and lets the last one sit.",
+          "knows": [
+            "why the bar is named for the pole's cold traps",
+            "that Tycho's underwriters drink at the corner table",
+            "that the Terminal's prices are over an hour old by light before they reach the drum",
+            "the saying about coming up the spoke slowly."
+          ],
+          "does_not_know": [
+            "anything she has been asked to keep",
+            "the houses' books",
+            "the Fleet's orders."
+          ],
+          "fallback": [
+            "Sit, captain. It pours slow here. Watch it, everyone does.",
+            "The corner table is Tycho's. Ask them, not me.",
+            "Come up the spoke slowly. The drum takes you."
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_aitken",
+          "tycho"
+        ]
+      }
+    },
+    "npc.ferreira_lund": {
+      "kind": "npc",
+      "def": {
+        "name": "Cosima Ferreira-Lund",
+        "room": "room.l15_spine",
+        "tier": "major",
+        "profile": {
+          "persona": "runs the hub as a public utility and resents every hour the Fleet borrows it",
+          "background": "Director of Concord Orbital Access at Aitken Highport",
+          "enabled": false
+        }
+      }
+    },
+    "npc.kwarteng_fairweather": {
+      "kind": "npc",
+      "def": {
+        "name": "Odile Kwarteng-Fairweather",
+        "room": "room.l15_spine",
+        "tier": "major",
+        "profile": {
+          "persona": "keeps the habitats breathing and the Board's books closed to anyone who has not asked the right way",
+          "background": "Chair of the Lunar Habitat Board",
+          "enabled": false
+        }
+      }
+    },
+    "npc.rourke_haddad": {
+      "kind": "npc",
+      "def": {
+        "name": "Benedikt Rourke-Haddad",
+        "room": "room.l15_spine",
+        "tier": "major",
+        "profile": {
+          "persona": "sells the basin fabs' output by the crate and leaves the fabs' charters to the Compact",
+          "background": "Managing Director of Crisium Instruments",
+          "enabled": false
+        }
+      }
+    },
+    "npc.moravec_ansah": {
+      "kind": "npc",
+      "def": {
+        "name": "Ingrid Moravec-Ansah",
+        "room": "room.l15_spine",
+        "tier": "major",
+        "profile": {
+          "persona": "wants the Cabeus lines running at capacity and Kasei's ferrous stock out of every Martian frame",
+          "background": "Works Director of Cabeus Works",
+          "enabled": false
+        }
+      }
+    },
+    "lore.port_aitken": {
+      "kind": "lore",
+      "def": {
+        "tag": "port_aitken",
+        "entries": [
+          {
+            "tier": "public",
+            "subject": "The pocket",
+            "fact": "Through the Interval the lunar and orbital habitats kept the curve moving: \"closed-loop ecology, regolith industry, compact fusion\" (doc 11 §2). Luna holds the space-technology lineage, the yards and the seat; the pocket became the capital, and the Concord Executive sits at Shackleton."
+          },
+          {
+            "tier": "public",
+            "subject": "Aitken Highport",
+            "fact": "Concord Orbital Access's civil drum in low polar orbit, named for the South Pole-Aitken basin it crosses; Shackleton and Malapert swing under its hub ports once an orbit. A Dray cannot lift from Luna's sixth of a gravity, so ships berth at the non-rotating hub and the drum turns at the Moon's own sixth of a g."
+          },
+          {
+            "tier": "public",
+            "subject": "The Belt's door",
+            "fact": "The Belt's concentrate and water ice come up no further than the Highport and go down by the Lunar Habitat Board's landers. Lunar alloy and the basin fabs' instrument boards leave by Dray for Mars and Saturn. The Concord exports \"finance, biotech, electronics, high-end manufacturing, naval hulls\" and needs \"bulk metals and volatiles it no longer produces at scale\" (doc 11 §3.1)."
+          },
+          {
+            "tier": "public",
+            "subject": "Why not home to Ceres",
+            "fact": "Nothing at Ceres bids a board, and Kasei already fills the Freeport's alloy intake. A Ceres-bound Co-op hull calls at Kirkwood Depot by charter, so the way home from Luna would be the long one. The Belt's share of the boards goes by the importers' own agents and other carriers."
+          },
+          {
+            "tier": "public",
+            "subject": "The Registry",
+            "fact": "Founded at Luna about 2140 \"as the notary of last resort for the habitats' claims among themselves and the first Belt ventures\" (doc 11 §2); \"older than the Concord, and the Concord knows it\". Mirrored at Ceres by treaty. Its highport annex stamps export permits, which are Registry paper."
+          },
+          {
+            "tier": "public",
+            "subject": "Credits clear through Luna",
+            "fact": "Currency clearing is one of the five functions the Concordat of 2268 pooled. Every credit in the corridor clears through Luna in the end, and \"Ceres Clearing and the Republic both owe Luna\" (doc 11 §3.1). The Belt calls Concord finance dry money."
+          },
+          {
+            "tier": "public",
+            "subject": "The yards",
+            "fact": "The lunar yards trail the Highport on the same truss and are Concord Fleet's, closed to the trade. They built the Halcyon's class, the elderly cruiser the Belt Squadron keeps at Ceres, \"elderly because it was built for a push that ended\" (doc 11 §2)."
+          },
+          {
+            "tier": "public",
+            "subject": "Carbon",
+            "fact": "The habitats' closed loops lose carbon every year and Luna has none to spare. The Habitat Board tops them up with pressed carbon billet from Titan, and buys Belt and Titan ice for the same loops."
+          },
+          {
+            "tier": "public",
+            "subject": "Malapert",
+            "fact": "The Malapert Exchange's hub sits next to Shackleton, which puts the drum inside the relay star: instant to Phobos, Ceres and Kirkwood. Titan is over an hour away by light, up to an hour and a half, so the Terminal's prices are stale before they arrive."
+          },
+          {
+            "tier": "public",
+            "subject": "The spoke",
+            "fact": "The station's saying, painted at the top of the spoke ladder and repeated in the Cold Trap: \"Come up the spoke slowly, the drum takes you.\""
+          },
+          {
+            "tier": "guarded",
+            "subject": "The Board's ice",
+            "fact": "The Habitat Board's ice intake runs larger than the habitats need."
+          },
+          {
+            "tier": "guarded",
+            "subject": "The rotation",
+            "fact": "The Belt Squadron's rotation at Ceres is due."
+          },
+          {
+            "tier": "guarded",
+            "subject": "Tycho and Titan",
+            "fact": "Tycho's underwriters at the Cold Trap will not write a two-soul Titan run: the locker carries two only in a good season, and they will not bet on the season."
+          }
+        ]
+      }
+    },
+    "secret.half_afloat": {
+      "kind": "secret",
+      "def": {
+        "truth": "The Lunar Habitat Board's ice bid is Concord Fleet bunkering a Belt Squadron rotation through the Board's books; the Chair of the Board signs for the Fleet.",
+        "reveal": "staff",
+        "about": [
+          "npc.kwarteng_fairweather"
+        ]
+      }
+    }
+  }
+}

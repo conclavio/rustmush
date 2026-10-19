@@ -395,6 +395,15 @@ fn plan_and_apply(tw: &mut TestWorld) -> (String, String) {
     (plan, apply)
 }
 
+/// A lane location's label (doc 19 cut A.8: five ports, five places).
+fn location_label(place: &CanonicalId) -> String {
+    let pack = load_pack(LANE_JSON).expect("the lane verifies");
+    match pack.entry(place) {
+        Some(PackEntry::Location(def)) => def.label.clone(),
+        other => panic!("{place}: {other:?}"),
+    }
+}
+
 /// The sum of every authored capital over the decoded lane, major units.
 fn total_capital() -> u64 {
     ports_of(LANE_JSON)
@@ -455,7 +464,13 @@ fn ic3_boot_opens_two_passive_domains_into_the_galleries() {
         "no window was opened"
     );
     let out = run(&mut tw, GOD, "@domain");
-    for place in ["Ceres Freeport", "Stickney Yards"] {
+    for place in [
+        "Ceres Freeport",
+        "Stickney Yards",
+        "Aitken Highport",
+        "Voltaire Anchorage",
+        "Ligeia Terminal",
+    ] {
         assert!(
             out.lines()
                 .any(|line| line.contains(&format!("host {place} "))
@@ -584,7 +599,10 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
         treasury_balance,
         -(i64::try_from(total_capital()).expect("fits") * 100)
     );
-    assert_eq!(treasury_balance, -820_000_000, "8,200,000.00cr at v2");
+    assert_eq!(
+        treasury_balance, -1_450_000_000,
+        "14,500,000.00cr: 8,200,000 at v2 and the moon ports' 6,300,000 (doc 19 cut A.8)"
+    );
     set_rate(&mut tw, 24);
     let after = report(&mut tw);
     // Doc 18 cut IC8: the stock lines (pools, listings, bids) wait on the port tick,
@@ -611,7 +629,8 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
         "the stock lines are reported: {after}"
     );
     for line in bracketed {
-        let want = if stock_line(line) {
+        // Doc 19 cut A.8: a bid-only vendor (no stock rows) reads Ready at 0 of 0.
+        let want = if stock_line(line) && !line.contains("0 of 0 stock rows seeded") {
             "[pending]"
         } else {
             "[ready]"
@@ -680,7 +699,7 @@ fn ic3_a_second_boot_posts_nothing() {
     assert_eq!(tw.world().iter().count(), objects, "no new object");
     // The documents a reboot reads back are the ones the first boot wrote, and
     // the second boot writes none.
-    assert_eq!(docs.len(), 2, "{:?}", docs.keys().collect::<Vec<_>>());
+    assert_eq!(docs.len(), 5, "{:?}", docs.keys().collect::<Vec<_>>());
     for map in maps(&tw) {
         let written = docs.get(map.key().as_str()).expect("a document");
         assert_eq!(&serde_json::to_value(&map).expect("encodes"), written);
@@ -710,7 +729,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{}: 0 create, 2 update, 0 retire, 22 unchanged",
+            "Plan for {LANE_PACK}@{}: 0 create, 2 update, 0 retire, 34 unchanged",
             LANE_VERSION + 1
         )),
         "{plan}"
@@ -724,7 +743,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     }
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 22 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 34 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -868,7 +887,7 @@ fn ic3_an_update_creates_a_new_org_and_keeps_every_recorded_row() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 22 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 34 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -996,7 +1015,7 @@ fn ic3_a_map_that_stopped_part_way_is_completed() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 22 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 34 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -1268,7 +1287,14 @@ fn assert_nothing_bound(w: &mush_core::World) {
     for domain in spatial.domains.values() {
         let host = mush_core::output::display_name(w, domain.host);
         assert!(
-            host != "Ceres Freeport" && host != "Stickney Yards",
+            ![
+                "Ceres Freeport",
+                "Stickney Yards",
+                "Aitken Highport",
+                "Voltaire Anchorage",
+                "Ligeia Terminal",
+            ]
+            .contains(&host.as_str()),
             "a port domain was opened on {host}"
         );
     }
@@ -1415,6 +1441,9 @@ fn ic3_a_kept_world_with_eight_windows_open_still_applies_the_lane() {
 /// Lane v1's bytes, rebuilt from v2: the ports dropped, IC2's four seconds.
 fn lane_v1_json() -> String {
     lane_variant(1, |doc| {
+        // Doc 19 cut A.8: v1 had none of the moons' trade (its three places stay, so
+        // the placed rooms keep their ids across the upgrade).
+        support::moon::strip_moon_trade(doc);
         let entries = doc["entries"].as_object_mut().expect("entries");
         entries.remove("ceres_port");
         entries.remove("stickney_port");
@@ -1483,7 +1512,13 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
                 .published_digest(&lane_id(), LANE_VERSION)
                 .is_some()
         );
-        for entry in ["ceres_port", "stickney_port"] {
+        for entry in [
+            "ceres_port",
+            "stickney_port",
+            "luna_port",
+            "deimos_port",
+            "titan_port",
+        ] {
             assert!(matches!(
                 store(&next).port_map(&lane_id(), &cid(entry)),
                 PortMapState::Absent
@@ -1497,6 +1532,9 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
             ),
             "  ceres_port: not applied. [missing]".to_owned(),
             "  stickney_port: not applied. [missing]".to_owned(),
+            "  luna_port: not applied. [missing]".to_owned(),
+            "  deimos_port: not applied. [missing]".to_owned(),
+            "  titan_port: not applied. [missing]".to_owned(),
         ] {
             assert!(out.lines().any(|l| l == line), "{line}\n{out}");
         }
@@ -1510,7 +1548,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let plan = run(&mut next, GOD, &format!("@atlas/pack plan {LANE_PACK}"));
         assert!(
             plan.contains(&format!(
-                "Plan for {LANE_PACK}@{LANE_VERSION}: 2 create, 2 update, 0 retire, 20 unchanged"
+                "Plan for {LANE_PACK}@{LANE_VERSION}: 11 create, 2 update, 0 retire, 23 unchanged"
             )),
             "{plan}"
         );
@@ -1519,6 +1557,16 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
             ("stickney_ceres (route)", "update"),
             ("ceres_port (port)", "create"),
             ("stickney_port (port)", "create"),
+            // Doc 19 cut A.8: the moon ports and their routes arrive with the trade.
+            ("luna_port (port)", "create"),
+            ("deimos_port (port)", "create"),
+            ("titan_port (port)", "create"),
+            ("ceres_aitken (route)", "create"),
+            ("aitken_voltaire (route)", "create"),
+            ("aitken_ligeia (route)", "create"),
+            ("ligeia_aitken (route)", "create"),
+            ("ligeia_voltaire (route)", "create"),
+            ("voltaire_stickney (route)", "create"),
         ] {
             assert!(
                 plan.lines().any(|l| l.contains(step) && l.contains(entry)),
@@ -1528,7 +1576,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let (_, apply) = plan_and_apply(&mut next);
         assert!(
             apply.contains(&format!(
-                "Applied {LANE_PACK}@{LANE_VERSION}: 2 created, 2 updated, 0 retired, 20 unchanged."
+                "Applied {LANE_PACK}@{LANE_VERSION}: 11 created, 2 updated, 0 retired, 23 unchanged."
             )),
             "{apply}"
         );
@@ -1539,7 +1587,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
             .and_then(|c| c.latches.applied(&lane_id()))
             .map(mush_content::Applied::placed)
             .expect("v2 placed");
-        assert_eq!(placed_v2, placed_v1, "the three place rooms keep their ids");
+        assert_eq!(placed_v2, placed_v1, "the six place rooms keep their ids");
         for entry in ["ceres_port", "stickney_port"] {
             let _ = port_map(&next, entry);
         }
@@ -1598,7 +1646,7 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
             mush_inventory::MAX_APPLIED_MARKERS
         ),
     ];
-    let mut commerce_pending = 0;
+    let mut commerce_lines = 0;
     for (entry, def) in ports_of(LANE_JSON) {
         let map = port_map(&tw, entry.as_str());
         let refs: BTreeSet<&str> = std::iter::once(def.gallery.as_str())
@@ -1609,11 +1657,7 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
             "  {entry} rooms: {n} of {n} resolved; the gallery carries port.dock. [ready]",
             n = refs.len()
         ));
-        let place = if entry.as_str() == "ceres_port" {
-            "Ceres Freeport"
-        } else {
-            "Stickney Yards"
-        };
+        let place = location_label(&def.location);
         want.push(format!(
             "  {entry} domain: #{} on {place}, presents in Visiting Berth Gallery. [ready]",
             map.domain.expect("a domain")
@@ -1666,14 +1710,20 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
                 .find(|o| o.id == vendor.org)
                 .expect("the vendor's org")
                 .name;
+            // Doc 19 cut A.8: a bid-only vendor has nothing to seed and reads Ready.
+            let state = if vendor.stock.is_empty() {
+                "ready"
+            } else {
+                "pending"
+            };
             want.push(format!(
                 "  {entry} vendor {}: {name}, storefront vault #{}; 0 of {} stock rows seeded. \
-                 [pending]",
+                 [{state}]",
                 vendor.org,
                 row.vault,
                 vendor.stock.len()
             ));
-            commerce_pending += 1;
+            commerce_lines += 1;
         }
         for vendor in &def.vendors {
             for ask in &vendor.asks {
@@ -1681,7 +1731,7 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
                     "  {entry} ask {} {}: not seeded yet. [pending]",
                     vendor.org, ask.good
                 ));
-                commerce_pending += 1;
+                commerce_lines += 1;
             }
         }
         for vendor in &def.vendors {
@@ -1693,18 +1743,24 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
                      settles. [pending]",
                     vendor.org, bid.good
                 ));
-                commerce_pending += 1;
+                commerce_lines += 1;
             }
         }
     }
+    // Doc 19 cut A.8: one vendor, ask and bid line per authored row, pinned against
+    // the shipped lane (a count of report lines, not a vertex): Ceres 3 + 4 + 2,
+    // Stickney 3 + 4 + 2, Luna 4 + 4 + 3, Deimos 2 + 2 + 4, Titan 3 + 4 + 2. The
+    // bid-only vendors' lines are counted though they read Ready.
     assert_eq!(
-        commerce_pending, 18,
-        "3 + 4 + 2 lines at each of the two ports"
+        commerce_lines, 46,
+        "the shipped lane's vendor, ask and bid lines at the five ports"
     );
     let total = want.len();
+    // Doc 19 cut A.8: every line that is not ready — the orgs' tranches, the
+    // commerce lines and whatever else the report flags — counted off the list.
+    let not_ready = want.iter().filter(|l| !l.ends_with("[ready]")).count();
     want.push(format!(
-        "Not ready: {} of {total} lines are pending, missing or flagged.",
-        9 + commerce_pending
+        "Not ready: {not_ready} of {total} lines are pending, missing or flagged."
     ));
     assert_eq!(
         &lines[1..],
@@ -2256,7 +2312,7 @@ fn ic3_a_mint_cap_below_a_tranche_refuses_the_lane_before_anything_is_made() {
 fn ic3_the_ic_return_table_agrees_with_the_port_entries() {
     let pack = load_pack(LANE_JSON).expect("the lane verifies");
     let ports = ports_of(LANE_JSON);
-    assert_eq!(ports.len(), tacsim::ic_return::PORTS.len(), "two and two");
+    assert_eq!(ports.len(), tacsim::ic_return::PORTS.len(), "five and five");
     for row in &tacsim::ic_return::PORTS {
         let matching: Vec<&(CanonicalId, PortDef)> = ports
             .iter()
@@ -2502,7 +2558,13 @@ fn ic14_a_storefront_that_already_backs_a_vault_is_refused_before_any_write() {
     );
     assert_eq!(counts(&next), before, "nothing was made");
     assert_eq!(lane_latch(&next), Some(1), "the lane stays at v1");
-    for entry in ["ceres_port", "stickney_port"] {
+    for entry in [
+        "ceres_port",
+        "stickney_port",
+        "luna_port",
+        "deimos_port",
+        "titan_port",
+    ] {
         assert!(matches!(
             store(&next).port_map(&lane_id(), &cid(entry)),
             PortMapState::Absent

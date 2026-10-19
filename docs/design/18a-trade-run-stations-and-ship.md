@@ -1,4 +1,4 @@
-# 18a — The trade run's places: two stations and the Dray's interior
+# 18a — The trade run's places: five stations and the Dray's interior
 
 **Revised with doc 18 Draft 0.4 (2026-10-17), as built through IC12.** The packs this brief describes have
 shipped: `region.ceres_freeport` and `region.stickney_yards` at v1, `neighborhood.ceres_freeport` at **v2**
@@ -7,6 +7,17 @@ IC12), and the Dray's interior in `tacsim.pack.dray` **v2** (IC8). The brief's p
 where a shipped pack differs, an **"As built (IC*n*):"** note beside the text says how and where, in doc
 18's style ([18-trade-run-vertical-slice.md](18-trade-run-vertical-slice.md); the per-cut record is
 [18-cut-notes.md](18-cut-notes.md)).
+
+**Extended with doc 19 cut A.8 (2026-10-19).** Three stations join the two: Aitken Highport on Luna
+(§5), Voltaire Anchorage on Deimos (§6) and Ligeia Terminal on Titan (§7), each a region pack and a
+neighborhood pack at **v1** (`region.aitken_highport` + `neighborhood.aitken_highport`,
+`region.voltaire_anchorage` + `neighborhood.voltaire_anchorage`, `region.ligeia_terminal` +
+`neighborhood.ligeia_terminal`), named by lane v8's `luna_port`, `deimos_port` and `titan_port`
+([19-astronomy-engine.md](19-astronomy-engine.md) §3.8). §1 and §2 were written before their packs; §5–§7
+are written from packs already authored and validated, so the packs are the authority and these sections
+index them — the theme, the overview, the rooms with their short descs and detail keys, the listings, the
+cast, the lore pool's subjects, the boxes and the exit words. Each room's full desc and detail text is the
+pack's own and is not repeated here. The new names await the owner's "names ok" (§4).
 
 **Content brief, Draft 0.1 — 2026-10-15**, the companion of
 [18-trade-run-vertical-slice.md](18-trade-run-vertical-slice.md) Draft 0.2 (§4.5, §4.6, D-18-35). It
@@ -32,14 +43,19 @@ sold from the `YARD — SPARES` cage, signed by the Stickney service clerk and w
 
 ### 0.1 What the brief is for
 
-Doc 18's loop touches thirty-two rooms: thirteen at Ceres, twelve at Stickney, and the seven aboard a
-Dray. A pilot who follows R3 lives in them for a 30–60 minute session a day and sleeps aboard the rest;
-the rooms must be places before they are desks. This brief gives each room a purpose in the loop, a
+Doc 18's loop and the moon ports of doc 19 cut A.8 touch sixty-seven rooms: thirteen at Ceres, twelve at
+Stickney, twelve at Aitken Highport, eleven at Voltaire Anchorage, twelve at Ligeia Terminal, and the seven
+aboard a Dray. The five stations place fifty-two NPCs: thirty-four cast (Ceres 7, Stickney 6, Aitken 9,
+Voltaire 6, Ligeia 6), fifteen of them Warrant signatories — the NPCs the lane's port entries name (Ceres 3,
+Stickney 3, Aitken 4, Voltaire 2, Ligeia 3) — and eighteen principals placed `enabled:false` (Ceres 6,
+Stickney 3, Aitken 4, Voltaire 3, Ligeia 2). A pilot who follows R3 lives in them for a 30–60 minute
+session a day and sleeps aboard the rest; the rooms must be places before they are desks. This brief gives each room a purpose in the loop, a
 short desc and a full desc in the setting's voice, the `look` details that reward a second glance, its
 exits with aliases, its items and boards, and its access; each station gets a theme, an overview, a cast
 with voices, knowledge bounds and non-LLM fallbacks, a lore pool in three secrecy tiers, and ambience
 lines. The builder of cut IC1 authors the four atlas packs from §1 and §2; the builder of IC2 and IC4
-authors the Dray's interior template from §3.
+authors the Dray's interior template from §3; cut A.8 authored the six moon packs from its design's §4,
+and §5–§7 record them.
 
 ### 0.2 The pack shape
 
@@ -86,12 +102,12 @@ authors the Dray's interior template from §3.
   passive domain. Without it every public room at Stickney, which has no foot route, fails
   `topology.unreachable` (`validate.rs:1958-2000`). Ceres also has the unlocked Limbo door.
 - **Themes.** `Theme` fields: `name`, `style_guide`, `vocabulary`, `banned`, `exemplars`, `desc_length`,
-  `pov_rules` (`theme.rs:80-99`); nearest tier wins for scalars, lists union. The two stations are
+  `pov_rules` (`theme.rs:80-99`); nearest tier wins for scalars, lists union. The stations are
   separate regions with no common parent below the staff-set world theme, so the 2350 base (banned
   words, pov rules, desc length) repeats in each region pack and the flavour sits on each neighborhood.
   Theme has no `deny_unknown_fields`: a misspelled field name is dropped, a wrong type fails decode.
   Banned words only warn.
-- **Hydration** `{"enabled": false, "max_player_sites": 0}` on both neighborhoods (the serde default and
+- **Hydration** `{"enabled": false, "max_player_sites": 0}` on every neighborhood (the serde default and
   the staff lobby's choice). Nothing else auto-expands.
 - **NPCs** ship inside the pack that makes their rooms (`mush-npc/src/content.rs:214-219`) with
   `interfaces` naming only providers that exist (atlas, travel, help, market), a `fallback` list, a
@@ -123,6 +139,22 @@ checks for a `+` before a letter anywhere in the text); Stickney's details still
 `shift boards`) and `+market/list` (P07's `intake board`, P08's `price board`), an unowned residual;
 fiction figures stay (IC12 O3).
 
+**As built (A.8):** the three moon stations take the same shape at v1. Each region pack holds one
+**surface** region on its body — `region.aitken_highport` on `luna`, `region.voltaire_anchorage` on
+`deimos`, `region.ligeia_terminal` on `titan`, extent [[0,0],[400,400]], the 2350 base theme repeated —
+and one `locality.<location>` of kind `port`; Aitken and Ligeia are orbital in the fiction and authored on
+the tested surface path all the same. Each neighborhood has one `site.transit` site and one structure of
+two floors: Aitken's Hub Deck 0 at z 0 (6 m, unspun) and Drum Deck 1 at z 6 (4.5 m, spun at a sixth of a
+g); Voltaire's Tank Deck 0 at z 0 (7 m) and Roads Deck 1 at z 7 (4.5 m); Ligeia's Cargo Deck 0 at z 0
+(7 m) and Company Deck 1 at z 7 (4.5 m). Each Visiting Berth Gallery carries `port.dock` and seeds its
+station's topology (no moon station has a Limbo door); each station has one restricted spine behind one
+`lock: staff`, `visibility: hidden` hatch, holding the storefront items and the principals `enabled:false`.
+The neighborhood themes' banned lists add `shields`, `stardate` and `hangar bay` to the region base. No
+detail names a verb or carries a money figure; the only numerals in moon room text are years and the
+Voltaire lobby placard's step numbers. Every exit
+word is drawn from the two shipped stations' alias set plus each station's own nouns and codes, no alias
+sits on two exits of one room, and `exit_command_words` is the gate (§5.7, §6.7, §7.7).
+
 ### 0.3 The room lists, reconciled
 
 The owner's pasted proposal drew fifteen rooms per station. The second review's three judges endorsed
@@ -144,6 +176,10 @@ counter (the fiction lens's separate Co-op Hall is folded in, because every room
 scene).
 
 **As built (IC1):** the lists ship as reconciled here: Ceres 13 rooms, Stickney 12.
+
+**As built (A.8):** the moon lists are the A.8 design's and ship as drawn: Aitken Highport 12 rooms,
+Voltaire Anchorage 11 (the Stickney boxes, deliberately), Ligeia Terminal 12. Each station has one social
+room on the Slack Line and Shift Board precedent — the Cold Trap, the Long Straw, the Ninety-Four — with a keeper NPC.
 
 ### 0.4 Geometry (metres, neighborhood frame; the pack author's starting points)
 
@@ -178,6 +214,10 @@ edge with no exit between them are open floor on `+map` unless walled. The boxes
 that every door shares an edge and every exitless seam is in the wall list (the first draft's P04
 [140,130]–[170,155] touched neither P05 nor P12, and five seams were unwalled); IC1's validate-clean
 test runs an adjacency check over the authored boxes so the next re-box cannot regress it.
+
+**As built (A.8):** the moon stations' boxes, cross-deck points, hatches and walls are in §5.7, §6.7 and
+§7.7, read from the packs. The validator skips geometry for an exit with `portal.at`, so each stair's and
+ladder's point was placed inside both its rooms and outside the spine by hand (A.8 design §4.1).
 
 ---
 
@@ -1799,7 +1839,9 @@ the stations and two aboard (§0.2 as built); no person, org or place name chang
   clerk, signatory of the Yard's crated-fittings ask, and Tycho's chair, P11); Pavla Adeyinka-Rusk (harbourmaster's clerk, P05); Hanne Okonkwo-Steyn
   (Yard Commissary storekeeper and signatory, P09); Dmitri "Mitya" Abubakar-Lange (the Shift Board's
   cook, P10). Principals from doc 11: Priya Castellanos, Ruaridh Tanaka, Teodor Bask (P15). Thirteen
-  NPCs in all, six of them signatories; every listing in the slice has a signatory of its own house.
+  cast NPCs at the two corridor stations, six of them signatories; with the moon stations below,
+  thirty-four cast NPCs across the five, fifteen of them signatories, and eighteen principals — fifty-two
+  NPCs in all. Every listing in the lane has a signatory of its own house.
 - **Places**: the Freeport Hub (Ceres' structure), the Yard Rim (Stickney's), the Slack Line, the Shift
   Board, the Port Authority Gallery, the Yard Maintenance Spine.
 - **Institutions and ids**: the Co-op First Captain Trust (`coop_trust`); the First Captain programme
@@ -1813,3 +1855,577 @@ the stations and two aboard (§0.2 as built); no person, org or place name chang
   `+ship/order`; `+credit`; `+ic`; staff `@coop/revoke`, `@tacsim/port status`.
 - **Ship rooms**: Airlock, Central Passage, Bridge, Crew Compartment, Cargo Hold, Engineering Access,
   Hold Stowage.
+
+**Appended with cut A.8 (2026-10-19).** The names below are the A.8 design's, authored in the moon packs
+and lane v8 and checked against doc 11's principals and the shipped cast (the design's names pass, Q11).
+They are **not yet accepted**: the owner's "names ok" under Q-18-12 is owed for every one of them (the
+design's O11), with the history rows they carry (the ark moorings, the 2308 blockade depot, the Saturn
+Charter of 2291).
+
+- **Aitken cast** (nine): Lorcan Mwangi-Eriksen (Cabeus Works sales agent, signatory of the alloy ask and
+  the concentrate bid, L07); Thandiwe Albrecht-Sato (Lunar Habitat Board receiving commissioner, signatory
+  of the ice and billet bids, L08); Anneliese Okafor-Thistlewood (Crisium Instruments export factor,
+  signatory of the boards ask, L07); Imogen Batista-Okeke (Highport Victualling Office purser, signatory of
+  the reaction mass and provisions asks, L09); Dockmaster Aurelio Kowalczyk-Amadi (Concord Orbital Access,
+  L12); Deputy Registrar Kwabena Holt-Iversen (the Registry's highport annex, L05); Mireille
+  Devereux-Anand (Concord currency clearing, L06); Maren Ferro-Wainwright (the annex's export clerk, L05);
+  Ngozi Rasmussen-Oto (the Cold Trap's keeper, L10). Principals: Cosima Ferreira-Lund, Odile
+  Kwarteng-Fairweather, Benedikt Rourke-Haddad, Ingrid Moravec-Ansah (L15).
+- **Voltaire cast** (six): Caspian Abiodun-Fleck (Reserve quartermaster, signatory of the rotation sales
+  and the ice and billet bids, D07); Emeka Strand-Villanueva (Syrtis Bonded Imports buyer, signatory of
+  the alloy and boards bids, D08); Femi Rautio-Grant (Republic customs inspector, D03); Aurek Szabo-Mensah
+  (roadsmaster, D05); Marisol Kettunen-Ade (the Long Straw's keeper, D10); Wilhelmina Tsai-Barros (the
+  Titan Concession Company's agent at the Roads, D10). Principals: Radmila Delgado-Mertens, Anders
+  Bergström-Nwachukwu, Liesel Okwuosa-Brandão (D15).
+- **Ligeia cast** (six): Ysolde Marangoni-Teague (Company sales clerk, signatory of the billet, ice and
+  reaction mass asks, T07); Barnabas Oyelowo-Krauss (Company Store storekeeper, signatory of the
+  provisions ask, T09); Saoirse Tupou-Lindahl (Selk Townships Board purchasing delegate, signatory of the
+  alloy and boards bids, T08); Kenji Abara-Vos (dockmaster, T05); Noor Adichie-Brun (Lift Marshal, T03);
+  Ottoline Quayle-Ibekwe (the Ninety-Four's keeper, T10). Principals: Augustin Varela-Nwosu, Hallgerd
+  Asante-Pryce (T15).
+- **Places**: Aitken Highport, the Aitken Drum (its site), the Hub Deck and the Drum Deck, the spoke, the
+  Cold Trap, the Rim Service Spine; Voltaire Anchorage, Voltaire Roads (its site), the Roads Deck and the
+  Tank Deck, the Ark Moorings Gallery, the *Long Mercy*, the Long Straw, the Reserve Spine; Ligeia
+  Terminal, the Ligeia Spar (its site), the Company Deck and the Cargo Deck, the Lifter Gallery, the
+  Ninety-Four, the Spar Service Spine.
+- **Institutions and ids**: Concord Orbital Access (`orbital_access`), Cabeus Works (`cabeus_works`), the
+  Lunar Habitat Board (`habitat_board`), Crisium Instruments (`crisium_instruments`), the Highport
+  Victualling Office (`highport_victualling`); the Voltaire Bond Authority (`voltaire_bond`), the Republic
+  Strategic Reserve (`strategic_reserve`), Syrtis Bonded Imports (`syrtis_bonded`); the Titan Concession
+  Company (`titan_concession`), Concession Stores (`concession_stores`), the Selk Townships Board
+  (`selk_townships`); the Saturn Charter of 2291; the faction words `company` and `townships`; the port
+  entries `luna_port`, `deimos_port`, `titan_port` at the locations `aitken_highport`,
+  `voltaire_anchorage`, `ligeia_terminal`; the goods `instrument_boards` "instrument boards, crated" and
+  `carbon_feedstock` "carbon billet, pressed"; the routes `ceres_aitken`, `aitken_voltaire`,
+  `aitken_ligeia`, `ligeia_aitken`, `ligeia_voltaire`, `voltaire_stickney`.
+
+---
+
+## 5. Aitken Highport, Luna
+
+`region.aitken_highport` (surface region "Luna", body `luna`; locality `locality.aitken_highport`, kind
+`port`) + `neighborhood.aitken_highport` v1 (requires `region.aitken_highport`@1); site `site.aitken_drum`
+"Aitken Drum" (`site.transit`) and structure `structure.aitken_drum`, Hub Deck index 0 (z 0 m, 6 m) and
+Drum Deck index 1 (z 6 m, 4.5 m). Twelve rooms, two decks, no Limbo door: reachable only by flight. Lane
+v8's `luna_port` (location `aitken_highport`, venue `luna`) names it; every name below is the A.8 design's
+and awaits the owner's "names ok" (§4).
+
+### 5.1 Theme (`neighborhood.aitken_highport`; the 2350 base on `region.aitken_highport`)
+
+**Name.** TacSim 2350: the Highport.
+
+**Style guide** (the pack's, condensed). Present tense, no second person, no named NPCs in a room desc;
+each room distinct in sound, light and smell before furniture. The Highport has two physics and says so
+(doc 10 §3: no artificial gravity beyond thrust and rotation): the hub stands still and holds nothing
+down — handlines, hook pads, tether clips — and the drum spins at the Moon's own sixth of a g — long slow
+strides, slow pours, a floor that curves up ahead and behind. The Concord sounds institutional and old:
+seals, brass plates, Shackleton time, the Registry's patience, habitat discipline in every poster. The
+houses sound like houses: Cabeus and Crisium price lines, the Habitat Board's conservation slogans, permit
+sleeves. Power shows as paperwork, as the hooded lamps in the yards' slips, and as who may open the service
+hatch. Earth comes past the viewports once a turn and the basin wheels below. Desc length medium (60–120
+words); details one or two dry sentences with a fact in them.
+
+**Vocabulary.** hub, drum, spoke, spoke ladder, spin, bearing race, handline, hook pad, tether clip,
+cradle, boarding collar, pressure door, sailing board, Orbital Access, the Concord, Shackleton, Malapert,
+Aitken, basin, cold trap, regolith, closed loop, habitat discipline, Habitat Board, lander, freight
+collar, intake, receiving, assay, Cabeus, lunar alloy, Crisium, instrument boards, crated, export permit,
+Registry, annex, clearing, dry money, victualling, reaction mass, crew-day, tonne, in a good season.
+
+**Banned.** warp, hyperspace, FTL, teleport, alien, android, gravity plating, shields, stardate, hangar
+bay, you see (the region base carries the first seven and "you see", with `desc_length` medium and the
+pov rules).
+
+### 5.2 Overview
+
+Aitken Highport is the Concord's civil anchorage in low polar orbit, named for the South Pole–Aitken
+basin it crosses: Shackleton and Malapert swing under the hub ports once an orbit, and the lunar yards'
+restricted slips trail it on the same truss. A Dray cannot lift from Luna's sixth of a gravity, so nothing
+in this trade lands: ships berth at the drum's non-rotating hub, crews pull along the berth gallery and
+climb the spoke ladder down into spin, and the drum turns at the Moon's own sixth of a g, so the Drum Deck
+walks like Shackleton. The light is the polar Sun skimming the basin rim through the hub ports, and Earth
+swinging past the drum's viewports every turn. It smells of habitat discipline: filtered air, hydroponic
+green from the Habitat Board's racks, warm instrument dust from the clearing house, and new carpet, which
+the Belt calls the smell of dry money.
+
+The station is two decks of one structure. The Hub Deck stands still: the Visiting Berth Gallery along
+the hub cradles, the Pressure Lobby at the spoke's hub end, the Dockmaster's Office with the sailing
+board, and Habitat Board Receiving, where the Board's landers mate and the Belt's ice and concentrate are
+sold. The Drum Deck spins: Orbital Access Arrivals at the spoke's drum end, the Drum Concourse, the
+Registry Annex where export permits are stamped, the Clearing House Window, the Cabeus Exchange where
+lunar alloy and crated instrument boards are sold, the Victualling Office for reaction mass and stores,
+and the Cold Trap, the social room. A public stair runs a second spoke from the exchange down to
+receiving. One restricted room, the Rim Service Spine, is staff-locked and hidden off receiving; it holds
+the storefront items and the dark desks of the houses' principals.
+
+Its trade is the Belt's door to the Concord. The Belt's concentrate and ice come up no further than the
+Highport and go down by the Board's landers; lunar alloy and the basin fabs' boards leave by Dray for
+Deimos and Titan, the only two destinations the dockmaster files (Deimos a week or two in a good season,
+Titan nearer two months, one soul and throttled). Hulls arrive from Ceres and from Titan. Nothing goes
+back to Ceres: nothing there bids a board, Kasei already fills the Freeport's alloy intake, and a
+Ceres-bound Co-op hull calls at Kirkwood by charter. The governance is the Concord's, all four control
+kinds: Concord Orbital Access is the port authority (an org with no vendor, the Ceres Clearing
+precedent); the Registry's highport annex and Concord currency clearing keep desks here as rooms and desk
+officers without an org of their own, on the C05 precedent; Concord Fleet's yards adjoin and are closed to
+the trade; Malapert's coverage reaches the drum, and Titan is over an hour away by light, up to an hour
+and a half. Every org carries the faction `concord`.
+
+### 5.3 The rooms
+
+| id | Room | Deck | Kind | Access | Port role | Short (the pack's `short_desc`) | Details (`look` keys) |
+|---|---|---|---|---|---|---|---|
+| `room.l01_berth_gallery` | L01 Visiting Berth Gallery | Hub (0) | indoor | public | gallery; `port.dock` | A long weightless gallery along the hub's visiting cradles, handlines strung the length of it. | sailing board, ports, handlines, inspection slots, boarding collars |
+| `room.l02_pressure` | L02 Pressure Lobby | Hub | indoor | public | — | A round weightless chamber between two pressure doors, the spoke ladder's well at its centre. | placard, spoke well, small placard, cycle counter |
+| `room.l03_arrivals` | L03 Orbital Access Arrivals | Drum (1) | indoor | public | `arrivals` | The first room in spin, padded and railed for people who have just remembered they have weight. | placards, viewport strip, benches, ladder foot |
+| `room.l04_concourse` | L04 Drum Concourse | Drum | circulation | public | — | The drum's one wide hall, its floor curving up ahead and behind, hydroponic racks down the middle. | hydroponic racks, conservation posters, viewports, notices, floor |
+| `room.l05_registry` | L05 Registry Annex | Drum | indoor | public | `registry` | A quiet panelled annex of numbered windows, the Registry's seal above the counter. | seal, permit press, registers, brass plate |
+| `room.l06_clearing` | L06 Clearing House Window | Drum | indoor | public | `clearing` | A long glass window onto racked clearing machines, a counter and a slot on the near side. | machines, brass plate, board, slot |
+| `room.l07_exchange` | L07 Cabeus Exchange | Drum | indoor | public | `exchange` | A broad spun trading room, the Cabeus and Crisium asks on one wall and the receiving bids on the other. | ask board, sample billets, open crate, permit label, stair |
+| `room.l08_receiving` | L08 Habitat Board Receiving | Hub | indoor | public via the L07 stair or the dockmaster's inner door | `receiving` | A long weightless freight hall where the Habitat Board's landers mate to the hub. | intake board, freight collar, assay rig, service hatch, stair |
+| `room.l09_chandlery` | L09 Victualling Office | Drum | indoor | public | `chandlery` | A stores counter with ration crates racked behind it and a bunkering panel beside the till. | board, bunkering panel, crates, fill card |
+| `room.l10_cold_trap` | L10 The Cold Trap | Drum | indoor | public | — (the social room) | A blue-lit bar on the drum's curve, named for the shadowed craters at the pole. | bar, corner table, noticeboard, pour, tumblers |
+| `room.l12_dockmaster` | L12 Dockmaster's Office | Hub | indoor | public | `dockmaster` | A cramped weightless office with the sailing board on its back wall and the yards' slips in its window. | sailing board, window, clock, passage card |
+| `room.l15_spine` | L15 Rim Service Spine | Hub | indoor | restricted | `spine` | A weightless service trunk of cable trays and storefront cages, a glassed office at its inner end. | cages, office, bearings |
+
+Every desc runs 101–118 words. The IC return lands a pilot in L03 (`ic_return::PORTS`,
+`tacsim/src/ic_return.rs:76`); L03 is the first room in weight, and its `ladder foot` says WEIGHT RETURNS
+HERE. Ceres's Office Deck has no counterpart: the principals sit in the spine, on the Stickney pattern.
+
+**Listings** (lane v8's `luna_port`; every vendor's agent is the port's clerk, `luna_port.clerk`; the
+boards are the role words above):
+
+| Org (`id`, capital) | Signatory | Storefront (in L15) | Stock | Asks | Bids |
+|---|---|---|---|---|---|
+| Concord Orbital Access (`orbital_access`, 50,000cr) | — (no vendor: the port authority) | — | — | — | — |
+| Cabeus Works (`cabeus_works`, 250,000cr) | Lorcan Mwangi-Eriksen | `item.cabeus_cage` "Cabeus Works stock cage" | structural alloy stock 3,120 t | structural alloy stock 400cr/t (exchange) | metal concentrate 270cr/t, intake 800 t (receiving, exchange) |
+| Lunar Habitat Board (`habitat_board`, 1,000,000cr) | Thandiwe Albrecht-Sato | `item.habitat_manifold` "Habitat Board intake manifold" | — (bid-only) | — | water ice 195cr/t, intake 4,100 t; carbon billet 380cr/t, intake 300 t (receiving, exchange) |
+| Crisium Instruments (`crisium_instruments`, 50,000cr) | Anneliese Okafor-Thistlewood | `item.crisium_cage` "Crisium bonded cage" | instrument boards 2,080 t | instrument boards 900cr/t (exchange, clearing) | — |
+| Highport Victualling Office (`highport_victualling`, 50,000cr) | Imogen Batista-Okeke | `item.victualling_locker` "Victualling Office stores locker" | reaction mass 5,000 t; provisions 2,600 crew-days | reaction mass 60cr/t (chandlery, dockmaster); provisions 10cr a crew-day (chandlery) | — |
+
+Crisium carries the port's emergency block (provisions, water ice, reaction mass; ratio 1,500 ‰, intake
+100); the premium is `{300, 500}`; routes `deimos` → `aitken_voltaire`, `titan` → `aitken_ligeia`. The
+room text carries none of these figures: the boards and the counters name the lines and say the figures
+are the houses' own.
+
+### 5.4 The cast
+
+| entry | Name (as authored) | Room | House / office | Interfaces | Tier | Kind | Knows (the pack's `knows`, condensed) |
+|---|---|---|---|---|---|---|---|
+| `npc.mwangi_eriksen` | Lorcan Mwangi-Eriksen | L07 | Sales Agent, Cabeus Works; **signatory** of the alloy ask and the concentrate bid | market, atlas | minor | cast | the alloy ask and the concentrate bid and what remains; the aluminium–titanium regolith alloy, the dense partner of the boards; sold toward Deimos and Titan, never Ceres; finite, never topped up |
+| `npc.albrecht_sato` | Thandiwe Albrecht-Sato | L08 | Receiving Commissioner, Lunar Habitat Board; **signatory** of the ice and billet bids | market, atlas | minor | cast | the Board's bids, intake and funds; the loops lose carbon and Titan billet tops them up; the landers take the bulk down; Cabeus shares the receiving board |
+| `npc.okafor_thistlewood` | Anneliese Okafor-Thistlewood | L07 | Export Factor, Crisium Instruments; **signatory** of the boards ask | market, help | minor | cast | the boards ask and the stock; crated from the chartered Earth-basin fabs, they cube out before they weigh out; every crate under a Registry export permit; nothing at Ceres bids a board; Deimos and Titan buy |
+| `npc.batista_okeke` | Imogen Batista-Okeke | L09 | Purser, Highport Victualling Office; **signatory** of the reaction mass and provisions asks | market | extra | cast | the posted prices and stock; reaction mass metered to the cradle; two aboard need twice the days; Deimos a week or two and Titan nearer two months in a good season, single-handed |
+| `npc.kowalczyk_amadi` | Dockmaster Aurelio Kowalczyk-Amadi | L12 | Dockmaster, Concord Orbital Access | atlas, travel | minor | cast | the cradles; a Dray files for Deimos or Titan and nowhere else; Titan only throttled, `throttle=450`, one soul, on every listed Titan leg; the light lag to Titan; the layout |
+| `npc.holt_iversen` | Deputy Registrar Kwabena Holt-Iversen | L05 | Deputy Registrar, the Registry's highport annex | atlas, help | extra | cast | the Registry founded at Luna about 2140, older than the Concord, mirrored at Ceres; export permits are Registry paper; it records and notarises, never grants; the Saturn Charter of 2291 and the Townships' petitions are recorded here |
+| `npc.devereux_anand` | Mireille Devereux-Anand | L06 | Clearing Clerk, Concord currency clearing | help | extra | cast | clearing as a pooled function; every credit clears through Luna, one currency; Ceres Clearing and the Republic both owe Luna; the hours |
+| `npc.ferro_wainwright` | Maren Ferro-Wainwright | L05 | Registry Export Clerk, the highport annex | help | extra | cast | the permit bound to each crate's manifest; the press counts its strokes; the annex grants nothing |
+| `npc.rasmussen_oto` | Ngozi Rasmussen-Oto | L10 | Keeper of the Cold Trap | none | extra | cast (tags add `tycho`) | the bar's name; Tycho's underwriters at the corner table; the Terminal's prices stale by light; the spoke's saying |
+| `npc.ferreira_lund` | Cosima Ferreira-Lund | L15 | Director, Concord Orbital Access at Aitken Highport | none | major | principal, `enabled:false` | not voiced in the slice |
+| `npc.kwarteng_fairweather` | Odile Kwarteng-Fairweather | L15 | Chair, Lunar Habitat Board | none | major | principal, `enabled:false` | not voiced in the slice |
+| `npc.rourke_haddad` | Benedikt Rourke-Haddad | L15 | Managing Director, Crisium Instruments | none | major | principal, `enabled:false` | not voiced in the slice |
+| `npc.moravec_ansah` | Ingrid Moravec-Ansah | L15 | Works Director, Cabeus Works | none | major | principal, `enabled:false` | not voiced in the slice |
+
+Every cast NPC carries a `persona`, a `speech_style`, `does_not_know` bounds and a non-LLM `fallback`
+list, and the tags `corridor_trade` and `port_aitken`. Officials carry their title first in `name` (the
+Stickney pattern; `NpcDef` has no title field). No doc 11 principal is placed here.
+
+### 5.5 Lore pool (`lore.port_aitken`, tag `port_aitken`; the cast may draw `corridor_trade`, and the keeper `tycho`)
+
+*Public* (ten): The pocket · Aitken Highport · The Belt's door · Why not home to Ceres · The Registry ·
+Credits clear through Luna · The yards · Carbon · Malapert · The spoke.
+
+*Guarded* (three): The Board's ice · The rotation · Tycho and Titan.
+
+*Secret* (one): `secret.half_afloat`, `reveal: staff`, about `npc.kwarteng_fairweather`. Stored as a
+Secret; its truth is in the pack and in no prompt and not in this brief.
+
+### 5.6 Ambience
+
+Twelve lines (the validator's cap is 24): the drum's bearing note as a lander mates, Earth past the
+viewports, slow falls and slow pours in the spin, the grow lamps' dusk, the sailing board turning over,
+the polar Sun across the hub ports, the clearing lamps, the Cold Trap carrying along the curve, the
+conservation notice's carbon tally, and Shackleton's lamps under the hub with the yards' hooded slips after
+them.
+
+### 5.7 Geometry, exits and walls
+
+Neighborhood footprint [[100,80],[220,200]], site and structure [[110,90],[210,190]]; budget target 12,
+maximum 16. **Hub Deck** (floor 0): L01 [110,100]–[210,115]; L02 [110,115]–[140,140]; L12
+[140,115]–[185,140]; L08 [140,140]–[210,165]; L15 [140,165]–[185,190] (restricted, under L07). **Drum
+Deck** (floor 1, z 6): L03 [110,115]–[140,140]; L05 [110,140]–[140,160]; L06 [110,160]–[140,190]; L04
+[140,115]–[185,160] (circulation); L07 [140,160]–[185,190]; L09 [185,115]–[210,160]; L10
+[185,160]–[210,190]. The Drum Deck's horizontal split sits at y 160, not 165, so the stair's foot lies in
+L08 and outside the spine. **Cross-deck:** L02↔L03, the spoke, `mode: ladder`, `portal.at`
+(125,128,0)–(125,128,6), `dz_m` +6; L07↔L08 public stair, `portal.at` (165,162,6)–(165,162,0), `dz_m` −6;
+L08→L15 hatch on their shared edge (y 165, x 140–185), `lock: staff`, `visibility: hidden`. **Walls:** one
+— L01|L12 (y 115, x 140–185, z 0–6), the Hub Deck's one exitless public seam; the Drum Deck has none (L09|L07
+and L04|L10 meet at a corner only). **Counters** (features, `room` set): L08 (145,160)–(175,160), L12
+(150,135)–(175,135), L05 (112,150)–(138,150), L06 (112,175)–(138,175), L09 (205,120)–(205,155).
+Topology: the gallery's `port.dock` seed → L02 → L12 → L08 → the stair → L07 → L04 → L03, L05, L09, L10
+→ L06.
+
+| entry | From → to | Mode | Way in (`names[0]`) | Way back (`names[1]`) |
+|---|---|---|---|---|
+| `exit.l01_l02` | L01 → L02 | door | `Pressure Lobby <PL>;pl;lobby;in` | `Berth Gallery <BG>;bg;gallery;berths;out` |
+| `exit.l02_l12` | L02 → L12 | door | `Dockmaster <DM>;dm;dockmaster;office` | `Pressure Lobby <PL>;pl;lobby;out` |
+| `exit.l12_l08` | L12 → L08 | door | `Receiving <RC>;rc;receiving;habitat` | `Dockmaster <DM>;dm;dockmaster;out` |
+| `exit.l02_l03` | L02 → L03 | ladder (the spoke), dz +6 | `Spoke Ladder <SL>;sl;spoke;ladder;drum` | `Spoke Ladder <SL>;sl;spoke;ladder;hub` |
+| `exit.l03_l04` | L03 → L04 | door | `Concourse <C>;c;concourse;drum;in` | `Arrivals <AR>;ar;arrivals;access` |
+| `exit.l03_l05` | L03 → L05 | door | `Registry Annex <RA>;ra;registry;annex` | `Arrivals <AR>;ar;arrivals` |
+| `exit.l05_l04` | L05 → L04 | door | `Concourse <C>;c;concourse;out` | `Registry Annex <RA>;ra;registry;annex` |
+| `exit.l05_l06` | L05 → L06 | door | `Clearing House <CL>;cl;clearing;window` | `Registry Annex <RA>;ra;registry;annex` |
+| `exit.l06_l07` | L06 → L07 | door | `Exchange <X>;x;exchange;cabeus;market` | `Clearing House <CL>;cl;clearing;window` |
+| `exit.l04_l07` | L04 → L07 | door | `Exchange <X>;x;exchange;cabeus;market` | `Concourse <C>;c;concourse;out` |
+| `exit.l04_l09` | L04 → L09 | door | `Victualling <VO>;vo;victualling;chandlery;stores` | `Concourse <C>;c;concourse;out` |
+| `exit.l07_l10` | L07 → L10 | door | `Cold Trap <CT>;ct;trap;commons;bar` | `Exchange <X>;x;exchange;out` |
+| `exit.l09_l10` | L09 → L10 | door | `Cold Trap <CT>;ct;trap;commons;bar` | `Victualling <VO>;vo;victualling;stores` |
+| `exit.l07_l08` | L07 → L08 | stair, dz −6 | `Receiving Stair <RS>;rs;receiving;habitat;down;d` | `Exchange Stair <ES>;es;exchange;up;u` |
+| `exit.l08_l15` | L08 → L15 | hatch, hidden, `lock: staff` | `Service Spine <SS>;ss;spine;hatch` | `Receiving Hatch <RH>;rh;receiving;out` |
+
+Fifteen exits; `exit.l08_l15` is the locked one, and a paired exit locks only the way in.
+
+---
+
+## 6. Voltaire Anchorage, Deimos
+
+`region.voltaire_anchorage` (surface region "Deimos", body `deimos`; locality
+`locality.voltaire_anchorage`, kind `port`) + `neighborhood.voltaire_anchorage` v1 (requires
+`region.voltaire_anchorage`@1); site `site.voltaire_roads` "Voltaire Roads" (`site.transit`) and structure
+`structure.moorings_block`, Tank Deck index 0 (z 0 m, 7 m) and Roads Deck index 1 (z 7 m, 4.5 m). Eleven
+rooms, two decks, no Limbo door: reachable only by flight. Lane v8's `deimos_port` (location
+`voltaire_anchorage`, venue `deimos`) names it; the boxes are Stickney's, deliberately. Every name below
+awaits the owner's "names ok" (§4).
+
+### 6.1 Theme (`neighborhood.voltaire_anchorage`; the 2350 base on `region.voltaire_anchorage`)
+
+**Name.** TacSim 2350: the Roads.
+
+**Style guide** (the pack's, condensed). Present tense, no second person, no named NPCs in a room desc;
+each room distinct in sound, light and smell before furniture. Deimos holds even less than Phobos (doc 10
+§3): hulls settle into cradles and are tied down, decks are painted conventions, handlines run everywhere,
+benches have tether loops. The Roads are the Republic at its border — institutional, bonded and sealed,
+forms in triplicate, the Commissioner's seal on every manifest that goes on to Phobos. The arks are
+everywhere underfoot: salvaged plating with hull names on it, ark-era scrubbers, a galley turned bar, and
+the *Long Mercy* over the crater. The Reserve is in the floor and says little about itself; its rotation
+stamps and its posted prices are all it shows. Mars is a small rust disc in the sky. Desc length medium
+(60–120 words); details one or two dry sentences with a fact in them.
+
+**Vocabulary.** roads, anchorage, cradle, tie-down, handline, tether loop, pressure door, inspection
+sticker, bond, in bond, bonded, seal, Commissioner's seal, customs post, roadsmaster, sailing plan,
+clearance, Reserve, rotation, warden, tank gallery, ark, hulk, moorings, Long Mercy, breakers, Voltaire,
+Deimos, Phobos, Stickney, Syrtis, Coprates, Kasei, the Guard, Vigil, the hop, light alloy, instrument
+boards, carbon billet, water ice, reaction mass, crew-day, tonne, Republic.
+
+**Banned.** warp, hyperspace, FTL, teleport, alien, android, gravity plating, shields, stardate, hangar
+bay, you see.
+
+### 6.2 Overview
+
+Voltaire Anchorage is the Republic's outer anchorage, dug into the floor of Voltaire crater on Deimos,
+where the Enclave arks lay in the roads from the 2150s to the 2200s and their contract crews stayed to
+break the hulls up for the first Martian habitats. A Dray comes in on a long throttled fall from Titan or a
+shorter one from Luna and settles; it leaves by the one lane the Roads post, the hop down to Phobos, about
+three hours and a tonne of reaction mass in a good season. The berths are cradles with tie-downs, because
+on Deimos a hull resting on the crater floor would walk off it under the push of its own pumps. Over the
+crater rests the last ark hulk, the *Long Mercy*, kept as a monument; beyond it Mars is a rust disc less
+than half the size it shows from Phobos. Under the floor lies the Republic Strategic Reserve — reaction
+mass, water and fixed nitrogen against the day the Belt stops selling. The Concord fuelled its 2308
+blockade of Mars from a depot here and conveyed it to the Republic with the debt in 2312, as part of the
+Settlement. The air is old ark-era scrubber air with cold tank steel and new tether rubber in it, and the
+commissary gives off the cardboard-and-salt smell of rotated rations.
+
+The station is laid out as Stickney is: the visiting berths and the pressure lobby at one end; the
+Republic Customs Post the first desk every arrival stands at; the Roads Concourse the hall every public
+room opens off — the Roadsmaster's Office, the Bond Exchange (its public stair down to the Reserve
+Receiving Hall on the Tank Deck), the Reserve Commissary, the Long Straw and the Ark Moorings Gallery,
+whose ports look out on the *Long Mercy*. One restricted room, the Reserve Spine, is staff-locked and
+hidden off the receiving hall; it holds the storefront cages and the dark desks of the Reserve Warden, the
+Bond Commissioner and Syrtis's managing director.
+
+Its trade is the bond. Concord and Company goods enter Mars here, in bond, and leave bond only by the hop
+to Stickney's Customs Hall under the Commissioner's seal; Belt cargo clears at Stickney, as it always has,
+and the Republic does not bond its own yard stock, so no lane to the Roads is posted from Phobos. The
+anchorage sells nothing on its exchange floor: Syrtis Bonded Imports bids Luna's light alloy and crated
+boards — Kasei rolls ferrous stock from Belt concentrate, and the aluminium–titanium alloy the Yard's
+frames and pressure hulls want comes from the lunar regolith lines and nowhere on Mars — and the Reserve
+bids Titan's ice and carbon billet and sells its bunkers at the Republic's posted price, the same as
+Kasei's. The ice bid sits under Kasei's by design, and the receiving board says so in pencil. Hulls
+arrive from Luna and Titan. The governance is the Republic's, de jure and de facto: the Voltaire Bond
+Authority (an org with no vendor) under the Republic's customs service, the Reserve's wardens, the
+Orbital Guard's Vigils exercising off the Roads. Every org carries the faction `republic`.
+
+### 6.3 The rooms
+
+| id | Room | Deck | Kind | Access | Port role | Short (the pack's `short_desc`) | Details (`look` keys) |
+|---|---|---|---|---|---|---|---|
+| `room.d01_berth_gallery` | D01 Visiting Berth Gallery | Roads (1) | indoor | public | gallery; `port.dock` | A long pressurised gallery along the visiting cradles, every hull beyond the ports lashed down by its tie-downs. | berth board, tie downs, ports, handlines |
+| `room.d02_pressure` | D02 Pressure Lobby | Roads | indoor | public | — | A square chamber between two pressure doors, breathing through an ark-era scrubber. | placard, scrubber stack, cycle counter |
+| `room.d03_customs` | D03 Republic Customs Post | Roads | indoor | public | `customs` | A narrow customs post of two queue rails and a counter, an origin board behind it under the Republic's crest. | origin board, forms, seal press, crest |
+| `room.d04_concourse` | D04 Roads Concourse | Roads | circulation | public | — | The broad hall of the Roads Deck, its walls plated with salvage from broken arks. | ark plating, station map, handlines, patrol notice, clock |
+| `room.d05_harbourmaster` | D05 Roadsmaster's Office | Roads | indoor | public | `harbourmaster` | A cramped office behind a half-door, the roads board glowing on its back wall. | roads board, sailing plan pad, clocks, hop card, radio |
+| `room.d06_moorings` | D06 Ark Moorings Gallery | Roads | indoor | public | — (the *Long Mercy* in the ports) | A dim gallery of tall ports looking out over the crater at the last ark hulk. | Long Mercy, plaque, Mars, benches |
+| `room.d07_receiving` | D07 Reserve Receiving Hall | Tank (0) | indoor | public via the D08 stair | `receiving` | A receiving counter on the Tank Deck before a window onto the Reserve's tank gallery. | intake board, assay scales, tank window, hatch |
+| `room.d08_exchange` | D08 Bond Exchange | Roads | indoor | public | `exchange` | A low trading room with one board of bonded buyers' bids and no ask side at all. | bids board, blank panel, pencil note, inspection crate, stair well |
+| `room.d09_commissary` | D09 Reserve Commissary | Roads | indoor | public | `commissary` | A stores counter selling the Reserve's rotated rations, every crate stamped with two dates. | price posting, rotation stamps, crates, cold locker |
+| `room.d10_long_straw` | D10 The Long Straw | Roads | indoor | public | — (the social room) | A bar built into a salvaged ark galley, the Titan card pinned by its hatch. | galley, name board, roads chart, Titan card, chalk list |
+| `room.d15_spine` | D15 Reserve Spine | Tank | indoor | restricted | `spine` | A service corridor behind the tank gallery, two storefront cages and a glassed office at its end. | cages, office, gauges, manifolds |
+
+Every desc runs 97–117 words. The IC return lands a pilot in D01, the gallery (`ic_return::PORTS`). The
+`sailing plan pad` in D05 carries a bond seal number, "the line Stickney's pad does not have"; the `hop
+card` beside it gives the hop's three hours and its tonne in a good season.
+
+**Listings** (lane v8's `deimos_port`; every vendor's agent is `deimos_port.clerk`):
+
+| Org (`id`, capital) | Signatory | Storefront (in D15) | Stock | Asks | Bids |
+|---|---|---|---|---|---|
+| Voltaire Bond Authority (`voltaire_bond`, 50,000cr) | — (no vendor: the operator) | — | — | — | — |
+| Republic Strategic Reserve (`strategic_reserve`, 300,000cr) | Caspian Abiodun-Fleck | `item.reserve_manifold` "Reserve intake manifold" | reaction mass 5,000 t; provisions 2,600 crew-days | reaction mass 60cr/t (commissary, harbourmaster); provisions 10cr a crew-day (commissary) | water ice 190cr/t, intake 900 t; carbon billet 380cr/t, intake 300 t (receiving) |
+| Syrtis Bonded Imports (`syrtis_bonded`, 3,100,000cr) | Emeka Strand-Villanueva | `item.syrtis_cage` "Syrtis bonded cage" | — (bid-only) | — | structural alloy stock 460cr/t, intake 2,400 t; instrument boards 1,100cr/t, intake 1,600 t (receiving, exchange) |
+
+Syrtis carries the port's emergency block (provisions, water ice, reaction mass; ratio 1,500 ‰, intake
+100); the premium is `{300, 500}`; one route, `stickney` → `voltaire_stickney`. The goods table does not
+grade alloys, so the "light alloy stock, Concord origin" of the bids board is `structural_alloys` in the
+lane; the distinction is lore (A.8 design Q5). The exchange's `blank panel` reads NO SALES IN BOND.
+
+### 6.4 The cast
+
+| entry | Name (as authored) | Room | House / office | Interfaces | Tier | Kind | Knows (the pack's `knows`, condensed) |
+|---|---|---|---|---|---|---|---|
+| `npc.abiodun_fleck` | Caspian Abiodun-Fleck | D07 | Quartermaster, Republic Strategic Reserve; **signatory** of the rotation sales (reaction mass, provisions) and the ice and billet bids | market, atlas | minor | cast | the Reserve's lines, intake and stock; the ice bid under Kasei's by design; billet from Titan for Mars's soil; reaction mass at Kasei's price; rotation sales; both decks |
+| `npc.strand_villanueva` | Emeka Strand-Villanueva | D08 | Bonded Buyer, Syrtis Bonded Imports; **signatory** of the alloy and boards bids | market, help | minor | cast | Syrtis's bids and intake; Kasei's ferrous line against the lunar light alloy the Yard frames with; the premium Coprates calls tribute; boards cube out; bond left only by the hop under the seal; nothing sold on the floor |
+| `npc.rautio_grant` | Femi Rautio-Grant | D03 | Customs Inspector, the Republic's customs service, under the Voltaire Bond Authority | atlas, travel, help | minor | cast | Concord and Company goods into bond, Belt cargo cleared at Stickney; no lane posted from Phobos; the layout; the hop's three hours; how to file with the roadsmaster |
+| `npc.szabo_mensah` | Aurek Szabo-Mensah | D05 | Roadsmaster, Voltaire Bond Authority | atlas, travel | extra | cast | the cradles, in bond or cleared for Stickney; settle and tie down; the hop and the one lane out; the falls from Luna and Titan; sailing plans and IDLE; the ark moorings |
+| `npc.kettunen_ade` | Marisol Kettunen-Ade | D10 | Keeper of the Long Straw | none | extra | cast | the ark moorings as the Roads tell them; the *Long Mercy* a monument, not a wreck; the bar's name; who is in port; the crew cards |
+| `npc.tsai_barros` | Wilhelmina Tsai-Barros | D10 | Agent of the Titan Concession Company at the Roads | help | extra | cast | Ligeia Terminal; the Saturn Charter of 2291; the Townships' petitions; what Titan sells; Titan reached only throttled, by the lane from Luna; billet for the Reserve |
+| `npc.delgado_mertens` | Radmila Delgado-Mertens | D15 | Reserve Warden, Republic Strategic Reserve | none | major | principal, `enabled:false` | not voiced in the slice |
+| `npc.bergstrom_nwachukwu` | Anders Bergström-Nwachukwu | D15 | Bond Commissioner, Voltaire Bond Authority | none | major | principal, `enabled:false` | not voiced in the slice |
+| `npc.okwuosa_brandao` | Liesel Okwuosa-Brandão | D15 | Managing Director, Syrtis Bonded Imports | none | major | principal, `enabled:false` | not voiced in the slice |
+
+Every cast NPC carries a `persona`, a `speech_style`, `does_not_know` bounds and a non-LLM `fallback`
+list, and the tags `corridor_trade` and `port_voltaire`. No doc 11 principal is placed here; the pool's
+"The Guard off the Roads" names Commodore Bask's Kirkwood pickets as planned from Phobos.
+
+### 6.5 Lore pool (`lore.port_voltaire`, tag `port_voltaire`; the cast may draw `corridor_trade`)
+
+*Public* (ten): The Ark Moorings · The blockade depot · The conveyance · The long straw · The bond · Lunar
+light alloy · The Reserve's ice · Bunkers at the Roads · The Guard off the Roads · The Company's agent.
+
+*Guarded* (two): Rotation sales · The treaty inspector.
+
+*Secret* (one): `secret.reserve_level`, `reveal: staff`, about `npc.delgado_mertens`. Stored as a
+Secret; its truth is in the pack and in no prompt and not in this brief.
+
+### 6.6 Ambience
+
+Twelve lines: a pressure door cycling toward the cradles, a hull settling so slowly the tie-down crew
+finishes its coffee, the ark-era scrubbers' cough, a Reserve pump's count of ten, a Vigil's callsign and
+an exercise box on the approach channel, the *Long Mercy*'s cables taking up the cold, the Titan card in
+the Long Straw, a dolly of rotated ration crates, the seal press carried across the concourse, Syrtis
+coming into the light on Mars, the berth board going from IN BOND to CLEARED FOR STICKNEY, and a school
+group clipped in a line on its way to the moorings gallery.
+
+### 6.7 Geometry, exits and walls
+
+Neighborhood footprint [[100,80],[210,190]], site and structure [[110,90],[200,180]] — Stickney's;
+budget target 11, maximum 16. **Roads Deck** (floor 1, z 7): D01 [110,100]–[200,115]; D02
+[110,115]–[125,130]; D03 [110,130]–[125,155]; D04 [125,115]–[185,155] (circulation); D06
+[185,115]–[200,155]; D05 [110,155]–[132,180]; D08 [132,155]–[155,180]; D09 [155,155]–[177,180]; D10
+[177,155]–[200,180]. **Tank Deck** (floor 0): D07 [110,150]–[140,180]; D15 [140,150]–[170,180]
+(restricted, under D04's south edge, D08 and D09). **Cross-deck:** D08↔D07 public stair, `portal.at` (136,167,7)–(136,167,0),
+`dz_m` −7 (inside both rooms, Stickney's P08↔P07 point moved two metres); D07→D15 hatch on their shared
+edge (x 140, y 150–180), `lock: staff`, `visibility: hidden`. **Walls**, all seven exitless public seams:
+D01|D04 (y 115, x 125–185), D01|D06 (y 115, x 185–200), D02|D04 (x 125, y 115–130), D03|D05 (y 155,
+x 110–125), D05|D08 (x 132), D08|D09 (x 155), D09|D10 (x 177), each z 0–4.5. **Counters:** D03
+(112,153)–(123,153), D05 (112,157)–(130,157), D07 (112,177)–(138,177) on the Tank Deck, D09
+(157,176)–(175,176). Topology: the gallery's `port.dock` seed → D02 → D03 → D04 → D05, D06, D08, D09, D10;
+D08 → the stair → D07.
+
+| entry | From → to | Mode | Way in (`names[0]`) | Way back (`names[1]`) |
+|---|---|---|---|---|
+| `exit.d01_d02` | D01 → D02 | door | `Pressure Lobby <PL>;pl;lobby;in` | `Berth Gallery <BG>;bg;gallery;berths;out` |
+| `exit.d02_d03` | D02 → D03 | door | `Customs Post <CP>;cp;customs;in` | `Pressure Lobby <PL>;pl;lobby;out` |
+| `exit.d03_d04` | D03 → D04 | door | `Concourse <C>;c;concourse;roads;in` | `Customs Post <CP>;cp;customs;locks` |
+| `exit.d04_d05` | D04 → D05 | door | `Roadsmaster <RM>;rm;roadsmaster;harbourmaster;harbour` | `Concourse <C>;c;concourse;out` |
+| `exit.d04_d08` | D04 → D08 | door | `Bond Exchange <X>;x;exchange;bond;market` | `Concourse <C>;c;concourse;out` |
+| `exit.d04_d09` | D04 → D09 | door | `Commissary <CM>;cm;commissary;stores` | `Concourse <C>;c;concourse;out` |
+| `exit.d04_d10` | D04 → D10 | door | `Long Straw <LS>;ls;straw;commons;bar` | `Concourse <C>;c;concourse;out` |
+| `exit.d04_d06` | D04 → D06 | door | `Moorings Gallery <MG>;mg;moorings;arks;windows` | `Concourse <C>;c;concourse;out` |
+| `exit.d06_d10` | D06 → D10 | door | `Long Straw <LS>;ls;straw;commons;bar` | `Moorings Gallery <MG>;mg;moorings;arks` |
+| `exit.d08_d07` | D08 → D07 | stair, dz −7 | `Receiving Stair <RS>;rs;receiving;reserve;down;d` | `Exchange Stair <ES>;es;exchange;up;u` |
+| `exit.d07_d15` | D07 → D15 | hatch, hidden, `lock: staff` | `Reserve Spine <SS>;ss;spine;hatch` | `Receiving Hatch <RH>;rh;receiving;out` |
+
+Eleven exits; `exit.d07_d15` is the locked one.
+
+---
+
+## 7. Ligeia Terminal, Titan
+
+`region.ligeia_terminal` (surface region "Titan", body `titan`; locality `locality.ligeia_terminal`, kind
+`port`) + `neighborhood.ligeia_terminal` v1 (requires `region.ligeia_terminal`@1); site
+`site.ligeia_spar` "Ligeia Spar" (`site.transit`) and structure `structure.ligeia_spar`, Cargo Deck index
+0 (z 0 m, 7 m) and Company Deck index 1 (z 7 m, 4.5 m). Twelve rooms, two decks, no Limbo door: reachable
+only by flight, and only throttled. Lane v8's `titan_port` (location `ligeia_terminal`, venue `titan`)
+names it. Every name below awaits the owner's "names ok" (§4).
+
+### 7.1 Theme (`neighborhood.ligeia_terminal`; the 2350 base on `region.ligeia_terminal`)
+
+**Name.** TacSim 2350: the Terminal.
+
+**Style guide** (the pack's, condensed). Present tense, no second person, no named NPCs in a room desc;
+each room distinct in sound, light and smell before furniture. The spar is unspun and weightless (no
+artificial gravity beyond thrust and rotation): decks are painted conventions, handlines run everywhere,
+benches have tether loops, everything loose is netted or corded. It is cold: frost on the pressure seals,
+breath showing near the berths, heaters ticking. The air smells of naphtha and ammonia the scrubbers never
+quite take out, and of bitter almond near the billet locks. Saturn is huge and banded in the long window,
+the Sun a hard white star, Titan a featureless orange ball until a lifter's plume punches through. The
+Company sounds like a company town — orange lettering, posted notices, the Company's book, everything at
+the Company's price; the townships sound plain — hand-painted placards, their own heaters, petitions under
+film. News from Luna is always over an hour old. Desc length medium (60–120 words); details one or two dry
+sentences with a fact in them.
+
+**Vocabulary.** spar, Terminal, the Company, the Company's price, the Company's book, Chief Factor,
+Charter, Saturn Charter, townships, Selk, the Board, petition, Shackleton, lifter, lifter window, Ligeia,
+haze, overburden, carbon billet, billet lock, water ice, reaction mass, ninety-four kelvin, handline,
+tether loop, frost, pressure seal, collar, berth, clearance, sailing plan, light lag, Luna's board,
+throttled, single-handed, crew-day, tonne.
+
+**Banned.** warp, hyperspace, FTL, teleport, alien, android, gravity plating, shields, stardate, hangar
+bay, you see.
+
+### 7.2 Overview
+
+Ligeia Terminal is the Titan Concession Company's orbital terminal, a long unspun spar in low Titan orbit,
+named for the methane sea the Company's lifters climb from. The lifters come up out of the orange haze to
+it with carbon billet and the overburden ice and take the inbound down; the spar crosses the sea for a run
+of orbits each Titan day and then not for a fortnight, never standing over it. No Dray could leave Titan's
+surface at its thrust, and few reach the spar except slowly: the dockmaster's board reads COME SLOW OR
+DON'T COME, because the passage from Luna, or home to Luna or Mars, fits an 80-tonne tank only at half
+throttle — `throttle=450`, one soul aboard, on every listed leg — and most arrivals are single-handed; from Luna it
+is nearer two months in a good season. The spar is weightless and cold, frost on every seal, naphtha and
+ammonia in the air and bitter almond near the billet locks, which the Company's notices call harmless at
+the levels shown. Saturn hangs huge and banded in the long window, three fingers' width at arm's length; below, Titan is an orange ball until a lifter's plume
+punches through.
+
+The Terminal is laid out along the spar in two decks. The visiting berths cross the spar's head on the
+Company Deck; the pressure lobby opens on Company Arrivals and the Spar Concourse, and every public desk
+opens off the concourse — the dockmaster, the Company Sales Floor (its public stair down to Townships
+Receiving on the Cargo Deck), the Ninety-Four and the Lifter Gallery under the long window — with the
+Company Store reached from arrivals and from the bar. On the Cargo Deck the townships' counter, the one the
+Company does not own, opens on the Bunkering Yard, and a staff-locked hidden hatch off the yard leads to
+the Spar Service Spine, which holds the storefront cages and two offices facing each other across the
+corridor: the Chief Factor's and the Speaker's.
+
+It is a company town under a charter. The Concord's Saturn Charter of 2291, recorded at the Registry, a
+ninety-nine-year grant lapsing in 2390, makes the Titan Concession Company proprietor and government of
+the Saturn system, headed by its Chief Factor, clearing through Luna and months from anyone who could
+overrule it. The Selk Townships Board is the opposition: Selk, the first township, petitions Shackleton for
+a Concord charter of its own, the petitions lodged at the Registry, and the Board's office sits on the
+Company's service deck by the Charter. The
+Company sells billet, the overburden ice at its handling cost, the cheapest reaction mass in the system
+and the dearest stores, all at the Company's price; the Board buys alloy stock and instrument boards at
+frontier prices because everything breaks at ninety-four kelvin. There is no relay half, so news comes by
+light, over an hour stale from Luna and up to an hour and a half. Hulls arrive from Luna; they leave for
+Luna or for Deimos. The Company's two houses carry the faction `company`, the Board `townships` — the label
+is an org's allegiance, not its port's polity. The risk zone is frontier.
+
+### 7.3 The rooms
+
+| id | Room | Deck | Kind | Access | Port role | Short (the pack's `short_desc`) | Details (`look` keys) |
+|---|---|---|---|---|---|---|---|
+| `room.t01_berth_gallery` | T01 Visiting Berth Gallery | Company (1) | indoor | public | gallery; `port.dock` | A long cold gallery across the head of the spar, handlines strung the length of it and frost on every seal. | berth board, ports, handlines, frost |
+| `room.t02_pressure` | T02 Pressure Lobby | Company | indoor | public | — | A square chamber of pressure doors between the berths and the spar, nothing in it but tether clips. | placard, cycle counter, inspection tag |
+| `room.t03_arrivals` | T03 Company Arrivals | Company | indoor | public | `arrivals` | A low hall of queue rails ending at a single Company desk under the posted Charter notice. | charter notice, forms, lifter board, desk |
+| `room.t04_concourse` | T04 Spar Concourse | Company | circulation | public | — | The spar's widest corridor, handlines both ways and Company notices pinned flat under film. | notices, station map, handlines, fans |
+| `room.t05_dockmaster` | T05 Dockmaster's Office | Company | indoor | public | `dockmaster` | A narrow office behind a half-door, its back wall a hand-lettered board that reads COME SLOW OR DON'T COME. | motto board, slow board, clock, sailing plan pad, radio |
+| `room.t06_lifter` | T06 Lifter Gallery | Company | indoor | public | — (the long window) | A dark gallery along the long window, Saturn huge and banded above and Titan orange below. | Saturn, Titan, lifter plume, window, Sun |
+| `room.t07_exchange` | T07 Company Sales Floor | Company | indoor | public | `exchange` | A bare trading floor with the Company's prices on the long wall and a stair well down to receiving. | price board, townships board, Luna board, stair well, almond notice |
+| `room.t08_receiving` | T08 Townships Receiving | Cargo (0) | indoor | public via the T07 stair | `receiving` | A scarred bench at the foot of the stair, the one counter on the spar the Company does not own. | intake placard, mass gauge, lockers, heaters, petition notice |
+| `room.t09_commissary` | T09 Company Store | Company | indoor | public | `commissary` | A stores counter under the Company's posting, crew-day crates netted to the racks behind. | price posting, crates, ledger, cage |
+| `room.t10_ninety_four` | T10 The Ninety-Four | Company | indoor | public | — (the social room) | A padded low room with a hatch bar, a huge thermometer and crews keeping to their own sides. | thermometer, notice wall, bulbs, sides, name |
+| `room.t11_bunkering` | T11 Bunkering Yard | Cargo | indoor | public via T08 | `yard` | A frosted tank gallery of lagged transfer lines, thudding pumps and the billet locks at its far end. | transfer lines, billet locks, pumps, hatch |
+| `room.t15_spine` | T15 Spar Service Spine | Cargo | indoor | restricted | `spine` | A service corridor of cable trays and storefront cages, two offices facing each other at its end. | cages, offices, common services clause, manifolds |
+
+Every desc runs 101–115 words. The IC return lands a pilot in T03 (`ic_return::PORTS`). The `yard` role
+word names the Bunkering Yard here (at Stickney it is the service counter); the yard is where the
+Company's ice and reaction mass asks also post. The `sailing plan pad` in T05 rules its throttle line twice
+as wide as the rest.
+
+**Listings** (lane v8's `titan_port`; every vendor's agent is `titan_port.clerk`):
+
+| Org (`id`, capital) | Signatory | Storefront (in T15) | Stock | Asks | Bids |
+|---|---|---|---|---|---|
+| Titan Concession Company (`titan_concession`, 50,000cr; `company`) | Ysolde Marangoni-Teague | `item.concession_manifold` "Concession export manifold" | carbon billet 600 t; water ice 1,800 t; reaction mass 5,000 t | carbon billet 250cr/t (exchange); water ice 40cr/t (exchange, yard); reaction mass 30cr/t (exchange, yard, dockmaster) | — |
+| Concession Stores (`concession_stores`, 50,000cr; `company`) | Barnabas Oyelowo-Krauss | `item.stores_locker` "Company Store locker" | provisions 2,600 crew-days | provisions 20cr a crew-day (commissary) | — |
+| Selk Townships Board (`selk_townships`, 1,350,000cr; `townships`) | Saoirse Tupou-Lindahl | `item.townships_cage` "Townships receiving cage" | — (bid-only) | — | structural alloy stock 760cr/t, intake 720 t; instrument boards 1,500cr/t, intake 480 t (receiving, exchange) |
+
+The Board carries the port's emergency block (provisions only; ratio 1,500 ‰, intake 100); the premium is
+`{300, 500}`; routes `deimos` → `ligeia_voltaire`, `luna` → `ligeia_aitken`. The Townships' cage carries
+the Board's manifest and the Company's padlock.
+
+### 7.4 The cast
+
+| entry | Name (as authored) | Room | House / office | Interfaces | Tier | Kind | Knows (the pack's `knows`, condensed) |
+|---|---|---|---|---|---|---|---|
+| `npc.marangoni_teague` | Ysolde Marangoni-Teague | T07 | Sales Clerk, Titan Concession Company; **signatory** of the billet, ice and reaction mass asks | market, atlas | minor | cast | the Company's asks and what remains, at the Company's price; the ice is overburden sold at its handling cost; the cheapest reaction mass in the system; the Townships' counter down the stair; the layout |
+| `npc.oyelowo_krauss` | Barnabas Oyelowo-Krauss | T09 | Storekeeper, Concession Stores; **signatory** of the provisions ask | market | minor | cast | the posted price per crew-day and the crates left; two aboard need twice the days, most arrivals single-handed; the book in one currency, settled through Luna |
+| `npc.tupou_lindahl` | Saoirse Tupou-Lindahl | T08 | Purchasing Delegate, Selk Townships Board; **signatory** of the alloy and boards bids | market, help | minor | cast | the Board's bids and intake; everything breaks at ninety-four kelvin; the one counter the Company does not own; the petition to Shackleton lodged at the Registry; the leash; alloy and boards come from Luna |
+| `npc.abara_vos` | Kenji Abara-Vos | T05 | Dockmaster of Ligeia Terminal | atlas, travel | minor | cast | the motto and `throttle=450`, one soul, on every listed leg; two aboard only in a good season; the collars and IDLE; the slow board; no relay half; fill the tank before leaving |
+| `npc.adichie_brun` | Noor Adichie-Brun | T03 | Lift Marshal, Titan Concession Company (the arrivals desk and the lifter schedule) | atlas, help | extra | cast | the arrivals forms; the lifter windows over Ligeia; the lifters' loads; the Charter notice; the layout |
+| `npc.quayle_ibekwe` | Ottoline Quayle-Ibekwe | T10 | Keeper of the Ninety-Four | none | extra | cast | the Charter of 2291 and its lapse in 2390; the opinions on renewal; the custom of the sides; the bar's name; Malapert's decennial quote for a relay half; the current notices |
+| `npc.varela_nwosu` | Augustin Varela-Nwosu | T15 | Chief Factor, Titan Concession Company | none | major | principal, `enabled:false` | not voiced in the slice |
+| `npc.asante_pryce` | Hallgerd Asante-Pryce | T15 | Speaker of the Selk Townships | none | major | principal, `enabled:false` | not voiced in the slice |
+
+Every cast NPC carries a `persona`, a `speech_style`, `does_not_know` bounds and a non-LLM `fallback`
+list, and the tags `corridor_trade` and `port_ligeia`. No doc 11 principal is placed here.
+
+### 7.5 Lore pool (`lore.port_ligeia`, tag `port_ligeia`; the cast may draw `corridor_trade`)
+
+*Public* (nine): The Saturn Charter · Ligeia Terminal · The Company and the townships · No relay half ·
+Ninety-four kelvin · The Company's price · The overburden · Come slow or don't come · A company town.
+
+*Guarded* (three): The store's margin · Luna's board price · The leash.
+
+*Secret* (one): `secret.retainer`, `reveal: staff`, about `npc.varela_nwosu`. Stored as a Secret; its
+truth is in the pack and in no prompt and not in this brief.
+
+### 7.6 Ambience
+
+Twelve lines: a lock's breath of frost down the concourse, the spar ticking into Titan's shadow and the
+heaters coming on together, a Dray's callsign read out with "one soul aboard", a lifter's plume climbing out
+of the haze, Luna's prices arriving over an hour old, a bunkering pump's thud, a new name on the slow
+board, a bulb of tea caught in the Ninety-Four, the scrubbers briefly clearing the naphtha, the rings
+cutting the long window, a Company notice pressed flat by a glove, and frost creeping along a seal.
+
+### 7.7 Geometry, exits and walls
+
+Neighborhood footprint [[100,80],[220,200]], site and structure [[110,90],[210,190]]; budget target 12,
+maximum 16. **Company Deck** (floor 1, z 7): T01 [110,100]–[210,115]; T02 [110,115]–[140,140]; T03
+[110,140]–[140,165]; T04 [140,115]–[185,165] (circulation); T05 [185,115]–[210,140]; T07
+[185,140]–[210,165]; T09 [110,165]–[140,190]; T10 [140,165]–[175,190]; T06 [175,165]–[210,190]. **Cargo
+Deck** (floor 0): T11 [140,140]–[175,165]; T08 [175,140]–[210,165]; T15 [140,165]–[175,190] (restricted,
+under T10). **Cross-deck:** T07↔T08 public stair, `portal.at` (195,152,7)–(195,152,0), `dz_m` −7 (inside
+both rooms); T11→T15 hatch on their shared edge (y 165, x 140–175), `lock: staff`, `visibility: hidden`.
+**Walls**, the four exitless public seams: T01|T04 (y 115, x 140–185), T01|T05 (y 115, x 185–210),
+T05|T07 (y 140, x 185–210), T10|T06 (x 175, y 165–190), each z 0–4.5. **Counters:** T03
+(112,163)–(138,163), T05 (187,117)–(187,138), T08 (178,162)–(208,162) on the Cargo Deck, T09
+(112,167)–(138,167). Topology: the gallery's `port.dock` seed → T02 → T03 and T04 (joined to each
+other); T04 → T05, T06, T07, T10; T03 → T09 → T10; T07 → T06 and the stair → T08 → T11.
+
+| entry | From → to | Mode | Way in (`names[0]`) | Way back (`names[1]`) |
+|---|---|---|---|---|
+| `exit.t01_t02` | T01 → T02 | door | `Pressure Lobby <PL>;pl;lobby;in` | `Berth Gallery <BG>;bg;gallery;berths;out` |
+| `exit.t02_t03` | T02 → T03 | door | `Arrivals <AR>;ar;arrivals;company` | `Pressure Lobby <PL>;pl;lobby;out` |
+| `exit.t02_t04` | T02 → T04 | door | `Concourse <C>;c;concourse;spar;in` | `Pressure Lobby <PL>;pl;lobby;locks` |
+| `exit.t03_t04` | T03 → T04 | door | `Concourse <C>;c;concourse;spar;in` | `Arrivals <AR>;ar;arrivals;desk` |
+| `exit.t04_t05` | T04 → T05 | door | `Dockmaster <DM>;dm;dockmaster;office` | `Concourse <C>;c;concourse;out` |
+| `exit.t04_t07` | T04 → T07 | door | `Sales Floor <X>;x;exchange;sales;market` | `Concourse <C>;c;concourse;out` |
+| `exit.t03_t09` | T03 → T09 | door | `Company Store <CM>;cm;commissary;store;stores` | `Arrivals <AR>;ar;arrivals` |
+| `exit.t04_t10` | T04 → T10 | door | `Ninety-Four <NF>;nf;ninety;commons;bar` | `Concourse <C>;c;concourse;out` |
+| `exit.t04_t06` | T04 → T06 | door | `Lifter Gallery <LG>;lg;lifter;windows` | `Concourse <C>;c;concourse;out` |
+| `exit.t07_t06` | T07 → T06 | door | `Lifter Gallery <LG>;lg;lifter;windows` | `Sales Floor <X>;x;exchange;sales` |
+| `exit.t09_t10` | T09 → T10 | door | `Ninety-Four <NF>;nf;ninety;commons;bar` | `Company Store <CM>;cm;commissary;store` |
+| `exit.t08_t11` | T08 → T11 | door | `Bunkering Yard <BY>;by;bunkering;tanks` | `Receiving <RC>;rc;receiving;townships` |
+| `exit.t07_t08` | T07 → T08 | stair, dz −7 | `Receiving Stair <RS>;rs;receiving;townships;down;d` | `Sales Stair <ES>;es;exchange;sales;up;u` |
+| `exit.t11_t15` | T11 → T15 | hatch, hidden, `lock: staff` | `Service Spine <SS>;ss;spine;hatch` | `Bunkering Hatch <RH>;rh;bunkering;out` |
+
+Fourteen exits; `exit.t11_t15` is the locked one. The concourse holds two ways back toward the locks,
+`locks` to the lobby and `desk` to arrivals, so neither shares an alias with the other.

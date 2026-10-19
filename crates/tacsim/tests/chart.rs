@@ -153,7 +153,7 @@ fn a3_chart_window_under_a_constant_sky_says_every_day_is_today() {
         refused.contains(
             &CHART_NO_ROUTE
                 .replace("{here}", "Ceres Freeport")
-                .replace("{list}", "Stickney Yards")
+                .replace("{list}", "Aitken Highport, Stickney Yards")
         ),
         "{refused}"
     );
@@ -364,10 +364,16 @@ fn a3b_the_chart_frame_is_a_grid_with_the_chart_block_and_is_blessed_for_the_web
             .all(|b| b["r_au"].as_f64().is_some_and(|r| r > 0.0))
     );
     let routes = chart["routes"].as_array().expect("routes");
-    assert_eq!(routes.len(), 1);
-    assert_eq!(routes[0]["to"], "Stickney Yards");
-    assert_eq!(routes[0]["body"], "phobos");
-    let legs: Vec<(String, String)> = routes[0]["legs"]
+    // Doc 19 cut A.8: Ceres lists Luna and Stickney, in venue order.
+    assert_eq!(routes.len(), 2);
+    assert_eq!(routes[0]["to"], "Aitken Highport");
+    assert_eq!(routes[0]["body"], "luna");
+    let stickney = routes
+        .iter()
+        .find(|r| r["to"] == "Stickney Yards")
+        .expect("the Stickney route");
+    assert_eq!(stickney["body"], "phobos");
+    let legs: Vec<(String, String)> = stickney["legs"]
         .as_array()
         .expect("legs")
         .iter()
@@ -385,14 +391,10 @@ fn a3b_the_chart_frame_is_a_grid_with_the_chart_block_and_is_blessed_for_the_web
             ("kirkwood".to_owned(), "phobos".to_owned())
         ]
     );
-    assert!(
-        routes[0]["empty"]["total_s"]
-            .as_i64()
-            .is_some_and(|s| s > 0)
-    );
-    assert!(routes[0]["direct"]["km"].as_u64().is_some_and(|km| km > 0));
+    assert!(stickney["empty"]["total_s"].as_i64().is_some_and(|s| s > 0));
+    assert!(stickney["direct"]["km"].as_u64().is_some_and(|km| km > 0));
     let window = chart["window"].as_array().expect("window");
-    assert_eq!(window.len(), 1);
+    assert_eq!(window.len(), 2, "a window per destination");
     assert!(
         window[0]["fastest"]["offset_days"].is_number(),
         "{}",

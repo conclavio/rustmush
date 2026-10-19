@@ -51,6 +51,8 @@ pub mod ground;
 /// **17b cut M5.1**: the holdings seam's test provider — Standard Doctrine and
 /// two scripted fixture minds, installed through the production seam.
 pub mod holdings;
+/// **Doc 19 cut A.8**: the moon ports stripped away for the v7-shaped lane variants.
+pub mod moon;
 pub mod rig;
 pub mod scripted;
 

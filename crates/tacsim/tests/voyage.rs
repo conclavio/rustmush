@@ -45,14 +45,16 @@ use tacsim::port::apply::room_by_key;
 use tacsim::port::voyage::{
     AT_NOT_YET, CLEARANCE_LAPSED, GOODS_COMING, LANE_UNPLANNED, LAUNCH_GRACE_FIRES, LAUNCH_HELD,
     LEAVE_CLEARED, LISTING_HOLDS, MANUAL_DEPARTURE, NO_ROUTE, NOT_ABOARD, OVERLOADED, PORT_CLOSED,
-    TANK_SHORT, UNDOCK_CLEARED, UNDOCK_UNDER_WAY, VIA_UNKNOWN, VOYAGE_DARK, VOYAGE_PREFIX, Voyage,
-    VoyageState, voyage_key,
+    TANK_SHORT, THROTTLE_FITS, UNDOCK_CLEARED, UNDOCK_UNDER_WAY, VIA_UNKNOWN, VOYAGE_DARK,
+    VOYAGE_PREFIX, Voyage, VoyageState, voyage_key,
 };
 use tacsim::port::{
     HullRow, PortDef, PortHandles, PortMap, PortMapState, PortVenueGate, Ticket, TicketId, room_key,
 };
 use tacsim::port_tick::{NOTICE_HEADING, pending_notices};
 use tacsim::{Sky, TacsimConfig, TacsimStore};
+
+use support::ground::{UNSIGNED, sign};
 
 // ---------------------------------------------------------------------------
 // The rig (commerce.rs's, the sky rate a parameter)
@@ -68,10 +70,14 @@ fn lane_id() -> CanonicalId {
 
 /// How a test roster is composed: `commerce.rs`'s `Roster::bare` (no sheet, the
 /// test world's layer, the shipped game content), with `[tacsim.time.ephemeris]`'s
-/// rate a parameter (test 4's sky change).
+/// rate a parameter (test 4's sky change), and optionally a lane booted in place
+/// of the shipped one as an operator seed (`commerce.rs`'s `Roster::seeded`).
 #[derive(Clone, Copy, Default)]
 struct Roster {
     sky_rate: u32,
+    /// A lane booted instead of the shipped one (doc 19 cut A.8's `Throttle:`
+    /// test), leaked so the roster stays `Copy`.
+    seed_lane: Option<&'static str>,
 }
 
 impl Roster {
@@ -89,6 +95,12 @@ impl Roster {
             ..TacsimConfig::default()
         };
         cfg.time.ephemeris.rate = self.sky_rate;
+        if let Some(lane) = self.seed_lane {
+            cfg.seeds.push(tacsim::config::PackSource {
+                name: "ops/lane.json".to_owned(),
+                bytes: lane.to_owned(),
+            });
+        }
         let (mut mods, inventory) = comp::server_modules_with_tacsim(
             mush_weather::WeatherConfig::default(),
             EconomyConfig::default(),
@@ -105,8 +117,29 @@ impl Roster {
             comp::npc_agent_adapter(),
             &mush_config::config::NpcCfg::default(),
         ));
-        mods.push(comp::tacsim_test_world_module_wired(cfg, true, inventory));
-        mods.push(comp::content_module_with(true, true).expect("the content module composes"));
+        mods.push(comp::tacsim_test_world_module_wired(
+            cfg,
+            self.seed_lane.is_none(),
+            inventory,
+        ));
+        match self.seed_lane {
+            None => mods
+                .push(comp::content_module_with(true, true).expect("the content module composes")),
+            Some(lane) => {
+                let mut packs = comp::boot_pack_list(true, true).expect("the boot list");
+                packs.retain(|p| p.manifest().id().as_str() != LANE_PACK);
+                packs.push(mush_content::load_pack(lane).expect("the seed lane verifies"));
+                let mut appliers = mush_content::Appliers::new();
+                mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
+                mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
+                tacsim::register_appliers(&mut appliers).expect("tacsim appliers");
+                mods.push(Box::new(
+                    mush_content::ContentModule::new()
+                        .with_appliers(appliers)
+                        .with_boot_packs(packs),
+                ));
+            }
+        }
         mods
     }
 }
@@ -152,7 +185,12 @@ fn with_offer_keys(tw: &mut TestWorld) {
 
 /// Boot, settle the capital, stock both ports.
 fn stocked() -> Rig {
-    let mut tw = TestWorld::with_modules(Roster::default().modules());
+    stocked_with(Roster::default())
+}
+
+/// [`stocked`] on `roster`.
+fn stocked_with(roster: Roster) -> Rig {
+    let mut tw = TestWorld::with_modules(roster.modules());
     no_refused_writes(&tw);
     with_offer_keys(&mut tw);
     let oracle = Arc::new(MapOracle::default());
@@ -809,6 +847,11 @@ fn ic9_undock_flies_the_lane_and_docks_at_stickney() {
         lines.contains(&"Stores 19 crew-days (locker 19; 0 left)."),
         "line 6: {plan}"
     );
+    // Doc 19 cut A.8 (D-19-22): the shipped epoch plan fits, so no `Throttle:` line.
+    assert!(
+        !lines.iter().any(|l| l.starts_with("Throttle:")),
+        "the shipped plan fits: {plan}"
+    );
     assert!(
         lines
             .iter()
@@ -1059,7 +1102,7 @@ fn ic9_undock_refusals_move_nothing() {
         out.contains(
             &VIA_UNKNOWN
                 .replace("{via}", "nowhere")
-                .replace("{list}", "Ceres Freeport, Kirkwood Depot, Stickney Yards")
+                .replace("{list}", "Aitken Highport, Ceres Freeport, Kirkwood Depot, Ligeia Terminal, Stickney Yards, Voltaire Anchorage")
         ),
         "{out}"
     );
@@ -1068,6 +1111,13 @@ fn ic9_undock_refusals_move_nothing() {
     assert!(
         out.contains("Plan for Stickney Yards, by way of Kirkwood Depot:"),
         "{out}"
+    );
+    // Doc 19 cut A.8 (D-19-22): 52 t against today's 50 t is short, but the plan
+    // fits the tank and the locker filled to capacity, so no `Throttle:` line.
+    assert!(out.contains("(tank 50 t; 2 t short)"), "{out}");
+    assert!(
+        !out.lines().any(|l| l.starts_with("Throttle:")),
+        "a full tank fits: {out}"
     );
     let out = run(&mut rig.tw, pilot, "+ship/plan stickney throttle=100");
     assert!(out.contains("throttle= is 250 to 1000 permille"), "{out}");
@@ -1099,7 +1149,7 @@ fn ic9_undock_refusals_move_nothing() {
         out.contains(
             &NO_ROUTE
                 .replace("{here}", "Ceres Freeport")
-                .replace("{list}", "Stickney Yards")
+                .replace("{list}", "Aitken Highport, Stickney Yards")
         ),
         "{out}"
     );
@@ -2058,7 +2108,13 @@ fn sky_change_world() -> (Rig, ObjId, ObjId, Ticket) {
     let due: Vec<Option<i64>> = (0..2).map(|k| j.leg_due_at(k)).collect();
     let arrival = j.arrival_at();
     let old_rev = before.plan.sky_rev;
-    let mut rig = reboot_with(rig, Roster { sky_rate: 1_000 });
+    let mut rig = reboot_with(
+        rig,
+        Roster {
+            sky_rate: 1_000,
+            ..Roster::default()
+        },
+    );
     assert_eq!(store(&rig.tw).config().time.ephemeris.rate, 1_000);
     let after = ticket(&mut rig.tw, hull, 1).expect("the ticket reads back");
     assert_eq!(after, before, "the ticket reads back identical");
@@ -2714,4 +2770,243 @@ fn ic14_the_burn_gauge_reads_the_filed_plan() {
         Some(format!("  {filed}")),
         "{bridge:#?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Doc 19 cut A.8: the `Throttle:` line of `+ship/plan`
+// ---------------------------------------------------------------------------
+
+/// A Dray compartment's capacity in units of `good`: its `stowage` limits over
+/// the goods table's per-unit measures, the tightest (the planner's own reading).
+fn dray_capacity(stowage: &str, good: &str) -> u64 {
+    let goods = tacsim::definitions::goods::goods_table().expect("the goods table");
+    let pack = load_pack(tacsim::definitions::content::DRAY_JSON).expect("the Dray pack");
+    let Some(PackEntry::Unit(spec)) = pack.entry(&cid(tacsim::definitions::content::DRAY)) else {
+        panic!("the Dray unit");
+    };
+    let logistics = spec.logistics.as_ref().expect("the Dray's logistics");
+    let id = cid(stowage);
+    let def = logistics.stowage.get(&id).expect("the compartment");
+    let compartment = tacsim::port::capacity::Compartment::from_stowage(&id, def);
+    let row = goods.good(&cid(good)).expect("the good");
+    compartment
+        .limits
+        .iter()
+        .filter_map(|(measure, limit)| {
+            let per_unit = *row.measures.get(measure)?;
+            (per_unit > 0).then(|| limit / per_unit)
+        })
+        .min()
+        .expect("a limit the good is measured in")
+}
+
+/// The shipped lane with one test-only route, `ceres_ligeia` (Ceres Freeport to
+/// Ligeia Terminal in one flip-law leg; a cross-body leg never reads its
+/// `base_s`), listed by Ceres under `titan`; re-signed at the shipped version
+/// and leaked for the `Copy` roster.
+fn lane_with_ceres_titan() -> &'static str {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    doc["entries"]["ceres_ligeia"] = serde_json::json!({
+        "kind": "route",
+        "def": {
+            "from": "ceres_freeport",
+            "to": "ligeia_terminal",
+            "legs": [{ "to": "ligeia_terminal", "base_s": 1 }],
+            "drive_class": "coast_hauler",
+            "propellant": 0
+        }
+    });
+    doc["entries"]["ceres_port"]["def"]["routes"]["titan"] = serde_json::json!(["ceres_ligeia"]);
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    Box::leak(signed.into_boxed_str())
+}
+
+/// The two numbers a `+ship/plan` line names: `Burn B t (tank T t; …)` → `(B, T)`,
+/// `Stores C crew-days (locker L; …)` → `(C, L)` (`orders.rs`'s).
+fn plan_numbers(plan: &str, head: &str, open: &str) -> Option<(u64, u64)> {
+    let line = plan.lines().find(|l| l.starts_with(head))?;
+    let first = line
+        .strip_prefix(head)?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    let second = line
+        .split(open)
+        .nth(1)?
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()?;
+    Some((first, second))
+}
+
+/// The plan's lines that start `Throttle:`.
+fn throttle_lines(plan: &str) -> Vec<&str> {
+    plan.lines()
+        .filter(|l| l.starts_with("Throttle:"))
+        .collect()
+}
+
+/// A [`THROTTLE_FITS`] line read back: `(throttle, burn, crew-days, passage)`,
+/// re-rendered through the template so the form is exact.
+fn throttle_fits(line: &str) -> (u32, u64, u64, String) {
+    let field = |after: &str, until: char| -> String {
+        line.split(after)
+            .nth(1)
+            .and_then(|rest| rest.split(until).next())
+            .unwrap_or_else(|| panic!("{after:?} in {line:?}"))
+            .to_owned()
+    };
+    let throttle: u32 = field("throttle=", ' ').parse().expect("a throttle");
+    let burn: u64 = field("burn ", ' ').parse().expect("a burn");
+    let days: u64 = field("t, ", ' ').parse().expect("crew-days");
+    let passage = field("crew-days, ", ' ');
+    let rendered = THROTTLE_FITS
+        .replace("{throttle}", &throttle.to_string())
+        .replace("{burn}", &burn.to_string())
+        .replace("{days}", &days.to_string())
+        .replace("{passage}", &passage);
+    assert_eq!(line, rendered, "the line is THROTTLE_FITS");
+    (throttle, burn, days, passage)
+}
+
+/// **`+ship/plan` names the throttle that fits** (doc 19 cut A.8, D-19-22; the A.8b
+/// review's findings 6 and 32: the line had no world-side test). On a lane where
+/// Ceres lists a direct route to Titan, a Dray with the hold, the tank and the
+/// locker all full plans Titan at the default 1000 permille: the burn is over the
+/// tank, and exactly one `Throttle:` line follows the `Stores ` line, naming a
+/// throttle in the band below 1000 whose burn and crew-days fit the capacities;
+/// the `Burn ` and `Stores ` lines keep their form. One and twenty permille above
+/// it the same line is printed (the bisection's boundary; the payload is re-based
+/// independently of the asked throttle); at it the plan fits, no line is printed,
+/// and, the tank and the locker being full, the `Burn `, `Stores ` and `Passage `
+/// lines read the hint's own burn, crew-days and IC days. (The shipped epoch
+/// Ceres to Stickney plan printing none is asserted in
+/// `ic9_undock_flies_the_lane_and_docks_at_stickney`, and a plan short of today's
+/// tank but fitting a full one in `ic9_undock_refusals_move_nothing`.)
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a8_the_plan_names_the_throttle_that_fits() {
+    let mut rig = stocked_with(Roster {
+        seed_lane: Some(lane_with_ceres_titan()),
+        ..Roster::default()
+    });
+    let (pilot, row) = chartered(&mut rig, "Pilot", 1);
+    let tank = dray_capacity("propellant", "propellant");
+    let locker = dray_capacity("provisions", "provisions");
+    assert_eq!((tank, locker), (80, 120), "the Dray's tank and locker");
+    load(&mut rig, &row, tank, locker);
+    board(&mut rig, pilot);
+
+    // The default throttle: the tank short, one `Throttle:` line after `Stores `.
+    let plan = run(&mut rig.tw, pilot, "+ship/plan titan");
+    let lines: Vec<&str> = plan.lines().collect();
+    assert!(
+        lines
+            .first()
+            .is_some_and(|l| l.starts_with("Plan for Ligeia Terminal")),
+        "{plan}"
+    );
+    let at = |head: &str| -> Vec<usize> {
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.starts_with(head))
+            .map(|(k, _)| k)
+            .collect()
+    };
+    let (burns, stores, hints) = (at("Burn "), at("Stores "), at("Throttle:"));
+    assert_eq!((burns.len(), stores.len()), (1, 1), "{plan}");
+    assert_eq!(hints.len(), 1, "exactly one Throttle: line: {plan}");
+    assert_eq!(hints[0], stores[0] + 1, "the line follows Stores: {plan}");
+    assert!(burns[0] < stores[0], "{plan}");
+    let (burn, tank_read) = plan_numbers(&plan, "Burn ", "(tank ").expect(&plan);
+    let (crew, locker_read) = plan_numbers(&plan, "Stores ", "(locker ").expect(&plan);
+    assert_eq!(
+        (tank_read, locker_read),
+        (tank, locker),
+        "both full: {plan}"
+    );
+    assert!(burn > tank, "1000 permille burns over the tank: {plan}");
+    let burn_line = lines[burns[0]];
+    assert!(
+        burn_line.starts_with(&format!(
+            "Burn {burn} t (tank {tank} t; {} t short). Flip and burn at ",
+            burn - tank
+        )) && burn_line.contains("throttle 1000‰"),
+        "{plan}"
+    );
+    let left = if crew <= locker {
+        format!("{} left", locker - crew)
+    } else {
+        format!("{} short", crew - locker)
+    };
+    assert_eq!(
+        lines[stores[0]],
+        format!("Stores {crew} crew-days (locker {locker}; {left})."),
+        "{plan}"
+    );
+    let hint = lines[hints[0]];
+    assert!(
+        hint.starts_with("Throttle: with the tank and locker full, throttle="),
+        "{plan}"
+    );
+    let (n, hint_burn, hint_days, hint_passage) = throttle_fits(hint);
+    assert!(
+        (250..1_000).contains(&n),
+        "a throttle in the band below 1000: {hint}"
+    );
+    assert!(hint_burn <= tank && hint_days <= locker, "it fits: {hint}");
+    eprintln!(
+        "a8 Throttle: Ceres -> Titan at the epoch, laden, one soul: 1000 permille burns {burn} t \
+         ({crew} crew-days); throttle={n} fits: {hint_burn} t, {hint_days} crew-days, \
+         {hint_passage} IC days"
+    );
+
+    // One permille above it, and twenty: the same line (the boundary; the asked
+    // throttle does not move the answer).
+    for above in [n + 1, (n + 20).min(1_000)] {
+        let plan = run(
+            &mut rig.tw,
+            pilot,
+            &format!("+ship/plan titan throttle={above}"),
+        );
+        assert!(plan.contains(&format!("throttle {above}‰")), "{plan}");
+        assert_eq!(throttle_lines(&plan), vec![hint], "at {above}: {plan}");
+    }
+
+    // At it: the plan fits the full tank and locker, so no line; the plan's own
+    // lines are the hint's figures.
+    let plan = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+ship/plan titan throttle={n}"),
+    );
+    assert!(throttle_lines(&plan).is_empty(), "at {n} it fits: {plan}");
+    assert!(plan.contains(&format!("throttle {n}‰")), "{plan}");
+    assert_eq!(
+        plan_numbers(&plan, "Burn ", "(tank "),
+        Some((hint_burn, tank)),
+        "{plan}"
+    );
+    assert!(
+        plan.contains(&format!("(tank {tank} t; {} t left)", tank - hint_burn)),
+        "{plan}"
+    );
+    assert_eq!(
+        plan_numbers(&plan, "Stores ", "(locker "),
+        Some((hint_days, locker)),
+        "{plan}"
+    );
+    assert!(
+        plan.lines()
+            .any(|l| l.starts_with(&format!("Passage {hint_passage} IC days"))),
+        "{plan}"
+    );
+    // The shipped route on the same world still prints none.
+    let plan = run(&mut rig.tw, pilot, "+ship/plan stickney");
+    assert!(plan.contains("Plan for Stickney Yards"), "{plan}");
+    assert!(throttle_lines(&plan).is_empty(), "{plan}");
 }

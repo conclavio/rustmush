@@ -82,13 +82,19 @@ fn a3b_alt_c_opens_the_chart_and_draws_the_blessed_frame() {
     assert!(frame.contains("The sky on "), "{frame}");
     assert!(frame.contains('*'), "the Sun:\n{frame}");
     assert!(frame.contains("ceres (here)"), "the legend:\n{frame}");
+    // The tables pane prints the server's lines, the window first (doc 19 cut A.8:
+    // with two destinations from Ceres the window fills the pane before the sky's
+    // own heading, so the pane is held to its first heading and its first
+    // destination, Aitken Highport by venue order).
+    assert!(frame.contains("the window"), "the tables pane:\n{frame}");
+    let fixture: serde_json::Value =
+        serde_json::from_str(SKY_CHART_JSON).expect("the fixture is JSON");
+    let first = fixture["chart"]["routes"][0]["to"]
+        .as_str()
+        .expect("the fixture lists a destination");
     assert!(
-        frame.contains("the sky and the passages now"),
-        "the tables pane:\n{frame}"
-    );
-    assert!(
-        frame.contains("Stickney Yards"),
-        "a destination's line:\n{frame}"
+        frame.contains(first),
+        "a destination's line ({first}):\n{frame}"
     );
     assert!(
         frame.contains(" c chart"),

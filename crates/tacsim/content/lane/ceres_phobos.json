@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 7,
+    "version": 8,
     "kind": "campaign_seed",
-    "digest": "11fb2c9228799918184cc872a01d683e85de91e830104f170b966c7311f23541",
+    "digest": "be733686a1630175e541346c693fcb2cce9f658db876121c73c4d476e04ca330",
     "requires": []
   },
   "entries": {
@@ -2086,6 +2086,30 @@
         "body": "phobos"
       }
     },
+    "aitken_highport": {
+      "kind": "location",
+      "def": {
+        "label": "Aitken Highport",
+        "role": "port",
+        "body": "luna"
+      }
+    },
+    "voltaire_anchorage": {
+      "kind": "location",
+      "def": {
+        "label": "Voltaire Anchorage",
+        "role": "port",
+        "body": "deimos"
+      }
+    },
+    "ligeia_terminal": {
+      "kind": "location",
+      "def": {
+        "label": "Ligeia Terminal",
+        "role": "port",
+        "body": "titan"
+      }
+    },
     "ceres_stickney": {
       "kind": "route",
       "def": {
@@ -2118,6 +2142,96 @@
           {
             "to": "ceres_freeport",
             "base_s": 61776
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "ceres_aitken": {
+      "kind": "route",
+      "def": {
+        "from": "ceres_freeport",
+        "to": "aitken_highport",
+        "legs": [
+          {
+            "to": "aitken_highport",
+            "base_s": 1609856
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "aitken_voltaire": {
+      "kind": "route",
+      "def": {
+        "from": "aitken_highport",
+        "to": "voltaire_anchorage",
+        "legs": [
+          {
+            "to": "voltaire_anchorage",
+            "base_s": 728633
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "aitken_ligeia": {
+      "kind": "route",
+      "def": {
+        "from": "aitken_highport",
+        "to": "ligeia_terminal",
+        "legs": [
+          {
+            "to": "ligeia_terminal",
+            "base_s": 6803208
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "ligeia_aitken": {
+      "kind": "route",
+      "def": {
+        "from": "ligeia_terminal",
+        "to": "aitken_highport",
+        "legs": [
+          {
+            "to": "aitken_highport",
+            "base_s": 6803208
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "ligeia_voltaire": {
+      "kind": "route",
+      "def": {
+        "from": "ligeia_terminal",
+        "to": "voltaire_anchorage",
+        "legs": [
+          {
+            "to": "voltaire_anchorage",
+            "base_s": 6477235
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "voltaire_stickney": {
+      "kind": "route",
+      "def": {
+        "from": "voltaire_anchorage",
+        "to": "stickney_yards",
+        "legs": [
+          {
+            "to": "stickney_yards",
+            "base_s": 131
           }
         ],
         "drive_class": "coast_hauler",
@@ -2165,7 +2279,9 @@
             "metals": "ceres_port/freeport_exchange",
             "volatiles": "ceres_port/occator",
             "structural_alloys": "stickney_port/kasei",
-            "industrial_parts": "stickney_port/stickney_yards"
+            "industrial_parts": "stickney_port/stickney_yards",
+            "instrument_boards": "luna_port/crisium_instruments",
+            "carbon_feedstock": "titan_port/titan_concession"
           },
           "buyout_major": 90000,
           "dormancy_real_days": 7,
@@ -2189,7 +2305,7 @@
             "asks":  [ { "good": "provisions", "price_major": 10 } ],
             "bids":  [ { "good": "industrial_parts", "price_major": 560, "intake": 5400, "boards": ["chandlery"] } ] }
         ],
-        "routes": { "stickney": [ "ceres_stickney" ] },
+        "routes": { "luna": [ "ceres_aitken" ], "stickney": [ "ceres_stickney" ] },
         "premium": { "k_permille": 300, "cap_permille": 500 },
         "emergency": { "org": "freeport_exchange", "ratio_permille": 1500, "goods": ["provisions", "volatiles", "propellant"], "intake": 100 }
       }
@@ -2237,6 +2353,142 @@
         "routes": { "ceres": [ "stickney_ceres" ] },
         "premium": { "k_permille": 300, "cap_permille": 500 },
         "emergency": { "org": "stickney_yards", "ratio_permille": 1500, "goods": ["provisions", "volatiles", "propellant"], "intake": 100 }
+      }
+    },
+    "luna_port": {
+      "kind": "port",
+      "def": {
+        "location": "aitken_highport",
+        "venue": "luna",
+        "area": "neighborhood.aitken_highport",
+        "gallery": "neighborhood.aitken_highport.room.l01_berth_gallery",
+        "rooms": {
+          "arrivals": "neighborhood.aitken_highport.room.l03_arrivals",
+          "registry": "neighborhood.aitken_highport.room.l05_registry",
+          "clearing": "neighborhood.aitken_highport.room.l06_clearing",
+          "exchange": "neighborhood.aitken_highport.room.l07_exchange",
+          "receiving": "neighborhood.aitken_highport.room.l08_receiving",
+          "chandlery": "neighborhood.aitken_highport.room.l09_chandlery",
+          "dockmaster": "neighborhood.aitken_highport.room.l12_dockmaster",
+          "spine": "neighborhood.aitken_highport.room.l15_spine"
+        },
+        "treasury": "tacsim.treasury",
+        "orgs": [
+          { "id": "orbital_access", "name": "Concord Orbital Access", "capital_major": 50000, "faction": "concord" },
+          { "id": "cabeus_works", "name": "Cabeus Works", "capital_major": 250000, "faction": "concord" },
+          { "id": "habitat_board", "name": "Lunar Habitat Board", "capital_major": 1000000, "faction": "concord" },
+          { "id": "crisium_instruments", "name": "Crisium Instruments", "capital_major": 50000, "faction": "concord" },
+          { "id": "highport_victualling", "name": "Highport Victualling Office", "capital_major": 50000, "faction": "concord" }
+        ],
+        "vendors": [
+          { "org": "cabeus_works", "storefront": "neighborhood.aitken_highport.item.cabeus_cage",
+            "agent": "luna_port.clerk", "signatory": "neighborhood.aitken_highport.npc.mwangi_eriksen",
+            "stock": [ { "good": "structural_alloys", "qty": 3120, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "structural_alloys", "price_major": 400, "boards": ["exchange"] } ],
+            "bids":  [ { "good": "metals", "price_major": 270, "intake": 800, "boards": ["receiving", "exchange"] } ] },
+          { "org": "habitat_board", "storefront": "neighborhood.aitken_highport.item.habitat_manifold",
+            "agent": "luna_port.clerk", "signatory": "neighborhood.aitken_highport.npc.albrecht_sato",
+            "bids":  [ { "good": "volatiles", "price_major": 195, "intake": 4100, "boards": ["receiving", "exchange"] },
+                       { "good": "carbon_feedstock", "price_major": 380, "intake": 300, "boards": ["receiving", "exchange"] } ] },
+          { "org": "crisium_instruments", "storefront": "neighborhood.aitken_highport.item.crisium_cage",
+            "agent": "luna_port.clerk", "signatory": "neighborhood.aitken_highport.npc.okafor_thistlewood",
+            "stock": [ { "good": "instrument_boards", "qty": 2080, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "instrument_boards", "price_major": 900, "boards": ["exchange", "clearing"] } ] },
+          { "org": "highport_victualling", "storefront": "neighborhood.aitken_highport.item.victualling_locker",
+            "agent": "luna_port.clerk", "signatory": "neighborhood.aitken_highport.npc.batista_okeke",
+            "stock": [ { "good": "propellant", "qty": 5000, "grade": 50, "issue": 1 },
+                       { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "propellant", "price_major": 60, "boards": ["chandlery", "dockmaster"] },
+                       { "good": "provisions", "price_major": 10, "boards": ["chandlery"] } ] }
+        ],
+        "routes": { "deimos": [ "aitken_voltaire" ], "titan": [ "aitken_ligeia" ] },
+        "premium": { "k_permille": 300, "cap_permille": 500 },
+        "emergency": { "org": "crisium_instruments", "ratio_permille": 1500, "goods": ["provisions", "volatiles", "propellant"], "intake": 100 }
+      }
+    },
+    "deimos_port": {
+      "kind": "port",
+      "def": {
+        "location": "voltaire_anchorage",
+        "venue": "deimos",
+        "area": "neighborhood.voltaire_anchorage",
+        "gallery": "neighborhood.voltaire_anchorage.room.d01_berth_gallery",
+        "rooms": {
+          "customs": "neighborhood.voltaire_anchorage.room.d03_customs",
+          "harbourmaster": "neighborhood.voltaire_anchorage.room.d05_harbourmaster",
+          "receiving": "neighborhood.voltaire_anchorage.room.d07_receiving",
+          "exchange": "neighborhood.voltaire_anchorage.room.d08_exchange",
+          "commissary": "neighborhood.voltaire_anchorage.room.d09_commissary",
+          "spine": "neighborhood.voltaire_anchorage.room.d15_spine"
+        },
+        "treasury": "tacsim.treasury",
+        "orgs": [
+          { "id": "voltaire_bond", "name": "Voltaire Bond Authority", "capital_major": 50000, "faction": "republic" },
+          { "id": "strategic_reserve", "name": "Republic Strategic Reserve", "capital_major": 300000, "faction": "republic" },
+          { "id": "syrtis_bonded", "name": "Syrtis Bonded Imports", "capital_major": 3100000, "faction": "republic" }
+        ],
+        "vendors": [
+          { "org": "strategic_reserve", "storefront": "neighborhood.voltaire_anchorage.item.reserve_manifold",
+            "agent": "deimos_port.clerk", "signatory": "neighborhood.voltaire_anchorage.npc.abiodun_fleck",
+            "stock": [ { "good": "propellant", "qty": 5000, "grade": 50, "issue": 1 },
+                       { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "propellant", "price_major": 60, "boards": ["commissary", "harbourmaster"] },
+                       { "good": "provisions", "price_major": 10, "boards": ["commissary"] } ],
+            "bids":  [ { "good": "volatiles", "price_major": 190, "intake": 900, "boards": ["receiving"] },
+                       { "good": "carbon_feedstock", "price_major": 380, "intake": 300, "boards": ["receiving"] } ] },
+          { "org": "syrtis_bonded", "storefront": "neighborhood.voltaire_anchorage.item.syrtis_cage",
+            "agent": "deimos_port.clerk", "signatory": "neighborhood.voltaire_anchorage.npc.strand_villanueva",
+            "bids":  [ { "good": "structural_alloys", "price_major": 460, "intake": 2400, "boards": ["receiving", "exchange"] },
+                       { "good": "instrument_boards", "price_major": 1100, "intake": 1600, "boards": ["receiving", "exchange"] } ] }
+        ],
+        "routes": { "stickney": [ "voltaire_stickney" ] },
+        "premium": { "k_permille": 300, "cap_permille": 500 },
+        "emergency": { "org": "syrtis_bonded", "ratio_permille": 1500, "goods": ["provisions", "volatiles", "propellant"], "intake": 100 }
+      }
+    },
+    "titan_port": {
+      "kind": "port",
+      "def": {
+        "location": "ligeia_terminal",
+        "venue": "titan",
+        "area": "neighborhood.ligeia_terminal",
+        "gallery": "neighborhood.ligeia_terminal.room.t01_berth_gallery",
+        "rooms": {
+          "arrivals": "neighborhood.ligeia_terminal.room.t03_arrivals",
+          "dockmaster": "neighborhood.ligeia_terminal.room.t05_dockmaster",
+          "exchange": "neighborhood.ligeia_terminal.room.t07_exchange",
+          "receiving": "neighborhood.ligeia_terminal.room.t08_receiving",
+          "commissary": "neighborhood.ligeia_terminal.room.t09_commissary",
+          "yard": "neighborhood.ligeia_terminal.room.t11_bunkering",
+          "spine": "neighborhood.ligeia_terminal.room.t15_spine"
+        },
+        "treasury": "tacsim.treasury",
+        "orgs": [
+          { "id": "titan_concession", "name": "Titan Concession Company", "capital_major": 50000, "faction": "company" },
+          { "id": "concession_stores", "name": "Concession Stores", "capital_major": 50000, "faction": "company" },
+          { "id": "selk_townships", "name": "Selk Townships Board", "capital_major": 1350000, "faction": "townships" }
+        ],
+        "vendors": [
+          { "org": "titan_concession", "storefront": "neighborhood.ligeia_terminal.item.concession_manifold",
+            "agent": "titan_port.clerk", "signatory": "neighborhood.ligeia_terminal.npc.marangoni_teague",
+            "stock": [ { "good": "carbon_feedstock", "qty": 600, "grade": 50, "issue": 1 },
+                       { "good": "volatiles", "qty": 1800, "grade": 50, "issue": 1 },
+                       { "good": "propellant", "qty": 5000, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "carbon_feedstock", "price_major": 250, "boards": ["exchange"] },
+                       { "good": "volatiles", "price_major": 40, "boards": ["exchange", "yard"] },
+                       { "good": "propellant", "price_major": 30, "boards": ["exchange", "yard", "dockmaster"] } ] },
+          { "org": "concession_stores", "storefront": "neighborhood.ligeia_terminal.item.stores_locker",
+            "agent": "titan_port.clerk", "signatory": "neighborhood.ligeia_terminal.npc.oyelowo_krauss",
+            "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],
+            "asks":  [ { "good": "provisions", "price_major": 20, "boards": ["commissary"] } ] },
+          { "org": "selk_townships", "storefront": "neighborhood.ligeia_terminal.item.townships_cage",
+            "agent": "titan_port.clerk", "signatory": "neighborhood.ligeia_terminal.npc.tupou_lindahl",
+            "bids":  [ { "good": "structural_alloys", "price_major": 760, "intake": 720, "boards": ["receiving", "exchange"] },
+                       { "good": "instrument_boards", "price_major": 1500, "intake": 480, "boards": ["receiving", "exchange"] } ] }
+        ],
+        "routes": { "deimos": [ "ligeia_voltaire" ], "luna": [ "ligeia_aitken" ] },
+        "premium": { "k_permille": 300, "cap_permille": 500 },
+        "emergency": { "org": "selk_townships", "ratio_permille": 1500, "goods": ["provisions"], "intake": 100 }
       }
     }
   }

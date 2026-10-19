@@ -187,8 +187,9 @@ audited (`@llm/log`).
 
 ## The port cast
 
-At Ceres Freeport and Stickney Yards the clerks, agents and officers are NPCs
-of this kind. They answer questions about their port, their house and the
+At the five ports — Ceres Freeport, Stickney Yards, Aitken Highport, Voltaire
+Anchorage and Ligeia Terminal — the clerks, agents and officers are NPCs of this
+kind. They answer questions about their port, their house and the
 trade in character, and their names sign their houses' business: each line on a
 board names the clerk who signs for it, and a sale line names who countersigns.
 They never move money or goods themselves — every purchase, sale and enrolment

@@ -2,10 +2,12 @@
 //! bids** (doc 19 §6, D-19-14; doc 18 Q-18-39).
 //!
 //! On the production composition with the game on (the shipped lane latched at
-//! boot): the two ports carry `premium { k 300, cap 500 }` and an `emergency`
-//! block; at the constant sky (rate 0, every body at the lane's epoch) the reach
-//! ratio is one, every bid posts at its authored price and no emergency bid
-//! posts; at real motion from a test world's own date the bids post at the price
+//! boot): the five ports carry `premium { k 300, cap 500 }` and an `emergency`
+//! block (this suite reads Ceres's and Stickney's; lane v8's moon ports are
+//! `tests/moon_ports.rs`'s); at the constant sky (rate 0, every body at the
+//! lane's epoch) the reach ratio is one, every bid posts at its authored price
+//! and no emergency bid posts; the old ports' suppliers under lane v8 are the
+//! v7 graph's plus the Deimos hop to Stickney (`a8_…`); at real motion from a test world's own date the bids post at the price
 //! the premium function gives for the planner's reach — the same function the
 //! applier and the stock clerk call — and never below the authored price; a lane
 //! whose ratio the reach crosses has the clerk post the emergency bids at the
@@ -37,7 +39,7 @@ fn cid(word: &str) -> CanonicalId {
     CanonicalId::new(word).expect("a canonical id")
 }
 
-/// A test shelf with the four station packs ahead of it (`tests/hulls.rs`'s copy):
+/// A test shelf with the ten station packs ahead of it (`tests/hulls.rs`'s copy):
 /// the `PortApplier` resolves the vendors' storefront items and signatories from
 /// the station packs on the atlas shelf.
 fn with_stations(shelf: &[mush_content::Pack]) -> Vec<mush_content::Pack> {
@@ -174,6 +176,10 @@ fn lane_variant(version: u32, edit: impl FnOnce(&mut serde_json::Value)) -> Stri
 /// propellant to the goods table's 40, provisions to its 10.
 fn stickney_variant(version: u32, ratio: u32) -> String {
     lane_variant(version, |doc| {
+        // Doc 19 cut A.8: without the moons' trade Ceres is again Stickney's only
+        // supplier (Deimos's three-hour hop would make its provisions and
+        // propellant readings a coin flip at ratio 1,000).
+        support::moon::strip_moon_trade(doc);
         for entry in ["ceres_port", "stickney_port"] {
             doc["entries"][entry]["def"]["emergency"]["ratio_permille"] = json!(ratio);
         }
@@ -510,9 +516,12 @@ fn a4b_the_lane_authors_the_emergency_block_and_check_bounds_it() {
 /// **The constant sky posts no emergency bids** (D-19-14): at rate 0 the reach is
 /// its own median, so no good crosses the ratio; after the clerk's fires neither
 /// port map records an emergency bid, and the readings say so — every Stickney
-/// good has a reach (Ceres supplies the three), Ceres's volatiles has none
-/// (nobody at Stickney asks volatiles). The prices the bids would post at are the
-/// port's own highest authored price for the good under the cap.
+/// good has a reach (Ceres supplies volatiles; Ceres and, since lane v8, the
+/// Deimos hop supply provisions and propellant, which
+/// `a8_the_old_ports_suppliers_move_as_designed` pins), Ceres's volatiles has
+/// none (no port that lists a route to Ceres asks volatiles). The prices the
+/// bids would post at are the port's own highest authored price for the good
+/// under the cap.
 #[test]
 fn a4b_the_constant_sky_posts_no_emergency_bids() {
     let mut tw = TestWorld::with_modules(production_roster(config(0)));
@@ -529,7 +538,7 @@ fn a4b_the_constant_sky_posts_no_emergency_bids() {
     let readings = emergency_readings(tw.world(), &stickney);
     assert_eq!(readings.len(), 3);
     for reading in &readings {
-        let reach = reading.reach.expect("Ceres supplies it");
+        let reach = reading.reach.expect("a supplier is listed");
         assert_eq!(reach.now_s, reach.median_s, "{}", reading.good);
         assert!(!reading.crossed, "{}", reading.good);
     }
@@ -539,7 +548,10 @@ fn a4b_the_constant_sky_posts_no_emergency_bids() {
         .iter()
         .find(|r| r.good.as_str() == "volatiles")
         .expect("a volatiles reading");
-    assert_eq!(volatiles.reach, None, "nobody at Stickney asks volatiles");
+    assert_eq!(
+        volatiles.reach, None,
+        "no port with a route to Ceres asks volatiles"
+    );
     assert!(!volatiles.crossed);
     // Stickney's volatiles 200 → 300, provisions 10 → 15, propellant 60 → 90;
     // Ceres's provisions 10 → 15, propellant 40 → 60.
@@ -657,6 +669,93 @@ fn a4b_the_clerk_posts_emergency_bids_at_the_cap_and_withdraws_them_when_reach_f
         assert!(
             market(&tw).listing(ListingId(listing)).is_none(),
             "#{listing} is withdrawn"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A.8: the moon ports and the old ports' suppliers
+// ---------------------------------------------------------------------------
+
+/// **The old ports' suppliers move as designed** (doc 19 §6's supplier table,
+/// D-19-23): on the shipped lane v8 at the constant sky, Stickney's emergency
+/// provisions and propellant readings take the Deimos hop (Voltaire Anchorage
+/// asks both and lists `voltaire_stickney`), a reach under five IC hours where
+/// the v7-shaped lane (the same bytes with `support::moon::strip_moon_trade`) has
+/// Ceres's passage; Stickney's volatiles reading keeps Ceres's reach; Ceres's
+/// volatiles reading has none; Ceres's provisions and propellant readings and
+/// the four old bids — Kasei's metals and volatiles at Stickney, the Exchange's
+/// alloys and the Co-op's parts at Ceres — read the reach they read on v7 (Luna
+/// asks alloys but lists no `ceres`; no moon port lists `stickney` but Deimos,
+/// which asks neither metals nor volatiles).
+#[test]
+fn a8_the_old_ports_suppliers_move_as_designed() {
+    const HOP_CEILING_S: i64 = 5 * 3_600;
+    let shipped = TestWorld::with_modules(production_roster(config(0)));
+    let stripped = lane_variant(LANE_VERSION, support::moon::strip_moon_trade);
+    let lane = Lane::Seeded {
+        json: &stripped,
+        shelf: false,
+    };
+    let v7 = TestWorld::with_modules(roster(config(0), &lane));
+    let reading = |tw: &TestWorld, def: &PortDef, good: &str| {
+        emergency_readings(tw.world(), def)
+            .into_iter()
+            .find(|r| r.good.as_str() == good)
+            .unwrap_or_else(|| panic!("{}: a {good} reading", def.venue))
+            .reach
+    };
+    for (entry, good, hop) in [
+        ("stickney_port", "provisions", true),
+        ("stickney_port", "propellant", true),
+        ("stickney_port", "volatiles", false),
+        ("ceres_port", "provisions", false),
+        ("ceres_port", "propellant", false),
+        ("ceres_port", "volatiles", false),
+    ] {
+        let now = reading(&shipped, &port_def(entry), good);
+        let then = reading(&v7, &variant_port_def(&stripped, entry), good);
+        println!("{entry} emergency {good}: v8 {now:?}, v7 {then:?}");
+        if entry == "ceres_port" && good == "volatiles" {
+            assert_eq!(now, None, "Ceres's volatiles: no supplier on v8");
+            assert_eq!(then, None, "Ceres's volatiles: no supplier on v7");
+            continue;
+        }
+        let now = now.unwrap_or_else(|| panic!("{entry} {good}: a v8 supplier"));
+        let then = then.unwrap_or_else(|| panic!("{entry} {good}: a v7 supplier"));
+        assert!(
+            then.now_s > HOP_CEILING_S,
+            "{entry} {good}: v7's supplier is Ceres or Stickney, days away: {then:?}"
+        );
+        if hop {
+            assert!(
+                now.now_s < HOP_CEILING_S,
+                "{entry} {good}: the Deimos hop supplies it: {now:?}"
+            );
+            assert_eq!(now.now_s, now.median_s, "{entry} {good}: rate 0");
+        } else {
+            assert_eq!(now, then, "{entry} {good}: the v7 reach stands");
+        }
+    }
+    let stickney = port_def("stickney_port");
+    let ceres = port_def("ceres_port");
+    for (entry, def, good) in [
+        ("stickney_port", &stickney, "metals"),
+        ("stickney_port", &stickney, "volatiles"),
+        ("ceres_port", &ceres, "structural_alloys"),
+        ("ceres_port", &ceres, "industrial_parts"),
+    ] {
+        let now = reach_for(shipped.world(), def, &cid(good))
+            .unwrap_or_else(|| panic!("{entry} {good}: a v8 supplier"));
+        let v7_def = variant_port_def(&stripped, entry);
+        let then = reach_for(v7.world(), &v7_def, &cid(good))
+            .unwrap_or_else(|| panic!("{entry} {good}: a v7 supplier"));
+        println!("{entry} bid {good}: v8 {now:?}, v7 {then:?}");
+        assert_eq!(now, then, "{entry} {good}: the bid's suppliers are v7's");
+        assert_eq!(
+            bid_price_major(shipped.world(), def, authored_bid(def, good)),
+            bid_price_major(v7.world(), &v7_def, authored_bid(&v7_def, good)),
+            "{entry} {good}: the posted price is v7's"
         );
     }
 }

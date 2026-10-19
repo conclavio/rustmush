@@ -21,7 +21,7 @@ mod support;
 #[path = "support/vertex.rs"]
 mod vertex;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use mush_core::{
@@ -762,9 +762,15 @@ fn ic8_the_applier_submits_nothing() {
     );
     assert_eq!(first.action.key().id.as_str(), tacsim::port::STOCK_ACTION);
     let rest = drain(&mut rig.tw);
+    // Doc 19 cut A.8: the other four clerks' — Stickney's and the three moon ports'.
+    let others: BTreeSet<ObjId> = ["stickney_port", "luna_port", "deimos_port", "titan_port"]
+        .iter()
+        .map(|entry| clerk(&rig.tw, entry))
+        .collect();
+    assert_eq!(rest.len(), 4, "{rest:?}");
     assert!(
-        rest.iter().all(|s| s.actor == stickney),
-        "the other is the Stickney clerk's: {rest:?}"
+        rest.iter().all(|s| others.contains(&s.actor)),
+        "the others are the other clerks': {rest:?}"
     );
 }
 
@@ -781,7 +787,7 @@ fn ic8_the_ticks_seed_every_pool_exactly_once() {
     let mut rig = boot(Roster::bare());
     // The first fire mints; the lot stands with its origin before the dissolve.
     let (_, queued) = fire(&mut rig);
-    assert_eq!(queued.len(), 2, "one mint per clerk");
+    assert_eq!(queued.len(), 5, "one mint per clerk (doc 19 cut A.8: five)");
     land_all(&mut rig, &queued);
     let families = inventory(&rig.tw);
     let minted = receipts(&mut rig.tw);
@@ -2337,6 +2343,10 @@ fn ic8_retire_withdraws_draws_and_bids_and_a_later_apply_posts_the_bids_afresh()
 #[test]
 fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
     let v2 = lane_variant(2, |doc| {
+        // Doc 19 cut A.8 (lane v8): the three moon ports, their routes, Ceres's `luna`
+        // key, the two reference rows and the three places.
+        support::moon::strip_moon_trade(doc);
+        support::moon::strip_moon_places(doc);
         for entry in ["ceres_port", "stickney_port"] {
             if let Some(def) = doc["entries"][entry]["def"].as_object_mut() {
                 def.remove("vendors");
@@ -2840,4 +2850,239 @@ fn ic14_p07_shows_kaseis_funded_balance() {
         "{out}"
     );
     assert!(!out.contains("on hand to pay for what it buys"), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// Doc 19 cut A.8: the ports on the moons
+// ---------------------------------------------------------------------------
+
+/// The lane's v7 bytes, rebuilt from the shipped v8: the moons' trade and places
+/// stripped, the version put back (the A.7 lane every kept world latched).
+const LANE_V7_DIGEST: &str = "11fb2c9228799918184cc872a01d683e85de91e830104f170b966c7311f23541";
+
+fn lane_v7_json() -> String {
+    lane_variant(7, |doc| {
+        support::moon::strip_moon_trade(doc);
+        support::moon::strip_moon_places(doc);
+    })
+}
+
+/// **The moon ports stock, list and bid** (doc 19 §3.8, D-19-19, D-19-25): on the
+/// shipped lane the three new clerks mint their ten stock rows exactly once (Luna
+/// four, Deimos two, Titan four), every ask lists on its storefront pool, every bid
+/// of the three bid-only houses (the Lunar Habitat Board, Syrtis Bonded Imports, the
+/// Selk Townships Board) posts with its capital settled, and the two programme
+/// reference rows name live listings — the boards at Crisium and the billet at the
+/// Company — so a Co-op share on either measures against a price, not the baseline.
+#[test]
+fn a8_the_moon_ports_stock_list_and_bid() {
+    let mut rig = stocked();
+    // `receipts` reads the corridor's two ports; the moons' rows by their own maps.
+    let mut minted = Vec::new();
+    let handles = rig
+        .tw
+        .world()
+        .module_state::<PortHandles>()
+        .cloned()
+        .expect("port handles");
+    let mut moon_rows = 0;
+    for entry in ["luna_port", "deimos_port", "titan_port"] {
+        let map = port_map(&rig.tw, entry);
+        assert!(map.clerk.is_some(), "{entry}: the clerk");
+        let def = port_def(LANE_JSON, entry);
+        assert_eq!(map.vendors.len(), def.vendors.len(), "{entry}: the vendors");
+        for vendor in &def.vendors {
+            let row = &map.vendors[&vendor.org];
+            assert!(
+                row.vendor.is_some() && row.grant.is_some(),
+                "{entry}/{}",
+                vendor.org
+            );
+            assert_eq!(
+                row.stock.len(),
+                vendor.stock.len(),
+                "{entry}/{}: stock rows",
+                vendor.org
+            );
+            for stock in &row.stock {
+                let id = StockIssueId::parse(&stock.id).expect("an issue id");
+                let receipt =
+                    typed(&mut rig.tw, &handles.families.port_stock, &id).unwrap_or_else(|| {
+                        panic!("{entry}/{}: a receipt for {}", vendor.org, stock.id)
+                    });
+                minted.push((id, receipt));
+                moon_rows += 1;
+            }
+            for ask in &vendor.asks {
+                let good = ask.good.as_str();
+                let listing = listing_on(&rig.tw, entry, vendor.org.as_str(), good)
+                    .unwrap_or_else(|| panic!("{entry}/{}: {good} is listed", vendor.org));
+                assert!(market(&rig.tw).listing(listing).is_some());
+                let vault = storefront(&rig.tw, entry, vendor.org.as_str());
+                let pool = pool(&mut rig.tw, vault, good);
+                let authored: u64 = vendor
+                    .stock
+                    .iter()
+                    .filter(|s| s.good == ask.good)
+                    .map(|s| s.qty)
+                    .sum();
+                assert_eq!(pool, authored, "{entry}/{}: the {good} pool", vendor.org);
+            }
+            for bid in &vendor.bids {
+                let posted = row
+                    .bids
+                    .get(&bid.good)
+                    .unwrap_or_else(|| panic!("{entry}/{}: the {} bid", vendor.org, bid.good));
+                assert!(market(&rig.tw).listing(ListingId(posted.listing)).is_some());
+            }
+        }
+    }
+    assert_eq!(moon_rows, 10, "Luna 4, Deimos 2, Titan 4");
+    // The reference rows' listings are live.
+    for (entry, org, good) in [
+        ("luna_port", "crisium_instruments", "instrument_boards"),
+        ("titan_port", "titan_concession", "carbon_feedstock"),
+    ] {
+        assert!(
+            listing_on(&rig.tw, entry, org, good).is_some(),
+            "{entry}/{org} lists {good}"
+        );
+    }
+    // Every port reads Ready, the bid-only houses included.
+    let (ready, out) = stock_ready(&mut rig.tw);
+    assert!(ready, "{out}");
+    for line in [
+        "luna_port vendor habitat_board: Lunar Habitat Board, storefront vault #",
+        "deimos_port vendor syrtis_bonded: Syrtis Bonded Imports, storefront vault #",
+        "titan_port vendor selk_townships: Selk Townships Board, storefront vault #",
+    ] {
+        assert!(
+            out.lines()
+                .any(|l| l.contains(line) && l.ends_with("0 of 0 stock rows seeded. [ready]")),
+            "{line}\n{out}"
+        );
+    }
+    // Ten further fires mint nothing more: no fire queues a submission, every moon
+    // receipt reads back unchanged, and every moon pool still holds its authored stock.
+    for _ in 0..10 {
+        let (_, queued) = fire(&mut rig);
+        assert!(queued.is_empty(), "a further fire submitted {queued:?}");
+    }
+    assert_eq!(minted.len(), 10);
+    for (id, receipt) in &minted {
+        assert_eq!(
+            typed(&mut rig.tw, &handles.families.port_stock, id).as_ref(),
+            Some(receipt),
+            "{}/{}/{}: the receipt after ten fires",
+            receipt.entry,
+            receipt.org,
+            receipt.good
+        );
+    }
+    for entry in ["luna_port", "deimos_port", "titan_port"] {
+        let def = port_def(LANE_JSON, entry);
+        for vendor in &def.vendors {
+            let vault = storefront(&rig.tw, entry, vendor.org.as_str());
+            for stock in &vendor.stock {
+                let authored: u64 = vendor
+                    .stock
+                    .iter()
+                    .filter(|s| s.good == stock.good)
+                    .map(|s| s.qty)
+                    .sum();
+                assert_eq!(
+                    pool(&mut rig.tw, vault, stock.good.as_str()),
+                    authored,
+                    "{entry}/{}: the {} pool after ten fires",
+                    vendor.org,
+                    stock.good
+                );
+            }
+        }
+    }
+    no_refused_writes(&rig.tw);
+}
+
+/// **A world on lane v7 takes v8 by the shelf without drift** (doc 19 §3.8, Q8,
+/// D-19-20): the rebuilt v7 is the published v7 byte for byte; a world booted on it
+/// and rebooted into the shipped roster plans twelve creates and one update (Ceres's
+/// `luna` key and the programme's two reference rows) over twenty-three unchanged
+/// entries, applies them with no drift refusal — the applier never compares the
+/// programme block — and every port, the three new ones included, then stocks and
+/// reads Ready.
+#[test]
+fn a8_a_world_on_lane_v7_takes_v8_by_the_shelf() {
+    let v7 = lane_v7_json();
+    assert_eq!(
+        mush_content::parse_pack(&v7)
+            .expect("v7 parses")
+            .manifest()
+            .digest()
+            .to_hex(),
+        LANE_V7_DIGEST,
+        "the rebuilt bytes are the published v7"
+    );
+    let rig = boot(Roster::seeded(v7));
+    for entry in ["luna_port", "deimos_port", "titan_port"] {
+        assert!(
+            matches!(
+                store(&rig.tw).port_map(&lane_id(), &cid(entry)),
+                PortMapState::Absent
+            ),
+            "{entry} before the upgrade"
+        );
+    }
+    let Rig {
+        mut tw,
+        oracle,
+        typed,
+        ..
+    } = rig;
+    let folded = fold_module_ops(tw.take_module_ops());
+    let tw = tw
+        .reboot_into(Roster::bare().modules(), folded.clone())
+        .expect("the reboot boots");
+    let mut rig = Rig {
+        tw,
+        oracle,
+        roster: Roster::bare(),
+        store: folded,
+        typed,
+    };
+    with_offer_keys(&mut rig.tw);
+    let (plan, apply) = plan_and_apply(&mut rig.tw);
+    assert!(
+        plan.contains(&format!(
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 12 create, 1 update, 0 retire, 23 unchanged"
+        )),
+        "{plan}"
+    );
+    assert!(
+        plan.lines()
+            .any(|l| l.contains("update") && l.contains("ceres_port (port)")),
+        "{plan}"
+    );
+    assert!(
+        apply.contains(&format!(
+            "Applied {LANE_PACK}@{LANE_VERSION}: 12 created, 1 updated, 0 retired, 23 unchanged."
+        )),
+        "{plan}\n{apply}"
+    );
+    for entry in [
+        "ceres_port",
+        "stickney_port",
+        "luna_port",
+        "deimos_port",
+        "titan_port",
+    ] {
+        assert!(
+            matches!(
+                store(&rig.tw).port_map(&lane_id(), &cid(entry)),
+                PortMapState::Present(_)
+            ),
+            "{entry} after the upgrade"
+        );
+    }
+    sweep(&mut rig.tw, 120);
+    stock(&mut rig);
 }

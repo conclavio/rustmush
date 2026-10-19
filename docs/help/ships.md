@@ -71,6 +71,17 @@ itself, the stores — counts; the stores are crew-days for the souls aboard.
 `+ship/undock` takes the same three. `+ship/plan` ends with a window line when the
 sky moves: the best departure in the next thirty IC days against today's.
 
+When the plan does not fit at the throttle you asked even with the tank and the
+locker filled to their limits, `+ship/plan` prints one more line after the
+stores, beginning Throttle:. It names the highest throttle that fits this load
+with both full, and that plan's burn, crew-days and passage — or it says that no
+throttle from 250 fits. A plan short only because you have not bunkered yet gets
+no such line: top the tank and the locker up. The line is advice and changes
+nothing: it appears only in `+ship/plan`, and `+ship/undock` and a sailing
+plan's departure refuse a tank short of the burn or a locker short of the stores
+in the same words as ever. Pass the throttle yourself (`throttle=` on either).
+Titan's lanes fit the tank only throttled (`help trade`).
+
   +chart                  the sky now from the port you stand at: every body's
                           distance, longitude and latitude, the light lag, and
                           each port's passage now (this load, empty, and the

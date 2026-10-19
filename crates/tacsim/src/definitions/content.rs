@@ -186,7 +186,7 @@ pub const PROVING_GROUND_PACK: &str = "tacsim.pack.proving_ground";
 pub const PROVING_GROUND: &str = "tacsim.arena.proving_ground";
 
 // ---------------------------------------------------------------------------
-// The trade run's two IC stations (doc 18 §4.5, §4.7; cut IC1)
+// The trade run's five IC stations (doc 18 §4.5, §4.7; cut IC1; doc 19 cut A.8)
 // ---------------------------------------------------------------------------
 
 /// Ceres' region pack: the body, the 2350 base theme, the port locality.
@@ -210,20 +210,60 @@ pub const STICKNEY_REGION_JSON: &str =
 /// `crates/tacsim/content/atlas/neighborhood.stickney_yards.json`.
 pub const STICKNEY_JSON: &str =
     include_str!("../../content/atlas/neighborhood.stickney_yards.json");
-/// The four station packs in `requires` order (doc 18 §4.5, §4.7): each region
-/// before its neighborhood, Ceres before Stickney — Stickney's NPCs draw the
-/// `corridor_trade` and `tycho` pools Ceres' pack authors (each lore tag is
-/// owned by exactly one pack).
-pub const STATION_SOURCES: [(&str, &str); 4] = [
+/// Aitken Highport's region pack (Luna; doc 19 cut A.8).
+pub const AITKEN_REGION_PACK: &str = "region.aitken_highport";
+/// Aitken Highport: the moon port's station (doc 19 cut A.8, D-19-19; 18a).
+pub const AITKEN_PACK: &str = "neighborhood.aitken_highport";
+/// `crates/tacsim/content/atlas/region.aitken_highport.json`.
+pub const AITKEN_REGION_JSON: &str =
+    include_str!("../../content/atlas/region.aitken_highport.json");
+/// `crates/tacsim/content/atlas/neighborhood.aitken_highport.json`.
+pub const AITKEN_JSON: &str = include_str!("../../content/atlas/neighborhood.aitken_highport.json");
+/// Voltaire Anchorage's region pack (Deimos; doc 19 cut A.8).
+pub const VOLTAIRE_REGION_PACK: &str = "region.voltaire_anchorage";
+/// Voltaire Anchorage: the moon port's station (doc 19 cut A.8, D-19-19; 18a).
+pub const VOLTAIRE_PACK: &str = "neighborhood.voltaire_anchorage";
+/// `crates/tacsim/content/atlas/region.voltaire_anchorage.json`.
+pub const VOLTAIRE_REGION_JSON: &str =
+    include_str!("../../content/atlas/region.voltaire_anchorage.json");
+/// `crates/tacsim/content/atlas/neighborhood.voltaire_anchorage.json`.
+pub const VOLTAIRE_JSON: &str =
+    include_str!("../../content/atlas/neighborhood.voltaire_anchorage.json");
+/// Ligeia Terminal's region pack (Titan; doc 19 cut A.8).
+pub const LIGEIA_REGION_PACK: &str = "region.ligeia_terminal";
+/// Ligeia Terminal: the moon port's station (doc 19 cut A.8, D-19-19; 18a).
+pub const LIGEIA_PACK: &str = "neighborhood.ligeia_terminal";
+/// `crates/tacsim/content/atlas/region.ligeia_terminal.json`.
+pub const LIGEIA_REGION_JSON: &str =
+    include_str!("../../content/atlas/region.ligeia_terminal.json");
+/// `crates/tacsim/content/atlas/neighborhood.ligeia_terminal.json`.
+pub const LIGEIA_JSON: &str = include_str!("../../content/atlas/neighborhood.ligeia_terminal.json");
+/// The ten station packs in `requires` order (doc 18 §4.5, §4.7; doc 19 cut A.8
+/// added the three moon stations): each region before its neighborhood, Ceres
+/// first — Stickney's and the moon stations' NPCs draw the `corridor_trade` and
+/// `tycho` pools Ceres' pack authors (each lore tag is owned by exactly one pack).
+pub const STATION_SOURCES: [(&str, &str); 10] = [
     (CERES_REGION_PACK, CERES_REGION_JSON),
     (CERES_PACK, CERES_JSON),
     (STICKNEY_REGION_PACK, STICKNEY_REGION_JSON),
     (STICKNEY_PACK, STICKNEY_JSON),
+    (AITKEN_REGION_PACK, AITKEN_REGION_JSON),
+    (AITKEN_PACK, AITKEN_JSON),
+    (VOLTAIRE_REGION_PACK, VOLTAIRE_REGION_JSON),
+    (VOLTAIRE_PACK, VOLTAIRE_JSON),
+    (LIGEIA_REGION_PACK, LIGEIA_REGION_JSON),
+    (LIGEIA_PACK, LIGEIA_JSON),
 ];
 /// The rooms Ceres Freeport's pack makes (18a §1.3).
 pub const CERES_ROOMS: usize = 13;
 /// The rooms Stickney Yards' pack makes (18a §2.3).
 pub const STICKNEY_ROOMS: usize = 12;
+/// The rooms Aitken Highport's pack makes (18a §5; doc 19 cut A.8).
+pub const AITKEN_ROOMS: usize = 12;
+/// The rooms Voltaire Anchorage's pack makes (18a §6; doc 19 cut A.8).
+pub const VOLTAIRE_ROOMS: usize = 11;
+/// The rooms Ligeia Terminal's pack makes (18a §7; doc 19 cut A.8).
+pub const LIGEIA_ROOMS: usize = 12;
 
 /// The unit schema the shipped content declares.
 pub const LINE_TANK: &str = "tacsim.unit.line_tank";
@@ -581,10 +621,13 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// A.4: both ports' `premium` blocks, the reach premium on demand-side bids; **v6
 /// since doc 19 cut A.4b: both ports' `emergency` blocks, the emergency Wanted
 /// bids; **v7 since doc 19 cut A.7**: the four moons — Luna about Earth, Phobos and
-/// Deimos about Mars, Titan about Saturn — and Stickney Yards on Phobos). The port
+/// Deimos about Mars, Titan about Saturn — and Stickney Yards on Phobos; **v8 since
+/// doc 19 cut A.8**: the three moon ports — Aitken Highport on Luna, Voltaire
+/// Anchorage on Deimos, Ligeia Terminal on Titan — their six direct routes, Ceres's
+/// `luna` key and the programme's two reference rows for goods v2). The port
 /// readiness report (`crate::port::readiness`) reads the latched version against it,
 /// and every test that names the lane's version reads it here.
-pub const LANE_VERSION: u32 = 7;
+pub const LANE_VERSION: u32 = 8;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.
@@ -767,7 +810,7 @@ pub fn boot_packs() -> Result<Vec<mush_content::Pack>, String> {
 /// # Errors
 ///
 /// A message naming the pack when a shipped pack does not verify — a build error,
-/// since `crates/tacsim/tests/stations.rs` pins all four digests.
+/// since `crates/tacsim/tests/stations.rs` pins all ten digests.
 pub fn station_packs() -> Result<Vec<mush_content::Pack>, String> {
     STATION_SOURCES
         .iter()

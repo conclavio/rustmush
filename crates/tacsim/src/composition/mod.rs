@@ -922,8 +922,9 @@ pub fn atlas_module(cfg: mush_atlas::AtlasConfig) -> Box<dyn GameModule> {
         // loads the same bytes) says so again in its own words.
         Err(error) => tracing::error!(%error, "atlas: the game's boot packs did not load"),
     }
-    // Doc 18 cut IC1 (§4.7): the trade run's four station packs, after the proving
-    // ground, on the same degrade-and-log rule (pinned in
+    // Doc 18 cut IC1 (§4.7): the trade run's station packs (the corridor's four and,
+    // since doc 19 cut A.8, the moon ports' six), after the proving ground, on the
+    // same degrade-and-log rule (pinned in
     // `crates/tacsim/tests/stations.rs`). Shelved always, so a standing world takes a
     // newer station version by hand exactly as it takes a newer arena.
     match crate::definitions::content::station_packs() {
@@ -966,8 +967,8 @@ pub fn content_module(starter_area: bool) -> Result<Box<dyn GameModule>, String>
 
 /// The production boot list, in apply order (doc 18 §4.7): the starter area's three
 /// when `starter_area`, then — when `game_content` — the proving ground's two, the
-/// four station packs and (doc 18 cut IC2) the lane: the game's **seven** boot
-/// packs.
+/// ten station packs (the corridor's four and doc 19 cut A.8's six) and (doc 18 cut
+/// IC2) the lane: the game's **thirteen** boot packs.
 ///
 /// The stations are game content: they ride `game_content` (`[tacsim].enabled`),
 /// whatever `[game].starter_area` says, and come after the proving ground because
@@ -998,8 +999,8 @@ pub fn boot_pack_list(
 }
 
 /// [`content_module`] with the game's own boot packs (**16b cut C.2, C3**; the
-/// game's six boot packs since doc 18 cut IC1 and seven since cut IC2 —
-/// [`boot_pack_list`]).
+/// game's six boot packs since doc 18 cut IC1, seven since cut IC2 and thirteen
+/// since doc 19 cut A.8 — [`boot_pack_list`]).
 ///
 /// `game_content` is `[tacsim].enabled`: `true` appends the two packs that
 /// instantiate the proving ground — the atlas region carrying its ground, then
@@ -1041,9 +1042,9 @@ pub fn content_module_with(
     // 16b cut C.2 adds the `arena` kind to the same registration.
     crate::register_appliers(&mut appliers).map_err(|e| format!("tacsim appliers: {e}"))?;
     let mut module = mush_content::ContentModule::new().with_appliers(appliers);
-    // Doc 18 cut IC1: then the four station packs after the proving ground's two,
-    // and (cut IC2) the lane after them — the game's seven boot packs — from the
-    // one list the tests read too.
+    // Doc 18 cut IC1: then the station packs (ten since doc 19 cut A.8) after the
+    // proving ground's two, and (cut IC2) the lane after them — the game's thirteen
+    // boot packs — from the one list the tests read too.
     let packs = boot_pack_list(starter_area, game_content)?;
     if !packs.is_empty() {
         module = module.with_boot_packs(packs);
