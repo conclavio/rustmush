@@ -69,6 +69,14 @@
         <button type="button" class:selected={minds.name === item} disabled={minds.busy}
           onclick={() => { name = item; void minds.load(item); }}>{item}</button>
       {/each}
+      <form onsubmit={event => { event.preventDefault(); void minds.removeAttributed(name); }}>
+        <label>Attributed draft to remove<select bind:value={name} disabled={minds.busy}>
+          <option value="">Select a library entry</option>
+          {#each minds.names as item (item)}<option value={item}>{item}</option>{/each}
+        </select></label>
+        <button disabled={minds.busy || minds.dirty || !minds.names.includes(name) || minds.removalRequested.includes(name)}>Request attributed draft removal</button>
+        <p class="hint">Works without opening the source. Original drafts use the working-copy removal control. Refresh the library to confirm completion.</p>
+      </form>
       <form onsubmit={event => { event.preventDefault(); void minds.create(name, from.trim() || null); }}>
         <label>Mind name<input bind:value={name} maxlength="64" required disabled={minds.busy} /></label>
         <label>Copy from<input bind:value={from} placeholder="standard or an owned revision" disabled={minds.busy} /></label>

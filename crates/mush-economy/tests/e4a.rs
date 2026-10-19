@@ -1333,6 +1333,7 @@ fn terms() -> ContractTerms {
 
 fn contract_shell() -> EconomicContract {
     let consent = ConsentSurface {
+        managed: None,
         parties: vec![who(1), who(2)],
         terms: terms(),
         conditions: Vec::new(),

@@ -5,12 +5,14 @@ use super::{
     BulkError, invalid,
     model::{ArtifactBytes, BulkConfig, RunId, Status, WorkKind},
     owner::{Lease, Receipt},
+    registry_budget::{RegistryCase, RegistryEnding, RegistryProgress},
 };
 use mush_core::AccountId;
 use std::collections::{BTreeMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{
     Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, SyncSender, TrySendError},
 };
 use std::thread::JoinHandle;
@@ -18,7 +20,14 @@ use std::thread::JoinHandle;
 /// Implemented only by the frozen proving factory and verified replay adapter
 /// in this module tree. No command can substitute an arbitrary source adapter,
 /// World callback, shared MindPool or live Arena.
-pub(super) trait Machine: Send {
+pub(in crate::minds) trait Machine: Send {
+    fn registry_case(&self) -> Option<RegistryCase> {
+        None
+    }
+    fn registry_progress(&self) -> Option<RegistryProgress> {
+        None
+    }
+    fn begin_quantum(&mut self) {}
     fn native_substep_ms(&self) -> u32;
     fn next_simulation_ms(&self) -> u64;
     fn step(&mut self, maximum_sim_ms: u64) -> Result<Turn, BulkError>;
@@ -39,7 +48,7 @@ pub(super) trait Machine: Send {
         None
     }
 }
-pub(super) struct Turn {
+pub(in crate::minds) struct Turn {
     pub simulation_ms: u64,
     pub result: Option<ArtifactBytes>,
     pub terminal: Option<Status>,
@@ -48,7 +57,9 @@ pub(super) struct Turn {
 /// bound so a stream of non-time tape events cannot monopolize the worker.
 /// No simulation is split differently from the captured physics cadence.
 fn run_quantum(machine: &mut dyn Machine, maximum: u64) -> Result<Turn, BulkError> {
+    machine.begin_quantum();
     let mut used = 0_u64;
+    let mut native_steps = 0_u64;
     for _ in 0..32 {
         let next = machine.next_simulation_ms();
         if next > maximum.saturating_sub(used) {
@@ -62,6 +73,9 @@ fn run_quantum(machine: &mut dyn Machine, maximum: u64) -> Result<Turn, BulkErro
             return Err(invalid("machine exceeded prepaid quantum"));
         }
         used += turn.simulation_ms;
+        if turn.simulation_ms > 0 {
+            native_steps += 1;
+        }
         if turn.terminal.is_some() {
             return Ok(Turn {
                 simulation_ms: used,
@@ -70,6 +84,15 @@ fn run_quantum(machine: &mut dyn Machine, maximum: u64) -> Result<Turn, BulkErro
         }
         if turn.result.is_some() {
             return Err(invalid("nonterminal artifact"));
+        }
+        // A new case may have a different roster. Its first unit-millisecond
+        // requires a new persisted lease; never spend the previous case's rate.
+        if machine
+            .registry_progress()
+            .is_some_and(|p| p.ending != RegistryEnding::Continue)
+            || native_steps == super::model::LEASE_STEPS
+        {
+            break;
         }
     }
     Ok(Turn {
@@ -83,6 +106,7 @@ pub(crate) struct Ready {
     run: RunId,
     start: [u8; 32],
     machine: Box<dyn Machine>,
+    registry_binding: Option<super::registry_tickets::Binding>,
 }
 impl Ready {
     pub(super) fn new(
@@ -96,6 +120,20 @@ impl Ready {
             run,
             start,
             machine,
+            registry_binding: None,
+        }
+    }
+    pub(super) fn registry(
+        binding: super::registry_tickets::Binding,
+        start: [u8; 32],
+        machine: Box<dyn Machine>,
+    ) -> Self {
+        Self {
+            account: binding.account,
+            run: binding.run,
+            start,
+            machine,
+            registry_binding: Some(binding),
         }
     }
     /// Grant one millisecond for non-time phases, then refund their known zero.
@@ -140,6 +178,8 @@ struct Task {
     ready: Ready,
 }
 pub(crate) struct Completion {
+    pub(super) registry_settlement:
+        Option<Result<super::registry_tickets::PreparedSettlement, BulkError>>,
     pub artifact: Option<ArtifactBytes>,
     pub receipt: Receipt,
     pub ready: Option<Ready>,
@@ -152,6 +192,9 @@ pub(crate) struct FairQueue {
     ready: BTreeMap<AccountId, Ready>,
 }
 impl FairQueue {
+    pub(super) fn is_empty(&self) -> bool {
+        self.order.is_empty() && self.ready.is_empty()
+    }
     pub fn new(cfg: &BulkConfig) -> Result<Self, BulkError> {
         cfg.validate()?;
         Ok(Self {
@@ -177,6 +220,7 @@ impl FairQueue {
     }
 }
 pub(crate) struct Executor {
+    submitted: AtomicBool,
     sender: Option<SyncSender<Task>>,
     completed: Option<Receiver<Completion>>,
     threads: Vec<JoinHandle<()>>,
@@ -225,20 +269,41 @@ impl Executor {
                                 run_quantum(&mut *task.ready.machine, maximum)
                             }))
                         };
-                        let outcome = match result {
-                            Ok(Ok(turn)) if turn.simulation_ms <= maximum => turn,
+                        #[cfg(test)]
+                        if task.lease.kind() == WorkKind::Registry {
+                            match &result {
+                                Ok(Err(error)) => {
+                                    eprintln!("M7_REGISTRY_WORKER_FAILURE error={error}")
+                                }
+                                Err(_) => eprintln!("M7_REGISTRY_WORKER_FAILURE panic=true"),
+                                _ => {}
+                            }
+                        }
+                        let (outcome, unknown_work) = match result {
+                            Ok(Ok(turn)) if turn.simulation_ms <= maximum => (turn, false),
                             // A crash/error has unknown actual work. Charge this bounded
                             // grant and stop; retry cannot obtain free unaccounted CPU.
-                            _ => Turn {
-                                simulation_ms: maximum,
-                                result: None,
-                                terminal: Some(Status::Failed),
-                            },
+                            _ => (
+                                Turn {
+                                    simulation_ms: maximum,
+                                    result: None,
+                                    terminal: Some(Status::Failed),
+                                },
+                                true,
+                            ),
                         };
-                        let keep = outcome.terminal.is_none()
+                        let keep = task.lease.kind() == WorkKind::Registry
+                            || outcome.terminal.is_none()
                             || (outcome.terminal == Some(Status::Complete)
                                 && task.lease.kind() == WorkKind::Bench);
                         let receipt = Receipt {
+                            registry: if unknown_work {
+                                None
+                            } else if worker_day != Some(task.lease.utc_day()) {
+                                task.lease.unchanged_registry()
+                            } else {
+                                task.ready.machine.registry_progress()
+                            },
                             actual_unit_ms: outcome.simulation_ms * task.lease.units(),
                             lease: task.lease,
                             result: outcome
@@ -247,8 +312,22 @@ impl Executor {
                                 .map(|value| value.descriptor().clone()),
                             terminal: outcome.terminal,
                         };
+                        let (registry_settlement, artifact) =
+                            if let Some(binding) = task.ready.registry_binding {
+                                match super::registry_tickets::PreparedSettlement::from_worker(
+                                    binding,
+                                    receipt.clone(),
+                                    outcome.result,
+                                ) {
+                                    Ok(prepared) => (Some(Ok(prepared)), None),
+                                    Err((error, artifact)) => (Some(Err(error)), artifact),
+                                }
+                            } else {
+                                (None, outcome.result)
+                            };
                         let completion = Completion {
-                            artifact: outcome.result,
+                            registry_settlement,
+                            artifact,
                             receipt,
                             ready: keep.then_some(task.ready),
                         };
@@ -269,6 +348,7 @@ impl Executor {
             threads.push(thread);
         }
         Ok(Self {
+            submitted: AtomicBool::new(false),
             sender: Some(tx),
             completed: Some(done_rx),
             threads,
@@ -281,9 +361,24 @@ impl Executor {
     // the world can refund/requeue without releasing ownership prematurely.
     #[allow(clippy::result_large_err)]
     pub fn submit(&self, lease: Lease, ready: Ready) -> Result<(), (BulkError, Lease, Ready)> {
+        // A submission attempt permanently closes cold-boot recovery, even if
+        // this attempt is refused. Never infer a stopped worker from an empty
+        // queue or absence of a completion after a timeout.
+        self.submitted.store(true, Ordering::Release);
         if lease.account() != ready.account
             || lease.run() != ready.run
             || lease.start() != ready.start
+            || match (
+                lease.registry(),
+                ready.machine.registry_case(),
+                ready.machine.registry_progress(),
+            ) {
+                (None, None, None) => false,
+                (Some((cursor, case)), Some(actual), Some(progress)) => {
+                    *case != actual || *cursor != progress.cursor
+                }
+                _ => true,
+            }
         {
             return Err((BulkError::Missing, lease, ready));
         }
@@ -299,6 +394,9 @@ impl Executor {
     }
     pub fn poll(&self) -> Option<Completion> {
         self.completed.as_ref()?.try_recv().ok()
+    }
+    pub(super) fn never_submitted(&self) -> bool {
+        !self.submitted.load(Ordering::Acquire)
     }
 }
 impl Drop for Executor {

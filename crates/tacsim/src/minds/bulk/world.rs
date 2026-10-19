@@ -19,44 +19,86 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-struct Preparing {
-    account: AccountId,
-    actor: ObjId,
-    nonce: u64,
+pub(super) struct Preparing {
+    pub(super) account: AccountId,
+    pub(super) actor: ObjId,
+    pub(super) nonce: u64,
 }
 struct Waiting {
     lease: Lease,
     ready: Ready,
     latch: CommitLatch,
 }
-struct PendingCompletion {
-    done: Completion,
-    blob: Option<PreparedBlob>,
+pub(super) struct PendingCompletion {
+    pub(super) done: Completion,
+    pub(super) blob: Option<PreparedBlob>,
 }
-struct Runtime {
-    cfg: BulkConfig,
+pub(super) struct Runtime {
+    pub(super) recovery: super::registry_recovery::Recovery,
+    pub(super) registry: super::registry_service::Lane,
+    pub(super) cfg: BulkConfig,
     factory: Option<Arc<ScenarioFactory>>,
-    preparer: Preparer,
-    executor: Executor,
-    next: u64,
-    preparing: BTreeMap<u64, Preparing>,
-    queue: FairQueue,
+    pub(super) preparer: Preparer,
+    pub(super) executor: Executor,
+    pub(super) next: u64,
+    pub(super) preparing: BTreeMap<u64, Preparing>,
+    pub(super) queue: FairQueue,
     waiting: Vec<Waiting>,
-    retry: VecDeque<PendingCompletion>,
+    pub(super) retry: VecDeque<PendingCompletion>,
     completed_benches: VecDeque<BenchComplete>,
-    external_preparing: BTreeSet<AccountId>,
+    pub(super) external_preparing: BTreeSet<AccountId>,
+}
+impl Runtime {
+    /// One admitted account owns one bounded continuation until its actual
+    /// terminal acknowledgement/readback releases it. A terminal quota row can
+    /// precede that release. Count the union, including preparation/Registry
+    /// overlap during admission, rather than either dropping or double-counting
+    /// retained Machines when BulkStore changes phase.
+    pub(super) fn ensure_admission(
+        &self,
+        owner: &BulkStore,
+        account: AccountId,
+    ) -> Result<(), BulkError> {
+        if self.recovery.pending() {
+            return Err(BulkError::Busy);
+        }
+        let retained: BTreeSet<_> = self
+            .preparing
+            .values()
+            .map(|p| p.account)
+            .chain(self.external_preparing.iter().copied())
+            .chain(self.registry.accounts())
+            .collect();
+        if owner.active(account).is_some() || retained.contains(&account) {
+            return Err(BulkError::Busy);
+        }
+        let occupied = owner.active_count()
+            + retained
+                .iter()
+                .filter(|id| owner.active(**id).is_none())
+                .count();
+        if occupied >= self.cfg.queued + self.cfg.proving_workers {
+            return Err(BulkError::QueueFull);
+        }
+        Ok(())
+    }
 }
 #[derive(Clone)]
-pub(crate) struct BulkService(Arc<Mutex<Runtime>>);
+pub(crate) struct BulkService(pub(super) Arc<Mutex<Runtime>>);
+pub(super) struct ColdHydration {
+    _private: (),
+}
 impl BulkService {
     pub fn new(
         cfg: BulkConfig,
         wake: tokio::sync::mpsc::Sender<crate::arena_task::ArenaOut>,
     ) -> Result<Self, BulkError> {
         Ok(Self(Arc::new(Mutex::new(Runtime {
+            recovery: super::registry_recovery::Recovery::default(),
             preparer: Preparer::new(cfg.queued, wake.clone())?,
             executor: Executor::with_wake(&cfg, Some(wake))?,
             queue: FairQueue::new(&cfg)?,
+            registry: super::registry_service::Lane::default(),
             cfg,
             factory: None,
             next: 1,
@@ -68,6 +110,40 @@ impl BulkService {
         }))))
     }
 }
+/// One-shot cold service fence. This runs before loading any quota/artifact
+/// images, and refuses reuse of a service which has ever submitted work.
+pub(super) fn begin_hydration(
+    ctx: &mut Ctx<'_>,
+) -> Result<(BulkService, ColdHydration), BulkError> {
+    let service = service(ctx.w)?;
+    {
+        let mut runtime = service.0.lock().map_err(|_| BulkError::Busy)?;
+        if !runtime.executor.never_submitted()
+            || !runtime.preparer.never_submitted()
+            || runtime.next != 1
+            || runtime.factory.is_some()
+            || !runtime.preparing.is_empty()
+            || !runtime.queue.is_empty()
+            || !runtime.waiting.is_empty()
+            || !runtime.retry.is_empty()
+            || !runtime.completed_benches.is_empty()
+            || !runtime.external_preparing.is_empty()
+            || runtime.registry.accounts().next().is_some()
+            || !ctx
+                .w
+                .module_state::<BulkStore>()
+                .is_some_and(BulkStore::fresh_for_hydration)
+            || !ctx
+                .w
+                .module_state::<Artifacts>()
+                .is_some_and(|a| a.registry.pristine())
+        {
+            return Err(invalid("bulk hydration requires a fresh stopped service"));
+        }
+        runtime.recovery.begin()?;
+    }
+    Ok((service, ColdHydration { _private: () }))
+}
 pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -75,12 +151,12 @@ pub(crate) fn now_ms() -> i64 {
         .and_then(|d| i64::try_from(d.as_millis()).ok())
         .unwrap_or(0)
 }
-fn account(w: &World, actor: ObjId) -> Result<AccountId, BulkError> {
+pub(super) fn account(w: &World, actor: ObjId) -> Result<AccountId, BulkError> {
     w.module_state::<mush_sim::AccountOracle>()
         .and_then(|o| o.account_of(actor))
         .ok_or(BulkError::Missing)
 }
-fn service(w: &World) -> Result<BulkService, BulkError> {
+pub(super) fn service(w: &World) -> Result<BulkService, BulkError> {
     w.module_state::<BulkService>()
         .cloned()
         .ok_or(BulkError::Missing)
@@ -247,17 +323,7 @@ pub(crate) fn command(ctx: &mut Ctx<'_>, switch: &str, text: &str) -> Result<(),
             .w
             .module_state::<BulkStore>()
             .ok_or(BulkError::Missing)?;
-        if store.active(account).is_some()
-            || (runtime.preparing.values().any(|p| p.account == account)
-                || runtime.external_preparing.contains(&account))
-        {
-            return Err(BulkError::Busy);
-        }
-        if runtime.preparing.len() + runtime.external_preparing.len() + store.active_count()
-            >= runtime.cfg.queued + runtime.cfg.proving_workers
-        {
-            return Err(BulkError::QueueFull);
-        }
+        runtime.ensure_admission(store, account)?;
         let factory = runtime
             .factory
             .clone()
@@ -289,7 +355,7 @@ pub(crate) fn command(ctx: &mut Ctx<'_>, switch: &str, text: &str) -> Result<(),
             .ok_or_else(|| invalid("preparation sequence exhausted"))?;
         runtime
             .preparer
-            .submit(preparation::Request {
+            .submit(preparation::Request::Proving {
                 ticket,
                 recipe,
                 factory,
@@ -432,18 +498,26 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
         return;
     };
     let now = now_ms();
+    super::registry_service::acknowledged(ctx, &mut runtime);
     for _ in 0..2 {
         let Some(done) = runtime.preparer.poll() else {
             break;
         };
-        let Some(p) = runtime.preparing.remove(&done.ticket) else {
+        let Some(p) = runtime.preparing.remove(&done.ticket()) else {
             continue;
+        };
+        let (recipe, result) = match done {
+            preparation::Completion::Proving { recipe, result, .. } => (recipe, result),
+            preparation::Completion::Registry { result, .. } => {
+                super::registry_service::prepared(ctx, &mut runtime, p, result);
+                continue;
+            }
         };
         let result = (|| {
             if account(ctx.w, p.actor)? != p.account {
                 return Err(BulkError::Missing);
             }
-            done.recipe
+            recipe
                 .revalidate(
                     ctx.w
                         .module_state::<mush_roll::RollStore>()
@@ -454,7 +528,7 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
                     p.actor,
                 )
                 .map_err(|_| BulkError::Missing)?;
-            let mut frozen = done.result?;
+            let mut frozen = result?;
             let (run, change) = ctx
                 .w
                 .module_state::<BulkStore>()
@@ -469,12 +543,7 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
                 frozen.bytes_mut(),
                 Vec::new(),
             )?);
-            publication::publish(
-                ctx,
-                change,
-                &mut blob,
-                Some((run, done.recipe.references())),
-            )?;
+            publication::publish(ctx, change, &mut blob, Some((run, recipe.references())))?;
             // Capacity was reserved by account admission; no fallible command
             // exit follows publication, even if an internal invariant breaks.
             if runtime.queue.push(frozen.ready(p.account, run)).is_err() {
@@ -500,6 +569,10 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
         }) else {
             break;
         };
+        if pending.done.receipt.lease.kind() == super::model::WorkKind::Registry {
+            super::registry_service::completed(ctx, &mut runtime, pending.done);
+            continue;
+        }
         let done = &mut pending.done;
         let account = done.receipt.account();
         let run = done.receipt.run();
@@ -581,7 +654,9 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
             runtime.retry.push_back(PendingCompletion {
                 done: Completion {
                     artifact: None,
+                    registry_settlement: None,
                     receipt: Receipt {
+                        registry: waiting.lease.unchanged_registry(),
                         actual_unit_ms: 0,
                         result: None,
                         terminal: Some(Status::Cancelled),
@@ -602,11 +677,20 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
     }
     runtime.waiting = retained;
     for _ in 0..runtime.cfg.queued + runtime.cfg.proving_workers {
+        if runtime.registry.has_pending_turn() {
+            break;
+        }
         let Some(ready) = runtime.queue.pop() else {
             break;
         };
         let account = ready.account();
         let run = ready.run();
+        if store_kind(ctx.w, account, run) == Some(super::model::WorkKind::Registry) {
+            super::registry_service::grant(ctx, &mut runtime, ready);
+            // The signed grant has borrowed this exact fair turn. Its pending
+            // or Unknown disposition must not let later accounts overtake it.
+            break;
+        }
         let store = match ctx.w.module_state::<BulkStore>() {
             Some(s) => s,
             None => break,
@@ -662,6 +746,7 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
             }
         }
     }
+    super::registry_service::dispatch(ctx, &mut runtime);
     drop(runtime);
     super::bench_service::drain(ctx);
 }
@@ -685,17 +770,7 @@ pub(super) fn hold_preparation(w: &World, account: AccountId) -> Result<(), Bulk
     let service = service(w)?;
     let mut runtime = service.0.lock().map_err(|_| BulkError::Busy)?;
     let owner = w.module_state::<BulkStore>().ok_or(BulkError::Missing)?;
-    if owner.active(account).is_some()
-        || runtime.preparing.values().any(|p| p.account == account)
-        || runtime.external_preparing.contains(&account)
-    {
-        return Err(BulkError::Busy);
-    }
-    if runtime.preparing.len() + runtime.external_preparing.len() + owner.active_count()
-        >= runtime.cfg.queued + runtime.cfg.proving_workers
-    {
-        return Err(BulkError::QueueFull);
-    }
+    runtime.ensure_admission(owner, account)?;
     runtime.external_preparing.insert(account);
     Ok(())
 }
@@ -729,15 +804,11 @@ pub(super) fn admit_bench(
     let result = (|| {
         let service = service(ctx.w)?;
         let runtime = service.0.lock().map_err(|_| BulkError::Busy)?;
-        if runtime.preparing.values().any(|p| p.account == account)
-            || runtime.external_preparing.contains(&account)
-        {
-            return Err(BulkError::Busy);
-        }
         let owner = ctx
             .w
             .module_state::<BulkStore>()
             .ok_or(BulkError::Missing)?;
+        runtime.ensure_admission(owner, account)?;
         let nonce = owner.next_nonce(account)?;
         let (run, change) = owner.prepare_admit(account, actor, nonce, plan, now_ms())?;
         ready.stage_bench(command)?;

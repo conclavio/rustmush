@@ -46,6 +46,10 @@ use crate::record::{
 };
 use crate::snapshot::EconomySnapshot;
 
+pub mod managed;
+mod settlement;
+pub(crate) use settlement::prepare_settlement;
+
 // ---- caps (§9) ------------------------------------------------------------
 
 /// Maximum parties on one contract (§9).
@@ -461,6 +465,10 @@ pub enum TypedCondition {
 /// exactly as a set would be.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsentSurface {
+    /// Closed entitlement effect identity. Absent legacy surfaces retain their
+    /// exact serialized and consent-hash bytes. Presence is not E4 authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed: Option<managed::ManagedConsent>,
     /// Everyone bound (≤ [`MAX_PARTIES`]; includes the issuer).
     pub parties: Vec<PrincipalId>,
     /// The money and goods.
@@ -1112,6 +1120,8 @@ pub fn canonical_visibility(v: &EconomicVisibility) -> EconomicVisibility {
 
 #[derive(Serialize)]
 struct CanonicalConsent<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    managed: Option<&'a managed::ManagedConsent>,
     issuer: &'a PrincipalId,
     parties: Vec<&'a PrincipalId>,
     terms: &'a ContractTerms,
@@ -1219,6 +1229,7 @@ pub fn consent_hash(issuer: &PrincipalId, consent: &ConsentSurface) -> [u8; 32] 
     let mut parties: Vec<&PrincipalId> = consent.parties.iter().collect();
     parties.sort_by(|a, b| principal_key(a).cmp(&principal_key(b)));
     let canonical = CanonicalConsent {
+        managed: consent.managed.as_ref(),
         issuer,
         parties,
         terms: &consent.terms,
@@ -2566,6 +2577,18 @@ pub fn settlement_plan(
     snapshot: &EconomySnapshot,
     env: &ValidateEnv<'_>,
 ) -> Result<EconomyPlan, ContractError> {
+    check_settlement(c, snapshot, env)?;
+    let outcome = resolve_outcome(c, snapshot, env)?;
+    resolved_settlement_plan(c, snapshot, outcome)
+}
+
+/// The existing settlement preconditions, without choosing an outcome. The live
+/// path resolves its outcome first to retain its established refusal ordering.
+fn check_settlement(
+    c: &EconomicContract,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> Result<(), ContractError> {
     if !matches!(
         c.state,
         ContractState::ReadyToSettle | ContractState::Active
@@ -2579,9 +2602,15 @@ pub fn settlement_plan(
         return Err(ContractError::NotAccepted);
     }
     check_offerable(c, snapshot)?;
-    reverify(c, snapshot, env)?;
-    let outcome = resolve_outcome(c, snapshot, env)?;
+    reverify(c, snapshot, env)
+}
 
+/// Only the checked wrappers above and in `settlement` choose this outcome.
+fn resolved_settlement_plan(
+    c: &EconomicContract,
+    snapshot: &EconomySnapshot,
+    outcome: Option<usize>,
+) -> Result<EconomyPlan, ContractError> {
     // Every escrow hold must still be live — a broken escrow is a dispute, never a
     // settlement that pays out less than the parties agreed — and must actually BE
     // this contract's escrow (finding 3): a hold that merely got listed in `escrow`
@@ -2989,6 +3018,7 @@ pub enum ContractPurpose {
 /// asks about the part of a debit the captures do not cover, so 100 in escrow would
 /// fund a 100 capture **and** a further 100 of lines the parties never agreed to.
 pub struct ContractAuth<'a> {
+    legacy: bool,
     contract: &'a EconomicContract,
     /// The holds that qualify as this contract's escrow (finding 3) — the ONLY ones
     /// its authority reaches. `contract.escrow` is a mutable list of ids and is not
@@ -3033,6 +3063,7 @@ impl<'a> ContractAuth<'a> {
             None => (0..terms.deliverables.len()).collect(),
         };
         ContractAuth {
+            legacy: managed::legacy_contract(contract, snapshot),
             contract,
             qualifying: qualifying_ids(contract, snapshot),
             purpose: ContractPurpose::Settle {
@@ -3053,6 +3084,7 @@ impl<'a> ContractAuth<'a> {
     ) -> ContractAuth<'a> {
         let total = escrowed_total(contract, snapshot);
         ContractAuth {
+            legacy: managed::legacy_contract(contract, snapshot),
             contract,
             qualifying: qualifying_ids(contract, snapshot),
             purpose: ContractPurpose::Forfeit { to, total },
@@ -3074,6 +3106,7 @@ impl<'a> ContractAuth<'a> {
         snapshot: &EconomySnapshot,
     ) -> ContractAuth<'a> {
         ContractAuth {
+            legacy: managed::legacy_contract(contract, snapshot),
             contract,
             qualifying: qualifying_ids(contract, snapshot),
             purpose: ContractPurpose::Unwind,
@@ -3100,6 +3133,9 @@ impl<'a> ContractAuth<'a> {
     /// Whether the surface still binds — full acceptance for anything that moves
     /// money, mere consent-hash integrity for an unwind's give-backs.
     fn bound(&self) -> bool {
+        if !self.legacy {
+            return false;
+        }
         match self.purpose {
             ContractPurpose::Unwind => self.contract.consent_intact(),
             ContractPurpose::Settle { .. } | ContractPurpose::Forfeit { .. } => {
@@ -3280,6 +3316,9 @@ impl crate::engine::AuthEval for ContractAuth<'_> {
         to: &PrincipalId,
         _to_scope: Option<OrgScopeId>,
     ) -> bool {
+        if !self.bound() {
+            return false;
+        }
         let ContractPurpose::Settle { titles, .. } = &self.purpose else {
             return false;
         };
@@ -3464,6 +3503,7 @@ mod tests {
     fn golden_surface() -> (PrincipalId, ConsentSurface) {
         let issuer = PrincipalId::Organization(mush_org::OrgId(7));
         let consent = ConsentSurface {
+            managed: None,
             // Deliberately NOT in `principal_key` order: the sort is part of what
             // the pin freezes.
             parties: vec![
@@ -3529,6 +3569,7 @@ mod tests {
         let mut parties: Vec<&PrincipalId> = consent.parties.iter().collect();
         parties.sort_by(|a, b| principal_key(a).cmp(&principal_key(b)));
         let canonical = CanonicalConsent {
+            managed: consent.managed.as_ref(),
             issuer: &issuer,
             parties,
             terms: &consent.terms,
@@ -3556,6 +3597,7 @@ mod tests {
         let mut parties: Vec<&PrincipalId> = consent.parties.iter().collect();
         parties.sort_by(|a, b| principal_key(a).cmp(&principal_key(b)));
         let canonical = CanonicalConsent {
+            managed: consent.managed.as_ref(),
             issuer: &issuer,
             parties,
             terms: &consent.terms,

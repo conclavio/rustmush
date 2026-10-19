@@ -21,6 +21,8 @@
 //!   transport gates on [`GameBridge::is_ip_blocked`] before every auth
 //!   attempt.
 
+mod legal_action;
+
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -1096,6 +1098,30 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         let Some(actor) = self.actor_of(conn_id) else {
             return;
         };
+        if let mush_proto::InvokeRequest::LegalAction(action) = &request {
+            // No representable correlation exists for an unsafe JSON integer.
+            if id > MAX_VIEW_WIRE_INTEGER {
+                return;
+            }
+            if request.validate().is_err() {
+                self.legal_action_reply(
+                    conn_id,
+                    actor,
+                    id,
+                    mush_proto::LegalActionResponse::Invalid {},
+                );
+            } else if self.sessions.check_query_flood(conn_id) == FloodVerdict::Throttled {
+                self.legal_action_reply(
+                    conn_id,
+                    actor,
+                    id,
+                    mush_proto::LegalActionResponse::Busy {},
+                );
+            } else {
+                self.legal_action_invoke(conn_id, actor, id, action).await;
+            }
+            return;
+        }
         if request.validate().is_err()
             || self.sessions.check_query_flood(conn_id) == FloodVerdict::Throttled
         {

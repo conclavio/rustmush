@@ -11,7 +11,7 @@
 //! - **Standard Doctrine** ([`HeldMind::doctrine`]), as every character does
 //!   in production;
 //! - **`Fixture I`** — `fixture_i.rhai`, rated Class I, scripted, presets
-//!   Line and Sniper, a charter and a line that are not the Registry's — the
+//!   Line and Sniper, with explicit draft fixture provenance — the
 //!   fixture of every non-Doctrine lobby path (the not-held, fit and pool
 //!   cases, the lost holding). Every test fielding it fields a `line_tank` at
 //!   the default `fill_class` I. [`TestHoldings::drop_fixture_i`] takes it
@@ -68,6 +68,155 @@ pub fn digest_hex(text: &str) -> String {
         .collect()
 }
 
+/// Structural metadata for the pre-workshop fixed-stock fixture adapter. These
+/// sources intentionally predate MIND metadata; they are not M6 save acceptance
+/// fixtures. Roll still owns real immutable revisions and all retention checks.
+fn fixture_envelope(class: CoreClass) -> mush_roll::Envelope {
+    mush_roll::Envelope {
+        schema: serde_json::json!({"sections": []}),
+        presets: serde_json::json!({}),
+        profiles: serde_json::json!({"Default": {}}),
+        rules: serde_json::json!({}),
+        declared_class: class.as_str().into(),
+        mind_abi: tacsim::minds::MIND_ABI.into(),
+    }
+}
+
+pub fn fixture_origin(id: u64, class: CoreClass, source: &str) -> MindOrigin {
+    MindOrigin::Draft {
+        character: ObjId(1),
+        mind: id,
+        revision: 1,
+        digest: fixture_envelope(class)
+            .digest(source)
+            .expect("exact fixture envelope"),
+    }
+}
+
+struct FixtureSource;
+impl mush_roll::RevisionAdapter for FixtureSource {
+    fn normalize_source(&self, source: &str) -> Result<String, mush_roll::RollError> {
+        Ok(source.to_owned())
+    }
+    fn validate(
+        &self,
+        source: &str,
+        envelope: &mush_roll::Envelope,
+    ) -> Result<(), mush_roll::RollError> {
+        let class =
+            CoreClass::parse(&envelope.declared_class).ok_or(mush_roll::RollError::Missing)?;
+        if ![FIXTURE_I_RHAI, LOAD_III_RHAI].contains(&source)
+            || *envelope != fixture_envelope(class)
+        {
+            return Err(mush_roll::RollError::Missing);
+        }
+        tacsim::minds::RhaiRunner::new(
+            &tacsim::config::ArenaConfig::default(),
+            source,
+            mush_mind::Digest(digest(source)),
+        )
+        .map(|_| ())
+        .map_err(|error| mush_roll::RollError::Invalid {
+            field: "fixture source".into(),
+            message: error.to_string(),
+        })
+    }
+}
+impl mush_roll::SourceAdapter for FixtureSource {
+    type Token = ();
+    fn prepare_source(
+        &self,
+        source: &str,
+        abi: &str,
+    ) -> Result<mush_roll::PreparedSource<()>, mush_roll::RollError> {
+        if abi != tacsim::minds::MIND_ABI || ![FIXTURE_I_RHAI, LOAD_III_RHAI].contains(&source) {
+            return Err(mush_roll::RollError::Missing);
+        }
+        // The test content is already immutable in this binary. In particular,
+        // do not populate Tacsim's source map: NoSources verifies checkout does.
+        Ok(mush_roll::PreparedSource {
+            digest: mush_roll::source_digest(source),
+            operations: Vec::new(),
+            token: (),
+        })
+    }
+    fn read_source(
+        &self,
+        wanted: mush_core::DefinitionDigest,
+    ) -> Result<&str, mush_roll::RollError> {
+        [FIXTURE_I_RHAI, LOAD_III_RHAI]
+            .into_iter()
+            .find(|text| mush_roll::source_digest(text) == wanted)
+            .ok_or(mush_roll::RollError::Missing)
+    }
+}
+
+/// Seed the test adapter's three real immutable Roll revisions during fixture
+/// setup, before any command. This is not a production save/metadata bypass.
+/// Returned writes let a restarting fixture retain its complete setup image.
+pub fn seed_fixture_revisions(w: &mut World) -> Vec<mush_core::ModuleOp> {
+    let owner = w
+        .module_state_mut::<mush_roll::RollStore>()
+        .expect("real Roll owner");
+    let mut writes = Vec::new();
+    for (id, name, class, source) in [
+        (1, "Fixture I", CoreClass::I, FIXTURE_I_RHAI),
+        (2, "Load III", CoreClass::III, LOAD_III_RHAI),
+        (3, "Fixture II", CoreClass::II, FIXTURE_I_RHAI),
+    ] {
+        if owner.mind(ObjId(1), name).is_err() {
+            let create = owner
+                .prepare_create(
+                    ObjId(1),
+                    name,
+                    mush_roll::WorkingCopy {
+                        source: source.into(),
+                        envelope: fixture_envelope(class),
+                    },
+                )
+                .expect("bounded fixture draft");
+            owner
+                .publish_with(create, |ops| writes.extend_from_slice(ops))
+                .expect("fresh create");
+            let base = owner.mind(ObjId(1), name).expect("created fixture").base();
+            let save = owner
+                .prepare_save(
+                    ObjId(1),
+                    name,
+                    base,
+                    "legacy test adapter",
+                    None,
+                    &FixtureSource,
+                    &FixtureSource,
+                )
+                .expect("actual compiled fixture save");
+            let (change, _, reference) = save.into_parts();
+            assert_eq!(reference.key.mind, id);
+            owner
+                .publish_with(change, |ops| writes.extend_from_slice(ops))
+                .expect("fresh save");
+        }
+        let reference = mush_roll::RevisionRef {
+            key: mush_roll::RevisionKey {
+                character: ObjId(1),
+                mind: id,
+                number: 1,
+            },
+            digest: fixture_envelope(class)
+                .digest(source)
+                .expect("fixture digest"),
+        };
+        let revision = owner
+            .revision(ObjId(1), reference.key)
+            .expect("retained exact revision");
+        assert_eq!(revision.reference(), reference);
+        revision
+            .verify_source(&FixtureSource)
+            .expect("retained source identity");
+    }
+    writes
+}
+
 /// **`Fixture I`, as the provider holds it.**
 #[must_use]
 pub fn fixture_i() -> HeldMind {
@@ -76,12 +225,7 @@ pub fn fixture_i() -> HeldMind {
         saved: None,
         identity: SealIdentity {
             mind: SmolStr::new_static(FIXTURE_I),
-            origin: MindOrigin::Filed {
-                charter: SmolStr::new_static("Fixture"),
-                line: SmolStr::new_static("fixture_i"),
-                revision: 1,
-                licence: SmolStr::new_static("fixture"),
-            },
+            origin: fixture_origin(1, CoreClass::I, FIXTURE_I_RHAI),
             source_sha256: digest(FIXTURE_I_RHAI),
         },
         rated: CoreClass::I,
@@ -99,12 +243,7 @@ pub fn load_iii() -> HeldMind {
         saved: None,
         identity: SealIdentity {
             mind: SmolStr::new_static(LOAD_III),
-            origin: MindOrigin::Filed {
-                charter: SmolStr::new_static("Fixture"),
-                line: SmolStr::new_static("load"),
-                revision: 1,
-                licence: SmolStr::new_static("fixture"),
-            },
+            origin: fixture_origin(2, CoreClass::III, LOAD_III_RHAI),
             source_sha256: digest(LOAD_III_RHAI),
         },
         rated: CoreClass::III,
@@ -147,6 +286,7 @@ impl Holdings for TestHoldings {
 /// **Install the test provider on `w`** through the production seam, and
 /// hand back the provider so a test can drop a holding later.
 pub fn install(w: &mut World) -> Arc<TestHoldings> {
+    let _setup_writes = seed_fixture_revisions(w);
     let holdings = Arc::new(TestHoldings::default());
     tacsim::match_::holdings::install_holdings(w, holdings.clone());
     holdings
@@ -171,5 +311,6 @@ impl Holdings for NoSources {
 
 /// **Install [`NoSources`] on `w`** through the production seam.
 pub fn install_without_sources(w: &mut World) {
+    let _setup_writes = seed_fixture_revisions(w);
     tacsim::match_::holdings::install_holdings(w, Arc::new(NoSources::default()));
 }

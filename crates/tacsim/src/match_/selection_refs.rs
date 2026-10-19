@@ -136,21 +136,32 @@ pub(crate) fn revisions<'a>(seals: impl IntoIterator<Item = &'a MindSeal>) -> Ve
     let mut revisions = std::collections::BTreeSet::new();
     for seal in seals {
         for origin in [&seal.origin, &seal.requested.origin] {
-            if let MindOrigin::Draft {
-                character,
-                mind,
-                revision,
-                digest,
-            } = origin
-            {
-                revisions.insert(RevisionRef {
+            let reference = match origin {
+                MindOrigin::Draft {
+                    character,
+                    mind,
+                    revision,
+                    digest,
+                } => Some(RevisionRef {
                     key: RevisionKey {
                         character: *character,
                         mind: *mind,
                         number: *revision,
                     },
                     digest: *digest,
-                });
+                }),
+                MindOrigin::Filed { certificate, .. } => Some(RevisionRef {
+                    key: RevisionKey {
+                        character: certificate.revision_character,
+                        mind: certificate.revision_mind,
+                        number: certificate.revision_number,
+                    },
+                    digest: certificate.revision_digest,
+                }),
+                MindOrigin::Doctrine { .. } => None,
+            };
+            if let Some(reference) = reference {
+                revisions.insert(reference);
             }
         }
     }

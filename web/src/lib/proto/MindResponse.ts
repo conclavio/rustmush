@@ -8,7 +8,23 @@ import type { JsonValue } from "./serde_json/JsonValue";
 /**
  * Final responses and explicit asynchronous progress.
  */
-export type MindResponse = { "status": "removed",
+export type MindResponse = { "status": "filed_source",
+/**
+ * Canonical personal licence identity.
+ */
+licence: string,
+/**
+ * SHA256 of the exact complete immutable source.
+ */
+source_sha256: string,
+/**
+ * First requested one-based line.
+ */
+first: number,
+/**
+ * Bounded numbered display lines, escaped by the shared source viewer.
+ */
+lines: Array<string>, } | { "status": "removed",
 /**
  * Former library name.
  */

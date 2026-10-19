@@ -378,7 +378,7 @@ async fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Landing {
                     .await
                     .expect("the bundle reconciles");
                 assert!(receipt.matches_bundle(&bundle));
-                let heard = rig.tw.install_prepared_action_announcing(installation);
+                let heard = rig.tw.install_composed_action_announcing(installation);
                 rig.heard.extend(heard);
                 auth.checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
                     .await

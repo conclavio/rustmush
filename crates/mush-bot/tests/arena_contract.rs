@@ -2567,6 +2567,7 @@ fn m5_1_the_selection_fog_reads_as_the_bot_reads_it() {
     use mush_bot::arena::lines::BoardPilot;
     use tacsim::match_::lobby::{self, MindChoice};
     let choice = MindChoice {
+        filed: None,
         saved: None,
         mind: "Standard Doctrine".into(),
         profiles: vec!["Sniper".into(), "Line".into()],

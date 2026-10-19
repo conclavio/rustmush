@@ -491,6 +491,7 @@ pub struct HookReadContext<'a> {
     world: &'a World,
     typed_state: crate::action_state::ModuleActionState<'a>,
     registry: Option<&'a Registry>,
+    read_caller: Option<crate::read_service::OwnerReadCaller>,
 }
 
 impl<'a> HookReadContext<'a> {
@@ -520,7 +521,34 @@ impl<'a> HookReadContext<'a> {
             world,
             typed_state: crate::action_state::ModuleActionState::for_module(lens, Some(module)),
             registry: None,
+            read_caller: None,
         }
+    }
+
+    /// Actual dispatch attribution, never taken from service request data.
+    pub(crate) fn with_owner_read_caller(mut self, module: &str, actor: ObjId) -> Self {
+        self.read_caller = crate::read_service::OwnerReadCaller::object(module, actor).ok();
+        self
+    }
+
+    /// Invoke only a registered immutable service authorized for this dispatch.
+    pub fn read_owner<S: crate::read_service::OwnerReadService>(
+        &self,
+        handle: &crate::read_service::OwnerReadHandle<S>,
+        request: S::Request,
+    ) -> Result<S::Output, crate::read_service::OwnerReadError> {
+        let registry = self
+            .registry
+            .ok_or(crate::read_service::OwnerReadError::Unavailable)?;
+        let caller = self
+            .read_caller
+            .as_ref()
+            .ok_or(crate::read_service::OwnerReadError::Unavailable)?;
+        registry
+            .owner_reads
+            .as_ref()
+            .ok_or(crate::read_service::OwnerReadError::Unavailable)?
+            .call(self.world, self.typed_state.lens(), caller, handle, request)
     }
 
     /// Attach the live registry (engine query dispatch only), so a read-only
@@ -1629,12 +1657,82 @@ impl fmt::Debug for StateInit {
     }
 }
 
+/// An opaque identity for one installed module-state slot.
+///
+/// This records installation identity only: ordinary in-place changes do not
+/// invalidate it. A prepared owner operation must separately check every local
+/// generation or pre-state fact it used. It grants no module ownership or write
+/// delegation and cannot be serialized or restored across a process restart.
+/// Replacing the slot or cloning its map invalidates the old identity in the
+/// replacement/clone, even if every stored value is equal.
+#[must_use]
+pub struct StateSlotCapture<T> {
+    incarnation: Arc<()>,
+    marker: std::marker::PhantomData<fn() -> T>,
+}
+
+/// Core-only counterpart of a typed slot capture; never an external mutation API.
+#[derive(Clone)]
+pub(crate) struct ErasedSlotCapture {
+    type_id: TypeId,
+    incarnation: Arc<()>,
+}
+impl ErasedSlotCapture {
+    pub(crate) const fn type_id(&self) -> TypeId {
+        self.type_id
+    }
+}
+
+impl<T> Clone for StateSlotCapture<T> {
+    fn clone(&self) -> Self {
+        Self {
+            incarnation: Arc::clone(&self.incarnation),
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T> fmt::Debug for StateSlotCapture<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StateSlotCapture")
+            .field("type", &std::any::type_name::<T>())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Refusal to borrow an exact captured slot. No state is changed on refusal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StateSlotBindError {
+    /// The requested slot is not installed.
+    Missing,
+    /// The installed value belongs to a different installation.
+    Replaced,
+    /// Both requested types name the same slot.
+    Aliased,
+    /// The map's private type/value invariant is inconsistent.
+    TypeMismatch,
+}
+
+impl fmt::Display for StateSlotBindError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Missing => "captured module-state slot is absent",
+            Self::Replaced => "captured module-state slot was replaced",
+            Self::Aliased => "captured module-state slots alias",
+            Self::TypeMismatch => "captured module-state slot type mismatch",
+        })
+    }
+}
+
+impl std::error::Error for StateSlotBindError {}
+
 struct StateSlot {
     value: Box<dyn Any + Send>,
     clone_fn: StateCloneFn,
     /// The slot type's name, kept so a report can name it (see
     /// [`StateInit::type_name`]).
     type_name: &'static str,
+    incarnation: Arc<()>,
 }
 
 /// One installed state slot, as the ownership census sees it: what type the
@@ -1715,6 +1813,7 @@ impl Clone for ModuleStateMap {
                             value: (v.clone_fn)(v.value.as_ref()),
                             clone_fn: v.clone_fn,
                             type_name: v.type_name,
+                            incarnation: Arc::new(()),
                         },
                     )
                 })
@@ -1738,6 +1837,7 @@ impl ModuleStateMap {
                 value: Box::new(value),
                 clone_fn: clone_state::<T>,
                 type_name: std::any::type_name::<T>(),
+                incarnation: Arc::new(()),
             },
         );
     }
@@ -1750,6 +1850,7 @@ impl ModuleStateMap {
                 value: init.value,
                 clone_fn: init.clone_fn,
                 type_name: init.type_name,
+                incarnation: Arc::new(()),
             },
         );
     }
@@ -1760,12 +1861,168 @@ impl ModuleStateMap {
         self.slots.iter().map(|(&id, slot)| (id, slot.type_name))
     }
 
+    pub(crate) fn capture_erased(
+        &self,
+        type_id: TypeId,
+    ) -> Option<(ErasedSlotCapture, &(dyn Any + Send))> {
+        self.slots.get(&type_id).map(|slot| {
+            (
+                ErasedSlotCapture {
+                    type_id,
+                    incarnation: Arc::clone(&slot.incarnation),
+                },
+                slot.value.as_ref(),
+            )
+        })
+    }
+
+    pub(crate) fn get_erased_captured(
+        &self,
+        capture: &ErasedSlotCapture,
+    ) -> Option<&(dyn Any + Send)> {
+        let slot = self.slots.get(&capture.type_id)?;
+        Arc::ptr_eq(&slot.incarnation, &capture.incarnation).then_some(slot.value.as_ref())
+    }
+
+    pub(crate) fn get_erased_captured_mut(
+        &mut self,
+        capture: &ErasedSlotCapture,
+    ) -> Result<&mut (dyn Any + Send), StateSlotBindError> {
+        let slot = self
+            .slots
+            .get_mut(&capture.type_id)
+            .ok_or(StateSlotBindError::Missing)?;
+        if !Arc::ptr_eq(&slot.incarnation, &capture.incarnation) {
+            return Err(StateSlotBindError::Replaced);
+        }
+        Ok(slot.value.as_mut())
+    }
+
+    pub(crate) fn get_erased_captured_pair_mut(
+        &mut self,
+        a: &ErasedSlotCapture,
+        b: &ErasedSlotCapture,
+    ) -> Result<(&mut (dyn Any + Send), &mut (dyn Any + Send)), StateSlotBindError> {
+        if a.type_id == b.type_id {
+            return Err(StateSlotBindError::Aliased);
+        }
+        let [Some(left), Some(right)] = self.slots.get_disjoint_mut([&a.type_id, &b.type_id])
+        else {
+            return Err(StateSlotBindError::Missing);
+        };
+        if !Arc::ptr_eq(&left.incarnation, &a.incarnation)
+            || !Arc::ptr_eq(&right.incarnation, &b.incarnation)
+        {
+            return Err(StateSlotBindError::Replaced);
+        }
+        Ok((left.value.as_mut(), right.value.as_mut()))
+    }
+
+    pub(crate) fn get_erased_captured_triple_mut(
+        &mut self,
+        a: &ErasedSlotCapture,
+        b: &ErasedSlotCapture,
+        c: &ErasedSlotCapture,
+    ) -> Result<
+        (
+            &mut (dyn Any + Send),
+            &mut (dyn Any + Send),
+            &mut (dyn Any + Send),
+        ),
+        StateSlotBindError,
+    > {
+        if a.type_id == b.type_id || a.type_id == c.type_id || b.type_id == c.type_id {
+            return Err(StateSlotBindError::Aliased);
+        }
+        let [Some(left), Some(middle), Some(right)] = self
+            .slots
+            .get_disjoint_mut([&a.type_id, &b.type_id, &c.type_id])
+        else {
+            return Err(StateSlotBindError::Missing);
+        };
+        if !Arc::ptr_eq(&left.incarnation, &a.incarnation)
+            || !Arc::ptr_eq(&middle.incarnation, &b.incarnation)
+            || !Arc::ptr_eq(&right.incarnation, &c.incarnation)
+        {
+            return Err(StateSlotBindError::Replaced);
+        }
+        Ok((
+            left.value.as_mut(),
+            middle.value.as_mut(),
+            right.value.as_mut(),
+        ))
+    }
+
     /// Read the slot for `T`.
     #[must_use]
     pub fn get<T: Any + Send>(&self) -> Option<&T> {
         self.slots
             .get(&TypeId::of::<T>())
             .and_then(|s| s.value.downcast_ref::<T>())
+    }
+
+    /// Capture the identity of the currently installed slot for `T`.
+    /// This is a replacement fence, not a state-revision or ownership check.
+    #[must_use]
+    pub fn capture<T: Any + Send>(&self) -> Option<StateSlotCapture<T>> {
+        self.slots
+            .get(&TypeId::of::<T>())
+            .map(|slot| StateSlotCapture {
+                incarnation: Arc::clone(&slot.incarnation),
+                marker: std::marker::PhantomData,
+            })
+    }
+
+    /// Borrow the exact installation represented by `capture`.
+    /// Like [`Self::get_mut`], this carries no module identity or delegation;
+    /// callers must still perform owner-local preparation checks before mutation.
+    pub fn get_captured_mut<T: Any + Send>(
+        &mut self,
+        capture: &StateSlotCapture<T>,
+    ) -> Result<&mut T, StateSlotBindError> {
+        let slot = self
+            .slots
+            .get_mut(&TypeId::of::<T>())
+            .ok_or(StateSlotBindError::Missing)?;
+        if !Arc::ptr_eq(&slot.incarnation, &capture.incarnation) {
+            return Err(StateSlotBindError::Replaced);
+        }
+        slot.value
+            .downcast_mut::<T>()
+            .ok_or(StateSlotBindError::TypeMismatch)
+    }
+
+    /// Borrow two exact, distinct installations before either owner is changed.
+    /// Every presence, identity and downcast check finishes before the pair is
+    /// returned. No partial borrow escapes on refusal. This is the same unchecked
+    /// engine access as [`Self::get_pair_mut`], not an authority capability.
+    pub fn get_captured_pair_mut<A: Any + Send, B: Any + Send>(
+        &mut self,
+        first: &StateSlotCapture<A>,
+        second: &StateSlotCapture<B>,
+    ) -> Result<(&mut A, &mut B), StateSlotBindError> {
+        let first_key = TypeId::of::<A>();
+        let second_key = TypeId::of::<B>();
+        if first_key == second_key {
+            return Err(StateSlotBindError::Aliased);
+        }
+        let [Some(a), Some(b)] = self.slots.get_disjoint_mut([&first_key, &second_key]) else {
+            return Err(StateSlotBindError::Missing);
+        };
+        if !Arc::ptr_eq(&a.incarnation, &first.incarnation)
+            || !Arc::ptr_eq(&b.incarnation, &second.incarnation)
+        {
+            return Err(StateSlotBindError::Replaced);
+        }
+        let a = a
+            .value
+            .downcast_mut::<A>()
+            .ok_or(StateSlotBindError::TypeMismatch)?;
+        let b = b
+            .value
+            .downcast_mut::<B>()
+            .ok_or(StateSlotBindError::TypeMismatch)?;
+        Ok((a, b))
     }
 
     /// Mutably access the slot for `T`.
@@ -1996,6 +2253,8 @@ impl Registry {
             || self.bridges.is_some()
             || self.definition_migrations.is_some()
             || self.action_providers.is_some()
+            || self.participants.is_some()
+            || self.owner_reads.is_some()
             || self.revision_validators.is_some()
             || self.authority_guard_validators.is_some()
             || self.state_families.is_some()
@@ -2058,6 +2317,27 @@ impl Registry {
         let definition_migrations = std::mem::take(&mut self.definition_migration_builder)
             .freeze_for_composition(&definitions, owner_readiness.clone())
             .map_err(|e| ModError::msg(format!("definition migration registry: {e}")))?;
+        let participants = std::mem::take(&mut self.participant_builder)
+            .freeze(
+                &definitions,
+                &action_providers,
+                &self.mods.state_inits,
+                owner_readiness.clone(),
+            )
+            .map_err(|e| ModError::msg(format!("owner participant registry: {e}")))?;
+        state_families
+            .validate_registry_rating_composition(&definitions, &action_providers, &participants)
+            .map_err(|e| ModError::msg(format!("Registry rating capacity: {e}")))?;
+        let owner_reads = std::mem::take(&mut self.owner_read_builder)
+            .freeze(
+                &definitions,
+                module_owners,
+                &self.mods.state_inits,
+                owner_readiness.clone(),
+            )
+            .map_err(|e| ModError::msg(format!("owner read registry: {e}")))?;
+        self.owner_reads = Some(owner_reads);
+        self.participants = Some(participants);
         self.definitions = Some(definitions);
         self.mechanics_owner_readiness = Some(owner_readiness);
         self.bridges = Some(bridges);
@@ -2234,23 +2514,39 @@ impl Registry {
         let resource_effect_providers = self.resource_effect_providers.as_ref()?;
         let schedule_sources = self.schedule_sources.as_ref()?;
         let decision_sources = self.decision_sources.as_ref()?;
-        crate::mechanics::DefinitionDigest::for_canonical_value(
-            "mechanics_registry.v8",
-            &serde_json::json!({
-                "definitions": definitions.fingerprint().to_hex(),
-                "bridges": bridges.fingerprint().to_hex(),
-                "migrations": migrations.fingerprint().to_hex(),
-                "actions": actions.fingerprint().to_hex(),
-                "revision_validators": revisions.fingerprint().to_hex(),
-                "authority_validators": authority.fingerprint().to_hex(),
-                "state_families": state_families.fingerprint().to_hex(),
-                "clock_providers": clock_providers.fingerprint().to_hex(),
-                "resource_effect_providers": resource_effect_providers.fingerprint().to_hex(),
-                "schedule_sources": schedule_sources.fingerprint().to_hex(),
-                "decision_sources": decision_sources.fingerprint().to_hex(),
-            }),
-        )
-        .ok()
+        let mut material = serde_json::json!({
+            "definitions": definitions.fingerprint().to_hex(),
+            "bridges": bridges.fingerprint().to_hex(),
+            "migrations": migrations.fingerprint().to_hex(),
+            "actions": actions.fingerprint().to_hex(),
+            "revision_validators": revisions.fingerprint().to_hex(),
+            "authority_validators": authority.fingerprint().to_hex(),
+            "state_families": state_families.fingerprint().to_hex(),
+            "clock_providers": clock_providers.fingerprint().to_hex(),
+            "resource_effect_providers": resource_effect_providers.fingerprint().to_hex(),
+            "schedule_sources": schedule_sources.fingerprint().to_hex(),
+            "decision_sources": decision_sources.fingerprint().to_hex(),
+        });
+        let mut domain = "mechanics_registry.v8";
+        if let Some(participants) = &self.participants {
+            if !participants.is_empty() {
+                material.as_object_mut()?.insert(
+                    "owner_participants".into(),
+                    serde_json::Value::String(participants.fingerprint().to_hex()),
+                );
+                domain = "mechanics_registry.v9";
+            }
+        }
+        if let Some(readers) = &self.owner_reads {
+            if !readers.is_empty() {
+                material.as_object_mut()?.insert(
+                    "owner_reads".into(),
+                    serde_json::Value::String(readers.fingerprint().to_hex()),
+                );
+                domain = "mechanics_registry.v10";
+            }
+        }
+        crate::mechanics::DefinitionDigest::for_canonical_value(domain, &material).ok()
     }
 
     /// The module that owns attribute namespace `ns` (`"wod"` for
@@ -2629,6 +2925,19 @@ pub trait GameModule: Send {
         Ok(())
     }
 
+    /// Final synchronous owner audit, after every module's `on_all_loaded`
+    /// hook and its deferred work have completed. This receives the same
+    /// owner-stamped context and typed-state lens; it grants no new access.
+    ///
+    /// Use this for a readiness decision requiring another owner's completed
+    /// source/retention reconciliation. Keep readiness closed until this audit
+    /// succeeds. It must not depend on another final audit's roster position.
+    /// An error fails boot and stops the remaining final hooks. This is a boot
+    /// phase only, never a post-acknowledgement callback or live commit hook.
+    fn finalize_owner_composition(&mut self, _ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        Ok(())
+    }
+
     /// Which persisted streams the driver should load into this module's
     /// [`ModuleBootData::streams`], given the module's kv documents (as the
     /// driver just listed them): `(stream key, newest-N to load)` pairs.
@@ -2829,6 +3138,181 @@ impl<'a> Registrar<'a> {
             })
     }
 
+    /// Register one bounded immutable service under this actual module owner.
+    pub fn owner_read_service<S: crate::read_service::OwnerReadService>(
+        &mut self,
+        definition: crate::mechanics::DefinitionRef,
+        allowed: BTreeSet<crate::mechanics::OwnerId>,
+        dependencies: BTreeSet<crate::mechanics::OwnerId>,
+        service: S,
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.owner_reads.is_some() {
+            return Err(ModError::msg("owner read registry is frozen"));
+        }
+        let owner = crate::mechanics::OwnerId::parse_canonical(self.module.as_str())
+            .map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .owner_read_builder
+            .register(owner, definition, allowed, dependencies, service)
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
+    /// Ask the service owner to grant this module an exact read capability.
+    /// Requests resolve at freeze, independent of registration order.
+    pub fn request_owner_read<S: crate::read_service::OwnerReadService>(
+        &mut self,
+        definition: crate::mechanics::DefinitionRef,
+    ) -> Result<crate::read_service::OwnerReadHandle<S>, ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.owner_reads.is_some() {
+            return Err(ModError::msg("owner read registry is frozen"));
+        }
+        let caller = crate::mechanics::OwnerId::parse_canonical(self.module.as_str())
+            .map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .owner_read_builder
+            .request(caller, definition)
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
+    /// Register this module's legacy owner slot for one closed prepared effect.
+    /// Exact caller action definitions are nontransitive grants, frozen at composition.
+    pub fn owner_participant<P: crate::participant::OwnerParticipant>(
+        &mut self,
+        definition: crate::mechanics::DefinitionRef,
+        allowed_actions: BTreeSet<crate::mechanics::DefinitionRef>,
+        adapter: P,
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.participants.is_some() {
+            return Err(ModError::msg("owner participant registry is frozen"));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str())
+            .map_err(|e| ModError::msg(format!("owner participant owner: {e}")))?;
+        self.reg
+            .participant_builder
+            .register(owner, definition, allowed_actions, adapter)
+            .map_err(|e| ModError::msg(format!("owner participant: {e}")))
+    }
+
+    /// Request a handle for this exact action. The owner must independently grant
+    /// it, and freeze resolves both sides regardless of module registration order.
+    pub fn request_owner_participant<P: crate::participant::OwnerParticipant>(
+        &mut self,
+        action: crate::mechanics::DefinitionRef,
+    ) -> Result<crate::participant::ParticipantHandle<P>, ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.participants.is_some() {
+            return Err(ModError::msg("owner participant registry is frozen"));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str())
+            .map_err(|e| ModError::msg(format!("owner participant requester: {e}")))?;
+        self.reg
+            .participant_builder
+            .request(owner, action)
+            .map_err(|e| ModError::msg(format!("owner participant request: {e}")))
+    }
+
+    /// Declare the fixed Registry rating future-capacity protocol. Only the
+    /// actual Roll registrar may call this, after registering its six exact
+    /// rating families. Action order is admit, grant, settle, cancel, recover.
+    /// Targets, bounds and verification are coordinator-owned.
+    pub fn registry_rating_capacity(
+        &mut self,
+        manifest: crate::DefinitionRef,
+        actions: [crate::DefinitionRef; 5],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "roll" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "Registry rating capacity requires the unfrozen Roll registrar",
+            ));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str())
+            .map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .registry_rating_capacity(&owner, manifest, actions)
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
+    /// Declare the closed original personal purchase protocol. Only Market may
+    /// register it; action order is funding, grant and refund. Core derives all
+    /// five future targets from actual acknowledged purchase/allocation rows.
+    pub fn original_mind_purchase_capacity(
+        &mut self,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 3],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "market" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "original purchase capacity requires the unfrozen Market registrar",
+            ));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str())
+            .map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .original_mind_purchase_capacity(&owner, manifest, participants, actions)
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
+    /// Declare the closed OriginalV3/DerivedV1 purchase protocols. Only Market may
+    /// register it; action order is funding, grant and refund. Core derives all
+    /// six future targets from actual acknowledged purchase/allocation rows.
+    pub fn mind_entitlement_purchase_capacity(
+        &mut self,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        original_actions: [crate::DefinitionRef; 3],
+        derived_actions: [crate::DefinitionRef; 3],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "market" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "entitlement purchase capacity requires the unfrozen Market registrar",
+            ));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str())
+            .map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .mind_entitlement_purchase_capacity(
+                &owner,
+                manifest,
+                participants,
+                original_actions,
+                derived_actions,
+            )
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
+    /// Declare the closed personal mind renewal protocol. Actions are Draft,
+    /// Fund, Grant, Refund, and unfunded Close, in that order. Core derives the
+    /// seven fixed targets from actual paired rows; callers supply no targets.
+    pub fn mind_renewal_capacity(
+        &mut self,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 5],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "market" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "renewal capacity requires the unfrozen Market registrar",
+            ));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str())
+            .map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .mind_renewal_capacity(&owner, manifest, participants, actions)
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
     /// Declare one engine-owned typed state family and receive its opaque
     /// owner-stamped capability.
     ///
@@ -2924,6 +3408,45 @@ impl<'a> Registrar<'a> {
             .map_err(|e| {
                 ModError::msg(format!(
                     "module {}: state-family delegation: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Delegate one exact already-registered typed family to a composed owner.
+    ///
+    /// The handle must have been minted by this composition for this module.
+    /// Read and write permission applies only to this family; it is neither
+    /// transitive nor symmetric. Scoped and owner-wide grants share the
+    /// existing distinct-grantee limit and enter the frozen fingerprint.
+    /// Persisted records remain under the family owner's namespace.
+    ///
+    /// # Errors
+    /// Refuses legacy/frozen registrars, a foreign or unregistered handle,
+    /// another owner's family, an invalid/self grantee, or the existing cap.
+    /// An uncomposed grantee is refused when the registries freeze.
+    pub fn delegate_state_family<K: 'static, V: 'static>(
+        &mut self,
+        family: &crate::action_state::StateFamilyHandle<K, V>,
+        grantee: &str,
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.state_families.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: state-family registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str())
+            .map_err(|error| ModError::msg(error.to_string()))?;
+        let grantee = crate::mechanics::OwnerId::new(grantee)
+            .map_err(|error| ModError::msg(error.to_string()))?;
+        self.reg
+            .state_family_builder
+            .delegate_family(owner, family, grantee)
+            .map_err(|error| {
+                ModError::msg(format!(
+                    "module {}: state-family delegation: {error}",
                     self.module
                 ))
             })
@@ -3385,6 +3908,32 @@ impl<'a> Registrar<'a> {
         self.reg
             .register_tagged(spec, handler, Some(self.module.clone()), compatibility)?;
         Ok(())
+    }
+
+    /// Bind a private continuation to this module's exact, already registered
+    /// authoritative command and fixed switches. This is not a command alias
+    /// or a transport constructor. Timers retain the command's normal gates.
+    pub fn command_continuation(
+        &mut self,
+        primary: &str,
+        switches: &[&str],
+    ) -> Result<crate::ContinuationHandle, ModError> {
+        self.require_mechanics_registration_authority()?;
+        self.reg
+            .register_continuation(&self.module, primary, switches)
+    }
+
+    /// Bind an exact LegacyPostImage completion handler. Capturing a player
+    /// requires a separate actual connected-ingress observation; this handle
+    /// cannot choose a player or bypass the handler's permission checks.
+    pub fn connection_completion(
+        &mut self,
+        primary: &str,
+        switches: &[&str],
+    ) -> Result<crate::ConnectionCompletionHandle, ModError> {
+        self.require_mechanics_registration_authority()?;
+        self.reg
+            .register_connection_completion(&self.module, primary, switches)
     }
 
     /// Set the compatibility class applied to subsequently registered
@@ -4688,7 +5237,29 @@ impl Ctx<'_> {
     /// receives the same live typed-state snapshot as ordinary dispatch.
     #[must_use]
     pub fn hook_read_context<'a>(&'a self, module: &str) -> HookReadContext<'a> {
-        HookReadContext::for_module(self.w, self.typed_state.lens(), module)
+        let context = HookReadContext::for_module(self.w, self.typed_state.lens(), module)
+            .with_registry(self.reg);
+        HookReadContext {
+            read_caller: self.typed_state.dispatch_caller().cloned(),
+            ..context
+        }
+    }
+
+    /// A read service sees the command's actual actor and registering module.
+    pub fn read_owner<S: crate::read_service::OwnerReadService>(
+        &self,
+        handle: &crate::read_service::OwnerReadHandle<S>,
+        request: S::Request,
+    ) -> Result<S::Output, crate::read_service::OwnerReadError> {
+        let caller = self
+            .typed_state
+            .dispatch_caller()
+            .ok_or(crate::read_service::OwnerReadError::Unavailable)?;
+        self.reg
+            .owner_reads
+            .as_ref()
+            .ok_or(crate::read_service::OwnerReadError::Unavailable)?
+            .call(self.w, self.typed_state.lens(), caller, handle, request)
     }
 
     /// Consult the registered movement veto chain with this command's live
@@ -4979,6 +5550,46 @@ impl Ctx<'_> {
                 key,
             },
         )));
+    }
+
+    /// Observe one attempt on the same signed authoritative selector lane.
+    /// Only an immutable dispatch stamp can supply the actor. The returned
+    /// handle cannot complete itself, and no caller chooses a runtime adapter.
+    /// Consume its terminal observation before retrying; absence is unresolved.
+    pub fn submit_authoritative_observed(
+        &mut self,
+        action: crate::mechanics::DefinitionRef,
+        subject: crate::action::PerceivedRef,
+        targets: Vec<crate::action::PerceivedRef>,
+        parameters: serde_json::Value,
+        key: crate::action::IdempotencyKeyText,
+    ) -> Result<crate::submission_observation::SubmissionObservation, crate::cmd::CmdError> {
+        let actor = self
+            .typed_state
+            .dispatch_caller()
+            .ok_or_else(|| crate::cmd::CmdError::msg("This action is unavailable."))?
+            .actor();
+        crate::CanonicalHash::for_canonical_value(
+            "cmd.observed_selector.v1",
+            1,
+            &serde_json::json!({"actor": actor, "action": action, "subject": subject,
+                "targets": targets, "parameters": parameters, "key": key}),
+            64 * 1024,
+        )
+        .map_err(|_| crate::cmd::CmdError::msg("This action is unavailable."))?;
+        let request = Box::new(crate::engine::AuthoritativeSubmit {
+            actor,
+            action,
+            subject,
+            targets,
+            parameters,
+            key,
+        });
+        let (request, observation) =
+            crate::submission_observation::ObservedSubmission::new(request);
+        self.out
+            .defer(Deferred::ObservedAuthoritativeSubmit(request));
+        Ok(observation)
     }
 
     // ---- H1: the module store-read seam ----
@@ -5527,5 +6138,212 @@ mod concealment_tests {
         Registrar::new(&mut reg, "test").hook(HookPoint::Perceive, Arc::new(AlwaysConcealed));
         let w = World::new_minimal();
         assert!(is_concealed(&reg, &w, ObjId(1), DETACHED));
+    }
+}
+
+#[cfg(test)]
+mod captured_slot_tests {
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct Counter {
+        generation: u64,
+        value: u64,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct First(Counter);
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct Second(Counter);
+
+    fn counter(value: u64) -> Counter {
+        Counter {
+            generation: 1,
+            value,
+        }
+    }
+
+    fn pair() -> ModuleStateMap {
+        let mut map = ModuleStateMap::default();
+        map.insert(First(counter(10)));
+        map.insert(Second(counter(20)));
+        map
+    }
+
+    #[test]
+    fn capture_survives_in_place_edits_but_not_equal_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut map = pair();
+        let capture = map.capture::<First>().ok_or("first slot")?;
+        map.get_mut::<First>().ok_or("first slot")?.0.value = 11;
+        assert_eq!(map.get_captured_mut(&capture)?.0.value, 11);
+        let replacement = map.get::<First>().ok_or("first slot")?.clone();
+        map.insert(replacement);
+        assert!(matches!(
+            map.get_captured_mut(&capture),
+            Err(StateSlotBindError::Replaced)
+        ));
+        assert_eq!(map.get::<First>().ok_or("first slot")?.0.value, 11);
+        Ok(())
+    }
+
+    #[test]
+    fn collected_init_always_mints_a_fresh_installation() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut map = pair();
+        let capture = map.capture::<First>().ok_or("first slot")?;
+        map.apply(StateInit {
+            type_id: TypeId::of::<First>(),
+            type_name: std::any::type_name::<First>(),
+            module: SmolStr::new("capturetest"),
+            value: Box::new(First(counter(10))),
+            clone_fn: clone_state::<First>,
+        });
+        assert!(matches!(
+            map.get_captured_mut(&capture),
+            Err(StateSlotBindError::Replaced)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn cloned_world_slots_keep_values_but_do_not_accept_old_captures()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut original = pair();
+        let capture = original.capture::<First>().ok_or("first slot")?;
+        let copied_capture = capture.clone();
+        let mut copied = original.clone();
+        assert_eq!(original.get::<First>(), copied.get::<First>());
+        assert!(matches!(
+            copied.get_captured_mut(&capture),
+            Err(StateSlotBindError::Replaced)
+        ));
+        original.get_captured_mut(&copied_capture)?.0.value = 12;
+        assert_eq!(copied.get::<First>().ok_or("first slot")?.0.value, 10);
+        Ok(())
+    }
+
+    #[test]
+    fn aliases_missing_and_replaced_second_slots_leave_first_unchanged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut map = pair();
+        let first = map.capture::<First>().ok_or("first slot")?;
+        let second = map.capture::<Second>().ok_or("second slot")?;
+        assert!(matches!(
+            map.get_captured_pair_mut(&first, &first),
+            Err(StateSlotBindError::Aliased)
+        ));
+        let mut absent = ModuleStateMap::default();
+        assert!(absent.capture::<First>().is_none());
+        assert!(matches!(
+            absent.get_captured_mut(&first),
+            Err(StateSlotBindError::Missing)
+        ));
+        map.slots.remove(&TypeId::of::<Second>());
+        assert!(matches!(
+            map.get_captured_pair_mut(&first, &second),
+            Err(StateSlotBindError::Missing)
+        ));
+        map.insert(Second(counter(20)));
+        assert!(matches!(
+            map.get_captured_pair_mut(&first, &second),
+            Err(StateSlotBindError::Replaced)
+        ));
+        assert_eq!(map.get::<First>(), Some(&First(counter(10))));
+        Ok(())
+    }
+
+    #[test]
+    fn inconsistent_second_slot_value_refuses_without_returning_first()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut map = pair();
+        let first = map.capture::<First>().ok_or("first slot")?;
+        let second = map.capture::<Second>().ok_or("second slot")?;
+        map.slots
+            .get_mut(&TypeId::of::<Second>())
+            .ok_or("second slot")?
+            .value = Box::new(First(counter(99)));
+        assert!(matches!(
+            map.get_captured_pair_mut(&first, &second),
+            Err(StateSlotBindError::TypeMismatch)
+        ));
+        assert_eq!(map.get::<First>(), Some(&First(counter(10))));
+        Ok(())
+    }
+
+    struct BoundCounter<'a> {
+        state: &'a mut Counter,
+        value: u64,
+        next_generation: u64,
+    }
+
+    impl BoundCounter<'_> {
+        fn apply(self) {
+            self.state.value = self.value;
+            self.state.generation = self.next_generation;
+        }
+    }
+
+    fn bind_counter(
+        state: &mut Counter,
+        expected: u64,
+        value: u64,
+    ) -> Result<BoundCounter<'_>, &'static str> {
+        if state.generation != expected {
+            return Err("stale owner generation");
+        }
+        let next_generation = expected.checked_add(1).ok_or("generation exhausted")?;
+        Ok(BoundCounter {
+            state,
+            value,
+            next_generation,
+        })
+    }
+
+    fn install_pair(
+        map: &mut ModuleStateMap,
+        first: &StateSlotCapture<First>,
+        second: &StateSlotCapture<Second>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (a, b) = map.get_captured_pair_mut(first, second)?;
+        let a = bind_counter(&mut a.0, 1, 100)?;
+        let b = bind_counter(&mut b.0, 1, 200)?;
+        // Only both successful owner binds permit the first write. Neither
+        // bound apply contains another lookup, serializer or fallible operation.
+        a.apply();
+        b.apply();
+        Ok(())
+    }
+
+    #[test]
+    fn second_owner_bind_refusal_never_applies_first_and_success_applies_both()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut map = pair();
+        let first = map.capture::<First>().ok_or("first slot")?;
+        let second = map.capture::<Second>().ok_or("second slot")?;
+        map.get_mut::<Second>().ok_or("second slot")?.0.generation = 2;
+        let before_a = map.get::<First>().ok_or("first slot")?.clone();
+        let before_b = map.get::<Second>().ok_or("second slot")?.clone();
+        assert!(install_pair(&mut map, &first, &second).is_err());
+        assert_eq!(map.get::<First>(), Some(&before_a));
+        assert_eq!(map.get::<Second>(), Some(&before_b));
+        map.get_mut::<Second>().ok_or("second slot")?.0.generation = 1;
+        install_pair(&mut map, &first, &second)?;
+        assert_eq!(
+            map.get::<First>(),
+            Some(&First(Counter {
+                generation: 2,
+                value: 100
+            }))
+        );
+        assert_eq!(
+            map.get::<Second>(),
+            Some(&Second(Counter {
+                generation: 2,
+                value: 200
+            }))
+        );
+        Ok(())
     }
 }

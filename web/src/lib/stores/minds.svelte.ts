@@ -22,6 +22,7 @@ export class MindsStore {
   job = $state<number | null>(null);
   error = $state("");
   notice = $state("");
+  removalRequested = $state<string[]>([]);
   diagnostics = $state<MindDiagnostic[]>([]);
   reports = $state<MindPictureReport[]>([]);
   trace = $state<unknown>(null);
@@ -47,13 +48,13 @@ export class MindsStore {
     this.open = false; this.names = []; this.name = ""; this.revision = null;
     this.draft = null; this.base = null; this.rulesText = {}; this.rulesSource = {}; this.profile = "";
     this.dirty = false; this.busy = false; this.job = null; this.error = "";
-    this.notice = ""; this.diagnostics = []; this.reports = []; this.trace = null; this.proving = null; this.bench = null;
+    this.notice = ""; this.removalRequested = []; this.diagnostics = []; this.reports = []; this.trace = null; this.proving = null; this.bench = null;
   }
-  async #request(request: MindRequest): Promise<MindResponse> {
+  async #request(request: MindRequest, refused?: () => void): Promise<MindResponse> {
     const generation = this.#generation;
     const response = await this.rpc(request, job => { if (generation === this.#generation) this.job = job; });
     if (generation !== this.#generation) throw new Error("The character or connection changed.");
-    if (response.status === "error") throw new Error(response.message);
+    if (response.status === "error") { refused?.(); throw new Error(response.message); }
     return response;
   }
   async #run(operation: () => Promise<void>): Promise<void> {
@@ -68,7 +69,36 @@ export class MindsStore {
     this.open = true;
     await this.#run(async () => {
       const response = await this.#request({ op: "list" });
-      if (response.status === "library") this.names = response.names.slice(0, 20);
+      if (response.status === "library") this.#library(response.names);
+    });
+  }
+  #library(names: string[]): void {
+    this.names = names.slice(0, 20);
+    const absent = this.removalRequested.filter(name => !names.includes(name));
+    this.removalRequested = this.removalRequested.filter(name => names.includes(name));
+    // A requested removal is not success. Only this fresh library response can
+    // establish absence; keep any editor text until the player changes it.
+    if (absent.length) this.notice = `${absent.join(", ")} no longer appears in your library. Retained revisions and existing seals remain available.`;
+    else if (this.removalRequested.length) this.notice = "Removal requested; still present in the latest library. Refresh to check again.";
+  }
+  #requested(name: string): void {
+    if (!this.removalRequested.includes(name)) this.removalRequested = [...this.removalRequested, name].slice(-20);
+    this.notice = `Removal requested for ${name}. Refresh your library to confirm; the request may still be pending.`;
+  }
+  removeAttributed(name: string): Promise<void> {
+    return this.#run(async () => {
+      if (!this.names.includes(name)) throw new Error("Select an entry from your library first.");
+      if (this.dirty) throw new Error("Check or save your unsent changes before managing a library entry.");
+      if (this.removalRequested.includes(name)) throw new Error("Removal already requested. Refresh your library before trying again.");
+      // A transport failure may hide admission. Retain this marker until
+      // explicit refusal or a fresh library proves absence; never auto-replay.
+      this.#requested(name);
+      const response = await this.#request({ op: "remove", name }, () => {
+        this.removalRequested = this.removalRequested.filter(item => item !== name);
+        this.notice = "";
+      });
+      if (response.status !== "removal_requested" || response.name !== name) throw new Error("The removal request was not acknowledged.");
+      this.#requested(name);
     });
   }
   async #read(name: string, revision: string | null): Promise<void> {
@@ -169,8 +199,17 @@ export class MindsStore {
     return this.#run(async () => {
       if (!this.base || this.revision !== null) throw new Error("Open the working copy first.");
       if (this.dirty) throw new Error("Check or save your unsent changes before managing this library entry.");
-      const response = await this.#request({ op: "lifecycle", name: this.name, base: this.base, edit });
-      if (response.status === "removed") {
+      if (edit.kind === "remove" && this.removalRequested.includes(this.name)) throw new Error("Removal already requested. Refresh your library to check it.");
+      if (edit.kind === "remove") this.#requested(this.name);
+      const response = await this.#request({ op: "lifecycle", name: this.name, base: this.base, edit }, () => {
+        if (edit.kind === "remove") { this.removalRequested = this.removalRequested.filter(item => item !== this.name); this.notice = ""; }
+      });
+      if (response.status === "removal_requested") {
+        if (edit.kind !== "remove" || response.name !== this.name) throw new Error("Mismatched removal request acknowledgement.");
+        this.#requested(response.name);
+        return;
+      } else if (response.status === "removed") {
+        this.removalRequested = this.removalRequested.filter(name => name !== response.name);
         this.name = ""; this.revision = null; this.base = null; this.draft = null;
         this.rulesText = {}; this.rulesSource = {}; this.profile = ""; this.diagnostics = []; this.reports = [];
         this.notice = `Removed ${response.name} from your library. Retained revisions and existing seals remain available.`;

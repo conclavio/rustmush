@@ -68,12 +68,38 @@ pub enum Query {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         page: Option<u16>,
     },
+    /// Read bounded public listings or this character's own original-mind offers.
+    MarketOriginalMinds(MarketOriginalMindsRequest),
     /// Subscribe to a panel feed; the server responds with a keyframe and
     /// then streams deltas.
     PanelSubscribe {
         /// Panel feed id, e.g. `"wod.roll"`.
         feed: SmolStr,
     },
+}
+
+/// One bounded original-mind offer view. Ownership is always the attached character.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum MarketOriginalMindsKind {
+    /// Current public listings at the character's admitted venue.
+    Listings,
+    /// Only this character's listings and private quotes.
+    Own,
+}
+
+/// Closed read selectors for the original-mind Market handler.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct MarketOriginalMindsRequest {
+    /// Public venue listings or private offers owned by the attached character.
+    pub kind: MarketOriginalMindsKind,
+    /// Canonical 32-lowercase-hex publication cursor, not actor or account authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
+    pub after: Option<ProjectedCommitToken>,
 }
 
 /// Everything a client can say to the server.

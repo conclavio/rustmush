@@ -1,5 +1,5 @@
-//! Closed, bounded authoring requests. These run with mutation authority;
-//! panel subscriptions and read-only queries never carry source or saves.
+//! Closed, bounded invokes. Mind authoring runs with owner mutation authority;
+//! gateway legal offers enter the authoritative coordinator instead.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +12,8 @@ pub const MAX_MIND_SOURCE_BYTES: usize = 32 * 1024;
 /// Maximum container nesting before parsing a request.
 pub const MAX_INVOKE_DEPTH: usize = 32;
 
-/// Finite module service vocabulary; an owner can register only this family.
+/// Finite invoke vocabulary. Only Mind is a module-owned service; legal offers
+/// are gateway-owned and never dispatch a mutable module InvokeHandler.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(
@@ -24,6 +25,8 @@ pub const MAX_INVOKE_DEPTH: usize = 32;
 pub enum InvokeRequest {
     /// Character-owned unit mind authoring.
     Mind(MindRequest),
+    /// Gateway-owned opaque legal offer submission and authenticated status.
+    LegalAction(crate::LegalActionRequest),
 }
 impl InvokeRequest {
     /// Registration key, independent of caller-controlled strings.
@@ -31,13 +34,64 @@ impl InvokeRequest {
     pub const fn service(&self) -> &'static str {
         match self {
             Self::Mind(_) => "mind",
+            Self::LegalAction(_) => "legal_action",
+        }
+    }
+    /// A request-family-correct transport refusal, without declaring an action absent.
+    #[must_use]
+    pub fn unavailable(&self) -> InvokeResult {
+        match self {
+            Self::Mind(_) => InvokeResult::error("unavailable", "This service is unavailable."),
+            Self::LegalAction(_) => {
+                InvokeResult::LegalAction(crate::LegalActionResponse::Unavailable {
+                    reference: None,
+                })
+            }
+        }
+    }
+    /// Preserve the request family when a decoded request fails its bounds.
+    #[must_use]
+    pub fn invalid(&self) -> InvokeResult {
+        match self {
+            Self::Mind(_) => {
+                InvokeResult::error("invalid", "Invalid or oversized structured request.")
+            }
+            Self::LegalAction(_) => {
+                InvokeResult::LegalAction(crate::LegalActionResponse::Invalid {})
+            }
         }
     }
     /// Validate the complete wire envelope and source bounds again at ingress.
     pub fn validate(&self) -> Result<(), &'static str> {
         let bytes = serde_json::to_vec(self).map_err(|_| "invalid request")?;
         validate_invoke_json(&bytes)?;
-        let Self::Mind(request) = self;
+        let request = match self {
+            Self::Mind(request) => request,
+            Self::LegalAction(request) => return request.validate(),
+        };
+        if let MindRequest::FiledSource {
+            licence,
+            first,
+            last,
+        } = request
+        {
+            let raw = licence
+                .parse::<u64>()
+                .map_err(|_| "invalid paid source selector")?;
+            if raw == 0
+                || raw.to_string() != *licence
+                || *first == 0
+                || last < first
+                || last - first >= 200
+            {
+                return Err("invalid paid source range or selector");
+            }
+        }
+        if let MindRequest::Remove { name } = request {
+            if name.is_empty() || name.len() > 64 || name.contains(['\0', '@', ':']) {
+                return Err("invalid owned removal name");
+            }
+        }
         if let MindRequest::Replace { draft, .. } = request {
             if draft.source.len() > MAX_MIND_SOURCE_BYTES || draft.source.contains('\0') {
                 return Err("source exceeds 32 KiB or contains NUL");
@@ -189,6 +243,23 @@ pub enum MindLifecycle {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MindRequest {
+    /// Read a bounded current paid Open/OpenResale source range. This names no
+    /// actor, form, account, revision override, or author-edit capability.
+    FiledSource {
+        /// Canonical nonzero decimal personal licence identity.
+        licence: String,
+        /// First source line, one-based.
+        first: u32,
+        /// Inclusive last line, at most 200 lines in one response.
+        last: u32,
+    },
+    /// Request removal of an owned attributed working draft using source-free
+    /// current metadata. The server captures its exact identity and edit base;
+    /// originals keep the existing exact-CAS Lifecycle operation.
+    Remove {
+        /// Owned working library name, never an actor or revision selector.
+        name: String,
+    },
     /// Change a library entry or version label with exact edit authority.
     Lifecycle {
         /// Current library name.
@@ -317,6 +388,25 @@ pub struct MindPictureReport {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MindResponse {
+    /// Current authorised paid source display. This is never an editable draft
+    /// receipt or a reusable source-access capability.
+    FiledSource {
+        /// Canonical personal licence identity.
+        licence: String,
+        /// SHA256 of the exact complete immutable source.
+        source_sha256: String,
+        /// First requested one-based line.
+        first: u32,
+        /// Bounded numbered display lines, escaped by the shared source viewer.
+        lines: Vec<String>,
+    },
+    /// The removal selector was requested. This is a final transport response,
+    /// not a committed removal or a claim that durable intent is absent. Keep
+    /// the entry until the actual receipt or current library confirms removal.
+    RemovalRequested {
+        /// Actual canonical owned label; no source material is returned.
+        name: String,
+    },
     /// The library entry was removed; retained immutable revisions survive.
     Removed {
         /// Former library name.
@@ -445,6 +535,8 @@ impl MindResponse {
 pub enum InvokeResult {
     /// Character-owned unit mind service.
     Mind(MindResponse),
+    /// Source-free admission/status result from the gateway-owned service.
+    LegalAction(crate::LegalActionResponse),
 }
 impl InvokeResult {
     /// Generic ingress/registration refusal in the current service family.
@@ -461,7 +553,14 @@ impl InvokeResult {
         if serde_json::to_vec(&self).is_ok_and(|v| validate_invoke_json(&v).is_ok()) {
             self
         } else {
-            Self::error("too_large", "Result exceeds the structured response limit.")
+            match self {
+                Self::Mind(_) => {
+                    Self::error("too_large", "Result exceeds the structured response limit.")
+                }
+                Self::LegalAction(_) => {
+                    Self::LegalAction(crate::LegalActionResponse::Unavailable { reference: None })
+                }
+            }
         }
     }
 }
@@ -501,6 +600,71 @@ pub fn validate_invoke_json(bytes: &[u8]) -> Result<(), &'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn paid_source_wire_is_closed_bounded_and_distinct_from_author_edits() {
+        let request = super::InvokeRequest::Mind(super::MindRequest::FiledSource {
+            licence: "18446744073709551615".into(),
+            first: 1,
+            last: 200,
+        });
+        request.validate().expect("bounded licence request");
+        let bytes = serde_json::to_vec(&request).expect("wire");
+        assert_eq!(
+            serde_json::from_slice::<super::InvokeRequest>(&bytes).expect("decode"),
+            request
+        );
+        for field in [
+            "actor",
+            "account",
+            "form",
+            "source",
+            "revision",
+            "validated",
+        ] {
+            let mut value = serde_json::to_value(&request).expect("value");
+            value
+                .get_mut("request")
+                .expect("request")
+                .as_object_mut()
+                .expect("object")
+                .insert(field.into(), serde_json::json!(true));
+            assert!(
+                serde_json::from_value::<super::InvokeRequest>(value).is_err(),
+                "{field}"
+            );
+        }
+        for licence in ["0", "01", "+1", " 1", "18446744073709551616"] {
+            assert!(
+                super::InvokeRequest::Mind(super::MindRequest::FiledSource {
+                    licence: licence.into(),
+                    first: 1,
+                    last: 1
+                })
+                .validate()
+                .is_err()
+            );
+        }
+        for (first, last) in [(0, 1), (2, 1), (1, 201), (u32::MAX, 0)] {
+            assert!(
+                super::InvokeRequest::Mind(super::MindRequest::FiledSource {
+                    licence: "1".into(),
+                    first,
+                    last
+                })
+                .validate()
+                .is_err()
+            );
+        }
+        let legacy = super::InvokeRequest::Mind(super::MindRequest::Read {
+            name: "Candidate".into(),
+            revision: None,
+        });
+        assert_eq!(
+            serde_json::to_string(&legacy).expect("legacy wire"),
+            r#"{"service":"mind","request":{"op":"read","name":"Candidate","revision":null}}"#
+        );
+    }
+
     use super::*;
     #[test]
     fn preflight_bounds_bytes_depth_and_escaped_delimiters() {
@@ -562,6 +726,57 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+    #[test]
+    fn attributed_remove_is_name_only_and_never_reports_committed_removal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let wire = r#"{"service":"mind","request":{"op":"remove","name":"mine"}}"#;
+        let request: InvokeRequest = serde_json::from_str(wire)?;
+        request.validate()?;
+        assert_eq!(serde_json::to_string(&request)?, wire);
+        for field in [
+            "actor",
+            "account",
+            "mind",
+            "base",
+            "edit",
+            "revision",
+            "source",
+            "validated",
+        ] {
+            let raw = format!(
+                r#"{{"service":"mind","request":{{"op":"remove","name":"mine","{field}":1}}}}"#
+            );
+            assert!(serde_json::from_str::<InvokeRequest>(&raw).is_err());
+        }
+        assert!(
+            serde_json::from_str::<InvokeRequest>(
+                r#"{"service":"mind","request":{"op":"remove","name":"mine","name":"other"}}"#
+            )
+            .is_err()
+        );
+        for name in ["", "mine@1", "mine:other", "a\0b"] {
+            assert!(
+                InvokeRequest::Mind(MindRequest::Remove { name: name.into() })
+                    .validate()
+                    .is_err()
+            );
+        }
+        let reply = MindResponse::RemovalRequested {
+            name: "mine".into(),
+        };
+        assert!(reply.is_final()); // Transport completed; mutation has not been claimed.
+        assert_eq!(
+            serde_json::to_string(&reply)?,
+            r#"{"status":"removal_requested","name":"mine"}"#
+        );
+        assert_ne!(
+            reply,
+            MindResponse::Removed {
+                name: "mine".into()
+            }
+        );
         Ok(())
     }
 }

@@ -63,7 +63,10 @@ pub mod clock;
 pub mod clock_provider;
 pub mod cmd;
 pub mod commands;
+pub mod composed;
+pub mod connection_completion;
 pub mod contact;
+pub mod continuation;
 pub mod control;
 pub mod decision;
 pub mod decision_source;
@@ -80,15 +83,22 @@ pub mod obj;
 pub mod offer;
 pub mod onboarding;
 pub mod output;
+pub mod participant;
 pub mod perm;
+pub mod read_service;
 pub mod request;
+pub mod reserved_shell;
 pub mod resolution;
 pub mod resource;
 pub mod resource_provider;
 pub mod sched;
 pub mod schedule_source;
 pub mod sensor;
+pub mod submission_observation;
 pub mod world;
+
+pub use connection_completion::{ConnectionCompletion, ConnectionCompletionHandle};
+pub use continuation::ContinuationHandle;
 
 pub use account::{AccountId, AccountIdentity, SeatAudit};
 pub use action::{

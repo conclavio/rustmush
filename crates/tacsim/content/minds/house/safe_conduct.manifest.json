@@ -1,0 +1,45 @@
+{
+  "name": "Safe Conduct",
+  "content_id": "tycho.safe_conduct",
+  "content_version": 1,
+  "status": "unfiled_role_content",
+  "declared_class": "II",
+  "ops_ceiling": 3000,
+  "mind_abi": "rhai=1.26.0;api=4;stock=2",
+  "source_sha256": "018907192f6ee66154ea9611653d0646946fd14a96ba2b3af802ec2d43dec0b7",
+  "source_bytes": 3964,
+  "envelope_sha256": "4b6ec4501480a364ee4975b46841ce178ff8971e733afeb80331922c7815a2a1",
+  "roles": [
+    {
+      "profile": "Escort",
+      "order": "Support",
+      "behavior": "Follow only the current earned friendly charge plot; hold without it; regain station without firing outside leash; engage fresh classified hostiles without pursuit."
+    },
+    {
+      "profile": "Transit",
+      "order": "Advance",
+      "behavior": "Follow the current destination, stop for a fresh classified threat, resume when absent, and retry NoRoute after the declared delay. No firing."
+    }
+  ],
+  "memory_keys": [
+    "order_until",
+    "goal",
+    "blocked",
+    "retry_at"
+  ],
+  "functions": [
+    "cease",
+    "fresh",
+    "charge",
+    "threat",
+    "route",
+    "think"
+  ],
+  "authority": "Content only. No issued Registry result, filed line, licence, source grant, cargo transport, IC sortie, insurance qualification or active cover.",
+  "integration_required": [
+    "real Tycho organization filing and Registry result",
+    "real licensed distribution",
+    "actual cargo/IC host admission",
+    "exact revision-bound insurance terms"
+  ]
+}

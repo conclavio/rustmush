@@ -50,7 +50,9 @@ impl InvokeHandler for WorkshopCommands {
                 .connection_binding(conn)
                 .filter(|(actor, _)| *actor == ctx.actor)
                 .ok_or(RollError::Missing)?;
-            let InvokeRequest::Mind(request) = request;
+            let InvokeRequest::Mind(request) = request else {
+                return Err(RollError::Missing);
+            };
             if let MindRequest::Trace {
                 unit,
                 count,
@@ -88,8 +90,38 @@ impl WorkshopCommands {
         request: &MindRequest,
     ) -> Result<MindResponse, RollError> {
         match request {
+            MindRequest::FiledSource {
+                licence,
+                first,
+                last,
+            } => {
+                // Resolution occurs now, after the actual connection binding and
+                // principal checks; requests never retain an earlier permission.
+                let value = super::filed_source::read(ctx, licence, *first, *last)?;
+                if ctx.w.connection_binding(conn) != Some((principal.actor(), lease)) {
+                    return Err(RollError::Missing);
+                }
+                Ok(MindResponse::FiledSource {
+                    licence: value.licence,
+                    source_sha256: value.source_sha256,
+                    first: value.first,
+                    lines: value.lines,
+                })
+            }
+            MindRequest::Remove { name } => {
+                let name = super::retirement::request(ctx, name, None, Some(conn))?
+                    .ok_or(RollError::Missing)?;
+                Ok(MindResponse::RemovalRequested { name })
+            }
             MindRequest::Lifecycle { name, base, edit } => {
                 let base = from_base(*base);
+                if matches!(edit, mush_proto::MindLifecycle::Remove {}) {
+                    if let Some(name) =
+                        super::retirement::request(ctx, name, Some(base), Some(conn))?
+                    {
+                        return Ok(MindResponse::RemovalRequested { name });
+                    }
+                }
                 let prepared = super::lifecycle(roll(ctx)?, ctx.actor, name, base, edit)?;
                 let response = match edit {
                     mush_proto::MindLifecycle::Remove {} => MindResponse::Removed {
@@ -123,8 +155,9 @@ impl WorkshopCommands {
                     Some(revision) => format!("{name}@{revision}"),
                     None => name.clone(),
                 })?;
-                let draft = super::owned_copy(roll(ctx)?, sources(ctx)?, ctx.actor, &reference)?;
-                let base = roll(ctx)?.mind(ctx.actor, name)?.base();
+                let view = super::authored_access::View::source(ctx, &reference, Some(conn))?;
+                let draft = view.copy().clone();
+                let base = view.mind().base();
                 let mut rules_text = BTreeMap::new();
                 let mut rules_source = BTreeMap::new();
                 let mut diagnostics = Vec::new();
@@ -185,6 +218,10 @@ impl WorkshopCommands {
                             line: None, column: None,
                         });
                 }
+                view.check(ctx)?;
+                if ctx.w.connection_binding(conn) != Some((principal.actor(), lease)) {
+                    return Err(RollError::Missing);
+                }
                 Ok(response)
             }
             MindRequest::Create { name, from } => {
@@ -204,28 +241,27 @@ impl WorkshopCommands {
                 // Working replacement shares the owner CAS/bounds; compilation
                 // remains exclusively the bounded worker's check/save service.
                 let base = from_base(*base);
-                let prepared = roll(ctx)?.prepare_edit(
-                    ctx.actor,
+                let result = edited(name, base)?;
+                super::authored_access::replace(
+                    ctx,
                     name,
                     base,
                     from_draft((**draft).clone()),
+                    conn,
                 )?;
-                let result = edited(name, base)?;
-                publish(ctx, prepared)?;
                 Ok(result)
             }
             MindRequest::Edit { name, base, edit } => {
                 let base = from_base(*base);
-                let prepared = super::edit_card(
-                    roll(ctx)?,
-                    ctx.actor,
+                let result = edited(name, base)?;
+                super::authored_access::edit_card(
+                    ctx,
                     name,
                     base,
                     card_edit(edit.clone()),
                     self.floor_permille,
+                    Some(conn),
                 )?;
-                let result = edited(name, base)?;
-                publish(ctx, prepared)?;
                 Ok(result)
             }
             MindRequest::Check { name, base } => self.submit_remote(
@@ -257,6 +293,16 @@ impl WorkshopCommands {
                 },
             ),
             MindRequest::Status { job } | MindRequest::Cancel { job } => {
+                if let Some(result) = self.authored_status(
+                    ctx,
+                    principal,
+                    conn,
+                    request_id,
+                    *job,
+                    matches!(request, MindRequest::Cancel { .. }),
+                ) {
+                    return result;
+                }
                 let mut jobs = self
                     .remote
                     .lock()
@@ -311,6 +357,21 @@ impl WorkshopCommands {
         base: EditBase,
         kind: JobKind,
     ) -> Result<MindResponse, RollError> {
+        if roll(ctx)?
+            .mind(principal.actor(), name)?
+            .require_original_access()
+            .is_err()
+        {
+            let id = self.submit_authored(
+                ctx,
+                principal,
+                name,
+                base,
+                kind,
+                super::authored_jobs::Delivery::Remote { request },
+            )?;
+            return Ok(MindResponse::Queued { job: id.number() });
+        }
         let mut jobs = self
             .remote
             .lock()
@@ -407,12 +468,7 @@ impl WorkshopCommands {
                             .reports
                             .into_iter()
                             .map(|r| MindPictureReport {
-                                picture: match r.picture {
-                                    Picture::Empty => "empty",
-                                    Picture::Hostile450 => "hostile_450",
-                                    Picture::HurtTwo => "hurt_two",
-                                }
-                                .into(),
+                                picture: picture_name(r.picture).into(),
                                 armed: r.armed,
                                 operations: r.operations,
                                 fees: r.fees,
@@ -600,6 +656,7 @@ fn card_edit(edit: MindEdit) -> CardEdit {
 
 #[cfg(test)]
 mod tests {
+    mod lineage;
     use super::super::executor::{CheckPictures, PICTURES, PictureReport, WorkshopExecutor};
     use super::*;
     use mush_core::{
@@ -1419,7 +1476,9 @@ mod tests {
             serde_json::from_slice::<InvokeRequest>(&json).expect("decode"),
             request
         );
-        let InvokeRequest::Mind(request) = request;
+        let InvokeRequest::Mind(request) = request else {
+            panic!("mind fixture response")
+        };
         let edited = invoke(&mut engine, 7, GOD, 40, request);
         assert!(matches!(edited, MindResponse::Edited { .. }), "{edited:?}");
         let response = invoke(
@@ -1442,5 +1501,14 @@ mod tests {
             serde_json::from_slice::<InvokeResult>(&bytes).expect("reply decode"),
             result
         );
+    }
+}
+
+// Shared display spelling only; this carries no authority or worker evidence.
+pub(super) fn picture_name(picture: Picture) -> &'static str {
+    match picture {
+        Picture::Empty => "empty",
+        Picture::Hostile450 => "hostile_450",
+        Picture::HurtTwo => "hurt_two",
     }
 }

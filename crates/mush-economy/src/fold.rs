@@ -31,6 +31,27 @@ use crate::record::{AssetEffectKind, EconomicAsset, EconomicTransaction, Hold, H
 /// The journal-derived accumulators at [`FoldState::covered_seq`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FoldState {
+    /// Sparse historical proof for registered original filings. Old checkpoints
+    /// omit it and remain usable outside commerce; commerce requires full replay
+    /// before it can open a missing proof, even when no filings are visible.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::registry_filing::ReceiptAudit::uninitialized"
+    )]
+    pub(crate) filing_receipts: crate::registry_filing::ReceiptAudit,
+    /// Sparse proof of managed original purchases. Its runtime provenance is
+    /// opened only by actual replay; old checkpoints omit this exact field.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_purchase::PurchaseReceiptAudit::uninitialized"
+    )]
+    pub(crate) purchase_receipts: crate::managed_purchase::PurchaseReceiptAudit,
+    /// Separate renewal provenance; old checkpoints retain exact omission.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::managed_renewal::receipt::RenewalReceiptAudit::uninitialized"
+    )]
+    pub(crate) renewal_receipts: crate::managed_renewal::receipt::RenewalReceiptAudit,
     /// The last journal sequence folded, or `None` before any.
     pub covered_seq: Option<u64>,
     /// Per account, the sum of every journal line (`i128`, so an overflow past
@@ -77,6 +98,9 @@ impl FoldState {
     /// Fold one journal entry at `seq`. The one function boot replay and the
     /// live post path both call; a change here changes both.
     pub fn fold_entry(&mut self, seq: u64, tx: &EconomicTransaction) {
+        self.filing_receipts.observe(tx);
+        self.purchase_receipts.observe(tx);
+        self.renewal_receipts.observe(tx);
         let mut touched: BTreeSet<AccountId> = BTreeSet::new();
         for line in &tx.lines {
             *self.running.entry(line.account).or_insert(0) += line.delta.widen();

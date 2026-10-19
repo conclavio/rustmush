@@ -566,6 +566,9 @@ pub enum NamedResource {
 /// not needed until E4.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum EconomyError {
+    /// Managed money and entitlement effects require their closed composed path.
+    #[error("this managed contract requires its complete entitlement operation")]
+    ManagedContract,
     /// Fewer than two non-zero lines (invariant 1).
     #[error("a transaction needs at least two non-zero lines")]
     TooFewLines,

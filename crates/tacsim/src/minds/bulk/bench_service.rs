@@ -50,6 +50,8 @@ struct Entry {
     pin: Option<RunId>,
     source_root: Option<mush_roll::ReferenceKey>,
     pending_root: Option<mush_roll::ReferenceKey>,
+    source_revision: Option<mush_roll::RevisionRef>,
+    pending_revision: Option<mush_roll::RevisionRef>,
     pending_replace: bool,
     fork_bytes: u64,
     reference: ReferenceId,
@@ -114,6 +116,28 @@ fn authorized(w: &World, row: &Entry) -> bool {
         && w.module_state::<mush_sim::AccountOracle>()
             .and_then(|o| o.account_of(row.connection.character))
             == Some(row.connection.account)
+        && source_access(w, row)
+}
+fn source_access(w: &World, row: &Entry) -> bool {
+    let owner = w.module_state::<mush_roll::RollStore>();
+    if let Some(picture) = &row.picture {
+        let Some(origin) = &picture.access_origin else {
+            return false;
+        };
+        if !crate::match_::draft_holdings::current_draft_source_access(owner, origin) {
+            return false;
+        }
+    }
+    row.source_revision
+        .iter()
+        .chain(row.pending_revision.iter())
+        .all(|reference| {
+            owner
+                .and_then(|store| store.revision(reference.key.character, reference.key).ok())
+                .is_some_and(|revision| {
+                    revision.reference() == *reference && revision.require_original_access().is_ok()
+                })
+        })
 }
 fn say(ctx: &mut Ctx<'_>, conn: ConnId, text: impl Into<String>) {
     ctx.out
@@ -434,6 +458,8 @@ fn perform(ctx: &mut Ctx<'_>, text: &str) -> Result<(), BulkError> {
             pin: pin_run,
             source_root: None,
             pending_root: None,
+            source_revision: None,
+            pending_revision: None,
             pending_replace: false,
             fork_bytes: 0,
             reference,
@@ -699,6 +725,7 @@ fn perform(ctx: &mut Ctx<'_>, text: &str) -> Result<(), BulkError> {
                         return Err(error);
                     }
                     row.pending_root = root.map(|(key, _)| key);
+                    row.pending_revision = revision;
                     row.pending_replace = replace;
                     row.bytes += reserve;
                     row.fork_bytes += reserve;
@@ -727,6 +754,7 @@ fn perform(ctx: &mut Ctx<'_>, text: &str) -> Result<(), BulkError> {
                                 row.pending_root.iter().cloned().collect(),
                             )?;
                             row.pending_root = None;
+                            row.pending_revision = None;
                             row.pending_replace = false;
                             return Err(error);
                         }
@@ -929,6 +957,10 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
                     }
                     ResultValue::Selected(ready, error) => {
                         let picture = ready.bench_picture().ok_or(BulkError::Missing)?;
+                        row.picture = Some(picture.clone());
+                        if !source_access(ctx.w, &row) {
+                            return Err(BulkError::Missing);
+                        }
                         if let Some(error) = error {
                             say(ctx, row.conn, error.to_string());
                         } else {
@@ -951,6 +983,7 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
                                 row.pending_root.iter().cloned().collect(),
                             )?;
                             row.pending_root = None;
+                            row.pending_revision = None;
                             say(ctx, row.conn, error.to_string());
                         } else {
                             if row.pending_replace {
@@ -960,6 +993,7 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
                                     row.source_root.iter().cloned().collect(),
                                 )?;
                                 row.source_root = row.pending_root.take();
+                                row.source_revision = row.pending_revision.take();
                             }
                             if let Some(plan) = row.plan.as_mut() {
                                 plan.unit_count =
@@ -1135,6 +1169,7 @@ impl mush_core::StoreReadCompletion for Reads {
 }
 #[cfg(test)]
 mod tests {
+    mod lineage;
     use super::*;
     use mush_core::ObjId;
 
@@ -1258,12 +1293,15 @@ mod tests {
         record.runs.insert(
             RunId(1),
             Run {
+                registry_job: None,
+                registry: None,
                 id: RunId(1),
                 character: GOD,
                 nonce: 1,
                 created_ms: 0,
                 finished_ms: Some(1),
                 plan: Plan {
+                    registry: None,
                     kind: WorkKind::Proving,
                     scenario: Scenario::Duel,
                     opponent: Opponent::Mirror,
@@ -1538,6 +1576,8 @@ mod tests {
             pin: Some(RunId(1)),
             source_root: None,
             pending_root: None,
+            source_revision: None,
+            pending_revision: None,
             pending_replace: false,
             fork_bytes: 0,
             reference: ReferenceId::Proving(RunId(1)),
@@ -1602,12 +1642,15 @@ mod tests {
                 record.runs.insert(
                     id,
                     Run {
+                        registry_job: None,
+                        registry: None,
                         id,
                         character: actor,
                         nonce: 1,
                         created_ms: 0,
                         finished_ms: status.terminal().then_some(1),
                         plan: Plan {
+                            registry: None,
                             kind,
                             scenario: Scenario::Duel,
                             opponent: Opponent::Mirror,

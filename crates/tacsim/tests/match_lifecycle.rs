@@ -10023,6 +10023,8 @@ async fn m3_the_fill_rule_decides_the_pool_and_the_pool_is_the_last_gate() {
 /// (`tests/support/holdings.rs`): Standard Doctrine, `Fixture I` and `Load
 /// III` for every character.
 fn holdings_on(rig: &mut Rig) -> Arc<support::holdings::TestHoldings> {
+    let setup = support::holdings::seed_fixture_revisions(rig.tw.world_mut());
+    fold_ops(&mut rig.image, &setup);
     support::holdings::install(rig.tw.world_mut())
 }
 
@@ -12260,13 +12262,11 @@ impl tacsim::match_::holdings::Holdings for ClassTwoHoldings {
     ) -> Vec<tacsim::match_::holdings::HeldMind> {
         let mut mind = support::holdings::fixture_i();
         mind.identity.mind = "Fixture II".into();
-        if let tacsim::arena::profile_seal::MindOrigin::Filed { line, .. } =
-            &mut mind.identity.origin
-        {
-            *line = "fixture_ii".into();
-        } else {
-            panic!("the test provider has filed fixture provenance");
-        }
+        mind.identity.origin = support::holdings::fixture_origin(
+            3,
+            tacsim::arena::core::CoreClass::II,
+            support::holdings::FIXTURE_I_RHAI,
+        );
         mind.rated = tacsim::arena::core::CoreClass::II;
         vec![
             tacsim::match_::holdings::HeldMind::doctrine(),
@@ -12284,6 +12284,8 @@ impl tacsim::match_::holdings::Holdings for ClassTwoHoldings {
 }
 
 fn class_two_provider(rig: &mut Rig) {
+    let setup = support::holdings::seed_fixture_revisions(rig.tw.world_mut());
+    fold_ops(&mut rig.image, &setup);
     tacsim::match_::holdings::install_holdings(rig.tw.world_mut(), Arc::new(ClassTwoHoldings));
 }
 

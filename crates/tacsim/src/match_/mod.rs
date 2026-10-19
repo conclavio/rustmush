@@ -57,11 +57,13 @@ pub mod cockpit;
 // character may choose at the lobby, Standard Doctrine alone in production.
 // Documented by its own module doc.
 pub mod draft_holdings;
+pub(crate) mod filed_holdings;
 pub mod holdings;
 pub mod lobby;
 /// 16b cut Z.4 (16c `N8`): **the side nets** — `RedNet` and `BlueNet`, comsys
 /// channels made at boot, joined at the check-out and left with the seat.
 pub(crate) mod net;
+pub(crate) mod original_access;
 pub(crate) mod selection_refs;
 // 16b cut I.4: the staff picture's payload, `arena.observer` — deliberately
 // its own module and never the cockpit's, which builds only what a pilot is

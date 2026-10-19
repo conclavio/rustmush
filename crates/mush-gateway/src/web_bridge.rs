@@ -706,6 +706,10 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                     SmolStr::new_static("mind.bulk"),
                     serde_json::json!({ "run": run, "page": page }),
                 ),
+                Query::MarketOriginalMinds(request) => (
+                    SmolStr::new_static("market.original_minds"),
+                    serde_json::json!(request),
+                ),
                 Query::PanelSubscribe { feed } => {
                     if !self.panels.iter().any(|p| p.as_str() == feed.as_str()) {
                         self.direct_error_reply(

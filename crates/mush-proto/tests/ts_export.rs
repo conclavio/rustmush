@@ -11,8 +11,8 @@ use std::path::Path;
 
 use mush_proto::{
     AtlasMapDelta, AtlasMapFrame, ClientCommand, Color, Envelope, InvokeRequest, InvokeResult,
-    MindDiagnostic, MindRequest, MindResponse, OutputEvent, RoomView, Span, VitalValue,
-    VitalsFrame, WhoEntry,
+    LegalActionRequest, LegalActionResponse, LegalActionScalar, MindDiagnostic, MindRequest,
+    MindResponse, OutputEvent, RoomView, Span, VitalValue, VitalsFrame, WhoEntry,
 };
 use ts_rs::{Config, TS};
 
@@ -188,6 +188,20 @@ fn generated_shapes_match_wire_format() {
     assert!(invoke_request.contains(r#""service": "mind", "request": MindRequest"#));
     let invoke_result = InvokeResult::export_to_string(&cfg).expect("InvokeResult");
     assert!(invoke_result.contains(r#""service": "mind", "result": MindResponse"#));
+    assert!(invoke_request.contains(r#""service": "legal_action", "request": LegalActionRequest"#));
+    assert!(invoke_result.contains(r#""service": "legal_action", "result": LegalActionResponse"#));
+    let action = LegalActionRequest::export_to_string(&cfg).expect("LegalActionRequest");
+    assert!(action.contains(r#""op": "submit_self""#));
+    assert!(action.contains("offer: string"));
+    assert!(action.contains("parameters: LegalActionParameters"));
+    assert!(action.contains(r#""op": "status""#));
+    assert!(action.contains("reference: string"));
+    let scalar = LegalActionScalar::export_to_string(&cfg).expect("LegalActionScalar");
+    assert!(scalar.contains(r#""kind": "integer", value: string"#));
+    let response = LegalActionResponse::export_to_string(&cfg).expect("LegalActionResponse");
+    assert!(response.contains(r#""state": "committed""#));
+    assert!(response.contains("commit: string"));
+    assert!(response.contains("reference: string | null"));
     let mind_request = MindRequest::export_to_string(&cfg).expect("MindRequest");
     for needle in [
         r#""op": "replace""#,

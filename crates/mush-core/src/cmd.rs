@@ -560,6 +560,7 @@ pub struct HelpTopic {
 /// ([`ModuleTables`]; accessors live in [`crate::module`]).
 #[derive(Default)]
 pub struct Registry {
+    pub(crate) continuation_identity: Arc<()>,
     entries: Vec<Entry>,
     /// Lowercased name and alias → entry index.
     index: HashMap<String, usize>,
@@ -591,6 +592,10 @@ pub struct Registry {
     pub(crate) definition_migration_builder: crate::mechanics::DefinitionMigrationRegistryBuilder,
     /// K2 action providers, mutable only while modules register.
     pub(crate) action_provider_builder: crate::action::ActionProviderRegistryBuilder,
+    pub(crate) participant_builder: crate::participant::ParticipantRegistryBuilder,
+    pub(crate) participants: Option<crate::participant::ParticipantRegistry>,
+    pub(crate) owner_read_builder: crate::read_service::OwnerReadRegistryBuilder,
+    pub(crate) owner_reads: Option<crate::read_service::OwnerReadRegistry>,
     /// K2 revision validators, mutable only while modules register.
     pub(crate) revision_validator_builder: crate::action::RevisionValidatorRegistryBuilder,
     /// K2 authority validators, mutable only while modules register.
@@ -1257,6 +1262,228 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+impl Registry {
+    pub(crate) fn register_continuation(
+        &self,
+        module: &str,
+        primary: &str,
+        switches: &[&str],
+    ) -> Result<crate::ContinuationHandle, crate::ModError> {
+        self.register_exact_continuation(
+            module,
+            primary,
+            switches,
+            CommandCompatibility::Authoritative,
+        )
+    }
+
+    pub(crate) fn register_connection_completion(
+        &self,
+        module: &str,
+        primary: &str,
+        switches: &[&str],
+    ) -> Result<crate::ConnectionCompletionHandle, crate::ModError> {
+        self.register_exact_continuation(
+            module,
+            primary,
+            switches,
+            CommandCompatibility::LegacyPostImage,
+        )
+        .map(crate::ConnectionCompletionHandle)
+    }
+
+    fn register_exact_continuation(
+        &self,
+        module: &str,
+        primary: &str,
+        switches: &[&str],
+        compatibility: CommandCompatibility,
+    ) -> Result<crate::ContinuationHandle, crate::ModError> {
+        use crate::continuation::ContinuationHandle;
+        let refused = || crate::ModError::msg("invalid registered command continuation");
+        let index = *self
+            .index
+            .get(&primary.to_lowercase())
+            .ok_or_else(refused)?;
+        let entry = self.entries.get(index).ok_or_else(refused)?;
+        if entry.spec.name != primary
+            || primary.is_empty()
+            || primary.chars().any(|c| c.is_whitespace() || c == '/')
+            || entry.module.as_deref() != Some(module)
+            || entry.compatibility != compatibility
+        {
+            return Err(refused());
+        }
+        let mut fixed = Vec::new();
+        let mut prefix = primary.to_string();
+        for switch in switches {
+            let switch = switch.to_ascii_lowercase();
+            if switch.is_empty()
+                || switch.chars().any(|c| c.is_whitespace() || c == '/')
+                || !entry
+                    .spec
+                    .switches
+                    .iter()
+                    .any(|s| s.eq_ignore_ascii_case(&switch))
+                || fixed.contains(&SmolStr::new(&switch))
+            {
+                return Err(refused());
+            }
+            prefix.push('/');
+            prefix.push_str(&switch);
+            if prefix.len() >= crate::MAX_INGRESS_LINE_BYTES {
+                return Err(refused());
+            }
+            fixed.push(SmolStr::new(switch));
+        }
+        if prefix.len() >= crate::MAX_INGRESS_LINE_BYTES {
+            return Err(refused());
+        }
+        Ok(ContinuationHandle {
+            registry: Arc::clone(&self.continuation_identity),
+            index,
+            owner: crate::mechanics::OwnerId::parse_canonical(module).map_err(|_| refused())?,
+            primary: entry.spec.name.clone(),
+            switches: fixed,
+            prefix,
+        })
+    }
+
+    pub(crate) fn continuation_ready(&self, handle: &crate::ContinuationHandle) -> bool {
+        self.exact_continuation_ready(handle, CommandCompatibility::Authoritative)
+    }
+
+    pub(crate) fn connection_completion_ready(
+        &self,
+        handle: &crate::ConnectionCompletionHandle,
+    ) -> bool {
+        self.exact_continuation_ready(&handle.0, CommandCompatibility::LegacyPostImage)
+    }
+
+    fn exact_continuation_ready(
+        &self,
+        handle: &crate::ContinuationHandle,
+        compatibility: CommandCompatibility,
+    ) -> bool {
+        Arc::ptr_eq(&self.continuation_identity, &handle.registry)
+            && self.entries.get(handle.index).is_some_and(|entry| {
+                entry.module.as_deref() == Some(handle.owner.as_str())
+                    && entry.spec.name == handle.primary
+                    && entry.compatibility == compatibility
+            })
+            && self.require_mechanics_owner_ready(&handle.owner).is_ok()
+    }
+}
+
+/// Dispatch only the exact registered entry. No input context, text rewrite,
+/// exit, prefix or fallback participates; command/permission gates still do.
+pub(crate) fn dispatch_continuation(
+    reg: &Registry,
+    world: &mut World,
+    request: &crate::continuation::ContinuationRequest,
+    out: &mut Outbox,
+    lens: crate::action_state::TypedStateLens<'_>,
+) {
+    let handle = &request.handle;
+    let actor = request.actor();
+    if !crate::continuation::live_actor(world, actor) || !reg.continuation_ready(handle) {
+        return;
+    }
+    let Some(entry) = reg.entries.get(handle.index) else {
+        return;
+    };
+    let line = format!("{} {}", handle.prefix, request.argument);
+    if line.len() > crate::MAX_INGRESS_LINE_BYTES
+        || command_gates_refuse(reg, world, actor, &line, out)
+    {
+        return;
+    }
+    let switches: Vec<_> = handle.switches.iter().map(SmolStr::as_str).collect();
+    let Some((args, switches)) =
+        gate_spec(world, actor, &entry.spec, &switches, &request.argument, out)
+    else {
+        return;
+    };
+    // Gates are module callbacks and may close an owner through a shared
+    // readiness latch. Check again after the final callback, before dispatch.
+    if !reg.continuation_ready(handle) || !crate::continuation::live_actor(world, actor) {
+        return;
+    }
+    run_handler(
+        reg,
+        world,
+        actor,
+        switches,
+        args,
+        entry.module.clone(),
+        out,
+        lens,
+        |ctx| entry.handler.call(ctx),
+    );
+}
+
+/// Enter an exact captured LegacyPostImage completion with a genuine actor
+/// stamp. The physical binding and owner are checked again after all gates.
+pub(crate) fn dispatch_connection_completion(
+    reg: &Registry,
+    world: &mut World,
+    request: &crate::connection_completion::ConnectionCompletionRequest,
+    out: &mut Outbox,
+    lens: crate::action_state::TypedStateLens<'_>,
+) {
+    let handle = request.handle();
+    let completion_handle = crate::ConnectionCompletionHandle(handle.clone());
+    let actor = request.actor();
+    if request.ticket().has_entered()
+        || !request.ticket().is_live(world)
+        || !reg.connection_completion_ready(&completion_handle)
+    {
+        return;
+    }
+    let Some(entry) = reg.entries.get(handle.index) else {
+        return;
+    };
+    let line = format!("{} {}", handle.prefix, request.argument());
+    if line.len() > crate::MAX_INGRESS_LINE_BYTES
+        || command_gates_refuse(reg, world, actor, &line, out)
+    {
+        return;
+    }
+    let switches: Vec<_> = handle.switches.iter().map(SmolStr::as_str).collect();
+    let Some((args, switches)) = gate_spec(
+        world,
+        actor,
+        &entry.spec,
+        &switches,
+        request.argument(),
+        out,
+    ) else {
+        return;
+    };
+    if !reg.connection_completion_ready(&completion_handle) {
+        return;
+    }
+    let Some(stamp) = request.enter(world) else {
+        return;
+    };
+    let previous_conn = world.dispatching_conn();
+    world.set_connection_dispatch(Some(stamp));
+    world.set_dispatching_conn(Some(request.ticket().connection()));
+    run_handler(
+        reg,
+        world,
+        actor,
+        switches,
+        args,
+        entry.module.clone(),
+        out,
+        lens,
+        |ctx| entry.handler.call(ctx),
+    );
+    world.set_dispatching_conn(previous_conn);
+    world.set_connection_dispatch(None);
+}
+
 /// Run one input line through the full dispatch pipeline (module docs for
 /// the exact order). All output — including errors and `Huh?` — is queued
 /// on `out`.
@@ -1303,9 +1530,10 @@ pub fn dispatch(
                     // pushed it (mail compose persists as "mail"; a chargen
                     // context may write its ruleset's attr namespace).
                     module: stacked.module.clone(),
-                    typed_state: crate::action_state::ModuleActionState::for_module(
+                    typed_state: crate::action_state::ModuleActionState::for_dispatch(
                         lens,
                         stacked.module.as_deref(),
+                        actor,
                     ),
                 };
                 stacked.cx.feed(&mut ctx, trimmed)
@@ -1559,7 +1787,7 @@ fn run_handler(
     let deferred_before = out.deferred().len();
     let result = {
         let typed_state =
-            crate::action_state::ModuleActionState::for_module(lens, module.as_deref());
+            crate::action_state::ModuleActionState::for_dispatch(lens, module.as_deref(), actor);
         let mut ctx = Ctx {
             w,
             actor,

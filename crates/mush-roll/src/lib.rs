@@ -2,7 +2,9 @@
 //!
 //! This crate owns drafts, immutable revision envelopes, selections and explicit
 //! retention records. Game semantics and source storage belong to caller adapters.
-//! It has no simulation, script, market, licence or settlement dependency.
+//! Commercial values and closed first-filing owner adapters live in [`commerce`].
+//! Data decoding never grants rights. Only actual registered owner composition
+//! can activate filing; there is no simulation, script or market dependency.
 //!
 //! Every mutation is prepared, validated and fully serialized before publication.
 //! A caller publishes both owners inside one world operation and queues all their
@@ -20,6 +22,7 @@
     clippy::panic_in_result_fn
 )]
 
+pub mod commerce;
 mod model;
 mod owner;
 

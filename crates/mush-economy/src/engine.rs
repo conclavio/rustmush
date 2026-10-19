@@ -473,6 +473,52 @@ pub fn validate(
     snapshot: &EconomySnapshot,
     env: &ValidateEnv<'_>,
 ) -> PlanResult {
+    validate_guarded(plan, snapshot, env, PlanGuard::Legacy)
+}
+
+/// Only the private closed purchase adapter can construct this proof. Public
+/// post/approval paths always select Legacy, including exact-key retries.
+pub(crate) fn validate_purchase(
+    proof: &crate::managed_purchase::ClosedPurchasePlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(proof.plan(), snapshot, env, PlanGuard::Purchase(proof))
+}
+
+/// Separate private renewal proof. Existing purchase and Legacy routes do not
+/// accept a renewal namespace or infer authority from a managed contract.
+pub(crate) fn validate_renewal(
+    proof: &crate::managed_renewal::ClosedRenewalPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(proof.plan(), snapshot, env, PlanGuard::Renewal(proof))
+}
+#[derive(Clone, Copy)]
+enum PlanGuard<'a> {
+    Legacy,
+    Purchase(&'a crate::managed_purchase::ClosedPurchasePlan),
+    Renewal(&'a crate::managed_renewal::ClosedRenewalPlan),
+}
+impl PlanGuard<'_> {
+    fn check(self, plan: &EconomyPlan, snapshot: &EconomySnapshot) -> Result<(), EconomyError> {
+        match self {
+            Self::Legacy => crate::contract::managed::require_legacy_plan(plan, snapshot),
+            Self::Purchase(proof) => proof.check(plan, snapshot),
+            Self::Renewal(proof) => proof.check(plan, snapshot),
+        }
+    }
+}
+fn validate_guarded(
+    plan: &EconomyPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+    guard: PlanGuard<'_>,
+) -> PlanResult {
+    if let Err(error) = guard.check(plan, snapshot) {
+        return PlanResult::Refused(error);
+    }
     let hash = plan_hash(plan);
 
     // Idempotency FIRST: an exact repeat short-circuits to the original id; a reuse
@@ -489,7 +535,7 @@ pub fn validate(
         KeyVerdict::Fresh => {}
     }
 
-    match validate_inner(plan, snapshot, env, hash, false) {
+    match validate_inner(plan, snapshot, env, hash, false, guard) {
         Ok(prepared) => PlanResult::Post(Box::new(prepared)),
         Err(Fail::Refused(e)) => PlanResult::Refused(e),
         Err(Fail::NeedsApproval(need)) => PlanResult::NeedsApproval(Box::new(need)),
@@ -502,9 +548,11 @@ fn validate_inner(
     env: &ValidateEnv<'_>,
     hash: [u8; 32],
     skip_approval: bool,
+    guard: PlanGuard<'_>,
 ) -> Result<Prepared, Fail> {
     // Boundedness caps (R-B5) — cheap, first, so a huge plan is refused before work.
     caps(plan)?;
+    guard.check(plan, snapshot)?;
 
     // Expected-revision staleness on ECONOMIC data (authorization is live, below).
     for e in &plan.expected_revisions {
@@ -2189,6 +2237,9 @@ pub fn plan_reversal(
     auth: &dyn AuthEval,
     keys: &dyn KeyGate,
 ) -> PlanResult {
+    if let Err(error) = crate::contract::managed::require_legacy_transaction(original, snapshot) {
+        return PlanResult::Refused(error);
+    }
     // Invariant 28 extends E3's rule to reservations: money-only compensation would
     // pay the payer back and leave the hold `Consumed`, so the payee's credit
     // vanishes while the reservation still says it was spent. A capture is unwound by
@@ -2257,7 +2308,7 @@ pub fn plan_reversal(
         spent: BTreeMap::new(),
         keys,
     };
-    match validate_inner(&plan, snapshot, &env, hash, true) {
+    match validate_inner(&plan, snapshot, &env, hash, true, PlanGuard::Legacy) {
         Ok(mut prepared) => {
             prepared.reverses = Some(original.id);
             PlanResult::Post(Box::new(prepared))

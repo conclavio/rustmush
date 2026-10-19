@@ -6231,7 +6231,9 @@ pub const FRAME_SCHEMA: &str = "arena.cockpit";
 /// **M5r bumped it to 5** for public objective/motor facts and own-shot origin.
 /// **M6 bumps it to 6** for generic owned-mind card values/schema, profiles and
 /// full sealed-rule readback. Source and private memory stay out of the frame.
-pub const FRAME_VERSION: u32 = 6;
+/// **M7 bumps it to 7** for the shared public odds projection at the actual
+/// effective class's already-advertised ceiling. Class I/native stay at two rows.
+pub const FRAME_VERSION: u32 = 7;
 
 /// **The terrain frame's schema id** (16b cut Q.3), carried on
 /// [`crate::arena_bridge::MAP_FEED`].

@@ -21,7 +21,7 @@
 //! refuses beside dirty state), then `ActionCoordinator::command_ingress` →
 //! `preflight` → the actor's own projection and resolve → `prepare_and_stage_resolved`
 //! → `take_staged_action` → `reserve_authoritative_intent` → `reconcile_authoritative`
-//! → `install_prepared_action_announcing` → `checkpoint_authoritative`. So the typed
+//! → `install_composed_action_announcing` → `checkpoint_authoritative`. So the typed
 //! state lives in the store, a same-epoch resubmission is the coordinator's HIT (a
 //! replay, never landed), and **every restart is a plain `build_engine` re-boot over
 //! the kept store**, the typed partition hydrated before any module's boot pass as in
@@ -142,7 +142,7 @@ struct Rig {
     boots: u32,
     /// Every pilot made here and its gateway account.
     accounts: BTreeMap<ObjId, AccountId>,
-    /// What landings made observers hear (`install_prepared_action_announcing`).
+    /// What landings made observers hear (`install_composed_action_announcing`).
     heard: Vec<(Audience, OutputEvent)>,
     /// The providers' summaries, as the world task tells the actor.
     told: Vec<(ObjId, String)>,
@@ -392,7 +392,7 @@ async fn land(rig: &mut Rig, submit: &AuthoritativeSubmit) -> Landing {
                     .await
                     .expect("the bundle reconciles");
                 assert!(receipt.matches_bundle(&bundle));
-                let heard = rig.tw.install_prepared_action_announcing(installation);
+                let heard = rig.tw.install_composed_action_announcing(installation);
                 rig.heard.extend(heard);
                 auth.checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
                     .await

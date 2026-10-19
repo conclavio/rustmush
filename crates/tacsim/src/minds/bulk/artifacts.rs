@@ -44,6 +44,73 @@ impl Key {
         format!("{}:chunk:{n}", self.document()).into()
     }
 }
+
+/// Exact physical write codec for the registered artifact participant. The
+/// adapter still proves its private ticket/run before producing these writes.
+pub(super) fn accepts_registry_write(write: &mush_core::authoritative::ReplayWrite) -> bool {
+    use mush_core::authoritative::ReplayWrite;
+    let ReplayWrite::ModuleJsonSet {
+        namespace,
+        key,
+        value,
+    } = write
+    else {
+        return false;
+    };
+    if namespace.as_str() != crate::NS {
+        return false;
+    }
+    let parts = key.as_str().split(':').collect::<Vec<_>>();
+    let (account, run, part, chunk) = match parts.as_slice() {
+        ["tacsim", "mindbulk", "blob", account, run, part] => (*account, *run, *part, None),
+        [
+            "tacsim",
+            "mindbulk",
+            "blob",
+            account,
+            run,
+            part,
+            "chunk",
+            chunk,
+        ] => (*account, *run, *part, Some(*chunk)),
+        _ => return false,
+    };
+    let Ok(account) =
+        serde_json::from_value::<AccountId>(serde_json::Value::String(account.into()))
+    else {
+        return false;
+    };
+    let Ok(run) = run.parse::<u64>() else {
+        return false;
+    };
+    if run == 0 {
+        return false;
+    }
+    let part = match part {
+        "start" => Part::Start,
+        "result" => Part::Result,
+        _ => return false,
+    };
+    let exact = Key {
+        account,
+        run: RunId(run),
+        part,
+    };
+    if let Some(chunk) = chunk {
+        let Ok(chunk) = chunk.parse::<u16>() else {
+            return false;
+        };
+        chunk < 513
+            && key.as_str() == exact.chunk(chunk).as_str()
+            && value
+                .as_str()
+                .is_some_and(|text| !text.is_empty() && text.len() <= 32 * 1024)
+    } else {
+        key.as_str() == exact.document().as_str()
+            && serde_json::from_value::<Manifest>(value.clone())
+                .is_ok_and(|manifest| manifest.key == exact && manifest.validate().is_ok())
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Manifest {
@@ -116,6 +183,7 @@ impl PreparedBlob {
 pub(crate) struct Artifacts {
     manifests: BTreeMap<Key, Manifest>,
     quarantine: BTreeSet<SmolStr>,
+    pub(super) registry: super::registry_tickets::Tickets,
 }
 impl Artifacts {
     pub fn load(&mut self, docs: &[(SmolStr, serde_json::Value)]) {

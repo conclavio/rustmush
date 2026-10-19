@@ -8,12 +8,17 @@ description = "Character-owned mind drafts, immutable revisions and explicit ret
 
 [dependencies]
 mush-core.workspace = true
+mush-economy.workspace = true
+mush-org.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 smol_str.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+mush-proto.workspace = true
 
 [lints]
 workspace = true

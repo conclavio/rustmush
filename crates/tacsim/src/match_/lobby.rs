@@ -174,6 +174,10 @@ pub struct Slot {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MindChoice {
+    /// A stable original-owner licence, re-resolved through the owner service
+    /// at every preview and checkout. Never populated for ordinary M6 choices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filed: Option<mush_roll::commerce::LicenceId>,
     pub saved: Option<super::draft_holdings::SavedChoice>,
     /// The mind's name as its holding spells it (`Standard Doctrine`).
     pub mind: SmolStr,
@@ -184,14 +188,24 @@ pub struct MindChoice {
 }
 
 impl MindChoice {
-    pub(super) fn resolve(&self, w: &World, actor: ObjId) -> Option<HeldMind> {
-        holdings::resolve_choice(w, actor, &self.mind, self.saved.as_ref())
+    pub(super) fn resolve(
+        &self,
+        access: &super::original_access::HoldingAccess<'_>,
+        actor: ObjId,
+    ) -> Option<HeldMind> {
+        access.resolve(actor, self)
     }
 
     /// **How every line spells it**: `Standard Doctrine (Sniper, Line)`, and
     /// `Standard Doctrine (Line)` for Line alone.
     #[must_use]
     pub fn words(&self) -> String {
+        if let Some(licence) = self.filed {
+            return mind_words(
+                &format!("{} [filed:{}]", self.mind, licence.get()),
+                &self.profiles,
+            );
+        }
         let name = self.saved.as_ref().map_or_else(
             || self.mind.to_string(),
             |saved| match saved.selection {
@@ -1454,7 +1468,12 @@ pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
         if !centre.leads.iter().any(|(side, _)| *side == team) {
             centre.leads.push((team, account));
         }
-        caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+        caps::admit_change(
+            &super::original_access::HoldingAccess::from_ctx(ctx),
+            &previous,
+            &next,
+            ctx.actor,
+        )?;
         super::selection_refs::publish_centre(ctx, next)?;
         index
     };
@@ -1581,7 +1600,13 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
                         .iter()
                         .find(|slot| slot.team == *team && slot.account == *account)?
                         .pilot;
-                    caps::admit(ctx.w, centre, pilot).is_err().then_some(pilot)
+                    caps::admit(
+                        &super::original_access::HoldingAccess::from_ctx(ctx),
+                        centre,
+                        pilot,
+                    )
+                    .is_err()
+                    .then_some(pilot)
                 })
                 .collect::<Vec<_>>()
         })
@@ -1996,7 +2021,12 @@ pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError
             .find(|slot| slot.account == account)
             .ok_or(SimError::NoSlotToField)?;
         slot.unit_type = stored;
-        caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+        caps::admit_change(
+            &super::original_access::HoldingAccess::from_ctx(ctx),
+            &previous,
+            &next,
+            ctx.actor,
+        )?;
         super::selection_refs::publish_centre(ctx, next)?;
     }
     announce(
@@ -2054,6 +2084,8 @@ pub const FILLS_HIDDEN: &str = "The fills are not shown once a match starts.";
 pub enum MindRequest {
     /// The bare word: a read, to the actor alone.
     Read,
+    /// A bounded page of the authenticated character's original-owner holdings.
+    FiledRead { after: Option<ObjId> },
     /// `none`: the choice cleared.
     Clear,
     /// `<mind> [@<rev>] [PROFILE <p>[, <p>]…]`.
@@ -2095,6 +2127,20 @@ impl MindRequest {
         }
         if rest.eq_ignore_ascii_case("none") {
             return Ok(MindRequest::Clear);
+        }
+        let mut words = rest.split_whitespace();
+        if words
+            .next()
+            .is_some_and(|word| word.eq_ignore_ascii_case("/filed"))
+        {
+            let after = match (words.next(), words.next(), words.next()) {
+                (None, None, None) => None,
+                (Some(keyword), Some(cursor), None) if keyword.eq_ignore_ascii_case("after") => {
+                    Some(super::original_access::parse_cursor(cursor).ok_or(MindUsage::Mind)?)
+                }
+                _ => return Err(MindUsage::Mind),
+            };
+            return Ok(MindRequest::FiledRead { after });
         }
         let (head, tail) = match split_profile(rest) {
             Some((head, tail)) => (head, Some(tail)),
@@ -2463,9 +2509,16 @@ fn fits(w: &World, chassis: &str, held: &HeldMind) -> Option<(u8, Vec<SmolStr>)>
 /// **The mind a side's fill choice names, resolved** (17b cut M5.1): against
 /// the holdings of the lead who set it (their own slot's pilot, F11), or
 /// Standard Doctrine for staff (D9). `None` when it no longer resolves.
-fn fill_held(w: &World, centre: &Centre, fill: &FillChoice) -> Option<HeldMind> {
+fn fill_held(
+    access: &super::original_access::HoldingAccess<'_>,
+    centre: &Centre,
+    fill: &FillChoice,
+) -> Option<HeldMind> {
     match fill.by {
         FillSetter::Staff => {
+            if fill.choice.filed.is_some() || fill.choice.saved.is_some() {
+                return None;
+            }
             let doctrine = HeldMind::doctrine();
             holdings::names(&doctrine, &fill.choice.mind).then_some(doctrine)
         }
@@ -2475,7 +2528,7 @@ fn fill_held(w: &World, centre: &Centre, fill: &FillChoice) -> Option<HeldMind> 
                 .iter()
                 .find(|slot| slot.team == fill.team && slot.account == account)?
                 .pilot;
-            fill.choice.resolve(w, pilot)
+            fill.choice.resolve(access, pilot)
         }
     }
 }
@@ -2520,7 +2573,12 @@ fn fill_seal_choice(held: &HeldMind, fill: &FillChoice, doctrine_only: bool) -> 
 /// finds one) — the hulls [`ready`] will substitute — once each, in claim
 /// order. Empty when the rule is off, and on every production server before
 /// 17b cut M6 (production holds Standard Doctrine alone).
-fn substituted_pilots(w: &World, centre: &Centre, match_cfg: &MatchConfig) -> Vec<ObjId> {
+fn substituted_pilots(
+    access: &super::original_access::HoldingAccess<'_>,
+    centre: &Centre,
+    match_cfg: &MatchConfig,
+) -> Vec<ObjId> {
+    let w = access.world();
     let mut pilots: Vec<ObjId> = Vec::new();
     if !centre.doctrine_only {
         return pilots;
@@ -2530,7 +2588,7 @@ fn substituted_pilots(w: &World, centre: &Centre, match_cfg: &MatchConfig) -> Ve
             continue;
         };
         if choice
-            .resolve(w, slot.pilot)
+            .resolve(access, slot.pilot)
             .is_some_and(|held| !held.is_doctrine())
             && !pilots.contains(&slot.pilot)
         {
@@ -2555,7 +2613,7 @@ fn substituted_pilots(w: &World, centre: &Centre, match_cfg: &MatchConfig) -> Ve
                 .filter(|slot| slot.team == fill.team)
                 .filter_map(|slot| centre::tank_for_slot(w, fill.team, slot.index))
                 .collect();
-            if fill_held(w, centre, fill).is_some_and(|held| !held.is_doctrine())
+            if fill_held(access, centre, fill).is_some_and(|held| !held.is_doctrine())
                 && !fill_pods(w, centre, match_cfg, fill.team, &fielded).is_empty()
                 && !pilots.contains(&lead.pilot)
             {
@@ -2679,7 +2737,13 @@ pub fn holdings_words(held: &[HeldMind]) -> String {
 /// line per held mind that fits the slot's chassis and the side's pool; from
 /// `SIM START` on their choice and that selection is closed; and with no
 /// slot what they hold.
-fn mind_read_lines(w: &World, actor: ObjId, state: MatchState, slot: Option<&Slot>) -> Vec<String> {
+fn mind_read_lines(
+    access: &super::original_access::HoldingAccess<'_>,
+    actor: ObjId,
+    state: MatchState,
+    slot: Option<&Slot>,
+) -> Vec<String> {
+    let w = access.world();
     let character = slot.map_or(actor, |slot| slot.pilot);
     let held = holdings::held_by(w, character);
     let closed = matches!(
@@ -2719,7 +2783,7 @@ fn mind_read_lines(w: &World, actor: ObjId, state: MatchState, slot: Option<&Slo
         }
     }
     if let (Some(minds_cfg), Some(centre)) = (minds_config(w), centre(w)) {
-        match caps::preview_visible(w, centre, Some(slot.team), Some(actor)) {
+        match caps::preview_visible(access, centre, Some(slot.team), Some(actor)) {
             Ok(rows) => {
                 if let Some(row) = rows
                     .iter()
@@ -2786,7 +2850,19 @@ pub fn mind(ctx: &mut Ctx<'_>, request: MindRequest) -> Result<(), SimError> {
         .cloned();
     let chosen = match request {
         MindRequest::Read => {
-            for line in mind_read_lines(ctx.w, actor, state, slot.as_ref()) {
+            let access = super::original_access::HoldingAccess::from_ctx(ctx);
+            let mut lines = mind_read_lines(&access, actor, state, slot.as_ref());
+            if access.enabled() {
+                lines.push("Original-owner filings: SIM MIND /filed; choose with SIM MIND filed:<licence>.".into());
+            }
+            for line in lines {
+                ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+            }
+            return Ok(());
+        }
+        MindRequest::FiledRead { after } => {
+            let lines = super::original_access::HoldingAccess::from_ctx(ctx).list(after)?;
+            for line in lines {
                 ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
             }
             return Ok(());
@@ -2814,11 +2890,11 @@ pub fn mind(ctx: &mut Ctx<'_>, request: MindRequest) -> Result<(), SimError> {
     let (stored, reply) = match chosen {
         None => (None, MIND_CLEARED.to_owned()),
         Some((word, revision, profiles)) => {
-            let mind = holdings::choose(ctx.w, slot.pilot, &word, revision.as_deref()).map_err(
-                |error| SimError::MindAdmission {
+            let mind = super::original_access::HoldingAccess::from_ctx(ctx)
+                .choose(slot.pilot, &word, revision.as_deref())
+                .map_err(|error| SimError::MindAdmission {
                     reason: error.to_string(),
-                },
-            )?;
+                })?;
             let profiles = resolve_profiles(&mind, &profiles)?;
             let chassis = effective_type(ctx.w, &slot).ok_or(SimError::NoUnit {
                 team: slot.team.as_str(),
@@ -2832,6 +2908,7 @@ pub fn mind(ctx: &mut Ctx<'_>, request: MindRequest) -> Result<(), SimError> {
                 minds_config(ctx.w).unwrap_or_default().max_class,
             )?;
             let choice = MindChoice {
+                filed: super::original_access::filed_selection(&mind)?,
                 saved: mind.saved.clone(),
                 mind: mind.identity.mind.clone(),
                 profiles,
@@ -2848,7 +2925,12 @@ pub fn mind(ctx: &mut Ctx<'_>, request: MindRequest) -> Result<(), SimError> {
             .find(|held| held.account == account)
             .ok_or(SimError::NoSlotToField)?
             .mind = stored;
-        caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+        caps::admit_change(
+            &super::original_access::HoldingAccess::from_ctx(ctx),
+            &previous,
+            &next,
+            ctx.actor,
+        )?;
         super::selection_refs::publish_centre(ctx, next)?;
     }
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, reply);
@@ -2968,6 +3050,11 @@ pub fn ai_mind(ctx: &mut Ctx<'_>, request: FillRequest) -> Result<(), SimError> 
             }
             return Ok(());
         }
+        MindRequest::FiledRead { .. } => {
+            return Err(SimError::MindAdmission {
+                reason: "Use SIM MIND /filed to list your original-owner holdings.".into(),
+            });
+        }
         MindRequest::Clear => None,
         MindRequest::Choose {
             mind,
@@ -3010,20 +3097,20 @@ pub fn ai_mind(ctx: &mut Ctx<'_>, request: FillRequest) -> Result<(), SimError> 
     let (stored, reply) = match chosen {
         None => (None, fill_line(team, None)),
         Some((word, revision, profiles)) => {
-            let held =
-                match lead_pilot {
-                    Some(pilot) => holdings::choose(ctx.w, pilot, &word, revision.as_deref())
-                        .map_err(|error| SimError::MindAdmission {
-                            reason: error.to_string(),
-                        })?,
-                    None => {
-                        let doctrine = HeldMind::doctrine();
-                        if revision.is_some() || !holdings::names(&doctrine, &word) {
-                            return Err(SimError::StaffHoldNoMinds);
-                        }
-                        doctrine
+            let held = match lead_pilot {
+                Some(pilot) => super::original_access::HoldingAccess::from_ctx(ctx)
+                    .choose(pilot, &word, revision.as_deref())
+                    .map_err(|error| SimError::MindAdmission {
+                        reason: error.to_string(),
+                    })?,
+                None => {
+                    let doctrine = HeldMind::doctrine();
+                    if revision.is_some() || !holdings::names(&doctrine, &word) {
+                        return Err(SimError::StaffHoldNoMinds);
                     }
-                };
+                    doctrine
+                }
+            };
             if profiles.len() > 1 {
                 return Err(SimError::FillOneProfile);
             }
@@ -3042,6 +3129,7 @@ pub fn ai_mind(ctx: &mut Ctx<'_>, request: FillRequest) -> Result<(), SimError> 
                 }
             }
             let choice = MindChoice {
+                filed: super::original_access::filed_selection(&held)?,
                 saved: held.saved.clone(),
                 mind: held.identity.mind.clone(),
                 profiles,
@@ -3060,7 +3148,12 @@ pub fn ai_mind(ctx: &mut Ctx<'_>, request: FillRequest) -> Result<(), SimError> 
     if let Some(fill) = stored {
         next.fill_minds.push(fill);
     }
-    caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+    caps::admit_change(
+        &super::original_access::HoldingAccess::from_ctx(ctx),
+        &previous,
+        &next,
+        ctx.actor,
+    )?;
     super::selection_refs::publish_centre(ctx, next)?;
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, reply);
     Ok(())
@@ -3263,7 +3356,7 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     // authored type here, which is what stops a stale refit reaching the next
     // claimant or the AI fill.
     caps::admit(
-        ctx.w,
+        &super::original_access::HoldingAccess::from_ctx(ctx),
         centre(ctx.w).ok_or(SimError::Unavailable)?,
         ctx.actor,
     )?;
@@ -3320,7 +3413,13 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     // `SIM START` is whoever typed it), once. Never in production before
     // 17b cut M6 (production holds Standard Doctrine alone).
     let told = centre(ctx.w)
-        .map(|centre| substituted_pilots(ctx.w, centre, &match_cfg))
+        .map(|centre| {
+            substituted_pilots(
+                &super::original_access::HoldingAccess::from_ctx(ctx),
+                centre,
+                &match_cfg,
+            )
+        })
         .unwrap_or_default();
     for pilot in told {
         ctx.out
@@ -4288,7 +4387,11 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                 let Some(unit) = slot.unit else {
                     continue;
                 };
-                let choice = caps::slot_choice(ctx.w, centre, slot)?;
+                let choice = caps::slot_choice(
+                    &super::original_access::HoldingAccess::from_ctx(ctx),
+                    centre,
+                    slot,
+                )?;
                 let chassis = fitted_type(ctx.w, unit).or_else(|| effective_type(ctx.w, slot));
                 let mind_class = Some(sealed_class(
                     ctx.w,
@@ -4347,7 +4450,12 @@ fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
                 let pods = fill_pods(ctx.w, centre, &match_cfg, team, &fielded);
                 let fill = match centre.fill_minds.iter().find(|fill| fill.team == team) {
                     Some(fill) if !pods.is_empty() => Some(fill_seal_choice(
-                        &fill_held(ctx.w, centre, fill).ok_or(SimError::MindNotHeld {
+                        &fill_held(
+                            &super::original_access::HoldingAccess::from_ctx(ctx),
+                            centre,
+                            fill,
+                        )
+                        .ok_or(SimError::MindNotHeld {
                             team: team.as_str(),
                             index: None,
                         })?,
@@ -4622,7 +4730,12 @@ pub fn ai(ctx: &mut Ctx<'_>, size: Option<u8>) -> Result<(), SimError> {
     let previous = centre(ctx.w).ok_or(SimError::Unavailable)?.clone();
     let mut next = previous.clone();
     next.ai_side_size = Some(size);
-    caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+    caps::admit_change(
+        &super::original_access::HoldingAccess::from_ctx(ctx),
+        &previous,
+        &next,
+        ctx.actor,
+    )?;
     super::selection_refs::publish_centre(ctx, next)?;
     announce(ctx, format!("AI fill set to {size} a side."));
     Ok(())
@@ -4673,7 +4786,12 @@ pub fn ai_class(ctx: &mut Ctx<'_>, chosen: Option<CoreClass>) -> Result<(), SimE
         lead: account,
         class,
     });
-    caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+    caps::admit_change(
+        &super::original_access::HoldingAccess::from_ctx(ctx),
+        &previous,
+        &next,
+        ctx.actor,
+    )?;
     let effective = cfg.fill_cap(Some(class));
     super::selection_refs::publish_centre(ctx, next)?;
     ctx.out.sys_to_actor(
@@ -4715,7 +4833,11 @@ pub(crate) fn checkout_class_cap(w: &World, team: Team, unit: ObjId, seated: boo
 /// Bounded preview used by integration fixtures without checking a match out.
 #[doc(hidden)]
 pub fn class_preview_for_tests(w: &World) -> Result<Vec<(Team, u8, CoreClass)>, SimError> {
-    caps::preview(w, centre(w).ok_or(SimError::Unavailable)?).map(|rows| {
+    caps::preview(
+        &super::original_access::HoldingAccess::legacy(w),
+        centre(w).ok_or(SimError::Unavailable)?,
+    )
+    .map(|rows| {
         rows.into_iter()
             .map(|row| (row.team, row.index, row.class))
             .collect()
@@ -4911,7 +5033,12 @@ pub fn mode(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError> {
     let mut next = previous.clone();
     next.mode = chosen;
     next.range_targets = None;
-    caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+    caps::admit_change(
+        &super::original_access::HoldingAccess::from_ctx(ctx),
+        &previous,
+        &next,
+        ctx.actor,
+    )?;
     super::selection_refs::publish_centre(ctx, next)?;
     announce(ctx, announcement);
     Ok(())
@@ -5025,7 +5152,12 @@ pub fn range(ctx: &mut Ctx<'_>, count: Option<u8>) -> Result<(), SimError> {
     let mut next = previous.clone();
     next.mode = MatchMode::Range;
     next.range_targets = Some(count);
-    caps::admit_change(ctx.w, &previous, &next, ctx.actor)?;
+    caps::admit_change(
+        &super::original_access::HoldingAccess::from_ctx(ctx),
+        &previous,
+        &next,
+        ctx.actor,
+    )?;
     super::selection_refs::publish_centre(ctx, next)?;
     announce(
         ctx,
@@ -6473,6 +6605,54 @@ mod tests {
         assert_eq!(
             SimError::NoGun { team: "red" }.to_string(),
             "The red side fields no gun; a side needs a machine that carries one."
+        );
+    }
+
+    #[test]
+    fn original_choice_does_not_fall_back_through_staff_or_doctrine_substitution() {
+        let tw = mush_testkit::TestWorld::new();
+        let access = super::super::original_access::HoldingAccess::legacy(tw.world());
+        let mut centre = Centre {
+            doctrine_only: true,
+            ..Centre::default()
+        };
+        let mut selected = slot(Team::Red, 1, 1);
+        let ordinary = MindChoice {
+            filed: None,
+            saved: None,
+            mind: "Standard Doctrine".into(),
+            profiles: vec![],
+        };
+        let mut fill = FillChoice {
+            team: Team::Red,
+            by: FillSetter::Staff,
+            choice: ordinary.clone(),
+        };
+        assert_eq!(
+            fill_held(&access, &centre, &fill),
+            Some(HeldMind::doctrine())
+        );
+        fill.choice.filed = mush_roll::commerce::LicenceId::new(1).ok();
+        assert!(
+            fill_held(&access, &centre, &fill).is_none(),
+            "staff cannot disguise a filed choice as Doctrine"
+        );
+        selected.mind = Some(fill.choice.clone());
+        centre.slots.push(selected.clone());
+        assert!(
+            matches!(
+                caps::slot_choice(&access, &centre, &selected),
+                Err(SimError::MindNotHeld {
+                    team: "red",
+                    index: Some(1)
+                })
+            ),
+            "substitution still checks the original holding first"
+        );
+        selected.mind = Some(ordinary);
+        assert_eq!(
+            caps::slot_choice(&access, &centre, &selected).unwrap().held,
+            HeldMind::doctrine()
         );
     }
 }

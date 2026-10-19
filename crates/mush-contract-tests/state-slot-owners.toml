@@ -998,3 +998,98 @@ header's prior root is missing. Existing roots and immutable source bytes stay
 untouched; a corrected boot rebuilds the owner and is the only way to clear the
 guard. The published refusal carries no character, revision or source detail.
 """
+
+
+[[site]]
+path = "crates/mush-server/tests/mind_commerce_composition.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Full-roster boot test installs the same genuinely hydrated AccountIdentity in
+Engine and Sim's existing oracle, following the actual production boot boundary.
+It creates no account mapping, commercial readiness, deployment or receipt.
+"""
+
+
+[[site]]
+path = "crates/mush-server/src/world_task/submission_disposition/tests/paid_purchase/runtime.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+M7 test-only actual-server purchase recovery boot performs the same host wiring as
+boot.rs: the hydrated authentication map is shared by Engine and Sim before owner
+hydration, public Registry commands, and ordinary acknowledged purchase actions.
+The fixture does not mint an account or replace a business owner through this slot.
+"""
+
+[[site]]
+path = "crates/mush-server/src/world_task/submission_disposition/tests/paid_purchase/runtime.rs"
+accessor = "World::module_state_mut"
+slot = "PulseConfig"
+owner = "sim"
+reason = """
+M7 test-only actual-server purchase recovery boot installs the operator's ground
+and space pulse configuration at the same post-composition boundary as boot.rs.
+The actual server loop advances time; the fixture never moves the clock through
+pending custody or invokes a private commerce transition through this slot.
+"""
+
+[[site]]
+path = "crates/mush-roll/src/commerce/bootstrap.rs"
+accessor = "World::module_state_insert"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+M7 cfg(test) initialization refusal fixture seeds an unreplayed default EconomyStore in a minimal World. It asserts that empty maps cannot establish historical receipt readiness; production bootstrap uses the registered owner and actual journal replay.
+"""
+
+[[site]]
+path = "crates/mush-roll/src/commerce/bootstrap.rs"
+accessor = "World::module_state_insert"
+slot = "RollStore"
+owner = "roll"
+reason = """
+M7 cfg(test) initialization refusal fixture seeds an unaudited default RollStore in a minimal World. It proves that an empty owner map is not source-audit or deployment evidence; production bootstrap does not insert a slot.
+"""
+
+[[site]]
+path = "crates/tacsim/src/minds/bulk/bench_service/tests/lineage.rs"
+accessor = "World::module_state_insert"
+slot = "RollStore"
+owner = "roll"
+reason = """
+M7 test-only BENCH privacy fixture replaces its Roll slot with a strictly decoded persisted provenance image after caching a picture. It proves current and delayed output refusal, not an Open grant or live parent authority; production publication and frozen Arena behavior are unchanged.
+"""
+
+[[site]]
+path = "crates/tacsim/src/minds/workshop/structured/tests/lineage.rs"
+accessor = "World::module_state_insert"
+slot = "RollStore"
+owner = "roll"
+reason = """
+M7 test-only structured workshop fixture installs a strictly decoded marked Roll image after an original draft read. It tests refusal of source reads, replacements, copies, saves and delayed results; it does not issue provenance or commercial rights in production.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/support/holdings.rs"
+accessor = "World::module_state_mut"
+slot = "RollStore"
+owner = "roll"
+reason = """
+M7 test-only holdings adapter seeds three immutable revisions before commands using actual Roll prepare_create, prepare_save and publish_with. It retains the returned setup writes for restart tests and does not bypass production save, source verification, or ownership checks.
+"""
+
+[[site]]
+path = "crates/mush-economy/src/registry_filing/house/tests.rs"
+accessor = "World::module_state_mut"
+slot = "OrgStore"
+owner = "org"
+reason = """
+M7 scoped-filing test-only organization command uses the actual OrgStore policy
+allocator and mush_org::submit service under the registered org owner. It installs
+real Allow/Deny policies through the normal audited persistence path to test
+current authorization and Deny precedence; it does not construct title, money,
+commercial readiness, source or rating evidence.
+"""

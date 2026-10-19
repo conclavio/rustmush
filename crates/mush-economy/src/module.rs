@@ -235,6 +235,10 @@ pub enum PendingEconomyReadKind {
 
 #[derive(Clone, Debug, Default)]
 pub struct EconomyStore {
+    /// Complete immutable renewal-offer owner state; composition is opt-in.
+    pub(crate) renewal_offers: crate::managed_renewal::history::OfferBook,
+    /// RAM-only proof that actual boot checked the full renewal inventory.
+    pub(crate) renewal_inventory_checked: bool,
     /// The last boot's cold replay cost (H3); `None` until `on_world_loaded`.
     pub(crate) boot_replay: Option<ReplayStats>,
     /// Journal transactions posted since this boot (doc 12 D-12-1): with
@@ -575,10 +579,38 @@ pub(crate) struct BootParts {
 }
 
 impl EconomyStore {
+    /// Exact historical filing proof, unavailable until actual replay finishes.
+    /// Complete immutable paid-purchase history for the paired typed/root audit.
+    pub fn purchase_receipt_audit(&self) -> &crate::managed_purchase::PurchaseReceiptAudit {
+        &self.fold.purchase_receipts
+    }
+
+    /// Borrow exact renewal evidence only after the private combined audit.
+    /// This view supplies no setter, constructor, or posting authority.
+    pub fn renewal_audit(
+        &self,
+    ) -> Result<crate::managed_renewal::RenewalAudit<'_>, crate::managed_renewal::RenewalAuditError>
+    {
+        crate::managed_renewal::audit::read(self)
+    }
+
+    /// Refuse retained, invalid or unavailable renewal inventory when a paired
+    /// consumer is not configured. This read grants no mutation authority.
+    pub fn require_no_renewal_history(
+        &self,
+    ) -> Result<(), crate::managed_renewal::RenewalAuditError> {
+        crate::managed_renewal::bridge::require_absent(self)
+    }
+
+    pub fn filing_receipt_audit(&self) -> &crate::registry_filing::ReceiptAudit {
+        &self.fold.filing_receipts
+    }
     /// Assemble a store from boot-derived parts (used by [`crate::boot`]). The
     /// provider table is empty here — the module injects the frozen one after boot.
     pub(crate) fn from_parts(p: BootParts) -> EconomyStore {
         EconomyStore {
+            renewal_offers: crate::managed_renewal::history::OfferBook::default(),
+            renewal_inventory_checked: false,
             boot_replay: None,
             posts_since_boot: 0,
             snapshot: p.snapshot,
@@ -1512,6 +1544,15 @@ pub(crate) fn note_window_debits(
 /// module — economy authorizes through it).
 #[derive(Debug, Default)]
 pub struct EconomyModule {
+    initial_filing: Option<(
+        crate::registry_filing::InitialFilingPolicy,
+        mush_core::mechanics::DefinitionRef,
+    )>,
+    original_purchases: Option<[mush_core::mechanics::DefinitionRef; 3]>,
+    entitlement_purchases: Option<[[mush_core::mechanics::DefinitionRef; 3]; 2]>,
+    mind_renewals: Option<crate::managed_renewal::bridge::Configuration>,
+    house_initial_filing: Option<mush_core::mechanics::DefinitionRef>,
+    dependent_initial_filing: Option<mush_core::mechanics::DefinitionRef>,
     providers: CustodyTable,
     config: EconomyConfig,
     facts: crate::facts::FactTable,
@@ -1532,6 +1573,77 @@ pub struct EconomyModule {
 }
 
 impl EconomyModule {
+    /// Enable the closed initial-filing participant for one exact registered
+    /// Roll action. This is composition configuration, never a runtime grant.
+    #[must_use]
+    pub fn with_initial_filing(
+        mut self,
+        policy: crate::registry_filing::InitialFilingPolicy,
+        action: mush_core::mechanics::DefinitionRef,
+    ) -> Self {
+        self.initial_filing = Some((policy, action));
+        self
+    }
+    /// Add one exact scoped-house filing action to the existing participant.
+    /// No organization authorization or money is created by composition.
+    #[must_use]
+    pub fn with_house_initial_filing(
+        mut self,
+        action: mush_core::mechanics::DefinitionRef,
+    ) -> Self {
+        self.house_initial_filing = Some(action);
+        self
+    }
+    /// Grant only the exact opt-in personal dependent-filing action access to
+    /// this existing fee/title participant. Parent eligibility remains Roll-owned.
+    #[must_use]
+    pub fn with_dependent_initial_filing(
+        mut self,
+        action: mush_core::mechanics::DefinitionRef,
+    ) -> Self {
+        self.dependent_initial_filing = Some(action);
+        self
+    }
+    /// Add the three exact closed Market purchase actions to the existing
+    /// EconomyStore participant. Composition must also supply the paired
+    /// Market/Roll boot audit; this enables only E4's historical half.
+    #[must_use]
+    pub fn with_original_mind_purchases(
+        mut self,
+        actions: [mush_core::mechanics::DefinitionRef; 3],
+    ) -> Self {
+        self.original_purchases = Some(actions);
+        self
+    }
+    /// Grant only the fixed original-v3 and derived-v1 entitlement actions
+    /// access to this existing owner slot. Market/Roll retain their own audits.
+    #[must_use]
+    pub fn with_mind_entitlement_purchases(
+        mut self,
+        original: [mush_core::mechanics::DefinitionRef; 3],
+        derived: [mush_core::mechanics::DefinitionRef; 3],
+    ) -> Self {
+        self.entitlement_purchases = Some([original, derived]);
+        self
+    }
+
+    /// Freeze the exact five renewal actions on the existing Economy owner slot.
+    /// Paired Roll/Market audits remain required; defaults grant no renewal action.
+    #[must_use]
+    pub fn with_mind_renewals(
+        mut self,
+        manifest: mush_core::DefinitionRef,
+        participants: [mush_core::DefinitionRef; 2],
+        actions: [mush_core::DefinitionRef; 5],
+    ) -> Self {
+        self.mind_renewals = Some(crate::managed_renewal::bridge::Configuration {
+            manifest,
+            participants,
+            actions,
+        });
+        self
+    }
+
     /// A fresh module with only the built-in container custody provider.
     #[must_use]
     pub fn new() -> EconomyModule {
@@ -1768,6 +1880,40 @@ impl GameModule for EconomyModule {
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::EconomyCarveOut);
         reg.state(EconomyStore::default());
+        if let Some((policy, action)) = &self.initial_filing {
+            if !self.title_issuers.contains(policy.issuer()) {
+                return Err(ModError::msg(
+                    "initial filing issuer is not in the composition title-issuer table",
+                ));
+            }
+            crate::registry_filing::register(
+                reg,
+                policy.clone(),
+                action.clone(),
+                self.original_purchases.as_ref(),
+                self.entitlement_purchases.as_ref(),
+                self.house_initial_filing.as_ref(),
+                self.dependent_initial_filing.as_ref(),
+                self.mind_renewals.as_ref(),
+            )?;
+        }
+        if (self.original_purchases.is_some()
+            || self.entitlement_purchases.is_some()
+            || self.house_initial_filing.is_some()
+            || self.dependent_initial_filing.is_some())
+            && self.initial_filing.is_none()
+        {
+            return Err(ModError::msg(
+                "original purchases require the existing filing EconomyStore participant",
+            ));
+        }
+        if self.mind_renewals.is_some()
+            && (self.initial_filing.is_none() || self.entitlement_purchases.is_none())
+        {
+            return Err(ModError::msg(
+                "mind renewals require the existing filing and entitlement participants",
+            ));
+        }
         // WS03-A1: an economy command emits an EconomicEvent and the wired
         // observers run under THIS module's identity, so housing's observer
         // closes its tenancy story job through the jobs API wearing the
@@ -1830,13 +1976,16 @@ impl GameModule for EconomyModule {
         } else {
             self.config.tx_tail_max
         };
-        let mut store = boot::load_boot(
+        let mut store = boot::load_boot_with_renewals(
             ctx,
             data,
             &self.providers,
             &self.canon_outcome_kinds,
             tail_max,
             self.config.idempotency_window_secs,
+            self.initial_filing.is_some(),
+            self.original_purchases.is_some() || self.entitlement_purchases.is_some(),
+            self.mind_renewals.is_some(),
         )?;
         // C17 (08g §12.1 item 5): the cold replay is the whole boot cost until a
         // durability checkpoint exists. Say what it cost, every boot, and say loudly

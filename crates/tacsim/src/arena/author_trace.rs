@@ -124,6 +124,12 @@ impl ThinkDiagnostics {
     pub fn counts(&self) -> Option<(u64, u64)> {
         self.ops.zip(self.fees)
     }
+    /// Intent rows omitted from the bounded trace, not refused machine intents.
+    #[must_use]
+    pub(crate) const fn omitted_intents(&self) -> u32 {
+        self.omitted.intents
+    }
+
     #[must_use]
     pub fn measured(ops: u64, fees: u64) -> Self {
         Self {
@@ -889,7 +895,7 @@ mod tests {
                 .all(|line| line.chars().count() == LINE_CHARS && !line.contains('\u{1b}'))
         );
         assert_eq!(row.diagnostics.omitted.author_lines, 2);
-        assert_eq!(row.diagnostics.omitted.intents, 4);
+        assert_eq!(row.diagnostics.omitted_intents(), 4);
         assert_eq!(row.intents.len(), INTENTS);
         let json = serde_json::to_string(&row).unwrap();
         assert!(!json.contains("private memory") && !json.contains("source in an error"));

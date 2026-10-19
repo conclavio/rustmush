@@ -55,7 +55,11 @@ pub use mush_core::ControlMsg;
 // same version adds `ServiceReq::UnlinkPlayer`, the compensating half of that
 // insert; it needs no further bump because no released peer has ever spoken 6.
 // Version 7 adds closed module invokes under claim/release custody.
-pub const IPC_VERSION: u32 = 7;
+// Version 8 adds the closed licence-addressed FiledSource Mind request/reply.
+// Unlike gateway-owned LegalAction, it crosses WireInbound::Invoke; v7 cannot
+// decode it. Upgrade gateway and server together before enabling this route.
+// Version 9 adds source-free attributed Remove and its non-committed pending reply.
+pub const IPC_VERSION: u32 = 9;
 
 /// Maximum replayable player inputs held by either half of one split-process
 /// boundary. The gateway enforces the limit before accepting custody and the

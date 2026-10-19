@@ -934,7 +934,7 @@ mod tests {
     }
 
     /// **17b cut M5.3 (D14)**: the same life on a hull whose sealed mind is
-    /// not Standard Doctrine — an explicitly filed fixture identity rather
+    /// not Standard Doctrine — an explicit draft fixture identity rather
     /// than a renamed doctrine identity — comes back to its pilot with the
     /// machine's word `unknown` (`Arena::machine_state`, off the seal), and the
     /// catch-up says it as the mind's own: `  The machine was flying on its own
@@ -949,17 +949,17 @@ mod tests {
             let terms = crate::match_::SealTerms {
                 identity: crate::match_::SealIdentity {
                     mind: "Fixture I".into(),
-                    origin: crate::arena::profile_seal::MindOrigin::Filed {
-                        charter: "Fixture".into(),
-                        line: "fixture_i".into(),
+                    origin: crate::arena::profile_seal::MindOrigin::Draft {
+                        character: RED,
+                        mind: 1,
                         revision: 1,
-                        licence: "test".into(),
+                        digest: mush_core::DefinitionDigest::from_bytes([9; 32]),
                     },
                     source_sha256: [9; 32],
                 },
                 ..crate::match_::SealTerms::fixture()
             };
-            red.reseal(&terms).expect("the filed fixture terms seal");
+            red.reseal(&terms).expect("the draft fixture terms seal");
             red.seal
         };
         if let Some(unit) = arena.unit_mut(RED) {

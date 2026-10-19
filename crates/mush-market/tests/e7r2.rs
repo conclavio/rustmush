@@ -211,14 +211,20 @@ fn production(relative: &str) -> String {
 /// amended by this pass, and both stay green. What was missing is a scan of this
 /// crate's own manifest, so the pass's ONE new edge cannot be joined by a second.
 #[test]
-fn e7r2_p1_the_market_edge_set_is_exactly_core_org_economy_inventory() {
+fn e7r2_p1_market_edges_plus_m7_roll_reader_remain_exact() {
     let manifest = include_str!("../Cargo.toml");
     let declared: Vec<&str> = manifest
         .lines()
         .filter_map(|line| line.split_once(".workspace = true"))
         .map(|(name, _)| name.trim())
         .collect();
-    for required in ["mush-core", "mush-org", "mush-economy", "mush-inventory"] {
+    for required in [
+        "mush-core",
+        "mush-org",
+        "mush-economy",
+        "mush-inventory",
+        "mush-roll",
+    ] {
         assert!(
             declared.contains(&required),
             "mush-market declares {required}"
@@ -232,6 +238,8 @@ fn e7r2_p1_the_market_edge_set_is_exactly_core_org_economy_inventory() {
         "mush-org",
         "mush-economy",
         "mush-inventory",
+        // M7's generic Roll reader/typed entitlement vocabulary, not a game edge.
+        "mush-roll",
         "serde",
         "serde_json",
         "smol_str",
@@ -250,7 +258,7 @@ fn e7r2_p1_the_market_edge_set_is_exactly_core_org_economy_inventory() {
         assert!(
             allowed.contains(name),
             "mush-market grew an undeclared edge: {name}. E7 residue pass 2 adds EXACTLY \
-             ONE ({{mush-inventory}}); anything else needs its own decision."
+             ONE ({{mush-inventory}}); M7 additionally names {{mush-roll}} for typed original-mind offers. Any other edge needs its own decision."
         );
     }
     for forbidden in [

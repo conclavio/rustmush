@@ -1,3 +1,5 @@
+mod authored_retirement;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use mush_core::{
@@ -6,6 +8,9 @@ use mush_core::{
 use serde::de::DeserializeOwned;
 use smol_str::SmolStr;
 
+use crate::commerce::rating_roots::RatingRoots;
+use crate::commerce::roots::{CommerceReadiness, InitialRoots, RequiredRoot, RootAnchor};
+use crate::commerce::usage::{RollUsage, UsageChange, encoded_len};
 use crate::model::*;
 use crate::{RollError, invalid};
 
@@ -87,9 +92,27 @@ pub struct PreparedChange {
     generation: u64,
     changes: Vec<Change>,
     operations: Vec<ModuleOp>,
+    sizes: Vec<(String, Option<usize>)>,
+    usage: Option<UsageChange>,
+}
+
+/// Borrowed only after every composed owner has passed its final check. Dropping
+/// this value does nothing; applying it cannot fail, look up state or serialize.
+pub(crate) struct BoundCommercialRoots<'a> {
+    store: &'a mut RollStore,
+    change: PreparedChange,
+}
+
+impl BoundCommercialRoots<'_> {
+    pub(crate) fn apply(self) {
+        self.store.apply_checked(self.change);
+    }
 }
 
 impl PreparedChange {
+    pub(crate) const fn usage(&self) -> Option<UsageChange> {
+        self.usage
+    }
     pub fn operations(&self) -> &[ModuleOp] {
         &self.operations
     }
@@ -163,6 +186,8 @@ pub struct PreparedPrune {
 #[derive(Clone, Debug, Default)]
 pub struct RollStore {
     generation: u64,
+    source_audit_epoch: u64,
+    commerce: CommerceReadiness,
     libraries: BTreeMap<ObjId, Library>,
     minds: BTreeMap<(ObjId, u64), Mind>,
     revisions: BTreeMap<RevisionKey, Revision>,
@@ -170,6 +195,8 @@ pub struct RollStore {
     /// All occupied keys, including unreadable documents. They cannot be
     /// silently replaced by an operation that assumes absence.
     occupied: BTreeSet<String>,
+    /// Exact encoded size for every occupied document; None is unreadable/oversized.
+    sizes: BTreeMap<String, Option<usize>>,
     quarantine: BTreeMap<String, String>,
 }
 
@@ -235,6 +262,11 @@ impl RollStore {
     }
 
     fn check_collection(&self) -> Result<(), RollError> {
+        if self.commerce == CommerceReadiness::Closed {
+            return Err(RollError::Quarantined(
+                "commercial retention recovery".into(),
+            ));
+        }
         if self
             .quarantine
             .keys()
@@ -362,6 +394,108 @@ impl RollStore {
         name: &str,
         draft: WorkingCopy,
     ) -> Result<PreparedChange, RollError> {
+        self.prepare_create_with_provenance(actor, name, draft, None)
+    }
+
+    /// Copy an actual owned draft or exact saved revision. The caller cannot
+    /// supply or clear provenance. User-facing adapters must separately check
+    /// current source rights before invoking this owner operation.
+    pub fn prepare_copy<S: SourceAdapter>(
+        &self,
+        actor: ObjId,
+        name: &str,
+        from: &str,
+        revision: Option<RevisionRef>,
+        sources: &S,
+    ) -> Result<PreparedChange, RollError> {
+        let mind = self.mind(actor, from)?;
+        let (draft, provenance) = match revision {
+            None => (mind.draft.clone(), mind.provenance.clone()),
+            Some(reference) => {
+                if reference.key.character != actor || reference.key.mind != mind.id {
+                    return Err(RollError::Missing);
+                }
+                let saved = self.exact(reference)?;
+                if saved.provenance != mind.provenance {
+                    return Err(RollError::Missing);
+                }
+                saved.verify_source(sources)?;
+                (
+                    WorkingCopy {
+                        source: sources.read_source(saved.source)?.to_owned(),
+                        envelope: saved.envelope.clone(),
+                    },
+                    saved.provenance.clone(),
+                )
+            }
+        };
+        self.prepare_create_with_provenance(actor, name, draft, provenance)
+    }
+
+    /// Only the registered fork builder can construct this request. The actual
+    /// retained parent and source bytes are rejoined under Roll's owner fence.
+    pub(crate) fn prepare_authored_fork(
+        &self,
+        request: &crate::commerce::authored_fork::AuthoredFork,
+    ) -> Result<
+        (
+            PreparedChange,
+            crate::commerce::parent_selector::DraftParentSelection,
+        ),
+        RollError,
+    > {
+        self.commerce_ready()?;
+        let grant = request.grant();
+        let parent = self.exact(grant.holding().revision().reference())?;
+        parent.require_original_access()?;
+        if parent != grant.holding().revision() {
+            return Err(RollError::Missing);
+        }
+        let provenance = grant.provenance();
+        self.check_provenance(&provenance, None)?;
+        let draft = request.material().working_copy(parent)?;
+        let change = self.prepare_create_with_provenance(
+            grant.actor(),
+            request.name(),
+            draft,
+            Some(provenance),
+        )?;
+        let mind = change
+            .changes
+            .iter()
+            .find_map(|image| match image {
+                Change::Mind(mind) => Some(mind),
+                _ => None,
+            })
+            .ok_or(RollError::Missing)?;
+        let selection = crate::commerce::parent_selector::DraftParentSelection {
+            format: 1,
+            actor: grant.actor(),
+            mind: mind.id,
+            parent: grant.provenance().parent,
+            charter: grant.holding().charter(),
+            line: grant.holding().line(),
+            licence: grant.licence(),
+            created_parent_term: grant.holding().term(),
+            generation: 1,
+            created: request.commit(),
+            operation: request.commit(),
+        };
+        selection.check_mind(mind).map_err(|_| RollError::Missing)?;
+        Ok((change, selection))
+    }
+
+    pub(crate) fn derivative_minds(&self) -> impl Iterator<Item = &Mind> {
+        self.minds.values().filter(|mind| mind.provenance.is_some())
+    }
+
+    fn prepare_create_with_provenance(
+        &self,
+        actor: ObjId,
+        name: &str,
+        draft: WorkingCopy,
+        provenance: Option<DerivativeProvenance>,
+    ) -> Result<PreparedChange, RollError> {
         let name = canonical_name(name)?;
         draft.validate_bounds()?;
         let mut library = self
@@ -379,7 +513,11 @@ impl RollStore {
         library.next_mind = id.checked_add(1).ok_or(RollError::Exhausted("mind"))?;
         library.names.insert(name.clone(), id);
         let mind = Mind {
-            format: FORMAT,
+            format: if provenance.is_some() {
+                DERIVATIVE_FORMAT
+            } else {
+                FORMAT
+            },
             character: actor,
             id,
             name,
@@ -387,6 +525,7 @@ impl RollStore {
             next_revision: 1,
             head: None,
             draft,
+            provenance,
             unnamed: VecDeque::new(),
             named: BTreeMap::new(),
         };
@@ -506,11 +645,12 @@ impl RollStore {
             return Err(RollError::Exists(reference.key.key()));
         }
         let revision = Revision {
-            format: FORMAT,
+            format: mind.format,
             reference,
             source: source.digest,
             envelope: mind.draft.envelope.clone(),
             notes: notes.to_owned(),
+            provenance: mind.provenance.clone(),
         };
         let mut changes = vec![Change::Revision(revision)];
         if let Some(label) = version_name {
@@ -719,6 +859,9 @@ impl RollStore {
         base: EditBase,
     ) -> Result<PreparedChange, RollError> {
         let mind = self.editable(actor, name, base)?;
+        // A marked draft is paired with a typed parent selector. Legacy removal
+        // cannot retire that row atomically; refuse before either image changes.
+        mind.require_original_access()?;
         let mut library = self
             .libraries
             .get(&actor)
@@ -813,7 +956,9 @@ impl RollStore {
                 || owner == NS
                 || matches!(
                     key.kind,
-                    ReferenceKind::NamedVersion | ReferenceKind::UnnamedHistory
+                    ReferenceKind::NamedVersion
+                        | ReferenceKind::UnnamedHistory
+                        | ReferenceKind::Commercial
                 )
             {
                 return Err(invalid(
@@ -837,9 +982,12 @@ impl RollStore {
         }
         for key in releases {
             if owner != key.owner
+                || owner == NS
                 || matches!(
                     key.kind,
-                    ReferenceKind::NamedVersion | ReferenceKind::UnnamedHistory
+                    ReferenceKind::NamedVersion
+                        | ReferenceKind::UnnamedHistory
+                        | ReferenceKind::Commercial
                 )
             {
                 return Err(invalid(
@@ -946,6 +1094,18 @@ impl RollStore {
     ) -> Result<(), RollError> {
         self.check_prepared(&prepared)?;
         apply_other(&prepared.operations);
+        self.apply_checked(prepared);
+        Ok(())
+    }
+
+    fn apply_checked(&mut self, prepared: PreparedChange) {
+        for (key, size) in prepared.sizes {
+            if let Some(size) = size {
+                self.sizes.insert(key, Some(size));
+            } else {
+                self.sizes.remove(&key);
+            }
+        }
         for change in prepared.changes {
             match change {
                 Change::Library(record) => {
@@ -979,6 +1139,361 @@ impl RollStore {
             }
         }
         self.generation += 1;
+    }
+
+    pub(crate) fn commerce_ready(&self) -> Result<(), RollError> {
+        self.check_collection()?;
+        match self.commerce {
+            CommerceReadiness::Ready { source_epoch }
+                if source_epoch != 0 && source_epoch == self.source_audit_epoch =>
+            {
+                Ok(())
+            }
+            _ => Err(RollError::Quarantined(
+                "commercial retention recovery".into(),
+            )),
+        }
+    }
+
+    pub(crate) fn prepare_commercial_roots(
+        &self,
+        request: &InitialRoots,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        let mut changes = Vec::with_capacity(request.roots().len());
+        for required in request.roots() {
+            self.check_root_subject(required)?;
+            let record = ReferenceRecord {
+                format: FORMAT,
+                key: required.anchor.key(),
+                revisions: vec![required.target()],
+            };
+            if self.occupied.contains(&record.key.key()) {
+                return Err(invalid("commercial root", "obligation is already retained"));
+            }
+            changes.push(Change::Reference(record));
+        }
+        self.prepare(changes)
+    }
+
+    pub(crate) fn bind_commercial_roots(
+        &mut self,
+        prepared: PreparedChange,
+    ) -> Result<BoundCommercialRoots<'_>, RollError> {
+        self.commerce_ready()?;
+        self.check_prepared(&prepared)?;
+        Ok(BoundCommercialRoots {
+            store: self,
+            change: prepared,
+        })
+    }
+
+    /// Only the closed registered Registry builder can construct this request.
+    /// All old roots are checked first, including the permanent job root which
+    /// is unchanged. Ordinary prepare enforces the same global record ceiling.
+    pub(crate) fn prepare_rating_roots(
+        &self,
+        request: &RatingRoots,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        for required in request.before() {
+            self.check_required_root(required)?;
+        }
+        for required in request.after() {
+            self.check_root_subject(required)?;
+        }
+        let mut changes = Vec::new();
+        for before in request.before() {
+            if let Some(after) = request
+                .after()
+                .iter()
+                .find(|after| after.anchor == before.anchor)
+            {
+                if after.identity != before.identity {
+                    return Err(invalid("Registry retention", "changed obligation subject"));
+                }
+                // Progress still participates in the acknowledged owner union.
+                // Re-publish the exact root checked above instead of producing
+                // an empty owner image. This adds no key or retained bytes and
+                // preserves ordinary generation and capacity validation.
+                changes.push(Change::Reference(ReferenceRecord {
+                    format: FORMAT,
+                    key: before.anchor.key(),
+                    revisions: vec![before.target()],
+                }));
+                continue;
+            }
+            if !matches!(before.anchor, RootAnchor::RatingPending(_)) {
+                return Err(invalid(
+                    "Registry retention",
+                    "permanent obligation cannot be removed",
+                ));
+            }
+            changes.push(Change::RemoveReference(before.anchor.key()));
+        }
+        for after in request.after() {
+            if request
+                .before()
+                .iter()
+                .any(|before| before.anchor == after.anchor)
+            {
+                continue;
+            }
+            let record = ReferenceRecord {
+                format: FORMAT,
+                key: after.anchor.key(),
+                revisions: vec![after.target()],
+            };
+            if self.occupied.contains(&record.key.key()) {
+                return Err(invalid("Registry retention", "obligation already exists"));
+            }
+            changes.push(Change::Reference(record));
+        }
+        self.prepare(changes)
+    }
+
+    pub(crate) fn check_commercial_prepared(
+        &self,
+        prepared: &PreparedChange,
+    ) -> Result<(), RollError> {
+        self.commerce_ready()?;
+        self.check_prepared(prepared)
+    }
+
+    /// The actual paid allocator reserves both permanent roots at funding.
+    /// Terminal grant/refund only verifies them; it cannot require a new Roll
+    /// key or rewrite a retained target after escrow has already been funded.
+    pub(crate) fn prepare_paid_roots(
+        &self,
+        request: &crate::commerce::paid_roots::PaidRoots,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        let mut changes = Vec::new();
+        if request.before().is_empty() {
+            for required in request.after() {
+                self.check_root_subject(required)?;
+                let record = ReferenceRecord {
+                    format: FORMAT,
+                    key: required.anchor.key(),
+                    revisions: vec![required.target()],
+                };
+                if self.occupied.contains(&record.key.key()) {
+                    return Err(invalid("paid retention", "obligation already exists"));
+                }
+                changes.push(Change::Reference(record));
+            }
+        } else {
+            if request.before().len() != request.after().len() {
+                return Err(invalid("paid retention", "terminal roots differ"));
+            }
+            for (before, after) in request.before().iter().zip(request.after()) {
+                if before.anchor != after.anchor || before.identity != after.identity {
+                    return Err(invalid("paid retention", "terminal target differs"));
+                }
+                self.check_required_root(before)?;
+                // The participant remains part of the same acknowledged
+                // owner union. Re-publish the identical retained image rather
+                // than add a generic zero-write owner bypass. Both keys and
+                // their complete byte footprint were admitted at funding.
+                changes.push(Change::Reference(ReferenceRecord {
+                    format: FORMAT,
+                    key: before.anchor.key(),
+                    revisions: vec![before.target()],
+                }));
+            }
+        }
+        self.prepare(changes)
+    }
+
+    /// The closed entitlement request validates listing or funding/terminal
+    /// facts. Preserve ordinary root accounting and generation fences.
+    pub(crate) fn prepare_entitlement_roots(
+        &self,
+        request: &crate::commerce::entitlement::roots::EntitlementRoots,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        let mut changes = Vec::new();
+        if request.before().is_empty() {
+            for required in request.after() {
+                self.check_root_subject(required)?;
+                let record = ReferenceRecord {
+                    format: FORMAT,
+                    key: required.anchor.key(),
+                    revisions: vec![required.target()],
+                };
+                if self.occupied.contains(&record.key.key()) {
+                    return Err(invalid(
+                        "entitlement retention",
+                        "obligation already exists",
+                    ));
+                }
+                changes.push(Change::Reference(record));
+            }
+        } else {
+            if request.before().len() != request.after().len() {
+                return Err(invalid("entitlement retention", "terminal roots differ"));
+            }
+            for (before, after) in request.before().iter().zip(request.after()) {
+                if before.anchor != after.anchor || before.identity != after.identity {
+                    return Err(invalid("entitlement retention", "terminal target differs"));
+                }
+                self.check_required_root(before)?;
+                // The participant remains part of the same acknowledged
+                // owner union. Re-publish the identical retained image rather
+                // than add a generic zero-write owner bypass. Both keys and
+                // their complete byte footprint were admitted at funding.
+                changes.push(Change::Reference(ReferenceRecord {
+                    format: FORMAT,
+                    key: before.anchor.key(),
+                    revisions: vec![before.target()],
+                }));
+            }
+        }
+        self.prepare(changes)
+    }
+
+    /// Only the private renewal request can add its operation and exact next
+    /// term roots. A linked retry retains and checks the already admitted term
+    /// root; every terminal republishes its identical physical owner image.
+    pub(crate) fn prepare_renewal_roots(
+        &self,
+        request: &crate::commerce::renewal::roots::RenewalRoots,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        let mut seen = std::collections::BTreeSet::new();
+        for before in request.before() {
+            if !seen.insert(before.anchor.clone())
+                || !request
+                    .after()
+                    .iter()
+                    .any(|after| before.anchor == after.anchor && before.identity == after.identity)
+            {
+                return Err(invalid("renewal retention", "retained obligation changed"));
+            }
+            self.check_required_root(before)?;
+        }
+        let mut after_keys = std::collections::BTreeSet::new();
+        let mut changes = Vec::new();
+        for after in request.after() {
+            if !after_keys.insert(after.anchor.clone()) {
+                return Err(invalid("renewal retention", "duplicate obligation"));
+            }
+            self.check_root_subject(after)?;
+            let record = ReferenceRecord {
+                format: FORMAT,
+                key: after.anchor.key(),
+                revisions: vec![after.target()],
+            };
+            if !seen.contains(&after.anchor) && self.occupied.contains(&record.key.key()) {
+                return Err(invalid(
+                    "renewal retention",
+                    "new obligation already exists",
+                ));
+            }
+            changes.push(Change::Reference(record));
+        }
+        self.prepare(changes)
+    }
+
+    pub(crate) fn check_root_subject(&self, required: &RequiredRoot) -> Result<(), RollError> {
+        let revision = self.exact(required.target())?;
+        if !required
+            .identity
+            .matches(revision)
+            .map_err(|_| invalid("commercial root", "invalid subject"))?
+        {
+            return Err(invalid("commercial root", "source identity mismatch"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_required_root(&self, required: &RequiredRoot) -> Result<(), RollError> {
+        self.check_root_subject(required)?;
+        let record = self
+            .references
+            .get(&required.anchor.key())
+            .ok_or(RollError::Missing)?;
+        if record.revisions.as_slice() != [required.target()] {
+            return Err(invalid("commercial root", "obligation target mismatch"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn commercial_roots(
+        &self,
+    ) -> impl Iterator<Item = Result<(RootAnchor, RevisionRef), RollError>> + '_ {
+        self.references
+            .values()
+            .filter(|row| row.key.kind == ReferenceKind::Commercial)
+            .map(|row| {
+                let anchor = RootAnchor::parse(&row.key.record)
+                    .map_err(|_| invalid("commercial root", "invalid anchor"))?;
+                let [revision] = row.revisions.as_slice() else {
+                    return Err(invalid("commercial root", "invalid count"));
+                };
+                Ok((anchor, *revision))
+            })
+    }
+
+    /// Invoked before reading any commercial family, including a zero-root
+    /// installation. Invalidates already prepared collection even on failure.
+    pub(crate) fn close_commerce_for_audit(&mut self) -> Result<(), RollError> {
+        if self.commerce == CommerceReadiness::Disabled {
+            return Err(invalid("commerce", "owner composition is absent"));
+        }
+        let next = self
+            .generation
+            .checked_add(1)
+            .ok_or(RollError::Exhausted("store generation"))?;
+        self.commerce = CommerceReadiness::Closed;
+        self.generation = next;
+        Ok(())
+    }
+
+    pub(crate) fn commerce_audit_base(&self) -> Result<(u64, u64), RollError> {
+        if self.commerce != CommerceReadiness::Closed
+            || self.source_audit_epoch == 0
+            || !self.quarantine.is_empty()
+        {
+            return Err(RollError::Quarantined(
+                "commercial retention recovery".into(),
+            ));
+        }
+        Ok((self.generation, self.source_audit_epoch))
+    }
+
+    /// The closed first-install provider must also prove the typed families,
+    /// shell deployment and journal-derived filing history empty. This check
+    /// covers only this owner's actual retained roots; it does not initialize
+    /// the deployment or open collection/business readiness.
+    pub(crate) fn commerce_initialization_base(&self) -> Result<(u64, u64), RollError> {
+        let stamp = self.commerce_audit_base()?;
+        if self
+            .references
+            .values()
+            .any(|row| row.key.kind == ReferenceKind::Commercial)
+        {
+            return Err(invalid("commerce", "commercial retention already exists"));
+        }
+        Ok(stamp)
+    }
+
+    /// Only the synchronous complete typed-family audit can invoke this. No
+    /// public guard-clear API and no partial-family success path exist.
+    pub(crate) fn finish_commerce_audit(
+        &mut self,
+        generation: u64,
+        source_epoch: u64,
+    ) -> Result<(), RollError> {
+        if self.commerce_audit_base()? != (generation, source_epoch) {
+            return Err(RollError::StaleOperation);
+        }
+        let next = self
+            .generation
+            .checked_add(1)
+            .ok_or(RollError::Exhausted("store generation"))?;
+        self.commerce = CommerceReadiness::Ready { source_epoch };
+        self.generation = next;
         Ok(())
     }
 
@@ -991,12 +1506,22 @@ impl RollStore {
             .map(Change::operation)
             .collect::<Result<_, _>>()?;
         let mut count = self.occupied.len();
+        let mut sizes = Vec::with_capacity(operations.len());
         let mut changed = BTreeSet::new();
         for operation in &operations {
             let key = match &operation.op {
                 ModuleWrite::JsonSet { key, .. } | ModuleWrite::Del { key } => key,
                 _ => return Err(invalid("change", "stream writes forbidden")),
             };
+            let size = match &operation.op {
+                ModuleWrite::JsonSet { value, .. } => Some(
+                    encoded_len(value)
+                        .ok_or_else(|| invalid("change", "document size unavailable"))?,
+                ),
+                ModuleWrite::Del { .. } => None,
+                _ => return Err(invalid("change", "unsupported size accounting")),
+            };
+            sizes.push((key.to_string(), size));
             if self.quarantine.contains_key(key.as_str()) {
                 return Err(RollError::Quarantined(key.to_string()));
             }
@@ -1016,11 +1541,44 @@ impl RollStore {
         if count > MAX_RECORDS {
             return Err(invalid("roll", "record capacity exhausted"));
         }
+        let usage = self.current_usage().and_then(|before| {
+            let mut after = before;
+            for (key, next) in &sizes {
+                if let Some(old) = self.sizes.get(key) {
+                    after.document_bytes = after.document_bytes.checked_sub((*old)? as u64)?;
+                    after.key_bytes = after.key_bytes.checked_sub(key.len() as u64)?;
+                }
+                if let Some(next) = next {
+                    after.document_bytes = after.document_bytes.checked_add(*next as u64)?;
+                    after.key_bytes = after.key_bytes.checked_add(key.len() as u64)?;
+                }
+            }
+            after.records = count;
+            Some(UsageChange { before, after })
+        });
         Ok(PreparedChange {
             generation: self.generation,
             changes,
             operations,
+            sizes,
+            usage,
         })
+    }
+
+    pub(crate) fn current_usage(&self) -> Option<RollUsage> {
+        if self.sizes.len() != self.occupied.len() {
+            return None;
+        }
+        let mut usage = RollUsage {
+            records: self.occupied.len(),
+            document_bytes: 0,
+            key_bytes: 0,
+        };
+        for (key, bytes) in &self.sizes {
+            usage.document_bytes = usage.document_bytes.checked_add((*bytes)? as u64)?;
+            usage.key_bytes = usage.key_bytes.checked_add(key.len() as u64)?;
+        }
+        Some(usage)
     }
 
     fn editable(&self, actor: ObjId, name: &str, base: EditBase) -> Result<Mind, RollError> {
@@ -1031,7 +1589,7 @@ impl RollStore {
         Ok(mind.clone())
     }
 
-    fn exact(&self, reference: RevisionRef) -> Result<&Revision, RollError> {
+    pub(crate) fn exact(&self, reference: RevisionRef) -> Result<&Revision, RollError> {
         let revision = self.revision(reference.key.character, reference.key)?;
         if revision.reference != reference {
             return Err(RollError::Missing);
@@ -1070,6 +1628,30 @@ impl RollStore {
                 roots.insert(revision.key);
             }
         }
+        // Conservatively retain exact source parents of every retained marked
+        // record. A later prune may release a parent only after its last child
+        // record disappears; no second root registry or client root is created.
+        for provenance in self
+            .minds
+            .values()
+            .filter_map(|m| m.provenance.as_ref())
+            .chain(
+                self.revisions
+                    .values()
+                    .filter_map(|r| r.provenance.as_ref()),
+            )
+        {
+            let parent = self.exact(provenance.parent.revision.revision())?;
+            if !provenance
+                .parent
+                .revision
+                .matches(parent)
+                .map_err(|_| RollError::Missing)?
+            {
+                return Err(RollError::Missing);
+            }
+            roots.insert(parent.reference.key);
+        }
         Ok(roots)
     }
 
@@ -1077,13 +1659,30 @@ impl RollStore {
     /// deleting or repairing their persisted bytes. No source owner is read
     /// here; composition calls `audit_sources` after every owner has loaded.
     pub fn load(data: &ModuleBootData) -> Result<Self, RollError> {
+        Self::load_mode(data, false)
+    }
+
+    /// Only the real composed Roll module uses this path. A retained commercial
+    /// installation starts closed, including when every root disappeared.
+    pub(crate) fn load_commerce(data: &ModuleBootData) -> Result<Self, RollError> {
+        Self::load_mode(data, true)
+    }
+
+    fn load_mode(data: &ModuleBootData, commerce: bool) -> Result<Self, RollError> {
         if !data.streams.is_empty() || !data.ledger.is_empty() {
             return Err(invalid("roll boot", "unexpected stream or ledger records"));
         }
         if data.kv.len() > MAX_RECORDS {
             return Err(invalid("roll boot", "record capacity exceeded"));
         }
-        let mut store = Self::default();
+        let mut store = Self {
+            commerce: if commerce {
+                CommerceReadiness::Closed
+            } else {
+                CommerceReadiness::Disabled
+            },
+            ..Self::default()
+        };
         for (key, value) in &data.kv {
             let key = key.to_string();
             if !store.occupied.insert(key.clone()) {
@@ -1092,6 +1691,7 @@ impl RollStore {
                     .insert(key, "duplicate persistence key".into());
                 continue;
             }
+            store.sizes.insert(key.clone(), encoded_len(value));
             let result = encoded(value, &key, MAX_DOCUMENT_BYTES)
                 .and_then(|value| store.load_one(&key, value));
             if let Err(error) = result {
@@ -1133,6 +1733,14 @@ impl RollStore {
         } else if key.starts_with("reference:") {
             let record: ReferenceRecord = decode(key, value)?;
             record.validate()?;
+            if record.key.kind == ReferenceKind::Commercial
+                && self.commerce == CommerceReadiness::Disabled
+            {
+                return Err(invalid(
+                    "commercial root",
+                    "commercial owner composition is absent",
+                ));
+            }
             if record.key.key() != key {
                 return Err(invalid(key, "reference/key identity mismatch"));
             }
@@ -1260,6 +1868,44 @@ impl RollStore {
                 }
             }
         }
+        for revision in self.revisions.values() {
+            if self
+                .minds
+                .get(&(
+                    revision.reference.key.character,
+                    revision.reference.key.mind,
+                ))
+                .is_some_and(|mind| mind.provenance != revision.provenance)
+            {
+                bad.push((
+                    revision.reference.key.key(),
+                    "revision ancestry differs from its mind".into(),
+                ));
+                if let Some(mind) = self.minds.get(&(
+                    revision.reference.key.character,
+                    revision.reference.key.mind,
+                )) {
+                    bad.push((mind.key(), "mind ancestry differs from its revision".into()));
+                }
+            }
+        }
+        for (key, provenance, own) in self
+            .minds
+            .values()
+            .filter_map(|m| m.provenance.as_ref().map(|p| (m.key(), p, None)))
+            .chain(self.revisions.values().filter_map(|r| {
+                r.provenance
+                    .as_ref()
+                    .map(|p| (r.reference.key.key(), p, Some(r.reference)))
+            }))
+        {
+            if self.check_provenance(provenance, own).is_err() {
+                bad.push((
+                    key,
+                    "ancestry is missing, mismatched, cyclic or too deep".into(),
+                ));
+            }
+        }
         for reference in self.references.values() {
             if reference.revisions.iter().any(|r| self.exact(*r).is_err()) {
                 bad.push((
@@ -1269,6 +1915,44 @@ impl RollStore {
             }
         }
         self.quarantine.extend(bad);
+    }
+
+    /// Structural source retention only. The future closed fork/filing owner
+    /// must additionally join these identities to current commercial rights.
+    fn check_provenance(
+        &self,
+        provenance: &DerivativeProvenance,
+        own: Option<RevisionRef>,
+    ) -> Result<(), RollError> {
+        let mut seen = BTreeSet::new();
+        if let Some(own) = own {
+            seen.insert(own.key);
+        }
+        let mut next = Some(provenance);
+        for _ in 0..crate::commerce::filed::MAX_PARENT_DEPTH {
+            let Some(value) = next else {
+                return Ok(());
+            };
+            let reference = value.parent.revision.revision();
+            if !seen.insert(reference.key) {
+                return Err(RollError::Missing);
+            }
+            let parent = self.exact(reference)?;
+            if !value
+                .parent
+                .revision
+                .matches(parent)
+                .map_err(|_| RollError::Missing)?
+            {
+                return Err(RollError::Missing);
+            }
+            next = parent.provenance.as_ref();
+        }
+        if next.is_some() {
+            Err(RollError::Missing)
+        } else {
+            Ok(())
+        }
     }
 
     /// Validate loaded executable records through their existing source owner,
@@ -1313,11 +1997,19 @@ impl RollStore {
             .generation
             .checked_add(1)
             .ok_or(RollError::Exhausted("store generation"))?;
+        let next_source_epoch = self
+            .source_audit_epoch
+            .checked_add(1)
+            .ok_or(RollError::Exhausted("source audit epoch"))?;
         self.quarantine.extend(prepared.failures);
         self.check_links();
         // Revalidation is a publication barrier. A prepared prune may not
         // delete anything after this audit finds an unreadable source.
         self.generation = next;
+        self.source_audit_epoch = next_source_epoch;
+        if self.commerce != CommerceReadiness::Disabled {
+            self.commerce = CommerceReadiness::Closed;
+        }
         Ok(())
     }
 
@@ -1360,13 +2052,67 @@ fn named_reference(
 #[derive(Default)]
 pub struct RollModule {
     writers: Vec<String>,
+    commerce: Option<crate::commerce::module::CommerceConfig>,
+    registration: Option<crate::commerce::module::CommerceRegistration>,
+    registry_owners: Option<Box<dyn crate::commerce::rating::registration::Installer>>,
+    fork_source: Option<Box<dyn crate::commerce::authored_fork::Installer>>,
 }
 
 impl RollModule {
     pub fn with_writers(writers: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
             writers: writers.into_iter().map(Into::into).collect(),
+            ..Self::default()
         }
+    }
+
+    /// Opt in to the closed, registered commercial composition. Existing save
+    /// delegations remain intact; this does not itself open business readiness.
+    pub fn with_commerce(mut self, config: crate::commerce::module::CommerceConfig) -> Self {
+        self.commerce = Some(config);
+        self
+    }
+
+    /// Trusted composition chooses the two actual game-owned participant
+    /// types. This cannot accept a callback, handle, measurement or authority
+    /// from a command. Registration refuses Initialize or absent commerce.
+    pub fn with_registry_owners<Q, A>(mut self) -> Self
+    where
+        Q: crate::commerce::rating::protocol::RegistryQuotaParticipant,
+        A: mush_core::participant::OwnerParticipant<
+                Request = crate::commerce::rating::protocol::ArtifactRequest,
+                Output = crate::commerce::rating::protocol::ArtifactOutput,
+            >,
+    {
+        self.registry_owners = Some(crate::commerce::rating::registration::owners::<Q, A>());
+        self
+    }
+
+    /// Trusted opt-in selects the actual immutable source read service type.
+    /// No callbacks, source strings, client authority or ready flags are accepted.
+    pub fn with_authored_fork_source<S>(mut self) -> Self
+    where
+        S: mush_core::read_service::OwnerReadService<
+                Request = crate::commerce::fork_protocol::ForkMaterialRequest,
+                Output = crate::commerce::fork_protocol::ForkMaterial,
+            >,
+    {
+        self.fork_source = Some(crate::commerce::authored_fork::source::<S>());
+        self
+    }
+
+    /// Captures actual registered handles for the composed Engine fixture.
+    /// This neither constructs a registry nor changes commercial readiness.
+    #[cfg(test)]
+    pub(crate) fn commerce_test_handles(
+        &self,
+    ) -> Option<(
+        crate::commerce::families::CommerceFamilies,
+        crate::commerce::rating::RatingFamilies,
+    )> {
+        self.registration
+            .as_ref()
+            .map(|r| (r.families.clone(), r.ratings.clone()))
     }
 }
 
@@ -1375,13 +2121,30 @@ impl GameModule for RollModule {
         NS
     }
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
-        reg.state(RollStore::default());
+        reg.state(if self.commerce.is_some() {
+            RollStore::load_commerce(&ModuleBootData::default())
+                .map_err(|e| ModError::msg(e.to_string()))?
+        } else {
+            RollStore::default()
+        });
         for writer in &self.writers {
             reg.persist_delegation(
                 writer,
                 NS,
                 "character draft/revision owner API; combined source and revision batch",
             )?;
+        }
+        if let Some(config) = &self.commerce {
+            self.registration = Some(crate::commerce::module::register(
+                reg,
+                config,
+                self.registry_owners.as_deref(),
+                self.fork_source.as_deref(),
+            )?);
+        } else if self.registry_owners.is_some() || self.fork_source.is_some() {
+            return Err(ModError::msg(
+                "Registry owners require explicit Active commerce",
+            ));
         }
         Ok(())
     }
@@ -1390,7 +2153,12 @@ impl GameModule for RollModule {
         ctx: &mut ModuleCtx<'_>,
         data: ModuleBootData,
     ) -> Result<(), ModError> {
-        let store = RollStore::load(&data).map_err(|e| ModError::msg(e.to_string()))?;
+        let store = if self.commerce.is_some() {
+            RollStore::load_commerce(&data)
+        } else {
+            RollStore::load(&data)
+        }
+        .map_err(|e| ModError::msg(e.to_string()))?;
         for (key, reason) in store.quarantine() {
             tracing::error!(%key, %reason, "roll: quarantined record; collection disabled");
         }
@@ -1399,5 +2167,15 @@ impl GameModule for RollModule {
             .ok_or_else(|| ModError::msg("roll: state slot absent"))?;
         *target = store;
         Ok(())
+    }
+
+    fn finalize_owner_composition(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        match (&self.commerce, &self.registration) {
+            (Some(_), Some(registration)) => {
+                registration.finalize(ctx, self.registry_owners.as_deref())
+            }
+            (None, None) => Ok(()),
+            _ => Err(ModError::msg("roll: commercial registration is incomplete")),
+        }
     }
 }

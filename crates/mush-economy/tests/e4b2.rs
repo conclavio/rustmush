@@ -6908,6 +6908,7 @@ fn dl03_fixture(org_has_vault: bool) -> (EconomySnapshot, mush_economy::Economic
         name: SmolStr::new_static("consignment"),
         issuer: PrincipalId::Object(mush_core::ObjId(5)),
         consent: ConsentSurface {
+            managed: None,
             parties: vec![
                 PrincipalId::Object(mush_core::ObjId(5)),
                 PrincipalId::Organization(OrgId(3)),

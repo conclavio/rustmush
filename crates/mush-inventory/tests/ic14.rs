@@ -514,7 +514,7 @@ fn land(world: &mut TestWorld, token: u8) -> Result<(), String> {
         .map_err(|error| format!("prepare: {error:?}"))?;
     world
         .engine_mut()
-        .install_prepared_action(prepared.into_parts().1)
+        .install_composed_action(prepared.into_parts().1)
         .map_err(|error| format!("{error:?}"))?;
     Ok(())
 }

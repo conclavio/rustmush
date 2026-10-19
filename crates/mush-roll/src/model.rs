@@ -8,6 +8,33 @@ use sha2::{Digest as _, Sha256};
 use crate::{RollError, invalid};
 
 pub const FORMAT: u16 = 1;
+/// Only records with owner-retained derivative provenance use this format.
+/// Legacy original records keep their exact v1 encoding and executable digest.
+pub(crate) const DERIVATIVE_FORMAT: u16 = 2;
+
+/// Persisted ancestry, never a source-access capability. No public constructor
+/// exists. The future closed fork producer must derive these exact references
+/// from an acknowledged eligible parent; client WorkingCopy remains content-only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DerivativeProvenance {
+    pub(crate) parent: crate::commerce::filed::ParentContent,
+    pub(crate) charter: crate::commerce::CharterId,
+    pub(crate) line: crate::commerce::LineId,
+}
+
+fn provenance_format(
+    value: u16,
+    provenance: &Option<DerivativeProvenance>,
+) -> Result<(), RollError> {
+    match (value, provenance) {
+        (FORMAT, None) | (DERIVATIVE_FORMAT, Some(_)) => Ok(()),
+        _ => Err(invalid(
+            "provenance",
+            "record version and required ancestry disagree",
+        )),
+    }
+}
 pub const REVISION_DOMAIN: &str = "tacsim.mind.v1";
 pub const MAX_MINDS: usize = 20;
 pub const MAX_SOURCE_BYTES: usize = 32 * 1024;
@@ -167,9 +194,22 @@ pub struct Revision {
     pub(crate) envelope: Envelope,
     /// Revision notes are immutable annotations, deliberately outside the digest.
     pub(crate) notes: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) provenance: Option<DerivativeProvenance>,
 }
 
 impl Revision {
+    /// Current M6 source/execution paths have no parent-rights resolver. Refuse
+    /// marked derivatives rather than treating personal ownership as access.
+    /// Immutable source verification/replay deliberately does not use this gate.
+    pub fn require_original_access(&self) -> Result<(), RollError> {
+        self.validate().map_err(|_| RollError::Missing)?;
+        if self.provenance.is_some() {
+            Err(RollError::Missing)
+        } else {
+            Ok(())
+        }
+    }
     pub fn reference(&self) -> RevisionRef {
         self.reference
     }
@@ -183,7 +223,7 @@ impl Revision {
         &self.notes
     }
     pub(crate) fn validate(&self) -> Result<(), RollError> {
-        format(self.format)?;
+        provenance_format(self.format, &self.provenance)?;
         revision_key(self.reference.key)?;
         self.envelope.validate()?;
         bounded_text("revision notes", &self.notes, MAX_NOTES_BYTES, true)
@@ -286,11 +326,24 @@ pub struct Mind {
     pub(crate) next_revision: u64,
     pub(crate) head: Option<u64>,
     pub(crate) draft: WorkingCopy,
+    /// Owner metadata is outside every client replacement/import payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) provenance: Option<DerivativeProvenance>,
     pub(crate) unnamed: VecDeque<u64>,
     pub(crate) named: BTreeMap<String, u64>,
 }
 
 impl Mind {
+    /// Fail closed until a registered current-parent resolver admits this exact
+    /// owned derivative. This method does not inspect or change frozen sorties.
+    pub fn require_original_access(&self) -> Result<(), RollError> {
+        self.validate().map_err(|_| RollError::Missing)?;
+        if self.provenance.is_some() {
+            Err(RollError::Missing)
+        } else {
+            Ok(())
+        }
+    }
     pub fn id(&self) -> u64 {
         self.id
     }
@@ -320,7 +373,7 @@ impl Mind {
         format!("mind:{}:{}", self.character.0, self.id)
     }
     pub(crate) fn validate(&self) -> Result<(), RollError> {
-        format(self.format)?;
+        provenance_format(self.format, &self.provenance)?;
         if canonical_name(&self.name)? != self.name {
             return Err(invalid(self.key(), "mind name is not canonical"));
         }
@@ -382,6 +435,9 @@ pub enum ReferenceKind {
     ProvingRun,
     OpenSeal,
     Listing,
+    /// Reserved Roll-owned commercial obligation. No external writer may
+    /// create/release this kind through owner-string retention APIs.
+    Commercial,
 }
 
 impl ReferenceKind {
@@ -395,6 +451,7 @@ impl ReferenceKind {
             Self::ProvingRun => "proving_run",
             Self::OpenSeal => "open_seal",
             Self::Listing => "listing",
+            Self::Commercial => "commercial",
         }
     }
 }
@@ -451,16 +508,23 @@ impl ReferenceRecord {
         self.key.validate()?;
         if matches!(
             self.key.kind,
-            ReferenceKind::NamedVersion | ReferenceKind::UnnamedHistory
+            ReferenceKind::NamedVersion | ReferenceKind::UnnamedHistory | ReferenceKind::Commercial
         ) != (self.key.owner == crate::NS)
         {
             return Err(invalid(
                 "reference owner",
-                "named versions and retained history belong only to roll",
+                "internal retention records belong only to roll",
             ));
         }
         if self.revisions.is_empty() || self.revisions.len() > MAX_REFERENCE_TARGETS {
             return Err(invalid(self.key.key(), "reference count must be 1..128"));
+        }
+        if self.key.kind == ReferenceKind::Commercial {
+            crate::commerce::roots::RootAnchor::parse(&self.key.record)
+                .map_err(|_| invalid("commercial root", "invalid exact obligation anchor"))?;
+            if self.revisions.len() != 1 {
+                return Err(invalid("commercial root", "one exact revision is required"));
+            }
         }
         if (self.key.kind == ReferenceKind::NamedVersion && self.revisions.len() != 1)
             || (self.key.kind == ReferenceKind::UnnamedHistory

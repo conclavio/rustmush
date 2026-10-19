@@ -343,6 +343,14 @@ fn requires_cycle(
 
 /// The TacSim layer (`"tacsim"`).
 pub struct TacsimRuleset {
+    registry_commerce: Option<minds::registry::composition::Registration>,
+    fork_material: Option<mush_core::DefinitionRef>,
+    marked_registry: Option<mush_core::DefinitionRef>,
+    original_holdings: Option<mush_core::DefinitionRef>,
+    personal_filed_holdings: bool,
+    personal_source_forms: bool,
+    dependent_owner_holdings: bool,
+    entitlement_holdings: bool,
     cfg: TacsimConfig,
     /// The verified packs, or the host-facing message that names the failing file.
     loaded: Result<Vec<LoadedPack>, String>,
@@ -408,6 +416,14 @@ impl TacsimRuleset {
             }
         };
         TacsimRuleset {
+            registry_commerce: None,
+            fork_material: None,
+            marked_registry: None,
+            original_holdings: None,
+            personal_filed_holdings: false,
+            personal_source_forms: false,
+            dependent_owner_holdings: false,
+            entitlement_holdings: false,
             cfg,
             loaded,
             test_world: false,
@@ -434,6 +450,57 @@ impl TacsimRuleset {
     pub fn with_inventory(mut self, cell: mush_inventory::InventoryHandleCell) -> TacsimRuleset {
         self.inventory = Some(cell);
         self
+    }
+
+    /// Enable the original-owner reader against the actual registered combat
+    /// manifest supplied by composition. Ordinary constructors leave this off.
+    /// Registry/Roll registration must independently declare this exact ref.
+    #[must_use]
+    pub fn with_original_holdings(mut self, manifest: mush_core::DefinitionRef) -> Self {
+        self.original_holdings = Some(manifest);
+        self.personal_filed_holdings = false;
+        self.personal_source_forms = false;
+        self.dependent_owner_holdings = false;
+        self.entitlement_holdings = false;
+        self
+    }
+
+    /// Explicit OOC composition for current original personal Sealed Pin paid
+    /// holdings. No default activation, source display, IC seat or cash flow.
+    #[must_use]
+    pub fn with_personal_filed_holdings(mut self, manifest: mush_core::DefinitionRef) -> Self {
+        self.original_holdings = Some(manifest);
+        self.personal_filed_holdings = true;
+        self.personal_source_forms = false;
+        self.dependent_owner_holdings = false;
+        self.entitlement_holdings = false;
+        self
+    }
+
+    /// Explicit v2 original-personal Pin execution and current paid source
+    /// reader. Actual Roll composition must install the exact versioned services.
+    /// No derivative access, grant, or source permission is created here.
+    #[must_use]
+    pub fn with_personal_filed_source_forms(mut self, manifest: mush_core::DefinitionRef) -> Self {
+        self.original_holdings = Some(manifest);
+        self.personal_filed_holdings = true;
+        self.personal_source_forms = true;
+        self.dependent_owner_holdings = false;
+        self.entitlement_holdings = false;
+        self
+    }
+    /// Explicit dependent owner use/source; existing paid eligibility remains
+    /// based only on the paid holder's own acknowledged term and status.
+    pub fn with_dependent_owner_holdings(self, manifest: mush_core::DefinitionRef) -> Self {
+        let mut layer = self.with_personal_filed_source_forms(manifest);
+        layer.dependent_owner_holdings = true;
+        layer
+    }
+    /// Select the distinct current-customer reader; no licence is created.
+    pub fn with_mind_entitlement_holdings(self, manifest: mush_core::DefinitionRef) -> Self {
+        let mut layer = self.with_dependent_owner_holdings(manifest);
+        layer.entitlement_holdings = true;
+        layer
     }
 
     /// The layer, off.
@@ -527,6 +594,24 @@ impl GameModule for TacsimRuleset {
         // Standard Doctrine and its six presets. A test rig installs another
         // through `match_::holdings::install_holdings`.
         reg.state(match_::holdings::HoldingsSeam::production());
+        if let Some(manifest) = &self.original_holdings {
+            if self.entitlement_holdings {
+                match_::original_access::register_entitlements(reg, manifest)?;
+                minds::workshop::filed_source::register_entitlements(reg, manifest)?;
+                minds::workshop::filed_source::register_dependent(reg, manifest)?;
+            } else if self.dependent_owner_holdings {
+                match_::original_access::register_dependent_owners(reg, manifest)?;
+                minds::workshop::filed_source::register(reg, manifest)?;
+                minds::workshop::filed_source::register_dependent(reg, manifest)?;
+            } else if self.personal_source_forms {
+                match_::original_access::register_personal_source_forms(reg, manifest)?;
+                minds::workshop::filed_source::register(reg, manifest)?;
+            } else if self.personal_filed_holdings {
+                match_::original_access::register_personal(reg, manifest)?;
+            } else {
+                match_::original_access::register(reg, manifest)?;
+            }
+        }
         // Doc 18 cut IC4 (lead ruling L14): hull rooms are not atlas rooms, so
         // their details live on tacsim's own attribute shelf, and `look
         // <detail>` finds them through the registered prefix (16b cut D.5's
@@ -646,6 +731,29 @@ impl GameModule for TacsimRuleset {
         // Doc 18 cut IC8 (§4.3 "Stock and capital"; 18a C07/C08/P07/P08/P09/P11):
         // the boards. Registered unconditionally; silent while the layer is off.
         port::board::register_hooks(reg)?;
+        if let Some(registry) = &self.registry_commerce {
+            registry.register(reg, &self.cfg, &catalog)?;
+            if let Some(manifest) = &self.fork_material {
+                if manifest != registry.reference() {
+                    return Err(ModError::msg("fork material Registry differs"));
+                }
+                minds::workshop::fork_material::register(reg, manifest)?;
+                minds::workshop::authored_access::register(reg, manifest)?;
+            }
+            if let Some(manifest) = &self.marked_registry {
+                if self.fork_material.as_ref() != Some(manifest) || manifest != registry.reference()
+                {
+                    return Err(ModError::msg(
+                        "marked Registry requires exact authored fork composition",
+                    ));
+                }
+                minds::bulk::registry_service::register_marked(reg, manifest)?;
+            }
+        } else if self.fork_material.is_some() || self.marked_registry.is_some() {
+            return Err(ModError::msg(
+                "fork material requires actual Registry registration",
+            ));
+        }
         Ok(())
     }
 

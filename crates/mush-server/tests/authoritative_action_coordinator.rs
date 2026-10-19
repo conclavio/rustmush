@@ -237,7 +237,7 @@ async fn commit_toy_window_operation(
     assert!(receipt.matches_bundle(&bundle));
     world
         .engine_mut()
-        .install_prepared_action(installation)
+        .install_composed_action(installation)
         .expect("the fixture installs");
     let checkpoint = store
         .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
@@ -539,7 +539,7 @@ async fn real_provider_is_exactly_once_and_hydrates_before_the_next_action() {
         .unwrap();
     assert!(receipt.matches_bundle(&bundle));
     engine
-        .install_prepared_action(installation)
+        .install_composed_action(installation)
         .expect("the fixture installs");
     store
         .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
@@ -819,7 +819,7 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
     assert_eq!(receipt.resolution(), Some(&exact_resolution));
     world
         .engine_mut()
-        .install_prepared_action(installation)
+        .install_composed_action(installation)
         .expect("the fixture installs");
     assert_eq!(
         world
@@ -979,7 +979,7 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         .unwrap();
     restarted
         .engine_mut()
-        .install_prepared_action(installation)
+        .install_composed_action(installation)
         .expect("the fixture installs");
     store
         .checkpoint_authoritative(expiry_bundle.token(), expiry_bundle.bundle_hash())

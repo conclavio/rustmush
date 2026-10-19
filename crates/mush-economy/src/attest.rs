@@ -332,6 +332,7 @@ fn rescan_sources_inner(ctx: &mut Ctx<'_>, trigger: RescanTrigger) {
         'contracts: for c in store
             .snapshot()
             .contracts()
+            .filter(|contract| contract.consent.managed.is_none())
             .filter(|c| {
                 matches!(
                     c.state,
@@ -476,7 +477,10 @@ fn record_and_settle(
         // Durable either way: the record is installed and queued here, so a
         // settlement that refuses (or a contract that is not ready) still leaves the
         // attestation on the document.
-        crate::api::put_contract(ctx, c.clone());
+        if let Err(error) = crate::api::put_contract(ctx, c.clone()) {
+            tracing::error!(%error, "economy: legacy contract document refused before publication");
+            return;
+        }
         // E4c verify fold, E10: past the per-event settlement cap the evidence still
         // stands — it is already installed and queued above — and the contract is
         // left for the sweep, which has its own budget and its own batch.
@@ -509,7 +513,11 @@ fn matching_contracts(
         return Vec::new();
     };
     let mut out: Vec<(ContractId, Vec<usize>)> = Vec::new();
-    for c in store.snapshot().contracts() {
+    for c in store
+        .snapshot()
+        .contracts()
+        .filter(|contract| contract.consent.managed.is_none())
+    {
         // `Disputed` is included for the same reason `@contract/attest` accepts it:
         // evidence usually arrives *because* somebody disputed, and recording it is
         // what lets a resolution settle. It settles nothing — `promote_and_settle`
@@ -582,5 +590,6 @@ fn live_contract(ctx: &Ctx<'_>, id: ContractId) -> Option<EconomicContract> {
         .module_state::<EconomyStore>()?
         .snapshot()
         .contract(id)
+        .filter(|contract| contract.consent.managed.is_none())
         .cloned()
 }

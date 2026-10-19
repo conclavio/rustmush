@@ -68,6 +68,11 @@ fn publish_releasing(
     {
         return Err(invalid("bulk publication lacks owner authority"));
     }
+    if change.changes_registry() {
+        return Err(invalid(
+            "Registry publication requires its registered owners",
+        ));
+    }
     let account = change.account();
     let store = ctx
         .w
@@ -116,7 +121,7 @@ fn publish_releasing(
     for run in change
         .evicted()
         .iter()
-        .filter(|r| r.plan.kind == WorkKind::Proving)
+        .filter(|r| r.plan.kind != WorkKind::Bench)
     {
         let key = root(account, run.id);
         if existing.contains(&key) {
@@ -201,13 +206,15 @@ fn publish_releasing(
     Ok(lease)
 }
 
-/// Recover every readable account before accepting commands. Corrupt documents
-/// remain quarantined and never receive a replacement that resets their quota.
+/// Hydrate every readable account. Only legacy runs recover here. Registry
+/// post-images stay exact until all owner audits have passed and the registered
+/// Recover action atomically installs the typed, quota and retention images.
 pub(crate) fn hydrate(
     ctx: &mut Ctx<'_>,
     docs: &[(SmolStr, serde_json::Value)],
     now: i64,
 ) -> Result<(), BulkError> {
+    let (service, cold) = super::world::begin_hydration(ctx)?;
     let (store, artifacts) = ctx
         .w
         .module_state_pair_mut::<BulkStore, Artifacts>()
@@ -224,17 +231,27 @@ pub(crate) fn hydrate(
                 tracing::error!("proving quota document is quarantined");
             }
         } else {
+            store.quarantine_unreadable_key();
             tracing::error!("proving quota document key is unreadable");
         }
     }
     artifacts.load(docs);
     let ids = store.account_ids();
+    {
+        let mut runtime = service.0.lock().map_err(|_| BulkError::Busy)?;
+        runtime.recovery.capture(cold, store)?;
+        if runtime.recovery.pending() && !super::registry_service::configured(ctx.w) {
+            return Err(invalid(
+                "retained Registry jobs require registered recovery composition",
+            ));
+        }
+    }
     for account in ids {
         let prepared = ctx
             .w
             .module_state::<BulkStore>()
             .ok_or(BulkError::Missing)?
-            .prepare_recover(account, now)?;
+            .prepare_legacy_recover(account, now)?;
         publish(ctx, prepared, &mut None, None)?;
     }
     super::bench_roots::recover(ctx)?;

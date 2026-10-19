@@ -97,7 +97,9 @@ async fn invoke(server: &rig::Rig, user: &str, request: MindRequest) -> (MindRes
             .filter(|line| !line.is_empty())
             .map(|line| serde_json::from_slice::<InvokeResult>(line).expect("typed NDJSON only"))
             .collect::<Vec<_>>();
-        let InvokeResult::Mind(answer) = records.pop().expect("final result");
+        let InvokeResult::Mind(answer) = records.pop().expect("final result") else {
+            panic!("Mind-only author story")
+        };
         assert!(answer.is_final());
         (answer, status.expect("final SSH exit status"))
     })

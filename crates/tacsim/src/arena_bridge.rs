@@ -2548,6 +2548,12 @@ pub fn mind_traces(
         .module_state::<crate::match_::MatchBook>()?
         .get(match_id)?;
     let seal = &record.minds.get(&unit)?.seal;
+    if !crate::match_::draft_holdings::current_draft_source_access(
+        w.module_state::<mush_roll::RollStore>(),
+        &seal.requested.origin,
+    ) {
+        return None;
+    }
     let principal = match seal.principal.as_ref() {
         Some(crate::deliberation::order::CharacterRef::Character { id }) => Some(*id),
         _ => None,

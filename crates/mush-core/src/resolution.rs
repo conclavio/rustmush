@@ -176,6 +176,14 @@ pub struct PrepareCtx<'a> {
     commit_token: CommitToken,
     keys: Option<&'a ResolutionKeyRing>,
     resolution_opened: bool,
+    participants: Option<crate::participant::ParticipantPreparation<'a>>,
+    owner_error: Option<crate::participant::ParticipantError>,
+    owner_reads: Option<crate::read_service::PrepareReadContext<'a>>,
+    accounts: Option<crate::account::observation::AccountPrepareContext<'a>>,
+    registered_transaction: Option<(
+        &'a crate::action_state::ActionReadBase,
+        &'a crate::action::ProviderRegistrationOrdinal,
+    )>,
 }
 
 impl fmt::Debug for PrepareCtx<'_> {
@@ -204,7 +212,380 @@ impl<'a> PrepareCtx<'a> {
             commit_token,
             keys,
             resolution_opened: false,
+            participants: None,
+            owner_error: None,
+            owner_reads: None,
+            accounts: None,
+            registered_transaction: None,
         }
+    }
+
+    pub(crate) fn with_registered_transaction(
+        mut self,
+        base: &'a crate::action_state::ActionReadBase,
+        provider: &'a crate::action::ProviderRegistrationOrdinal,
+    ) -> Self {
+        self.registered_transaction = Some((base, provider));
+        self
+    }
+
+    /// Reserve the closed Registry job's exact future completion keys. The job
+    /// and validated post-images must belong to this invocation and transaction.
+    pub fn reserve_registry_rating_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.registry_rating_completion(txn, None)
+    }
+
+    /// Retire this Registry job's reservation with its exact terminal images in
+    /// the same acknowledgement. This does not accept caller-defined targets.
+    pub fn finish_registry_rating_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        job: CommitToken,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.registry_rating_completion(txn, Some(job))
+    }
+
+    fn registry_rating_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        terminal: Option<CommitToken>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        let result = match (self.owner_error.is_none(), self.registered_transaction) {
+            (true, Some((base, provider))) => {
+                txn.registry_rating_completion(base, provider, self.commit_token, terminal)
+            }
+            _ => Err(crate::action_state::ActionStateError::TerminalCapacity(
+                "Registry preparation unavailable",
+            )),
+        };
+        if result.is_err() {
+            txn.poison_owner_read();
+            self.owner_error
+                .get_or_insert(crate::participant::ParticipantError::Authority);
+        }
+        result
+    }
+
+    /// Reserve the closed original purchase's exact future completion keys. The job
+    /// and validated post-images must belong to this invocation and transaction.
+    pub fn reserve_original_mind_purchase_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.original_mind_purchase_completion(txn, None)
+    }
+
+    /// Retire this original purchase's reservation with its exact terminal images in
+    /// the same acknowledgement. This does not accept caller-defined targets.
+    pub fn finish_original_mind_purchase_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        operation: CommitToken,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.original_mind_purchase_completion(txn, Some(operation))
+    }
+
+    fn original_mind_purchase_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        terminal: Option<CommitToken>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        let result = match (self.owner_error.is_none(), self.registered_transaction) {
+            (true, Some((base, provider))) => {
+                txn.original_mind_purchase_completion(base, provider, self.commit_token, terminal)
+            }
+            _ => Err(crate::action_state::ActionStateError::TerminalCapacity(
+                "purchase preparation unavailable",
+            )),
+        };
+        if result.is_err() {
+            txn.poison_owner_read();
+            self.owner_error
+                .get_or_insert(crate::participant::ParticipantError::Authority);
+        }
+        result
+    }
+
+    /// Reserve the exact seven completion targets for this renewal Draft.
+    /// The action, operation, paired images and provider must be this invocation.
+    pub fn reserve_mind_renewal_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.mind_renewal_completion(txn, None)
+    }
+
+    /// Advance an acknowledged renewal using the actual registered action.
+    /// Fund retains its reservation; Grant, Refund and Close consume it once.
+    pub fn advance_mind_renewal_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        operation: CommitToken,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.mind_renewal_completion(txn, Some(operation))
+    }
+
+    fn mind_renewal_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        operation: Option<CommitToken>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        let result = match (self.owner_error.is_none(), self.registered_transaction) {
+            (true, Some((base, provider))) => {
+                txn.mind_renewal_completion(base, provider, self.commit_token, operation)
+            }
+            _ => Err(crate::action_state::ActionStateError::TerminalCapacity(
+                "renewal preparation unavailable",
+            )),
+        };
+        if result.is_err() {
+            txn.poison_owner_read();
+            self.owner_error
+                .get_or_insert(crate::participant::ParticipantError::Authority);
+        }
+        result
+    }
+
+    /// Reserve the closed entitlement purchase's exact future completion keys. The job
+    /// and validated post-images must belong to this invocation and transaction.
+    pub fn reserve_mind_entitlement_purchase_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.mind_entitlement_purchase_completion(txn, None)
+    }
+
+    /// Retire this entitlement purchase's reservation with its exact terminal images in
+    /// the same acknowledgement. This does not accept caller-defined targets.
+    pub fn finish_mind_entitlement_purchase_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        operation: CommitToken,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.mind_entitlement_purchase_completion(txn, Some(operation))
+    }
+
+    fn mind_entitlement_purchase_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        terminal: Option<CommitToken>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        let result = match (self.owner_error.is_none(), self.registered_transaction) {
+            (true, Some((base, provider))) => txn.mind_entitlement_purchase_completion(
+                base,
+                provider,
+                self.commit_token,
+                terminal,
+            ),
+            _ => Err(crate::action_state::ActionStateError::TerminalCapacity(
+                "entitlement purchase preparation unavailable",
+            )),
+        };
+        if result.is_err() {
+            txn.poison_owner_read();
+            self.owner_error
+                .get_or_insert(crate::participant::ParticipantError::Authority);
+        }
+        result
+    }
+
+    pub(crate) fn with_participants(
+        mut self,
+        participants: crate::participant::ParticipantPreparation<'a>,
+    ) -> Self {
+        self.participants = Some(participants);
+        self
+    }
+
+    pub(crate) fn with_owner_reads(
+        mut self,
+        reads: crate::read_service::PrepareReadContext<'a>,
+    ) -> Self {
+        self.owner_reads = Some(reads);
+        self
+    }
+
+    pub(crate) fn with_account_observations(
+        mut self,
+        accounts: crate::account::observation::AccountPrepareContext<'a>,
+    ) -> Self {
+        self.accounts = Some(accounts);
+        self
+    }
+
+    /// Capture the actual invocation actor's personal account without exposing
+    /// its identity. The engine retains backend and oracle-placement fences
+    /// through custody and installation, sharing the pair-observation limit.
+    /// Refusal poisons preparation even when the provider catches the error.
+    pub fn personal_account(
+        &mut self,
+    ) -> Result<crate::account::PersonalAccountObservation, crate::participant::ParticipantError>
+    {
+        if let Some(error) = &self.owner_error {
+            return Err(error.clone());
+        }
+        let preparation = self.commit_token();
+        let result = match &mut self.accounts {
+            Some(accounts) => accounts.personal_account(preparation),
+            None => Err(crate::participant::ParticipantError::Unavailable),
+        };
+        if let Err(error) = &result {
+            self.owner_error = Some(error.clone());
+        }
+        result
+    }
+
+    /// Observe the actual invocation actor and another live Player as belonging
+    /// to distinct personal accounts. The engine retains map and oracle-placement
+    /// fences through the single writer acknowledgement and installation.
+    /// Refusal poisons preparation even when the provider catches the error.
+    pub fn distinct_personal_accounts(
+        &mut self,
+        other: crate::ObjId,
+    ) -> Result<crate::account::DistinctPersonalAccounts, crate::participant::ParticipantError>
+    {
+        if let Some(error) = &self.owner_error {
+            return Err(error.clone());
+        }
+        let result = match &mut self.accounts {
+            Some(accounts) => accounts.distinct(other),
+            None => Err(crate::participant::ParticipantError::Unavailable),
+        };
+        if let Err(error) = &result {
+            self.owner_error = Some(error.clone());
+        }
+        result
+    }
+
+    /// Read a registered owner's committed pre-image from this action's exact
+    /// typed store and base revision. Staged puts/deletes are never visible.
+    /// Request fields cannot change the actual provider, actor or principal.
+    /// A refusal poisons the whole preparation even if provider code catches it.
+    ///
+    /// Service readiness and slot identity survive through installation. These
+    /// checks do not track arbitrary World/document values: the closed effect
+    /// must still fence current authority facts and validate its own post-images.
+    pub fn read_owner_preimage<S: crate::read_service::OwnerReadService>(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        handle: &crate::read_service::OwnerReadHandle<S>,
+        request: S::Request,
+    ) -> Result<S::Output, crate::read_service::OwnerReadError> {
+        let result = if self.owner_error.is_some() {
+            Err(crate::read_service::OwnerReadError::Unavailable)
+        } else {
+            match &mut self.owner_reads {
+                Some(reads) => reads.read(txn, handle, request),
+                None => Err(crate::read_service::OwnerReadError::Unavailable),
+            }
+        };
+        if result.is_err() {
+            txn.poison_owner_read();
+            self.owner_error
+                .get_or_insert(crate::participant::ParticipantError::Authority);
+        }
+        result
+    }
+
+    /// Prepare one registered owner's closed effect in this exact action.
+    /// A refused request poisons this preparation even if provider code catches it.
+    pub fn prepare_owner<P: crate::participant::OwnerParticipant>(
+        &mut self,
+        handle: &crate::participant::ParticipantHandle<P>,
+        request: P::Request,
+    ) -> Result<P::Output, crate::participant::ParticipantError> {
+        if let Some(error) = &self.owner_error {
+            return Err(error.clone());
+        }
+        let result = match &mut self.participants {
+            Some(participants) => participants.prepare(handle, self.commit_token, request),
+            None => Err(crate::participant::ParticipantError::Unavailable),
+        };
+        if let Err(error) = &result {
+            self.owner_error = Some(error.clone());
+        }
+        result
+    }
+
+    pub(crate) fn owner_error(&self) -> Option<&crate::participant::ParticipantError> {
+        self.owner_error.as_ref()
+    }
+
+    /// Actual read-only world used by this authoritative preparation. Reads
+    /// which must remain current still require a registered participant fence;
+    /// this borrow by itself grants neither authority nor freshness tracking.
+    pub fn world(&self) -> Result<&crate::World, crate::participant::ParticipantError> {
+        self.participants
+            .as_ref()
+            .map(|p| p.world())
+            .ok_or(crate::participant::ParticipantError::Unavailable)
+    }
+
+    /// Reserve one inert charter object using this invocation's actual actor.
+    /// The object and typed reservation share this action's single commit.
+    pub fn reserve_initial_filing_shell(
+        &mut self,
+        service: &crate::reserved_shell::ShellReservations,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+    ) -> Result<(crate::reserved_shell::ShellKey, crate::ObjId), crate::participant::ParticipantError>
+    {
+        self.with_shell(|participants, commit| participants.reserve_shell(service, txn, commit))
+    }
+
+    /// Initialize the closed shell family in explicit operator setup mode.
+    /// The service verifies the actual GOD invocation and empty typed families.
+    pub fn initialize_commerce_shells(
+        &mut self,
+        service: &crate::reserved_shell::ShellReservations,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+    ) -> Result<(), crate::participant::ParticipantError> {
+        self.with_shell(|participants, commit| participants.initialize_shells(service, txn, commit))
+    }
+
+    /// Read an acknowledged reservation through the exact initial-filing action.
+    pub fn resolve_initial_filing_shell(
+        &mut self,
+        service: &crate::reserved_shell::ShellReservations,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        key: crate::reserved_shell::ShellKey,
+    ) -> Result<crate::reserved_shell::ReservedShell, crate::participant::ParticipantError> {
+        self.with_shell(|participants, _| participants.resolve_shell(service, txn, key))
+    }
+
+    /// Consume the exact acknowledged reservation, retaining its object fence
+    /// until every owner is bound after the writer acknowledges the whole union.
+    pub fn consume_initial_filing_shell(
+        &mut self,
+        service: &crate::reserved_shell::ShellReservations,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        shell: crate::reserved_shell::ReservedShell,
+    ) -> Result<(), crate::participant::ParticipantError> {
+        self.with_shell(|participants, commit| {
+            participants.consume_shell(service, txn, shell, commit)
+        })
+    }
+
+    fn with_shell<T>(
+        &mut self,
+        prepare: impl FnOnce(
+            &mut crate::participant::ParticipantPreparation<'_>,
+            CommitToken,
+        ) -> Result<T, crate::participant::ParticipantError>,
+    ) -> Result<T, crate::participant::ParticipantError> {
+        if let Some(error) = &self.owner_error {
+            return Err(error.clone());
+        }
+        let result = match &mut self.participants {
+            Some(participants) => prepare(participants, self.commit_token),
+            None => Err(crate::participant::ParticipantError::Unavailable),
+        };
+        if let Err(error) = &result {
+            self.owner_error = Some(error.clone());
+        }
+        result
     }
 
     /// Coordinator-derived immutable identity of the bundle being prepared.

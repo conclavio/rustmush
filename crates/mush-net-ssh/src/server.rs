@@ -2217,7 +2217,10 @@ fn spawn_exec_pump(
             match event.as_ref() {
                 OutputEvent::InvokeResult { id: 1, result } => {
                     let result = result.clone().bounded();
-                    let mush_proto::InvokeResult::Mind(response) = &result;
+                    let mush_proto::InvokeResult::Mind(response) = &result else {
+                        // This channel was admitted only by the closed Mind exec grammar.
+                        break;
+                    };
                     if !matches!(
                         tokio::time::timeout(
                             WRITE_TIMEOUT,

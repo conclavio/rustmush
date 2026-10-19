@@ -1018,7 +1018,8 @@ pub const LIVE_RECORD: &str = "tacsim.live";
 /// policy — and a record of another format is refused by name.
 // M6: immutable authored custody replaces the old stock-only seal/profile
 // shape. Old live records must fail the outer version check before state decode.
-pub const LIVE_FORMAT: u32 = 2;
+/// M7 requires complete filed certification in retained sortie custody.
+pub const LIVE_FORMAT: u32 = 3;
 
 /// **What the world holds of one running match, as the boot would need it**
 /// (16b cut AF.2): the document at [`live_key`].
@@ -2906,31 +2907,27 @@ mod tests {
     }
 
     #[test]
-    fn m6_pre_authored_live_format_is_refused_before_old_state_decode() {
+    fn m7_pre_certificate_live_formats_refuse_before_old_state_decode() {
         let mut document = af2_live().to_document().expect("current live record");
-        assert_eq!(LIVE_FORMAT, 2, "M6 authored custody is live format 2");
-        document["format"] = serde_json::json!(1);
-        // Deliberately not the new MindSeal/Centre shape, with an invalid digest:
-        // old outer versions must be named before either payload check runs.
-        document["state"] = serde_json::json!(
-            r#"{"minds":{"4":{"charter":"Registry","line":"standard","profiles":[0]}}}"#
-        );
+        assert_eq!(LIVE_FORMAT, 3, "M7 certified custody is live format 3");
+        // Even a malformed inner state must receive the outer version refusal.
+        document["state"] = serde_json::json!("not a current state");
         document["state_digest"] = serde_json::json!("0".repeat(64));
-        assert_eq!(
-            LiveRecord::from_document(&document),
-            Err(LiveRecordError::Format {
-                found: 1,
-                expected: 2,
-            })
-        );
-        document["format"] = serde_json::json!(2);
-        assert!(
-            matches!(
+        for old in [1, 2] {
+            document["format"] = serde_json::json!(old);
+            assert_eq!(
                 LiveRecord::from_document(&document),
-                Err(LiveRecordError::DigestMismatch { .. })
-            ),
-            "current-format corruption still reaches the normal digest refusal"
-        );
+                Err(LiveRecordError::Format {
+                    found: old,
+                    expected: LIVE_FORMAT
+                })
+            );
+        }
+        document["format"] = serde_json::json!(LIVE_FORMAT);
+        assert!(matches!(
+            LiveRecord::from_document(&document),
+            Err(LiveRecordError::DigestMismatch { .. })
+        ));
     }
 
     /// **16b cut AF.2**: a live record round-trips equal — through a JSON

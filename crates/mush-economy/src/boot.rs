@@ -86,6 +86,33 @@ pub(crate) fn load_boot(
     outcomes: &crate::contract::CanonOutcomeKinds,
     tail_max: usize,
     window_secs: i64,
+    require_filing_receipts: bool,
+    require_purchase_receipts: bool,
+) -> Result<EconomyStore, ModError> {
+    load_boot_with_renewals(
+        ctx,
+        data,
+        providers,
+        outcomes,
+        tail_max,
+        window_secs,
+        require_filing_receipts,
+        require_purchase_receipts,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) fn load_boot_with_renewals(
+    ctx: &mut ModuleCtx<'_>,
+    data: ModuleBootData,
+    providers: &CustodyTable,
+    outcomes: &crate::contract::CanonOutcomeKinds,
+    tail_max: usize,
+    window_secs: i64,
+    require_filing_receipts: bool,
+    require_purchase_receipts: bool,
+    require_renewal_receipts: bool,
 ) -> Result<EconomyStore, ModError> {
     let ModuleBootData {
         kv,
@@ -93,6 +120,8 @@ pub(crate) fn load_boot(
         omitted,
         ..
     } = data;
+    let renewal_documents =
+        crate::managed_renewal::bridge::documents(&kv, require_renewal_receipts)?;
     // J4 (doc 12 §5.6): what the loader left out on the boot manifest — the
     // min-present marker the inspection honours; 0 for a whole fetch.
     let narrowed_below: u64 = omitted
@@ -309,6 +338,25 @@ pub(crate) fn load_boot(
                     c.id
                 )));
             }
+            // This legacy recovery owner cannot reconcile the entitlement half.
+            // Refuse before journal healing or any queued container rewrite; the
+            // closed paid-operation replay lane must be installed first.
+            if c.consent.managed.is_some() && !require_purchase_receipts {
+                return Err(ModError::msg(
+                    "economy: managed contract requires complete entitlement recovery",
+                ));
+            }
+            if c.consent
+                .managed
+                .as_ref()
+                .and_then(|m| m.renewal_offer_marker())
+                .is_some()
+                && !require_renewal_receipts
+            {
+                return Err(ModError::msg(
+                    "economy: renewal contract requires complete paired recovery",
+                ));
+            }
             stored_contracts.insert(c.id, c);
         } else if let Some(id) = key.strip_prefix("escalation:") {
             // A **leaf** (§4.6), exactly like an approval request: an unreadable alert
@@ -432,7 +480,46 @@ pub(crate) fn load_boot(
     // said at `error` and ignored — a checkpoint is a projection, never
     // authority, so an invalid one costs a full replay and nothing else.
     let checkpoint_started = std::time::Instant::now();
-    let (checkpoint, checkpoint_notes) = crate::checkpoint::select(&kv, journal_max, &history);
+    let (mut checkpoint, mut checkpoint_notes) =
+        crate::checkpoint::select(&kv, journal_max, &history);
+    if require_filing_receipts
+        && checkpoint
+            .as_ref()
+            .is_some_and(|saved| !saved.head.body.fold.filing_receipts.checkpoint_complete())
+    {
+        checkpoint_notes.push(
+            "checkpoint lacks complete initial-filing receipt coverage; full replay required"
+                .into(),
+        );
+        checkpoint = None;
+    }
+    if require_purchase_receipts
+        && checkpoint.as_ref().is_some_and(|saved| {
+            !saved
+                .head
+                .body
+                .fold
+                .purchase_receipts
+                .checkpoint_complete(&saved.rows)
+        })
+    {
+        checkpoint_notes.push(
+            "checkpoint lacks exact original-purchase receipt coverage; full replay required"
+                .into(),
+        );
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !crate::managed_renewal::bridge::checkpoint_complete(
+            &saved.head.body.fold,
+            &saved.rows,
+            require_renewal_receipts,
+        )
+    }) {
+        checkpoint_notes
+            .push("checkpoint lacks exact renewal inventory coverage; full replay required".into());
+        checkpoint = None;
+    }
     for note in &checkpoint_notes {
         tracing::error!(%note, "economy: checkpoint rejected; replaying past it");
     }
@@ -680,6 +767,70 @@ pub(crate) fn load_boot(
     // inspection are done with.
     drop(ledger_docs);
     drop(history);
+    let renewal_offers = crate::managed_renewal::bridge::recover(
+        &mut state,
+        &mut snapshot,
+        &mut stored_contracts,
+        &stored_holds,
+        &renewal_documents,
+        require_renewal_receipts,
+    )?;
+    // Managed purchases are a paired immutable protocol, not legacy container
+    // reconciliation. Inspect exact raw contract/hold documents before any
+    // legacy repair can manufacture or advance either projection.
+    if require_purchase_receipts {
+        state
+            .purchase_receipts
+            .finish_replay()
+            .map_err(|error| ModError::msg(format!("economy: {error}")))?;
+        let mut contracts = BTreeSet::new();
+        let mut holds = BTreeSet::new();
+        for history in state
+            .purchase_receipts
+            .receipts()
+            .map_err(|error| ModError::msg(error.to_string()))?
+        {
+            let contract = stored_contracts
+                .get(&history.funding().contract())
+                .ok_or_else(|| ModError::msg("economy: purchase contract is missing"))?;
+            let hold = stored_holds
+                .get(&history.funding().hold())
+                .ok_or_else(|| ModError::msg("economy: purchase hold is missing"))?;
+            history
+                .verify_documents(contract, hold)
+                .map_err(|error| ModError::msg(format!("economy: {error}")))?;
+            if state.journal_holds.get(&hold.id) != Some(hold)
+                || !contracts.insert(contract.id)
+                || !holds.insert(hold.id)
+            {
+                return Err(ModError::msg(
+                    "economy: purchase projection is crossed or differs from journal",
+                ));
+            }
+        }
+        if stored_contracts
+            .values()
+            .any(|c| c.consent.managed.is_some() && !contracts.contains(&c.id))
+            || stored_holds.values().any(|h| {
+                crate::managed_purchase::closed_namespace(h.holder.namespace.as_str())
+                    && !holds.contains(&h.id)
+            })
+        {
+            return Err(ModError::msg(
+                "economy: purchase projection lacks authoritative history",
+            ));
+        }
+        for id in contracts {
+            let contract = stored_contracts.remove(&id).ok_or_else(|| {
+                ModError::msg("economy: purchase contract disappeared during recovery")
+            })?;
+            snapshot.put_contract(contract);
+        }
+    } else if !state.purchase_receipts.uninitialized() {
+        return Err(ModError::msg(
+            "economy: purchase history requires complete entitlement recovery",
+        ));
+    }
     // Doc 13 W2: boot's gate over the complete filter (no cold cache yet); the
     // contracts it cannot decide are the sweep's (W-D7).
     let no_cold: BTreeMap<crate::record::IdempotencyKey, crate::module::ColdKey> = BTreeMap::new();
@@ -1753,7 +1904,12 @@ pub(crate) fn load_boot(
     // stored docs, after the journal fold), so the membership filter runs here, once,
     // against the assembled snapshot.
     debit_window.retain(|account, _| crate::module::account_windowed(&snapshot, *account));
-    let store = EconomyStore::from_parts(BootParts {
+    if require_filing_receipts && !frozen {
+        state.filing_receipts.finish_replay().map_err(|error| {
+            ModError::msg(format!("economy: filing receipt replay refused: {error}"))
+        })?;
+    }
+    let mut store = EconomyStore::from_parts(BootParts {
         snapshot,
         journal,
         transactions,
@@ -1792,6 +1948,8 @@ pub(crate) fn load_boot(
         boot_frozen,
         frozen,
     });
+    store.renewal_offers = renewal_offers;
+    store.renewal_inventory_checked = true;
     // Persist `meta` at the END of every boot, always. Two things ride on it and
     // both were previously RAM-only until the next post happened to write one: the
     // whole-economy **freeze latch** (a boot that froze, healed, and never wrote it

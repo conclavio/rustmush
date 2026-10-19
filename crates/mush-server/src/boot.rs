@@ -289,6 +289,29 @@ pub fn game_modules(
     config: &Config,
     llm: &Arc<LlmService>,
 ) -> Result<Vec<Box<dyn GameModule>>, String> {
+    game_modules_with_optional_commerce(config, llm, None)
+}
+
+/// The existing production roster with a host-supplied, opaque commerce policy.
+/// Default boot never selects this API. It preserves owner order and all boot
+/// hooks; Initialize and Active still need the real durable setup/audits.
+///
+/// # Errors
+/// Ordinary configuration errors, or a Tacsim config/catalog that differs from
+/// the exact resources captured by `commerce`.
+pub fn game_modules_with_mind_commerce(
+    config: &Config,
+    llm: &Arc<LlmService>,
+    commerce: &modules::mind_commerce::MindCommerce,
+) -> Result<Vec<Box<dyn GameModule>>, String> {
+    game_modules_with_optional_commerce(config, llm, Some(commerce))
+}
+
+fn game_modules_with_optional_commerce(
+    config: &Config,
+    llm: &Arc<LlmService>,
+    commerce: Option<&modules::mind_commerce::MindCommerce>,
+) -> Result<Vec<Box<dyn GameModule>>, String> {
     // E7 cut 1: the TacSim layer's frozen block, read **host-side** and BEFORE the
     // module list, because `[tacsim.recovery]` is mapped into the built-ins below.
     let tacsim = config_ext::tacsim_config(&config.tacsim)?;
@@ -304,17 +327,29 @@ pub fn game_modules(
     // Doc 18 cut IC5 (D-18-33, §4.4): the built-ins of a roster that composes the
     // TacSim layer — `mush-inventory` names `tacsim` its third quantity delegate,
     // and the inventory handle cell comes back for the layer below.
-    let (mut mods, inventory) = modules::server_modules_with_tacsim(
-        config_ext::weather_config(&config.weather),
-        config_ext::economy_config_with(&config.economy, &contributed)?,
-        atlas,
-        &onboarding,
-        &game,
-        // E7r1 R4: the composed roster ends in the TacSim layer, so the recovery
-        // provider gets the operator's own `[tacsim.recovery]` policy. A disabled
-        // block is still fail-closed, and `@recovery` says so out loud.
-        modules::recovery_policy(&tacsim.recovery),
-    );
+    let weather = config_ext::weather_config(&config.weather);
+    let economy = config_ext::economy_config_with(&config.economy, &contributed)?;
+    // The ordinary operator recovery policy reaches both roster choices.
+    let recovery = modules::recovery_policy(&tacsim.recovery);
+    let (mut mods, inventory) = match commerce {
+        Some(commerce) => modules::server_modules_with_tacsim_and_mind_commerce(
+            weather,
+            economy,
+            atlas,
+            &onboarding,
+            &game,
+            recovery,
+            commerce,
+        ),
+        None => modules::server_modules_with_tacsim(
+            weather,
+            economy,
+            atlas,
+            &onboarding,
+            &game,
+            recovery,
+        ),
+    };
     mods.push(modules::worldgen_module_with(
         Arc::clone(llm),
         config_ext::worldgen_config(&config.worldgen),
@@ -349,11 +384,16 @@ pub fn game_modules(
     // content latch's boot list below move together.
     // Doc 18 cut IC5: handed the inventory cell (`tacsim_module_wired`, which takes
     // no test-world flag: production is never a test world, IC3 L15).
-    mods.push(modules::tacsim_module_wired(
-        tacsim,
-        tacsim_enabled,
-        inventory,
-    ));
+    mods.push(match commerce {
+        Some(commerce) => modules::tacsim_module_wired_with_mind_commerce(
+            tacsim,
+            tacsim_enabled,
+            inventory,
+            commerce,
+        )
+        .map_err(|error| error.to_string())?,
+        None => modules::tacsim_module_wired(tacsim, tacsim_enabled, inventory),
+    });
     // S1: the content module LAST of all — its boot pass applies the starter packs
     // through the atlas's and the NPC module's appliers, which must have hydrated
     // their own slots first (`on_world_loaded` runs in list order). Zero LLM calls:

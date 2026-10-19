@@ -1,5 +1,9 @@
 # Minds
 
+`@mind/doctrine` opens the free Stickney teaching library for Standard Doctrine.
+Use `@mind/doctrine Sniper` (or another preset) for its current configured card;
+`help doctrine` explains these public pages.
+
 Your tank's core can fly it when you are not in the seat. SIM MIND chooses its mind; the match's start seals it.
 With none chosen, a tank you leave flies Standard Doctrine on Line, the Registry's own; MIND reads it in the cockpit.
 It flies from when you climb out to the end, or from a drop past the grace until the end or you board again.

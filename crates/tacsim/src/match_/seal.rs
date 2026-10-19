@@ -54,7 +54,14 @@
 //!    definition, selected profile bindings and bound programs. Even a single
 //!    Line profile is explicit; [`MindSeal::rom`] carries the frozen fallback.
 //!
-//! The class the mind thinks at is `min(rated, core_class, class_cap)` under
+//! Draft and doctrine execution uses `min(rated, core_class, class_cap)`. A
+//! filed certificate keeps the immutable declaration and measured minimum
+//! separate: non-ROM execution must meet that minimum and use its exact source
+//! and definition. Missing/Class0 hardware still captures native ROM while the
+//! requested certificate remains in the seal. The terms' rating is checked
+//! against the certificate before either execution path is selected.
+//!
+//! The ordinary class calculation is under
 //! the terms' [`SealTerms::rated`] (Standard Doctrine's `STOCK_RATED_CLASS`)
 //! and [`SealTerms::class_cap`] (17b cut M3's ruling, the plan's F4; 17b cut
 //! M4.1 put the rating and the cap on the terms and the think side reads the
@@ -126,12 +133,13 @@ pub const NO_CORE_FALLBACK: &str = "no core: the ROM";
 /// mind's identity, the profiles sealed and why a substituted hull flies
 /// Standard Doctrine (`fallback`).
 ///
-/// **`rated` and `engine_for_minds` stay the terms' own and authoritative**
+/// **Draft and doctrine `rated` and `engine_for_minds` stay the terms' own**
 /// (17b cut M5.2): [`seal_for`] takes only the five identity fields from
 /// [`SealTerms::identity`], never a rating or an engine, so every fixture
 /// lever ([`SealTerms::rated`], a scripted muster's engine, the harness's
 /// Load III heavies) stays whole and no seal digest moves by a second source
-/// of either.
+/// of either. Filed identities instead require these terms to agree with the
+/// immutable certificate and require scripted execution outside ROM.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SealTerms {
     /// Authored immutable revision data; None selects the stock adapter below.
@@ -432,6 +440,25 @@ pub fn seal_for(unit: &CustodyUnit, terms: &SealTerms) -> Result<MindSeal, SealE
         None => (None, CoreClass::Zero, true),
     };
     let class = terms.rated.min(core_class).min(terms.class_cap);
+    if let Some(certificate) = terms.identity.origin.certificate() {
+        let definition = terms.authored.as_deref().ok_or_else(|| {
+            SealError::Schema(crate::arena::schema::SchemaError {
+                field: "certificate".into(),
+                message: "filed source requires its complete certified definition".into(),
+            })
+        })?;
+        certificate.verify_definition(definition)?;
+        if terms.rated != certificate.minimum
+            || terms.engine_for_minds != SealEngine::Scripted
+            || (class != CoreClass::Zero && class != certificate.minimum)
+        {
+            return Err(SealError::Schema(crate::arena::schema::SchemaError {
+                field: "certificate".into(),
+                message: "selected class or engine is below the certified execution requirement"
+                    .into(),
+            }));
+        }
+    }
     let rom_identity = SealIdentity::doctrine();
     let rom = SealedCards::prepare(
         rom_definition(&terms.rom_cfg, terms.odds_floor_permille)?,
@@ -493,10 +520,16 @@ pub fn prepare_cards(
     weapons: &[crate::arena::rules::RuleWeapon],
     channels: &[Channel],
 ) -> Result<SealedCards, SealError> {
+    terms.identity.validate()?;
     let (definition, names) = if let Some(definition) = &terms.authored {
-        if definition.declared_class != terms.rated
-            || terms.engine_for_minds != SealEngine::Scripted
-        {
+        let class_matches = match terms.identity.origin.certificate() {
+            Some(certificate) => {
+                certificate.verify_definition(definition)?;
+                terms.rated == certificate.minimum && class == certificate.minimum
+            }
+            None => definition.declared_class == terms.rated,
+        };
+        if !class_matches || terms.engine_for_minds != SealEngine::Scripted {
             return Err(SealError::Schema(crate::arena::schema::SchemaError {
                 field: "mind".into(),
                 message: "authored source class or engine differs from immutable revision".into(),
@@ -504,6 +537,12 @@ pub fn prepare_cards(
         }
         ((**definition).clone(), terms.selected_profiles.clone())
     } else {
+        if terms.identity.origin.certificate().is_some() {
+            return Err(SealError::Schema(crate::arena::schema::SchemaError {
+                field: "certificate".into(),
+                message: "filed source cannot reconstruct its definition from stock presets".into(),
+            }));
+        }
         let selected = sealed_set(terms)?;
         for (name, card) in &selected {
             card.pair(name).map_err(SealError::Card)?;
@@ -664,6 +703,204 @@ mod tests {
             principal: Some(CharacterRef::Character { id: ObjId(77) }),
             ..SealTerms::fixture()
         }
+    }
+
+    /// Structural seal evidence only: this does not manufacture a usable Roll
+    /// receipt or exercise Registry certification. The owner-reader tests cover
+    /// current authority; here the pure arena must preserve exact bindings.
+    fn filed_terms() -> SealTerms {
+        use crate::arena::profile_seal::FiledCertificate;
+        use mush_core::DefinitionDigest;
+        let mut terms = terms();
+        let definition =
+            stock_definition(&[("Line".into(), terms.card.clone())], CoreClass::I).unwrap();
+        let certificate = FiledCertificate {
+            revision_character: ObjId(77),
+            revision_mind: 1,
+            revision_number: 1,
+            revision_digest: DefinitionDigest::from_bytes([1; 32]),
+            source_digest: DefinitionDigest::from_bytes([9; 32]),
+            rating_job: mush_core::CommitToken::from_bytes([4; 16]),
+            rating_id: DefinitionDigest::from_bytes([2; 32]),
+            rating_schema: 1,
+            rating_digest: DefinitionDigest::from_bytes([3; 32]),
+            compatibility: DefinitionDigest::from_bytes([4; 32]),
+            definition: definition.validate().unwrap(),
+            declared: CoreClass::I,
+            minimum: CoreClass::II,
+        };
+        terms.authored = Some(Arc::new(definition));
+        terms.selected_profiles = vec!["Line".into()];
+        terms.identity = SealIdentity {
+            mind: "Certified fixture".into(),
+            origin: MindOrigin::Filed {
+                charter: "1".into(),
+                line: "1".into(),
+                revision: 1,
+                licence: "1".into(),
+                certificate,
+            },
+            source_sha256: [9; 32],
+        };
+        terms.rated = CoreClass::II;
+        terms.engine_for_minds = SealEngine::Scripted;
+        terms
+    }
+
+    #[test]
+    fn m7_filed_seal_preserves_declared_definition_and_requires_certified_execution() {
+        let terms = filed_terms();
+        let unit = checked_out(
+            &catalog(),
+            crate::definitions::content::LINE_TANK,
+            ObjId(4),
+            Controller::Mind,
+            &terms,
+        )
+        .unwrap();
+        assert_eq!(unit.seal.class, CoreClass::II);
+        assert_eq!(unit.seal.cards.definition.declared_class, CoreClass::I);
+        assert_eq!(unit.seal.requested, terms.identity);
+        assert_eq!(unit.seal.identity(), terms.identity);
+        assert_eq!(Some(&unit.seal.cards.definition), terms.authored.as_deref());
+        let restored: MindSeal =
+            serde_json::from_slice(&serde_json::to_vec(&unit.seal).unwrap()).unwrap();
+        restored.verify(&terms.classes, &unit.seal.weapons).unwrap();
+        assert_eq!(restored, unit.seal);
+
+        let mut low = terms.clone();
+        low.class_cap = CoreClass::I;
+        assert!(
+            seal_for(&unit, &low).is_err(),
+            "a nonzero cap cannot underclock certification"
+        );
+        low = terms.clone();
+        low.rated = CoreClass::I;
+        assert!(
+            seal_for(&unit, &low).is_err(),
+            "terms cannot replace the certified minimum"
+        );
+        low = terms.clone();
+        low.engine_for_minds = SealEngine::Native;
+        assert!(
+            seal_for(&unit, &low).is_err(),
+            "filed source cannot enter free native execution"
+        );
+        low = terms.clone();
+        low.authored = None;
+        assert!(
+            seal_for(&unit, &low).is_err(),
+            "no stock-preset reconstruction for filed source"
+        );
+    }
+
+    #[test]
+    fn m7_filed_rom_keeps_requested_certificate_and_checks_it_before_substitution() {
+        let terms = filed_terms();
+        let unit = checked_out(
+            &catalog(),
+            crate::definitions::content::TARGET_MK1,
+            ObjId(9),
+            Controller::Mind,
+            &terms,
+        )
+        .unwrap();
+        assert_eq!(unit.seal.class, CoreClass::Zero);
+        assert_eq!(unit.seal.identity(), unit.seal.rom_identity);
+        assert_eq!(unit.seal.cards, unit.seal.rom);
+        assert_eq!(unit.seal.requested, terms.identity);
+        let restored: MindSeal =
+            serde_json::from_slice(&serde_json::to_vec(&unit.seal).unwrap()).unwrap();
+        restored.verify(&terms.classes, &unit.seal.weapons).unwrap();
+        assert_eq!(restored.requested, terms.identity);
+        assert_eq!(
+            super::super::selection_refs::revisions([&restored, &unit.seal]),
+            vec![mush_roll::RevisionRef {
+                key: mush_roll::RevisionKey {
+                    character: ObjId(77),
+                    mind: 1,
+                    number: 1
+                },
+                digest: mush_core::DefinitionDigest::from_bytes([1; 32]),
+            },],
+            "ROM retains the exact requested revision once for open/result/tape roots"
+        );
+        let mut wrong_source = terms.clone();
+        wrong_source.identity.source_sha256 = [8; 32];
+        assert!(seal_for(&unit, &wrong_source).is_err());
+        let mut wrong_definition = terms.clone();
+        wrong_definition.authored = Some(Arc::new(
+            stock_definition(&[("Other".into(), terms.card.clone())], CoreClass::I).unwrap(),
+        ));
+        assert!(seal_for(&unit, &wrong_definition).is_err());
+    }
+
+    #[test]
+    fn m7_filed_certificate_decode_and_seal_binding_are_closed() {
+        let terms = filed_terms();
+        let unit = checked_out(
+            &catalog(),
+            crate::definitions::content::LINE_TANK,
+            ObjId(4),
+            Controller::Mind,
+            &terms,
+        )
+        .unwrap();
+        let origin = serde_json::to_value(&terms.identity.origin).unwrap();
+        let mut absent = origin.clone();
+        absent.as_object_mut().unwrap().remove("certificate");
+        assert!(serde_json::from_value::<MindOrigin>(absent).is_err());
+        let mut missing_job = origin.clone();
+        missing_job
+            .get_mut("certificate")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("rating_job");
+        assert!(
+            serde_json::from_value::<MindOrigin>(missing_job).is_err(),
+            "a content digest cannot replace the exact durable receipt key"
+        );
+        let mut extra = origin;
+        extra
+            .get_mut("certificate")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert("authority".into(), serde_json::json!(true));
+        assert!(serde_json::from_value::<MindOrigin>(extra).is_err());
+        let mut tampered = unit.seal.clone();
+        tampered.source_sha256 = [8; 32];
+        assert!(tampered.verify(&terms.classes, &unit.seal.weapons).is_err());
+        tampered = unit.seal.clone();
+        tampered.class = CoreClass::I;
+        assert!(tampered.verify(&terms.classes, &unit.seal.weapons).is_err());
+        tampered = unit.seal.clone();
+        if let MindOrigin::Filed { certificate, .. } = &mut tampered.requested.origin {
+            certificate.rating_digest = mush_core::DefinitionDigest::from_bytes([7; 32]);
+        }
+        assert_ne!(
+            tampered.digest(),
+            unit.seal.digest(),
+            "requested certificate is hashed"
+        );
+        assert!(
+            tampered.verify(&terms.classes, &unit.seal.weapons).is_err(),
+            "effective and requested receipts must agree"
+        );
+        tampered = unit.seal.clone();
+        if let MindOrigin::Filed { certificate, .. } = &mut tampered.requested.origin {
+            certificate.rating_job = mush_core::CommitToken::from_bytes([5; 16]);
+        }
+        assert_ne!(
+            tampered.digest(),
+            unit.seal.digest(),
+            "a different rating attempt changes custody identity"
+        );
+        assert!(
+            tampered.verify(&terms.classes, &unit.seal.weapons).is_err(),
+            "a requested receipt cannot name a different durable job"
+        );
     }
 
     /// **17b cut M3.3** (doc 17 §13): every field of a shipped line tank's
@@ -1146,11 +1383,11 @@ mod m5_tests {
         // The identity is the terms' — its rating and engine are not.
         let identity = SealIdentity {
             mind: SmolStr::new_static("Fixture I"),
-            origin: MindOrigin::Filed {
-                charter: "Fixture".into(),
-                line: "fixture_i".into(),
+            origin: MindOrigin::Draft {
+                character: ObjId(77),
+                mind: 1,
                 revision: 1,
-                licence: "test".into(),
+                digest: mush_core::DefinitionDigest::from_bytes([9; 32]),
             },
             source_sha256: [9; 32],
         };

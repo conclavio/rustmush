@@ -1,6 +1,6 @@
-//! **The TacSim API for unit minds** (17b cut M2.3; doc 17 §3 "The
-//! observation", §4 "The outputs", §7 "The sandbox and the budget", §8, §19
-//! "Fit with the crates", §23; D-UM-4, D-UM-6, D-UM-7, D-UM-9, D-UM-10,
+//! **The TacSim API for unit minds** (17b cut M2.3; doc 17 Â§3 "The
+//! observation", Â§4 "The outputs", Â§7 "The sandbox and the budget", Â§8, Â§19
+//! "Fit with the crates", Â§23; D-UM-4, D-UM-6, D-UM-7, D-UM-9, D-UM-10,
 //! D-UM-11, D-UM-24, D-UM-26, D-UM-27, D-UM-28, D-UM-29, D-UM-31, D-UM-35,
 //! D-UM-47).
 //!
@@ -18,20 +18,20 @@
 //! [`RhaiRunner`](crate::minds::runner::RhaiRunner) (17b cut M2.4).
 //!
 //! * **The context** (`context.rs`): the think's thread-local
-//!   [`ThinkContext`](crate::minds::context::ThinkContext) — the view and the
+//!   [`ThinkContext`](crate::minds::context::ThinkContext) â€” the view and the
 //!   map behind the arena's own `Arc`s, the seed, the clocks, the draw and
 //!   `line_to` counters, the intent
-//!   buffer and the refusal flag — set by the runner at a think's start and
-//!   taken at its end, and the fifteen context functions (`lands_ms()` …
+//!   buffer and the refusal flag â€” set by the runner at a think's start and
+//!   taken at its end, and the fifteen context functions (`lands_ms()` â€¦
 //!   `cover()`) that read it from any call depth (17b's settled question
 //!   (ii): never scope constants, never script `const`s).
 //! * **The view** (`api.rs`): `View`, `Contact`, `Weapon`, `Section`, `Facet`,
-//!   `Heat`, `Receiver`, `Order`, `Notice`, `Condition`, `Armed` — each a
+//!   `Heat`, `Receiver`, `Order`, `Notice`, `Condition`, `Armed` â€” each a
 //!   handle on the one `Arc<MindView>` the arena wrapped (no row copied), each
 //!   getter an INT, a bool, a word, a two-INT cell or `()`, never a FLOAT
 //!   (D-UM-28), and each with its row in
 //!   [`PARITY`](crate::minds::api::PARITY), the pinned table of where the
-//!   keyframe carries the same field (D-UM-4 read at the field level, 17b §1
+//!   keyframe carries the same field (D-UM-4 read at the field level, 17b Â§1
 //!   (ii)).
 //! * **The card** (`card.rs`): `Card`, the 24 stored fields by slider name in
 //!   stored integer units (D-UM-27, D-UM-43).
@@ -42,7 +42,7 @@
 //!   `MindRunner` that runs a compiled script synchronously at the think
 //!   point, reads the label rule on both ends of the call, and answers a
 //!   dropped hull (three faults running) with the native stand-in.
-//! * **The think pool** (`pool.rs`, 17b cut M4.1; doc 17 §6 "Execution
+//! * **The think pool** (`pool.rs`, 17b cut M4.1; doc 17 Â§6 "Execution
 //!   policy", D-UM-22): [`MindPool`](crate::minds::MindPool), the
 //!   process-wide pure-`std` pool of `[tacsim.minds].workers` threads every
 //!   sim task sends a pulse's collected thinks to as one batch, served
@@ -53,16 +53,16 @@
 //! * **The sealed runners** (`sealed.rs`, 17b cut M3.5):
 //!   [`install_sealed_runners`](crate::minds::install_sealed_runners), the
 //!   one place a scripted seal becomes a hull's own runner on
-//!   `Arena::runners` — at check-out and at a resume alike.
+//!   `Arena::runners` â€” at check-out and at a resume alike.
 //! * **The stock mind** (`content.rs`, 17b cut M2.5): Standard Doctrine in
 //!   Rhai (T2, `content/minds/standard.rhai`) with its manifest
 //!   (`standard.json`, the role `combat`) and its pinned SHA-256, and
-//!   [`standard_runner`](crate::minds::standard_runner) — the native stock
+//!   [`standard_runner`](crate::minds::standard_runner) â€” the native stock
 //!   mind ported arm for arm: the helm half (17b cut M2.5) and the fire
 //!   half (17b cut M2.6).
-//! * **The stations** (`stations.rs`): exactly doc 17 §4's list — `helm`,
+//! * **The stations** (`stations.rs`): exactly doc 17 Â§4's list â€” `helm`,
 //!   `speed`, `startup`, `goto`, `hold`, `goto_off`; `lock`, `emcon`; `fire`,
-//!   `arm`, `disarm`; `trace` — each pushing the
+//!   `arm`, `disarm`; `trace` â€” each pushing the
 //!   [`IntentKind`](crate::arena::intents::IntentKind) T1 emits (D-UM-10: a
 //!   pilot can type every one of them). `goto` is a reserved keyword of rhai
 //!   1.26 and is registered as custom syntax, `goto ( expr )`, with the
@@ -70,19 +70,19 @@
 //!
 //! # Refusals
 //!
-//! Every refusal a station or a kernel raises — an argument of the wrong type,
-//! an id the view does not hold, a seventeenth intent, a third `line_to` — sets
+//! Every refusal a station or a kernel raises â€” an argument of the wrong type,
+//! an id the view does not hold, a seventeenth intent, a third `line_to` â€” sets
 //! the context's flag
 //! ([`ThinkContext::refused`](crate::minds::context::ThinkContext::refused),
 //! the cause word the runner reads on the `Ok` path too) and is raised through
 //! `mush_mind::system_error`, so a script's `try { } catch { }` cannot swallow
-//! it (D-UM-31; 17b §1 (iv), the adversarial F5). A call that no registered
+//! it (D-UM-31; 17b Â§1 (iv), the adversarial F5). A call that no registered
 //! signature matches is Rhai's own error and Rhai's own `type` fault.
 //!
 //! # Lints
 //!
 //! `tacsim`'s crate deny omits `indexing_slicing`, so this module adds it here
-//! (doc 17 §7 "Lints"): every row is reached by `get`, and a handle whose
+//! (doc 17 Â§7 "Lints"): every row is reached by `get`, and a handle whose
 //! index names no row answers `()`.
 
 #![deny(clippy::indexing_slicing)]
@@ -93,7 +93,7 @@ use mush_mind::rhai::Engine;
 use mush_mind::{EngineLimits, Sandbox};
 
 /// **Register one native function** of the API on the registrar's engine and
-/// record its name — the one path a name enters the engine by, so
+/// record its name â€” the one path a name enters the engine by, so
 /// [`registered_names`] is the engine's list by construction.
 macro_rules! function {
     ($api:expr, $name:literal, $f:expr) => {{
@@ -140,14 +140,22 @@ pub mod card;
 pub(crate) mod check;
 pub mod content;
 pub mod context;
+#[cfg(test)]
+mod coprates_drill;
+mod doctrine_library;
 pub mod fees;
 pub mod kernels;
+#[cfg(test)]
+mod meridiani_field;
 pub(crate) mod metadata;
 pub(crate) mod normalize;
 pub mod pool;
+pub(crate) mod registry;
 pub mod resimulation;
 pub(crate) mod rule_samples;
 pub mod runner;
+#[cfg(test)]
+mod safe_conduct;
 pub mod sealed;
 pub mod starter;
 pub mod stations;
@@ -163,21 +171,21 @@ pub use pool::{BatchFailed, BatchHandle, MindPool};
 pub use runner::{DROPPED_LINE, RhaiRunner, ThinkStat};
 pub use sealed::{InstallError, install_sealed_runners};
 
-/// **The API's version** (doc 17 §13): the `api=` part of [`MIND_ABI`]. A
+/// **The API's version** (doc 17 Â§13): the `api=` part of [`MIND_ABI`]. A
 /// change to any registered name, signature, getter, fee or refusal is a bump.
 pub const API_VERSION: u32 = 4;
 
-/// **The stock content's version** (doc 17 §13): the `stock=` part of
+/// **The stock content's version** (doc 17 Â§13): the `stock=` part of
 /// [`MIND_ABI`]; M5r's restored Hold/motor/origin behavior is version 2.
 pub const STOCK_VERSION: u32 = 2;
 
-/// **The ABI a compiled mind is cached and sealed under** (doc 17 §7, §13;
+/// **The ABI a compiled mind is cached and sealed under** (doc 17 Â§7, Â§13;
 /// D-UM-27): `mush_mind::RHAI_ABI`, then [`API_VERSION`] and
-/// [`STOCK_VERSION`] — `mind_abi_is_composed_and_the_sandbox_is_one` composes
+/// [`STOCK_VERSION`] â€” `mind_abi_is_composed_and_the_sandbox_is_one` composes
 /// it and asserts the literal.
 pub const MIND_ABI: &str = "rhai=1.26.0;api=4;stock=2";
 
-/// **The stock class's op ceiling per think** (doc 17 §9, D-UM-35's class I
+/// **The stock class's op ceiling per think** (doc 17 Â§9, D-UM-35's class I
 /// `ops` column): operations plus fees a think may spend. **The Class I row of
 /// `ClassTable::STOCK`; production reads the profile, the tests' arithmetic
 /// keeps the constant** (17b cut M3.1: [`RhaiRunner`] runs a think at its
@@ -192,7 +200,7 @@ pub const STOCK_OPS_PER_THINK: u64 = 1_500;
 /// M3.1: the cap is the think's row's, `context::ThinkContext::line_to_max`).
 pub const STOCK_LINE_TO_PER_THINK: u32 = 2;
 
-/// **The largest `k` a `rand(k)` may ask for** (D-UM-29 as read by 17b §1 (iv),
+/// **The largest `k` a `rand(k)` may ask for** (D-UM-29 as read by 17b Â§1 (iv),
 /// the adversarial F2): `draw_permille`'s resolution. A raw 64-bit draw is
 /// invertible back to the seed-keyed state through a label the script knows
 /// (`crate::arena::rng`'s `draw` is two bijections, and the label
@@ -207,8 +215,8 @@ pub const RAND_MAX_K: i64 = 1_000;
 pub const SANDBOX_NAMES: [&str; 3] = ["clamp", "isqrt", "sleep"];
 
 /// **The packages' names the pin carries** (D-UM-24's seven packages; 17b
-/// §1's departure (5)): the integer helpers `abs`, `min`, `max`
-/// (`ArithmeticPackage`, `LogicPackage`); `LanguageCorePackage`'s own —
+/// Â§1's departure (5)): the integer helpers `abs`, `min`, `max`
+/// (`ArithmeticPackage`, `LogicPackage`); `LanguageCorePackage`'s own â€”
 /// `exit` (a return, M2.1), `take`, the `tag` property and `set_tag`, `sleep`
 /// (shadowed by the sandbox, so a call refuses), `parse_json` and the
 /// reflection function `get_fn_metadata_list`; and the keyword functions
@@ -263,18 +271,18 @@ fn register(engine: &mut Engine) -> Vec<&'static str> {
     api.names
 }
 
-/// **Register the TacSim API on an engine** (doc 17 §7, §19): the custom types
+/// **Register the TacSim API on an engine** (doc 17 Â§7, Â§19): the custom types
 /// and their getters, the card, the kernels and `rand`, the context functions
-/// and the station functions with `trace` — the closure `mush_mind`'s
+/// and the station functions with `trace` â€” the closure `mush_mind`'s
 /// `Sandbox::new` hands its engine to, last, after every limit, shadow and
 /// hook.
 pub fn register_api(engine: &mut Engine) {
     let _registered = register(engine);
 }
 
-/// **Every name a mind can call or read, pinned** (17b §2's M2.3 test 9): the
-/// API's registrations in registration order — `name` for a function, `Type.name`
-/// for a getter or a method, `type Name` for a custom type — then
+/// **Every name a mind can call or read, pinned** (17b Â§2's M2.3 test 9): the
+/// API's registrations in registration order â€” `name` for a function, `Type.name`
+/// for a getter or a method, `type Name` for a custom type â€” then
 /// [`SANDBOX_NAMES`], then [`PACKAGE_NAMES`]. Read off a scratch engine through
 /// the same registrar [`register_api`] runs, so a name cannot be registered
 /// without appearing here. D-UM-11 is the pin's other half: no `order`,
@@ -291,13 +299,13 @@ pub fn registered_names() -> Vec<String> {
         .collect()
 }
 
-/// **The one sandbox every stock think of the process runs on** (doc 17 §7,
+/// **The one sandbox every stock think of the process runs on** (doc 17 Â§7,
 /// D-UM-24: one shared engine per process): `mush_mind`'s sandbox with its
 /// engine backstop at the largest class's ceiling (17b cut M3.1:
 /// `mush_mind::MAX_OPS_ANY_CLASS`, Class III's 4,500, so every class's think
 /// runs on the one engine and a think asking past it is refused before it
 /// runs) and the API registered
-/// ([`register_api`]), built once (a process-wide `OnceLock`) and shared — two
+/// ([`register_api`]), built once (a process-wide `OnceLock`) and shared â€” two
 /// calls answer one `Arc`.
 #[must_use]
 pub fn standard_sandbox() -> Arc<Sandbox> {
@@ -314,7 +322,7 @@ pub fn standard_sandbox() -> Arc<Sandbox> {
 
 /// **The in-source fixture** every test of this module drives: a hand-built
 /// view whose every optional field is held (the shapes 17b cut M1b's (j) field
-/// gives a live view, rebuilt by hand — no arena, no runner), the arena
+/// gives a live view, rebuilt by hand â€” no arena, no runner), the arena
 /// library's own test window as the map, Line as the card, and the two ways a
 /// test drives the API: a think on [`standard_sandbox`], and an expression on
 /// a scratch engine for reading a getter's value straight back.
@@ -381,9 +389,9 @@ pub(crate) mod fixture {
     /// **The full view**: a red hull at cell (1, 4) of the test window,
     /// online, holding a lock on the hostile, a standing `Engage` order, two
     /// weapons (the cannon armed in slot 1, the coax idle), one section with
-    /// two facets, heat, a receiver and a pod — and three contacts: a
+    /// two facets, heat, a receiver and a pod â€” and three contacts: a
     /// classified hostile (blue) with a reading, a classified friend, and an
-    /// unidentified return — and one notice of each shape the getters read.
+    /// unidentified return â€” and one notice of each shape the getters read.
     #[allow(clippy::too_many_lines)]
     pub(crate) fn view() -> MindView {
         let hostile = named(HOSTILE, hostile_designator());
@@ -675,7 +683,7 @@ pub(crate) mod fixture {
     }
 
     /// The same hull with **no weapons station**: no weapon rows, and the
-    /// two weapons-station fields gone from every contact (doc 17 §22's
+    /// two weapons-station fields gone from every contact (doc 17 Â§22's
     /// italic line).
     pub(crate) fn unarmed_view() -> MindView {
         let mut view = view();
@@ -777,7 +785,7 @@ pub(crate) mod fixture {
 
     /// **One think through [`standard_sandbox`]** on `ctx` with `card`,
     /// starting from `memory`, at the stock class's ceiling and the think fee
-    /// — the way 17b cut M2.4's runner will drive it.
+    /// â€” the way 17b cut M2.4's runner will drive it.
     pub(crate) fn think_with(
         source: &str,
         ctx: ThinkContext,
@@ -810,7 +818,7 @@ pub(crate) mod fixture {
         think_with(source, context_on(view()), card(), &[])
     }
 
-    /// **A scratch engine** with the seven packages and the API — for reading
+    /// **A scratch engine** with the seven packages and the API â€” for reading
     /// a getter's value straight back as a `Dynamic` (a think answers only its
     /// memory).
     pub(crate) fn scratch() -> Engine {
@@ -835,7 +843,7 @@ pub(crate) mod fixture {
         eval_in(context_on(view()), expr)
     }
 
-    /// [`eval`] under `ctx`, with `v` its view — for a view or a map other
+    /// [`eval`] under `ctx`, with `v` its view â€” for a view or a map other
     /// than the full view's.
     pub(crate) fn eval_in(ctx: ThinkContext, expr: &str) -> Result<Dynamic, Box<EvalAltResult>> {
         let view = Arc::clone(&ctx.view);
@@ -864,7 +872,7 @@ mod tests {
     use super::fixture::{self, think};
     use super::*;
 
-    /// 17b §2's M2.3 test 8: the ABI composed from its three parts equals the
+    /// 17b Â§2's M2.3 test 8: the ABI composed from its three parts equals the
     /// literal, and the sandbox is one per process.
     #[test]
     fn mind_abi_is_composed_and_the_sandbox_is_one() {
@@ -881,8 +889,8 @@ mod tests {
         assert!(Arc::ptr_eq(&one, &two), "two calls built two sandboxes");
     }
 
-    /// **17b cut M3.1** (doc 17 §9, D-UM-35): every think-side `STOCK_*`
-    /// constant is the Class I row of `ClassTable::STOCK` — production reads
+    /// **17b cut M3.1** (doc 17 Â§9, D-UM-35): every think-side `STOCK_*`
+    /// constant is the Class I row of `ClassTable::STOCK` â€” production reads
     /// the profile, the tests' arithmetic keeps the constant, and the two
     /// cannot part.
     #[test]
@@ -912,9 +920,9 @@ mod tests {
         );
     }
 
-    /// **The registered names, pinned** (17b §2's M2.3 test 9; D-UM-11): every
+    /// **The registered names, pinned** (17b Â§2's M2.3 test 9; D-UM-11): every
     /// type, getter, method, kernel, context function and station function in
-    /// registration order, then the sandbox's and the packages' — and none of
+    /// registration order, then the sandbox's and the packages' â€” and none of
     /// the five verbs a mind never has.
     #[test]
     fn the_registered_names_are_pinned() {
@@ -936,12 +944,12 @@ mod tests {
         }
     }
 
-    /// **Every pinned name resolves from a script** — the list kept beside the
+    /// **Every pinned name resolves from a script** â€” the list kept beside the
     /// registration proven against the engine: each name called (or read) once
     /// on the full view: every API name on the scratch engine, where each
     /// answers (none is refused on the full view), and every sandbox and
     /// package name in a think on [`standard_sandbox`], where none answers
-    /// rhai's "not found" (a refusal there — `sleep`'s — is an answer: it
+    /// rhai's "not found" (a refusal there â€” `sleep`'s â€” is an answer: it
     /// proves the name resolved to the shadow).
     #[test]
     fn every_registered_name_resolves_from_a_script() {

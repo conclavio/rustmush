@@ -8,7 +8,19 @@ import type { MindLifecycle } from "./MindLifecycle";
  * All requests act as the connection's selected character. No actor, account,
  * source path, validation receipt, or arbitrary command is accepted here.
  */
-export type MindRequest = { "op": "lifecycle",
+export type MindRequest = { "op": "filed_source",
+/**
+ * Canonical nonzero decimal personal licence identity.
+ */
+licence: string,
+/**
+ * First source line, one-based.
+ */
+first: number,
+/**
+ * Inclusive last line, at most 200 lines in one response.
+ */
+last: number, } | { "op": "lifecycle",
 /**
  * Current library name.
  */

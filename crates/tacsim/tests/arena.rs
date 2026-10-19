@@ -6296,7 +6296,7 @@ fn m1a1_a_snapshot_carries_the_motors_and_refuses_a_format_two_document() {
     // to 6, 17b cut M1b.1 to 7, 17b cut M3.2 to 8, 17b cut M4.6 to 9 and 17b
     // cut M5.2 to 10 (the sealed set, the active profile, STOP E's charge); a
     // format-2 document is still refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 13);
+    assert_eq!(SNAPSHOT_FORMAT, 14);
     assert_eq!(Snapshot::head(&two), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&two, (*arena.definition).clone()).map(|_| ()),
@@ -6380,7 +6380,7 @@ fn m1a4_a_snapshot_carries_a_motor_tick_and_a_pilots_motor_row() {
     // 17b cut M1a.5 moved the format to 5, 17b cut L.1 to 6, 17b cut M1b.1
     // to 7, 17b cut M3.2 to 8, 17b cut M4.6 to 9 and 17b cut M5.2 to 10; a
     // format-3 document is still refused by name.
-    assert_eq!(SNAPSHOT_FORMAT, 13);
+    assert_eq!(SNAPSHOT_FORMAT, 14);
     assert_eq!(Snapshot::head(&three), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&three, (*arena.definition).clone()).map(|_| ()),
@@ -6599,7 +6599,7 @@ fn m3_a_snapshot_carries_the_minds_with_their_pending_answers() {
     // cut M3.2's to M4.6's), a format-7 one (17b cut M1b.1's) and a format-4
     // one are refused by name. M6 also refuses its immediate predecessors:
     // M5r's format 12 and M5rules' format 11, before decoding their old state.
-    assert_eq!(SNAPSHOT_FORMAT, 13);
+    assert_eq!(SNAPSHOT_FORMAT, 14);
     for old in [12_u32, 11, 10, 9, 8, 7, 4] {
         let mut stale = snapshot.document.clone();
         stale["format"] = serde_json::json!(old);
@@ -6705,7 +6705,7 @@ fn l1_a_snapshot_carries_the_orders_author_and_refuses_a_format_five_document() 
     };
     // 17b cut M3.2 moved the format to 8, 17b cut M4.6 to 9 and 17b cut M5.2
     // to 10.
-    assert_eq!(SNAPSHOT_FORMAT, 13);
+    assert_eq!(SNAPSHOT_FORMAT, 14);
     assert_eq!(Snapshot::head(&five), Err(refused.clone()));
     assert_eq!(
         Snapshot::decode(&five, (*arena.definition).clone()).map(|_| ()),

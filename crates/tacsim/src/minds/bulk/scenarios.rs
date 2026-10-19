@@ -27,7 +27,7 @@ use smol_str::SmolStr;
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone)]
-pub(super) struct Candidate {
+pub(in crate::minds) struct Candidate {
     pub(super) held: HeldMind,
     pub(super) profile: SmolStr,
     owned: Option<SavedMind>,
@@ -496,6 +496,7 @@ impl ScenarioFactory {
         starts.context = Some(context);
         FrozenProving::prepare(
             Plan {
+                registry: None,
                 kind: WorkKind::Proving,
                 scenario: recipe.scenario,
                 opponent: recipe.opponent_kind,

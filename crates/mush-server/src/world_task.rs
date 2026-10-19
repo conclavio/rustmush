@@ -125,6 +125,8 @@
 //! diff somebody reads.
 #![deny(clippy::unreachable)]
 
+use mush_core::composed::ComposedInstallation as PreparedInstallation;
+
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -137,10 +139,10 @@ use mush_core::{
     Audience, ControlMsg, DeliveryClass, DeliveryOutcome, DisconnectKind, Effect, Effects, Engine,
     Flags, Inbound, IncidentId, LegalActionQuery, OUTPUT_PREFIX_TAG, OUTPUT_SUFFIX_TAG, ObjId,
     ObjKind, OfferExecutionContext, OfferRouteTable, OfferSubmission, Outbox, OutputBrackets,
-    PerceivedRef, PreparedInstallation, PrincipalId, Privileges, ProjectedLegalAction,
-    ReceiptProjectionTable, Registry, Role, ScheduledKind, StagedAction, StepOutcome, TickCadence,
-    TypedStateLens, World, WorldCommand, WorldEvent, can_perceive, event_subject, is_ignoring,
-    narrative_actor, register_core_commands, register_engine_commands, spoof_for_listener,
+    PerceivedRef, PrincipalId, Privileges, ProjectedLegalAction, ReceiptProjectionTable, Registry,
+    Role, ScheduledKind, StagedAction, StepOutcome, TickCadence, TypedStateLens, World,
+    WorldCommand, WorldEvent, can_perceive, event_subject, is_ignoring, narrative_actor,
+    register_core_commands, register_engine_commands, spoof_for_listener,
 };
 use mush_ipc::{
     ActionSend, DiscordControlOp, GatewayAction, GatewayInput, GatewayRequest,
@@ -3127,6 +3129,8 @@ async fn stage_decision_fallback_trigger(
     Err("decision fallback trigger retirement watermark changed repeatedly".to_owned())
 }
 
+mod submission_disposition;
+
 // ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----
 
 /// The five steps every authoritative offer execution takes inside the world
@@ -3279,15 +3283,22 @@ fn drive_decision_capture(
 /// watermark and retrying a bounded number of times.
 struct CommandSubmitDriver {
     idempotency_epoch: u64,
+    runtime_installed: bool,
+    retry_after: Option<tokio::time::Instant>,
+    // Impossible queue-restoration failure is an integrity stop, not evidence
+    // of absence. Preserve the exact handoff even while the loop freezes.
+    stranded: Option<mush_core::submission_observation::DrivenSubmission>,
 }
 
-/// What one command-ingress drive did. Every arm is terminal for the
-/// submission except [`Self::DeferredByLegacyPredecessor`], which leaves it
-/// queued for the next iteration.
+/// What one command-ingress drive did. Deferred arms retain the same queued
+/// submission; only the separate observation can prove exact intent absence.
 enum CommandSubmitDrive {
     Idle,
     DeferredByLegacyPredecessor,
-    /// Nothing was staged; the actor is told and no durable intent exists.
+    /// Same observed attempt retained before staging, waiting for its timer.
+    DeferredByPreflight,
+    /// Presentation refusal. This also includes indeterminate/integrity cases;
+    /// only the separate private observation can prove no durable intent.
     Refused {
         actor: ObjId,
         detail: String,
@@ -3318,12 +3329,18 @@ enum CommandSubmitDrive {
     Staged {
         staged: StagedAuthoritativeAction,
         actor: ObjId,
+        disposition: Option<submission_disposition::StagedAttempt>,
     },
 }
 
 impl CommandSubmitDriver {
     const fn new(idempotency_epoch: u64) -> Self {
-        Self { idempotency_epoch }
+        Self {
+            idempotency_epoch,
+            runtime_installed: false,
+            retry_after: None,
+            stranded: None,
+        }
     }
 
     async fn drive_one(
@@ -3331,21 +3348,41 @@ impl CommandSubmitDriver {
         engine: &mut Engine,
         store: &dyn AuthoritativeStore,
     ) -> Result<CommandSubmitDrive, String> {
+        if self.stranded.is_some() {
+            return Err("observed command handoff could not be restored".into());
+        }
         if !engine.has_authoritative_submit() {
+            self.retry_after = None;
             return Ok(CommandSubmitDrive::Idle);
         }
+        if self
+            .retry_after
+            .is_some_and(|deadline| tokio::time::Instant::now() < deadline)
+        {
+            return Ok(CommandSubmitDrive::DeferredByPreflight);
+        }
+        self.retry_after = None;
         // Same rule as `DurableScheduleDriver::drive_one`: legacy work owns the
         // next FIFO commit, and `flush_prepared_action` rejects a prepared
         // action that reaches submission beside it. The submission stays queued.
         if engine.has_legacy_persistence_work() {
             return Ok(CommandSubmitDrive::DeferredByLegacyPredecessor);
         }
-        let Some(submit) = engine.take_authoritative_submit() else {
+        if !self.runtime_installed {
+            engine
+                .set_submission_runtime(Arc::new(submission_disposition::Runtime))
+                .map_err(str::to_owned)?;
+            self.runtime_installed = true;
+        }
+        let Some(driven) = engine.take_observed_authoritative_submit() else {
             return Ok(CommandSubmitDrive::Idle);
         };
+        // Keep the opaque handoff intact until preflight gives a definitive
+        // branch. A transient lookup may only restore this same attempt.
+        let submit = driven.request();
         let actor = submit.actor;
         for _ in 0..3 {
-            let envelope = match ActionCoordinator::command_ingress(&submit, self.idempotency_epoch)
+            let envelope = match ActionCoordinator::command_ingress(submit, self.idempotency_epoch)
             {
                 Ok(envelope) => envelope,
                 Err(detail) => {
@@ -3368,9 +3405,19 @@ impl CommandSubmitDriver {
             };
             let preflight = match ActionCoordinator::preflight(store, envelope).await {
                 Ok(preflight) => preflight,
-                // A transient store is not a durable fact: nothing was staged,
-                // so refusing is fail-closed and the actor may simply retype.
+                // No provider or writer has seen this attempt. Restore the
+                // same opaque observation before relinquishing the Engine;
+                // missing acknowledgement is never interpreted as absence.
                 Err(error) if error.is_transient() => {
+                    if driven.is_observed() {
+                        if let Err(driven) = engine.requeue_observed_authoritative_submit(driven) {
+                            self.stranded = Some(driven);
+                            return Err("observed command handoff could not be restored".into());
+                        }
+                        self.retry_after =
+                            Some(tokio::time::Instant::now() + COMMAND_PREFLIGHT_RETRY_DELAY);
+                        return Ok(CommandSubmitDrive::DeferredByPreflight);
+                    }
                     return Ok(CommandSubmitDrive::Refused {
                         actor,
                         detail: error.to_string(),
@@ -3386,9 +3433,16 @@ impl CommandSubmitDriver {
                     self.idempotency_epoch = self.idempotency_epoch.max(minimum_accepted_epoch);
                 }
                 ActionPreflight::Vacant(permit) => {
+                    let (submit, driver) = driven.into_parts();
+                    let observation = submission_disposition::Attempt::from_driver(driver)
+                        .map(|attempt| attempt.vacant(&permit))
+                        .transpose()?;
                     let submission = match command_offer_submission(engine, &submit) {
                         Ok(submission) => submission,
                         Err(detail) => {
+                            if let Some(observation) = observation {
+                                observation.refuse_unstaged(engine);
+                            }
                             return Ok(CommandSubmitDrive::Refused {
                                 actor,
                                 detail,
@@ -3397,12 +3451,24 @@ impl CommandSubmitDriver {
                         }
                     };
                     return Ok(match resolve_and_stage_offer(engine, permit, submission) {
-                        Ok((staged, actor)) => CommandSubmitDrive::Staged { staged, actor },
-                        Err(detail) => CommandSubmitDrive::Refused {
-                            actor,
-                            detail,
-                            integrity: false,
-                        },
+                        Ok((staged, actor)) => {
+                            let disposition = observation.map(|proof| proof.staged(&staged));
+                            CommandSubmitDrive::Staged {
+                                staged,
+                                actor,
+                                disposition,
+                            }
+                        }
+                        Err(detail) => {
+                            if let Some(observation) = observation {
+                                observation.refuse_unstaged(engine);
+                            }
+                            CommandSubmitDrive::Refused {
+                                actor,
+                                detail,
+                                integrity: false,
+                            }
+                        }
                     });
                 }
                 ActionPreflight::Pending { .. } => {
@@ -3439,6 +3505,16 @@ impl CommandSubmitDriver {
             detail: "the idempotency retirement watermark changed repeatedly".to_owned(),
             integrity: true,
         })
+    }
+}
+
+// Retained preflight work occupies the existing queue budget. A timer rather
+// than a ready future prevents a store outage from spinning the world loop.
+const COMMAND_PREFLIGHT_RETRY_DELAY: Duration = Duration::from_millis(250);
+
+async fn command_submit_ready(retry_after: Option<tokio::time::Instant>) {
+    if let Some(deadline) = retry_after {
+        tokio::time::sleep_until(deadline).await;
     }
 }
 
@@ -3637,6 +3713,7 @@ struct CreateCompletion {
 
 struct ActionCompletion {
     staged: StagedAuthoritativeAction,
+    disposition: Option<submission_disposition::StagedAttempt>,
     owned: Option<oneshot::Sender<Result<StagedAuthoritativeAction, AuthoritativeCommitFailure>>>,
     finished:
         Option<oneshot::Sender<Result<StagedAuthoritativeAction, AuthoritativeCommitFailure>>>,
@@ -3698,6 +3775,19 @@ enum PendingReceipt {
 }
 
 impl PendingReceipt {
+    const fn authoritative_identity(
+        &self,
+    ) -> Option<(mush_core::CommitToken, mush_core::CanonicalHash)> {
+        match self {
+            Self::Authoritative {
+                expected_token,
+                expected_hash,
+                ..
+            } => Some((*expected_token, *expected_hash)),
+            Self::Legacy { .. } => None,
+        }
+    }
+
     const fn token(&self) -> CommitToken {
         match self {
             Self::Legacy {
@@ -4312,10 +4402,9 @@ async fn run(
             && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
         // E7c2 B1: arm the command-ingress adapter only when a prepared action
         // could legally be staged right now — no queued legacy persistence
-        // work, no unresolved ledger predecessor, no pending commit. That is
-        // also what makes the ready-future arm below terminate: every drive
-        // either consumes the submission or leaves it queued behind a condition
-        // the foot-of-loop flush clears.
+        // work, no unresolved ledger predecessor, no pending commit.
+        // A transient preflight retains the same queue entry and arms a timer;
+        // other deferred work stays behind conditions the foot-of-loop clears.
         let command_submit_armed = (engine.has_authoritative_submit()
             || engine.has_decision_capture())
             && pending_commit.is_none()
@@ -4391,9 +4480,9 @@ async fn run(
                 }
             } => Wake::CommitReceipt(receipt),
             () = sleep_until_unix_ms(next_due), if sched_armed => Wake::Timer,
-            // E7c2 B1: a queued command submission is ready work, not polled
-            // work — a player's `@inv/move` must not wait on a 250 ms tick.
-            () = std::future::ready(()), if command_submit_armed => Wake::CommandSubmits,
+            // New command submissions are immediately ready. Only a retained
+            // transient preflight waits, without blocking other loop arms.
+            () = command_submit_ready(command_submits.retry_after), if command_submit_armed => Wake::CommandSubmits,
             _ = durable_schedule_tick.tick(), if durable_schedule_armed => Wake::DurableSchedules,
             wake = async {
                 match decision_wakes.as_mut() {
@@ -4822,6 +4911,7 @@ async fn run(
                                     }));
                                     failure_actor = Some(actor);
                                     action_completion = Some(ActionCompletion {
+                                        disposition: None,
                                         staged,
                                         owned: Some(owned),
                                         finished: Some(finished),
@@ -5034,6 +5124,7 @@ async fn run(
                             match resolving {
                                 Ok(Some(staged)) => {
                                     action_completion = Some(ActionCompletion {
+                                        disposition: None,
                                         staged,
                                         owned: None,
                                         finished: None,
@@ -5077,6 +5168,7 @@ async fn run(
                             match staged {
                                 Ok(Some(staged)) => {
                                     action_completion = Some(ActionCompletion {
+                                        disposition: None,
                                         staged,
                                         owned: None,
                                         finished: None,
@@ -5207,7 +5299,9 @@ async fn run(
                 }
                 match command_submits.drive_one(&mut engine, store).await {
                     Ok(
-                        CommandSubmitDrive::Idle | CommandSubmitDrive::DeferredByLegacyPredecessor,
+                        CommandSubmitDrive::Idle
+                        | CommandSubmitDrive::DeferredByLegacyPredecessor
+                        | CommandSubmitDrive::DeferredByPreflight,
                     ) => {}
                     Ok(CommandSubmitDrive::Refused {
                         actor,
@@ -5270,7 +5364,11 @@ async fn run(
                             None => out.info(actor, "That was already done."),
                         }
                     }
-                    Ok(CommandSubmitDrive::Staged { staged, actor }) => {
+                    Ok(CommandSubmitDrive::Staged {
+                        staged,
+                        actor,
+                        disposition,
+                    }) => {
                         // The confirmation is COMMIT-BOUND: `resolve_classified_sends`
                         // collects it below and the delivery boundary withholds
                         // it until this exact bundle's durable receipt resolves,
@@ -5286,6 +5384,7 @@ async fn run(
                             staged.summary.clone().unwrap_or_else(|| "Done.".to_owned()),
                         );
                         action_completion = Some(ActionCompletion {
+                            disposition,
                             staged,
                             owned: None,
                             finished: None,
@@ -5344,6 +5443,7 @@ async fn run(
                     Ok(DurableScheduleDrive::Staged(staged)) => {
                         durable_schedule_transient_alarmed = false;
                         action_completion = Some(ActionCompletion {
+                            disposition: None,
                             staged,
                             owned: None,
                             finished: None,
@@ -5424,6 +5524,7 @@ async fn run(
                         durable_decision_transient_alarmed = false;
                         let StagedDecisionLease { staged, worker } = staged;
                         action_completion = Some(ActionCompletion {
+                            disposition: None,
                             staged,
                             owned: None,
                             finished: None,
@@ -5439,6 +5540,7 @@ async fn run(
                     Ok(DurableDecisionDrive::StagedLifecycle(staged)) => {
                         durable_decision_transient_alarmed = false;
                         action_completion = Some(ActionCompletion {
+                            disposition: None,
                             staged,
                             owned: None,
                             finished: None,
@@ -5450,6 +5552,7 @@ async fn run(
                     }
                     Ok(DurableDecisionDrive::StagedFallback(selected)) => {
                         action_completion = Some(ActionCompletion {
+                            disposition: None,
                             staged: selected.staged,
                             owned: None,
                             finished: None,
@@ -5470,6 +5573,7 @@ async fn run(
                         outcome,
                     }) => {
                         action_completion = Some(ActionCompletion {
+                            disposition: None,
                             staged,
                             owned: None,
                             finished: None,
@@ -5563,6 +5667,7 @@ async fn run(
                                     "decision provider failure entered durable lifecycle"
                                 );
                                 action_completion = Some(ActionCompletion {
+                                    disposition: None,
                                     staged: attempt.staged,
                                     owned: None,
                                     finished: None,
@@ -5632,6 +5737,7 @@ async fn run(
                                         binding,
                                     }) => {
                                         action_completion = Some(ActionCompletion {
+                                            disposition: None,
                                             staged,
                                             owned: None,
                                             finished: None,
@@ -5686,6 +5792,7 @@ async fn run(
                                             "reconciled an already finalized selected action"
                                         );
                                         action_completion = Some(ActionCompletion {
+                                            disposition: None,
                                             staged,
                                             owned: None,
                                             finished: None,
@@ -7521,9 +7628,11 @@ pub fn render_ps(engine: &Engine, now_ms: i64) -> String {
                 scenes.push(format!("  {module}:{tag}  {scene}  next in {remain_s}s"));
             }
             ScheduledKind::Control(_) => control += 1,
-            // A server-initiated request deadline (interface plan I10):
-            // ephemeral and not shown in the @ps report.
-            ScheduledKind::RequestTimeout { .. } => {}
+            // Internal deadlines and registered continuations are ephemeral;
+            // their private request arguments are not shown in @ps.
+            ScheduledKind::RequestTimeout { .. }
+            | ScheduledKind::CommandContinuation(_)
+            | ScheduledKind::ConnectionCompletion(_) => {}
         }
     }
     let mut ticks = Vec::new();
@@ -9663,6 +9772,7 @@ fn complete_pending_commit(
     llm: Option<&Arc<LlmService>>,
     store: &Arc<dyn ObjectStore>,
 ) -> CompletedPending {
+    let disposition_identity = pending.receipt.authoritative_identity();
     let PendingCommit {
         mut sends,
         mut effects,
@@ -9701,7 +9811,7 @@ fn complete_pending_commit(
             let ops_before = engine.module_ops().len();
             let mut announce_out = Outbox::new();
             let mut announce_fx = Effects::new();
-            match engine.install_prepared_action_announcing(
+            match engine.install_composed_action_announcing(
                 installation,
                 &mut announce_out,
                 &mut announce_fx,
@@ -9739,18 +9849,33 @@ fn complete_pending_commit(
                     );
                 }
             }
-        } else if let Err(error) = engine.abort_prepared_action(installation) {
-            // Same wiring bug on the refusal half of the seam: the reservation
-            // could not be released, so the store is wedged and the world must
-            // stop writing rather than assert here.
-            integrity_failure = true;
-            apply_integrity_freeze(
-                &engine.world,
-                gateway,
-                health,
-                persistence_integrity,
-                &format!("prepared action-state abort refused: {error}"),
-            );
+        } else if integrity_failure {
+            // No exact Refused disposition exists. Dropping the installation
+            // leaves its typed reservation poisoned; it must never become
+            // available for another action while persistence is indeterminate.
+            drop(installation);
+        } else {
+            let observation = action
+                .as_mut()
+                .and_then(|completion| completion.disposition.take());
+            let aborted = match (observation, terminal_failure.as_ref()) {
+                (Some(observation), Some(failure)) => {
+                    observation.abort_refused(engine, installation, failure, disposition_identity)
+                }
+                _ => engine
+                    .abort_prepared_action(installation)
+                    .map_err(|error| error.to_string()),
+            };
+            if let Err(error) = aborted {
+                integrity_failure = true;
+                apply_integrity_freeze(
+                    &engine.world,
+                    gateway,
+                    health,
+                    persistence_integrity,
+                    &format!("prepared action-state abort refused: {error}"),
+                );
+            }
         }
     }
     if let Some(post_commit) = action
@@ -11351,7 +11476,7 @@ mod tests {
             .expect("decision lease prepare")
             .into_parts();
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         let fence = mush_core::DecisionCompletionFence::new(
             worker.controller().clone(),
@@ -11448,7 +11573,7 @@ mod tests {
             .await
             .expect("capture reconciliation");
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
     }
 
@@ -11938,6 +12063,7 @@ mod tests {
             failure_actor: None,
             create: None,
             action: Some(ActionCompletion {
+                disposition: None,
                 staged,
                 owned: None,
                 finished: None,
@@ -12225,7 +12351,7 @@ mod tests {
             .await
             .expect("fallback custody reconcile");
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         assert!(matches!(
             engine
@@ -12389,7 +12515,7 @@ mod tests {
             .await
             .expect("lease reconcile");
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         drop(reservation);
 
@@ -12452,7 +12578,7 @@ mod tests {
             .await
             .expect("cancellation reconcile");
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         assert!(engine.decision_response_ingress(&fence, &response).is_err());
         assert!(matches!(
@@ -12496,7 +12622,7 @@ mod tests {
             .await
             .expect("compaction reconcile");
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         assert!(
             engine
@@ -12555,7 +12681,7 @@ mod tests {
             .expect("terminal test prepare")
             .into_parts();
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
 
         let (completion_tx, _completion_rx) = mpsc::channel(MAX_DECISION_COMPLETIONS);
@@ -12639,7 +12765,7 @@ mod tests {
             .await
             .expect("lease reconciliation");
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         drop(reservation);
 
@@ -12733,7 +12859,7 @@ mod tests {
         let prepared = transaction.prepare().expect("retry preparation");
         let (_, installation) = prepared.into_parts();
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         let second_fence = mush_core::DecisionCompletionFence::new(
             worker.controller().clone(),
@@ -12786,7 +12912,7 @@ mod tests {
             .await
             .expect("selected action reconcile");
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         assert!(matches!(
             ActionCoordinator::preflight(&store, duplicate_ingress)
@@ -12834,7 +12960,7 @@ mod tests {
             .await
             .expect("resolving reconcile");
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         let resolved = engine
             .action_state()
@@ -12879,7 +13005,7 @@ mod tests {
             .await
             .expect("terminal reconcile");
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         let terminal = engine
             .action_state()
@@ -13058,7 +13184,7 @@ mod tests {
             .expect("fallback race post-image");
         let (_, installation) = txn.prepare().unwrap().into_parts();
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
 
         let page = engine
@@ -13106,7 +13232,7 @@ mod tests {
             .await
             .expect("fallback reconcile");
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
 
         assert!(matches!(
@@ -13190,7 +13316,7 @@ mod tests {
             .expect("tampered post-image");
         let (_, installation) = txn.prepare().unwrap().into_parts();
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
 
         let owner = OwnerId::new(DECISION_HARNESS_OWNER).expect("static harness owner");
@@ -13466,7 +13592,7 @@ mod tests {
                         .expect("lease-revoke post-image");
                     let (_, installation) = txn.prepare().unwrap().into_parts();
                     engine
-                        .install_prepared_action(installation)
+                        .install_composed_action(installation)
                         .expect("the fixture installs");
                 }
                 Change::SourceComponent => {
@@ -13496,7 +13622,7 @@ mod tests {
                         .expect("contact-loss post-image");
                     let (_, installation) = txn.prepare().unwrap().into_parts();
                     engine
-                        .install_prepared_action(installation)
+                        .install_composed_action(installation)
                         .expect("the fixture installs");
                 }
                 Change::Window => {
@@ -13522,7 +13648,7 @@ mod tests {
                         .expect("window-close post-image");
                     let (_, installation) = txn.prepare().unwrap().into_parts();
                     engine
-                        .install_prepared_action(installation)
+                        .install_composed_action(installation)
                         .expect("the fixture installs");
                 }
                 Change::BridgeOwner => {
@@ -13684,7 +13810,7 @@ mod tests {
         let (_, installation) = prepared.into_parts();
         world
             .engine_mut()
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         let effect = world
             .engine()
@@ -13785,7 +13911,7 @@ mod tests {
         let (_, installation) = prepared.into_parts();
         world
             .engine_mut()
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         let effect = world
             .engine()
@@ -13874,7 +14000,7 @@ mod tests {
         let (_, installation) = prepared.into_parts();
         world
             .engine_mut()
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         let effect = world
             .engine()
@@ -13929,7 +14055,7 @@ mod tests {
         let (_, installation) = prepared.into_parts();
         world
             .engine_mut()
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         let _ = world.drain_write_batch();
 
@@ -14288,7 +14414,7 @@ mod tests {
             .expect("test state is valid");
         let prepared = transaction.prepare().expect("test transaction prepares");
         let (_module_ops, installation) = prepared.into_parts();
-        installation
+        installation.into()
     }
 
     fn prepared_lane_bundle(prepared: &PreparedTxn, identity: u8) -> AuthoritativeBundle {
@@ -15829,6 +15955,7 @@ mod tests {
             .expect("test transaction prepares")
             .into_parts()
             .1
+            .into()
     }
 
     /// Whether staff were told, in the words `apply_integrity_freeze` uses.
@@ -16426,7 +16553,7 @@ mod tests {
             .expect("test state is valid");
         let prepared = transaction.prepare().expect("test transaction prepares");
         let (_, installation) = prepared.into_parts();
-        let pending = pending_with_prepared_installation(7, installation);
+        let pending = pending_with_prepared_installation(7, installation.into());
         let recorder = Arc::new(RecordingGateway {
             discord: Mutex::default(),
             sends: Mutex::new(Vec::new()),
@@ -19333,7 +19460,7 @@ mod tests {
         let mut engine = world.into_engine();
         let mut driver = CommandSubmitDriver::new(1);
         let staged = match driver.drive_one(&mut engine, &store).await.unwrap() {
-            CommandSubmitDrive::Staged { staged, actor } => {
+            CommandSubmitDrive::Staged { staged, actor, .. } => {
                 assert_eq!(actor, GOD);
                 staged
             }
@@ -19443,7 +19570,7 @@ mod tests {
             .await
             .unwrap();
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         store
             .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
@@ -19534,7 +19661,7 @@ mod tests {
         let _ = world.drain_write_batch();
         let mut engine = world.into_engine();
         let mut driver = CommandSubmitDriver::new(1);
-        let CommandSubmitDrive::Staged { staged, actor } =
+        let CommandSubmitDrive::Staged { staged, actor, .. } =
             driver.drive_one(&mut engine, &store).await.unwrap()
         else {
             panic!("staged")
@@ -19633,7 +19760,7 @@ mod tests {
             let prepared = txn.prepare().expect("prepared");
             let (_, installation) = prepared.into_parts();
             engine
-                .install_prepared_action(installation)
+                .install_composed_action(installation)
                 .expect("the fixture installs");
         }
         (world, families, from)
@@ -19699,7 +19826,7 @@ mod tests {
             .await
             .unwrap();
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         store
             .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
@@ -19827,7 +19954,7 @@ mod tests {
             .await
             .unwrap();
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the mint installs");
         store
             .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
@@ -20037,7 +20164,7 @@ mod tests {
         if let Some(prepared) = prepared {
             let (_, installation) = prepared.into_parts();
             engine
-                .install_prepared_action(installation)
+                .install_composed_action(installation)
                 .expect("the fixture installs");
         }
         result
@@ -20104,7 +20231,7 @@ mod tests {
             .await
             .unwrap();
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         store
             .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
@@ -20181,7 +20308,7 @@ mod tests {
             .unwrap();
         world
             .engine_mut()
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         store
             .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
@@ -20787,7 +20914,7 @@ mod tests {
             .await
             .unwrap();
         engine
-            .install_prepared_action(installation)
+            .install_composed_action(installation)
             .expect("the fixture installs");
         store
             .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
@@ -21368,7 +21495,7 @@ mod tests {
                 .expect("the pulse arm prepares");
             let (_ops, installation) = prepared.into_parts();
             engine
-                .install_prepared_action(installation)
+                .install_composed_action(installation)
                 .expect("the fixture installs");
         }
 
@@ -21451,7 +21578,7 @@ mod tests {
                         .await
                         .expect("reconcile");
                     engine
-                        .install_prepared_action(installation)
+                        .install_composed_action(installation)
                         .expect("the fixture installs");
                     "staged"
                 }
@@ -21597,7 +21724,7 @@ mod tests {
                 .expect("the re-arm prepares");
             let (_ops, installation) = prepared.into_parts();
             engine
-                .install_prepared_action(installation)
+                .install_composed_action(installation)
                 .expect("the fixture installs");
             let after = engine
                 .action_state()

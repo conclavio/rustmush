@@ -847,6 +847,37 @@ pub(crate) mod tests {
         }
     }
     #[test]
+    fn m7_old_tape_engine_and_snapshot_refuse_before_replay_starts() {
+        let (_, header) = opening(2);
+        assert_eq!(TAPE_FORMAT, 2);
+        assert_eq!(EngineStamp::current().engine, "tacsim-engine-m7-v1");
+        assert_eq!(EngineStamp::current().snapshot, 14);
+        for mutation in 0..4 {
+            let mut old = (*header).clone();
+            match mutation {
+                0 => old.format = 1,
+                1 => old.engine.engine = "tacsim-engine-m6.5-v1".into(),
+                2 => old.engine.snapshot = 13,
+                _ => {
+                    old.opening["format"] = serde_json::json!(13);
+                    old.opening["state"] = serde_json::json!("malformed old state");
+                    assert!(matches!(
+                        Snapshot::head(&old.opening),
+                        Err(crate::arena::snapshot::SnapshotError::Format {
+                            found: 13,
+                            expected: 14
+                        })
+                    ));
+                }
+            }
+            assert!(
+                open_frozen_header(&old).is_err(),
+                "old protocol mutation {mutation}"
+            );
+        }
+    }
+
+    #[test]
     fn m6_frozen_opening_refuses_missing_source_changed_abi_engine_seal_and_ground() {
         let (_, header) = opening(2);
         for mutation in 0..6 {

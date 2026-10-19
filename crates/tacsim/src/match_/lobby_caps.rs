@@ -2,6 +2,7 @@
 //! Selection is volatile with the rest of the lobby. A running centre's selected
 //! caps ride its existing durable live record and are restored with that record.
 
+use super::super::original_access::HoldingAccess;
 use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,18 +24,30 @@ pub(super) fn fill_cap(w: &World, centre: &Centre, team: Team) -> CoreClass {
 
 /// The pilot/default distinction is ownership of the claimed slot, not whether
 /// that pilot happens to be seated at this moment.
-pub(super) fn slot_choice(w: &World, centre: &Centre, slot: &Slot) -> Result<SealChoice, SimError> {
+pub(super) fn slot_choice(
+    access: &HoldingAccess<'_>,
+    centre: &Centre,
+    slot: &Slot,
+) -> Result<SealChoice, SimError> {
     let Some(choice) = &slot.mind else {
         return Ok(SealChoice::unchosen());
     };
-    let held = choice.resolve(w, slot.pilot).ok_or(SimError::MindNotHeld {
-        team: slot.team.as_str(),
-        index: Some(slot.index),
-    })?;
+    let held = choice
+        .resolve(access, slot.pilot)
+        .ok_or(SimError::MindNotHeld {
+            team: slot.team.as_str(),
+            index: Some(slot.index),
+        })?;
+    Ok(resolved_slot_choice(centre, choice, held))
+}
+
+/// Reuse one current holding within this layout calculation. It is never kept
+/// in the lobby or reused by a later action or checkout.
+fn resolved_slot_choice(centre: &Centre, choice: &MindChoice, held: HeldMind) -> SealChoice {
     let doctrine_only = centre.doctrine_only
         || (centre.state == MatchState::Selection
             && Team::ALL.iter().all(|team| centre.side_len(*team) > 0));
-    Ok(if doctrine_only && !held.is_doctrine() {
+    if doctrine_only && !held.is_doctrine() {
         SealChoice {
             held: HeldMind::doctrine(),
             profiles: Vec::new(),
@@ -48,19 +61,20 @@ pub(super) fn slot_choice(w: &World, centre: &Centre, slot: &Slot) -> Result<Sea
             chose: true,
             substituted: false,
         }
-    })
+    }
 }
 
-pub(super) fn preview(w: &World, centre: &Centre) -> Result<Vec<Hull>, SimError> {
-    preview_visible(w, centre, None, None)
+pub(super) fn preview(access: &HoldingAccess<'_>, centre: &Centre) -> Result<Vec<Hull>, SimError> {
+    preview_visible(access, centre, None, None)
 }
 
 pub(super) fn preview_visible(
-    w: &World,
+    access: &HoldingAccess<'_>,
     centre: &Centre,
     visible: Option<Team>,
     viewer: Option<ObjId>,
 ) -> Result<Vec<Hull>, SimError> {
+    let w = access.world();
     let cfg = minds_config(w).unwrap_or_default();
     let (_, match_cfg, _) = configs(w).ok_or(SimError::Unavailable)?;
     let mut rows = Vec::new();
@@ -74,20 +88,29 @@ pub(super) fn preview_visible(
         let result = (|| -> Result<(), SimError> {
             for slot in centre.slots.iter().filter(|slot| slot.team == team) {
                 disclose = privileged || viewer == Some(slot.pilot);
-                let choice = slot_choice(w, centre, slot)?;
+                let requested = slot
+                    .mind
+                    .as_ref()
+                    .map(|choice| {
+                        choice
+                            .resolve(access, slot.pilot)
+                            .map(|held| (choice, held))
+                            .ok_or(SimError::MindNotHeld {
+                                team: team.as_str(),
+                                index: Some(slot.index),
+                            })
+                    })
+                    .transpose()?;
                 let chassis = effective_type(w, slot).ok_or(SimError::NoUnit {
                     team: team.as_str(),
                     index: slot.index,
                 })?;
-                if let Some(requested) = &slot.mind {
-                    let held = requested
-                        .resolve(w, slot.pilot)
-                        .ok_or(SimError::MindNotHeld {
-                            team: team.as_str(),
-                            index: Some(slot.index),
-                        })?;
+                let choice = if let Some((requested, held)) = requested {
                     check_rating(w, &chassis, &held)?;
-                }
+                    resolved_slot_choice(centre, requested, held)
+                } else {
+                    SealChoice::unchosen()
+                };
                 rows.push(Hull {
                     team,
                     index: slot.index,
@@ -119,24 +142,27 @@ pub(super) fn preview_visible(
             } else {
                 Vec::new()
             };
-            let choice = if !pods.is_empty() && range.is_none() {
+            let requested_fill = if !pods.is_empty() && range.is_none() {
                 centre
                     .fill_minds
                     .iter()
                     .find(|fill| fill.team == team)
                     .map(|fill| {
-                        fill_held(w, centre, fill)
-                            .map(|held| fill_seal_choice(&held, fill, doctrine_only))
+                        fill_held(access, centre, fill)
+                            .map(|held| (fill, held))
                             .ok_or(SimError::MindNotHeld {
                                 team: team.as_str(),
                                 index: None,
                             })
                     })
                     .transpose()?
-                    .unwrap_or_else(SealChoice::unchosen)
             } else {
-                SealChoice::unchosen()
+                None
             };
+            let choice = requested_fill
+                .as_ref()
+                .map(|(fill, held)| fill_seal_choice(held, fill, doctrine_only))
+                .unwrap_or_else(SealChoice::unchosen);
             let cap = fill_cap(w, centre, team);
             for (index, _) in pods {
                 let target = range.is_some_and(|(_, targets)| targets == team);
@@ -148,11 +174,8 @@ pub(super) fn preview_visible(
                         index,
                     })?
                 };
-                if !target
-                    && let Some(fill) = centre.fill_minds.iter().find(|fill| fill.team == team)
-                    && let Some(held) = fill_held(w, centre, fill)
-                {
-                    check_rating(w, &chassis, &held)?;
+                if let Some((_, held)) = &requested_fill {
+                    check_rating(w, &chassis, held)?;
                 }
                 rows.push(Hull {
                     team,
@@ -207,10 +230,14 @@ fn preview_class(
     }
 }
 
-pub(super) fn admit(w: &World, centre: &Centre, actor: ObjId) -> Result<(), SimError> {
+pub(super) fn admit(
+    access: &HoldingAccess<'_>,
+    centre: &Centre,
+    actor: ObjId,
+) -> Result<(), SimError> {
     let visible = centre.slot_of_pilot(actor).map(|slot| slot.team);
-    let rows = preview_visible(w, centre, visible, Some(actor))?;
-    admit_rows(w, &rows, visible)
+    let rows = preview_visible(access, centre, visible, Some(actor))?;
+    admit_rows(access.world(), &rows, visible)
 }
 
 fn admit_rows(w: &World, rows: &[Hull], visible: Option<Team>) -> Result<(), SimError> {
@@ -237,17 +264,18 @@ fn admit_rows(w: &World, rows: &[Hull], visible: Option<Team>) -> Result<(), Sim
 /// Preserve the existing recovery rule: a strictly lower load can repair an
 /// already oversized side, provided neither the other side nor hull count grows.
 pub(super) fn admit_change(
-    w: &World,
+    access: &HoldingAccess<'_>,
     before: &Centre,
     after: &Centre,
     actor: ObjId,
 ) -> Result<(), SimError> {
+    let w = access.world();
     let visible = after
         .slot_of_pilot(actor)
         .or_else(|| before.slot_of_pilot(actor))
         .map(|slot| slot.team);
-    let next = preview_visible(w, after, visible, Some(actor))?;
-    if let Ok(previous) = preview(w, before) {
+    let next = preview_visible(access, after, visible, Some(actor))?;
+    if let Ok(previous) = preview(access, before) {
         let cfg = minds_config(w).unwrap_or_default();
         let load = |rows: &[Hull], team| {
             rows.iter()

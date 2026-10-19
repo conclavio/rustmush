@@ -47,6 +47,11 @@ pub enum ScheduledKind {
         /// The full command line to dispatch.
         line: String,
     },
+    /// An opaque module-registered command continuation. Only an attributed
+    /// module context can construct its bounded request; player text cannot.
+    CommandContinuation(crate::continuation::ContinuationRequest),
+    /// Exact one-shot completion captured from a real physical client ingress.
+    ConnectionCompletion(crate::connection_completion::ConnectionCompletionRequest),
     /// A recurring module tick (weather every 300s per zone, comsys
     /// housekeeping, …). The engine routes it to the module's registered
     /// [`TickHandler`](crate::module::TickHandler) and re-arms it at its

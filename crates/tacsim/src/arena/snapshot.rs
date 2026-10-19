@@ -324,7 +324,10 @@ pub const SNAPSHOT_RECORD: &str = "tacsim.snapshot";
 /// cursor and the captured snapshot byte limit replace the old fixed-card shape.
 /// Earlier formats, including 12 and 11, are refused by name before state decode;
 /// in-flight matches restart rather than migrating.
-pub const SNAPSHOT_FORMAT: u32 = 13;
+/// **14 since M7:** filed origins carry the exact immutable Registry certificate
+/// and saved revision identity, including when the effective execution is ROM.
+/// There is no default certificate or migration from an unbound filed origin.
+pub const SNAPSHOT_FORMAT: u32 = 14;
 
 /// **One arena between two pulses, as a document** (16b cut AF.1).
 ///

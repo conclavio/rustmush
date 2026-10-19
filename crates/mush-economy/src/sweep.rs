@@ -233,6 +233,12 @@ fn expire_holds(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
         let snap = store.snapshot();
         snap.holds()
             .filter(|h| h.status.is_held())
+            // Managed escrow has a coupled terminal owner. Do not consume its
+            // expiry attempts or publish legacy repair advice after refusing it.
+            .filter(|h| {
+                !matches!(&h.purpose, crate::record::HoldPurpose::Escrow { contract }
+                    if crate::contract::managed::at(snap, *contract))
+            })
             .filter(|h| h.expires.is_some_and(|d| clocks.passed(&d, snap, i64::MIN)))
             // The engine refuses a hold op on a non-`Active` account (a frozen account
             // must not have its numbers moved even by an effect). Skipping here keeps
@@ -497,6 +503,7 @@ fn disposition(e: &EconomyError) -> Disposition {
         | EconomyError::BackingInvalid(_)
         | EconomyError::DuplicateAssetOp(_)
         | EconomyError::DuplicateCustodyOp(_)
+        | EconomyError::ManagedContract
         | EconomyError::HasEffects
         | EconomyError::Custody(_)
         | EconomyError::StaleAsset { .. }
@@ -1328,6 +1335,7 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             Some(e) => e.renotify_due(now) || e.reopen_due(now),
         };
         snap.contracts()
+            .filter(|contract| contract.consent.managed.is_none())
             .filter_map(|c| {
                 // A pending terminal transition outranks everything: its plan may
                 // already be durable, and nothing else may run over it.
@@ -1490,6 +1498,7 @@ fn stamp_observed_conditions(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
         };
         let snap = store.snapshot();
         snap.contracts()
+            .filter(|contract| contract.consent.managed.is_none())
             .filter(|c| {
                 matches!(
                     c.state,
@@ -1509,7 +1518,10 @@ fn stamp_observed_conditions(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             .collect()
     };
     for c in stamped {
-        api::put_contract(ctx, c);
+        if let Err(error) = api::put_contract(ctx, c) {
+            tracing::error!(%error, "economy: legacy contract document refused before publication");
+            return;
+        }
     }
 }
 
@@ -1540,6 +1552,7 @@ fn republish_settlements(ctx: &mut Ctx<'_>, now: i64) {
         };
         let snap = store.snapshot();
         snap.contracts()
+            .filter(|contract| contract.consent.managed.is_none())
             .filter(|c| c.canon_published.is_none() && c.consent.visibility.is_public())
             .filter_map(|c| match c.state {
                 crate::contract::ContractState::Settled { transaction } => {
@@ -1606,6 +1619,7 @@ fn page_stale_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
         }
         let snap = store.snapshot();
         snap.contracts()
+            .filter(|contract| contract.consent.managed.is_none())
             // E6a step 1 verify fold (M2): `Draft` belongs here too. An A′ amendment
             // leaves a draft that may still hold the author's escrow, and one that is
             // never re-offered is money reserved with nobody looking at it — it pages
@@ -1716,7 +1730,8 @@ fn collect_draft(ctx: &mut Ctx<'_>, id: crate::ids::ContractId) {
     let collectable = ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
         let snap = s.snapshot();
         snap.contract(id).is_some_and(|c| {
-            c.state == crate::contract::ContractState::Draft
+            c.consent.managed.is_none()
+                && c.state == crate::contract::ContractState::Draft
                 && crate::contract::qualifying_escrow(c, snap).holds.is_empty()
         })
     });
@@ -2030,6 +2045,9 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
         let holds: Vec<_> = snap
             .holds()
             .filter(|h| !h.status.is_held())
+            // These exact terminal holds remain part of the permanent paired
+            // purchase audit. Their funding already admitted that footprint.
+            .filter(|h| !crate::managed_purchase::closed_namespace(h.holder.namespace.as_str()))
             .filter(|h| {
                 // A terminal hold with no recorded terminal instant (a journal older
                 // than this store's bookkeeping) is kept: never collect on a guess.

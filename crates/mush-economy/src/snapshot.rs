@@ -73,6 +73,68 @@ pub struct EconomySnapshot {
     contract_locks: BTreeMap<(ObjId, VaultId), ContractId>,
 }
 
+#[cfg(test)]
+mod owner_page_tests {
+    use super::*;
+    use crate::record::AssetLifecycle;
+
+    fn asset(object: u32, owner: ObjId) -> EconomicAsset {
+        EconomicAsset {
+            object: ObjId(object),
+            title_owner: PrincipalId::Object(owner),
+            scope: None,
+            assignment: None,
+            maintenance_account: None,
+            catalog: None,
+            encumbrances: vec![],
+            acquisition: None,
+            lifecycle: AssetLifecycle::Active,
+            last_journal_seq: 0,
+            revision: 1,
+            stolen: None,
+            frozen: false,
+            frozen_reason: None,
+        }
+    }
+
+    #[test]
+    fn owned_asset_pages_seek_exclusively_and_follow_current_title_index() {
+        let first = ObjId(7);
+        let second = ObjId(9);
+        let mut snapshot = EconomySnapshot::new();
+        for (object, owner) in [
+            (50, first),
+            (40, second),
+            (10, first),
+            (30, first),
+            (20, second),
+        ] {
+            snapshot.put_asset(asset(object, owner));
+        }
+        let page = |snapshot: &EconomySnapshot, owner, after, limit| {
+            snapshot
+                .assets_of_after(&PrincipalId::Object(owner), after, limit)
+                .map(|asset| asset.object)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(page(&snapshot, first, None, 2), vec![ObjId(10), ObjId(30)]);
+        assert_eq!(page(&snapshot, first, Some(ObjId(10)), 1), vec![ObjId(30)]);
+        assert_eq!(
+            page(&snapshot, first, Some(ObjId(20)), 2),
+            vec![ObjId(30), ObjId(50)]
+        );
+        assert!(page(&snapshot, first, Some(ObjId(50)), 2).is_empty());
+        assert!(page(&snapshot, first, None, 0).is_empty());
+        assert!(page(&snapshot, ObjId(99), None, 2).is_empty());
+        snapshot.put_asset(asset(30, second));
+        assert_eq!(page(&snapshot, first, Some(ObjId(10)), 2), vec![ObjId(50)]);
+        assert_eq!(
+            page(&snapshot, second, Some(ObjId(20)), 2),
+            vec![ObjId(30), ObjId(40)]
+        );
+    }
+}
+
 impl EconomySnapshot {
     /// An empty snapshot.
     #[must_use]
@@ -136,6 +198,25 @@ impl EconomySnapshot {
             .get(owner)
             .into_iter()
             .flat_map(|set| set.iter().filter_map(|o| self.assets.get(o)))
+    }
+    /// A bounded continuation of the existing current-title index. Seeking the
+    /// cursor uses the ordered index; it never scans another owner's assets or
+    /// walks an arbitrary prefix merely to find the next owned charter.
+    pub fn assets_of_after(
+        &self,
+        owner: &PrincipalId,
+        after: Option<ObjId>,
+        limit: usize,
+    ) -> impl Iterator<Item = &EconomicAsset> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        self.assets_by_owner
+            .get(owner)
+            .into_iter()
+            .flat_map(move |set| {
+                set.range((after.map_or(Unbounded, Excluded), Unbounded))
+                    .take(limit)
+                    .filter_map(|id| self.assets.get(id))
+            })
     }
     /// Look up a vault.
     #[must_use]

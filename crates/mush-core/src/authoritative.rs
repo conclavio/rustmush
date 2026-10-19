@@ -421,6 +421,34 @@ pub enum ReplayWrite {
     },
 }
 
+/// One physical-write union validator, shared by typed/legacy composition and
+/// bundle restoration. Equal-byte duplicates still collide; Ledger and JSON keys
+/// deliberately inhabit the same target namespace.
+pub(crate) fn canonicalize_replay_writes(
+    writes: &mut Vec<ReplayWrite>,
+    require_canonical_order: bool,
+) -> Result<(), AuthoritativeBundleError> {
+    let original = require_canonical_order.then(|| writes.clone());
+    writes.sort_by_key(ReplayWrite::target);
+    if original.as_ref().is_some_and(|before| before != writes) {
+        return Err(AuthoritativeBundleError::NonCanonicalWrites);
+    }
+    for pair in writes.windows(2) {
+        if pair[0].target() == pair[1].target() {
+            return Err(AuthoritativeBundleError::DuplicateWrite {
+                target: format!("{:?}", pair[0].target()).into_boxed_str(),
+            });
+        }
+    }
+    if writes.len() > MAX_AUTHORITATIVE_REPLAY_WRITES {
+        return Err(AuthoritativeBundleError::ReplayWriteLimit {
+            actual: writes.len(),
+            max: MAX_AUTHORITATIVE_REPLAY_WRITES,
+        });
+    }
+    validate_allocator(writes)
+}
+
 impl ReplayWrite {
     fn target(&self) -> ReplayTarget {
         match self {
@@ -771,28 +799,7 @@ impl AuthoritativeBundle {
             }
         }
 
-        let original_writes = require_canonical_order.then(|| draft.writes.clone());
-        draft.writes.sort_by_key(ReplayWrite::target);
-        if original_writes
-            .as_ref()
-            .is_some_and(|original| *original != draft.writes)
-        {
-            return Err(AuthoritativeBundleError::NonCanonicalWrites);
-        }
-        for pair in draft.writes.windows(2) {
-            if pair[0].target() == pair[1].target() {
-                return Err(AuthoritativeBundleError::DuplicateWrite {
-                    target: format!("{:?}", pair[0].target()).into_boxed_str(),
-                });
-            }
-        }
-        if draft.writes.len() > MAX_AUTHORITATIVE_REPLAY_WRITES {
-            return Err(AuthoritativeBundleError::ReplayWriteLimit {
-                actual: draft.writes.len(),
-                max: MAX_AUTHORITATIVE_REPLAY_WRITES,
-            });
-        }
-        validate_allocator(&draft.writes)?;
+        canonicalize_replay_writes(&mut draft.writes, require_canonical_order)?;
         if schema_version < Self::SCHEMA_VERSION
             && draft
                 .writes

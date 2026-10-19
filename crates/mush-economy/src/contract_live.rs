@@ -52,8 +52,8 @@ use crate::contract::{
     MAX_LIVE_CONTRACTS_PER_PARTY, MAX_OPEN_CONTRACTS_PER_ISSUER, MAX_OUTCOMES, MAX_PARTIES,
     MAX_SETTLE_ATTEMPTS, MAX_SHARES, ObligationTemplate, OutcomeTerms, PERMILLE, PartyAgreement,
     PayoutShare, PendingKind, PendingTerminal, Readiness, Resolution, Share, TypedCondition,
-    activate_key, check_offerable, consent_hash, forfeit_plan, principal_key, qualifying_escrow,
-    readiness, refund_plan, resolve_outcome, settlement_plan,
+    activate_key, check_offerable, consent_hash, forfeit_plan, prepare_settlement, principal_key,
+    qualifying_escrow, readiness, refund_plan,
 };
 use crate::custody::WorldCustody;
 use crate::engine::ValidateEnv;
@@ -293,6 +293,16 @@ fn cmd_contract(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return contract_list(ctx);
     }
     refuse_if_frozen(ctx)?;
+    if !sw.has("draft")
+        && let Some(id) = parse_contract_id(ctx.args.lhs())
+        && may_view_contract(ctx.w, ctx.actor, id)
+        && ctx
+            .w
+            .module_state::<EconomyStore>()
+            .is_some_and(|store| crate::contract::managed::at(store.snapshot(), id))
+    {
+        return Err(CmdError::msg(EconomyError::ManagedContract.to_string()));
+    }
     if sw.has("draft") {
         contract_draft(ctx)
     } else if sw.has("party") {
@@ -472,7 +482,7 @@ fn save_open(ctx: &mut Ctx<'_>, mut c: EconomicContract) -> Result<ContractId, C
     }
     let offered = c.state == ContractState::Offered;
     let parties = c.consent.parties.clone();
-    api::put_contract(ctx, c);
+    api::put_contract(ctx, c).map_err(|error| CmdError::msg(error.to_string()))?;
     if offered {
         for p in &parties {
             notify(
@@ -488,11 +498,24 @@ fn save_open(ctx: &mut Ctx<'_>, mut c: EconomicContract) -> Result<ContractId, C
 
 /// Persist a contract whose consent surface must NOT be re-hashed (anything from
 /// `Offer` onwards: the hash is what the acceptances bind to).
-fn save(ctx: &mut Ctx<'_>, mut c: EconomicContract) -> ContractId {
-    c.revision = c.revision.saturating_add(1);
-    let id = c.id;
-    api::put_contract(ctx, c);
-    id
+fn prepare_save(
+    ctx: &Ctx<'_>,
+    mut contract: EconomicContract,
+) -> Result<api::LegacyContractWrite, EconomyError> {
+    contract.revision = contract.revision.saturating_add(1);
+    api::prepare_contract_write(ctx, contract)
+}
+
+fn save(ctx: &mut Ctx<'_>, contract: EconomicContract) -> Result<ContractId, EconomyError> {
+    let id = contract.id;
+    let prepared = prepare_save(ctx, contract)?;
+    api::install_contract_write(ctx, prepared);
+    Ok(id)
+}
+
+fn report_contract_write_refusal(ctx: &mut Ctx<'_>, error: &EconomyError) {
+    tracing::error!(%error, "economy: legacy contract document refused before publication");
+    info(ctx, error.to_string());
 }
 
 // ---- @contract/draft ------------------------------------------------------
@@ -557,6 +580,7 @@ fn contract_draft(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         })?
     };
     let consent = ConsentSurface {
+        managed: None,
         parties: vec![issuer.clone()],
         terms: ContractTerms {
             consideration: Vec::new(),
@@ -602,7 +626,7 @@ fn contract_draft(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         },
         revision: 1,
     };
-    api::put_contract(ctx, c);
+    api::put_contract(ctx, c).map_err(|error| CmdError::msg(error.to_string()))?;
     let meta = ctx
         .w
         .module_state::<EconomyStore>()
@@ -1542,7 +1566,7 @@ fn build_roster(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         _ => return Err(CmdError::msg(USAGE)),
     }
     let locked = c.roster_locked;
-    let id = save(ctx, c);
+    let id = save(ctx, c).map_err(|error| CmdError::msg(error.to_string()))?;
     info(
         ctx,
         format!(
@@ -1569,7 +1593,7 @@ fn contract_offer(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if let Err(e) = check_offer(ctx, &c) {
         return Err(offer_refusal(ctx, &c, &e));
     }
-    let id = freeze_and_offer(ctx, c);
+    let id = freeze_and_offer(ctx, c).map_err(|error| CmdError::msg(error.to_string()))?;
     info(
         ctx,
         format!("Contract #{id} is offered; its consent surface is frozen."),
@@ -1598,6 +1622,7 @@ const PARTY_CAP_REFUSAL: &str = "a party is already on the most live contracts a
 /// hold was broken, is money the acceptance never covered, and `@contract/cancel`
 /// is the route that releases what still stands.
 pub(crate) fn check_offer(ctx: &Ctx<'_>, c: &EconomicContract) -> Result<(), ContractError> {
+    api::require_legacy_contract(ctx, c).map_err(ContractError::Refused)?;
     let store = ctx
         .w
         .module_state::<EconomyStore>()
@@ -1658,7 +1683,11 @@ fn offer_refusal(ctx: &mut Ctx<'_>, c: &EconomicContract, e: &ContractError) -> 
 /// an `Offered` contract still carry an unfrozen party is therefore an explicit act —
 /// `@contract/roster <id>=open` — and never the default, so "the surface changed
 /// after Offer" stays the refusal it has to be.
-pub(crate) fn freeze_and_offer(ctx: &mut Ctx<'_>, mut c: EconomicContract) -> ContractId {
+pub(crate) fn freeze_and_offer(
+    ctx: &mut Ctx<'_>,
+    mut c: EconomicContract,
+) -> Result<ContractId, EconomyError> {
+    api::require_legacy_contract(ctx, &c)?;
     c.consent_hash = consent_hash(&c.issuer, &c.consent);
     let hash = c.consent_hash;
     for a in &mut c.acceptances {
@@ -1677,7 +1706,7 @@ pub(crate) fn freeze_and_offer(ctx: &mut Ctx<'_>, mut c: EconomicContract) -> Co
     // for an acceptance that had already happened. Activation belongs wherever a
     // surface becomes fully accepted, and this is one of those places.
     let unanimous = c.fully_accepted();
-    save(ctx, c);
+    save(ctx, c)?;
     for p in &parties {
         let already = standing
             .iter()
@@ -1694,7 +1723,7 @@ pub(crate) fn freeze_and_offer(ctx: &mut Ctx<'_>, mut c: EconomicContract) -> Co
     if unanimous {
         activate(ctx, id);
     }
-    id
+    Ok(id)
 }
 
 /// Render a [`ContractError`] behind the existence-hiding rule (§4.5, E4b2 verify
@@ -1875,6 +1904,7 @@ pub(crate) fn accept_core_as(
     party: PrincipalId,
     actor: PrincipalId,
 ) -> Result<AcceptOutcome, ContractError> {
+    api::require_legacy_contract(ctx, &c).map_err(ContractError::Refused)?;
     if c.state != ContractState::Offered || c.pending.is_some() {
         return Err(ContractError::State(c.id));
     }
@@ -1916,9 +1946,10 @@ pub(crate) fn accept_core_as(
     // exact shares. From here a substitution is an amendment.
     c.roster_locked = true;
     let id = c.id;
+    let accepted_write = prepare_save(ctx, c.clone()).map_err(ContractError::Refused)?;
     let placed: Vec<HoldId> = if considerations.is_empty() {
         // Nothing to post, so nothing to ride: the ordinary container write.
-        save(ctx, c.clone());
+        api::install_contract_write(ctx, accepted_write.clone());
         Vec::new()
     } else {
         let mut plan = EconomyPlan::new(
@@ -1984,7 +2015,7 @@ pub(crate) fn accept_core_as(
         healed.escrow.retain(|h| !predicted.contains(h));
         healed.escrow.extend(placed.iter().copied());
         c = healed.clone();
-        save(ctx, healed);
+        api::install_contract_write(ctx, accepted_write.landed_escrow(&predicted, &placed));
     }
     let full = c.fully_accepted();
     if full {
@@ -2062,7 +2093,10 @@ pub(crate) fn activate(ctx: &mut Ctx<'_>, id: ContractId) {
     }
     c.state = ContractState::Active;
     c.deposits = record_deposits(ctx, &c);
-    save(ctx, c.clone());
+    if let Err(error) = save(ctx, c.clone()) {
+        report_contract_write_refusal(ctx, &error);
+        return;
+    }
     notify_parties(
         ctx,
         &c,
@@ -2273,6 +2307,7 @@ fn live_contract(ctx: &Ctx<'_>, id: ContractId) -> Option<EconomicContract> {
         .module_state::<EconomyStore>()?
         .snapshot()
         .contract(id)
+        .filter(|contract| contract.consent.managed.is_none())
         .cloned()
 }
 
@@ -2388,7 +2423,7 @@ fn contract_attest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         });
     }
     let id = c.id;
-    save(ctx, c);
+    save(ctx, c).map_err(|error| CmdError::msg(error.to_string()))?;
     info(ctx, format!("Contract #{id}: condition {n} attested."));
     // §3.5: the step that satisfies the last condition settles in the same step if
     // every re-verification passes.
@@ -2503,7 +2538,10 @@ pub(crate) fn promote_and_settle_with(
     if c.state == ContractState::Active {
         let mut next = c.clone();
         next.state = ContractState::ReadyToSettle;
-        save(ctx, next);
+        if let Err(error) = save(ctx, next) {
+            report_contract_write_refusal(ctx, &error);
+            return Settled::Refused(error.to_string(), error.named_resources());
+        }
     }
     if !settle_now {
         return Settled::NotReady;
@@ -2559,12 +2597,9 @@ fn settle_with(ctx: &mut Ctx<'_>, id: ContractId, companions: Vec<EconomicContra
             spent: std::collections::BTreeMap::new(),
         };
         let snap = store.snapshot();
-        match resolve_outcome(&c, snap, &env) {
-            Err(e) => Err(e),
-            Ok(outcome) => settlement_plan(&c, snap, &env).map(|p| (p, outcome)),
-        }
+        prepare_settlement(&c, snap, &env)
     };
-    let (plan, outcome) = match built {
+    let prepared = match built {
         Ok(v) => v,
         Err(e) => {
             let named = e.named_resources();
@@ -2577,22 +2612,25 @@ fn settle_with(ctx: &mut Ctx<'_>, id: ContractId, companions: Vec<EconomicContra
             );
         }
     };
-    let owned = c.clone();
-    let posted = {
-        let auth = {
-            let Some(store) = ctx.w.module_state::<EconomyStore>() else {
-                return Settled::NotReady;
-            };
-            ContractAuth::settling(&owned, store.snapshot(), outcome)
-        };
-        api::post_with_companions(ctx, &plan, PostAuth::Injected(&auth), companions)
+    let terminal_write = match prepare_save(ctx, c.clone()) {
+        Ok(write) => write,
+        Err(error) => return Settled::Refused(error.to_string(), error.named_resources()),
     };
+    let posted = api::post_with_companions(
+        ctx,
+        prepared.plan(),
+        PostAuth::Injected(prepared.authorization()),
+        companions,
+    );
+    // The preparation borrows the exact consent carrier. Only the existing post
+    // result below decides whether that carrier becomes terminal.
+    drop(prepared);
     match posted {
         Ok(PostOutcome::Posted(tx) | PostOutcome::AlreadyPosted(tx)) => {
-            let mut next = owned;
+            let mut next = c;
             next.state = ContractState::Settled { transaction: tx };
             next.settle_attempts = 0;
-            save(ctx, next.clone());
+            api::install_contract_write(ctx, terminal_write.settled(tx));
             notify_parties(ctx, &next, &format!("Contract #{id} has settled."));
             Settled::Posted(tx)
         }
@@ -2651,7 +2689,10 @@ fn note_settle_failure(
     if c.state == ContractState::Active {
         c.state = ContractState::ReadyToSettle;
     }
-    save(ctx, c);
+    if let Err(error) = save(ctx, c) {
+        report_contract_write_refusal(ctx, &error);
+        return Settled::Refused(error.to_string(), error.named_resources());
+    }
     if spent {
         dispute_with(
             ctx,
@@ -2682,7 +2723,10 @@ pub(crate) fn dispute_with(ctx: &mut Ctx<'_>, id: ContractId, context: String) {
     if !c.state.is_terminal() && c.state != ContractState::Disputed {
         c.state = ContractState::Disputed;
         c.disputed_at = Some(ctx.w.now());
-        save(ctx, c.clone());
+        if let Err(error) = save(ctx, c.clone()) {
+            report_contract_write_refusal(ctx, &error);
+            return;
+        }
         notify_parties(
             ctx,
             &c,
@@ -2792,7 +2836,7 @@ fn contract_agree(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .any(|a| principal_key(&a.party) == principal_key(p) && a.resolution == resolution)
     });
     let id = c.id;
-    save(ctx, c);
+    save(ctx, c).map_err(|error| CmdError::msg(error.to_string()))?;
     info(
         ctx,
         format!("Contract #{id}: your agreement to {resolution:?} is recorded."),
@@ -2911,7 +2955,9 @@ fn record_staff_override(ctx: &mut Ctx<'_>, id: ContractId, reason: &str) {
              ({reason}). Deterministic conditions are still checked."
         ),
     );
-    api::put_contract(ctx, c);
+    if let Err(error) = api::put_contract(ctx, c) {
+        report_contract_write_refusal(ctx, &error);
+    }
 }
 
 /// Apply a resolution to a disputed contract.
@@ -2931,7 +2977,10 @@ fn apply_resolution(ctx: &mut Ctx<'_>, id: ContractId, resolution: Resolution) {
         Resolution::Settle => {
             c.state = ContractState::ReadyToSettle;
             c.settle_attempts = 0;
-            save(ctx, c);
+            if let Err(error) = save(ctx, c) {
+                report_contract_write_refusal(ctx, &error);
+                return;
+            }
             match settle(ctx, id) {
                 Settled::Posted(tx) => {
                     info(ctx, format!("Contract #{id} settled as transaction #{tx}."));
@@ -3243,6 +3292,7 @@ pub(crate) fn amend_core(
     c: EconomicContract,
     author: &PrincipalId,
 ) -> Result<AmendOutcome, ContractError> {
+    api::require_legacy_contract(ctx, &c).map_err(ContractError::Refused)?;
     let key = principal_key(author);
     // An `Offered` contract, or — the other face of A′ — one **in force with nobody
     // but its author bound**. A one-party contract activates at its author's own
@@ -3329,6 +3379,8 @@ pub(crate) fn amend_core(
     if refunding || refund_landed {
         back.amendments = c.amendments.saturating_add(1);
     }
+    let back_write =
+        api::prepare_contract_write(ctx, back.clone()).map_err(ContractError::Refused)?;
     match plan.filter(|_| refunding) {
         Some(plan) => {
             let owned = c.clone();
@@ -3357,14 +3409,14 @@ pub(crate) fn amend_core(
                 }
                 // The refund landed on an earlier attempt and only the state write
                 // was lost: finish it.
-                Ok(PostOutcome::AlreadyPosted(_)) => api::put_contract(ctx, back.clone()),
+                Ok(PostOutcome::AlreadyPosted(_)) => api::install_contract_write(ctx, back_write),
                 Ok(PostOutcome::NeedsApproval(_)) => {
                     return Err(ContractError::Refused(EconomyError::ApprovalRequired));
                 }
                 Err(e) => return Err(ContractError::Refused(e)),
             }
         }
-        None => api::put_contract(ctx, back.clone()),
+        None => api::install_contract_write(ctx, back_write),
     }
     for p in &back.consent.parties {
         let stands = back
@@ -3496,7 +3548,10 @@ fn begin_pending(ctx: &mut Ctx<'_>, id: ContractId, kind: PendingKind) -> bool {
             attempts: 0,
             since: ctx.w.now(),
         });
-        save(ctx, c);
+        if let Err(error) = save(ctx, c) {
+            report_contract_write_refusal(ctx, &error);
+            return false;
+        }
     }
     true
 }
@@ -3551,6 +3606,18 @@ pub(crate) fn finish_terminal(ctx: &mut Ctx<'_>, id: ContractId) -> bool {
             return false;
         }
     };
+    let mut terminal = c.clone();
+    if !terminal.state.is_terminal() {
+        terminal.state = pending.kind.target();
+    }
+    terminal.pending = None;
+    let terminal_write = match prepare_save(ctx, terminal.clone()) {
+        Ok(write) => write,
+        Err(error) => {
+            report_contract_write_refusal(ctx, &error);
+            return false;
+        }
+    };
     // Nothing to post: no escrow to release, no pledge to lift, no deposit to hand
     // back. The transition is complete the moment the state is written.
     if plan.requested_lines.is_empty()
@@ -3558,7 +3625,7 @@ pub(crate) fn finish_terminal(ctx: &mut Ctx<'_>, id: ContractId) -> bool {
         && plan.asset_ops.is_empty()
         && plan.custody_ops.is_empty()
     {
-        return land_terminal(ctx, id, pending.kind);
+        return land_terminal(ctx, terminal, pending.kind, terminal_write);
     }
     let posted = {
         let auth = {
@@ -3581,7 +3648,7 @@ pub(crate) fn finish_terminal(ctx: &mut Ctx<'_>, id: ContractId) -> bool {
     };
     match posted {
         Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => {
-            land_terminal(ctx, id, pending.kind)
+            land_terminal(ctx, terminal, pending.kind, terminal_write)
         }
         Ok(PostOutcome::NeedsApproval(request)) => {
             note_terminal_failure(
@@ -3662,7 +3729,10 @@ pub(crate) fn heal_lost_transitions(ctx: &mut Ctx<'_>) {
             c.state = state;
             c.pending = None;
             c.revision = c.revision.saturating_add(1);
-            api::put_contract(ctx, c);
+            if let Err(error) = api::put_contract(ctx, c) {
+                report_contract_write_refusal(ctx, &error);
+                return;
+            }
             forget_heal(ctx, id);
         } else if unknown.is_empty() {
             forget_heal(ctx, id);
@@ -3690,17 +3760,14 @@ fn forget_heal(ctx: &mut Ctx<'_>, id: ContractId) {
 
 /// The transition's plan is durable: write the terminal state, clear `pending`, stop
 /// the lease's rent, and tell the parties.
-fn land_terminal(ctx: &mut Ctx<'_>, id: ContractId, kind: PendingKind) -> bool {
-    let Some(mut c) = live_contract(ctx, id) else {
-        return false;
-    };
-    if !c.state.is_terminal() {
-        c.state = kind.target();
-        c.pending = None;
-        save(ctx, c.clone());
-    } else {
-        clear_pending(ctx, id);
-    }
+fn land_terminal(
+    ctx: &mut Ctx<'_>,
+    c: EconomicContract,
+    kind: PendingKind,
+    prepared: api::LegacyContractWrite,
+) -> bool {
+    let id = c.id;
+    api::install_contract_write(ctx, prepared);
     cancel_lease_obligations(ctx, id);
     let msg = match kind {
         PendingKind::Forfeit => format!("Contract #{id} lapsed; its escrow was forfeit."),
@@ -3710,16 +3777,6 @@ fn land_terminal(ctx: &mut Ctx<'_>, id: ContractId, kind: PendingKind) -> bool {
     };
     notify_parties(ctx, &c, &msg);
     true
-}
-
-fn clear_pending(ctx: &mut Ctx<'_>, id: ContractId) {
-    let Some(mut c) = live_contract(ctx, id) else {
-        return;
-    };
-    if c.pending.is_some() {
-        c.pending = None;
-        save(ctx, c);
-    }
 }
 
 /// One refused attempt at a terminal transition: the contract stays **live** with its
@@ -3741,7 +3798,10 @@ fn note_terminal_failure(ctx: &mut Ctx<'_>, id: ContractId, detail: &str) {
     pending.attempts = pending.attempts.saturating_add(1);
     let spent = pending.attempts >= MAX_SETTLE_ATTEMPTS;
     c.pending = if spent { None } else { Some(pending) };
-    save(ctx, c);
+    if let Err(error) = save(ctx, c) {
+        report_contract_write_refusal(ctx, &error);
+        return;
+    }
     if spent {
         dispute_with(
             ctx,
@@ -4551,6 +4611,7 @@ pub fn offer_lease(ctx: &mut Ctx<'_>, spec: LeaseSpec) -> Result<ContractId, Con
     // Read before `spec.rent` is moved into the deliverable below.
     let rent_credit = spec.rent.credit_account;
     let consent = ConsentSurface {
+        managed: None,
         parties,
         terms: ContractTerms {
             consideration: Vec::new(),
@@ -4636,7 +4697,7 @@ pub fn offer_lease(ctx: &mut Ctx<'_>, spec: LeaseSpec) -> Result<ContractId, Con
         at: now,
         consent_hash: c.consent_hash,
     });
-    api::put_contract(ctx, c.clone());
+    api::put_contract(ctx, c.clone()).map_err(ContractError::Refused)?;
     let meta = ctx
         .w
         .module_state::<EconomyStore>()
@@ -5048,6 +5109,7 @@ pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractI
     }
     let satisfied = vec![None; spec.conditions.len()];
     let consent = ConsentSurface {
+        managed: None,
         parties,
         terms: ContractTerms {
             consideration,
@@ -5100,7 +5162,7 @@ pub fn offer_contract(ctx: &mut Ctx<'_>, spec: ContractSpec) -> Result<ContractI
         ))?
     };
     c.id = id;
-    let id = freeze_and_offer(ctx, c);
+    let id = freeze_and_offer(ctx, c).map_err(ContractError::Refused)?;
     let meta = ctx
         .w
         .module_state::<EconomyStore>()
@@ -5247,7 +5309,8 @@ pub fn deliver_settled(
         let c = snap.contract(contract).ok_or(ContractError::NoStanding)?;
         (
             account.owner.clone(),
-            matches!(c.state, ContractState::Settled { .. })
+            c.consent.managed.is_none()
+                && matches!(c.state, ContractState::Settled { .. })
                 && c.consent.parties.contains(&account.owner),
         )
     };
@@ -5372,7 +5435,13 @@ pub fn amend_contract(
         Err(e) => return Ok(AmendReoffer::NotReoffered(outcome, e)),
     };
     back.revision = back.revision.saturating_add(1);
-    api::put_contract(ctx, back.clone());
+    if let Err(error) = api::put_contract(ctx, back.clone()) {
+        ctx.gate_on_durable_ack();
+        return Ok(AmendReoffer::NotReoffered(
+            outcome,
+            ContractError::Refused(error),
+        ));
+    }
     if amend.reoffer {
         // Re-checked live: the projection was built before the refund posted, and
         // releasing escrow is exactly the kind of change `check_offer` reads.
@@ -5380,7 +5449,13 @@ pub fn amend_contract(
             ctx.gate_on_durable_ack();
             return Ok(AmendReoffer::NotReoffered(outcome, e));
         }
-        freeze_and_offer(ctx, back);
+        if let Err(error) = freeze_and_offer(ctx, back) {
+            ctx.gate_on_durable_ack();
+            return Ok(AmendReoffer::NotReoffered(
+                outcome,
+                ContractError::Refused(error),
+            ));
+        }
     }
     ctx.gate_on_durable_ack();
     Ok(AmendReoffer::Amended(outcome))

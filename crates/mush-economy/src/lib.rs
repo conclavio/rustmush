@@ -85,8 +85,12 @@ mod amount;
 mod engine;
 mod hash;
 mod ids;
+pub mod managed_entitlement;
+pub mod managed_purchase;
+pub mod managed_renewal;
 mod plan;
 mod record;
+pub mod registry_filing;
 mod snapshot;
 
 // E4a — clocks, holds, obligations, contracts (still pure).

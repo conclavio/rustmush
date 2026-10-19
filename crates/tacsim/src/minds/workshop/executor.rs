@@ -13,6 +13,7 @@ use mush_roll::{
 };
 
 use super::invalid;
+use mush_roll::commerce::authored_access::{AuthoredDraftAccess, AuthoredJobKind};
 
 pub(crate) const WORKERS: usize = 2;
 pub(crate) const MAX_JOBS: usize = 8;
@@ -95,7 +96,22 @@ pub(crate) enum JobKind {
     },
 }
 
+impl JobKind {
+    pub(super) fn authored_kind(&self) -> AuthoredJobKind {
+        match self {
+            Self::Check => AuthoredJobKind::Check,
+            Self::Save { .. } => AuthoredJobKind::Save,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DraftOrigin {
+    Original,
+    Authored,
+}
+
 struct Binding {
+    origin: DraftOrigin,
     principal: Principal,
     name: String,
     base: EditBase,
@@ -124,10 +140,43 @@ impl ValidatedDraft {
         notes: &str,
         version: Option<&str>,
     ) -> Result<PreparedSave<S::Token>, RollError> {
-        if principal != self.binding.principal {
+        if principal != self.binding.principal || self.binding.origin != DraftOrigin::Original {
+            return Err(RollError::Missing);
+        }
+        let mind = super::authoring_mind(roll, principal.actor, &self.binding.name)?;
+        self.prepare_exact(principal, roll, sources, notes, version, mind)
+    }
+    pub(super) fn prepare_authored_save<S: SourceAdapter>(
+        self,
+        principal: Principal,
+        access: &AuthoredDraftAccess,
+        roll: &RollStore,
+        sources: &S,
+        notes: &str,
+        version: Option<&str>,
+    ) -> Result<PreparedSave<S::Token>, RollError> {
+        if principal != self.binding.principal
+            || self.binding.origin != DraftOrigin::Authored
+            || access.actor() != principal.actor
+            || access.job_kind() != Some(AuthoredJobKind::Save)
+        {
             return Err(RollError::Missing);
         }
         let mind = roll.mind(principal.actor, &self.binding.name)?;
+        if mind != access.mind() {
+            return Err(RollError::StaleEdit);
+        }
+        self.prepare_exact(principal, roll, sources, notes, version, mind)
+    }
+    fn prepare_exact<S: SourceAdapter>(
+        self,
+        principal: Principal,
+        roll: &RollStore,
+        sources: &S,
+        notes: &str,
+        version: Option<&str>,
+        mind: &mush_roll::Mind,
+    ) -> Result<PreparedSave<S::Token>, RollError> {
         if mind.base() != self.binding.base || mind.draft() != &self.binding.original {
             return Err(RollError::StaleEdit);
         }
@@ -169,7 +218,7 @@ impl RevisionAdapter for ReceiptAdapter<'_> {
 }
 
 pub(crate) struct Completion {
-    expected: (Principal, String, EditBase),
+    expected: (Principal, String, EditBase, DraftOrigin),
     pub kind: JobKind,
     pub reports: Vec<PictureReport>,
     pub diagnostic: Option<Diagnostic>,
@@ -177,15 +226,33 @@ pub(crate) struct Completion {
 }
 
 impl Completion {
+    pub(super) fn check_authored(
+        &self,
+        principal: Principal,
+        access: &AuthoredDraftAccess,
+    ) -> Result<(), RollError> {
+        if self.expected.0 != principal
+            || self.expected.3 != DraftOrigin::Authored
+            || access.actor() != principal.actor
+            || access.job_kind() != Some(self.kind.authored_kind())
+        {
+            return Err(RollError::Missing);
+        }
+        if access.mind().name() != self.expected.1 || access.mind().base() != self.expected.2 {
+            return Err(RollError::StaleEdit);
+        }
+        Ok(())
+    }
     pub(crate) fn check_current(
         &self,
         principal: Principal,
         roll: &RollStore,
     ) -> Result<(), RollError> {
-        if self.expected.0 != principal {
+        if self.expected.0 != principal || self.expected.3 != DraftOrigin::Original {
             return Err(RollError::Missing);
         }
-        if roll.mind(principal.actor, &self.expected.1)?.base() != self.expected.2 {
+        if super::authoring_mind(roll, principal.actor, &self.expected.1)?.base() != self.expected.2
+        {
             return Err(RollError::StaleEdit);
         }
         Ok(())
@@ -304,7 +371,31 @@ impl WorkshopExecutor {
         base: EditBase,
         kind: JobKind,
     ) -> Result<JobId, RollError> {
-        let mind = roll.mind(principal.actor, name)?;
+        let mind = super::authoring_mind(roll, principal.actor, name)?;
+        self.submit_exact(principal, mind, base, kind, DraftOrigin::Original)
+    }
+
+    pub(super) fn submit_authored(
+        &self,
+        principal: Principal,
+        access: &AuthoredDraftAccess,
+        base: EditBase,
+        kind: JobKind,
+    ) -> Result<JobId, RollError> {
+        if access.actor() != principal.actor || access.job_kind() != Some(kind.authored_kind()) {
+            return Err(RollError::Missing);
+        }
+        self.submit_exact(principal, access.mind(), base, kind, DraftOrigin::Authored)
+    }
+
+    fn submit_exact(
+        &self,
+        principal: Principal,
+        mind: &mush_roll::Mind,
+        base: EditBase,
+        kind: JobKind,
+        origin: DraftOrigin,
+    ) -> Result<JobId, RollError> {
         if mind.base() != base {
             return Err(RollError::StaleEdit);
         }
@@ -349,6 +440,7 @@ impl WorkshopExecutor {
         let id = JobId(state.next);
         let request = Request {
             binding: Binding {
+                origin,
                 principal,
                 name: mind.name().to_owned(),
                 base,
@@ -514,6 +606,7 @@ fn worker(shared: &Shared) {
             request.binding.principal,
             request.binding.name.clone(),
             request.binding.base,
+            request.binding.origin,
         );
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             execute(*request, shared.pictures.as_ref())
@@ -548,7 +641,12 @@ fn worker(shared: &Shared) {
 
 fn execute(request: Request, pictures: &dyn CheckPictures) -> Completion {
     let Request { binding, kind } = request;
-    let expected = (binding.principal, binding.name.clone(), binding.base);
+    let expected = (
+        binding.principal,
+        binding.name.clone(),
+        binding.base,
+        binding.origin,
+    );
     let validation = (|| {
         let rules = crate::minds::authoring::RevisionRules;
         let normalized = rules.normalize_source(&binding.original.source)?;
@@ -640,6 +738,71 @@ fn validate_reports(reports: &[PictureReport]) -> Result<(), RollError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validated_worker_receipt_rechecks_owner_provenance_before_save()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let actor = mush_core::GOD;
+        let service = WorkshopExecutor::new(Arc::new(NoPictures))?;
+        let mut roll = RollStore::default();
+        let change = super::super::create(
+            &roll,
+            &super::super::lineage_tests::Sources,
+            actor,
+            "mine",
+            None,
+        )?;
+        roll.publish_with(change, |_| {})?;
+        let principal = service.principal(actor, AccountId::mint("lineage-author", 1)?)?;
+        let base = roll.mind(actor, "mine")?.base();
+        let job = service.submit(
+            principal,
+            &roll,
+            "mine",
+            base,
+            JobKind::Save {
+                notes: String::new(),
+                version: None,
+            },
+        )?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let completion = loop {
+            if let Some(completion) = service.take(principal, job)? {
+                break completion;
+            }
+            if Instant::now() >= deadline {
+                return Err("worker timed out".into());
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        completion.check_current(principal, &roll)?;
+        assert!(completion.diagnostic.is_none());
+        let marked = super::super::lineage_tests::marked_store(roll.mind(actor, "mine")?)?;
+        assert_eq!(
+            completion.check_current(principal, &marked),
+            Err(RollError::Missing)
+        );
+        let validated = completion.validated.ok_or("validated receipt")?;
+        assert!(matches!(
+            validated.prepare_save(
+                principal,
+                &marked,
+                &super::super::lineage_tests::Sources,
+                "",
+                None
+            ),
+            Err(RollError::Missing)
+        ));
+        assert!(marked.mind(actor, "mine")?.latest().is_none());
+        Ok(())
+    }
+
+    struct NoPictures;
+    impl CheckPictures for NoPictures {
+        fn run(&self, _: &WorkingCopy) -> Result<Vec<PictureReport>, RollError> {
+            Err(RollError::Missing)
+        }
+    }
 
     fn reports() -> Vec<PictureReport> {
         PICTURES

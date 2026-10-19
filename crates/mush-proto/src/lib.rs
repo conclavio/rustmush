@@ -44,11 +44,12 @@ mod client;
 mod envelope;
 mod event;
 mod invoke;
+mod legal_action;
 mod receipt;
 mod text;
 
 pub use caps::{ClientCaps, ClientKind, ColorDepth};
-pub use client::{ClientCommand, Query};
+pub use client::{ClientCommand, MarketOriginalMindsKind, MarketOriginalMindsRequest, Query};
 pub use envelope::Envelope;
 pub use event::{
     AtlasMapDelta, AtlasMapFrame, ExitRef, InputMode, MAX_NOTICE_TEXT_BYTES, MAX_REQUEST_OPTIONS,
@@ -63,6 +64,11 @@ pub use invoke::{
     InvokeRequest, InvokeResult, MAX_INVOKE_BYTES, MAX_INVOKE_DEPTH, MAX_MIND_ENVELOPE_BYTES,
     MAX_MIND_SOURCE_BYTES, MindDiagnostic, MindDraft, MindEdit, MindEditBase, MindLifecycle,
     MindPictureReport, MindRequest, MindResponse, validate_invoke_json,
+};
+pub use legal_action::{
+    LegalActionInteger, LegalActionParameters, LegalActionRequest, LegalActionResponse,
+    LegalActionScalar, MAX_LEGAL_ACTION_PARAMETER_BYTES, MAX_LEGAL_ACTION_PARAMETERS,
+    MAX_LEGAL_ACTION_TEXT_BYTES, ProjectedOfferId,
 };
 pub use receipt::{
     ActionStatusId, ActionStatusIdError, MAX_ACTION_STATUS_ID_BYTES,

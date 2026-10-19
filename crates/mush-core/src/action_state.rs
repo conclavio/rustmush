@@ -23,6 +23,8 @@ use serde_json::{Value, json};
 use smol_str::SmolStr;
 use thiserror::Error;
 
+mod terminal_capacity;
+
 use crate::action::{MAX_CASCADE_OPERATIONS, ProviderRegistrationOrdinal};
 use crate::authoritative::{AuthoritativeKey, ReplayWrite};
 use crate::mechanics::{
@@ -569,11 +571,12 @@ impl<'a> TypedStateLens<'a> {
 /// ordinary module context.
 ///
 /// The backing store and owner stamp are private. A module can use only an
-/// opaque family handle minted for its own owner; it cannot mutate state or
-/// borrow another owner's family through this surface.
+/// opaque family handle minted for its own owner or explicitly delegated
+/// to it at composition; this surface cannot mutate state.
 pub struct ModuleActionState<'a> {
     lens: TypedStateLens<'a>,
     owner: Option<OwnerId>,
+    dispatch: Option<crate::read_service::OwnerReadCaller>,
 }
 
 impl fmt::Debug for ModuleActionState<'_> {
@@ -594,6 +597,7 @@ impl<'a> ModuleActionState<'a> {
         Self {
             lens: TypedStateLens::Detached(DetachedTypedState::CompatibilityCtx),
             owner: None,
+            dispatch: None,
         }
     }
 
@@ -601,7 +605,25 @@ impl<'a> ModuleActionState<'a> {
         Self {
             lens,
             owner: module.and_then(|name| OwnerId::parse_canonical(name).ok()),
+            dispatch: None,
         }
+    }
+
+    /// Captured by actual core dispatch, independent of the compatibility
+    /// context's public actor/module fields. No external constructor can mint it.
+    pub(crate) fn for_dispatch(
+        lens: TypedStateLens<'a>,
+        module: Option<&str>,
+        actor: crate::ObjId,
+    ) -> Self {
+        let mut state = Self::for_module(lens, module);
+        state.dispatch =
+            module.and_then(|name| crate::read_service::OwnerReadCaller::object(name, actor).ok());
+        state
+    }
+
+    pub(crate) fn dispatch_caller(&self) -> Option<&crate::read_service::OwnerReadCaller> {
+        self.dispatch.as_ref()
     }
 
     /// The lens this reader was built from, so a module holding a
@@ -645,7 +667,7 @@ impl<'a> ModuleActionState<'a> {
             .lens
             .store()
             .ok_or(ModuleActionStateReadError::Unavailable)?;
-        self.require_owner(handle.owner())?;
+        self.require_owner(handle.owner(), &handle.descriptor().id)?;
         store.get(handle, key).map_err(Into::into)
     }
 
@@ -665,11 +687,15 @@ impl<'a> ModuleActionState<'a> {
             .lens
             .store()
             .ok_or(ModuleActionStateReadError::Unavailable)?;
-        self.require_owner(handle.owner())?;
+        self.require_owner(handle.owner(), &handle.descriptor().id)?;
         store.scan_family(handle, after, limit).map_err(Into::into)
     }
 
-    fn require_owner(&self, family: &OwnerId) -> Result<(), ModuleActionStateReadError> {
+    fn require_owner(
+        &self,
+        family: &OwnerId,
+        id: &StateFamilyId,
+    ) -> Result<(), ModuleActionStateReadError> {
         let context = self
             .owner
             .as_ref()
@@ -684,7 +710,7 @@ impl<'a> ModuleActionState<'a> {
         if self
             .lens
             .store()
-            .is_some_and(|store| store.registry.delegates(family, context))
+            .is_some_and(|store| store.registry.delegates_family(family, id, context))
         {
             return Ok(());
         }
@@ -717,6 +743,12 @@ pub struct StateFamilyRegistryBuilder {
     owner_counts: BTreeMap<OwnerId, usize>,
     /// `(family owner, grantee)` — see [`MAX_STATE_FAMILY_DELEGATES`].
     delegations: BTreeSet<(OwnerId, OwnerId)>,
+    /// Exact `(family owner, family id, grantee)` grants.
+    family_delegations: BTreeSet<(OwnerId, StateFamilyId, OwnerId)>,
+    registry_rating: Option<terminal_capacity::Protocol>,
+    original_purchase: Option<terminal_capacity::PurchaseProtocol>,
+    entitlement_purchase: Option<terminal_capacity::EntitlementProtocol>,
+    mind_renewal: Option<terminal_capacity::RenewalProtocol>,
 }
 
 impl fmt::Debug for StateFamilyRegistryBuilder {
@@ -725,6 +757,7 @@ impl fmt::Debug for StateFamilyRegistryBuilder {
             .field("families", &self.entries.keys().collect::<Vec<_>>())
             .field("owner_counts", &self.owner_counts)
             .field("delegations", &self.delegations)
+            .field("family_delegations", &self.family_delegations)
             .finish()
     }
 }
@@ -804,23 +837,154 @@ impl StateFamilyRegistryBuilder {
         owner: OwnerId,
         grantee: OwnerId,
     ) -> Result<(), StateFamilyRegistryError> {
-        if owner == grantee {
-            return Err(StateFamilyRegistryError::SelfDelegation { owner });
+        self.check_delegate(&owner, &grantee)?;
+        self.delegations.insert((owner, grantee));
+        Ok(())
+    }
+
+    /// Delegate one already-registered family. An opaque handle from another
+    /// composition, or one owned by another module, cannot create a grant.
+    pub(crate) fn delegate_family<K: 'static, V: 'static>(
+        &mut self,
+        owner: OwnerId,
+        handle: &StateFamilyHandle<K, V>,
+        grantee: OwnerId,
+    ) -> Result<(), StateFamilyRegistryError> {
+        if handle.owner() != &owner {
+            return Err(StateFamilyRegistryError::DelegationOwnerMismatch {
+                caller: owner,
+                family_owner: handle.owner().clone(),
+            });
         }
-        let count = self
+        let locator = (owner.clone(), handle.descriptor().id.clone());
+        let Some(registered) = self.entries.get(&locator) else {
+            return Err(StateFamilyRegistryError::UnknownDelegatedFamily {
+                owner,
+                family: handle.descriptor().id.clone(),
+            });
+        };
+        if !Arc::ptr_eq(registered, &handle.family) {
+            return Err(StateFamilyRegistryError::ForeignDelegatedFamily {
+                owner,
+                family: handle.descriptor().id.clone(),
+            });
+        }
+        self.check_delegate(&owner, &grantee)?;
+        self.family_delegations
+            .insert((owner, handle.descriptor().id.clone(), grantee));
+        Ok(())
+    }
+
+    fn check_delegate(
+        &self,
+        owner: &OwnerId,
+        grantee: &OwnerId,
+    ) -> Result<(), StateFamilyRegistryError> {
+        if owner == grantee {
+            return Err(StateFamilyRegistryError::SelfDelegation {
+                owner: owner.clone(),
+            });
+        }
+        // A mixture of scoped and legacy grants cannot bypass the existing
+        // distinct-grantee cap. Repeating a grant consumes no additional slot.
+        let grantees: BTreeSet<_> = self
             .delegations
             .iter()
-            .filter(|(from, _)| from == &owner)
-            .count();
-        if count >= MAX_STATE_FAMILY_DELEGATES
-            && !self.delegations.contains(&(owner.clone(), grantee.clone()))
-        {
+            .filter(|(from, _)| from == owner)
+            .map(|(_, to)| to)
+            .chain(
+                self.family_delegations
+                    .iter()
+                    .filter(|(from, _, _)| from == owner)
+                    .map(|(_, _, to)| to),
+            )
+            .collect();
+        if grantees.len() >= MAX_STATE_FAMILY_DELEGATES && !grantees.contains(grantee) {
             return Err(StateFamilyRegistryError::OwnerDelegateLimit {
-                owner,
+                owner: owner.clone(),
                 max: MAX_STATE_FAMILY_DELEGATES,
             });
         }
-        self.delegations.insert((owner, grantee));
+        Ok(())
+    }
+
+    pub(crate) fn registry_rating_capacity(
+        &mut self,
+        owner: &OwnerId,
+        manifest: crate::DefinitionRef,
+        actions: [crate::DefinitionRef; 5],
+    ) -> Result<(), ActionStateError> {
+        if self.registry_rating.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate Registry protocol",
+            ));
+        }
+        self.registry_rating = Some(terminal_capacity::Protocol::new(owner, manifest, actions)?);
+        Ok(())
+    }
+
+    pub(crate) fn original_mind_purchase_capacity(
+        &mut self,
+        owner: &OwnerId,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 3],
+    ) -> Result<(), ActionStateError> {
+        if self.original_purchase.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate purchase protocol",
+            ));
+        }
+        self.original_purchase = Some(terminal_capacity::PurchaseProtocol::new(
+            owner,
+            manifest,
+            participants,
+            actions,
+        )?);
+        Ok(())
+    }
+
+    pub(crate) fn mind_entitlement_purchase_capacity(
+        &mut self,
+        owner: &OwnerId,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        original_actions: [crate::DefinitionRef; 3],
+        derived_actions: [crate::DefinitionRef; 3],
+    ) -> Result<(), ActionStateError> {
+        if self.entitlement_purchase.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate entitlement purchase protocol",
+            ));
+        }
+        self.entitlement_purchase = Some(terminal_capacity::EntitlementProtocol::new(
+            owner,
+            manifest,
+            participants,
+            original_actions,
+            derived_actions,
+        )?);
+        Ok(())
+    }
+
+    pub(crate) fn mind_renewal_capacity(
+        &mut self,
+        owner: &OwnerId,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 5],
+    ) -> Result<(), ActionStateError> {
+        if self.mind_renewal.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate renewal protocol",
+            ));
+        }
+        self.mind_renewal = Some(terminal_capacity::RenewalProtocol::new(
+            owner,
+            manifest,
+            participants,
+            actions,
+        )?);
         Ok(())
     }
 
@@ -845,13 +1009,56 @@ impl StateFamilyRegistryBuilder {
                 }
             }
         }
-        let fingerprint = state_family_fingerprint(self.entries.values(), &self.delegations)?;
-        Ok(StateFamilyRegistry {
+        for (owner, _, grantee) in &self.family_delegations {
+            for named in [owner, grantee] {
+                if !module_owners.contains(named) {
+                    return Err(StateFamilyRegistryError::UnknownOwner {
+                        owner: named.clone(),
+                    });
+                }
+            }
+        }
+        let fingerprint = state_family_fingerprint(
+            self.entries.values(),
+            &self.delegations,
+            &self.family_delegations,
+            self.registry_rating.as_ref(),
+            self.original_purchase.as_ref(),
+            self.entitlement_purchase.as_ref(),
+            self.mind_renewal.as_ref(),
+        )?;
+        let registry = StateFamilyRegistry {
             entries: self.entries,
             delegations: self.delegations,
+            family_delegations: self.family_delegations,
+            registry_rating: self.registry_rating,
+            original_purchase: self.original_purchase,
+            entitlement_purchase: self.entitlement_purchase,
+            mind_renewal: self.mind_renewal,
             fingerprint,
             owner_readiness,
-        })
+        };
+        if let Some(protocol) = &registry.registry_rating {
+            protocol
+                .validate_families(&registry)
+                .map_err(|e| StateFamilyRegistryError::RegistryRating(e.to_string()))?;
+        }
+        if let Some(protocol) = &registry.original_purchase {
+            protocol
+                .validate_families(&registry)
+                .map_err(|e| StateFamilyRegistryError::OriginalPurchase(e.to_string()))?;
+        }
+        if let Some(protocol) = &registry.entitlement_purchase {
+            protocol
+                .validate_families(&registry)
+                .map_err(|e| StateFamilyRegistryError::EntitlementPurchase(e.to_string()))?;
+        }
+        if let Some(protocol) = &registry.mind_renewal {
+            protocol
+                .validate_families(&registry)
+                .map_err(|e| StateFamilyRegistryError::MindRenewal(e.to_string()))?;
+        }
+        Ok(registry)
     }
 }
 
@@ -860,6 +1067,12 @@ impl StateFamilyRegistryBuilder {
 pub struct StateFamilyRegistry {
     entries: BTreeMap<StateFamilyLocator, Arc<dyn ErasedStateFamily>>,
     delegations: BTreeSet<(OwnerId, OwnerId)>,
+    /// Exact `(family owner, family id, grantee)` grants.
+    family_delegations: BTreeSet<(OwnerId, StateFamilyId, OwnerId)>,
+    registry_rating: Option<terminal_capacity::Protocol>,
+    original_purchase: Option<terminal_capacity::PurchaseProtocol>,
+    entitlement_purchase: Option<terminal_capacity::EntitlementProtocol>,
+    mind_renewal: Option<terminal_capacity::RenewalProtocol>,
     fingerprint: DefinitionDigest,
     owner_readiness: MechanicalOwnerReadiness,
 }
@@ -874,6 +1087,27 @@ impl fmt::Debug for StateFamilyRegistry {
 }
 
 impl StateFamilyRegistry {
+    pub(crate) fn validate_registry_rating_composition(
+        &self,
+        definitions: &crate::mechanics::DefinitionRegistry,
+        providers: &crate::action::ActionProviderRegistry,
+        participants: &crate::participant::ParticipantRegistry,
+    ) -> Result<(), ActionStateError> {
+        if let Some(protocol) = &self.registry_rating {
+            protocol.validate_composition(definitions, providers, participants)?;
+        }
+        if let Some(protocol) = &self.original_purchase {
+            protocol.validate_composition(definitions, providers, participants)?;
+        }
+        if let Some(protocol) = &self.entitlement_purchase {
+            protocol.validate_composition(definitions, providers, participants)?;
+        }
+        if let Some(protocol) = &self.mind_renewal {
+            protocol.validate_composition(definitions, providers, participants)?;
+        }
+        Ok(())
+    }
+
     /// Whether `grantee` was delegated authority over `family_owner`'s typed
     /// families at composition. Never transitive, never symmetric.
     #[must_use]
@@ -882,7 +1116,31 @@ impl StateFamilyRegistry {
             .contains(&(family_owner.clone(), grantee.clone()))
     }
 
-    /// Every `(family owner, grantee)` pair this composition declared.
+    /// Whether an explicit scoped or legacy owner-wide grant permits access
+    /// to this exact family. This does not replace opaque-handle validation.
+    #[must_use]
+    pub fn delegates_family(
+        &self,
+        family_owner: &OwnerId,
+        family: &StateFamilyId,
+        grantee: &OwnerId,
+    ) -> bool {
+        self.delegates(family_owner, grantee)
+            || self.family_delegations.contains(&(
+                family_owner.clone(),
+                family.clone(),
+                grantee.clone(),
+            ))
+    }
+
+    /// Every explicit `(family owner, family id, grantee)` scoped grant,
+    /// in canonical order. Legacy owner-wide grants remain in `delegations`.
+    #[must_use]
+    pub fn family_delegations(&self) -> Vec<(OwnerId, StateFamilyId, OwnerId)> {
+        self.family_delegations.iter().cloned().collect()
+    }
+
+    /// Every legacy owner-wide `(family owner, grantee)` grant declared.
     #[must_use]
     pub fn delegations(&self) -> Vec<(OwnerId, OwnerId)> {
         self.delegations.iter().cloned().collect()
@@ -944,11 +1202,16 @@ impl StateFamilyRegistry {
 fn state_family_fingerprint<'a>(
     entries: impl Iterator<Item = &'a Arc<dyn ErasedStateFamily>>,
     delegations: &BTreeSet<(OwnerId, OwnerId)>,
+    family_delegations: &BTreeSet<(OwnerId, StateFamilyId, OwnerId)>,
+    registry_rating: Option<&terminal_capacity::Protocol>,
+    original_purchase: Option<&terminal_capacity::PurchaseProtocol>,
+    entitlement_purchase: Option<&terminal_capacity::EntitlementProtocol>,
+    mind_renewal: Option<&terminal_capacity::RenewalProtocol>,
 ) -> Result<DefinitionDigest, CanonicalEncodingError> {
-    DefinitionDigest::for_canonical_value(
-        "state_family_registry.v1",
-        &json!({
-            "families": Value::Array(
+    let mut value = serde_json::Map::from_iter([
+        (
+            "families".to_owned(),
+            Value::Array(
                 entries
                     .map(|family| {
                         json!({
@@ -958,26 +1221,92 @@ fn state_family_fingerprint<'a>(
                     })
                     .collect(),
             ),
-            // A delegation widens who may write an owner's families, so it is
-            // part of the composition's identity: two deployments that differ
-            // only in a delegation are not the same deployment.
-            "delegations": Value::Array(
+        ),
+        (
+            "delegations".to_owned(),
+            Value::Array(
                 delegations
                     .iter()
                     .map(|(owner, grantee)| json!({ "owner": owner, "grantee": grantee }))
                     .collect(),
             ),
-        }),
-    )
+        ),
+    ]);
+    // Preserve the exact existing domain and canonical bytes when no scoped
+    // grants exist. A new scoped grant changes the frozen deployment identity.
+    let domain = if family_delegations.is_empty() {
+        "state_family_registry.v1"
+    } else {
+        value.insert(
+            "family_delegations".to_owned(),
+            Value::Array(
+                family_delegations
+                    .iter()
+                    .map(|(owner, family, grantee)| {
+                        json!({ "owner": owner, "family": family, "grantee": grantee })
+                    })
+                    .collect(),
+            ),
+        );
+        "state_family_registry.v2"
+    };
+    let domain = if let Some(protocol) = registry_rating {
+        value.insert("registry_rating".to_owned(), json!(protocol));
+        "state_family_registry.v3"
+    } else {
+        domain
+    };
+    let domain = if let Some(protocol) = original_purchase {
+        value.insert("original_purchase".to_owned(), json!(protocol));
+        "state_family_registry.v4"
+    } else {
+        domain
+    };
+    let domain = if let Some(protocol) = entitlement_purchase {
+        value.insert("entitlement_purchase".to_owned(), json!(protocol));
+        "state_family_registry.v5"
+    } else {
+        domain
+    };
+    let domain = if let Some(protocol) = mind_renewal {
+        value.insert("mind_renewal".to_owned(), json!(protocol));
+        "state_family_registry.v6"
+    } else {
+        domain
+    };
+    DefinitionDigest::for_canonical_value(domain, &Value::Object(value))
 }
 
 /// State-family registration failure.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum StateFamilyRegistryError {
+    #[error("Mind renewal capacity composition: {0}")]
+    MindRenewal(String),
+    #[error("Entitlement purchase capacity composition: {0}")]
+    EntitlementPurchase(String),
+    #[error("Original purchase capacity composition: {0}")]
+    OriginalPurchase(String),
+    #[error("Registry rating capacity composition: {0}")]
+    RegistryRating(String),
     #[error("state-family registry exceeds its hard limit of {max}")]
     FamilyLimit { max: usize },
     #[error("owner {owner} exceeds its state-family limit of {max}")]
     OwnerFamilyLimit { owner: OwnerId, max: usize },
+    #[error("module {caller} cannot delegate a state family owned by {family_owner}")]
+    DelegationOwnerMismatch {
+        caller: OwnerId,
+        family_owner: OwnerId,
+    },
+    #[error("delegated state family {owner}/{family} is not registered")]
+    UnknownDelegatedFamily {
+        owner: OwnerId,
+        family: StateFamilyId,
+    },
+    #[error("delegated state family {owner}/{family} belongs to another composition")]
+    ForeignDelegatedFamily {
+        owner: OwnerId,
+        family: StateFamilyId,
+    },
     #[error("owner {owner} cannot delegate its state families to itself")]
     SelfDelegation { owner: OwnerId },
     #[error("owner {owner} exceeds its state-family delegate limit of {max}")]
@@ -1262,6 +1591,10 @@ impl Drop for ReservationGuard {
 pub struct ActionStateStore {
     registry: StateFamilyRegistry,
     records: BTreeMap<StateKey, StoredStateRecord>,
+    live_canonical_bytes: usize,
+    capacity: Arc<terminal_capacity::CapacityState>,
+    capacity_usage: terminal_capacity::Usage,
+    capacity_verifiers: terminal_capacity::Verifiers,
     slot: Arc<ReservationSlot>,
     revision: u64,
     next_reservation: u64,
@@ -1332,9 +1665,14 @@ impl ActionStateStore {
 
     #[must_use]
     pub(crate) fn new(registry: StateFamilyRegistry) -> Self {
+        let capacity_verifiers = terminal_capacity::Verifiers::for_registry(&registry);
         Self {
             registry,
             records: BTreeMap::new(),
+            live_canonical_bytes: 0,
+            capacity: Arc::default(),
+            capacity_usage: terminal_capacity::Usage::default(),
+            capacity_verifiers,
             slot: Arc::new(ReservationSlot::new()),
             revision: 0,
             next_reservation: 0,
@@ -1417,16 +1755,40 @@ impl ActionStateStore {
         &mut self,
         records: impl IntoIterator<Item = ActionStateBootRecord>,
     ) -> Result<(), ActionStateError> {
-        if !self.records.is_empty() || self.pending_reservation().is_some() || self.revision != 0 {
+        if !self.records.is_empty()
+            || !self.capacity.is_empty()
+            || self.pending_reservation().is_some()
+            || self.revision != 0
+        {
             return Err(ActionStateError::HydrationStoreNotEmpty);
         }
         let mut hydrated = BTreeMap::new();
+        let mut capacity_records = BTreeMap::new();
         let mut total_bytes = 0usize;
         for record in records {
-            if hydrated.len() >= MAX_ACTION_STATE_BOOT_RECORDS {
+            if hydrated.len() + capacity_records.len() >= MAX_ACTION_STATE_BOOT_RECORDS {
                 return Err(ActionStateError::HydrationRecordLimit {
                     max: MAX_ACTION_STATE_BOOT_RECORDS,
                 });
+            }
+            if terminal_capacity::is_capacity_key(&record.key) {
+                let stored = terminal_capacity::decode(&record)?;
+                total_bytes = total_bytes
+                    .checked_add(stored.len())
+                    .ok_or(ActionStateError::ArithmeticOverflow)?;
+                if total_bytes > MAX_ACTION_STATE_BOOT_BYTES {
+                    return Err(ActionStateError::HydrationBytesExceeded {
+                        attempted: total_bytes,
+                        max: MAX_ACTION_STATE_BOOT_BYTES,
+                    });
+                }
+                if capacity_records
+                    .insert(stored.id(), Arc::new(stored))
+                    .is_some()
+                {
+                    return Err(ActionStateError::TerminalCapacity("duplicate metadata"));
+                }
+                continue;
             }
             let state_key = self.hydration_key(&record)?;
             let locator = (state_key.owner.clone(), state_key.family.clone());
@@ -1524,7 +1886,20 @@ impl ActionStateStore {
                 return Err(ActionStateError::DuplicateHydratedRecord { key: state_key });
             }
         }
+        let (capacity, usage) = terminal_capacity::hydrate(
+            &self.registry,
+            &self.capacity_verifiers,
+            capacity_records,
+            &hydrated,
+            total_bytes,
+        )?;
+        let typed_bytes = total_bytes
+            .checked_sub(capacity.metadata_bytes())
+            .ok_or(ActionStateError::ArithmeticOverflow)?;
         self.records = hydrated;
+        self.live_canonical_bytes = typed_bytes;
+        self.capacity = Arc::new(capacity);
+        self.capacity_usage = usage;
         Ok(())
     }
 
@@ -1749,6 +2124,8 @@ impl ActionStateStore {
             owner,
             provider_ordinal,
             mutations: BTreeMap::new(),
+            capacity_changes: terminal_capacity::Changes::default(),
+            registered_identity: None,
             operation_count: 0,
             canonical_bytes: 0,
             limits,
@@ -1781,28 +2158,25 @@ impl ActionStateStore {
     /// The whole check happens before the first mutation, so a refusal leaves
     /// `records`, `revision` and the reservation exactly as they were.
     pub fn install(&mut self, installation: PreparedInstallation) -> Result<(), ActionStateError> {
-        self.check_installation(&installation)?;
-        let PreparedInstallation {
-            new_revision,
-            mutations,
-            mut guard,
-            ..
-        } = installation;
-        for (key, mutation) in mutations {
-            match mutation {
-                InstallMutation::Put { value, canonical } => {
-                    self.records
-                        .insert(key, StoredStateRecord { value, canonical });
-                }
-                InstallMutation::Delete => {
-                    let removed = self.records.remove(&key);
-                    debug_assert!(removed.is_some(), "prepared delete retained its pre-state");
-                }
-            }
-        }
-        self.revision = new_revision;
-        guard.settle();
+        self.bind_installation(installation)?
+            .apply_images()
+            .complete();
         Ok(())
+    }
+
+    /// Bind the complete typed pre-state before any image is installed. The
+    /// exclusive borrow prevents it moving between this check and application.
+    /// This stays private until the complete registered-participant protocol
+    /// can bind every owner before applying any of them.
+    pub(crate) fn bind_installation(
+        &mut self,
+        installation: PreparedInstallation,
+    ) -> Result<BoundTypedInstall<'_>, ActionStateError> {
+        self.check_installation(&installation)?;
+        Ok(BoundTypedInstall {
+            store: self,
+            installation,
+        })
     }
 
     /// Drop prepared post-images after a definitive persistence refusal.
@@ -1841,6 +2215,72 @@ impl ActionStateStore {
             });
         }
         Ok(())
+    }
+}
+
+/// A validated installation exclusively bound to its exact typed store.
+/// Dropping it before application preserves all images and drops the existing
+/// installation-stage guard, which retains the reservation and latches loss.
+#[must_use = "apply and complete the bound installation; dropping it fails closed"]
+pub(crate) struct BoundTypedInstall<'a> {
+    store: &'a mut ActionStateStore,
+    installation: PreparedInstallation,
+}
+
+impl<'a> BoundTypedInstall<'a> {
+    /// Move only already-prepared images. No serializer, provider, external
+    /// owner lookup or fallible operation runs after the first mutation.
+    pub(crate) fn apply_images(self) -> UnsettledTypedInstall<'a> {
+        let Self {
+            store,
+            installation,
+        } = self;
+        let PreparedInstallation {
+            new_revision,
+            live_bytes,
+            capacity,
+            capacity_usage,
+            mutations,
+            guard,
+            ..
+        } = installation;
+        for (key, mutation) in mutations {
+            match mutation {
+                InstallMutation::Put { value, canonical } => {
+                    store
+                        .records
+                        .insert(key, StoredStateRecord { value, canonical });
+                }
+                InstallMutation::Delete => {
+                    let removed = store.records.remove(&key);
+                    debug_assert!(removed.is_some(), "prepared delete retained its pre-state");
+                }
+            }
+        }
+        store.live_canonical_bytes = live_bytes;
+        store.capacity = capacity;
+        store.capacity_usage = capacity_usage;
+        store.revision = new_revision;
+        UnsettledTypedInstall {
+            _store: store,
+            guard,
+        }
+    }
+}
+
+/// The typed images are live, but the reservation stays held until the final
+/// consuming completion. Keep the exclusive store borrow across that interval.
+/// Dropping this is fail-stop, not a rollback or permission to start another
+/// transaction; exact durable images must repair the owner on recovery.
+#[must_use = "complete only after every bound image is installed"]
+pub(crate) struct UnsettledTypedInstall<'a> {
+    _store: &'a mut ActionStateStore,
+    guard: ReservationGuard,
+}
+
+impl UnsettledTypedInstall<'_> {
+    pub(crate) fn complete(mut self) {
+        self.guard.settle();
     }
 }
 
@@ -1887,6 +2327,13 @@ enum TxnMutation {
     Delete,
 }
 
+/// Exact committed base captured by core before any provider callback. Keeping
+/// the reservation allocation alive prevents a replacement store from matching.
+pub(crate) struct ActionReadBase {
+    slot: Arc<ReservationSlot>,
+    revision: u64,
+}
+
 /// Scratch state for one owner. It borrows the live store mutably, making
 /// concurrent preparation impossible even before a prepared reservation is
 /// installed.
@@ -1895,6 +2342,8 @@ pub struct ActionTxn<'a> {
     owner: OwnerId,
     provider_ordinal: Option<u32>,
     mutations: BTreeMap<StateKey, TxnMutation>,
+    capacity_changes: terminal_capacity::Changes,
+    registered_identity: Option<terminal_capacity::RegisteredTxnIdentity>,
     operation_count: usize,
     canonical_bytes: usize,
     limits: ActionTxnLimits,
@@ -1916,6 +2365,127 @@ impl fmt::Debug for ActionTxn<'_> {
 }
 
 impl ActionTxn<'_> {
+    pub(crate) fn bind_registered_invocation(
+        &mut self,
+        provider: &crate::action::ActionProviderEntry,
+        invocation: &crate::action::ActionInvocation,
+        commit: crate::CommitToken,
+    ) {
+        self.registered_identity = Some(terminal_capacity::RegisteredTxnIdentity::new(
+            provider, invocation, commit,
+        ));
+    }
+
+    pub(crate) fn registry_rating_completion(
+        &mut self,
+        base: &ActionReadBase,
+        provider: &ProviderRegistrationOrdinal,
+        commit: crate::CommitToken,
+        terminal: Option<crate::CommitToken>,
+    ) -> Result<(), ActionStateError> {
+        let result = (|| {
+            self.read_preimage(base, provider).map_err(|_| {
+                ActionStateError::TerminalCapacity("Registry transaction base differs")
+            })?;
+            terminal_capacity::registry_change(self, commit, terminal)
+        })();
+        if let Err(error) = &result {
+            self.poison(error);
+        }
+        result
+    }
+
+    pub(crate) fn original_mind_purchase_completion(
+        &mut self,
+        base: &ActionReadBase,
+        provider: &ProviderRegistrationOrdinal,
+        commit: crate::CommitToken,
+        terminal: Option<crate::CommitToken>,
+    ) -> Result<(), ActionStateError> {
+        let result = (|| {
+            self.read_preimage(base, provider).map_err(|_| {
+                ActionStateError::TerminalCapacity("purchase transaction base differs")
+            })?;
+            terminal_capacity::purchase_change(self, commit, terminal)
+        })();
+        if let Err(error) = &result {
+            self.poison(error);
+        }
+        result
+    }
+
+    pub(crate) fn mind_entitlement_purchase_completion(
+        &mut self,
+        base: &ActionReadBase,
+        provider: &ProviderRegistrationOrdinal,
+        commit: crate::CommitToken,
+        terminal: Option<crate::CommitToken>,
+    ) -> Result<(), ActionStateError> {
+        let result = (|| {
+            self.read_preimage(base, provider).map_err(|_| {
+                ActionStateError::TerminalCapacity("entitlement transaction base differs")
+            })?;
+            terminal_capacity::entitlement_change(self, commit, terminal)
+        })();
+        if let Err(error) = &result {
+            self.poison(error);
+        }
+        result
+    }
+
+    pub(crate) fn mind_renewal_completion(
+        &mut self,
+        base: &ActionReadBase,
+        provider: &ProviderRegistrationOrdinal,
+        commit: crate::CommitToken,
+        operation: Option<crate::CommitToken>,
+    ) -> Result<(), ActionStateError> {
+        let result = (|| {
+            self.read_preimage(base, provider).map_err(|_| {
+                ActionStateError::TerminalCapacity("renewal transaction base differs")
+            })?;
+            terminal_capacity::renewal_change(self, commit, operation)
+        })();
+        if let Err(error) = &result {
+            self.poison(error);
+        }
+        result
+    }
+
+    pub(crate) fn read_base(&self) -> ActionReadBase {
+        ActionReadBase {
+            slot: Arc::clone(&self.store.slot),
+            revision: self.store.revision,
+        }
+    }
+
+    /// A temporary committed-only lens. Staged mutations are deliberately not
+    /// part of this snapshot; its borrow cannot outlive the transaction borrow.
+    pub(crate) fn read_preimage(
+        &self,
+        base: &ActionReadBase,
+        provider: &ProviderRegistrationOrdinal,
+    ) -> Result<TypedStateLens<'_>, crate::read_service::OwnerReadError> {
+        if self.poison.is_some()
+            || !Arc::ptr_eq(&base.slot, &self.store.slot)
+            || base.revision != self.store.revision
+            || self.owner != *provider.owner()
+            || self.provider_ordinal != Some(provider.get())
+            || !self
+                .store
+                .registry
+                .shares_readiness_with(provider.owner_readiness())
+        {
+            return Err(crate::read_service::OwnerReadError::Authority);
+        }
+        Ok(TypedStateLens::Live(&*self.store))
+    }
+
+    pub(crate) fn poison_owner_read(&mut self) {
+        self.poison
+            .get_or_insert_with(|| "owner pre-image read refused".into());
+    }
+
     /// Tighten per-action limits before adding mutations.
     pub fn set_limits(&mut self, limits: ActionTxnLimits) -> Result<(), ActionStateError> {
         let limits = ActionTxnLimits::tightened(limits.operations, limits.canonical_bytes);
@@ -1942,6 +2512,58 @@ impl ActionTxn<'_> {
     #[must_use]
     pub const fn canonical_bytes(&self) -> usize {
         self.canonical_bytes
+    }
+
+    /// Check that an exact registered family has neither committed records nor
+    /// staged mutations. This is a bounded bootstrap precondition, not a scan
+    /// or a way to erase existing rows and then describe them as uninitialized.
+    /// The transaction's existing global revision fence guards this read.
+    pub fn family_is_empty<K, V>(
+        &mut self,
+        handle: &StateFamilyHandle<K, V>,
+    ) -> Result<bool, ActionStateError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        let result = (|| {
+            self.store.registry.get_for_handle(handle)?;
+            if handle.owner() != &self.owner
+                && !self.store.registry.delegates_family(
+                    handle.owner(),
+                    &handle.descriptor().id,
+                    &self.owner,
+                )
+            {
+                return Err(ActionStateError::OwnerMismatch {
+                    transaction: self.owner.clone(),
+                    family: handle.owner().clone(),
+                });
+            }
+            let first = StateKey {
+                owner: handle.owner().clone(),
+                family: handle.descriptor().id.clone(),
+                encoded: SmolStr::new(""),
+            };
+            let same = |key: &StateKey| {
+                key.owner() == handle.owner() && key.family() == &handle.descriptor().id
+            };
+            Ok(!self
+                .store
+                .records
+                .range(first.clone()..)
+                .next()
+                .is_some_and(|(key, _)| same(key))
+                && !self
+                    .mutations
+                    .range(first..)
+                    .next()
+                    .is_some_and(|(key, _)| same(key)))
+        })();
+        if let Err(error) = &result {
+            self.poison(error);
+        }
+        result
     }
 
     /// Read the transaction's post-image when present, otherwise live state.
@@ -2066,13 +2688,17 @@ impl ActionTxn<'_> {
         self.store.registry.get_for_handle(handle)?;
         // E7c3 B1: a family this transaction's owner does not own is writable
         // only when the family's **own** owner delegated it at composition
-        // (`Registrar::delegate_state_families`). The persisted namespace and
+        // (exact-family or legacy owner-wide grant). The persisted namespace and
         // the replay write stay the family owner's either way
         // (`PreparedTxn::authoritative_replay_writes` keys each write by
         // `record.key.owner`), so a delegated write is one bundle carrying two
         // owners' post-images, never a namespace transplant.
         if handle.owner() != &self.owner
-            && !self.store.registry.delegates(handle.owner(), &self.owner)
+            && !self.store.registry.delegates_family(
+                handle.owner(),
+                &handle.descriptor().id,
+                &self.owner,
+            )
         {
             return Err(ActionStateError::OwnerMismatch {
                 transaction: self.owner.clone(),
@@ -2190,6 +2816,75 @@ impl ActionTxn<'_> {
             .owner_readiness
             .require_ready(&self.owner)
             .map_err(ActionStateError::OwnerNotReady)?;
+        // A live action must remain bootable under the same global record
+        // and byte limits. Charge exact final canonical images, across every
+        // owner/family; replacements and deletes release their own old bytes.
+        let mut live_bytes = self.store.live_canonical_bytes;
+        let mut live_records = self.store.records.len();
+        for (key, mutation) in &self.mutations {
+            if let Some(previous) = self.store.records.get(key) {
+                live_bytes = live_bytes
+                    .checked_sub(previous.canonical.len())
+                    .ok_or(ActionStateError::ArithmeticOverflow)?;
+                live_records = live_records
+                    .checked_sub(1)
+                    .ok_or(ActionStateError::ArithmeticOverflow)?;
+            }
+            if let TxnMutation::Put { canonical, .. } = mutation {
+                live_bytes = live_bytes
+                    .checked_add(canonical.len())
+                    .ok_or(ActionStateError::ArithmeticOverflow)?;
+                live_records = live_records
+                    .checked_add(1)
+                    .ok_or(ActionStateError::ArithmeticOverflow)?;
+            }
+        }
+        if live_records > MAX_ACTION_STATE_BOOT_RECORDS {
+            return Err(ActionStateError::LiveRecordLimit {
+                attempted: live_records,
+                max: MAX_ACTION_STATE_BOOT_RECORDS,
+            });
+        }
+        if live_bytes > MAX_ACTION_STATE_BOOT_BYTES {
+            return Err(ActionStateError::LiveBytesExceeded {
+                attempted: live_bytes,
+                max: MAX_ACTION_STATE_BOOT_BYTES,
+            });
+        }
+        let capacity = terminal_capacity::prepare(
+            self.store,
+            &self.owner,
+            &self.mutations,
+            self.capacity_changes,
+            self.registered_identity.as_ref(),
+            live_bytes,
+            live_records,
+        )?;
+        let operation_count = self
+            .operation_count
+            .checked_add(capacity.writes.len())
+            .ok_or(ActionStateError::ArithmeticOverflow)?;
+        let canonical_bytes = self
+            .canonical_bytes
+            .checked_add(capacity.write_bytes)
+            .ok_or(ActionStateError::ArithmeticOverflow)?;
+        if operation_count > self.limits.operations {
+            return Err(ActionStateError::OperationLimit {
+                attempted: operation_count,
+                max: self.limits.operations,
+            });
+        }
+        if canonical_bytes > self.limits.canonical_bytes {
+            return Err(ActionStateError::BundleBytesExceeded {
+                attempted: canonical_bytes,
+                max: self.limits.canonical_bytes,
+            });
+        }
+        self.store
+            .registry
+            .owner_readiness
+            .require_ready(&self.owner)
+            .map_err(ActionStateError::OwnerNotReady)?;
         let reservation = self
             .store
             .next_reservation
@@ -2203,8 +2898,6 @@ impl ActionTxn<'_> {
         let base_revision = self.store.revision;
         let owner = self.owner;
         let provider_ordinal = self.provider_ordinal;
-        let operation_count = self.operation_count;
-        let canonical_bytes = self.canonical_bytes;
         let mut records = Vec::with_capacity(self.mutations.len());
         for (key, mutation) in self.mutations {
             let persistence_key = key.persistence_key();
@@ -2243,6 +2936,15 @@ impl ActionTxn<'_> {
                 installation,
             });
         }
+        let capacity_replay = if capacity.writes.is_empty() {
+            None
+        } else {
+            let mut writes = typed_replay_writes(&records);
+            writes.extend(capacity.writes.iter().map(|write| write.replay.clone()));
+            crate::authoritative::canonicalize_replay_writes(&mut writes, false)
+                .map_err(|_| ActionStateError::TerminalCapacity("physical write union"))?;
+            Some(writes)
+        };
         self.store.next_reservation = reservation;
         self.store
             .slot
@@ -2255,6 +2957,9 @@ impl ActionTxn<'_> {
             canonical_bytes,
             base_revision,
             new_revision,
+            live_bytes,
+            capacity,
+            capacity_replay,
             guard: ReservationGuard::arm(Arc::clone(&self.store.slot), reservation),
             records,
         })
@@ -2424,6 +3129,9 @@ pub struct PreparedTxn {
     canonical_bytes: usize,
     base_revision: u64,
     new_revision: u64,
+    live_bytes: usize,
+    capacity: terminal_capacity::PreparedCapacity,
+    capacity_replay: Option<Vec<ReplayWrite>>,
     guard: ReservationGuard,
     records: Vec<PreparedRecord>,
 }
@@ -2474,27 +3182,9 @@ impl PreparedTxn {
     /// write set before the transaction is consumed for staging.
     #[must_use]
     pub fn authoritative_replay_writes(&self) -> Vec<ReplayWrite> {
-        self.records
-            .iter()
-            .map(|record| match &record.module_op.op {
-                ModuleWrite::JsonSet { key, value } => ReplayWrite::ModuleJsonSet {
-                    namespace: record.key.owner.clone(),
-                    key: AuthoritativeKey::parse_canonical(key).expect(
-                        "prepared action-state keys already satisfy authoritative-key constraints",
-                    ),
-                    value: value.clone(),
-                },
-                ModuleWrite::Del { key } => ReplayWrite::ModuleDelete {
-                    namespace: record.key.owner.clone(),
-                    key: AuthoritativeKey::parse_canonical(key).expect(
-                        "prepared action-state keys already satisfy authoritative-key constraints",
-                    ),
-                },
-                ModuleWrite::StreamAppend { .. } => {
-                    unreachable!("typed action-state transactions never produce stream appends")
-                }
-            })
-            .collect()
+        self.capacity_replay
+            .clone()
+            .unwrap_or_else(|| typed_replay_writes(&self.records))
     }
 
     /// Split store writes from the non-cloneable install images. Both were
@@ -2503,6 +3193,8 @@ impl PreparedTxn {
         let PreparedTxn {
             base_revision,
             new_revision,
+            live_bytes,
+            capacity,
             mut guard,
             records,
             ..
@@ -2514,6 +3206,7 @@ impl PreparedTxn {
             let previous = mutations.insert(record.key, record.installation);
             debug_assert!(previous.is_none());
         }
+        module_ops.extend(capacity.writes.into_iter().map(|write| write.module_op));
         // The module ops are about to leave for the store, so from here a
         // durable write may already be in flight: the guard stops releasing on
         // drop and the reservation stays held, fail-closed, until an install or
@@ -2524,11 +3217,38 @@ impl PreparedTxn {
             PreparedInstallation {
                 base_revision,
                 new_revision,
+                live_bytes,
+                capacity: capacity.state,
+                capacity_usage: capacity.usage,
                 guard,
                 mutations,
             },
         )
     }
+}
+
+fn typed_replay_writes(records: &[PreparedRecord]) -> Vec<ReplayWrite> {
+    records
+        .iter()
+        .map(|record| match &record.module_op.op {
+            ModuleWrite::JsonSet { key, value } => ReplayWrite::ModuleJsonSet {
+                namespace: record.key.owner.clone(),
+                key: AuthoritativeKey::parse_canonical(key).expect(
+                    "prepared action-state keys already satisfy authoritative-key constraints",
+                ),
+                value: value.clone(),
+            },
+            ModuleWrite::Del { key } => ReplayWrite::ModuleDelete {
+                namespace: record.key.owner.clone(),
+                key: AuthoritativeKey::parse_canonical(key).expect(
+                    "prepared action-state keys already satisfy authoritative-key constraints",
+                ),
+            },
+            ModuleWrite::StreamAppend { .. } => {
+                unreachable!("typed action-state transactions never produce stream appends")
+            }
+        })
+        .collect()
 }
 
 enum InstallMutation {
@@ -2552,6 +3272,9 @@ enum InstallMutation {
 pub struct PreparedInstallation {
     base_revision: u64,
     new_revision: u64,
+    live_bytes: usize,
+    capacity: Arc<terminal_capacity::CapacityState>,
+    capacity_usage: terminal_capacity::Usage,
     guard: ReservationGuard,
     mutations: BTreeMap<StateKey, InstallMutation>,
 }
@@ -2597,6 +3320,12 @@ impl PreparedInstallation {
 /// Checked action-state refusal. Every variant occurs before live mutation.
 #[derive(Debug, Error)]
 pub enum ActionStateError {
+    #[error("terminal capacity refused: {0}")]
+    TerminalCapacity(&'static str),
+    #[error("live typed records {attempted} exceed the global recoverable limit {max}")]
+    LiveRecordLimit { attempted: usize, max: usize },
+    #[error("live typed bytes {attempted} exceed the global recoverable limit {max}")]
+    LiveBytesExceeded { attempted: usize, max: usize },
     #[error("state family {owner}/{family} is not registered")]
     UnknownFamily {
         owner: OwnerId,
@@ -3111,6 +3840,39 @@ mod tests {
     }
 
     #[test]
+    fn family_empty_bootstrap_guard_rejects_staged_or_live_rows_even_when_deleted() {
+        let (mut engine, handle, _) = fixture("state_test");
+        let mut txn = engine.action_transaction(&handle).unwrap();
+        assert!(txn.family_is_empty(&handle).unwrap());
+        txn.insert(&handle, &1, CounterState { amount: 1 }).unwrap();
+        assert!(!txn.family_is_empty(&handle).unwrap());
+        let prepared = txn.prepare().unwrap();
+        install_direct(&mut engine, prepared);
+        let mut txn = engine.action_transaction(&handle).unwrap();
+        assert!(!txn.family_is_empty(&handle).unwrap());
+        txn.remove(&handle, &1).unwrap();
+        assert!(
+            !txn.family_is_empty(&handle).unwrap(),
+            "deleting history is not first initialization"
+        );
+        drop(txn);
+        assert_eq!(
+            engine.action_state().get(&handle, &1).unwrap(),
+            Some(&CounterState { amount: 1 })
+        );
+    }
+
+    #[test]
+    fn family_empty_refuses_foreign_registry_handle_and_poison_cannot_be_caught() {
+        let (mut engine, handle, _) = fixture("state_test");
+        let (_, foreign, _) = fixture("state_test");
+        let mut txn = engine.action_transaction(&handle).unwrap();
+        assert!(txn.family_is_empty(&foreign).is_err());
+        assert!(txn.prepare().is_err());
+        assert!(engine.action_state().is_empty());
+    }
+
+    #[test]
     fn typed_family_scan_is_canonical_bounded_and_exclusively_pageable() {
         let (mut engine, handle, _) = fixture("state_test");
         let mut txn = engine.action_transaction(&handle).unwrap();
@@ -3242,6 +4004,81 @@ mod tests {
             .expect("the fixture aborts");
         assert!(!engine.action_state().has_prepared());
         assert!(engine.action_state().get(&handle, &7).unwrap().is_none());
+    }
+
+    #[test]
+    fn live_byte_accounting_tracks_actual_replace_delete_and_hydration_images() {
+        let (mut store, handle) = bare_store();
+        let mut txn = store.transaction(&handle).unwrap();
+        txn.insert(&handle, &7, CounterState { amount: 1 }).unwrap();
+        let (first_ops, first) = txn.prepare().unwrap().into_parts();
+        assert_eq!(store.live_canonical_bytes, 0, "prepare is not an install");
+        store.install(first).unwrap();
+        let first_bytes = store.canonical(&handle, &7).unwrap().unwrap().len();
+        assert_eq!(store.live_canonical_bytes, first_bytes);
+
+        let mut txn = store.transaction(&handle).unwrap();
+        txn.replace(&handle, &7, CounterState { amount: 65_535 })
+            .unwrap();
+        let (replacement_ops, replacement) = txn.prepare().unwrap().into_parts();
+        store.install(replacement).unwrap();
+        let replacement_bytes = store.canonical(&handle, &7).unwrap().unwrap().len();
+        assert!(replacement_bytes > first_bytes);
+        assert_eq!(store.live_canonical_bytes, replacement_bytes);
+
+        let (mut restarted, restarted_handle) = bare_store();
+        restarted.hydrate(boot_records(replacement_ops)).unwrap();
+        assert_eq!(restarted.live_canonical_bytes, replacement_bytes);
+        assert_eq!(
+            restarted.get(&restarted_handle, &7).unwrap(),
+            store.get(&handle, &7).unwrap()
+        );
+        let (mut original, _) = bare_store();
+        original.hydrate(boot_records(first_ops)).unwrap();
+        assert_eq!(original.live_canonical_bytes, first_bytes);
+
+        let mut txn = store.transaction(&handle).unwrap();
+        txn.remove(&handle, &7).unwrap();
+        let (_, deletion) = txn.prepare().unwrap().into_parts();
+        store.install(deletion).unwrap();
+        assert_eq!(store.live_canonical_bytes, 0);
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn live_byte_limit_refuses_before_reservation_and_replacement_reuses_existing_charge() {
+        let (mut store, handle) = bare_store();
+        let seeded = prepare_counter(&mut store, &handle, 1, 1);
+        store.install(seeded).unwrap();
+        // Exercise the exact aggregate boundary without allocating 512 MiB.
+        // The preceding test proves this counter from real installed/replayed
+        // bytes; here unseen unchanged families account for the remaining charge.
+        store.live_canonical_bytes = MAX_ACTION_STATE_BOOT_BYTES;
+        let before = live_state(&store);
+        let mut txn = store.transaction(&handle).unwrap();
+        txn.insert(&handle, &2, CounterState { amount: 1 }).unwrap();
+        assert!(matches!(
+            txn.prepare(),
+            Err(ActionStateError::LiveBytesExceeded { .. })
+        ));
+        assert_eq!(live_state(&store), before);
+        assert!(!store.has_prepared());
+
+        let mut txn = store.transaction(&handle).unwrap();
+        txn.replace(&handle, &1, CounterState { amount: 2 })
+            .unwrap();
+        let (_, equal_size) = txn.prepare().unwrap().into_parts();
+        store.install(equal_size).unwrap();
+        assert_eq!(store.live_canonical_bytes, MAX_ACTION_STATE_BOOT_BYTES);
+        let removed = store.canonical(&handle, &1).unwrap().unwrap().len();
+        let mut txn = store.transaction(&handle).unwrap();
+        txn.remove(&handle, &1).unwrap();
+        let (_, deletion) = txn.prepare().unwrap().into_parts();
+        store.install(deletion).unwrap();
+        assert_eq!(
+            store.live_canonical_bytes,
+            MAX_ACTION_STATE_BOOT_BYTES - removed
+        );
     }
 
     #[test]
@@ -3496,6 +4333,89 @@ mod tests {
             .1
     }
 
+    #[test]
+    fn bound_typed_install_keeps_the_reservation_until_consuming_completion() {
+        let (mut store, handle) = bare_store();
+        let installation = prepare_counter(&mut store, &handle, 9, 3);
+        let before = live_state(&store);
+        let bound = store
+            .bind_installation(installation)
+            .expect("exact binding");
+        assert_eq!(live_state(bound.store), before, "bind changes no image");
+
+        let completion = bound.apply_images();
+        assert_eq!(completion._store.revision(), 1);
+        assert_eq!(
+            completion._store.get(&handle, &9).expect("record"),
+            Some(&CounterState { amount: 3 })
+        );
+        assert_eq!(completion._store.pending_reservation(), Some(1));
+        assert_eq!(completion._store.lost_installations(), 0);
+        assert!(!completion._store.reservation_lost());
+        completion.complete();
+
+        assert_eq!(store.pending_reservation(), None);
+        assert_eq!(store.lost_installations(), 0);
+        assert!(!store.reservation_lost());
+        let next = prepare_counter(&mut store, &handle, 10, 2);
+        store
+            .install(next)
+            .expect("ordinary install still completes");
+        assert_eq!(store.revision(), 2);
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn dropping_bound_typed_install_preserves_images_and_latches_installation_loss() {
+        let (mut store, handle) = bare_store();
+        let seeded = prepare_counter(&mut store, &handle, 1, 1);
+        store.install(seeded).expect("seed");
+        let installation = prepare_counter(&mut store, &handle, 2, 2);
+        let before = live_state(&store);
+        let bound = store
+            .bind_installation(installation)
+            .expect("exact binding");
+        // A later owner bind could refuse here. Dropping the earlier bound
+        // value must not apply it or release an acknowledged reservation.
+        drop(bound);
+        assert_eq!(live_state(&store), before);
+        assert!(store.reservation_lost());
+        assert_eq!(store.lost_installations(), 1);
+        assert_eq!(store.dropped_reservations(), 0);
+        assert!(matches!(
+            store.transaction(&handle).err(),
+            Some(ActionStateError::InstallationLost { reservation: 2 })
+        ));
+    }
+
+    #[test]
+    fn dropping_unsettled_typed_images_never_reopens_the_store() {
+        let (mut store, handle) = bare_store();
+        let installation = prepare_counter(&mut store, &handle, 9, 3);
+        let completion = store
+            .bind_installation(installation)
+            .expect("exact binding")
+            .apply_images();
+        assert_eq!(completion._store.revision(), 1);
+        assert_eq!(
+            completion._store.get(&handle, &9).expect("record"),
+            Some(&CounterState { amount: 3 })
+        );
+        let images = live_state(completion._store);
+        // Images already changed, so this is fail-stop, not rollback. The
+        // existing installation guard must remain armed across this interval.
+        drop(completion);
+        assert_eq!(live_state(&store), images);
+        assert_eq!(store.pending_reservation(), Some(1));
+        assert!(store.reservation_lost());
+        assert_eq!(store.lost_installations(), 1);
+        assert_eq!(store.dropped_reservations(), 0);
+        assert!(matches!(
+            store.transaction(&handle).err(),
+            Some(ActionStateError::InstallationLost { reservation: 1 })
+        ));
+    }
+
     /// core-action-7 (a): an installation minted against one store and applied
     /// to another used to `assert!` on `Arc::ptr_eq`. The world task is the
     /// single writer and may never panic (docs/PLAN.md), so the mismatch is a
@@ -3591,6 +4511,9 @@ mod tests {
         let replay = PreparedInstallation {
             base_revision,
             new_revision,
+            live_bytes: 0, // The forged replay would delete the sole record.
+            capacity: Arc::default(),
+            capacity_usage: terminal_capacity::Usage::default(),
             guard,
             mutations: BTreeMap::from([(live_key, InstallMutation::Delete)]),
         };
@@ -3854,3 +4777,6 @@ mod tests {
         assert!(!ModuleActionState::unavailable().commit_pending());
     }
 }
+
+#[cfg(test)]
+mod scoped_delegation_tests;

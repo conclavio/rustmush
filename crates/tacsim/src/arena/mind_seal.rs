@@ -153,6 +153,25 @@ impl MindSeal {
         self.identity().validate()?;
         self.requested.validate()?;
         self.rom_identity.validate()?;
+        if let Some(certificate) = self.requested.origin.certificate()
+            && self.class != CoreClass::Zero
+        {
+            if self.identity() != self.requested
+                || self.engine != SealEngine::Scripted
+                || self.class != certificate.minimum
+                || self.core_class < certificate.minimum
+            {
+                return Err(invalid(
+                    "filed execution differs from its certified identity or class",
+                ));
+            }
+            certificate.verify_definition(&self.cards.definition)?;
+        }
+        if self.origin.certificate().is_some() && self.identity() != self.requested {
+            return Err(invalid(
+                "filed execution lacks its exact requested certificate",
+            ));
+        }
         if self.unit == ObjId(0)
             || self.odds_floor_permille > 1000
             || self.card != self.cards.opening_card

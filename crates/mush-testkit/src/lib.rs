@@ -317,6 +317,20 @@ impl TestWorld {
         out.take()
     }
 
+    /// Install the complete typed and owner-participant image after an exact
+    /// authoritative receipt, then deliver its action-state notifications.
+    pub fn install_composed_action_announcing(
+        &mut self,
+        installation: mush_core::composed::ComposedInstallation,
+    ) -> Vec<(Audience, OutputEvent)> {
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        self.engine
+            .install_composed_action_announcing(installation, &mut out, &mut fx)
+            .expect("the composed fixture installs");
+        out.take()
+    }
+
     /// Feed wall time in (unix seconds) — module ticks and `@wait` due
     /// times are relative to it.
     pub fn set_now(&mut self, unix_seconds: i64) {

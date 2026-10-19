@@ -36,19 +36,44 @@ files verify, with unchanged source; archive SHA-256 is
 The source-only F2 renewal capacity prerequisite has independent review and
 seven prepared coordinator tests, but no Cargo result yet.
 
-N39 freezes 180 reviewed packages at
-`2500edb31d3b2e199d3fe4f9b13574d7a9bb147f`: the retirement assertion repair,
-a bounded boot diagnostic preserving the original refusal criterion, inactive
-funded-renewal groundwork, first-generation personal entitlements, and captured
-retirement entry. Its first startup refused before applying input or compiling:
-the host already had an unrelated server release build in
-`/opt/rustmush/dev1/build`. That build remains untouched; the same frozen N39
-input awaits a clear host lane. No stage result is inferred from this startup
-refusal. Generated client bindings still require the actual exporter
-before frontend validation. Neither parsing nor partial gates establish the
-complete author/buyer story. Each further commit records its actual passing,
-failing and unexecuted scope.
+N39 froze 180 reviewed packages at
+`2500edb31d3b2e199d3fe4f9b13574d7a9bb147f`. After the unrelated host release
+build finished, compilation identified an import and exact-lookup visibility
+error; all runtime stages remained unexecuted. Those errors were repaired.
 
+On the next continuation, main was fetched at `3160cdd0` and merged normally
+into the implementation branch at `4b6d710f`, then pushed. The candidate includes
+the owner's line-tables-only debug profile, Linux CI changes, AQ command-name
+protection and P-B's Missing-only Co-op admission rule. Accepted main remains
+separate from M7 acceptance. All cumulative preparation through N42 is now
+materialized in this implementation checkout for review and progressive commits.
+
+N40 (`e7afe36ab47067da3ec76c08c81c465f6bf9c159`) added the reviewed renewal
+capacity, exact linked retry, Economy recovery/participant bridge, Roll renewal
+writer and immutable-history audit, strict Market renewal records, Republic
+membership guard and upstream reconciliation. Compilation found a missing
+re-export of the existing 1,024-byte receipt limit; the limit did not change.
+N41 (`3e23a5c7c287dfd358f900621510cd7d31b660e4`) then found missing generic
+scan bounds in Market's entitlement recovery. N42
+(`225264bae5e652e95538cf3284e58a4539901312`) reached the test fixtures and found
+two outdated API calls: the canonical idempotency parser and infallible offer-key
+setter. The narrow repairs preserve all production checks and test assertions.
+These three runs failed compilation, executed no runtime tests, and retained
+their exact unchanged source, logs and verified evidence archives. None is an
+acceptance result.
+
+The remaining M7 work includes actual renewal providers/due processing and
+owner attestation; compatible updates, withdrawal and Registry recall;
+production IC claim/close and resale/charter-transfer policy; scoped house
+catalogue and underwriting; and governed core supply, custody and installation.
+These are M7 obligations. Only integration with an unavailable live IC sortie
+or convoy driver is conditional; its production services remain required.
+M8's contraband and NPC procurement programme remains separate. The current
+parallel slices are complete renewal publication/recovery, its genuine buyer
+story, the closed Tactics replacement owner, and author withdrawal. Real
+generated client bindings, transport checks and final complete acceptance
+still follow their actual implementation. Existing partial passes and source
+review do not substitute for those gates.
 The detailed cuts below state the complete intended result. Existing inert
 components can land with focused evidence; public paid services require their
 own complete phase gates. Hardware, renewal/transfer, the house catalogue and
@@ -571,10 +596,11 @@ finish all IC13 work substitutes for that evidence.
 
 Track IC10's 4,096 inventory-marker deployment blocker and its other documented
 delivery/boot residuals as existing trade constraints. IC12 did not repair them.
-IC12 also makes Treasury and Bids readiness close Co-op enrolment, including a
-house bid that cannot fund one unit (Q-18-60); Sky remains reported/paged but
-ungated. Record this existing trade policy and its normal-funds-depletion effect
-without silently weakening it or making M7 own that unrelated policy change.
+Current main's P-B supersedes IC12's funds-depletion enrolment gate:
+only Missing required Treasury/Bids dependencies close Co-op enrolment; normal
+insufficient funds are reported/paged without blocking enrolment. Sky remains
+reported/paged and ungated. Preserve that current trade policy in M7 composition
+and regression checks; do not restore the superseded Pending-funds rule.
 Do not copy the marker scheme or silently make this cut unrelated trade cleanup.
 If those paths are required by the chosen deployment, activation waits for their
 tracked repair. Coordinate `contract_live`, market APIs and tacsim composition;
