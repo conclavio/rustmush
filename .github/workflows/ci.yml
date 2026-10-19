@@ -3,7 +3,19 @@ name: CI
 on:
   push:
     branches: [main]
+    # A design-doc or ops-note commit changes nothing a job compiles or tests;
+    # docs/help is NOT excluded, because the help topics are loaded at boot and
+    # pinned by tests. Each run of this workflow is about an hour of runner
+    # time (owner, 2026-10-18: keep the per-commit cost down).
+    paths-ignore:
+      - "docs/design/**"
+      - "docs/*.md"
+      - "README.md"
   pull_request:
+    paths-ignore:
+      - "docs/design/**"
+      - "docs/*.md"
+      - "README.md"
   # H3: the `scale` job below runs only on these two triggers.
   workflow_dispatch:
   schedule:
@@ -11,6 +23,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # No incremental artifacts on CI: nothing is rebuilt twice in one run, and
+  # they cost disk and memory the hosted runner does not have.
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   mind-author-acceptance:
@@ -70,7 +85,9 @@ jobs:
       - name: Maximize build space
         uses: easimon/maximize-build-space@v10
         with:
-          root-reserve-mb: 2048
+          # rustup's toolchain install, the cargo registry and the runner's own
+          # logs all live on the root filesystem, outside the build volume.
+          root-reserve-mb: 8192
           temp-reserve-mb: 1024
           swap-size-mb: 4096
           remove-dotnet: 'true'
@@ -131,10 +148,21 @@ jobs:
       # its serde_json `arbitrary_precision` feature would otherwise unify into every
       # engine test binary and break untagged number decoding (the worldgen proposal
       # path). See crates/mush-bot/Cargo.toml.
+      # The hosted runner is 4 cores and 16 GB; two of the Test step's runs on
+      # 2026-10-18 ended with "The hosted runner lost communication with the
+      # server" at the same point, 58 minutes in, with no log left behind —
+      # a runner starved until its agent died. Links are capped at two at a
+      # time (a test binary's link is the memory peak), and a monitor streams
+      # memory and disk into this log every 30 s so the next death, if any,
+      # leaves its reading behind.
+      - name: Runner resources before the test run
+        run: nproc; free -m; df -h / "$GITHUB_WORKSPACE"
       - name: Test
-        run: cargo test --workspace --exclude mush-bot --no-fail-fast
+        run: |
+          ( while sleep 30; do echo "[monitor $(date -u +%T)] $(free -m | awk '/Mem:/ {print "mem used " $3 "M avail " $7 "M"}') | root $(df -m / | awk 'NR==2 {print $4 "M free"}') | workspace $(df -m "$GITHUB_WORKSPACE" | awk 'NR==2 {print $4 "M free"}')"; done ) &
+          cargo test --workspace --exclude mush-bot --no-fail-fast -j 2
       - name: Test the bot on its own feature set
-        run: cargo test -p mush-bot
+        run: cargo test -p mush-bot -j 2
       # 16b cut R-b: the testkit's toy ruleset is a test-only feature the host crates'
       # dev-dependencies enable; naming it here is what lets the feature census (the
       # `feature_matrix_inventory` gate) see that a job compiles it.
