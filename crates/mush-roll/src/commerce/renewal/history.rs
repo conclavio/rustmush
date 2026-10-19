@@ -59,6 +59,18 @@ pub(crate) fn verify(
     {
         return Err(PublicationError::Mismatch);
     }
+    if let Some(service) = actual.service_closed() {
+        return match &row.state {
+            RenewalStateV1::UnfundedServiceClosed { closure }
+                if closure == service
+                    && actual.history().is_none()
+                    && actual.closure().is_none() =>
+            {
+                Ok(())
+            }
+            _ => Err(PublicationError::Mismatch),
+        };
+    }
     match (&row.state, actual.history(), actual.closure()) {
         (RenewalStateV1::Drafted {}, None, None) => Ok(()),
         (RenewalStateV1::UnfundedClosed { closure }, None, Some(a))

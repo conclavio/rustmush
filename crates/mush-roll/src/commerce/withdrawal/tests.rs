@@ -67,7 +67,7 @@ fn cause() -> TestResult<records::WithdrawalOperation> {
     let digest = mush_core::DefinitionDigest::from_bytes([3; 32]);
     Ok(serde_json::from_value(
         json!({"format":1,"operation":CommitToken::from_bytes([1;16]),"action":action_reference()?,"author":ObjId(2),
-        "initial_filing":CommitToken::from_bytes([2;16]),"filed":7,"charter":8,"line":9,"title_revision":1,
+        "initial_filing":CommitToken::from_bytes([2;16]),"filed":FiledRevisionId::new(7)?,"charter":CharterId::new(8)?,"line":super::super::LineId::new(9)?,"title_revision":1,
         "revision":{"format":1,"revision":{"key":{"character":ObjId(2),"mind":1,"number":1},"digest":digest},"source":digest}}),
     )?)
 }

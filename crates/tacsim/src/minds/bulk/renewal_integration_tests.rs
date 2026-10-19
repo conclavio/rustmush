@@ -9,6 +9,9 @@ use mush_roll::commerce::{
     renewal::{RenewalAttemptV1, RenewalHeadV1, RenewalOperationV1, RenewalStateV1},
 };
 
+#[path = "renewal_service_integration_tests.rs"]
+pub(super) mod service_tests;
+
 const START: u128 = 9_000_000;
 const DRAFT: &str = "draft_mind_renewal";
 const FUND: &str = "fund_mind_renewal";
@@ -194,7 +197,7 @@ fn grant_chain(
             DRAFT,
             GOD,
             START + 89,
-            json!({"licence":birth.licence()})
+            json!({"licence":birth.licence().get()})
         )
         .is_err(),
         "early renewal cannot truncate a paid term"
@@ -213,7 +216,7 @@ fn grant_chain(
             DRAFT,
             GOD,
             START + 89,
-            json!({"licence":birth.licence()})
+            json!({"licence":birth.licence().get()})
         )
         .is_err(),
         "one second before term_end remains too early"
@@ -225,14 +228,14 @@ fn grant_chain(
         .set_now(old_term.window().term_end().get());
     let old_balances = balances(&world)?;
     let before = disk(&world);
-    let params = json!({"licence":birth.licence()});
+    let params = json!({"licence":birth.licence().get()});
     // No host-supplied price/payee/form and no other character's request.
     for (actor, bad) in [
         (BUYER, params.clone()),
-        (GOD, json!({"licence":birth.licence(),"price":1})),
+        (GOD, json!({"licence":birth.licence().get(),"price":1})),
         (
             GOD,
-            json!({"licence":birth.licence(),"previous_operation":token(START)}),
+            json!({"licence":birth.licence().get(),"previous_operation":token(START)}),
         ),
     ] {
         assert!(prepare_step(&mut world, DRAFT, actor, START + 90, bad).is_err());
@@ -256,7 +259,7 @@ fn grant_chain(
     let drafted = capture(&world, &disk(&world));
     // Pending automatic/retry overlap must not replace the current head.
     for params in [
-        json!({"licence":old.id()}),
+        json!({"licence":old.id().get()}),
         json!({"previous_operation":token(START)}),
     ] {
         let before = disk(&world);
@@ -373,7 +376,7 @@ fn retries(f: &PurchaseFixture, granted: &Durable, birth: &EntitlementAllocation
         let old_term = term(&world, old.id(), old.term())?;
         let old_economics = economics(&world, old.id(), old.term())?;
         let initial = balances(&world)?;
-        step(&mut world, DRAFT, number, json!({"licence":old.id()}))?;
+        step(&mut world, DRAFT, number, json!({"licence":old.id().get()}))?;
         if ending == "refund" {
             step_for(&mut world, FUND, number + 1, token(number))?;
             step_for(&mut world, REFUND, number + 2, token(number))?;
@@ -421,7 +424,7 @@ fn retries(f: &PurchaseFixture, granted: &Durable, birth: &EntitlementAllocation
                 DRAFT,
                 GOD,
                 number + 3,
-                json!({"licence":old.id()})
+                json!({"licence":old.id().get()})
             )
             .is_err(),
             "same predecessor requires explicit new consent/retry link"
@@ -492,14 +495,14 @@ fn title_fences(
                     &mut world,
                     DRAFT,
                     number,
-                    json!({"licence":birth.licence()}),
+                    json!({"licence":birth.licence().get()}),
                 )?;
             }
             if id == GRANT {
                 step_for(&mut world, FUND, number + 1, token(number))?;
             }
             let params = if id == DRAFT {
-                json!({"licence":birth.licence()})
+                json!({"licence":birth.licence().get()})
             } else {
                 json!({"operation":token(number)})
             };
@@ -580,7 +583,7 @@ fn accounts_and_expiry(
             .get();
         let before = disk(&world);
         let money = balances(&world)?;
-        let params = json!({"licence":birth.licence()});
+        let params = json!({"licence":birth.licence().get()});
         let definition = action(&world, "market", DRAFT, 1)?;
         let (prepared, output) = prepare_step(&mut world, DRAFT, GOD, START + 249, params.clone())?;
         stage(
@@ -611,14 +614,14 @@ fn accounts_and_expiry(
                 &mut world,
                 DRAFT,
                 number,
-                json!({"licence":birth.licence()}),
+                json!({"licence":birth.licence().get()}),
             )?;
         }
         if id == GRANT {
             step_for(&mut world, FUND, number + 1, token(number))?;
         }
         let params = if id == DRAFT {
-            json!({"licence":birth.licence()})
+            json!({"licence":birth.licence().get()})
         } else {
             json!({"operation":token(number)})
         };
@@ -652,7 +655,7 @@ fn accounts_and_expiry(
             &mut world,
             DRAFT,
             number,
-            json!({"licence":birth.licence()}),
+            json!({"licence":birth.licence().get()}),
         )?;
         if id == GRANT {
             step_for(&mut world, FUND, number + 1, token(number))?;
@@ -708,7 +711,7 @@ fn cleanup_after_parent_lapse(
             &mut world,
             DRAFT,
             number,
-            json!({"licence":birth.licence()}),
+            json!({"licence":birth.licence().get()}),
         )?;
         if funded {
             step_for(&mut world, FUND, number + 1, token(number))?;
@@ -740,7 +743,7 @@ fn cleanup_after_parent_lapse(
                 DRAFT,
                 GOD,
                 number + 2,
-                json!({"licence":birth.licence()})
+                json!({"licence":birth.licence().get()})
             )
             .is_err()
         );
@@ -915,7 +918,7 @@ async fn customer(
         let own=term(&world,a.licence(),current.term())?;
         assert_eq!(own.window().phase_at(mush_roll::commerce::WorldIcSeconds::from_stamp(&world.engine.world.world_ic_now())?),mush_roll::commerce::TermPhase::Grace);
         source_answer(&mut world,GOD,a.licence(),Some(a.revision().source()))?;
-        assert!(prepare_step(&mut world,DRAFT,GOD,START+500,json!({"licence":a.licence()})).is_err(),"new renewal still needs current issuer parent");
+        assert!(prepare_step(&mut world,DRAFT,GOD,START+500,json!({"licence":a.licence().get()})).is_err(),"new renewal still needs current issuer parent");
         assert!(super::prepare(&mut world,"market","list_derived_mind",1,BUYER,START+501,listing_params(owner,"open_resale",100)).is_err(),"new sale still needs current issuer parent");
         source_answer(&mut world,BUYER,a.licence(),None)?;
         source_answer(&mut world,BUYER,owner,None)?;
@@ -967,6 +970,7 @@ pub(super) async fn exercise(
     birth: &EntitlementAllocationV1,
 ) -> TestResult {
     eprintln!("M7_STORY phase=renewal.transitions event=begin");
+    service_tests::exercise(f, granted, birth)?;
     let (renewed, _drafted) = grant_chain(f, granted, birth)?;
     retries(f, granted, birth)?;
     title_fences(f, granted, birth)?;

@@ -91,3 +91,27 @@ pub(crate) fn validate_refs(
     }
     Ok(())
 }
+
+/// Optional sixth action. The original five descriptors remain byte-identical.
+pub fn service_descriptor(
+    manifest: &DefinitionRef,
+    participants: &PurchaseParticipants,
+) -> Result<DefinitionDescriptor, ModError> {
+    super::super::holding_reader::descriptor(manifest)?;
+    participants.validate().map_err(error)?;
+    DefinitionDescriptor::new(DefinitionKind::new("action").map_err(error)?,
+        DefinitionId::new(mush_economy::managed_renewal::SERVICE_CLOSE_ACTION).map_err(error)?, 1,
+        serde_json::json!({"format":1,"protocol":"personal_mind_renewal_service_v1","transition":"unfunded_service_close","service_actor":1}))
+        .map_err(error).map(|d| d.with_references(vec![manifest.clone(), participants.economy().clone(), participants.retention().clone()]))
+}
+pub fn service_reference(
+    manifest: &DefinitionRef,
+    participants: &PurchaseParticipants,
+) -> Result<DefinitionRef, ModError> {
+    DefinitionRegistryBuilder::new()
+        .register(
+            OwnerId::new("market").map_err(error)?,
+            service_descriptor(manifest, participants)?,
+        )
+        .map_err(error)
+}

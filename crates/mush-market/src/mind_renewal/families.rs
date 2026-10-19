@@ -92,7 +92,7 @@ impl Families {
                 operations: family(reg)?,
                 receipts: family(reg)?,
             },
-            RenewalReader::request(reg, &config.manifest)?,
+            RenewalReader::request_configured(reg, &config.manifest, config.service.is_some())?,
         ))
     }
 }

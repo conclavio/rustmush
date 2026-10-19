@@ -441,7 +441,8 @@ impl MarketModule {
         self
     }
 
-    /// Explicit paired renewal providers. No timer, auto-acceptance or UI is installed.
+    /// Explicit paired renewal providers. The optional service adds bounded
+    /// continuations and controls; acceptance is always explicit.
     pub fn with_mind_renewals(mut self, config: crate::mind_renewal::RenewalConfig) -> Self {
         self.mind_renewals = Some(config);
         self
@@ -798,6 +799,7 @@ impl GameModule for MarketModule {
                 .as_ref()
                 .ok_or_else(|| ModError::msg("renewal families unavailable"))?
                 .audit(ctx, config)?;
+            crate::mind_renewal::enable_service(ctx)?;
         } else {
             crate::mind_renewal::require_disabled(ctx)?;
         }

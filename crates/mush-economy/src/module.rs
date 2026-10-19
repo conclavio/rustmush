@@ -1627,6 +1627,23 @@ impl EconomyModule {
         self
     }
 
+    /// Add only the exact registered unfunded service-closure action.
+    /// Buyer funding/grant authority is unchanged.
+    pub fn with_mind_renewal_service(
+        mut self,
+        action: mush_core::DefinitionRef,
+    ) -> Result<Self, ModError> {
+        let config = self
+            .mind_renewals
+            .as_mut()
+            .ok_or_else(|| ModError::msg("renewal service requires renewal configuration"))?;
+        if config.service_close.is_some() || action != config.service_reference()? {
+            return Err(ModError::msg("renewal service action differs"));
+        }
+        config.service_close = Some(action);
+        Ok(self)
+    }
+
     /// Freeze the exact five renewal actions on the existing Economy owner slot.
     /// Paired Roll/Market audits remain required; defaults grant no renewal action.
     #[must_use]
@@ -1640,6 +1657,7 @@ impl EconomyModule {
             manifest,
             participants,
             actions,
+            service_close: None,
         });
         self
     }

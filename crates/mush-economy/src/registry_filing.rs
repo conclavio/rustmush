@@ -277,6 +277,7 @@ pub(crate) fn register(
     if let Some(renewals) = renewals {
         renewals.validate(&definition)?;
         actions.extend(renewals.actions.iter().cloned());
+        actions.extend(renewals.service_close.iter().cloned());
     }
     reg.owner_participant(
         definition,
@@ -791,6 +792,10 @@ pub enum EconomyRequest {
     RenewalFunding(crate::managed_renewal::RenewalMoneyRequest),
     RenewalGrant(crate::managed_renewal::RenewalMoneyRequest),
     RenewalRefund(crate::managed_renewal::RenewalMoneyRequest),
+    RenewalServiceClose {
+        operation: CommitToken,
+        reason: crate::managed_renewal::RenewalServiceCloseReason,
+    },
     RenewalClose {
         operation: CommitToken,
         reason: crate::managed_renewal::UnfundedCloseReason,
@@ -1037,6 +1042,17 @@ impl OwnerParticipant for InitialFilingParticipant {
                     writes,
                 ))
             }
+            EconomyRequest::RenewalServiceClose { operation, reason } => {
+                self.require_renewal(context, crate::managed_renewal::SERVICE_CLOSE_ACTION)?;
+                let (output, patch, writes) = crate::managed_renewal::prepare_service_close(
+                    state, context, operation, reason,
+                )?;
+                Ok(OwnerPreparation::new(
+                    EconomyOutput::RenewalOffer(output),
+                    EconomyPatch::RenewalOffer(Box::new(patch)),
+                    writes,
+                ))
+            }
             EconomyRequest::RenewalClose { operation, reason } => {
                 self.require_renewal(context, crate::managed_renewal::CLOSE_ACTION)?;
                 let (output, patch, writes) =
@@ -1265,6 +1281,19 @@ impl OwnerParticipant for InitialFilingParticipant {
         match write {
             ReplayWrite::LedgerChunkSet { write } => write.log_id() == JOURNAL_LOG,
             ReplayWrite::ModuleJsonSet { key, .. } => {
+                if let Some(operation) = key
+                    .as_str()
+                    .strip_prefix(crate::managed_renewal::service::PREFIX)
+                {
+                    return self
+                        .renewals
+                        .as_ref()
+                        .is_some_and(|c| c.service_close.is_some())
+                        && operation.len() == 32
+                        && operation
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+                }
                 if let Some(operation) = key.as_str().strip_prefix("renewal-offer:") {
                     return self.renewals.is_some()
                         && operation.len() == 32

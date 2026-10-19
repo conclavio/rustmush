@@ -37,7 +37,10 @@ impl<'a> RenewalAudit<'a> {
         record.validate().map_err(|_| RenewalAuditError::Refused)?;
         let history = self.state.fold.renewal_receipts.find(operation)?;
         if let Some(h) = history {
-            if h.origin() != record || record.closure.is_some() {
+            if h.origin() != record
+                || record.closure.is_some()
+                || self.state.renewal_offers.service(operation).is_some()
+            {
                 return Err(RenewalAuditError::Refused);
             }
             h.verify_documents(
@@ -51,11 +54,16 @@ impl<'a> RenewalAudit<'a> {
                     .ok_or(RenewalAuditError::Refused)?,
             )?;
         } else {
-            record
-                .verify_documents(&self.state.snapshot)
+            self.state
+                .renewal_offers
+                .verify_offer(record, &self.state.snapshot)
                 .map_err(|_| RenewalAuditError::Refused)?;
         }
-        Ok(RenewalOfferView { record, history })
+        Ok(RenewalOfferView {
+            record,
+            history,
+            service: self.state.renewal_offers.service(operation),
+        })
     }
     /// At most the existing 32,768 permanent offers. Every yielded row repeats
     /// its exact current projection join; a failure is not an absent row.
@@ -74,6 +82,7 @@ impl<'a> RenewalAudit<'a> {
 pub struct RenewalOfferView<'a> {
     record: &'a OfferRecord,
     history: Option<&'a RenewalHistory>,
+    service: Option<&'a super::service::ServiceRecord>,
 }
 impl<'a> RenewalOfferView<'a> {
     pub fn format(&self) -> u16 {
@@ -108,6 +117,9 @@ impl<'a> RenewalOfferView<'a> {
             .closure
             .as_ref()
             .map(|closure| RenewalClosureView { closure })
+    }
+    pub fn service_closed(&self) -> Option<&'a super::RenewalServiceClosureV1> {
+        self.service.map(|record| &record.closure)
     }
     pub fn history(&self) -> Option<&'a RenewalHistory> {
         self.history

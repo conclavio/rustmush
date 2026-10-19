@@ -18,8 +18,20 @@ pub(crate) struct Configuration {
     pub(crate) manifest: DefinitionRef,
     pub(crate) participants: [DefinitionRef; 2],
     pub(crate) actions: [DefinitionRef; 5],
+    pub(crate) service_close: Option<DefinitionRef>,
 }
 impl Configuration {
+    pub(crate) fn service_reference(&self) -> Result<DefinitionRef, ModError> {
+        let [economy, retention] = &self.participants;
+        let descriptor=DefinitionDescriptor::new(DefinitionKind::new("action").map_err(|_|failed())?,
+            DefinitionId::new(super::SERVICE_CLOSE_ACTION).map_err(|_|failed())?,1,
+            serde_json::json!({"format":1,"protocol":"personal_mind_renewal_service_v1","transition":"unfunded_service_close","service_actor":1}))
+            .map_err(|_|failed())?.with_references(vec![self.manifest.clone(),economy.clone(),retention.clone()]);
+        DefinitionRegistryBuilder::new()
+            .register(OwnerId::new("market").map_err(|_| failed())?, descriptor)
+            .map_err(|_| failed())
+    }
+
     pub(crate) fn validate(&self, economy: &DefinitionRef) -> Result<(), ModError> {
         let [configured_economy, roll] = &self.participants;
         if configured_economy != economy
@@ -56,6 +68,11 @@ impl Configuration {
                 return Err(failed());
             }
         }
+        if let Some(action) = &self.service_close {
+            if action != &self.service_reference()? {
+                return Err(failed());
+            }
+        }
         Ok(())
     }
     pub(crate) fn require(
@@ -70,6 +87,9 @@ impl Configuration {
             super::GRANT_ACTION => grant,
             super::REFUND_ACTION => refund,
             super::CLOSE_ACTION => close,
+            super::SERVICE_CLOSE_ACTION => {
+                self.service_close.as_ref().ok_or_else(super::refused)?
+            }
             _ => return Err(super::refused()),
         };
         if expected != action {
@@ -89,12 +109,23 @@ pub(crate) fn documents(
     enabled: bool,
 ) -> Result<Vec<(String, Vec<u8>)>, ModError> {
     let mut documents = Vec::new();
-    for (name, value) in kv.iter().filter(|(k, _)| k.starts_with(history::PREFIX)) {
-        if !enabled || documents.len() == history::MAX_RECORDS {
+    let mut offers = 0usize;
+    let mut services = 0usize;
+    for (name, value) in kv
+        .iter()
+        .filter(|(k, _)| k.starts_with(history::PREFIX) || k.starts_with(super::service::PREFIX))
+    {
+        let (count, limit) = if name.starts_with(super::service::PREFIX) {
+            (&mut services, super::service::MAX_BYTES)
+        } else {
+            (&mut offers, history::MAX_RECORD_BYTES)
+        };
+        if !enabled || *count == history::MAX_RECORDS {
             return Err(failed());
         }
-        let bytes = mush_core::canonical_json_bytes_with_limit(value, history::MAX_RECORD_BYTES)
-            .map_err(|_| failed())?;
+        *count += 1;
+        let bytes =
+            mush_core::canonical_json_bytes_with_limit(value, limit).map_err(|_| failed())?;
         documents.push((name.to_string(), bytes));
     }
     Ok(documents)

@@ -65,11 +65,54 @@ pub(crate) fn register(
             },
         )?;
     }
-    reg.mind_renewal_capacity(
-        config.manifest.clone(),
-        config.participants.ordered(),
-        actions,
-    )?;
+    if let Some(action) = config.service_action()? {
+        if reg.definition(protocol::service_descriptor(
+            &config.manifest,
+            &config.participants,
+        )?)? != action
+        {
+            return Err(error("renewal service action differs"));
+        }
+        let economy = reg.request_owner_participant::<InitialFilingParticipant>(action.clone())?;
+        let writer = config.writer.for_action(
+            reg,
+            &action,
+            &config.manifest,
+            &config.participants,
+            reader.clone(),
+        )?;
+        let refusal = ActionError::new(
+            ActionErrorCode::ProviderRejected,
+            false,
+            "This retained renewal cleanup is unavailable.",
+        )
+        .map_err(error)?;
+        reg.action_provider(
+            action.clone(),
+            super::service_provider::Provider {
+                action: action.clone(),
+                outcome: outcome.clone(),
+                config: config.clone(),
+                families: families.clone(),
+                economy,
+                writer,
+                refusal,
+            },
+        )?;
+        reg.mind_renewal_capacity_with_service(
+            config.manifest.clone(),
+            config.participants.ordered(),
+            actions,
+            action,
+        )?;
+        super::service::register(reg, config, families.clone(), reader)?;
+    } else {
+        reg.mind_renewal_capacity(
+            config.manifest.clone(),
+            config.participants.ordered(),
+            actions,
+        )?;
+    }
     Ok(families)
 }
 fn binding(reg: &mut Registrar<'_>, config: &RenewalConfig) -> Result<(), ModError> {
@@ -77,12 +120,14 @@ fn binding(reg: &mut Registrar<'_>, config: &RenewalConfig) -> Result<(), ModErr
     let participants = config.participants.clone();
     let actions = config.actions()?;
     let writer = config.writer.clone();
+    let service_close = config.service_action()?;
     let mut refs: Vec<DefinitionRef> = vec![
         manifest.clone(),
         participants.economy().clone(),
         participants.retention().clone(),
     ];
     refs.extend(actions.iter().cloned());
+    refs.extend(service_close.iter().cloned());
     refs.sort();
     refs.dedup();
     let d = descriptor(
@@ -110,7 +155,13 @@ fn binding(reg: &mut Registrar<'_>, config: &RenewalConfig) -> Result<(), ModErr
             }
             writer
                 .validate_registration(&manifest, &participants, &actions)
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            if let Some(service) = &service_close {
+                writer
+                    .validate_service_registration(service)
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
         },
     )?;
     reg.definition(d)?;

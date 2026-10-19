@@ -44,6 +44,7 @@ pub struct RenewalConfig {
     pub(super) participants: PurchaseParticipants,
     pub(super) writer: RenewalWriter,
     pub(super) policy: RenewalPolicy,
+    pub(super) service: Option<super::service::ServiceConfig>,
 }
 pub(super) fn error(e: impl std::fmt::Display) -> ModError {
     ModError::msg(e.to_string())
@@ -74,9 +75,25 @@ impl RenewalConfig {
             participants,
             writer,
             policy,
+            service: None,
         };
         value.actions()?;
         Ok(value)
+    }
+    /// Explicit service opt-in. This never authorizes automatic acceptance.
+    pub fn with_service(mut self) -> Result<Self, ModError> {
+        if self.service.is_some() {
+            return Err(error("renewal service already configured"));
+        }
+        self.service = Some(super::service::ServiceConfig::default());
+        self.service_action()?;
+        Ok(self)
+    }
+    pub fn service_action(&self) -> Result<Option<DefinitionRef>, ModError> {
+        self.service
+            .as_ref()
+            .map(|_| protocol::service_reference(&self.manifest, &self.participants))
+            .transpose()
     }
     pub fn manifest(&self) -> &DefinitionRef {
         &self.manifest
@@ -138,6 +155,12 @@ impl RenewalConfig {
             Transition::Close,
         ] {
             all.push(protocol::descriptor(t, &self.manifest, &self.participants)?);
+        }
+        if self.service.is_some() {
+            all.push(protocol::service_descriptor(
+                &self.manifest,
+                &self.participants,
+            )?);
         }
         Ok(all)
     }

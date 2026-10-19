@@ -132,7 +132,7 @@ fn create(
         .renewal_offers
         .require_retry(&row, &state.snapshot, &state.fold.renewal_receipts)?;
     check_offerable(&after, &state.snapshot).map_err(|_| refused())?;
-    images(state, row, after, None, next_contract)
+    images(state, row, after, None, next_contract, None)
 }
 pub(super) fn close(
     state: &EconomyStore,
@@ -164,7 +164,59 @@ pub(super) fn close(
         after,
         Some(before_contract),
         state.next_contract,
+        None,
     )
+}
+pub(super) fn service_close(
+    state: &EconomyStore,
+    context: &OfferContext<'_>,
+    operation: CommitToken,
+    reason: super::RenewalServiceCloseReason,
+) -> Result<(RenewalOfferOutput, OfferPatch, Vec<ReplayWrite>), ParticipantError> {
+    let before = state.renewal_offers.get(operation).ok_or_else(refused)?;
+    service_close_current(state, context, before, reason)?;
+    let record = super::service::ServiceRecord {
+        format: 1,
+        operation,
+        closure: super::RenewalServiceClosureV1::create(context, reason)?,
+    };
+    let after = super::service::contract(before, &record)?;
+    let before_contract = state
+        .snapshot
+        .contract(before.contract)
+        .cloned()
+        .ok_or_else(refused)?;
+    images(
+        state,
+        before.clone(),
+        after,
+        Some(before_contract),
+        state.next_contract,
+        Some(record),
+    )
+}
+fn service_close_current(
+    state: &EconomyStore,
+    context: &OfferContext<'_>,
+    before: &OfferRecord,
+    reason: super::RenewalServiceCloseReason,
+) -> Result<(), ParticipantError> {
+    if state.frozen
+        || context.actor != mush_core::GOD
+        || context.principal != &(mush_core::PrincipalId::Object { id: mush_core::GOD })
+        || !super::subject::player(context.world, mush_core::GOD)
+        || !action_matches(context.action, super::SERVICE_CLOSE_ACTION)
+        || state.renewal_offers.service(before.operation).is_some()
+    {
+        return Err(refused());
+    }
+    let audit = state.renewal_audit().map_err(|_| refused())?;
+    let actual = audit.get(before.operation).map_err(|_| refused())?;
+    if actual.history().is_some() || actual.closure().is_some() || actual.service_closed().is_some()
+    {
+        return Err(refused());
+    }
+    super::RenewalServiceClosureV1::create(context, reason)?.require_origin(before)
 }
 fn close_current(
     state: &EconomyStore,
@@ -177,6 +229,7 @@ fn close_current(
     if state.frozen
         || !action_matches(context.action, CLOSE_ACTION)
         || before.closure.is_some()
+        || state.renewal_offers.service(before.operation).is_some()
         || context.commit == before.operation
         || context.commit == before.offer.basis.predecessor_operation
         || context.commit == before.offer.basis.prior_quote
@@ -200,6 +253,7 @@ pub struct OfferPatch {
     before_instrument: Option<InstrumentDef>,
     before_open_counts: Option<(usize, usize)>,
     row: OfferRecord,
+    service: Option<super::service::ServiceRecord>,
     contract: EconomicContract,
     next_contract: u64,
     next_book_generation: u64,
@@ -210,14 +264,28 @@ fn images(
     after: EconomicContract,
     before_contract: Option<EconomicContract>,
     next_contract: u64,
+    service: Option<super::service::ServiceRecord>,
 ) -> Result<(RenewalOfferOutput, OfferPatch, Vec<ReplayWrite>), ParticipantError> {
     row.validate()?;
     let next_book_generation = state.renewal_offers.next_generation()?;
-    let mut writes = vec![
-        json_write(crate::api::contract_key(after.id), &after)?,
-        json_write(history::key(row.operation).into(), &row)?,
-    ];
-    let offered = row.closure.is_none();
+    let mut writes = vec![json_write(crate::api::contract_key(after.id), &after)?];
+    if let Some(record) = &service {
+        record.require_origin(&row)?;
+        if serde_json::to_vec(&after)
+            .map_err(|_| ParticipantError::Encoding)?
+            .len()
+            > history::MAX_CONTRACT_BYTES
+        {
+            return Err(refused());
+        }
+        writes.push(json_write(
+            super::service::key(row.operation).into(),
+            record,
+        )?);
+    } else {
+        writes.push(json_write(history::key(row.operation).into(), &row)?);
+    }
+    let offered = row.closure.is_none() && service.is_none();
     if offered {
         let mut meta = state.meta_doc();
         meta.as_object_mut()
@@ -266,7 +334,7 @@ fn images(
                 .ok_or_else(refused)?,
         );
     }
-    let output = RenewalOfferOutput {
+    let mut output = RenewalOfferOutput {
         operation: row.operation,
         contract: row.contract,
         consent_hash: row.consent_hash,
@@ -275,6 +343,7 @@ fn images(
             .as_ref()
             .map_or_else(|| row.created_at_ic.clone(), |c| c.at_ic.clone()),
         closed: row.closure.as_ref().map(|c| c.reason),
+        service_closed: service.as_ref().map(|r| r.closure.clone()),
         attempt: row.attempt(),
         offer_digest: row.offer.digest()?,
         commit: row.closure.as_ref().map_or(row.operation, |c| c.commit),
@@ -288,6 +357,12 @@ fn images(
             .as_ref()
             .map_or(row.created_at_utc, |c| c.at_utc),
     };
+    if let Some(record) = &service {
+        output.at_ic = record.closure.at_ic().clone();
+        output.commit = record.closure.commit();
+        output.action = record.closure.action().clone();
+        output.posted_at_utc = record.closure.posted_at_utc();
+    }
     let patch = OfferPatch {
         before_meta: MetaFence::capture(state),
         before_book_generation: state.renewal_offers.generation(),
@@ -298,6 +373,7 @@ fn images(
         before_instrument,
         before_open_counts: offered.then(|| open_counts(state, terms.buyer)),
         row,
+        service,
         contract: after,
         next_contract,
         next_book_generation,
@@ -318,7 +394,7 @@ impl OfferPatch {
         context: &OfferContext<'_>,
     ) -> Result<(), ParticipantError> {
         self.check_local(state)?;
-        let (action, commit, at, utc) = self.row.closure.as_ref().map_or(
+        let (mut action, mut commit, mut at, mut utc) = self.row.closure.as_ref().map_or(
             (
                 &self.row.action,
                 self.row.operation,
@@ -327,6 +403,12 @@ impl OfferPatch {
             ),
             |c| (&c.action, c.commit, &c.at_ic, c.at_utc),
         );
+        if let Some(record) = &self.service {
+            action = record.closure.action();
+            commit = record.closure.commit();
+            at = record.closure.at_ic();
+            utc = record.closure.posted_at_utc();
+        }
         let now = context.world.world_ic_now();
         if context.action != action
             || context.commit != commit
@@ -336,7 +418,14 @@ impl OfferPatch {
         {
             return Err(refused());
         }
-        if let Some(close) = &self.row.closure {
+        if let Some(record) = &self.service {
+            service_close_current(
+                state,
+                context,
+                self.before_record.as_ref().ok_or_else(refused)?,
+                record.closure.reason(),
+            )?;
+        } else if let Some(close) = &self.row.closure {
             close_current(
                 state,
                 context,
@@ -362,6 +451,7 @@ impl OfferPatch {
         if state.frozen || !self.before_meta.matches(state)
             || state.renewal_offers.generation()!=self.before_book_generation
             || state.renewal_offers.get(self.row.operation)!=self.before_record.as_ref()
+            || state.renewal_offers.service(self.row.operation).is_some()
             || state.snapshot.contract(self.row.contract)!=self.before_contract.as_ref()
             || state.snapshot.holds().any(|h|matches!(h.purpose,HoldPurpose::Escrow{contract} if contract==self.row.contract))
             || self.before_accounts.iter().any(|a|state.snapshot.account(a.id)!=Some(a))
@@ -379,6 +469,7 @@ impl OfferPatch {
             book: &mut state.renewal_offers,
             next_contract: &mut state.next_contract,
             row: self.row,
+            service: self.service,
             contract: self.contract,
             after_contract: self.next_contract,
             after_generation: self.next_book_generation,
@@ -390,6 +481,7 @@ pub struct BoundOffer<'a> {
     book: &'a mut OfferBook,
     next_contract: &'a mut u64,
     row: OfferRecord,
+    service: Option<super::service::ServiceRecord>,
     contract: EconomicContract,
     after_contract: u64,
     after_generation: u64,
@@ -398,6 +490,9 @@ impl BoundParticipant for BoundOffer<'_> {
     fn apply(self) {
         self.snapshot.put_contract(self.contract);
         self.book.install(self.row, self.after_generation);
+        if let Some(record) = self.service {
+            self.book.install_service(record);
+        }
         *self.next_contract = self.after_contract;
     }
 }

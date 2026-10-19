@@ -628,6 +628,7 @@ fn original_v3(f: &PurchaseFixture, filed: &Durable) -> TestResult {
     assert_eq!(a.terms().form(), PaidForm::OpenResale {});
     let snapshot = capture(&world, &disk(&world));
     let _ = PlayerWorld::boot_entitlements(f, &snapshot)?;
+    renewal::service_tests::unavailable_buyer(f, &snapshot, &a)?;
     Ok(())
 }
 fn lapse_refund(f: &PurchaseFixture, filed: &Durable, owner: LicenceId) -> TestResult {

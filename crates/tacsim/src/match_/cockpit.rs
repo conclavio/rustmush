@@ -797,7 +797,7 @@ pub fn power_of(w: &World, pilot: ObjId) -> Power {
 /// # Errors
 ///
 /// [`CockpitError::Destroyed`].
-fn require_alive(w: &World, pilot: ObjId) -> Result<(), CockpitError> {
+pub(crate) fn require_alive(w: &World, pilot: ObjId) -> Result<(), CockpitError> {
     match last_frame(w, pilot) {
         Some(held) if held.frame.wreck => Err(CockpitError::Destroyed),
         _ => Ok(()),

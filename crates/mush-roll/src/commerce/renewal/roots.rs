@@ -9,12 +9,33 @@ use mush_core::{
     CommitToken, DefinitionRef, Flags, ObjId, ObjKind, participant::OwnerPrepareContext,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Publication {
+    Ordinary(Transition),
+    ServiceClose,
+}
+impl From<Transition> for Publication {
+    fn from(value: Transition) -> Self {
+        Self::Ordinary(value)
+    }
+}
+impl Publication {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Ordinary(t) => t.id(),
+            Self::ServiceClose => mush_economy::managed_renewal::SERVICE_CLOSE_ACTION,
+        }
+    }
+    fn fresh(self) -> bool {
+        matches!(self, Self::Ordinary(t) if t.fresh())
+    }
+}
 #[derive(Clone)]
 pub(crate) struct RenewalFence {
     action: DefinitionRef,
     commit: CommitToken,
     holder: ObjId,
-    transition: Transition,
+    transition: Publication,
     fresh: Option<RenewalFacts>,
 }
 impl RenewalFence {
@@ -49,7 +70,7 @@ impl RenewalRoots {
     pub(super) fn prepare(
         action: &DefinitionRef,
         commit: CommitToken,
-        transition: Transition,
+        transition: Publication,
         before: Option<&RenewalOperationV1>,
         after: &RenewalOperationV1,
         prior_attempt: Option<&RenewalOperationV1>,
@@ -67,7 +88,7 @@ impl RenewalRoots {
         }
         let after_roots = super::audit::required(after)?.to_vec();
         let before_roots = match transition {
-            Transition::Draft => {
+            Publication::Ordinary(Transition::Draft) => {
                 if before.is_some()
                     || after.operation() != commit
                     || !matches!(after.state(), super::RenewalStateV1::Drafted {})
@@ -97,24 +118,36 @@ impl RenewalRoots {
                 let before = before.ok_or(PublicationError::Missing)?;
                 after.follows(before)?;
                 let actual_commit = match transition {
-                    Transition::Fund => after.state().funding().map(|r| r.commit()),
-                    Transition::Grant | Transition::Refund | Transition::Close => {
-                        after.state().terminal_commit()
+                    Publication::Ordinary(Transition::Fund) => {
+                        after.state().funding().map(|r| r.commit())
                     }
-                    Transition::Draft => None,
+                    Publication::Ordinary(
+                        Transition::Grant | Transition::Refund | Transition::Close,
+                    )
+                    | Publication::ServiceClose => after.state().terminal_commit(),
+                    Publication::Ordinary(Transition::Draft) => None,
                 };
                 if actual_commit != Some(commit) {
                     return Err(PublicationError::Mismatch);
                 }
                 let expected = matches!(
                     (transition, after.state()),
-                    (Transition::Fund, super::RenewalStateV1::Funded { .. })
-                        | (Transition::Grant, super::RenewalStateV1::Granted { .. })
-                        | (Transition::Refund, super::RenewalStateV1::Refunded { .. })
-                        | (
-                            Transition::Close,
-                            super::RenewalStateV1::UnfundedClosed { .. }
-                        )
+                    (
+                        Publication::Ordinary(Transition::Fund),
+                        super::RenewalStateV1::Funded { .. }
+                    ) | (
+                        Publication::Ordinary(Transition::Grant),
+                        super::RenewalStateV1::Granted { .. }
+                    ) | (
+                        Publication::Ordinary(Transition::Refund),
+                        super::RenewalStateV1::Refunded { .. }
+                    ) | (
+                        Publication::Ordinary(Transition::Close),
+                        super::RenewalStateV1::UnfundedClosed { .. }
+                    ) | (
+                        Publication::ServiceClose,
+                        super::RenewalStateV1::UnfundedServiceClosed { .. }
+                    )
                 );
                 if !expected || prior_attempt.is_some() {
                     return Err(PublicationError::Mismatch);
@@ -126,7 +159,11 @@ impl RenewalRoots {
             fence: RenewalFence {
                 action: action.clone(),
                 commit,
-                holder: after.binding.holder,
+                holder: if transition == Publication::ServiceClose {
+                    mush_core::GOD
+                } else {
+                    after.binding.holder
+                },
                 transition,
                 fresh: fresh.cloned(),
             },

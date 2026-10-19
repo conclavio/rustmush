@@ -428,6 +428,7 @@ pub mod filed;
 pub mod filing;
 pub mod fork_protocol;
 pub mod holding_reader;
+mod ic_claims;
 pub mod marked_rating;
 pub mod module;
 pub mod owner_holdings;

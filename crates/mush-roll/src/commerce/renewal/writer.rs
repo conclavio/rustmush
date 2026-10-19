@@ -14,7 +14,7 @@ use super::{
     RenewalAttemptV1, RenewalClosureV1, RenewalHeadV1, RenewalOperationV1, RenewalStateV1,
     protocol::{self, Transition},
     reader::{RenewalFacts, RenewalReader, RenewalRequest},
-    roots::RenewalRoots,
+    roots::{Publication, RenewalRoots},
 };
 use mush_core::PrepareCtx;
 use mush_core::participant::ParticipantHandle;
@@ -41,6 +41,7 @@ struct Registration {
     manifest: DefinitionRef,
     participants: PurchaseParticipants,
     actions: [DefinitionRef; 5],
+    service_close: Option<DefinitionRef>,
 }
 /// Shared trusted composition cell. Only Roll installs its real families and
 /// fixed grants; no public state/image or current-rights constructor exists.
@@ -116,6 +117,7 @@ impl RenewalWriter {
         manifest: DefinitionRef,
         participants: PurchaseParticipants,
         actions: [DefinitionRef; 5],
+        service_close: Option<DefinitionRef>,
     ) -> Result<(), ModError> {
         if reg.module() != crate::NS || self.0.get().is_some() {
             return Err(ModError::msg(
@@ -123,6 +125,11 @@ impl RenewalWriter {
             ));
         }
         protocol::validate_refs(&manifest, &participants, &actions)?;
+        if let Some(service) = &service_close {
+            if service != &protocol::service_reference(&manifest, &participants)? {
+                return Err(ModError::msg("renewal service definition differs"));
+            }
+        }
         reg.delegate_state_family(&families.renewal_operations, "market")?;
         reg.delegate_state_family(&families.renewal_heads, "market")?;
         reg.delegate_state_family(&families.paid_licences, "market")?;
@@ -134,6 +141,7 @@ impl RenewalWriter {
                 manifest,
                 participants,
                 actions,
+                service_close,
             })
             .map_err(|_| ModError::msg("renewal writer registration conflicts"))
     }
@@ -153,6 +161,12 @@ impl RenewalWriter {
             || &actual.actions != actions
         {
             return Err(ModError::msg("renewal writer composition differs"));
+        }
+        Ok(())
+    }
+    pub fn validate_service_registration(&self, service: &DefinitionRef) -> Result<(), ModError> {
+        if self.0.get().and_then(|r| r.service_close.as_ref()) != Some(service) {
+            return Err(ModError::msg("renewal service writer is unavailable"));
         }
         Ok(())
     }
@@ -210,7 +224,7 @@ impl RegisteredRenewalWriter {
             .ok_or(PublicationError::Unavailable)?;
         if self.manifest != r.manifest
             || self.participants != r.participants
-            || !r.actions.contains(&self.action)
+            || (!r.actions.contains(&self.action) && r.service_close.as_ref() != Some(&self.action))
         {
             return Err(PublicationError::Mismatch);
         }
@@ -237,6 +251,7 @@ impl RegisteredRenewalWriter {
         }
         let facts = ctx
             .read_owner_preimage(txn, &self.reader, RenewalRequest::own(licence))
+            .and_then(|v| v.into_facts())
             .map_err(invalid)?;
         let pair = ctx
             .distinct_personal_accounts(facts.sale().seller())
@@ -374,6 +389,7 @@ impl RegisteredRenewalWriter {
             || output.commit() != ctx.commit_token()
             || output.action() != &self.action
             || output.closed().is_some()
+            || output.service_closed().is_some()
             || output.offer_digest() != offer.digest().map_err(invalid)?
         {
             return Err(PublicationError::Mismatch);
@@ -418,7 +434,7 @@ impl RegisteredRenewalWriter {
         let roots = RenewalRoots::prepare(
             &self.action,
             ctx.commit_token(),
-            Transition::Draft,
+            Transition::Draft.into(),
             None,
             &row,
             prior_retry,
@@ -462,7 +478,14 @@ impl RegisteredRenewalWriter {
         after.state = RenewalStateV1::Funded {
             funding: output.receipt().clone(),
         };
-        self.publish(ctx, txn, Transition::Fund, before, after, Some(facts))
+        self.publish(
+            ctx,
+            txn,
+            Transition::Fund.into(),
+            before,
+            after,
+            Some(facts),
+        )
     }
     pub fn terminal(
         &self,
@@ -509,7 +532,7 @@ impl RegisteredRenewalWriter {
             },
             _ => return Err(PublicationError::Mismatch),
         };
-        self.publish(ctx, txn, transition, before, after, facts)
+        self.publish(ctx, txn, transition.into(), before, after, facts)
     }
     pub fn close(
         &self,
@@ -540,13 +563,47 @@ impl RegisteredRenewalWriter {
                 reason: output.closed().ok_or(PublicationError::Mismatch)?,
             },
         };
-        self.publish(ctx, txn, Transition::Close, before, after, None)
+        self.publish(ctx, txn, Transition::Close.into(), before, after, None)
+    }
+    pub fn service_close(
+        &self,
+        ctx: &mut PrepareCtx<'_>,
+        txn: &mut ActionTxn<'_>,
+        before: &RenewalOperationV1,
+        output: &RenewalOfferOutput,
+    ) -> Result<RenewalOperationV1, PublicationError> {
+        if self.registration()?.service_close.as_ref() != Some(&self.action)
+            || !matches!(before.state(), RenewalStateV1::Drafted {})
+            || output.operation() != before.operation()
+            || output.commit() != ctx.commit_token()
+            || output.action() != &self.action
+            || output.offer_digest() != before.offer_digest()
+            || RenewalAttemptV1::from_economy(output.attempt()) != before.attempt()
+            || output.contract() != before.contract()
+            || &output.consent_hash() != before.consent_hash()
+            || output.closed().is_some()
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        let closure = output.service_closed().ok_or(PublicationError::Missing)?;
+        if closure.commit() != ctx.commit_token()
+            || closure.action() != &self.action
+            || closure.at_ic() != output.at_ic()
+            || closure.posted_at_utc() != output.posted_at_utc()
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        let mut after = before.clone();
+        after.state = RenewalStateV1::UnfundedServiceClosed {
+            closure: closure.clone(),
+        };
+        self.publish(ctx, txn, Publication::ServiceClose, before, after, None)
     }
     fn publish(
         &self,
         ctx: &mut PrepareCtx<'_>,
         txn: &mut ActionTxn<'_>,
-        transition: Transition,
+        transition: Publication,
         before: &RenewalOperationV1,
         after: RenewalOperationV1,
         facts: Option<&RenewalFacts>,
@@ -572,7 +629,7 @@ impl RegisteredRenewalWriter {
             None,
             facts,
         )?;
-        if transition == Transition::Grant {
+        if transition == Publication::Ordinary(Transition::Grant) {
             let (licence, term, economics) = after.granted_rows()?;
             super::super::entitlement::admission_capacity::check(&f.term_economics, &economics)?;
             txn.replace(&f.paid_licences, &licence.key(), licence.clone())
@@ -595,7 +652,7 @@ impl RegisteredRenewalWriter {
             .map_err(invalid)?;
         // Fund retains the reservation and exact head without a third typed
         // mutation; core permits only the two paired operation progress rows.
-        if transition != Transition::Fund {
+        if transition != Publication::Ordinary(Transition::Fund) {
             txn.replace(&f.renewal_heads, &next.key(), next.clone())
                 .map_err(invalid)?;
         } else if next != old {

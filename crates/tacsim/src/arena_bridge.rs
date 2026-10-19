@@ -4831,7 +4831,10 @@ pub(crate) fn admit_order(
     let entitled = match &order.by {
         CharacterRef::Character { id } => {
             crate::match_::cockpit::flying(w, *id).is_some_and(|seat| {
-                seat.driver == *id && command_grants(w, &seat, match_id, order.squad, unit)
+                seat.driver == *id
+                    && order.issuer == Some(seat.unit)
+                    && crate::match_::cockpit::require_alive(w, *id).is_ok()
+                    && command_grants(w, &seat, match_id, order.squad, unit)
             })
         }
         CharacterRef::Persona { squad } => {

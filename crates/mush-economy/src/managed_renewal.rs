@@ -26,6 +26,8 @@ pub use audit::{RenewalAudit, RenewalClosureView, RenewalOfferView};
 pub(crate) mod funding;
 pub(crate) mod history;
 pub(crate) mod install;
+pub(crate) mod service;
+pub use service::{RenewalServiceCloseReason, RenewalServiceClosureV1, SERVICE_CLOSE_ACTION};
 pub(crate) mod money_install;
 pub(crate) mod receipt;
 pub(crate) use funding::ClosedRenewalPlan;
@@ -143,6 +145,7 @@ pub struct RenewalOfferOutput {
     consent_hash: [u8; 32],
     at_ic: ClockStamp,
     closed: Option<UnfundedCloseReason>,
+    service_closed: Option<RenewalServiceClosureV1>,
     attempt: RenewalAttemptV1,
     offer_digest: DefinitionDigest,
     commit: CommitToken,
@@ -164,6 +167,9 @@ impl RenewalOfferOutput {
     }
     pub const fn closed(&self) -> Option<UnfundedCloseReason> {
         self.closed
+    }
+    pub fn service_closed(&self) -> Option<&RenewalServiceClosureV1> {
+        self.service_closed.as_ref()
     }
     pub const fn attempt(&self) -> RenewalAttemptV1 {
         self.attempt
@@ -243,6 +249,27 @@ pub(crate) fn prepare_close(
     ParticipantError,
 > {
     install::close(
+        state,
+        &install::OfferContext::from(context),
+        operation,
+        reason,
+    )
+}
+
+pub(crate) fn prepare_service_close(
+    state: &EconomyStore,
+    context: &OwnerPrepareContext<'_>,
+    operation: CommitToken,
+    reason: RenewalServiceCloseReason,
+) -> Result<
+    (
+        RenewalOfferOutput,
+        install::OfferPatch,
+        Vec<mush_core::authoritative::ReplayWrite>,
+    ),
+    ParticipantError,
+> {
+    install::service_close(
         state,
         &install::OfferContext::from(context),
         operation,

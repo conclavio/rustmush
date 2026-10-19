@@ -22,7 +22,12 @@ impl AuthorityGuardValidator for Capabilities {
             }
         }
         if let Some(entitlement) = &self.entitlement {
-            return entitlement.is_current(ctx, guard);
+            if entitlement.is_current(ctx, guard)? {
+                return Ok(true);
+            }
+        }
+        if crate::mind_renewal::service_guard_current(ctx, guard) {
+            return Ok(true);
         }
         Ok(false)
     }

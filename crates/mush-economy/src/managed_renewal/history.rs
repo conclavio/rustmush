@@ -66,7 +66,7 @@ impl OfferRecord {
     pub(super) fn attempt(&self) -> RenewalAttemptV1 {
         self.attempt.unwrap_or(RenewalAttemptV1::Automatic)
     }
-    fn previous(&self) -> Option<CommitToken> {
+    pub(super) fn previous(&self) -> Option<CommitToken> {
         match self.attempt {
             Some(RenewalAttemptV1::BuyerRetry { previous_operation }) => Some(previous_operation),
             _ => None,
@@ -227,6 +227,7 @@ impl OfferRecord {
 pub(crate) struct OfferBook {
     rows: BTreeMap<CommitToken, OfferRecord>,
     contracts: BTreeMap<ContractId, CommitToken>,
+    services: BTreeMap<CommitToken, super::service::ServiceRecord>,
     predecessors: BTreeMap<(u64, u64), CommitToken>,
     generation: u64,
     // Runtime-only: the old unfunded-only document path cannot mint this.
@@ -238,6 +239,19 @@ impl OfferBook {
     }
     pub(super) fn operations(&self) -> impl ExactSizeIterator<Item = CommitToken> + '_ {
         self.rows.keys().copied()
+    }
+    pub(super) fn service(&self, operation: CommitToken) -> Option<&super::service::ServiceRecord> {
+        self.services.get(&operation)
+    }
+    pub(super) fn install_service(&mut self, record: super::service::ServiceRecord) {
+        self.services.insert(record.operation, record);
+    }
+    pub(super) fn verify_offer(
+        &self,
+        row: &OfferRecord,
+        snapshot: &EconomySnapshot,
+    ) -> Result<(), ParticipantError> {
+        verify_pair(row, snapshot, None, self.service(row.operation))
     }
     pub(super) fn get(&self, operation: CommitToken) -> Option<&OfferRecord> {
         self.rows.get(&operation)
@@ -291,7 +305,13 @@ impl OfferBook {
         };
         receipts.require_complete().map_err(|_| refused())?;
         let before = self.rows.get(&previous).ok_or_else(refused)?;
-        require_link(before, row, snapshot, Some(receipts))
+        require_link(
+            before,
+            row,
+            snapshot,
+            Some(receipts),
+            self.service(before.operation),
+        )
     }
     pub(super) fn install(&mut self, row: OfferRecord, generation: u64) {
         self.contracts.insert(row.contract, row.operation);
@@ -328,7 +348,7 @@ impl OfferBook {
         documents: &[(String, Vec<u8>)],
         receipts: Option<&super::receipt::RenewalReceiptAudit>,
     ) -> Result<Self, ParticipantError> {
-        if documents.len() > MAX_RECORDS {
+        if documents.len() > MAX_RECORDS * 2 {
             return Err(refused());
         }
         let mut histories = match receipts {
@@ -340,19 +360,40 @@ impl OfferBook {
             None => BTreeMap::new(),
         };
         let mut book = Self::default();
-        for (name, bytes) in documents {
+        for (name, bytes) in documents
+            .iter()
+            .filter(|(k, _)| k.starts_with(super::service::PREFIX))
+        {
+            let record = super::service::ServiceRecord::decode(bytes)?;
+            if book.services.len() == MAX_RECORDS
+                || *name != super::service::key(record.operation)
+                || book.services.insert(record.operation, record).is_some()
+            {
+                return Err(refused());
+            }
+        }
+        for (name, bytes) in documents
+            .iter()
+            .filter(|(k, _)| !k.starts_with(super::service::PREFIX))
+        {
             let row = OfferRecord::decode(bytes)?;
-            if *name != key(row.operation)
+            if book.rows.len() == MAX_RECORDS
+                || *name != key(row.operation)
                 || book.rows.contains_key(&row.operation)
                 || book.contracts.contains_key(&row.contract)
             {
                 return Err(refused());
             }
-            verify_pair(&row, snapshot, histories.remove(&row.operation))?;
+            verify_pair(
+                &row,
+                snapshot,
+                histories.remove(&row.operation),
+                book.service(row.operation),
+            )?;
             book.contracts.insert(row.contract, row.operation);
             book.rows.insert(row.operation, row);
         }
-        if !histories.is_empty() {
+        if !histories.is_empty() || book.services.keys().any(|op| !book.rows.contains_key(op)) {
             return Err(refused());
         }
         for contract in snapshot.contracts() {
@@ -386,7 +427,13 @@ impl OfferBook {
             );
             if let Some(previous) = row.previous() {
                 let before = self.rows.get(&previous).ok_or_else(refused)?;
-                require_link(before, row, snapshot, receipts)?;
+                require_link(
+                    before,
+                    row,
+                    snapshot,
+                    receipts,
+                    self.service(before.operation),
+                )?;
                 if followers.insert(previous, row.operation).is_some() {
                     return Err(refused());
                 }
@@ -419,9 +466,10 @@ fn verify_pair(
     row: &OfferRecord,
     snapshot: &EconomySnapshot,
     history: Option<&super::RenewalHistory>,
+    service: Option<&super::service::ServiceRecord>,
 ) -> Result<(), ParticipantError> {
     if let Some(history) = history {
-        if row.closure.is_some() || history.origin() != row {
+        if row.closure.is_some() || service.is_some() || history.origin() != row {
             return Err(refused());
         }
         history
@@ -440,6 +488,16 @@ fn verify_pair(
         {
             return Err(refused());
         }
+    } else if let Some(service) = service {
+        row.validate()?;
+        let expected = super::service::contract(row, service)?;
+        if snapshot.contract(row.contract) != Some(&expected)
+            || snapshot.holds().any(
+                |h| matches!(h.purpose,HoldPurpose::Escrow{contract} if contract==row.contract),
+            )
+        {
+            return Err(refused());
+        }
     } else {
         row.verify_documents(snapshot)?;
     }
@@ -451,6 +509,7 @@ fn require_link(
     row: &OfferRecord,
     snapshot: &EconomySnapshot,
     receipts: Option<&super::receipt::RenewalReceiptAudit>,
+    service: Option<&super::service::ServiceRecord>,
 ) -> Result<(), ParticipantError> {
     if row.previous() != Some(before.operation)
         || row.operation == before.operation
@@ -467,7 +526,7 @@ fn require_link(
         Some(r) => r.find(before.operation).map_err(|_| refused())?,
         None => None,
     };
-    verify_pair(before, snapshot, history)?;
+    verify_pair(before, snapshot, history, service)?;
     let (at, utc, terminal_commit) = if let Some(h) = history {
         let terminal = h.terminal().ok_or_else(refused)?;
         if terminal.outcome() != RenewalOutcome::Refunded {
@@ -477,6 +536,12 @@ fn require_link(
             terminal.at_ic(),
             terminal.posted_at_utc(),
             terminal.commit(),
+        )
+    } else if let Some(record) = service {
+        (
+            record.closure.at_ic(),
+            record.closure.posted_at_utc(),
+            record.closure.commit(),
         )
     } else {
         let closure = before.closure.as_ref().ok_or_else(refused)?;

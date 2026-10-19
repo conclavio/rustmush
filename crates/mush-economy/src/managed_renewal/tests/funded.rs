@@ -833,3 +833,6 @@ fn renewal_zero_cash_credit_changed_owner_and_approval_rule_never_create_escrow(
 
 #[path = "funded/reoffer.rs"]
 mod reoffer;
+
+#[path = "funded/service.rs"]
+mod service;

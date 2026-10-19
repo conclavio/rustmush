@@ -7203,6 +7203,24 @@ async fn l1_send_order_refuses_an_order_nobody_entitled_gave() {
             "{who}"
         );
     }
+    // A valid principal cannot borrow the commander's or another unit's
+    // contact scope through the direct bridge entry.
+    for issuer in [None, Some(third_tank), Some(rb)] {
+        assert_eq!(
+            send(&mut rig, rb, l1_order(red_one, issuer, character(lead))),
+            refused,
+            "the lead's issuer must be their actual occupied tank"
+        );
+    }
+    assert_eq!(
+        send(
+            &mut rig,
+            rd,
+            l1_order(red_one, Some(lead_tank), character(third))
+        ),
+        refused,
+        "the wingman grant does not borrow the lead's contact scope"
+    );
     // Entitled: the non-lead for their own wingman, the lead for any red unit.
     assert_eq!(
         send(
@@ -7303,6 +7321,24 @@ async fn l1_send_order_refuses_an_order_nobody_entitled_gave() {
         Err(IntentRefusal::Unavailable),
         "a match with no record"
     );
+
+    // The same real egress wreck fact that stops typed ORDER also stops a
+    // direct send_order, for both a lead and an otherwise entitled wingman.
+    for (pilot, tank, author, unit) in [(0, lead_tank, lead, rb), (2, third_tank, third, rd)] {
+        let mut dead = rig.held_frame(pilot);
+        dead.notices.clear();
+        dead.wreck = true;
+        rig.push_frame(pilot, dead);
+        assert_eq!(
+            send(
+                &mut rig,
+                unit,
+                l1_order(red_one, Some(tank), character(author))
+            ),
+            refused,
+            "a destroyed pilot cannot bypass typed ORDER's alive check"
+        );
+    }
 
     // The record is the persona's warrant: with red-1's row gone from
     // `leaders`, red-1's own persona in the commander's scope is refused.

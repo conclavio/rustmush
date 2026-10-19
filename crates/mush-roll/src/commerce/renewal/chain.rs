@@ -53,6 +53,7 @@ pub(crate) fn check_draft(
                 super::RenewalStateV1::Granted { terminal, .. }
                 | super::RenewalStateV1::Refunded { terminal, .. } => terminal.posted_at_utc(),
                 super::RenewalStateV1::UnfundedClosed { closure } => closure.posted_at_utc,
+                super::RenewalStateV1::UnfundedServiceClosed { closure } => closure.posted_at_utc(),
                 _ => return Err(PublicationError::Mismatch),
             };
             if row.created_at_utc < terminal_utc {

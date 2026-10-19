@@ -62,6 +62,7 @@ struct RenewalRegistration {
     writer: super::renewal::writer::RenewalWriter,
     participants: super::purchase::PurchaseParticipants,
     actions: [DefinitionRef; 5],
+    service_close: Option<DefinitionRef>,
 }
 impl CommerceConfig {
     /// The game supplies the pair constructed from its actual frozen Registry
@@ -278,10 +279,26 @@ impl CommerceConfig {
             writer,
             participants,
             actions,
+            service_close: None,
         });
         Ok(self)
     }
 
+    /// Optional exact registered service, without changing old five-action config.
+    pub fn with_mind_renewal_service(mut self, action: DefinitionRef) -> Result<Self, ModError> {
+        let r = self
+            .renewals
+            .as_mut()
+            .ok_or_else(|| ModError::msg("renewal service requires renewals"))?;
+        if r.service_close.is_some()
+            || action
+                != super::renewal::protocol::service_reference(&self.manifest, &r.participants)?
+        {
+            return Err(ModError::msg("renewal service composition differs"));
+        }
+        r.service_close = Some(action);
+        Ok(self)
+    }
     fn dependent_action_descriptor(&self) -> Result<DefinitionDescriptor, ModError> {
         Ok(descriptor(
             "action",
@@ -567,7 +584,13 @@ pub(crate) fn register(
             )?);
         }
         if config.renewals.is_some() {
-            declarations.push(super::renewal::reader::descriptor(&config.manifest)?);
+            declarations.push(super::renewal::reader::configured_descriptor(
+                &config.manifest,
+                config
+                    .renewals
+                    .as_ref()
+                    .is_some_and(|r| r.service_close.is_some()),
+            )?);
         }
         reg.definition_validator(
             DefinitionKind::new("owner_read").map_err(error)?,
@@ -646,6 +669,10 @@ pub(crate) fn register(
                 ratings.clone(),
                 &config.manifest,
                 config.compatibility.clone(),
+                config
+                    .renewals
+                    .as_ref()
+                    .is_some_and(|r| r.service_close.is_some()),
             )?;
         }
         if config.original_market_quotes {
@@ -755,12 +782,14 @@ pub(crate) fn register(
             return Err(ModError::msg("renewal retention definition differs"));
         }
         root_actions.extend(renewal.actions.iter().cloned());
+        root_actions.extend(renewal.service_close.iter().cloned());
         renewal.writer.install(
             reg,
             families.clone(),
             config.manifest.clone(),
             renewal.participants.clone(),
             renewal.actions.clone(),
+            renewal.service_close.clone(),
         )?;
     }
     let fork_registration = if let Some(installer) = fork {

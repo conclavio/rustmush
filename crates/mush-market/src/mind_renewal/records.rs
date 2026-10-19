@@ -136,6 +136,20 @@ impl MindRenewalOperationV1 {
                     return Err(invalid());
                 }
             }
+            RenewalStateV1::UnfundedServiceClosed { closure } => match closure.reason() {
+                mush_economy::managed_renewal::RenewalServiceCloseReason::DeadlineReached => {
+                    if closure.at_ic().clock != self.created_at_ic.clock
+                        || closure.at_ic().at < expiry.at
+                    {
+                        return Err(invalid());
+                    }
+                }
+                mush_economy::managed_renewal::RenewalServiceCloseReason::ClockInvalidated => {
+                    if closure.at_ic().clock == self.created_at_ic.clock {
+                        return Err(invalid());
+                    }
+                }
+            },
             _ => {}
         }
         // Refund/Close can use a current cleanup descriptor after a manifest
@@ -249,6 +263,11 @@ impl MindRenewalReceiptV1 {
                 }
             }
             RenewalStateV1::UnfundedClosed { closure } if closure.commit() != self.operation => {
+                closure.validate().map_err(error)?;
+            }
+            RenewalStateV1::UnfundedServiceClosed { closure }
+                if closure.commit() != self.operation =>
+            {
                 closure.validate().map_err(error)?;
             }
             _ => return Err(invalid()),

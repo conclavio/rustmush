@@ -177,11 +177,13 @@ fn rules() -> Result<Rules> {
             mobility: None,
             rules: RulesValue::new(schema_ref.clone(), json!({}))?,
         };
-        let d = body.descriptor(
-            DefinitionKind::new("unit")?,
-            DefinitionId::new(format!("unit_{n}"))?,
-            1,
-        )?;
+        let d = body
+            .descriptor(
+                DefinitionKind::new("unit")?,
+                DefinitionId::new(format!("unit_{n}"))?,
+                1,
+            )?
+            .as_current();
         let reference = builder.register(owner.clone(), d.clone())?;
         descriptors.push(d);
         specs.push(body.with_definition(reference));
@@ -219,6 +221,7 @@ impl GameModule for Rules {
                     d.id() == &e.reference().key().id
                         && d.payload() == e.payload()
                         && d.references() == e.references()
+                        && d.is_current() == e.is_current()
                 }) {
                     Ok(())
                 } else {

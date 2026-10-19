@@ -385,6 +385,7 @@ struct PurchaseRoll {
     dependent_owners: bool,
     entitlements: bool,
     renewals: bool,
+    renewal_service: bool,
     author_withdrawal: bool,
     shared: Shared,
     purchase: PurchaseShared,
@@ -454,11 +455,21 @@ impl GameModule for PurchaseRoll {
         let config = if self.renewals {
             let renewal =
                 renewal_configuration(&purchase, manifest.clone()).map_err(module_error)?;
+            let renewal = if self.renewal_service {
+                renewal.with_service()?
+            } else {
+                renewal
+            };
             let config = config.with_mind_renewals(
                 renewal.writer(),
                 purchase.participants.clone(),
                 renewal.actions()?,
             )?;
+            let config = if let Some(service) = renewal.service_action()? {
+                config.with_mind_renewal_service(service)?
+            } else {
+                config
+            };
             purchase.renewals = Some(renewal);
             config
         } else {
@@ -548,6 +559,9 @@ impl GameModule for PurchaseEconomy {
                 ],
                 renewal.actions()?,
             );
+            if let Some(service) = renewal.service_action()? {
+                module = module.with_mind_renewal_service(service)?;
+            }
         }
         module.register(reg)?;
         self.inner = Some(module);
@@ -765,6 +779,7 @@ impl PurchaseFixture {
                     dependent_owners: false,
                     entitlements: false,
                     renewals: false,
+                    renewal_service: false,
                     author_withdrawal: false,
                     shared: shared.clone(),
                     purchase: purchase.clone(),

@@ -82,8 +82,52 @@ The 18-file evidence archive verifies against unchanged source, SHA-256
 Neither genuine story is claimed passed. All 59 web test files / 625 tests pass
 against the committed N45 tree.
 The first web attempt executed zero tests because Windows sandbox temporary-file
-renames were denied; the authorized unsandboxed rerun passed. Generated bindings,
-typecheck/build and complete final acceptance are still required.
+renames were denied; the authorized unsandboxed rerun passed. The actual Rust
+protocol exporter then passed both tests and supplied the two removal message
+variants. Those generated files are included in N46, whose production web build
+and typecheck pass with zero checker errors or warnings. The existing bundle-size
+advisory remains report-only. Complete M7 acceptance remains required.
+
+N46 tree `a65939338a12f679ac0576e731108a8045d61056` was committed and pushed
+as `bde138fd`. Compilation and 1,165 tests pass; seven fail and one is ignored.
+The six Tactics failures share a fixture whose unit roots were not explicitly
+selected as current, so real `@unit/create` refused before replacement. One
+withdrawal fixture used numeric persistent commerce IDs instead of their
+canonical string representation. Both narrow fixture repairs preserve production
+checks and assertions. N45's two Market failures and workshop stale-response
+failure now pass. Both genuine stories remain unstarted because required gates
+failed. The 19-file evidence archive verifies unchanged source, SHA-256
+`998e8e5623c68feddbecc4518436f644030ea012c7ccbd84f8430a3c8af5a516`.
+
+The next candidate adds the reviewed optional renewal service: separate immutable
+Economy cleanup proof, exact Roll/Market progression, private retained service
+intent, holder-bound due processing, and source-free status/request/accept/decline/
+retry commands. Automatic processing never pays or retries a closed offer.
+Its six Economy, four Market, one reader and genuine child checks still need
+execution. The new inactive IC prerequisite adds strict permanent claim history,
+ordered capacity replay, actual personal admission reading, and eight structural
+tests including same-generation close-clock rollback refusal. It registers no
+IC service or custody adapter; the actual four-owner custody, full seal, future
+close reservation and host integration remain separate work. These prepared
+packages and fixture repairs are not acceptance results or default activation.
+
+N47 tree `25ab15488942154a09f16d20c3060266d9fc9082` stopped at compilation:
+the renewal integration added a field to the unrelated purchase registration and
+omitted an explicit nested test path. Its two-file terminal archive is verified,
+SHA-256 `9ae2ef1470963df1e09e7b2c1a1c99cfecb50614eec84dc911135d3e3c572b21`.
+N48 tree `0b949813fba009c16bd1c3b79266ee1262082870` resolved both, then
+stopped on an ambiguous redundant String conversion in Market's status output.
+Its two-file terminal archive is verified, SHA-256
+`eea057e3b5f8afb23ec32f4a9119097da7b62e53f43a7f7617bbfaeea77b749f`.
+Both runs executed zero runtime tests; all downstream stages remain unstarted.
+The next candidate removes that conversion without changing output bytes.
+
+The L residual audit also confirms and repairs 17b's R1: direct character ORDER
+admission now binds `issuer` to the actual occupied hull and applies the same
+published wreck predicate as typed cockpit ORDER. The existing actual boarded
+lead/wingman regression adds missing/borrowed issuer and egress-wreck refusals,
+preserving its valid controls and Persona rules. Runtime validation is pending;
+this does not close the other historical L residuals.
 
 The five real renewal providers and genuine renewal story are integrated, with
 new service cleanup/due/status/control work continuing separately. Reviewed

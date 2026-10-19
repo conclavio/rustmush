@@ -13,7 +13,8 @@ use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionR
 use mush_economy::{
     ContractId,
     managed_renewal::{
-        RenewalFundingReceiptV1, RenewalOutcome, RenewalTerminalReceiptV1, UnfundedCloseReason,
+        RenewalFundingReceiptV1, RenewalOutcome, RenewalServiceCloseReason,
+        RenewalServiceClosureV1, RenewalTerminalReceiptV1, UnfundedCloseReason,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -325,6 +326,9 @@ pub enum RenewalStateV1 {
     UnfundedClosed {
         closure: RenewalClosureV1,
     },
+    UnfundedServiceClosed {
+        closure: RenewalServiceClosureV1,
+    },
 }
 impl RenewalStateV1 {
     pub const fn pending(&self) -> bool {
@@ -334,7 +338,12 @@ impl RenewalStateV1 {
         matches!(self, Self::Granted { .. })
     }
     pub const fn retryable(&self) -> bool {
-        matches!(self, Self::Refunded { .. } | Self::UnfundedClosed { .. })
+        matches!(
+            self,
+            Self::Refunded { .. }
+                | Self::UnfundedClosed { .. }
+                | Self::UnfundedServiceClosed { .. }
+        )
     }
     pub fn funding(&self) -> Option<&RenewalFundingReceiptV1> {
         match self {
@@ -356,6 +365,7 @@ impl RenewalStateV1 {
                 Some(terminal.commit())
             }
             Self::UnfundedClosed { closure } => Some(closure.commit),
+            Self::UnfundedServiceClosed { closure } => Some(closure.commit()),
             _ => None,
         }
     }
@@ -441,7 +451,9 @@ impl RenewalOperationV1 {
         match (&old.state, &self.state) {
             (
                 RenewalStateV1::Drafted {},
-                RenewalStateV1::Funded { .. } | RenewalStateV1::UnfundedClosed { .. },
+                RenewalStateV1::Funded { .. }
+                | RenewalStateV1::UnfundedClosed { .. }
+                | RenewalStateV1::UnfundedServiceClosed { .. },
             ) => Ok(()),
             (
                 RenewalStateV1::Funded { funding: a },
@@ -559,6 +571,24 @@ impl Record for RenewalOperationV1 {
         if let RenewalStateV1::UnfundedClosed { closure } = &self.state {
             closure.validate()?;
             if !distinct(closure.commit) || closure.posted_at_utc < self.created_at_utc {
+                return Err(PublicationError::Mismatch);
+            }
+        }
+        if let RenewalStateV1::UnfundedServiceClosed { closure } = &self.state {
+            closure.validate().map_err(invalid)?;
+            if !distinct(closure.commit())
+                || closure.posted_at_utc() < self.created_at_utc
+                || matches!(self.attempt, RenewalAttemptV1::BuyerRetry { previous_operation } if previous_operation == closure.commit())
+                || match closure.reason() {
+                    RenewalServiceCloseReason::DeadlineReached => {
+                        closure.at_ic().clock != self.created_at_ic.clock
+                            || closure.at_ic().at < self.created_at_ic.at
+                    }
+                    RenewalServiceCloseReason::ClockInvalidated => {
+                        closure.at_ic().clock == self.created_at_ic.clock
+                    }
+                }
+            {
                 return Err(PublicationError::Mismatch);
             }
         }
