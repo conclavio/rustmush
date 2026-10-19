@@ -160,8 +160,10 @@ pub use orders::{
     What, orders_key, orders_key_owner, orders_state,
 };
 pub use passage::{
-    DAY_SECS, DriveLaw, HullDrive, INTERCEPT_PASSES, PlanError, choose_route, crew_days,
-    intercept_passes, passage_burn, payload_kg, plan_passage,
+    DAY_SECS, DEFAULT_THROTTLE_PERMILLE, DriveLaw, FlipProfile, G0_MPS2, HullDrive,
+    INTERCEPT_PASSES, KEEP_OUT_AU, MAX_THROTTLE_PERMILLE, MIN_THROTTLE_PERMILLE, PlanError,
+    RoutePolicy, choose_route, crew_days, detour_km, flip_accel_mps2, flip_profile,
+    intercept_passes, leg_distance_km, leg_seconds, passage_burn, payload_kg, plan_passage,
 };
 pub use proceeds::{
     BASELINE_MEMO, CoopProceeds, REFERENCE_DARK, SALE_BOOKS_DARK, SALE_LINE, SALE_LINE_NO_SHARE,
@@ -173,7 +175,8 @@ pub use stock::{
     STOCK_SOURCE_KIND,
 };
 pub use voyage::{
-    LAUNCH_GRACE_FIRES, LAUNCH_WATCH_FIRES, PendingVoyage, VOYAGE_PREFIX, VOYAGE_SCHEMA, Voyage,
-    VoyageState, voyage_key, voyage_key_owner,
+    LAUNCH_GRACE_FIRES, LAUNCH_WATCH_FIRES, POLICY_USAGE, PassageOptions, PendingVoyage,
+    THROTTLE_USAGE, VIA_UNKNOWN, VOYAGE_PREFIX, VOYAGE_SCHEMA, Voyage, VoyageState, voyage_key,
+    voyage_key_owner,
 };
 pub use when::{MAX_AHEAD_SECS, MAX_WINDOW_SECS, NotBefore};

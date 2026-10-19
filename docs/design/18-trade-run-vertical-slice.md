@@ -1721,6 +1721,21 @@ hold (out 45 t at a brimmed tank, back 37–40 t), so Stickney's price matters.
 "40 t against a 41 t burn" cannot be built: the tank case is **39 t aboard against a 40 t burn** (the
 vertex with 39 t), as the story test's negative check builds it from the planner.
 
+**As built (doc 19 cut A.2, 2026-10-18):** Q-18-41 is ruled the engine's way — the Dray flies
+`DriveLaw::Flip { accel_mg: 50, exhaust_kms: 6000 }` (`dray.json` v3): a leg is `2√(d / a)` at the
+hull's thrust-limited acceleration for its load (50 milli-g at the rated 421 t, more when lighter),
+the burn the rocket equation over the passage's `Δv = Σ a·t`, so **both time and fuel move with the
+sky**; the laden law stays mush-sim's for the coast law and same-body legs only. `passage_burn` takes
+the `HullDrive` (law, rail and the passage's throttle, 250–1000 ‰). At the epoch sky the story's
+outbound (100 t cargo, 53 t bunkered, 19 crew-days) takes 321,547 + 1,256,313 s (18.3 h at rate 24)
+and burns 51–52 t; the return 1,195,660 + 306,023 s (17.4 h), 48 t, 18 crew-days — the slice's 42 t
+tank no longer covers an outbound, so the story bunkers 53. The solar keep-out (0.3 AU) is a detour
+cost in the leg's distance, never a closure (Q-18-40); `choose_route` keeps the fastest or the
+cheapest listed route and honours `via=` as a waypoint filter; the throttle rides `+ship/plan`,
+`+ship/undock` and the depart order. The figures above this note are the coast law's history
+(D-18-50: none was an invariant); the cut note in [18-cut-notes.md](18-cut-notes.md) "A.2" has the
+table.
+
 **The queued-orders model (D-18-31).** Rejected carriers: `@wait` re-dispatch (it can act as the pilot,
 `engine.rs:3213-3232`, but is RAM-only, invisible, capped at 100 shared slots, not atomic with any record,
 voided by fan-out) and `schedule_source` (acts as the pilot, writes typed families only, cannot post money

@@ -209,11 +209,17 @@ becoming a week by accident (Q-19-4).
 
 `tacsim.unit.dray` v3: `"law": { "flip": { "accel_mg": 50, "exhaust_kms": 6000 } }` — a twentieth of
 a gravity at 421 t, exhaust at 2 % of c: doc 11 §7's "slow, efficient" against the Vigil's torch.
-At the epoch sky a brimmed hull makes Ceres–Kirkwood–Stickney in about 19 h at rate 24 for about 52 t
-of reaction mass (direct: 15 h, 43 t); at the best season (Ceres–Mars ≈ 1.24 AU) about 14 h and
-40 t; at the worst (≈ 4.3 AU, and the chord inside the keep-out) about 30 h and over 70 t against an
-80 t tank. Lighter loads are faster and cheaper on both axes. Every doc 18 figure that was the coast
-law's output is re-stated "as built (A.2)" and none is an invariant (D-18-50).
+**As built (A.2), at the epoch sky:** the story's outbound load (100 t of cargo, 53 t in the tank,
+19 crew-days, one soul: 153,176 kg) flies Ceres–Kirkwood–Stickney in 321,547 + 1,256,313 s (18.3 h
+at rate 24) for 51–52 t of reaction mass and 19 crew-days — the 2° hop to Kirkwood is 3.7 days of
+flight, since a brachistochrone's short legs are slow; the return at 106,176 kg in 1,195,660 +
+306,023 s (17.4 h), 48 t, 18 crew-days. Under the coast law the same loads took 20.8 h / 41 t / 22
+and 18.5 h / 37 t / 20: the flip Dray is faster and thirstier, and the tank the slice bunkered
+(42 t) no longer covers an outbound, so the story bunkers 53. At the best season (Ceres–Mars ≈
+1.24 AU) a brimmed hull runs about 14 h and 40 t; at the worst (≈ 4.3 AU, the chord inside the
+keep-out) about 30 h and over 70 t against an 80 t tank. Lighter loads are faster and cheaper on
+both axes. Every doc 18 figure that was the coast law's output is re-stated "as built (A.2)" and
+none is an invariant (D-18-50).
 
 ### 4.4 The intercept — D-19-11
 
@@ -301,7 +307,7 @@ within rounding, the latitude term measured) and the drift per IC year recorded 
 | Cut | What | Size | Acceptance |
 |---|---|---|---|
 | **A.1** data and model (**landed 2026-10-18**; the cut note in [18-cut-notes.md](18-cut-notes.md) "A.1") | `ElementRow` tables on `BodyDef` (wire, scales, bounds, the consistency rule); `kepler.rs` (`julian_day`, the solver, the blend); `Sky::Kepler` with `PosKm` in 3D, `isqrt` distances, `heliocentric`, `light_lag_s`, the revision; `fetch_elements.py` + `golden.json`; lane **v4** (eleven bodies + Kirkwood on Ceres's rows trailing 2°; the slice's circular numbers unchanged; routes re-timed to the 3D chords at the epoch); `@corridor/show` names the model; pins re-blessed (lane digest, passage figures) and the drift recorded | M | `a1_sky_kepler_tracks_horizons` within the recorded per-body tolerance; `a1_sky_kepler_is_the_circular_sky_at_the_epoch` (r within 10⁻⁶, λ within 0.001°, β the measured latitude); a fixture pack without tables is `Sky::Circular` byte for byte; every existing suite green |
-| **A.2** laws | `DriveLaw::Flip`, the thrust-limited laden rule, the rocket-equation burn, the throttle, five intercept passes, the keep-out detour, `RoutePolicy`, `via=`; Dray **v3**, lane **v5** (direct routes added, ports unchanged); `+ship/plan throttle=`, the order's `throttle=`; pins re-blessed; doc 18 figures "as built (A.2)" | M | the epoch figures of §4.3 within 2 %; a worst-season plan over 24 h and over 70 t; `Cheapest` never slower-and-costlier than `Fastest`; a keep-out leg longer than its chord and never refused; a route planned under Coast byte-identical to IC9 |
+| **A.2** laws (**landed 2026-10-18**; the cut note "A.2") | `DriveLaw::Flip`, the thrust-limited laden rule, the rocket-equation burn, the throttle (on the plan too), five intercept passes, the keep-out detour, `RoutePolicy`, `via=` as a waypoint filter; `PassageOptions` on `+ship/plan`, `+ship/undock` and the depart order; Dray **v3**; pins re-blessed; doc 18 §4.4 "as built (A.2)"; lane v5's direct routes moved to A.3 | M | the epoch figures of §4.3 within 2 %; a worst-season plan over 24 h and over 70 t; `Cheapest` never slower-and-costlier than `Fastest`; a keep-out leg longer than its chord and never refused; a route planned under Coast byte-identical to IC9 |
 | **A.3** chart | `+chart`, `+chart <port>`, `+chart/body`, the `+ship/plan` window line | S | the scan ≤ 365 evaluations; the best day in the next IC year is the day the direct chord is shortest within a day; 120 columns |
 | **A.3b** chart panel | the web cockpit panel and the TUI screen on the OutputEvent/Panel protocol | M | later |
 | **A.4** prices | the price arm, reach, the synodic median, premiums, emergency bids; port-entry caps | M | a Pallas-like port's bid rises as its reach rises; nothing minted; a frozen quote unmoved |

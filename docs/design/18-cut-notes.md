@@ -7049,3 +7049,114 @@ crew-days). The readiness Sky line and its pins are untouched.
 - Moons (Phobos, Luna, Titan) as bodies (Q-19-9); the window past 2400 (Q-19-8).
 - The `Ephemeris` type's doc comment still describes itself as the sky; it is the circular model
   under the seam (one sentence in A.6's docs pass).
+
+## A.2
+
+**The laws** ([doc 19](19-astronomy-engine.md) §4, cut A.2; D-19-8 … D-19-13; doc 18 Q-18-35,
+Q-18-40 and Q-18-41 ruled by doc 19 §2's defaults), built 2026-10-18 on main over `41e7259d` (cut
+A.1). One commit with the Fable trailer, pushed when green. This is the cut where the moving sky
+reaches the captain's wallet: under the slice's coast law the burn was a flat fraction of mass and
+only time moved with the season; under the flip law both move, and a bad season costs reaction mass
+the tank may not hold.
+
+### What landed
+
+1. **`DriveLaw::Flip { accel_mg, exhaust_kms }`** (`definitions/logistics.rs`; D-19-8): constant
+   thrust, accelerate to the midpoint, flip, decelerate. `accel_mg` is the acceleration at the
+   **rated maximum departure mass** (`dry_mass_t + payload_ceiling_kg`), so it is the acceleration
+   every legal load is guaranteed and the drive is thrust-limited — a lighter hull is faster.
+   Bounds `1..=MAX_ACCEL_MG` (10,000 mg) and `1..=MAX_EXHAUST_KMS` (light) in the validator; the
+   law's word is `flip`; `Display` prints its two numbers. The Coast law is untouched.
+2. **The planner** (`port/passage.rs`, rewritten around the law): `leg_seconds(drive, dry, payload,
+   dist)` — Coast lades `ceil(dist / kms)` through mush-sim's step as before; Flip is
+   `ceil(2√(d / a))` at `flip_accel_mps2` = `accel_mg · g₀ · (dry + ceiling) / (dry + payload) ·
+   throttle / 1000`. `passage_burn(drive, dry, payload, legs)` — Coast the doctrine fraction; Flip
+   the rocket equation over the passage's `Δv = Σ a·t`, whole tonnes up (`flip_profile` gives the
+   acceleration, `Δv` and the longest leg's peak velocity for the verbs). **The throttle**
+   (`HullDrive::throttle_permille`, `MIN_THROTTLE_PERMILLE` 250 ..= `MAX_THROTTLE_PERMILLE` 1000,
+   `DEFAULT` 1000; D-19-9): half thrust is 41 % longer and 29 % cheaper; outside the band
+   `PlanError::Throttle`. **The solar keep-out** (`KEEP_OUT_AU` 0.3; D-19-12; Q-18-40): `detour_km`
+   takes a leg's chord when it clears the disc about the Sun (or when either end is inside it) and
+   otherwise the shortest path around it — tangent, arc, tangent, in the plane of the two
+   positions — and `leg_distance_km` is what the intercept flies; a cost, never a refusal.
+   **`INTERCEPT_PASSES` 5** (D-19-11; the test shows each pass moving the leg no more than the
+   one before and the sixth within a minute or 2 %). **`RoutePolicy::{Fastest, Cheapest}`**
+   (D-19-13) with `word`/`parse`; `choose_route(…, policy, via)` keeps the best under the policy
+   (cheapest = least `burn_t`, ties to the faster) over the listed routes that **call at `via`**
+   before their destination (`PlanError::NoRouteVia`; `ViaReserved` retired). `PassagePlan` gains
+   `throttle_permille` (`#[serde(default)]` = 1000, so every ticket from before the cut reads
+   back), and the burn's prepare recomputes the plan's burn at the plan's own throttle.
+3. **The verbs** (`port/voyage.rs`): `PassageOptions { throttle_permille, policy, via }` with
+   `PassageOptions::for_order`; `+ship/plan` and `+ship/undock` take `throttle=<permille>`,
+   `policy=fastest|cheapest` and `via=<place>` (a lane place by id or a prefix of its label,
+   `match_waypoint`; `VIA_UNKNOWN`, `THROTTLE_USAGE`, `POLICY_USAGE`); `prepare_departure` takes
+   the options, so a live undock and a queued depart fly the same way. The plan's burn line says
+   the law's own sentence: the coast law's "Every tonne aboard … costs N kg of burn", or "Flip and
+   burn at 0.54 m/s² (50 milli-g rated, throttle 1000‰): Δv 852 km/s, peak 437 km/s, exhaust 6000
+   km/s; a farther port costs more."
+4. **The orders** (`port/orders.rs`): `What::Depart` gains `throttle_permille: Option<u32>` and
+   `via: Option<CanonicalId>` (serde defaults, so every filed sailing plan reads back);
+   `+ship/order depart <port> … [via=<place>] [throttle=<permille>]`; the document's check bounds
+   the throttle; `+ship/orders` prints `, via Kirkwood Depot, throttle 500‰`; the executor's
+   planning core (`Planner::plan(…, &PassageOptions)`) flies the order's options for the fill
+   fixed point, the dry run and the departure itself.
+5. **The Dray v3** (`content/units/dray.json`; D-19-10): `"law": { "flip": { "accel_mg": 50,
+   "exhaust_kms": 6000 } }`, the note rewritten within its 1,024 bytes, digest re-signed and
+   pinned (`tests/content.rs`); lane v4 is untouched (its `base_s` are documentary since this cut:
+   the planner reads them for no cross-body leg, and `tests/lane.rs` keeps them as the chord at the
+   slice's 226 km/s).
+
+### The figures (the flip law over lane v4 at the epoch sky; `tests/passage.rs`)
+
+| Load | Coast (A.1) | **Flip (A.2)** |
+|---|---|---|
+| Outbound, 100 t cargo + 42 t fuel + 22 crew-days, 142,188 kg | 110,305 + 1,683,834 s (20.8 h at rate 24), 41 t, 22 crew-days | 321,547 + 1,256,313 s (18.3 h), **51 t**, 19 crew-days |
+| Return, 106,176 kg | 1,496,209 + 98,014 s (18.5 h), 37 t, 20 crew-days | 1,195,660 + 306,023 s (17.4 h), **48 t**, 18 crew-days |
+
+The 2° hop to Kirkwood takes 3.7 days under the flip law (a brachistochrone's short legs are slow)
+and the Kirkwood–Mars chord 14.5; the burn is thirteen percent of departure mass at the epoch. The
+slice's 42 t tank no longer covers an outbound, so **the story bunkers 53 t and 19 crew-days**: the
+voyage rig's ticket at 153,176 kg flies 326,136 + 1,274,245 s (1,600,381; 18.5 IC days) for 52 t
+with a tonne left, the queue's return fill is 50 t and 19 crew-days (49 t bought at Stickney, the
+alloys cut to 17 t by funds where the slice bought 20), and IC14's short-buy scenario needs ten
+tonnes of margin over the empty-tank burn where the coast law's 105 kg per tonne needed five — the
+flip law charges about fifteen percent of the fuel's own mass. The plan line at that load reads
+"Burn 52 t (tank 53 t; 1 t left). Flip and burn at 0.53 m/s² (50 milli-g rated, throttle 1000‰):
+Δv 840 km/s, peak 335 km/s, exhaust 6000 km/s; a farther port costs more." Seasonality, the point of the
+engine: at the best season (Ceres–Mars ≈ 1.24 AU) a brimmed hull runs about 14 h and 40 t, at the
+worst (≈ 4.3 AU, the chord inside the keep-out) about 30 h and over 70 t against an 80 t tank
+(doc 19 §4.3); `tests/passage.rs`'s half-synodic plan burns more than the epoch's.
+
+### Lead rulings taken (owner may override, each by data)
+
+- **The Dray's numbers** 50 mg / 6,000 km/s (Q-19-1): "slow, efficient" — a twentieth of a gravity,
+  two percent of c; 70 mg or 10,000 km/s are a `dray.json` edit.
+- **The throttle band** 250–1000 ‰ (Q-19-4); the policy on `+ship/plan`/`+ship/undock`, not on a
+  queued depart (the queue flies the fastest route; a captain who wants the thrifty route plans it
+  and files the throttle).
+- **Direct routes stay out of the lane** this cut (the brief's lane v5 moves to A.3 with `+chart`,
+  which is what compares them; the ports' lists are unchanged, Q-19-3's default).
+- **Same-body legs** keep mush-sim's laden step under either law (an authored `base_s`).
+
+### Verified
+
+`cargo fmt --all -- --check`; `cargo clippy -p tacsim --all-targets -- -D warnings` clean (two
+findings fixed: a negated float comparison and an `unwrap_err`); the whole tacsim suite green
+(2,673 passed after the cascade re-pins), then the touched lib, passage and voyage suites again
+with mush-server's `ic_slice_loop` (the story test now bunkers 53 t and 19 crew-days, its
+one-tonne-short case 51 t against a 52 t burn) and `boot_parity`: 1,296 passed, 0 failed at -j 8.
+Pins re-blessed: `passage.rs` (the flip figures), `voyage.rs` (the 53/19 story load, the ticket's
+326,136 + 1,274,245 s and 153,176 kg, the rail overload at 192.6 t, the burn gauge), `orders.rs`
+(the day's 53 t and 19 crew-days, the return's 50 t fill and 49 t bought, 17 t of alloys, the
+short-buy margin), `coop.rs` (the gauges), `lane.rs` (the flip law in the drive table; the Dray
+copy edits `accel_mg`), `content.rs` (Dray v3's digest and law), the executor's fill fixed point
+(50 t, 19). A.1's readiness Sky line is still untouched.
+
+### Deferred
+
+- **A.3** `+chart`, `+chart <port>` (the best departure in the next IC year), `+chart/body`, the
+  `+ship/plan` window line, lane v5's direct routes; **A.4** prices; **A.5** doc 15 R5 on
+  `light_lag_s`; **A.6** the flip (templates at rate 1000, the readiness model word, the migration
+  tests, the help's "later, the season" → now).
+- The Engineering gauge and the help still describe the burn in the coast law's words where they
+  do; A.6's docs pass.

@@ -7,12 +7,14 @@
 //! drive from the fielded catalog, the sky from `Sky::from_pack` under an explicit
 //! ephemeris configuration. No world.
 //!
-//! The figures pinned are **lane v4's** (doc 19 cut A.1: the three-dimensional
-//! chords of the Kepler sky at the epoch, Kirkwood trailing Ceres by 2°, 226 km/s
-//! legs under `route_duration`'s floor arithmetic, lead rulings L1/L2): out
-//! 110,305 + 1,683,834 s (1,794,139), 41 t, 22 crew-days; back 1,496,209 + 98,014 s
-//! (1,594,223), 37 t, 20 crew-days. Lane v3's were 959,361 + 735,600 / 653,642 +
-//! 852,473 (21 / 18 crew-days); doc 18's 965,623 + 730,645 were lane v1's.
+//! The figures pinned are **the flip law's over lane v4** (doc 19 cut A.2, D-19-8,
+//! D-19-10: the Dray at 50 milli-g rated and 6,000 km/s exhaust; the Kepler sky's
+//! three-dimensional chords at the epoch, Kirkwood trailing Ceres by 2°): out
+//! 321,547 + 1,256,313 s (1,577,860; 18.3 h at rate 24), 51 t, 19 crew-days at
+//! 142,188 kg; back 1,195,660 + 306,023 s (1,501,683), 48 t, 18 crew-days at
+//! 106,176 kg. Under the coast law lane v4 gave 110,305 + 1,683,834 (41 t, 22) and
+//! 1,496,209 + 98,014 (37 t, 20); lane v3 959,361 + 735,600 / 653,642 + 852,473
+//! (21 / 18 crew-days); doc 18's 965,623 + 730,645 were lane v1's.
 
 mod support;
 
@@ -22,7 +24,8 @@ use tacsim::definitions::Catalog;
 use tacsim::definitions::content::{DRAY, LANE_JSON, LANE_ROUTE_BACK, LANE_ROUTE_OUT};
 use tacsim::pack::{PackEntry, RulesPack, rules_pack_of};
 use tacsim::port::{
-    HullDrive, INTERCEPT_PASSES, PlanError, PortDef, choose_route, intercept_passes, plan_passage,
+    HullDrive, INTERCEPT_PASSES, PlanError, PortDef, RoutePolicy, choose_route, intercept_passes,
+    plan_passage,
 };
 use tacsim::{EphemerisConfig, Sky};
 
@@ -59,6 +62,7 @@ fn dray() -> HullDrive {
         class: logistics.drive.class.clone(),
         law,
         payload_ceiling_kg: logistics.payload_ceiling_kg,
+        throttle_permille: tacsim::port::DEFAULT_THROTTLE_PERMILLE,
     }
 }
 
@@ -111,22 +115,28 @@ fn secs(plan: &tacsim::port::PassagePlan) -> Vec<u32> {
 // 1. The slice figures
 // ---------------------------------------------------------------------------
 
-/// **`plan_passage` reproduces the slice figures** at the constant sky: every
-/// leg's unladen time is the pack's own `base_s` (the sky and the pack agree),
-/// and the laden legs, totals, burns and crew-days are lane v3's (lead ruling L2).
+/// **`plan_passage` reproduces the story's figures** at the constant sky: every
+/// authored `base_s` is the chord at the slice's cruise (the sky and the pack
+/// agree), and the flip law's legs, totals, burns and crew-days are the cut A.2
+/// figures above.
 #[test]
 fn plan_passage_reproduces_the_slice_figures() {
     let pack = lane();
     let sky = sky_at(&pack, 0);
     let drive = dray();
     let depart = lane_epoch(&pack);
-    // The sky and the pack agree: the unladen intercept is the authored base_s.
+    // The sky and the pack agree: each authored `base_s` is the chord at the
+    // epoch over the slice's 226 km/s cruise (documentary since doc 19 cut A.2,
+    // when the Dray took the flip law and the planner stopped reading it for a
+    // cross-body leg); the intercept's first pass flies the same chord.
     for route in [LANE_ROUTE_OUT, LANE_ROUTE_BACK] {
         for (a, b, base) in body_pairs(&pack, route) {
-            let passes = intercept_passes(&sky, &a, &b, depart, &drive, 0, 1).expect("plans");
+            let passes =
+                intercept_passes(&sky, &a, &b, depart, &drive, DRY_KG, 0, 1).expect("plans");
+            let chord = passes.first().map(|(km, _)| *km).expect("a pass");
             assert_eq!(
-                passes.first().map(|(_, s)| *s),
-                Some(base),
+                u32::try_from(chord.div_ceil(226)).expect("fits"),
+                base,
                 "{route}: {a} -> {b}: the sky and the pack disagree"
             );
         }
@@ -142,11 +152,11 @@ fn plan_passage_reproduces_the_slice_figures() {
         depart,
     )
     .expect("the outbound plan");
-    assert_eq!(secs(&out), vec![110_305, 1_683_834]);
-    assert_eq!(out.total_s, 1_794_139);
-    assert_eq!(out.burn_t, 41);
-    assert_eq!(out.crew_days, 22);
-    assert_eq!(out.law.as_str(), "coast");
+    assert_eq!(secs(&out), vec![321_547, 1_256_313]);
+    assert_eq!(out.total_s, 1_577_860);
+    assert_eq!(out.burn_t, 51);
+    assert_eq!(out.crew_days, 19);
+    assert_eq!(out.law.as_str(), "flip");
     assert_eq!(out.route.as_str(), LANE_ROUTE_OUT);
     assert_eq!(out.depart_ic, depart);
     assert_eq!(
@@ -171,10 +181,10 @@ fn plan_passage_reproduces_the_slice_figures() {
         depart,
     )
     .expect("the return plan");
-    assert_eq!(secs(&back), vec![1_496_209, 98_014]);
-    assert_eq!(back.total_s, 1_594_223);
-    assert_eq!(back.burn_t, 37);
-    assert_eq!(back.crew_days, 20);
+    assert_eq!(secs(&back), vec![1_195_660, 306_023]);
+    assert_eq!(back.total_s, 1_501_683);
+    assert_eq!(back.burn_t, 48);
+    assert_eq!(back.crew_days, 18);
 
     // The rail: the ceiling plans, one kilogram past it refuses.
     let ceiling = drive.payload_ceiling_kg;
@@ -329,10 +339,22 @@ fn moving_circular_sky_moves_the_plan_and_converges() {
         first.total_s,
         constant.total_s
     );
-    assert_eq!(
-        first.burn_t, constant.burn_t,
-        "the Coast burn is distance-free"
-    );
+    // Doc 19 cut A.2 (D-19-8): under the flip law the longer passage burns more —
+    // fuel moves with the sky; under the coast law it would not.
+    match drive.law {
+        tacsim::port::DriveLaw::Flip { .. } => assert!(
+            first.burn_t > constant.burn_t,
+            "the flip burn grows with the half-synodic distance ({} t over {} t)",
+            first.burn_t,
+            constant.burn_t
+        ),
+        tacsim::port::DriveLaw::Coast { .. } => {
+            assert_eq!(
+                first.burn_t, constant.burn_t,
+                "the Coast burn is distance-free"
+            );
+        }
+    }
     assert_ne!(first.sky_rev, constant.sky_rev);
 
     let pairs = body_pairs(&pack, LANE_ROUTE_OUT);
@@ -344,28 +366,30 @@ fn moving_circular_sky_moves_the_plan_and_converges() {
             b,
             leg.t0,
             &drive,
+            DRY_KG,
             OUT_PAYLOAD,
             INTERCEPT_PASSES + 1,
         )
         .expect("passes");
         let s: Vec<i64> = passes.iter().map(|(_, secs)| i64::from(*secs)).collect();
-        assert_eq!(s.len(), 4);
+        assert_eq!(s.len(), INTERCEPT_PASSES + 1);
+        let last = INTERCEPT_PASSES - 1;
         assert_eq!(
-            s[2],
+            s[last],
             i64::from(leg.secs),
-            "{a} -> {b}: the planner stops at pass three"
+            "{a} -> {b}: the planner stops at pass {INTERCEPT_PASSES}"
         );
+        // Each pass moves the leg no more than the one before it (D-19-11).
+        for k in 2..s.len() {
+            assert!(
+                (s[k] - s[k - 1]).abs() <= (s[k - 1] - s[k - 2]).abs() + 1,
+                "{a} -> {b}: {s:?} does not contract at pass {}",
+                k + 1
+            );
+        }
         assert!(
-            (s[3] - s[2]).abs() <= (s[2] - s[1]).abs() + 1,
-            "{a} -> {b}: {s:?} does not contract"
-        );
-        assert!(
-            (s[2] - s[1]).abs() <= (s[1] - s[0]).abs() + 1,
-            "{a} -> {b}: {s:?} does not contract"
-        );
-        assert!(
-            (s[3] - s[2]).abs() <= s[2] / 50,
-            "{a} -> {b}: {s:?}: a fourth pass moves the leg more than 2 %"
+            (s[last + 1] - s[last]).abs() <= 60.max(s[last] / 50),
+            "{a} -> {b}: {s:?}: one more pass moves the leg more than a minute or 2 %"
         );
     }
 }
@@ -399,8 +423,8 @@ fn lane_with_choices() -> RulesPack {
 
 /// **A port's routes are a list and the planner picks the fastest** (D-18-47): a
 /// bare-string `routes` value is refused by the wire; a slower route listed first
-/// loses; two identical routes tie to the earlier listing; `via` is reserved
-/// (`+ship/plan stickney via=…` is `tests/voyage.rs`'s).
+/// loses; two identical routes tie to the earlier listing; `via` keeps the routes
+/// that call at the place (doc 19 cut A.2).
 #[test]
 fn port_routes_are_a_list_and_the_planner_picks_the_fastest() {
     // The wire: a bare string where the list belongs.
@@ -425,6 +449,7 @@ fn port_routes_are_a_list_and_the_planner_picks_the_fastest() {
             OUT_PAYLOAD,
             1,
             depart,
+            RoutePolicy::default(),
             via,
         )
     };
@@ -449,10 +474,50 @@ fn port_routes_are_a_list_and_the_planner_picks_the_fastest() {
         LANE_ROUTE_OUT,
         "a tie keeps the earlier"
     );
+    // Doc 19 cut A.2 (D-19-13): `via` keeps the listed routes that call at the
+    // place before their destination; none, and the choice refuses by name.
+    let by_depot = choose(&[LANE_ROUTE_OUT], Some(&cid("kirkwood_depot"))).expect("plans");
+    assert_eq!(by_depot.route.as_str(), LANE_ROUTE_OUT);
+    let by_rock = choose(
+        &[LANE_ROUTE_OUT, "ceres_stickney_long"],
+        Some(&cid("pallas_rock")),
+    )
+    .expect("plans");
     assert_eq!(
-        choose(&[LANE_ROUTE_OUT], Some(&cid("kirkwood_depot"))),
-        Err(PlanError::ViaReserved)
+        by_rock.route.as_str(),
+        "ceres_stickney_long",
+        "the only route by Pallas Rock"
     );
+    assert_eq!(
+        choose(&[LANE_ROUTE_OUT], Some(&cid("pallas_rock"))),
+        Err(PlanError::NoRouteVia {
+            via: "pallas_rock".to_owned()
+        })
+    );
+    assert_eq!(
+        choose(&[LANE_ROUTE_OUT], Some(&cid("stickney_yards"))),
+        Err(PlanError::NoRouteVia {
+            via: "stickney_yards".to_owned()
+        }),
+        "the destination itself is no waypoint"
+    );
+    // The cheapest policy under the coast law: every route burns the same
+    // fraction of mass, so the tie goes to the faster.
+    let routes: Vec<CanonicalId> = vec![cid("ceres_stickney_long"), cid(LANE_ROUTE_OUT)];
+    let thrifty = choose_route(
+        &sky,
+        &pack,
+        &routes,
+        &drive,
+        DRY_KG,
+        OUT_PAYLOAD,
+        1,
+        depart,
+        RoutePolicy::Cheapest,
+        None,
+    )
+    .expect("plans");
+    assert_eq!(thrifty.route.as_str(), LANE_ROUTE_OUT);
     assert!(matches!(
         choose(&[], None),
         Err(PlanError::UnknownRoute { .. })

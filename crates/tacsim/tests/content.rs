@@ -2487,7 +2487,7 @@ fn m3_the_stock_class_table_is_the_doc_17_table() {
 
 /// **The Dray's pin** (doc 18 cut IC2; doc 18 §4.2, D-18-29). Re-signed in
 /// place under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const DRAY_DIGEST: &str = "2f11e37f4de1f02df1f5d19aba599c4235c74307c55a6a13201e74184741cabb";
+const DRAY_DIGEST: &str = "b40cfff4943616ec798534fee10a7a995433477ef248a5875a87b69b53b9e372";
 
 /// **The goods table's pin** (doc 18 cut IC2; doc 18 §4.3): the canonical digest
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
@@ -2548,8 +2548,8 @@ fn ic2_the_dray_is_pinned_and_checks() {
     assert_eq!(pack.manifest().id().as_str(), content::DRAY_PACK);
     assert_eq!(
         pack.manifest().version(),
-        2,
-        "doc 18 cut IC8 re-published the Dray at v2"
+        3,
+        "doc 19 cut A.2 re-published the Dray at v3 (the flip law); doc 18 cut IC8's was v2"
     );
     assert!(
         pack.manifest().requires().is_empty(),
@@ -2622,11 +2622,13 @@ fn ic2_the_dray_is_pinned_and_checks() {
     assert_eq!(logistics.occupant_allowance_kg, 100);
     assert_eq!(logistics.payload_ceiling_kg, 181_000);
     assert_eq!(logistics.drive.class.as_str(), "coast_hauler");
+    // Doc 19 cut A.2 (D-19-10): the flip law, a twentieth of a gravity at the
+    // rated 421 t, exhaust at 2 % of c; the slice's coast {226, 105} was v2's.
     assert_eq!(
         logistics.drive.law,
-        DriveLaw::Coast {
-            kms: 226,
-            burn_permille: 105
+        DriveLaw::Flip {
+            accel_mg: 50,
+            exhaust_kms: 6_000
         }
     );
 

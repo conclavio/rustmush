@@ -135,11 +135,17 @@ fn derived_legs(pack: &RulesPack, route: &RouteEntry, kms: u32) -> Result<Vec<u6
     Ok(out)
 }
 
-/// The coast rate the fielded catalog's drive table gives a route's class.
+/// **The documentary cruise a lane leg's `base_s` is timed at**, km/s (doc 19 cut
+/// A.2): the slice's coast Dray cruised at 226 km/s (lane v3/v4's legs); since the
+/// Dray flies the flip law, `base_s` is a pin of the chord at that cruise and
+/// nothing reads it for a cross-body leg — the planner derives every leg from the
+/// sky and the law. The fielded drive table is checked to fly the class under a
+/// law (whichever it is).
 fn coast_kms(class: &CanonicalId) -> u32 {
     let catalog = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     match catalog.drive_for_class(class) {
         Some(DriveLaw::Coast { kms, .. }) => *kms,
+        Some(DriveLaw::Flip { .. }) => 226,
         None => panic!("no drive flies {class}"),
     }
 }
@@ -548,9 +554,10 @@ fn fixture_digests_unmoved_by_optional_sky_fields() {
 // The drive table and the game-packs list
 // ---------------------------------------------------------------------------
 
-/// The Dray's JSON as another operator pack: its id, its entry and its coast
-/// rate changed, re-signed so the digest is not what refuses it.
-fn dray_copy(kms: u32) -> LoadedPack {
+/// The Dray's JSON as another operator pack: its id, its entry and its rated
+/// acceleration changed (the flip law since doc 19 cut A.2), re-signed so the
+/// digest is not what refuses it.
+fn dray_copy(accel_mg: u32) -> LoadedPack {
     let mut doc: serde_json::Value = serde_json::from_str(DRAY_JSON).expect("the Dray is JSON");
     let manifest = doc.get_mut("manifest").expect("a manifest");
     manifest["id"] = serde_json::json!("test.pack.dray_b");
@@ -562,7 +569,7 @@ fn dray_copy(kms: u32) -> LoadedPack {
     let mut def = entries
         .remove("tacsim.unit.dray")
         .expect("the Dray's entry");
-    def["def"]["logistics"]["drive"]["law"]["coast"]["kms"] = serde_json::json!(kms);
+    def["def"]["logistics"]["drive"]["law"]["flip"]["accel_mg"] = serde_json::json!(accel_mg);
     entries.insert("test.unit.dray_b".to_owned(), def);
     let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
     LoadedPack {
@@ -572,7 +579,7 @@ fn dray_copy(kms: u32) -> LoadedPack {
 }
 
 /// **One drive class, one law** (Q-18-5, D-18-45): the fielded catalog answers
-/// the Dray's coast law for `coast_hauler` and nothing for a class no hull
+/// the Dray's flip law (doc 19 cut A.2) for `coast_hauler` and nothing for a class no hull
 /// declares; a second hull flying `coast_hauler` at another speed is refused
 /// naming the class and both units; at the same law it is accepted and the
 /// table is unchanged.
@@ -581,14 +588,14 @@ fn one_drive_class_one_law() {
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     assert_eq!(
         fielded.drive_for_class(&cid("coast_hauler")),
-        Some(&DriveLaw::Coast {
-            kms: 226,
-            burn_permille: 105
+        Some(&DriveLaw::Flip {
+            accel_mg: 50,
+            exhaust_kms: 6_000
         })
     );
     assert_eq!(fielded.drive_for_class(&cid("fusion_torch")), None);
 
-    let refused = Catalog::build_fielded(&[dray_copy(300)], tacsim::NS)
+    let refused = Catalog::build_fielded(&[dray_copy(70)], tacsim::NS)
         .err()
         .map(|error| error.to_string())
         .expect("a second law for one class is refused");
@@ -597,7 +604,7 @@ fn one_drive_class_one_law() {
     }
     assert!(refused.contains("one class, one law"), "{refused}");
 
-    let same = Catalog::build_fielded(&[dray_copy(226)], tacsim::NS)
+    let same = Catalog::build_fielded(&[dray_copy(50)], tacsim::NS)
         .expect("the same law twice is one law");
     assert_eq!(same.drives, fielded.drives);
 }

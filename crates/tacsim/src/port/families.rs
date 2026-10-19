@@ -96,6 +96,15 @@ pub struct PassagePlan {
     pub burn_t: u64,
     /// The provisions the burn debits, crew-days.
     pub crew_days: u32,
+    /// **Doc 19 cut A.2 (D-19-9)** — the throttle the plan was flown at, permille
+    /// of the hull's thrust; a plan from before the cut reads full thrust.
+    #[serde(default = "full_throttle")]
+    pub throttle_permille: u32,
+}
+
+/// The throttle a plan without one was flown at: full thrust.
+fn full_throttle() -> u32 {
+    1_000
 }
 
 impl PassagePlan {
@@ -648,6 +657,7 @@ mod tests {
                 total_s: total,
                 burn_t: 41,
                 crew_days: 21,
+                throttle_permille: 1_000,
             },
             order: Some(9),
             attempt: 1,

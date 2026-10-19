@@ -42,8 +42,8 @@ use crate::port::executor::MAX_ORDER_REFUSALS;
 use crate::port::families::{TicketId, strict_decimal_u32};
 use crate::port::ship::{Berth, berth_of, hull_view};
 use crate::port::voyage::{
-    Passage, VIA_NOT_YET, VoyageState, aboard, lane_ports, passage_of, souls_aboard, ticket_at,
-    utc_day_word, utc_hhmm, venue_name,
+    Passage, VoyageState, aboard, lane_ports, match_waypoint, parse_throttle, passage_of,
+    souls_aboard, ticket_at, utc_day_word, utc_hhmm, venue_name, waypoint_label,
 };
 use crate::port::when::{
     MAX_WINDOW_SECS, NotBefore, hhmm_minutes, parse_at, parse_until, render_due, resolve_due,
@@ -229,6 +229,13 @@ pub enum What {
         on_fail: OnShort,
         /// The listed passengers: aboard at filing, other than the pilot (L11).
         crew: Vec<ObjId>,
+        /// The throttle the passage is flown at, permille of thrust (doc 19 cut
+        /// A.2, D-19-9); full thrust when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        throttle_permille: Option<u32>,
+        /// A lane place the route must call at (doc 19 cut A.2, D-19-13).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        via: Option<CanonicalId>,
     },
     /// A barrier: when reached it marks itself done and pauses the plan (owner item O5).
     Stop,
@@ -662,8 +669,20 @@ fn check_what(id: u32, what: &What) -> Result<(), String> {
             not_after_s,
             on_fail,
             crew,
+            throttle_permille,
             ..
         } => {
+            if let Some(permille) = throttle_permille
+                && !(crate::port::passage::MIN_THROTTLE_PERMILLE
+                    ..=crate::port::passage::MAX_THROTTLE_PERMILLE)
+                    .contains(permille)
+            {
+                return Err(format!(
+                    "order {id}'s throttle is {} to {} permille",
+                    crate::port::passage::MIN_THROTTLE_PERMILLE,
+                    crate::port::passage::MAX_THROTTLE_PERMILLE
+                ));
+            }
             if *on_fail == OnShort::Partial {
                 return Err(format!("order {id}, a depart, skips or holds"));
             }
@@ -712,7 +731,7 @@ pub fn orders_state(w: &World, hull: ObjId) -> OrdersState<'_> {
 // ---- the texts (the planner's wording, owner item O1) ------------------------------
 
 /// `+ship/order`'s grammar.
-pub const ORDER_USAGE: &str = "Usage: +ship/order sell <good> <qty|all> [min=<cr>] [short=partial|skip|hold] | buy <good> <qty|fill> [max=<cr>] [short=partial|skip|hold] | depart <port> [at=now|HH:MM|daily HH:MM|+Nh|+Nm] [until=+Nh|+Nm] | stop | del <n> | move <n>=<pos> | clear | pause | resume | skip <n>";
+pub const ORDER_USAGE: &str = "Usage: +ship/order sell <good> <qty|all> [min=<cr>] [short=partial|skip|hold] | buy <good> <qty|fill> [max=<cr>] [short=partial|skip|hold] | depart <port> [at=now|HH:MM|daily HH:MM|+Nh|+Nm] [until=+Nh|+Nm] [via=<place>] [throttle=<permille>] | stop | del <n> | move <n>=<pos> | clear | pause | resume | skip <n>";
 /// Anything the vocabulary does not take (lead note 2g).
 pub const NOT_ORDERABLE: &str = "The sailing plan takes sell, buy, depart and stop. Boarding, leaving, enrolling and buying out are done in person.";
 /// Away from the hull and its port (Q-18-28): `{name}`.
@@ -871,6 +890,8 @@ pub(crate) fn order_summary(w: &World, goods: &GoodsTable, what: &What) -> Strin
             to,
             not_before,
             not_after_s,
+            throttle_permille,
+            via,
             ..
         } => {
             let when = match not_before {
@@ -886,7 +907,15 @@ pub(crate) fn order_summary(w: &World, goods: &GoodsTable, what: &What) -> Strin
                     crate::port::voyage::real_span(i64::from(window))
                 )
             });
-            format!("depart for {}{when}{until}", venue_name(w, to))
+            let via = via.as_ref().map_or_else(String::new, |place| {
+                format!(", via {}", waypoint_label(w, place))
+            });
+            let throttle = throttle_permille
+                .map_or_else(String::new, |permille| format!(", throttle {permille}‰"));
+            format!(
+                "depart for {}{when}{until}{via}{throttle}",
+                venue_name(w, to)
+            )
         }
         What::Stop => "stop".to_owned(),
     }
@@ -1287,16 +1316,31 @@ fn parse_trade(goods: &GoodsTable, sell: bool, args: &[&str]) -> Result<What, Cm
     })
 }
 
-/// `depart <port> [at=…] [until=…] [via=…]`; `crew` is filled by the caller.
+/// `depart <port> [at=…] [until=…] [via=…] [throttle=…]`; `crew` is filled by the
+/// caller.
 fn parse_depart(w: &World, args: &[&str]) -> Result<What, CmdError> {
     let mut words: Vec<&str> = Vec::new();
     let mut at: Option<NotBefore> = None;
     let mut until: Option<u32> = None;
+    let mut via: Option<CanonicalId> = None;
+    let mut throttle: Option<u32> = None;
     let mut tokens = args.iter().copied().peekable();
     while let Some(token) = tokens.next() {
         let lower = token.to_ascii_lowercase();
-        if lower.starts_with("via=") {
-            return Err(CmdError::msg(VIA_NOT_YET));
+        // Doc 19 cut A.2: a waypoint and a throttle, each once.
+        if let Some(place) = token.get(4..).filter(|_| lower.starts_with("via=")) {
+            if via.is_some() {
+                return Err(CmdError::msg(ORDER_USAGE));
+            }
+            via = Some(match_waypoint(w, place).map_err(CmdError::msg)?);
+            continue;
+        }
+        if let Some(value) = lower.strip_prefix("throttle=") {
+            if throttle.is_some() {
+                return Err(CmdError::msg(ORDER_USAGE));
+            }
+            throttle = Some(parse_throttle(value).map_err(CmdError::msg)?);
+            continue;
         }
         if let Some(value) = lower.strip_prefix("at=") {
             if at.is_some() {
@@ -1332,6 +1376,8 @@ fn parse_depart(w: &World, args: &[&str]) -> Result<What, CmdError> {
         not_after_s: until,
         on_fail: OnShort::Hold,
         crew: Vec::new(),
+        throttle_permille: throttle,
+        via,
     })
 }
 
@@ -1457,6 +1503,8 @@ pub(crate) fn order_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     not_before,
                     not_after_s,
                     on_fail,
+                    throttle_permille,
+                    via,
                     ..
                 } => {
                     // L11: the listed passengers are whoever is aboard at filing, the
@@ -1475,6 +1523,8 @@ pub(crate) fn order_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         not_after_s,
                         on_fail,
                         crew,
+                        throttle_permille,
+                        via,
                     }
                 }
                 other => other,
@@ -1727,6 +1777,8 @@ mod tests {
             not_after_s: Some(7_200),
             on_fail: OnShort::Hold,
             crew: Vec::new(),
+            throttle_permille: None,
+            via: None,
         }
     }
 
