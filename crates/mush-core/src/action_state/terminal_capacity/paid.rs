@@ -546,13 +546,13 @@ fn outputs(view: &View<'_>, id: CommitToken, pair: &Pair) -> Result<(), ActionSt
     let current = current.ok_or_else(|| refused("purchase paid licence missing"))?;
     renewal::validate_current_birth(view, &current, id)?;
     let term = term.ok_or_else(|| refused("purchase paid term missing"))?;
-    for name in ["charter", "line", "holder"] {
+    paid_resale::validate_current_holder(view, &current, field(&pair.allocation, "holder")?, id)?;
+    for name in ["charter", "line"] {
         if field(&current, name)? != field(&pair.allocation, name)? {
             return Err(refused("purchase paid licence subject differs"));
         }
     }
-    if number(&current, "format")? != 1
-        || number(&term, "format")? != 1
+    if number(&term, "format")? != 1
         || field(&current, "id")? != field(&pair.purchase, "licence")?
         || field(&term, "licence")? != field(&pair.purchase, "licence")?
         || text(&term, "generation")? != "1"
@@ -771,6 +771,9 @@ pub(super) fn validate_changes(
     };
     let mut operations = BTreeSet::new();
     for key in mutations.keys().filter(|key| protected(key)) {
+        if paid_resale::owns_licence_change(&after, key, identity, changes)? {
+            continue;
+        }
         if house::shared_output_is_house(&after, key)? {
             continue;
         }

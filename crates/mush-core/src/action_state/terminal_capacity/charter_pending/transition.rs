@@ -405,6 +405,22 @@ pub(in crate::action_state::terminal_capacity) fn audit_boot(
         if !head_keys.remove(&key(HEAD, charter_key(*charter))?.resolve(view.registry)?) {
             return Err(refused("pending missing head"));
         }
+        // A settled pending attempt permanently requires the shared current
+        // ownership projection. It may have advanced through later immediate
+        // or pending transfers; walk that one retained chain per charter.
+        if let Some(first) = rows
+            .values()
+            .filter(|p| p.phase == "settled")
+            .min_by_key(|p| p.generation)
+        {
+            let latest = rows
+                .values()
+                .filter(|p| p.phase == "settled")
+                .map(|p| p.generation + 1)
+                .max()
+                .ok_or_else(|| refused("pending settled ownership absent"))?;
+            require_retained_ownership(view, first, latest)?;
+        }
     }
     if !head_keys.is_empty() {
         return Err(refused("pending orphan head"));

@@ -200,9 +200,11 @@ async fn boot_fixture(tag: &str, mutate: impl FnOnce(&mut Config)) -> Fixture {
     mutate(&mut cfg);
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let spool = spool(&cfg);
-    let booted = boot::build_engine(&cfg, &store, &spool)
-        .await
-        .expect("the split half boots");
+    let pending = boot::build_engine(&cfg, &store, &spool);
+    // A caller may add tracing or sequence several boots, as the readiness
+    // regression below does. Its future must not embed the entire boot state.
+    assert!(std::mem::size_of_val(&pending) <= 128);
+    let booted = pending.await.expect("the split half boots");
     Fixture {
         cfg,
         booted,

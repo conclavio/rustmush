@@ -60,6 +60,7 @@ impl CoreRecipeAuthority for Recipe {
 struct FactoryContent {
     grades: [Grade; 3],
     recipe: Recipe,
+    refits: Option<refit_rules::Rules>,
 }
 impl GameModule for FactoryContent {
     fn name(&self) -> &'static str {
@@ -71,8 +72,15 @@ impl GameModule for FactoryContent {
             .recipe
             .descriptor()
             .map_err(|e| ModError::msg(e.to_string()))?;
-        provider::exact(reg, "recipe", std::slice::from_ref(&d))?;
-        reg.definition(d)?;
+        let mut recipes = vec![d];
+        if let Some(r) = &self.refits {
+            recipes.push(r.recipe().map_err(|e| ModError::msg(e.to_string()))?);
+            r.register(reg)?;
+        }
+        provider::exact(reg, "recipe", &recipes)?;
+        for d in recipes {
+            reg.definition(d)?;
+        }
         delivery_tests::register_controls(reg)?;
         Ok(())
     }
@@ -131,6 +139,7 @@ struct Composition {
     factory: CoreFactoryConfig,
     filing: InitialFilingPolicy,
     recipe: Recipe,
+    refits: Option<refit_rules::Rules>,
 }
 impl Composition {
     fn modules(
@@ -151,9 +160,16 @@ impl Composition {
             )?);
         let mut economy =
             EconomyModule::new().with_title_issuers(vec![self.filing.issuer().clone()]);
+        let mut tactics = None;
         if enabled {
             let mut config = self.factory.clone();
             config.mode = mode;
+            if let Some(r) = &self.refits {
+                let fitting = r.config(&config, mode)?;
+                tactics = Some(r.tactics(&fitting)?);
+                config = config.with_refits(fitting)?;
+                economy = economy.with_core_refit(config.economy_refit_config(&self.origin)?);
+            }
             inventory = inventory.with_core_inputs(CoreInputBinding::new(
                 config.action(factory::ACCEPT)?,
                 config.action(factory::COMPLETE)?,
@@ -171,10 +187,15 @@ impl Composition {
             Box::new(FactoryContent {
                 grades: self.origin.grades,
                 recipe: self.recipe.clone(),
+                refits: self.refits.clone(),
             }),
             Box::new(ClosedRoll),
             Box::new(industry),
         ];
+        if let Some(tactics) = tactics {
+            modules.push(Box::new(mush_sim::SimulationModule::new()));
+            modules.push(Box::new(tactics));
+        }
         if reverse {
             modules.reverse()
         }
@@ -201,6 +222,9 @@ impl FactoryRig {
         Self::new_delivery(reverse, false)
     }
     fn new_delivery(reverse: bool, delivery: bool) -> Result<Self> {
+        Self::new_options(reverse, delivery, false)
+    }
+    fn new_options(reverse: bool, delivery: bool, refits: bool) -> Result<Self> {
         let mut r = Rig::new(true)?;
         let operator = r.policy.agents[1].actor;
         let certificate = r.issue(operator, 2, DieClass::I)?;
@@ -260,7 +284,11 @@ impl FactoryRig {
         )?;
         command(
             &mut r.w,
-            &format!("@facility/open {}=2 core_integration", factory_object.0),
+            &format!(
+                "@facility/open {}=2 core_integration{}",
+                factory_object.0,
+                if refits { " core_refit" } else { "" }
+            ),
         )?;
         command(
             &mut r.w,
@@ -330,6 +358,7 @@ impl FactoryRig {
             factory,
             filing,
             recipe,
+            refits: refits.then(refit_rules::Rules::new).transpose()?,
         };
         let mut f = Self {
             r,
@@ -435,6 +464,15 @@ impl FactoryRig {
     }
     fn stage_inv(&mut self, phase: usize, inv: &ActionInvocation, n: u8, p: Prepared) -> Result {
         let action = self.phase_action(phase)?;
+        self.stage_action(action, inv, n, p)
+    }
+    fn stage_action(
+        &mut self,
+        action: DefinitionRef,
+        inv: &ActionInvocation,
+        n: u8,
+        p: Prepared,
+    ) -> Result {
         let (
             outcome,
             resolution,
@@ -1233,3 +1271,8 @@ fn factory_boot_image(boot: &Boot) -> std::collections::BTreeMap<&str, Value> {
         })
         .collect()
 }
+
+#[path = "refit_test_rules.rs"]
+mod refit_rules;
+#[path = "refit_integration_tests.rs"]
+mod refit_tests;

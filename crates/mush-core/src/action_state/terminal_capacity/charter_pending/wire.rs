@@ -628,6 +628,73 @@ pub(super) fn require_new_ownership(view: &View<'_>, p: &Pair) -> Result<(), Act
     Ok(())
 }
 
+/// Complete current-head affinity after a historical pending settlement. The
+/// native/typed owner audits still prove the economic causes; Core requires
+/// every retained predecessor between today's head and this reserved result.
+/// This runs once per charter, down a strictly decreasing bounded generation.
+pub(super) fn require_retained_ownership(
+    view: &View<'_>,
+    p: &Pair,
+    latest: u64,
+) -> Result<(), ActionStateError> {
+    let head = required(view, &key(OWNERSHIP, charter_key(p.charter))?)?;
+    shape(&head, &["format", "charter", "current"])?;
+    if num(&head, "format")? != 1 || field(&head, "charter")? != field(&p.row, "charter")? {
+        return Err(refused("pending retained ownership head differs"));
+    }
+    let expected = field(field(&p.row, "state")?, "transfer")?;
+    let minimum = p.generation + 1;
+    let mut current = field(&head, "current")?.clone();
+    if ownership(&current)? < latest {
+        return Err(refused("pending retained ownership behind settlement"));
+    }
+    loop {
+        let generation = ownership(&current)?;
+        if generation < minimum {
+            return Err(refused("pending retained ownership regressed"));
+        }
+        if generation == minimum {
+            if &current != expected {
+                return Err(refused("pending retained ownership ancestry differs"));
+            }
+            return Ok(());
+        }
+        let row = required(view, &key(TRANSFER, transfer_key(p.charter, generation))?)?;
+        shape(
+            &row,
+            &[
+                "format",
+                "operation",
+                "action",
+                "charter",
+                "generation",
+                "birth",
+                "predecessor",
+                "offer",
+                "offer_digest",
+                "accepted_at_ic",
+                "economic",
+            ],
+        )?;
+        let domain = match num(&row, "format")? {
+            1 => "roll.charter_ownership.transfer.v1",
+            2 => "roll.charter_ownership.transfer.v2",
+            _ => return Err(refused("pending retained ownership format")),
+        };
+        let predecessor = field(&row, "predecessor")?;
+        if field(&row, "charter")? != field(&p.row, "charter")?
+            || field(&row, "birth")? != field(&p.offer, "birth")?
+            || num(&row, "generation")? != generation
+            || field(&row, "operation")? != field(&current, "operation")?
+            || digest_value(field(&current, "digest")?)? != digest(domain, &row)?
+            || ownership(predecessor)?.checked_add(1) != Some(generation)
+        {
+            return Err(refused("pending retained ownership link differs"));
+        }
+        current = predecessor.clone();
+    }
+}
+
 pub(super) fn sanction_keys(row: &Value, decision: &Value) -> Result<[Key; 2], ActionStateError> {
     let reason = field(decision, "reason")?;
     let term = field(row, "owner_term")?;

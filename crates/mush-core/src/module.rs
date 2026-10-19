@@ -3369,6 +3369,28 @@ impl<'a> Registrar<'a> {
             .map_err(|e| ModError::msg(e.to_string()))
     }
 
+    /// Declare the closed existing paid-licence transfer and its six future rows.
+    /// Order: Economy/Roll participants; Offer/Accept/Fund/Settle/Refund actions.
+    pub fn paid_resale_capacity(
+        &mut self,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 5],
+        registry_revocation: Option<crate::DefinitionRef>,
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "market" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "paid resale capacity requires the unfrozen Market registrar",
+            ));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str())
+            .map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .paid_resale_capacity(&owner, participants, actions, registry_revocation)
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
     /// Reserve the closed house purchase's six future rows. References are
     /// the exact manifest, Economy/retention participants, then Fund/Grant/Refund.
     pub fn house_mind_purchase_capacity(
@@ -3424,6 +3446,26 @@ impl<'a> Registrar<'a> {
     /// Fixed Industry future completion: Industry/Economy owner refs followed
     /// by Accept, Reserve, Advance, Complete and Cancel action refs. No targets
     /// or ceilings are supplied by the module.
+    /// Closed refit participants Industry/Economy/Tactics; actions Accept/Advance/Install/Cancel.
+    pub fn core_refit_capacity(
+        &mut self,
+        participants: [crate::DefinitionRef; 3],
+        actions: [crate::DefinitionRef; 4],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "industry" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "core refit capacity requires unfrozen Industry registrar",
+            ));
+        }
+        let owner =
+            crate::OwnerId::new(self.module.as_str()).map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .core_refit_capacity(&owner, participants, actions)
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
     pub fn core_integration_capacity(
         &mut self,
         participants: [crate::DefinitionRef; 2],

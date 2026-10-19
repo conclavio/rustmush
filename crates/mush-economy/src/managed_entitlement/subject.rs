@@ -389,18 +389,53 @@ pub(crate) struct EconomicRecipe<'a> {
 }
 impl EconomicRecipe<'_> {
     pub(crate) fn payouts(&self) -> Result<Vec<PurchasePayout>, ParticipantError> {
+        // Preserve the complete old issuer/ancestry shape checks. The shared
+        // money-only splitter below does not infer charter-title authority.
+        if self.title_revision == 0
+            || (!self.requires_parents && !self.parents.is_empty())
+            || (self.requires_parents && self.parents.is_empty())
+        {
+            return Err(refused());
+        }
+        GrossMoneySplit {
+            buyer: self.buyer,
+            seller: self.seller,
+            charter: self.charter,
+            payer: self.payer,
+            price: self.price,
+            registry: self.registry,
+            venue: self.venue,
+            parents: self.parents,
+            remainder: self.remainder,
+        }
+        .payouts()
+    }
+}
+
+/// Pure gross-rate calculation, also used when a paid holder sells an existing
+/// instrument. It carries no current issuer/title/source authority or grant.
+pub(crate) struct GrossMoneySplit<'a> {
+    pub buyer: ObjId,
+    pub seller: ObjId,
+    pub charter: ObjId,
+    pub payer: AccountId,
+    pub price: Amount,
+    pub registry: &'a GrossRecipientCut,
+    pub venue: Option<&'a GrossRecipientCut>,
+    pub parents: &'a [RoyaltyRecipientCut],
+    pub remainder: &'a Recipient,
+}
+impl GrossMoneySplit<'_> {
+    pub(crate) fn payouts(&self) -> Result<Vec<PurchasePayout>, ParticipantError> {
         if self.buyer.0 == 0
             || self.seller.0 == 0
             || self.buyer == self.seller
             || self.charter.0 == 0
-            || self.title_revision == 0
             || self.price.is_negative()
             || self.price.is_zero()
             || self.remainder.owner != PrincipalId::Object(self.seller)
             || self.remainder.account == self.payer
             || self.parents.len() > MAX_PARENT_CUTS
-            || (!self.requires_parents && !self.parents.is_empty())
-            || (self.requires_parents && self.parents.is_empty())
         {
             return Err(refused());
         }

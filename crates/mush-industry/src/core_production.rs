@@ -64,3 +64,5 @@ pub(crate) fn fixed(r: &DefinitionRef, kind: &str, name: &str) -> bool {
         && r.key().id.as_str() == name
         && r.version() == 1
 }
+
+pub mod refit;

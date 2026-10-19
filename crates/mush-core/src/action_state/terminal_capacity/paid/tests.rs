@@ -17,6 +17,8 @@ struct Fixture {
     handles: BTreeMap<String, Handle>,
     providers: ActionProviderRegistry,
     actions: [DefinitionRef; 3],
+    resale_actions: Option<[DefinitionRef; 5]>,
+    resale_registry: Option<DefinitionRef>,
     invocation: ActionInvocation,
     disk: BTreeMap<(SmolStr, SmolStr), Value>,
 }
@@ -36,6 +38,38 @@ fn fixture_product(
     economy_generation: u64,
     version: u32,
     form: &'static str,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_product_resale(
+        manifest_generation,
+        economy_generation,
+        version,
+        form,
+        false,
+    )
+}
+fn fixture_product_resale(
+    manifest_generation: u64,
+    economy_generation: u64,
+    version: u32,
+    form: &'static str,
+    resale: bool,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_product_resale_registry(
+        manifest_generation,
+        economy_generation,
+        version,
+        form,
+        resale,
+        false,
+    )
+}
+fn fixture_product_resale_registry(
+    manifest_generation: u64,
+    economy_generation: u64,
+    version: u32,
+    form: &'static str,
+    resale: bool,
+    compound: bool,
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
     let market = OwnerId::new("market")?;
     let roll = OwnerId::new("roll")?;
@@ -102,11 +136,33 @@ fn fixture_product(
         );
     }
     let actions: [DefinitionRef; 3] = actions.try_into().map_err(|_| "actions")?;
+    let resale_actions = if resale {
+        Some(resale::register_actions(
+            &mut definitions,
+            &participant_refs[1],
+        )?)
+    } else {
+        None
+    };
+    let resale_registry = if compound {
+        Some(resale::register_registry(
+            &mut definitions,
+            &participant_refs[1],
+        )?)
+    } else {
+        None
+    };
     let mut definitions = definitions.freeze()?;
     definitions.bind_owner_readiness(readiness.clone());
     let mut providers = ActionProviderRegistryBuilder::new();
-    for action in &actions {
+    for action in actions
+        .iter()
+        .chain(resale_actions.iter().flat_map(|a| a.iter()))
+    {
         providers.register(market.clone(), action.clone(), Arc::new(Provider))?;
+    }
+    if let Some(action) = &resale_registry {
+        providers.register(roll.clone(), action.clone(), Arc::new(Provider))?;
     }
     let providers =
         providers.freeze_for_owners_with_readiness(&definitions, &owners, readiness.clone())?;
@@ -149,9 +205,18 @@ fn fixture_product(
     builder.original_mind_purchase_capacity(
         &market,
         manifest,
-        participant_refs,
+        participant_refs.clone(),
         actions.clone(),
     )?;
+    if let Some(resale_actions) = &resale_actions {
+        resale::register_families(&mut builder, &mut handles, compound)?;
+        builder.paid_resale_capacity(
+            &market,
+            participant_refs,
+            resale_actions.clone(),
+            resale_registry.clone(),
+        )?;
+    }
     let store =
         ActionStateStore::new(builder.freeze_for_owners_with_readiness(&owners, readiness)?);
     let request = RequestUid::from_bytes([1; 16]);
@@ -180,6 +245,8 @@ fn fixture_product(
         handles,
         providers,
         actions,
+        resale_actions,
+        resale_registry,
         invocation,
         disk: BTreeMap::new(),
     };
@@ -753,3 +820,6 @@ fn exact_old_v1_funding_under_v2_can_only_refund() -> TestResult {
     );
     Ok(())
 }
+
+#[path = "../paid_resale/tests.rs"]
+mod resale;

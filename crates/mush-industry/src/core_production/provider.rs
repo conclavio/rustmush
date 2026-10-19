@@ -30,6 +30,7 @@ pub(crate) struct Runtime {
     pub(crate) definitions: Definitions,
     pub(crate) actions: [DefinitionRef; 2],
     pub(crate) integration: Option<super::integration::runtime::Runtime>,
+    pub(crate) refit: Option<super::refit::runtime::Runtime>,
 }
 #[cfg(test)]
 #[derive(Clone)]
@@ -67,9 +68,11 @@ pub(crate) fn exact(
     let values: BTreeMap<_, _> = descriptors
         .iter()
         .map(|d| {
+            let mut references = d.references().to_vec();
+            references.sort();
             (
                 (d.id().clone(), d.version()),
-                (d.payload().clone(), d.references().to_vec(), d.is_current()),
+                (d.payload().clone(), references, d.is_current()),
             )
         })
         .collect();
@@ -143,6 +146,22 @@ impl Runtime {
                 )
             })
             .transpose()?;
+        let refit = integration
+            .as_ref()
+            .and_then(|r| r.config.refit.clone())
+            .map(|c| {
+                let r = integration
+                    .as_ref()
+                    .ok_or_else(|| mod_error(Error::Integrity))?;
+                super::refit::runtime::Runtime::register(
+                    reg,
+                    c,
+                    r.industry.clone(),
+                    r.config.economy_owner.clone(),
+                    r.families.clone(),
+                )
+            })
+            .transpose()?;
         let mut refs = actions.to_vec();
         refs.push(config.policy.content.clone());
         refs.sort();
@@ -170,6 +189,15 @@ impl Runtime {
         if let Some(d) = integration.as_ref().and_then(|r| r.delivery.as_ref()) {
             allowed.insert(d.action.clone());
         }
+        if let Some(r) = &refit {
+            allowed.extend(
+                r.actions
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != 4)
+                    .map(|(_, a)| a.clone()),
+            );
+        }
         reg.owner_participant(
             participant.clone(),
             allowed,
@@ -194,6 +222,13 @@ impl Runtime {
                 super::integration::delivery::Policy,
             >::policy_descriptor(&d.action)?);
         }
+        if let Some(r) = &refit {
+            reads.push(mush_core::core_exchange::CoreComponentExchanges::<
+                super::refit::policies::ExchangePolicy,
+            >::policy_descriptor(
+                &r.actions[4], &r.participants
+            )?);
+        }
         exact(reg, "owner_read", &reads)?;
         let rd = reg.definition(rd)?;
         let industry = OwnerId::new(crate::NS).map_err(mod_error)?;
@@ -216,6 +251,7 @@ impl Runtime {
             config,
             families,
             integration,
+            refit,
             definitions,
             actions,
         };
@@ -239,7 +275,7 @@ impl Runtime {
         if let Some(r) = &runtime.integration {
             if let Some(delivery) = &r.delivery {
                 reg.core_integration_delivery_capacity(
-                    [participant, r.config.economy_owner.clone()],
+                    [participant.clone(), r.config.economy_owner.clone()],
                     [
                         r.actions[2].clone(),
                         r.actions[3].clone(),
@@ -251,7 +287,7 @@ impl Runtime {
                 )?;
             } else {
                 reg.core_integration_capacity(
-                    [participant, r.config.economy_owner.clone()],
+                    [participant.clone(), r.config.economy_owner.clone()],
                     [
                         r.actions[2].clone(),
                         r.actions[3].clone(),
@@ -261,8 +297,32 @@ impl Runtime {
                     ],
                 )?;
             }
-            super::integration::provider::register(reg, r.clone(), readiness)?;
+            super::integration::provider::register(reg, r.clone(), readiness.clone())?;
             super::integration::schedule::register(reg, r.clone())?;
+        }
+        if let Some(r) = &runtime.refit {
+            reg.core_refit_capacity(
+                [
+                    participant,
+                    r.participants[0].clone(),
+                    r.participants[1].clone(),
+                ],
+                [
+                    r.actions[2].clone(),
+                    r.actions[3].clone(),
+                    r.actions[4].clone(),
+                    r.actions[5].clone(),
+                ],
+            )?;
+            super::refit::provider::register(reg, r.clone(), readiness)?;
+            super::refit::schedule::register(reg, r.clone())?;
+            let hook = std::sync::Arc::new(super::refit::policies::CustodyHook {
+                config: r.config.clone(),
+                families: r.families.clone(),
+                participants: r.participants.clone(),
+            });
+            reg.hook(mush_core::HookPoint::CarryAttempt, hook.clone());
+            reg.hook(mush_core::HookPoint::MoveAttempt, hook);
         }
         Ok(runtime)
     }
@@ -278,8 +338,15 @@ impl Runtime {
             .clone();
         self.definitions
             .0
-            .set(defs)
+            .set(defs.clone())
             .map_err(|_| mod_error(Error::Integrity))?;
+        if let Some(r) = &self.refit {
+            r.config
+                .definitions
+                .0
+                .set(defs)
+                .map_err(|_| mod_error(Error::Integrity))?;
+        }
         if data
             .kv
             .iter()
@@ -296,6 +363,12 @@ impl Runtime {
             .map(|(_, v)| decode::<OriginIndex>(v))
             .transpose()
             .map_err(mod_error)?;
+        let refit_index = super::refit::audit::load_index(data).map_err(mod_error)?;
+        if self.refit.is_none() && refit_index.is_some() {
+            return Err(mod_error(
+                "Core refit history requires its configured owner",
+            ));
+        }
         let integration_index = super::integration::audit::load_index(data).map_err(mod_error)?;
         let delivery_index = super::integration::delivery::audit::load(data).map_err(mod_error)?;
         if delivery_index.is_some()
@@ -321,6 +394,13 @@ impl Runtime {
         state.ready = false;
         state.index = index;
         state.generation = 1;
+        state.refit = self
+            .refit
+            .as_ref()
+            .map(|_| super::refit::state::Projection {
+                index: refit_index,
+                ..Default::default()
+            });
         state.integration =
             self.integration
                 .as_ref()
@@ -344,10 +424,22 @@ impl Runtime {
                 None
             }
         };
+        let refit = match &self.refit {
+            Some(r) => Some(super::refit::audit::audit(ctx, r).map_err(mod_error)?),
+            None => {
+                ctx.w
+                    .module_state::<mush_economy::EconomyStore>()
+                    .ok_or_else(|| mod_error(Error::Unavailable))?
+                    .require_no_core_refit_history()
+                    .map_err(mod_error)?;
+                None
+            }
+        };
         let state = ctx
             .w
             .module_state_mut::<CoreProductionState>()
             .ok_or_else(|| mod_error(Error::Unavailable))?;
+        state.refit = refit;
         state.integration = integration;
         state.ready = true;
         Ok(())

@@ -44,7 +44,23 @@ fn fixture_config(
     service_provider: bool,
     service_protocol: bool,
 ) -> TestResult<Fixture> {
-    let (birth, mut handles, disk) = house::tests::renewal_birth_seed()?;
+    fixture_from_seed(
+        manifest_generation,
+        service_provider,
+        service_protocol,
+        house::tests::renewal_birth_seed()?,
+    )
+}
+fn fixture_from_seed(
+    manifest_generation: u64,
+    service_provider: bool,
+    service_protocol: bool,
+    (birth, mut handles, disk): (
+        ActionStateStore,
+        BTreeMap<String, Handle>,
+        BTreeMap<(SmolStr, SmolStr), Value>,
+    ),
+) -> TestResult<Fixture> {
     let market = OwnerId::new("market")?;
     let roll = OwnerId::new("roll")?;
     let owners = BTreeSet::from([
@@ -158,7 +174,10 @@ fn fixture_config(
         .family_delegations
         .extend(legacy.family_delegations.clone());
     builder.original_purchase = birth.registry.original_purchase.clone();
-    builder.entitlement_purchase = birth.registry.entitlement_purchase.clone();
+    builder.paid_resale = birth.registry.paid_resale.clone();
+    // The House birth seed has no personal entitlement profile. Preserve
+    // the closed purchase audits required by the coexisting renewal profile.
+    builder.entitlement_purchase = legacy.entitlement_purchase.clone();
     builder.house_purchase = birth.registry.house_purchase.clone();
     for (owner, family, bytes) in FAMILIES
         .into_iter()
@@ -181,6 +200,15 @@ fn fixture_config(
         )?
         .with_limits(key_bytes, bytes)?;
         let owner = OwnerId::new(owner)?;
+        if let Some(existing) = builder
+            .entries
+            .get(&(owner.clone(), descriptor.id().clone()))
+        {
+            if existing.descriptor().canonical_value() != descriptor.canonical_value() {
+                return Err("retained renewal family descriptor differs".into());
+            }
+            continue;
+        }
         let h = builder.register(
             owner.clone(),
             descriptor,
@@ -216,11 +244,18 @@ fn fixture_config(
         ActionStateBootRecord::new(ns.clone(), key.clone(), row.clone())
     }))?;
     let request = RequestUid::from_bytes([30; 16]);
-    let principal = PrincipalId::Object { id: ObjId(7) };
+    let pointer = store
+        .get(
+            handles.get(LICENCE).ok_or("licence handle")?,
+            &"licence/0000000000000001".to_owned(),
+        )?
+        .ok_or("current licence")?;
+    let actor = ObjId(u32::try_from(number(pointer, "holder")?)?);
+    let principal = PrincipalId::Object { id: actor };
     let invocation = ActionInvocation::new(ActionInvocationDraft {
         request,
         principal: principal.clone(),
-        actor: ObjId(7),
+        actor,
         offered_action: ActionOfferId(CanonicalHash::from_bytes([30; 32])),
         subject: PerceivedRef::SelfActor,
         targets: vec![],
@@ -300,26 +335,53 @@ fn draft(f: &mut Fixture, byte: u8, previous: Option<CommitToken>) -> TestResult
     let economics = required(&view(f), &term_key(ECONOMICS, 1, predecessor)?)?;
     let grant = field(&economics, "grant")?;
     let renewal = field(grant, "renewal")?;
-    let binding = json!({"format":1,"licence":"1","holder":7,"issuer":field(&birth,"issuer")?,"charter":"1","line":"1",
+    let holder = field(&licence, "holder")?.clone();
+    let holder_basis = if number(&licence, "format")? == 2 {
+        let ownership = field(&licence, "ownership")?;
+        let generation = number(ownership, "generation")?;
+        let h = required(
+            &view(f),
+            &key(
+                "roll_mind_paid_holders",
+                format!("licence/{:016x}/{generation:016x}", 1),
+            )?,
+        )?;
+        Some(json!({"acceptance":field(&h,"acceptance")?,"ownership":ownership}))
+    } else {
+        None
+    };
+    let mut binding = json!({"format":1,"licence":"1","holder":holder,"issuer":field(&birth,"issuer")?,"charter":"1","line":"1",
         "birth_operation":field(&licence,"operation")?,"predecessor":predecessor.to_string(),"next":next.to_string(),
         "predecessor_operation":field(&term,"operation")?,"predecessor_term":digest("roll.mind.house_renewal_predecessor.v1",&term)?,
         "predecessor_economics":digest("roll.mind.house_term_economics.v1",&economics)?,"filed":"1",
         "revision":field(field(&term,"revision")?,"revision")?,"terms":field(&term,"terms")?,
         "term_seconds":100,"grace_seconds":10,"grant":grant,"product_digest":field(&economics,"product_digest")?});
+    if let Some(basis) = &holder_basis {
+        binding["format"] = json!(2);
+        binding["holder_basis"] = basis.clone();
+    }
     let at = 1000 + i64::from(byte);
     let offer = json!({"format":1,"basis":{"format":1,"licence":1,"predecessor_generation":predecessor,"next_generation":next,
         "predecessor_operation":field(&term,"operation")?,"prior_quote":field(&birth,"quote")?,
         "prior_quote_digest":field(&birth,"quote_digest")?,"product_digest":field(&economics,"product_digest")?,
         "template_digest":digest("roll.mind.house_renewal_template.v1",renewal)?,"grant_economics_digest":digest("roll.mind.house_grant_economics.v1",grant)?},
-        "terms":{"format":1,"buyer":7,"organization":0,"scope":0,"charter":1,"title_revision":1,"payer":1,
+        "terms":{"format":1,"buyer":holder,"organization":0,"scope":0,"charter":1,"title_revision":1,"payer":1,
         "instrument":field(renewal,"instrument")?,"price":field(renewal,"price")?,"registry":{"permille":0,"recipient":null},"venue":null,
         "remainder":{"account":2,"owner":{"kind":"organization","id":0}},
         "not_before":{"clock":{"kind":"world_ic","generation":1},"at":at},
         "expires_at":{"clock":{"kind":"world_ic","generation":1},"at":at+100}}});
-    let attempt = previous.map_or_else(
+    let mut attempt = previous.map_or_else(
         || json!({"kind":"automatic"}),
         |p| json!({"kind":"buyer_retry","previous_operation":p}),
     );
+    if let Some(basis) = holder_basis {
+        attempt["kind"] = json!(if previous.is_some() {
+            "holder_retry"
+        } else {
+            "holder_automatic"
+        });
+        attempt["basis"] = basis;
+    }
     let roll = json!({"format":1,"operation":operation,"action":f.actions[0],"attempt":attempt,"binding":binding,
         "offer_digest":digest("economy.house_mind_renewal_offer.v1",&offer)?,"contract":u64::from(byte),"consent_hash":vec![0_u8;32],
         "created_at_ic":{"clock":{"kind":"world_ic","generation":1},"at":at},"created_at_utc":at,"state":{"kind":"drafted"}});
@@ -776,5 +838,212 @@ fn personal_profile_rejects_house_aliases_and_resolves_each_real_owner() -> Test
             .as_str(),
         "roll"
     );
+    Ok(())
+}
+
+// Reuse only acknowledged coordinator transitions; native rows remain inert
+// fixture data and do not stand in for real Economy payment authority.
+pub(in crate::action_state::terminal_capacity) fn resale_term_seed(
+    grant: bool,
+) -> TestResult<(
+    ActionStateStore,
+    BTreeMap<String, Handle>,
+    BTreeMap<(SmolStr, SmolStr), Value>,
+)> {
+    let mut f = fixture()?;
+    let operation = CommitToken::from_bytes([31; 16]);
+    let p = draft(&mut f, 31, None)?;
+    install(&mut f, p)?;
+    if grant {
+        let p = advance(&mut f, operation, 1, 32)?;
+        install(&mut f, p)?;
+        let p = advance(&mut f, operation, 2, 33)?;
+        install(&mut f, p)?;
+    }
+    Ok((f.store, f.handles, f.disk))
+}
+
+pub(in crate::action_state::terminal_capacity) fn closed_holder_seed(
+    funded: bool,
+) -> TestResult<(
+    ActionStateStore,
+    BTreeMap<String, Handle>,
+    BTreeMap<(SmolStr, SmolStr), Value>,
+)> {
+    let mut f = fixture()?;
+    let operation = CommitToken::from_bytes([31; 16]);
+    let p = draft(&mut f, 31, None)?;
+    install(&mut f, p)?;
+    if funded {
+        let p = advance(&mut f, operation, 1, 32)?;
+        install(&mut f, p)?;
+    }
+    let p = advance(&mut f, operation, if funded { 3 } else { 4 }, 33)?;
+    install(&mut f, p)?;
+    hydrate(&f, &f.disk)?;
+    Ok((f.store, f.handles, f.disk))
+}
+pub(in crate::action_state::terminal_capacity) fn continue_holder_seed(
+    seed: (
+        ActionStateStore,
+        BTreeMap<String, Handle>,
+        BTreeMap<(SmolStr, SmolStr), Value>,
+    ),
+    byte: u8,
+    previous: Option<CommitToken>,
+    terminal: usize,
+) -> TestResult<(
+    ActionStateStore,
+    BTreeMap<String, Handle>,
+    BTreeMap<(SmolStr, SmolStr), Value>,
+)> {
+    let mut f = fixture_from_seed(1, false, false, seed)?;
+    let before = required(&view(&f), &licence_key(LICENCE, 1)?)?;
+    let op = CommitToken::from_bytes([byte; 16]);
+    let p = draft(&mut f, byte, previous)?;
+    install(&mut f, p)?;
+    let reserved = f
+        .store
+        .capacity
+        .records
+        .values()
+        .next()
+        .ok_or("reservation")?
+        .canonical
+        .clone();
+    assert_eq!(
+        f.store
+            .capacity
+            .records
+            .values()
+            .next()
+            .ok_or("reservation")?
+            .record
+            .targets
+            .len(),
+        7
+    );
+    assert_eq!(
+        f.store
+            .capacity
+            .records
+            .values()
+            .next()
+            .ok_or("reservation")?
+            .record
+            .targets
+            .iter()
+            .map(|t| t.ceiling)
+            .sum::<usize>(),
+        81920
+    );
+    hydrate(&f, &f.disk)?;
+    assert!(
+        draft(&mut f, byte + 10, None).is_err(),
+        "duplicate automatic while pending"
+    );
+    if terminal == 0 {
+        return Ok((f.store, f.handles, f.disk));
+    }
+    if terminal != 4 {
+        let p = advance(&mut f, op, 1, byte + 1)?;
+        install(&mut f, p)?;
+        assert_eq!(
+            f.store
+                .capacity
+                .records
+                .values()
+                .next()
+                .ok_or("reservation")?
+                .canonical,
+            reserved
+        );
+    }
+    let p = advance(&mut f, op, terminal, byte + 2)?;
+    install(&mut f, p)?;
+    let after = required(&view(&f), &licence_key(LICENCE, 1)?)?;
+    for name in [
+        "format",
+        "holder",
+        "ownership",
+        "operation",
+        "charter",
+        "line",
+    ] {
+        assert!(
+            before.get(name) == after.get(name),
+            "renewal changed immutable holder identity"
+        );
+    }
+    assert!(f.store.capacity.is_empty());
+    hydrate(&f, &f.disk)?;
+    if terminal != 2 {
+        assert!(
+            draft(&mut f, byte + 10, None).is_err(),
+            "duplicate automatic after refusal"
+        );
+    }
+    // Both owner records must carry the same strict format and attempt basis;
+    // corrupt both so this reaches the historical join rather than pair equality.
+    for case in 0..7 {
+        let mut disk = f.disk.clone();
+        for family in [MARKET, ROLL] {
+            let raw = operation_key(family, op)?;
+            let resolved = raw.resolve(&f.store.registry)?;
+            let row = disk
+                .get_mut(&(raw.owner.as_str().into(), resolved.persistence_key()))
+                .ok_or("operation")?;
+            match case {
+                0 => {
+                    row["value"]["binding"]["holder_basis"] = Value::Null;
+                }
+                1 => {
+                    row["value"]["binding"]["format"] = json!(1);
+                }
+                2 => {
+                    row["value"]["attempt"]["basis"]["ownership"]["digest"] =
+                        json!(DefinitionDigest::from_bytes([99; 32]));
+                }
+                3 => {
+                    row["value"]["binding"]["holder_basis"]["acceptance"] =
+                        json!(CommitToken::from_bytes([99; 16]));
+                    row["value"]["attempt"]["basis"] =
+                        row["value"]["binding"]["holder_basis"].clone();
+                }
+                4 => {
+                    row["value"]["attempt"] = json!({"kind":"automatic"});
+                }
+                5 => {
+                    row["value"]["binding"]["holder_basis"]["ownership"]["generation"] = json!(1);
+                    row["value"]["attempt"]["basis"] =
+                        row["value"]["binding"]["holder_basis"].clone();
+                }
+                _ => {
+                    row["value"]["attempt"]["kind"] = json!("holder_retry");
+                    row["value"]["attempt"]["previous_operation"] =
+                        json!(CommitToken::from_bytes([31; 16]));
+                }
+            }
+        }
+        assert!(
+            hydrate(&f, &disk).is_err(),
+            "crossed transferred-holder evidence admitted"
+        );
+    }
+    Ok((f.store, f.handles, f.disk))
+}
+
+pub(in crate::action_state::terminal_capacity) fn refuse_holder_seed(
+    seed: (
+        ActionStateStore,
+        BTreeMap<String, Handle>,
+        BTreeMap<(SmolStr, SmolStr), Value>,
+    ),
+) -> TestResult {
+    let mut f = fixture_from_seed(1, false, false, seed)?;
+    let before = f.disk.clone();
+    assert!(draft(&mut f, 100, None).is_err());
+    assert!(f.disk == before, "failed holder renewal changed custody");
+    hydrate(&f, &f.disk)?;
     Ok(())
 }

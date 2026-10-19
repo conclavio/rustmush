@@ -149,7 +149,9 @@ pub struct InitialFilingParticipant {
     compatible_update: Option<mush_core::DefinitionRef>,
     charter_transfer: Option<mush_core::DefinitionRef>,
     core_integration: Option<crate::core_integration::CoreIntegrationConfig>,
+    core_refit: Option<crate::core_refit::CoreRefitConfig>,
     charter_pending: Option<crate::managed_charter_transfer::CharterPendingConfig>,
+    paid_resale: Option<crate::managed_paid_resale::PaidResaleConfig>,
 }
 impl InitialFilingParticipant {
     pub fn new(policy: InitialFilingPolicy) -> Self {
@@ -160,7 +162,9 @@ impl InitialFilingParticipant {
             compatible_update: None,
             charter_transfer: None,
             core_integration: None,
+            core_refit: None,
             charter_pending: None,
+            paid_resale: None,
         }
     }
 }
@@ -296,6 +300,78 @@ pub(crate) fn register_with_house_renewals(
     charter_pending: Option<&crate::managed_charter_transfer::CharterPendingConfig>,
     house_purchases: Option<&[mush_core::DefinitionRef; 3]>,
     house_renewals: Option<&crate::managed_house_renewal::bridge::Configuration>,
+) -> Result<(), mush_core::ModError> {
+    register_with_paid_resale(
+        reg,
+        policy,
+        action,
+        purchases,
+        entitlements,
+        house_action,
+        dependent_action,
+        renewals,
+        compatible_update,
+        charter_transfer,
+        core_integration,
+        charter_pending,
+        house_purchases,
+        house_renewals,
+        None,
+    )
+}
+pub(crate) fn register_with_paid_resale(
+    reg: &mut mush_core::Registrar<'_>,
+    policy: InitialFilingPolicy,
+    action: mush_core::mechanics::DefinitionRef,
+    purchases: Option<&[mush_core::mechanics::DefinitionRef; 3]>,
+    entitlements: Option<&[[mush_core::mechanics::DefinitionRef; 3]; 2]>,
+    house_action: Option<&mush_core::mechanics::DefinitionRef>,
+    dependent_action: Option<&mush_core::mechanics::DefinitionRef>,
+    renewals: Option<&crate::managed_renewal::bridge::Configuration>,
+    compatible_update: Option<&mush_core::DefinitionRef>,
+    charter_transfer: Option<&mush_core::DefinitionRef>,
+    core_integration: Option<&crate::core_integration::CoreIntegrationConfig>,
+    charter_pending: Option<&crate::managed_charter_transfer::CharterPendingConfig>,
+    house_purchases: Option<&[mush_core::DefinitionRef; 3]>,
+    house_renewals: Option<&crate::managed_house_renewal::bridge::Configuration>,
+    paid_resale: Option<&crate::managed_paid_resale::PaidResaleConfig>,
+) -> Result<(), mush_core::ModError> {
+    register_with_core_refits(
+        reg,
+        policy,
+        action,
+        purchases,
+        entitlements,
+        house_action,
+        dependent_action,
+        renewals,
+        compatible_update,
+        charter_transfer,
+        core_integration,
+        charter_pending,
+        house_purchases,
+        house_renewals,
+        paid_resale,
+        None,
+    )
+}
+pub(crate) fn register_with_core_refits(
+    reg: &mut mush_core::Registrar<'_>,
+    policy: InitialFilingPolicy,
+    action: mush_core::mechanics::DefinitionRef,
+    purchases: Option<&[mush_core::mechanics::DefinitionRef; 3]>,
+    entitlements: Option<&[[mush_core::mechanics::DefinitionRef; 3]; 2]>,
+    house_action: Option<&mush_core::mechanics::DefinitionRef>,
+    dependent_action: Option<&mush_core::mechanics::DefinitionRef>,
+    renewals: Option<&crate::managed_renewal::bridge::Configuration>,
+    compatible_update: Option<&mush_core::DefinitionRef>,
+    charter_transfer: Option<&mush_core::DefinitionRef>,
+    core_integration: Option<&crate::core_integration::CoreIntegrationConfig>,
+    charter_pending: Option<&crate::managed_charter_transfer::CharterPendingConfig>,
+    house_purchases: Option<&[mush_core::DefinitionRef; 3]>,
+    house_renewals: Option<&crate::managed_house_renewal::bridge::Configuration>,
+    paid_resale: Option<&crate::managed_paid_resale::PaidResaleConfig>,
+    core_refit: Option<&crate::core_refit::CoreRefitConfig>,
 ) -> Result<(), mush_core::ModError> {
     use mush_core::mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionValidationContext,
@@ -483,8 +559,27 @@ pub(crate) fn register_with_house_renewals(
         ]);
         actions.extend(config.revoke.iter().cloned());
     }
+    if let Some(config) = paid_resale {
+        config.validate().map_err(|e| bad(&e))?;
+        if config.issuer != policy.issuer {
+            return Err(mush_core::ModError::msg(
+                "paid resale requires exact configured monetary issuer",
+            ));
+        }
+        // Offer is Market-only; the four monetary transitions reuse this owner slot.
+        actions.extend(config.actions.iter().skip(1).cloned());
+        actions.extend(config.revoke.iter().cloned());
+    }
     if let Some(config) = core_integration {
         actions.extend(crate::core_integration::bridge::register(reg, config)?);
+    }
+    if let Some(config) = core_refit {
+        if core_integration.is_none() {
+            return Err(mush_core::ModError::msg(
+                "Core refit requires actual native manufacture history",
+            ));
+        }
+        actions.extend(crate::core_refit::bridge::register(reg, config)?);
     }
     reg.owner_participant(
         definition,
@@ -496,7 +591,9 @@ pub(crate) fn register_with_house_renewals(
             compatible_update: compatible_update.cloned(),
             charter_transfer: charter_transfer.cloned(),
             core_integration: core_integration.cloned(),
+            core_refit: core_refit.cloned(),
             charter_pending: charter_pending.cloned(),
+            paid_resale: paid_resale.cloned(),
         },
     )
 }
@@ -996,6 +1093,8 @@ impl InitialFilingParticipant {
 /// original filing request/output wrappers avoids sharing money authority
 /// through a second adapter or generic plan callback.
 pub enum EconomyRequest {
+    PaidResaleAcceptance(crate::managed_paid_resale::PaidResaleAcceptanceRequest),
+    PaidResaleTerminal(crate::managed_paid_resale::PaidResaleTerminalRequest),
     HouseFunding(crate::managed_house_purchase::HousePurchase),
     HouseGrant(crate::managed_house_purchase::HouseTerminal),
     HouseRefund(crate::managed_house_purchase::HouseTerminal),
@@ -1005,6 +1104,9 @@ pub enum EconomyRequest {
     CoreFunding(crate::core_integration::CoreFundingRequest),
     CoreCompletion(crate::core_integration::CoreCompletionRequest),
     CoreCancellation(crate::core_integration::CoreCancellationRequest),
+    RefitFunding(crate::core_refit::RefitFundingRequest),
+    RefitInstallation(crate::core_refit::RefitInstallationRequest),
+    RefitCancellation(crate::core_refit::RefitCancellationRequest),
     CompatibleUpdate(update::RegistryCompatibleUpdate),
     InitialFiling(RegistryInitialFiling),
     DependentInitialFiling(RegistryInitialFiling),
@@ -1054,12 +1156,15 @@ impl From<RegistryInitialFiling> for EconomyRequest {
     }
 }
 pub enum EconomyOutput {
+    PaidResale(crate::managed_paid_resale::PaidResaleOutput),
     HouseFunding(crate::managed_house_purchase::HouseFundingOutput),
     HouseTerminal(crate::managed_house_purchase::HouseTerminalOutput),
     CharterPending(crate::managed_charter_transfer::CharterPendingOutput),
     CharterTransfer(charter_transfer::CharterTransferOutput),
     CoreFunding(crate::core_integration::CoreFundingOutput),
     CoreTerminal(crate::core_integration::CoreTerminalOutput),
+    RefitFunding(crate::core_refit::RefitFundingOutput),
+    RefitTerminal(crate::core_refit::RefitTerminalOutput),
     CompatibleUpdate(update::CompatibleUpdateOutput),
     InitialFiling(InitialFilingOutput),
     PurchaseFunding(crate::managed_purchase::FundingOutput),
@@ -1074,6 +1179,15 @@ pub enum EconomyOutput {
     HouseRenewalTerminal(crate::managed_house_renewal::RenewalTerminalOutput),
 }
 impl EconomyOutput {
+    pub fn paid_resale(
+        self,
+    ) -> Result<crate::managed_paid_resale::PaidResaleOutput, ParticipantError> {
+        match self {
+            Self::PaidResale(out) => Ok(out),
+            _ => Err(refused()),
+        }
+    }
+
     pub fn house_funding(
         self,
     ) -> Result<crate::managed_house_purchase::HouseFundingOutput, ParticipantError> {
@@ -1119,6 +1233,20 @@ impl EconomyOutput {
     ) -> Result<crate::core_integration::CoreTerminalOutput, ParticipantError> {
         match self {
             Self::CoreTerminal(output) => Ok(output),
+            _ => Err(refused()),
+        }
+    }
+    pub fn refit_funding(self) -> Result<crate::core_refit::RefitFundingOutput, ParticipantError> {
+        match self {
+            Self::RefitFunding(output) => Ok(output),
+            _ => Err(refused()),
+        }
+    }
+    pub fn refit_terminal(
+        self,
+    ) -> Result<crate::core_refit::RefitTerminalOutput, ParticipantError> {
+        match self {
+            Self::RefitTerminal(output) => Ok(output),
             _ => Err(refused()),
         }
     }
@@ -1212,9 +1340,11 @@ impl EconomyOutput {
     }
 }
 pub enum EconomyPatch {
+    PaidResale(Box<crate::managed_paid_resale::PaidResalePatch>),
     CharterPending(Box<crate::managed_charter_transfer::CharterPendingPatch>),
     CharterTransfer(Box<charter_transfer::CharterTransferPatch>),
     CoreMoney(Box<crate::core_integration::CoreMoneyPatch>),
+    RefitMoney(Box<crate::core_refit::RefitMoneyPatch>),
     CompatibleUpdate(Box<update::CompatibleUpdatePatch>),
     InitialFiling(Box<InitialFilingPatch>),
     Purchase(Box<crate::managed_purchase::PurchasePatch>),
@@ -1229,9 +1359,11 @@ impl From<InitialFilingPatch> for EconomyPatch {
     }
 }
 pub enum BoundEconomy<'a> {
+    PaidResale(crate::managed_paid_resale::BoundPaidResale<'a>),
     CharterPending(crate::managed_charter_transfer::BoundCharterPending<'a>),
     CharterTransfer(charter_transfer::BoundCharterTransfer<'a>),
     CoreMoney(crate::core_integration::BoundCoreMoney<'a>),
+    RefitMoney(crate::core_refit::BoundRefitMoney<'a>),
     CompatibleUpdate(update::BoundCompatibleUpdate<'a>),
     InitialFiling(BoundInitialFiling<'a>),
     Purchase(crate::managed_purchase::BoundPurchase<'a>),
@@ -1243,6 +1375,7 @@ pub enum BoundEconomy<'a> {
 impl BoundParticipant for BoundEconomy<'_> {
     fn apply(self) {
         match self {
+            Self::PaidResale(bound) => bound.apply(),
             Self::InitialFiling(bound) => bound.apply(),
             Self::CompatibleUpdate(bound) => bound.apply(),
             Self::CharterTransfer(bound) => bound.apply(),
@@ -1253,11 +1386,27 @@ impl BoundParticipant for BoundEconomy<'_> {
             Self::RenewalMoney(bound) => bound.apply(),
             Self::HouseRenewalMoney(bound) => bound.apply(),
             Self::CoreMoney(bound) => bound.apply(),
+            Self::RefitMoney(bound) => bound.apply(),
         }
     }
 }
 
 impl InitialFilingParticipant {
+    fn prepare_resale(
+        &self,
+        state: &EconomyStore,
+        context: &OwnerPrepareContext<'_>,
+        request: crate::managed_paid_resale::native::Request,
+    ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
+        let config = self.paid_resale.as_ref().ok_or_else(refused)?;
+        let (output, patch, writes) =
+            crate::managed_paid_resale::install::prepare(config, state, context, request)?;
+        Ok(OwnerPreparation::new(
+            EconomyOutput::PaidResale(output),
+            EconomyPatch::PaidResale(Box::new(patch)),
+            writes,
+        ))
+    }
     fn prepare_pending(
         &self,
         state: &EconomyStore,
@@ -1293,6 +1442,27 @@ impl InitialFilingParticipant {
         Ok(OwnerPreparation::new(
             output,
             EconomyPatch::CoreMoney(Box::new(patch)),
+            writes,
+        ))
+    }
+    fn prepare_refit(
+        &self,
+        state: &EconomyStore,
+        context: &OwnerPrepareContext<'_>,
+        request: crate::core_refit::money::Request,
+    ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
+        let config = self.core_refit.as_ref().ok_or_else(refused)?;
+        let (output, patch, writes) =
+            crate::core_refit::install::prepare(config, state, context, request)?;
+        let output = match output {
+            crate::core_refit::money::Output::Funded(output) => EconomyOutput::RefitFunding(output),
+            crate::core_refit::money::Output::Terminal(output) => {
+                EconomyOutput::RefitTerminal(output)
+            }
+        };
+        Ok(OwnerPreparation::new(
+            output,
+            EconomyPatch::RefitMoney(Box::new(patch)),
             writes,
         ))
     }
@@ -1416,6 +1586,16 @@ impl OwnerParticipant for InitialFilingParticipant {
     ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
         use crate::managed_purchase::{PurchaseOutcome, install};
         match request {
+            EconomyRequest::PaidResaleAcceptance(request) => self.prepare_resale(
+                state,
+                context,
+                crate::managed_paid_resale::native::Request::Accept(request),
+            ),
+            EconomyRequest::PaidResaleTerminal(request) => self.prepare_resale(
+                state,
+                context,
+                crate::managed_paid_resale::native::Request::Terminal(request),
+            ),
             EconomyRequest::CharterPendingFunding(request) => self.prepare_pending(
                 state,
                 context,
@@ -1440,6 +1620,21 @@ impl OwnerParticipant for InitialFilingParticipant {
                 state,
                 context,
                 crate::core_integration::money::Request::Cancel(request),
+            ),
+            EconomyRequest::RefitFunding(request) => self.prepare_refit(
+                state,
+                context,
+                crate::core_refit::money::Request::Fund(request),
+            ),
+            EconomyRequest::RefitInstallation(request) => self.prepare_refit(
+                state,
+                context,
+                crate::core_refit::money::Request::Install(request),
+            ),
+            EconomyRequest::RefitCancellation(request) => self.prepare_refit(
+                state,
+                context,
+                crate::core_refit::money::Request::Cancel(request),
             ),
             EconomyRequest::RenewalDraft(request) => {
                 self.require_renewal(context, crate::managed_renewal::DRAFT_ACTION)?;
@@ -1817,6 +2012,11 @@ impl OwnerParticipant for InitialFilingParticipant {
         patch: &EconomyPatch,
     ) -> Result<(), ParticipantError> {
         match patch {
+            EconomyPatch::PaidResale(patch) => patch.recheck(
+                self.paid_resale.as_ref().ok_or_else(refused)?,
+                state,
+                context,
+            ),
             EconomyPatch::CharterPending(patch) => patch.recheck(
                 self.charter_pending.as_ref().ok_or_else(refused)?,
                 state,
@@ -1831,6 +2031,11 @@ impl OwnerParticipant for InitialFilingParticipant {
             ),
             EconomyPatch::CoreMoney(patch) => patch.recheck(
                 self.core_integration.as_ref().ok_or_else(refused)?,
+                state,
+                context,
+            ),
+            EconomyPatch::RefitMoney(patch) => patch.recheck(
+                self.core_refit.as_ref().ok_or_else(refused)?,
                 state,
                 context,
             ),
@@ -1867,6 +2072,7 @@ impl OwnerParticipant for InitialFilingParticipant {
         patch: EconomyPatch,
     ) -> Result<BoundEconomy<'a>, ParticipantError> {
         match patch {
+            EconomyPatch::PaidResale(patch) => (*patch).bind(state).map(BoundEconomy::PaidResale),
             EconomyPatch::CharterPending(patch) => {
                 (*patch).bind(state).map(BoundEconomy::CharterPending)
             }
@@ -1874,6 +2080,7 @@ impl OwnerParticipant for InitialFilingParticipant {
                 charter_transfer::bind(state, *patch).map(BoundEconomy::CharterTransfer)
             }
             EconomyPatch::CoreMoney(patch) => (*patch).bind(state).map(BoundEconomy::CoreMoney),
+            EconomyPatch::RefitMoney(patch) => (*patch).bind(state).map(BoundEconomy::RefitMoney),
             EconomyPatch::CompatibleUpdate(patch) => {
                 update::bind(state, *patch).map(BoundEconomy::CompatibleUpdate)
             }

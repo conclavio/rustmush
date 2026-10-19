@@ -156,11 +156,12 @@ fn object_fence(world: &mush_core::World, object: ObjId) -> Result<ObjectFence, 
         binding: binding.clone(),
     })
 }
-fn world_ready(context: &OwnerPrepareContext<'_>, object: ObjId) -> Result<(), ParticipantError> {
-    let world = context.world();
-    let actor = world
-        .get(context.invocation().actor())
-        .ok_or_else(refused)?;
+fn idle_world(
+    world: &mush_core::World,
+    actor: ObjId,
+    object: ObjId,
+) -> Result<(), ParticipantError> {
+    let actor = world.get(actor).ok_or_else(refused)?;
     if actor.kind != ObjKind::Player || actor.flags.contains(Flags::GOING) {
         return Err(refused());
     }
@@ -201,6 +202,29 @@ fn world_ready(context: &OwnerPrepareContext<'_>, object: ObjId) -> Result<(), P
     }
     Ok(())
 }
+/// Read-only current refit preflight using the same actual owner lifecycle and
+/// physical exclusion checks as the prepared adapter. It grants no mutation.
+pub fn current_refit_unit(
+    world: &mush_core::World,
+    actor: ObjId,
+    object: ObjId,
+) -> Result<&TacticalUnit, ParticipantError> {
+    idle_world(world, actor, object)?;
+    if world
+        .module_state_owner(std::any::TypeId::of::<UnitStore>())
+        .is_none_or(|o| o.as_str() != NS)
+    {
+        return Err(refused());
+    }
+    let state = world.module_state::<UnitStore>().ok_or_else(refused)?;
+    let record = state.record_definition.as_ref().ok_or_else(refused)?;
+    let (_, unit, _) = active(state, object, record)?;
+    Ok(unit)
+}
+fn world_ready(context: &OwnerPrepareContext<'_>, object: ObjId) -> Result<(), ParticipantError> {
+    current_refit_unit(context.world(), context.invocation().actor(), object).map(|_| ())
+}
+
 fn active<'a>(
     state: &'a UnitStore,
     object: ObjId,
@@ -444,25 +468,7 @@ impl<P: ReplacementPolicy> std::fmt::Debug for Install<P> {
 }
 impl<P: ReplacementPolicy> Installer for Install<P> {
     fn descriptor(&self, record: &DefinitionRef) -> Result<DefinitionDescriptor, ModError> {
-        if self.action.key().kind.as_str() != "action"
-            || self.roots.is_empty()
-            || self.roots.len() > MAX_REPLACEMENT_ROOTS
-            || self.roots.iter().any(|r| r.key().kind.as_str() != "unit")
-        {
-            return Err(bad("invalid replacement registration"));
-        }
-        let mut refs: Vec<_> = self
-            .roots
-            .iter()
-            .cloned()
-            .chain([self.action.clone(), record.clone()])
-            .collect();
-        refs.sort();
-        refs.dedup();
-        let descriptor = DefinitionDescriptor::new(DefinitionKind::new("owner_participant").map_err(bad)?,
-            DefinitionId::new("component_replacement").map_err(bad)?, 1,
-            serde_json::json!({"format":1,"component":self.component,"roots":self.roots,"action":self.action,"record":record,"intact_incoming":true})).map_err(bad)?.with_references(refs.clone());
-        Ok(descriptor)
+        descriptor_with_record(&self.action, &self.component, &self.roots, record)
     }
     fn register(&self, reg: &mut Registrar<'_>, record: &DefinitionRef) -> Result<(), ModError> {
         if reg.module() != NS {
@@ -498,6 +504,48 @@ impl<P: ReplacementPolicy> Installer for Install<P> {
             .map_err(|_| bad("replacement runtime was already initialized"))
     }
 }
+
+/// Exact pure registration descriptor for trusted composition. This creates no
+/// policy, participant, unit state or permission to install a component.
+pub fn participant_descriptor(
+    action: &DefinitionRef,
+    component: &ComponentId,
+    roots: &BTreeSet<DefinitionRef>,
+) -> Result<DefinitionDescriptor, ModError> {
+    let record = mush_core::DefinitionRegistryBuilder::new()
+        .register(
+            OwnerId::new(NS).map_err(bad)?,
+            crate::module::current_unit_record_descriptor()?,
+        )
+        .map_err(bad)?;
+    descriptor_with_record(action, component, roots, &record)
+}
+fn descriptor_with_record(
+    action: &DefinitionRef,
+    component: &ComponentId,
+    roots: &BTreeSet<DefinitionRef>,
+    record: &DefinitionRef,
+) -> Result<DefinitionDescriptor, ModError> {
+    if action.key().kind.as_str() != "action"
+        || roots.is_empty()
+        || roots.len() > MAX_REPLACEMENT_ROOTS
+        || roots.iter().any(|r| r.key().kind.as_str() != "unit")
+    {
+        return Err(bad("invalid replacement registration"));
+    }
+    let mut refs: Vec<_> = roots
+        .iter()
+        .cloned()
+        .chain([action.clone(), record.clone()])
+        .collect();
+    refs.sort();
+    refs.dedup();
+    Ok(DefinitionDescriptor::new(DefinitionKind::new("owner_participant").map_err(bad)?,
+        DefinitionId::new("component_replacement").map_err(bad)?, 1,
+        serde_json::json!({"format":1,"component":component,"roots":roots,"action":action,"record":record,"intact_incoming":true}))
+        .map_err(bad)?.with_references(refs))
+}
+
 pub(crate) fn installer<P: ReplacementPolicy>(
     policy: P,
     action: DefinitionRef,

@@ -351,6 +351,44 @@ impl<'a> PrepareCtx<'a> {
     }
 
     /// Reserve the fixed actual Industry order's future terminal rows at Accept.
+    pub fn reserve_core_refit_completion(
+        &mut self,
+        txn: &mut crate::ActionTxn<'_>,
+        order: u64,
+    ) -> Result<(), crate::ActionStateError> {
+        self.core_refit_completion(txn, order, true)
+    }
+    /// Retain through actual scheduled Advance; release only on Install/Cancel.
+    pub fn advance_core_refit_completion(
+        &mut self,
+        txn: &mut crate::ActionTxn<'_>,
+        order: u64,
+    ) -> Result<(), crate::ActionStateError> {
+        self.core_refit_completion(txn, order, false)
+    }
+    fn core_refit_completion(
+        &mut self,
+        txn: &mut crate::ActionTxn<'_>,
+        order: u64,
+        admission: bool,
+    ) -> Result<(), crate::ActionStateError> {
+        let result = match (self.owner_error.is_none(), self.registered_transaction) {
+            (true, Some((base, provider))) => {
+                txn.core_refit_completion(base, provider, self.commit_token, order, admission)
+            }
+            _ => Err(crate::ActionStateError::TerminalCapacity(
+                "core refit preparation unavailable",
+            )),
+        };
+        if result.is_err() {
+            txn.poison_owner_read();
+            self.owner_error
+                .get_or_insert(crate::participant::ParticipantError::Authority);
+        }
+        result
+    }
+
+    /// Reserve the fixed actual Industry order's future terminal rows at Accept.
     pub fn reserve_core_integration_completion(
         &mut self,
         txn: &mut crate::ActionTxn<'_>,
@@ -537,6 +575,46 @@ impl<'a> PrepareCtx<'a> {
             }
             _ => Err(crate::action_state::ActionStateError::TerminalCapacity(
                 "pending charter transfer preparation unavailable",
+            )),
+        };
+        if result.is_err() {
+            txn.poison_owner_read();
+            self.owner_error
+                .get_or_insert(crate::participant::ParticipantError::Authority);
+        }
+        result
+    }
+
+    /// Reserve the closed paid resale's exact future completion keys. The operation
+    /// and validated post-images must belong to this invocation and transaction.
+    pub fn reserve_paid_resale_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.paid_resale_completion(txn, None)
+    }
+
+    /// Retire this paid resale's reservation with its exact terminal images in
+    /// the same acknowledgement. This does not accept caller-defined targets.
+    pub fn close_paid_resale_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        operation: CommitToken,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        self.paid_resale_completion(txn, Some(operation))
+    }
+
+    fn paid_resale_completion(
+        &mut self,
+        txn: &mut crate::action_state::ActionTxn<'_>,
+        terminal: Option<CommitToken>,
+    ) -> Result<(), crate::action_state::ActionStateError> {
+        let result = match (self.owner_error.is_none(), self.registered_transaction) {
+            (true, Some((base, provider))) => {
+                txn.paid_resale_completion(base, provider, self.commit_token, terminal)
+            }
+            _ => Err(crate::action_state::ActionStateError::TerminalCapacity(
+                "paid resale preparation unavailable",
             )),
         };
         if result.is_err() {

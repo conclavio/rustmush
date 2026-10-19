@@ -622,6 +622,50 @@ impl EconomyStore {
         &self.fold.update_receipts
     }
 
+    /// Complete actual paid-resale monetary history; this supplies no holder authority.
+    pub fn paid_resale_history(
+        &self,
+        operation: mush_core::CommitToken,
+    ) -> Result<
+        &crate::managed_paid_resale::PaidResaleHistoryV1,
+        mush_core::participant::ParticipantError,
+    > {
+        if self.frozen {
+            return Err(mush_core::participant::ParticipantError::refused(
+                "paid resale owner unavailable",
+            ));
+        }
+        let row = self.fold.paid_resale_receipts.get(operation)?;
+        let contract = self.snapshot.contract(row.contract_id()).ok_or_else(|| {
+            mush_core::participant::ParticipantError::refused("paid resale contract unavailable")
+        })?;
+        let hold = row
+            .acceptance()
+            .hold()
+            .map(|id| {
+                self.snapshot.hold(id).ok_or_else(|| {
+                    mush_core::participant::ParticipantError::refused(
+                        "paid resale hold unavailable",
+                    )
+                })
+            })
+            .transpose()?;
+        row.verify_documents(contract, hold)?;
+        Ok(row)
+    }
+    pub fn paid_resale_histories(
+        &self,
+    ) -> Result<
+        impl ExactSizeIterator<Item = &crate::managed_paid_resale::PaidResaleHistoryV1>,
+        mush_core::participant::ParticipantError,
+    > {
+        if self.frozen {
+            return Err(mush_core::participant::ParticipantError::refused(
+                "paid resale owner unavailable",
+            ));
+        }
+        self.fold.paid_resale_receipts.histories()
+    }
     /// Complete native charter transfer history; this accessor grants no authority.
     pub fn pending_charter_history(
         &self,
@@ -1601,7 +1645,9 @@ pub(crate) fn note_window_debits(
 #[derive(Debug, Default)]
 pub struct EconomyModule {
     charter_pending: Option<crate::managed_charter_transfer::CharterPendingConfig>,
+    paid_resale: Option<crate::managed_paid_resale::PaidResaleConfig>,
     core_integration: Option<crate::core_integration::CoreIntegrationConfig>,
+    core_refit: Option<crate::core_refit::CoreRefitConfig>,
     initial_filing: Option<(
         crate::registry_filing::InitialFilingPolicy,
         mush_core::mechanics::DefinitionRef,
@@ -1635,6 +1681,14 @@ pub struct EconomyModule {
 }
 
 impl EconomyModule {
+    /// Explicit paired resale owner only; no default service or acceptance.
+    pub fn with_paid_mind_resale(
+        mut self,
+        config: crate::managed_paid_resale::PaidResaleConfig,
+    ) -> Self {
+        self.paid_resale = Some(config);
+        self
+    }
     /// Explicit native escrow half only. Roll's exact pending/ownership/claim
     /// audit and fixed future-capacity protocol must accompany this composition.
     pub fn with_mind_charter_pending(
@@ -1651,6 +1705,13 @@ impl EconomyModule {
         config: crate::core_integration::CoreIntegrationConfig,
     ) -> Self {
         self.core_integration = Some(config);
+        self
+    }
+
+    /// Optional native fee leg; Industry's complete accepted-order, Tactics and
+    /// Core exchange audits must be present before any business activation.
+    pub fn with_core_refit(mut self, config: crate::core_refit::CoreRefitConfig) -> Self {
+        self.core_refit = Some(config);
         self
     }
 
@@ -2049,7 +2110,7 @@ impl GameModule for EconomyModule {
                     "initial filing issuer is not in the composition title-issuer table",
                 ));
             }
-            crate::registry_filing::register_with_house_renewals(
+            crate::registry_filing::register_with_core_refits(
                 reg,
                 policy.clone(),
                 action.clone(),
@@ -2064,6 +2125,8 @@ impl GameModule for EconomyModule {
                 self.charter_pending.as_ref(),
                 self.house_purchases.as_ref(),
                 self.house_mind_renewals.as_ref(),
+                self.paid_resale.as_ref(),
+                self.core_refit.as_ref(),
             )?;
         }
         if (self.house_purchases.is_some()
@@ -2074,11 +2137,18 @@ impl GameModule for EconomyModule {
             || self.compatible_update.is_some()
             || self.charter_transfer.is_some()
             || self.core_integration.is_some()
-            || self.charter_pending.is_some())
+            || self.core_refit.is_some()
+            || self.charter_pending.is_some()
+            || self.paid_resale.is_some())
             && self.initial_filing.is_none()
         {
             return Err(ModError::msg(
                 "original purchases require the existing filing EconomyStore participant",
+            ));
+        }
+        if self.core_refit.is_some() && self.core_integration.is_none() {
+            return Err(ModError::msg(
+                "Core refit requires native manufacture recovery",
             ));
         }
         if self.house_purchases.is_some() && self.house_initial_filing.is_none() {
@@ -2175,6 +2245,17 @@ impl GameModule for EconomyModule {
                 .set(defs)
                 .map_err(|_| ModError::msg("Core payment definitions already captured"))?;
         }
+        if let Some(config) = &self.core_refit {
+            let defs = ctx
+                .reg
+                .definitions()
+                .ok_or_else(|| ModError::msg("Core refit definitions unavailable"))?
+                .clone();
+            config
+                .definitions
+                .set(defs)
+                .map_err(|_| ModError::msg("Core refit definitions already captured"))?;
+        }
         let fetch_ms = data.fetch_ms;
         let started = std::time::Instant::now();
         let tail_max = if self.config.tx_tail_max == 0 {
@@ -2182,7 +2263,7 @@ impl GameModule for EconomyModule {
         } else {
             self.config.tx_tail_max
         };
-        let mut store = boot::load_boot_with_house_renewals(
+        let mut store = boot::load_boot_with_core_refit(
             ctx,
             data,
             &self.providers,
@@ -2199,6 +2280,8 @@ impl GameModule for EconomyModule {
             self.core_integration.is_some(),
             self.charter_pending.is_some(),
             self.house_mind_renewals.is_some(),
+            self.paid_resale.is_some(),
+            self.core_refit.is_some(),
         )?;
         // C17 (08g §12.1 item 5): the cold replay is the whole boot cost until a
         // durability checkpoint exists. Say what it cost, every boot, and say loudly

@@ -36,7 +36,7 @@ impl Protocol {
             if r.key().owner.as_str() != owner
                 || r.key().kind.as_str() != "owner_participant"
                 || r.key().id.as_str() != id
-                || r.version() != version
+                || (r.version() != version && !(owner == "industry" && r.version() == 3))
             {
                 return Err(refused("core integration participant identity"));
             }
@@ -76,6 +76,11 @@ impl Protocol {
         protocol.delivery = Some(delivery);
         Ok(protocol)
     }
+    pub(in crate::action_state::terminal_capacity) fn industry_participant(
+        &self,
+    ) -> &DefinitionRef {
+        &self.participants[0]
+    }
     pub(in crate::action_state::terminal_capacity) fn admission_action(&self) -> &DefinitionRef {
         &self.actions[0]
     }
@@ -99,6 +104,18 @@ impl Protocol {
         &self,
         registry: &StateFamilyRegistry,
     ) -> Result<(), ActionStateError> {
+        // Version 3 is accepted only with this exact additional closed refit
+        // declaration, never as a generic successor participant version.
+        if self.participants[0].version() == 3
+            && registry
+                .core_refit
+                .as_ref()
+                .is_none_or(|p| p.industry_participant() != self.industry_participant())
+        {
+            return Err(refused(
+                "core integration v3 requires the exact refit owner",
+            ));
+        }
         for (owner, name, _) in FAMILIES
             .into_iter()
             .chain(self.delivery.iter().flat_map(|_| super::delivery::FAMILIES))

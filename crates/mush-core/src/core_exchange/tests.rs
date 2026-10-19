@@ -170,7 +170,12 @@ fn validators(
                 e.reference().key().id == *d.id()
                     && e.reference().version() == d.version()
                     && e.payload() == d.payload()
-                    && e.references() == d.references()
+                    && {
+                        // Registration sorts references before validation.
+                        let mut references = d.references().to_vec();
+                        references.sort();
+                        e.references() == references.as_slice()
+                    }
             }) {
                 Ok(())
             } else {

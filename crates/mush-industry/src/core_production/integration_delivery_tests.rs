@@ -9,6 +9,7 @@ use mush_economy::{
 const LICENCE: &str = "tacsim.licence.core3_end_user";
 
 pub(super) fn register_controls(reg: &mut Registrar<'_>) -> std::result::Result<(), ModError> {
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     reg.command(
         CommandSpec {
             name: "@delivery-fixture".into(),
@@ -102,7 +103,7 @@ impl FactoryRig {
         self.r.flush();
         Ok(())
     }
-    fn licence(&mut self) -> Result<AccountId> {
+    pub(super) fn licence(&mut self) -> Result<AccountId> {
         self.control("@delivery-fixture licence")?;
         self.control(&format!("@account/open #{}={LICENCE}", self.buyer.0))?;
         self.control(&format!("@account/system core.licence.fixture={LICENCE}"))?;

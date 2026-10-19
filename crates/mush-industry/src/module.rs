@@ -703,6 +703,7 @@ impl GameModule for IndustryModule {
             key.as_str() == crate::core_production::INDEX_KEY
                 || key.as_str() == crate::core_production::integration::records::INDEX_KEY
                 || key.as_str() == crate::core_production::integration::delivery::INDEX_KEY
+                || key.as_str() == crate::core_production::refit::records::INDEX_KEY
         }) {
             return Err(ModError::msg(
                 "certified Origin history requires its configured owner",

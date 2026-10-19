@@ -502,6 +502,113 @@ fn pending_four_reserved_rows_settle_and_recover_exact_native_pair() -> TestResu
     }
     Ok(())
 }
+
+#[test]
+fn pending_completed_owner_head_can_advance_but_cannot_lose_or_cross_its_chain() -> TestResult {
+    let mut f = funded()?;
+    let before = row(&f, PENDING, &commit(5).to_hex())?;
+    let settled = terminal_row(&f, &before, commit(6), "last_claim_closed")?;
+    let prepared = finish(&mut f, commit(5), settled.clone(), None)?;
+    install(&mut f, prepared)?;
+    let first_ownership = field(field(&settled, "state")?, "transfer")?.clone();
+    let mut next_offer = offer_row(&f, commit(7), 2)?;
+    next_offer["ownership"] = first_ownership.clone();
+    let provider = f.providers.get_exact(&f.actions[0])?;
+    let inv = invocation(6, 7)?;
+    let mut txn = f
+        .store
+        .transaction_for_provider(provider.registration_ordinal())?;
+    txn.bind_registered_invocation(provider, &inv, commit(7));
+    txn.insert(
+        f.handles.get(OFFER).ok_or("offer handle")?,
+        &commit(7).to_hex(),
+        next_offer,
+    )?;
+    let prepared = txn.prepare()?;
+    install(&mut f, prepared)?;
+    let next = pending_row(
+        &f,
+        commit(8),
+        commit(7),
+        2,
+        field(&pending_head(&settled)?, "current")?.clone(),
+    )?;
+    let prepared = fund(&mut f, next, Fault::default())?;
+    install(&mut f, prepared)?;
+    let second = row(&f, PENDING, &commit(8).to_hex())?;
+    let second = terminal_row(&f, &second, commit(9), "last_claim_closed")?;
+    let prepared = finish(&mut f, commit(8), second.clone(), None)?;
+    install(&mut f, prepared)?;
+    hydrate(&f, &f.disk)?;
+    let mut rolled_back = f.disk.clone();
+    let head_path = key(OWNERSHIP, charter_key(100))?
+        .resolve(&f.store.registry)?
+        .persistence_key();
+    rolled_back
+        .get_mut(&("roll".into(), head_path))
+        .ok_or("head")?["value"]["current"] = first_ownership;
+    assert!(
+        hydrate(&f, &rolled_back).is_err(),
+        "head before later settlement accepted"
+    );
+    let mut current = field(field(&second, "state")?, "transfer")?.clone();
+    let transfer_handle = handle(&f, TRANSFER)?.clone();
+    let ownership_handle = handle(&f, OWNERSHIP)?.clone();
+    // Inert later immediate-transfer rows exercise shared-family coexistence.
+    // They are not native title receipts; the actual Roll/E4 audit owns that.
+    for generation in [4u64, 5] {
+        let transfer = json!({"format":1,"operation":commit(generation as u8+10),"action":{"fixture":"immediate"},"charter":"100","generation":generation,"birth":commit(1),"predecessor":current,"offer":commit(generation as u8+20),"offer_digest":hash(9),"accepted_at_ic":at(1,300),"economic":{"fixture":"native-owner-proof-external"}});
+        current = json!({"generation":generation,"operation":field(&transfer,"operation")?,"digest":digest("roll.charter_ownership.transfer.v1",&transfer)?});
+        let mut txn = f.store.transaction(&transfer_handle)?;
+        txn.insert(&transfer_handle, &transfer_key(100, generation), transfer)?;
+        txn.replace(
+            &ownership_handle,
+            &charter_key(100),
+            json!({"format":1,"charter":"100","current":current}),
+        )?;
+        let prepared = txn.prepare()?;
+        install(&mut f, prepared)?;
+    }
+    hydrate(&f, &f.disk)?;
+    let path = |family, encoded| -> TestResult<(SmolStr, SmolStr)> {
+        Ok((
+            "roll".into(),
+            key(family, encoded)?
+                .resolve(&f.store.registry)?
+                .persistence_key(),
+        ))
+    };
+    for (family, encoded) in [
+        (OWNERSHIP, charter_key(100)),
+        (TRANSFER, transfer_key(100, 4)),
+        (TRANSFER, transfer_key(100, 5)),
+    ] {
+        let mut disk = f.disk.clone();
+        assert!(disk.remove(&path(family, encoded)?).is_some());
+        assert!(hydrate(&f, &disk).is_err());
+    }
+    for drift in 0..3 {
+        let mut disk = f.disk.clone();
+        let k = path(TRANSFER, transfer_key(100, 5))?;
+        let transfer = disk
+            .get_mut(&k)
+            .ok_or("last transfer")?
+            .get_mut("value")
+            .ok_or("value")?;
+        match drift {
+            0 => transfer["predecessor"]["digest"] = json!(hash(77)),
+            1 => transfer["birth"] = json!(commit(88)),
+            _ => transfer["predecessor"]["generation"] = json!(2),
+        }
+        let digest = digest("roll.charter_ownership.transfer.v1", transfer)?;
+        // Re-stamp today's head to ensure the deeper lineage join refuses.
+        disk.get_mut(&path(OWNERSHIP, charter_key(100))?)
+            .ok_or("head")?["value"]["current"]["digest"] = json!(digest);
+        assert!(hydrate(&f, &disk).is_err());
+    }
+    assert_eq!(row(&f, PENDING, &commit(5).to_hex())?, settled);
+    Ok(())
+}
 #[test]
 fn pending_refund_retry_preserves_history_and_offer_is_permanently_one_use() -> TestResult {
     let mut f = funded()?;

@@ -54,6 +54,9 @@ enum ManagedWire {
     MindCharterTransferV1 {
         pending: crate::managed_charter_transfer::CharterPendingMarkerV1,
     },
+    PaidResaleV1 {
+        resale: crate::managed_paid_resale::PaidResaleMarkerV1,
+    },
 }
 impl TryFrom<ManagedWire> for ManagedConsent {
     type Error = &'static str;
@@ -97,6 +100,11 @@ impl TryFrom<ManagedWire> for ManagedConsent {
                     return Err("invalid house purchase managed consent");
                 }
             }
+            ManagedWire::PaidResaleV1 { resale } => {
+                resale
+                    .validate()
+                    .map_err(|_| "invalid paid resale consent")?;
+            }
             ManagedWire::MindCharterTransferV1 { pending } => {
                 pending
                     .validate()
@@ -122,6 +130,18 @@ impl From<ManagedConsent> for ManagedWire {
     }
 }
 impl ManagedConsent {
+    pub(crate) fn paid_resale(
+        resale: crate::managed_paid_resale::PaidResaleMarkerV1,
+    ) -> Result<Self, mush_core::participant::ParticipantError> {
+        Self::try_from(ManagedWire::PaidResaleV1 { resale })
+            .map_err(mush_core::participant::ParticipantError::refused)
+    }
+    pub fn paid_resale_marker(&self) -> Option<&crate::managed_paid_resale::PaidResaleMarkerV1> {
+        match &self.wire {
+            ManagedWire::PaidResaleV1 { resale } => Some(resale),
+            _ => None,
+        }
+    }
     pub(crate) fn house_purchase(
         operation: CommitToken,
         effect: DefinitionRef,
@@ -247,6 +267,7 @@ impl ManagedConsent {
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.operation(),
             ManagedWire::HouseMindRenewalOfferV1 { renewal } => renewal.operation(),
             ManagedWire::MindCharterTransferV1 { pending } => pending.operation(),
+            ManagedWire::PaidResaleV1 { resale } => resale.operation,
         }
     }
     #[must_use]
@@ -258,6 +279,7 @@ impl ManagedConsent {
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.effect(),
             ManagedWire::HouseMindRenewalOfferV1 { renewal } => renewal.effect(),
             ManagedWire::MindCharterTransferV1 { pending } => pending.effect(),
+            ManagedWire::PaidResaleV1 { resale } => &resale.effect,
         }
     }
     /// Actual retained quote basis. Renewal returns its accepted prior quote;
@@ -271,6 +293,7 @@ impl ManagedConsent {
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.basis().prior_quote,
             ManagedWire::HouseMindRenewalOfferV1 { renewal } => renewal.basis().prior_quote,
             ManagedWire::MindCharterTransferV1 { pending } => pending.offer(),
+            ManagedWire::PaidResaleV1 { resale } => resale.offer,
         }
     }
     #[must_use]
@@ -282,6 +305,7 @@ impl ManagedConsent {
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.basis().prior_quote_digest,
             ManagedWire::HouseMindRenewalOfferV1 { renewal } => renewal.basis().prior_quote_digest,
             ManagedWire::MindCharterTransferV1 { pending } => pending.offer_digest(),
+            ManagedWire::PaidResaleV1 { resale } => resale.offer_digest,
         }
     }
     #[must_use]
@@ -293,6 +317,7 @@ impl ManagedConsent {
             ManagedWire::MindRenewalOfferV1 { renewal } => renewal.basis().product_digest,
             ManagedWire::HouseMindRenewalOfferV1 { renewal } => renewal.basis().product_digest,
             ManagedWire::MindCharterTransferV1 { pending } => pending.terms_digest(),
+            ManagedWire::PaidResaleV1 { resale } => resale.consent_digest,
         }
     }
 }
@@ -311,7 +336,7 @@ pub(crate) fn legacy_contract(c: &EconomicContract, snapshot: &EconomySnapshot) 
 
 fn purpose(snapshot: &EconomySnapshot, purpose: &HoldPurpose) -> bool {
     matches!(purpose, HoldPurpose::Escrow { contract } if at(snapshot, *contract))
-        || matches!(purpose, HoldPurpose::Reservation { kind, .. } if kind == crate::core_integration::HOLD_PURPOSE)
+        || matches!(purpose, HoldPurpose::Reservation { kind, .. } if kind == crate::core_integration::HOLD_PURPOSE || kind == crate::core_refit::HOLD_PURPOSE)
 }
 fn encumbrance(snapshot: &EconomySnapshot, value: &Encumbrance) -> bool {
     match value {
@@ -339,12 +364,14 @@ fn key(snapshot: &EconomySnapshot, key: &IdempotencyKey) -> bool {
 
 fn closed_money_namespace(namespace: &str) -> bool {
     namespace == crate::managed_charter_transfer::NAMESPACE
+        || namespace == crate::managed_paid_resale::NAMESPACE
         || crate::managed_purchase::closed_namespace(namespace)
         || namespace == crate::managed_renewal::NAMESPACE
         || namespace == crate::managed_house_renewal::NAMESPACE
         || namespace == crate::registry_filing::update::receipt::NAMESPACE
         || namespace == crate::registry_filing::charter_transfer::receipt::NAMESPACE
         || namespace == crate::core_integration::NAMESPACE
+        || namespace == crate::core_refit::NAMESPACE
 }
 
 /// Refuse before idempotency lookup, custom authorization or approval replay.

@@ -15,6 +15,7 @@ pub(crate) struct CoreProductionState {
     pub(crate) generation: u64,
     pub(crate) index: Option<OriginIndex>,
     pub(crate) integration: Option<super::integration::state::Projection>,
+    pub(crate) refit: Option<super::refit::state::Projection>,
 }
 pub(crate) struct Readiness;
 impl OwnerReadService for Readiness {
@@ -37,6 +38,7 @@ pub(crate) enum Request {
     Initialize,
     Issue(DieCertificate),
     Integration(super::integration::owner::Request),
+    Refit(super::refit::owner::Request),
 }
 pub(crate) struct OriginParticipant {
     pub(crate) config: CoreOriginConfig,
@@ -96,7 +98,7 @@ impl OriginParticipant {
             .content(&self.config.policy)
             .map_err(|_| refused())?;
         let (after, live) = match request {
-            Request::Integration(_) => return Err(refused()),
+            Request::Integration(_) | Request::Refit(_) => return Err(refused()),
             Request::Initialize => {
                 if self.config.mode != CoreOriginMode::Initialize
                     || ctx.invocation().actor() != GOD
@@ -232,8 +234,15 @@ impl OriginParticipant {
 pub(crate) enum Output {
     Origin(OriginIndex),
     Integration(super::integration::owner::Output),
+    Refit(super::refit::owner::Output),
 }
 impl Output {
+    pub(crate) fn refit(self) -> Result<super::refit::owner::Output, ParticipantError> {
+        match self {
+            Self::Refit(v) => Ok(v),
+            _ => Err(refused()),
+        }
+    }
     pub(crate) fn origin(self) -> Result<OriginIndex, ParticipantError> {
         match self {
             Self::Origin(v) => Ok(v),
@@ -250,9 +259,14 @@ impl Output {
 pub(crate) enum Patch {
     Origin(OriginPatch),
     Integration(super::integration::owner::Patch),
+    Refit(super::refit::owner::Patch),
 }
 pub(crate) enum Bound<'a> {
     Origin(OriginBound<'a>),
+    Refit {
+        state: &'a mut CoreProductionState,
+        patch: super::refit::owner::Patch,
+    },
     Integration {
         state: &'a mut CoreProductionState,
         patch: super::integration::owner::Patch,
@@ -262,6 +276,10 @@ impl BoundParticipant for Bound<'_> {
     fn apply(self) {
         match self {
             Self::Origin(v) => v.apply(),
+            Self::Refit { state, patch } => {
+                state.refit = Some(patch.after);
+                state.generation = patch.next_generation;
+            }
             Self::Integration { state, patch } => {
                 state.integration = Some(patch.after);
                 state.generation = patch.next_generation;
@@ -282,6 +300,20 @@ impl OwnerParticipant for OriginParticipant {
         request: Request,
     ) -> Result<OwnerPreparation<Output, Patch>, ParticipantError> {
         match request {
+            Request::Refit(request) => {
+                let config = self
+                    .integration
+                    .as_ref()
+                    .and_then(|(c, _)| c.refit.as_ref())
+                    .ok_or_else(refused)?;
+                let (output, patch, writes) =
+                    super::refit::owner::prepare(state, ctx, config, request)?;
+                Ok(OwnerPreparation::new(
+                    Output::Refit(output),
+                    Patch::Refit(patch),
+                    writes,
+                ))
+            }
             Request::Integration(request) => {
                 let (config, inputs) = self.integration.as_ref().ok_or_else(refused)?;
                 let (output, patch, writes) = super::integration::owner::prepare(
@@ -317,6 +349,14 @@ impl OwnerParticipant for OriginParticipant {
     ) -> Result<(), ParticipantError> {
         match patch {
             Patch::Origin(p) => self.recheck_origin(state, ctx, p),
+            Patch::Refit(p) => p.recheck(
+                state,
+                ctx,
+                self.integration
+                    .as_ref()
+                    .and_then(|(c, _)| c.refit.as_ref())
+                    .ok_or_else(refused)?,
+            ),
             Patch::Integration(p) => {
                 let (config, inputs) = self.integration.as_ref().ok_or_else(refused)?;
                 p.recheck(
@@ -337,6 +377,10 @@ impl OwnerParticipant for OriginParticipant {
     ) -> Result<Bound<'a>, ParticipantError> {
         match patch {
             Patch::Origin(p) => self.bind_origin(state, p).map(Bound::Origin),
+            Patch::Refit(p) => {
+                p.check_local(state)?;
+                Ok(Bound::Refit { state, patch: p })
+            }
             Patch::Integration(p) => {
                 p.check_local(state)?;
                 Ok(Bound::Integration { state, patch: p })
@@ -353,7 +397,18 @@ impl OwnerParticipant for OriginParticipant {
                 key,
                 value,
             } if self.integration.is_some() && namespace.as_str() == crate::NS => {
-                if key.as_str() == super::integration::records::INDEX_KEY {
+                if key.as_str() == super::refit::records::INDEX_KEY
+                    && self
+                        .integration
+                        .as_ref()
+                        .is_some_and(|(c, _)| c.refit.is_some())
+                {
+                    super::refit::records::decode::<super::refit::records::RefitIndex>(
+                        value,
+                        super::refit::records::INDEX_BYTES,
+                    )
+                    .is_ok_and(|r| r.validate().is_ok())
+                } else if key.as_str() == super::integration::records::INDEX_KEY {
                     super::integration::records::decode::<
                         super::integration::records::IntegrationIndex,
                     >(value, super::integration::records::INDEX_BYTES)

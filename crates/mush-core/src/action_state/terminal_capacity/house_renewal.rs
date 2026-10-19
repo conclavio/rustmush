@@ -418,7 +418,7 @@ fn pair(view: &View<'_>, operation: CommitToken) -> Result<Pair, ActionStateErro
     let phase = text(field(&market, "state")?, "kind")?.to_owned();
     if number(&market, "format")? != 1
         || number(&roll, "format")? != 1
-        || number(binding, "format")? != 1
+        || !matches!(number(binding, "format")?, 1 | 2)
         || token(field(&market, "operation")?)? != operation
         || predecessor.checked_add(1) != Some(next)
         || !matches!(
@@ -510,17 +510,7 @@ fn pair(view: &View<'_>, operation: CommitToken) -> Result<Pair, ActionStateErro
     if field(&pair.market, "action")? != &json!(historical_action(&pair, 0)?) {
         return Err(refused("renewal historical Draft differs"));
     }
-    let attempt = field(&pair.market, "attempt")?;
-    match text(attempt, "kind")? {
-        "automatic" if attempt.as_object().is_some_and(|row| row.len() == 1) => (),
-        "buyer_retry"
-            if attempt.as_object().is_some_and(|row| row.len() == 2)
-                && token(field(attempt, "previous_operation")?)? != operation =>
-        {
-            ()
-        }
-        _ => return Err(refused("renewal attempt shape")),
-    }
+    paid_resale::renewal_holder(view, pair.binding()?, &pair.market)?;
     Ok(pair)
 }
 // Birth selection is independent of current issuer eligibility. This proves
@@ -551,12 +541,14 @@ fn require_house_birth(
     {
         return Err(refused("house renewal birth route differs"));
     }
-    for name in [
-        "holder", "issuer", "charter", "line", "filed", "revision", "terms",
-    ] {
+    for name in ["issuer", "charter", "line", "filed", "revision", "terms"] {
         if field(&allocation, name)? != field(binding, name)? {
             return Err(refused("house renewal birth subject differs"));
         }
+    }
+    if number(binding, "format")? == 1 && field(&allocation, "holder")? != field(binding, "holder")?
+    {
+        return Err(refused("house renewal original holder differs"));
     }
     let issuer = field(binding, "issuer")?;
     if issuer.as_object().is_none_or(|o| o.len() != 3)
@@ -733,17 +725,17 @@ fn state_receipts(pair: &Pair, operation: CommitToken) -> Result<(), ActionState
 fn current_licence(view: &View<'_>, pair: &Pair) -> Result<Value, ActionStateError> {
     let licence = required(view, &licence_key(LICENCE, pair.licence)?)?;
     let binding = pair.binding()?;
-    for name in ["holder", "charter", "line"] {
+    for name in ["charter", "line"] {
         if field(&licence, name)? != field(binding, name)? {
             return Err(refused("renewal immutable licence identity"));
         }
     }
-    if number(&licence, "format")? != 1
-        || field(&licence, "id")? != field(binding, "licence")?
+    if field(&licence, "id")? != field(binding, "licence")?
         || field(&licence, "operation")? != field(binding, "birth_operation")?
     {
         return Err(refused("renewal immutable licence birth"));
     }
+    paid_resale::renewal_current_holder(view, &licence, binding, pair.pending())?;
     Ok(licence)
 }
 fn expected_head(pair: &Pair, operation: CommitToken) -> Result<Value, ActionStateError> {
@@ -951,18 +943,25 @@ fn attempt_before(
     }
     let head = value(before, &licence_key(HEAD, after_pair.licence)?)?;
     let attempt = field(&after_pair.market, "attempt")?;
+    let generation = paid_resale::renewal_holder_generation(after_pair.binding()?)?;
     match (text(attempt, "kind")?, head) {
-        ("automatic", None) if after_pair.predecessor == 1 => (),
-        ("automatic", Some(head)) => {
+        ("automatic" | "holder_automatic", None) if after_pair.predecessor == 1 => (),
+        ("automatic" | "holder_automatic", Some(head)) => {
+            let old = pair(before, token(field(&head, "last_operation")?)?)?;
+            let old_generation = paid_resale::renewal_holder_generation(old.binding()?)?;
             if !field(&head, "pending")?.is_null()
                 || positive_string(field(&head, "current")?)? != after_pair.predecessor
-                || positive_string(field(&head, "attempted_predecessor")?)?
-                    >= after_pair.predecessor
+                || old_generation > generation
+                || (old.predecessor == after_pair.predecessor
+                    && (old_generation >= generation || !closed_attempt(&old)))
+                || old.predecessor > after_pair.predecessor
+                || (old.predecessor < after_pair.predecessor && old.phase != "granted")
             {
                 return Err(refused("renewal automatic offer already attempted"));
             }
+            require_after_terminal(after_pair, &old)?;
         }
-        ("buyer_retry", Some(head)) => {
+        ("buyer_retry" | "holder_retry", Some(head)) => {
             let previous = token(field(attempt, "previous_operation")?)?;
             let prior = pair(before, previous)?;
             if previous == operation
@@ -971,28 +970,14 @@ fn attempt_before(
                 || positive_string(field(&head, "current")?)? != after_pair.predecessor
                 || positive_string(field(&head, "attempted_predecessor")?)?
                     != after_pair.predecessor
-                || !matches!(
-                    prior.phase.as_str(),
-                    "refunded" | "unfunded_closed" | "unfunded_service_closed"
-                )
+                || !closed_attempt(&prior)
+                || prior.binding()? != after_pair.binding()?
             {
                 return Err(refused(
                     "renewal retry lacks exact latest terminal predecessor",
                 ));
             }
-            for name in ["licence", "holder", "birth_operation", "predecessor"] {
-                if field(prior.binding()?, name)? != field(after_pair.binding()?, name)? {
-                    return Err(refused("renewal retry crosses identity"));
-                }
-            }
-            let closed = if prior.phase == "refunded" {
-                field(prior.state()?, "terminal")?
-            } else {
-                field(prior.state()?, "closure")?
-            };
-            if signed(&after_pair.market, "created_at_utc")? < signed(closed, "posted_at_utc")? {
-                return Err(refused("renewal retry predates closure"));
-            }
+            require_after_terminal(after_pair, &prior)?;
             outputs(before, previous, &prior, false)?;
         }
         _ => return Err(refused("renewal attempt cannot replace pending custody")),
@@ -1060,6 +1045,9 @@ pub(super) fn validate_changes(
         token(&json!(id.1))?
     };
     let next = pair(&after, operation)?;
+    if action <= 2 {
+        paid_resale::require_no_pending(&before, next.licence)?;
+    }
     if identity.principal != (PrincipalId::Object { id: identity.actor }) {
         return Err(refused("renewal actual principal differs"));
     }
@@ -1311,17 +1299,40 @@ fn own_row_operation(
     }
     Ok(operation)
 }
+fn closed_attempt(pair: &Pair) -> bool {
+    matches!(
+        pair.phase.as_str(),
+        "refunded" | "unfunded_closed" | "unfunded_service_closed"
+    )
+}
+fn require_after_terminal(next: &Pair, prior: &Pair) -> Result<(), ActionStateError> {
+    let terminal = if matches!(prior.phase.as_str(), "granted" | "refunded") {
+        field(prior.state()?, "terminal")?
+    } else {
+        field(prior.state()?, "closure")?
+    };
+    if signed(&next.market, "created_at_utc")? < signed(terminal, "posted_at_utc")? {
+        return Err(refused("renewal attempt predates prior terminal"));
+    }
+    Ok(())
+}
 fn audit_attempts(
     view: &View<'_>,
     operations: &BTreeMap<CommitToken, Pair>,
     heads: &BTreeSet<u64>,
 ) -> Result<(), ActionStateError> {
-    let mut groups: BTreeMap<u64, BTreeMap<u64, Vec<CommitToken>>> = BTreeMap::new();
+    // Transfer generation orders independent rooted attempt chains within one
+    // term. A later holder can start after an old holder's terminal refusal;
+    // only an actual Grant advances the term. Token ordering is irrelevant.
+    let mut groups: BTreeMap<u64, BTreeMap<(u64, u64), Vec<CommitToken>>> = BTreeMap::new();
     for (operation, pair) in operations {
         groups
             .entry(pair.licence)
             .or_default()
-            .entry(pair.predecessor)
+            .entry((
+                pair.predecessor,
+                paid_resale::renewal_holder_generation(pair.binding()?)?,
+            ))
             .or_default()
             .push(*operation);
     }
@@ -1331,40 +1342,41 @@ fn audit_attempts(
     for (licence, generations) in groups {
         let mut current = 1_u64;
         let mut last = None;
-        let mut closed = false;
+        let mut last_holder = 0_u64;
         let mut birth_identity = None;
-        for (predecessor, ids) in generations {
-            if closed || predecessor != current {
-                return Err(refused("renewal generations are not consecutive Grants"));
+        for ((predecessor, holder_generation), ids) in generations {
+            if predecessor != current || holder_generation < last_holder {
+                return Err(refused("renewal term or holder history moves backwards"));
             }
             let mut root = None;
             let mut successors = BTreeMap::new();
+            let mut tuple_binding = None;
             for operation in &ids {
                 let pair = operations
                     .get(operation)
                     .ok_or_else(|| refused("renewal attempt index"))?;
                 let binding = pair.binding()?;
                 let identity = json!([
-                    field(binding, "holder")?,
                     field(binding, "birth_operation")?,
                     field(binding, "charter")?,
                     field(binding, "line")?
                 ]);
-                if birth_identity.as_ref().is_some_and(|old| old != &identity) {
-                    return Err(refused("renewal historical buyer or birth drift"));
+                if birth_identity.as_ref().is_some_and(|old| old != &identity)
+                    || tuple_binding.as_ref().is_some_and(|old| old != binding)
+                {
+                    return Err(refused("renewal historical birth or retry binding drift"));
                 }
                 birth_identity = Some(identity);
-                match text(field(&pair.market, "attempt")?, "kind")? {
-                    "automatic" => {
+                tuple_binding = Some(binding.clone());
+                let attempt = field(&pair.market, "attempt")?;
+                match text(attempt, "kind")? {
+                    "automatic" | "holder_automatic" => {
                         if root.replace(*operation).is_some() {
-                            return Err(refused("renewal repeated automatic predecessor"));
+                            return Err(refused("renewal repeated automatic holder predecessor"));
                         }
                     }
-                    "buyer_retry" => {
-                        let previous = token(field(
-                            field(&pair.market, "attempt")?,
-                            "previous_operation",
-                        )?)?;
+                    "buyer_retry" | "holder_retry" => {
+                        let previous = token(field(attempt, "previous_operation")?)?;
                         if successors.insert(previous, *operation).is_some() {
                             return Err(refused("renewal retry branch"));
                         }
@@ -1373,6 +1385,23 @@ fn audit_attempts(
                 }
             }
             let mut cursor = root.ok_or_else(|| refused("renewal automatic root missing"))?;
+            if let Some(prior_id) = last {
+                let prior: &Pair = operations
+                    .get(&prior_id)
+                    .ok_or_else(|| refused("renewal prior group"))?;
+                let next = operations
+                    .get(&cursor)
+                    .ok_or_else(|| refused("renewal next group"))?;
+                if prior.pending()
+                    || (prior.predecessor == predecessor
+                        && (!closed_attempt(prior) || holder_generation <= last_holder))
+                {
+                    return Err(refused(
+                        "renewal later holder replaced open or granted attempt",
+                    ));
+                }
+                require_after_terminal(next, prior)?;
+            }
             let mut visited = BTreeSet::new();
             loop {
                 if !visited.insert(cursor) {
@@ -1381,27 +1410,20 @@ fn audit_attempts(
                 let pair = operations
                     .get(&cursor)
                     .ok_or_else(|| refused("renewal retry predecessor missing"))?;
-                if pair.licence != licence || pair.predecessor != predecessor {
-                    return Err(refused("renewal retry crossed licence or generation"));
+                if pair.licence != licence
+                    || pair.predecessor != predecessor
+                    || paid_resale::renewal_holder_generation(pair.binding()?)? != holder_generation
+                {
+                    return Err(refused("renewal retry crossed licence term or holder"));
                 }
                 if let Some(next) = successors.get(&cursor) {
-                    if !matches!(
-                        pair.phase.as_str(),
-                        "refunded" | "unfunded_closed" | "unfunded_service_closed"
-                    ) {
+                    if !closed_attempt(pair) {
                         return Err(refused("renewal retry after pending or granted operation"));
                     }
                     let retry = operations
                         .get(next)
                         .ok_or_else(|| refused("renewal retry successor missing"))?;
-                    let closed = if pair.phase == "refunded" {
-                        field(pair.state()?, "terminal")?
-                    } else {
-                        field(pair.state()?, "closure")?
-                    };
-                    if signed(&retry.market, "created_at_utc")? < signed(closed, "posted_at_utc")? {
-                        return Err(refused("renewal retry predates closure"));
-                    }
+                    require_after_terminal(retry, pair)?;
                     cursor = *next;
                 } else {
                     if visited.len() != ids.len() {
@@ -1409,10 +1431,9 @@ fn audit_attempts(
                     }
                     if pair.phase == "granted" {
                         current = pair.next;
-                    } else {
-                        closed = true;
                     }
                     last = Some(cursor);
+                    last_holder = holder_generation;
                     break;
                 }
             }
@@ -1503,4 +1524,4 @@ pub(super) fn audit_boot(
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

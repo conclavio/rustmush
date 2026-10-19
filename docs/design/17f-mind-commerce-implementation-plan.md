@@ -562,8 +562,10 @@ Paid-resale IC capture has a separate exact format 3 carrying only paid ownershi
 format 2 remains charter ownership and format 1 remains unchanged. This Core
 shape and its prepared tests do not substitute for actual resale issuance/history.
 The full House renewal owner path has now passed its assigned source reviews and
-is integrated for the next runtime candidate. Paid resale and actual Industry
-refit remain under implementation/review. None of N79–N81 ran runtime stages.
+is integrated for the next runtime candidate. Native paid resale and actual
+Industry refit have since passed source review and await runtime validation;
+the paired resale producer remains under implementation. None of N79–N81 ran
+runtime stages.
 
 Latest fetched main `b0d036d324b987ae280dfe9b8d388b5cc71f4133` merged cleanly
 as `1457eba89c0f97c4281ccb45566969ded472c7bb`: doc 19 A8a's versioned goods,
@@ -572,8 +574,38 @@ N82's immutable tree `313987d7848c00e79107d92aa37f534b0d87ee2b` includes that
 merge and the reviewed charter PendingTransfer term-window correction. The
 correction uses Roll's actual bounded interval rules: issue during Grace is
 valid history and never shifts any date or revives current admission. N82
-compilation and five underwriting arithmetic/window checks pass; its remaining
-runtime gates are still running at this checkpoint. This is not final evidence.
+compilation and five underwriting arithmetic/window checks pass. N82 completed
+50 stages with 2,331 reported passing test executions, 55 assertion failures and
+two ignored cases; overlapping filters mean these are not unique-test counts.
+The full archive was downloaded, hash-verified and reconciled, and its source
+census remained unchanged: archive SHA-256
+`8df5d60297f8d8f6f8943705dbc56726095b3d887c201f760643044907decd08`
+(100,349 bytes, 51 files). This is diagnostic evidence, not acceptance.
+
+All 32 Core failures traced to the House fixture's missing coexisting entitlement
+profile, unordered output references, or the completed PendingTransfer join's
+incorrect current-ownership comparison. All 21 Industry failures reached an
+unclassified legacy fixture command. The Roll envelope fixture tried to create a
+protected House record outside its registered protocol, and one composition
+fixture reused a filled once-only writer cell after an intentionally failed boot.
+Reviewed repairs retain the production admission and history fences. Economy's
+188 executed checks passed; its runner incorrectly expected 14 rather than 15
+funded-renewal tests. The House admission census also used the wrong Rust module
+path; both runner counts are corrected for the next candidate.
+
+The roster stage additionally aborted in
+`the_boot_says_whether_the_simulator_is_there` with a stack overflow. Inspection
+of the exact failed Linux binary showed nested boot-future frames exhausting the
+normal test-thread stack. The production boot entry now returns a boxed, lazy
+future, preserving the validated-spool borrow and all boot ordering; the existing
+real boot fixture checks its small inline size. No stack allowance was increased.
+This repair still needs the next runtime run.
+
+The focused L deliberation, boarded/cockpit order, resume/watch, match-boot and
+leader-presentation checks all pass in N82, as do the E4, IC composition and
+source-owner contract checks selected by that run. Both combined purchase-story
+stages were unstarted because earlier stages failed. N83 and N84 were frozen
+drafts only, never launched, and are superseded by the N85 candidate.
 
 Subsequent reviewed source packages, not included in N82, add:
 
@@ -592,6 +624,15 @@ Subsequent reviewed source packages, not included in N82, add:
   authority. Five structural tests await execution. The actual CREDIT example
   uses its two-decimal scale: 10,000cr insured value, 100cr ordinary premium,
   conditional 90cr qualified premium and 8,000cr reserved maximum payout.
+
+The next candidate also contains the reviewed native paid-resale payment,
+escrow, settlement/refund and complete replay inventory, plus the real Industry
+refit owner. Refit accepts certified manufacture/delivery, reserves the actual
+seven-IC-day K slot and 100cr fee, and runs scheduled install/replace or cancel
+through the Tactics, Economy and Core owners. Fourteen new Industry integration
+tests await execution. First/replacement Core transitions reserve eight/nine
+exact targets (424,960/429,056 bytes); this is an optional profile, not a global
+capacity increase. Finite shipped hardware composition and activation remain due.
 
 Underwriting Bind is a separate E4/Roll transition after acknowledged four-owner
 IC Open and before a genuine host releases covered departure. Its private host
@@ -639,9 +680,10 @@ focused checks; their combined genuine-story and final acceptance gates remain.
 Automatic re-conformance, current certificate selection and the scoped house
 catalogue reader now have reviewed implementations awaiting their combined
 runtime evidence. House renewal now awaits its combined runtime and genuine-story
-evidence. Remaining implementation includes paid licence resale and underwriting,
-actual governed refit and
-production activation. Reviewed checkout and delivery need their combined runtime
+evidence. Remaining implementation includes the paired paid-licence resale
+producer, underwriting and production activation. The governed refit owner is
+source-complete and reviewed but awaits runtime and genuine-flow acceptance.
+Reviewed checkout and delivery need their combined runtime
 and genuine-story acceptance.
 The acknowledged Core output reservation and certified Origin producer are
 prerequisites, not completed manufacturing or usable installed hardware.

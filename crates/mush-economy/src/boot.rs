@@ -264,6 +264,78 @@ pub(crate) fn load_boot_with_house_renewals(
     require_charter_pending: bool,
     require_house_renewal_receipts: bool,
 ) -> Result<EconomyStore, ModError> {
+    load_boot_with_paid_resale(
+        ctx,
+        data,
+        providers,
+        outcomes,
+        tail_max,
+        window_secs,
+        require_filing_receipts,
+        require_purchase_receipts,
+        require_renewal_receipts,
+        require_update_receipts,
+        require_charter_transfer_receipts,
+        require_core_receipts,
+        require_charter_pending,
+        require_house_renewal_receipts,
+        false,
+    )
+}
+pub(crate) fn load_boot_with_paid_resale(
+    ctx: &mut ModuleCtx<'_>,
+    data: ModuleBootData,
+    providers: &CustodyTable,
+    outcomes: &crate::contract::CanonOutcomeKinds,
+    tail_max: usize,
+    window_secs: i64,
+    require_filing_receipts: bool,
+    require_purchase_receipts: bool,
+    require_renewal_receipts: bool,
+    require_update_receipts: bool,
+    require_charter_transfer_receipts: bool,
+    require_core_receipts: bool,
+    require_charter_pending: bool,
+    require_house_renewal_receipts: bool,
+    require_paid_resale: bool,
+) -> Result<EconomyStore, ModError> {
+    load_boot_with_core_refit(
+        ctx,
+        data,
+        providers,
+        outcomes,
+        tail_max,
+        window_secs,
+        require_filing_receipts,
+        require_purchase_receipts,
+        require_renewal_receipts,
+        require_update_receipts,
+        require_charter_transfer_receipts,
+        require_core_receipts,
+        require_charter_pending,
+        require_house_renewal_receipts,
+        require_paid_resale,
+        false,
+    )
+}
+pub(crate) fn load_boot_with_core_refit(
+    ctx: &mut ModuleCtx<'_>,
+    data: ModuleBootData,
+    providers: &CustodyTable,
+    outcomes: &crate::contract::CanonOutcomeKinds,
+    tail_max: usize,
+    window_secs: i64,
+    require_filing_receipts: bool,
+    require_purchase_receipts: bool,
+    require_renewal_receipts: bool,
+    require_update_receipts: bool,
+    require_charter_transfer_receipts: bool,
+    require_core_receipts: bool,
+    require_charter_pending: bool,
+    require_house_renewal_receipts: bool,
+    require_paid_resale: bool,
+    require_refit_receipts: bool,
+) -> Result<EconomyStore, ModError> {
     let ModuleBootData {
         kv,
         ledger: mut ledger_docs,
@@ -494,7 +566,13 @@ pub(crate) fn load_boot_with_house_renewals(
             // Refuse before journal healing or any queued container rewrite; the
             // closed paid-operation replay lane must be installed first.
             if let Some(managed) = c.consent.managed.as_ref() {
-                if managed.charter_pending_marker().is_some() {
+                if managed.paid_resale_marker().is_some() {
+                    if !require_paid_resale {
+                        return Err(ModError::msg(
+                            "economy: paid resale requires complete paired recovery",
+                        ));
+                    }
+                } else if managed.charter_pending_marker().is_some() {
                     if !require_charter_pending {
                         return Err(ModError::msg(
                             "economy: pending charter contract requires complete paired recovery",
@@ -681,6 +759,19 @@ pub(crate) fn load_boot_with_house_renewals(
         checkpoint = None;
     }
     if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
+            .paid_resale_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes.push(
+            "checkpoint lacks exact paid resale inventory coverage; full replay required".into(),
+        );
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
         !crate::managed_renewal::bridge::checkpoint_complete(
             &saved.head.body.fold,
             &saved.rows,
@@ -740,6 +831,19 @@ pub(crate) fn load_boot_with_house_renewals(
     }) {
         checkpoint_notes.push(
             "checkpoint lacks exact Core integration receipt coverage; full replay required".into(),
+        );
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
+            .refit_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes.push(
+            "checkpoint lacks exact Core refit receipt coverage; full replay required".into(),
         );
         checkpoint = None;
     }
@@ -1029,6 +1133,15 @@ pub(crate) fn load_boot_with_house_renewals(
                 ModError::msg("economy: charter-transfer history requires paired recovery")
             })?;
     }
+    crate::managed_paid_resale::bridge::recover(
+        &mut state.paid_resale_receipts,
+        &state.journal_holds,
+        &mut snapshot,
+        &mut stored_contracts,
+        &stored_holds,
+        require_paid_resale,
+    )
+    .map_err(|_| ModError::msg("economy: paid resale history requires exact paired recovery"))?;
     crate::managed_charter_transfer::bridge::recover(
         &mut state,
         &mut snapshot,
@@ -1045,6 +1158,7 @@ pub(crate) fn load_boot_with_house_renewals(
         &stored_assets,
         require_core_receipts,
     )?;
+    crate::core_refit::bridge::recover(&mut state, &stored_holds, require_refit_receipts)?;
     let renewal_offers = crate::managed_renewal::bridge::recover(
         &mut state,
         &mut snapshot,
@@ -2206,7 +2320,7 @@ pub(crate) fn load_boot_with_house_renewals(
                 ModError::msg("economy: managed charter lineage differs from complete history")
             })?;
     }
-    if frozen && require_core_receipts {
+    if frozen && (require_core_receipts || require_refit_receipts) {
         snapshot.managed_titles = crate::managed_title::ManagedTitleIndex::Unavailable;
     } else if !frozen {
         snapshot.managed_titles = snapshot

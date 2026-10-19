@@ -4,7 +4,7 @@ pub(crate) mod audit;
 mod authority;
 mod config;
 pub(crate) mod delivery;
-mod families;
+pub(crate) mod families;
 mod offer;
 pub(super) mod output_policy;
 pub(crate) mod owner;

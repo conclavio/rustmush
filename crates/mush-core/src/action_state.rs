@@ -750,10 +750,12 @@ pub struct StateFamilyRegistryBuilder {
     entitlement_purchase: Option<terminal_capacity::EntitlementProtocol>,
     house_purchase: Option<terminal_capacity::HouseProtocol>,
     charter_pending: Option<terminal_capacity::CharterPendingProtocol>,
+    paid_resale: Option<terminal_capacity::PaidResaleProtocol>,
     mind_renewal: Option<terminal_capacity::RenewalProtocol>,
     house_mind_renewal: Option<terminal_capacity::HouseRenewalProtocol>,
     ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
     core_integration: Option<terminal_capacity::CoreIntegrationProtocol>,
+    core_refit: Option<terminal_capacity::CoreRefitProtocol>,
 }
 
 impl fmt::Debug for StateFamilyRegistryBuilder {
@@ -983,6 +985,27 @@ impl StateFamilyRegistryBuilder {
         Ok(())
     }
 
+    pub(crate) fn paid_resale_capacity(
+        &mut self,
+        owner: &OwnerId,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 5],
+        registry_revocation: Option<crate::DefinitionRef>,
+    ) -> Result<(), ActionStateError> {
+        if self.paid_resale.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate paid resale protocol",
+            ));
+        }
+        self.paid_resale = Some(terminal_capacity::PaidResaleProtocol::new(
+            owner,
+            participants,
+            actions,
+            registry_revocation,
+        )?);
+        Ok(())
+    }
+
     pub(crate) fn house_mind_purchase_capacity(
         &mut self,
         owner: &OwnerId,
@@ -1023,6 +1046,25 @@ impl StateFamilyRegistryBuilder {
             participants,
             original_actions,
             derived_actions,
+        )?);
+        Ok(())
+    }
+
+    pub(crate) fn core_refit_capacity(
+        &mut self,
+        owner: &OwnerId,
+        participants: [crate::DefinitionRef; 3],
+        actions: [crate::DefinitionRef; 4],
+    ) -> Result<(), ActionStateError> {
+        if self.core_refit.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate core refit protocol",
+            ));
+        }
+        self.core_refit = Some(terminal_capacity::CoreRefitProtocol::new(
+            owner,
+            participants,
+            actions,
         )?);
         Ok(())
     }
@@ -1217,6 +1259,8 @@ impl StateFamilyRegistryBuilder {
             self.house_purchase.as_ref(),
             self.charter_pending.as_ref(),
             self.house_mind_renewal.as_ref(),
+            self.paid_resale.as_ref(),
+            self.core_refit.as_ref(),
         )?;
         let registry = StateFamilyRegistry {
             entries: self.entries,
@@ -1229,8 +1273,10 @@ impl StateFamilyRegistryBuilder {
             house_mind_renewal: self.house_mind_renewal,
             ic_mind_claim: self.ic_mind_claim,
             core_integration: self.core_integration,
+            core_refit: self.core_refit,
             house_purchase: self.house_purchase,
             charter_pending: self.charter_pending,
+            paid_resale: self.paid_resale,
             fingerprint,
             owner_readiness,
         };
@@ -1253,6 +1299,11 @@ impl StateFamilyRegistryBuilder {
             protocol
                 .validate_families(&registry)
                 .map_err(|e| StateFamilyRegistryError::CharterPending(e.to_string()))?;
+        }
+        if let Some(protocol) = &registry.paid_resale {
+            protocol
+                .validate_families(&registry)
+                .map_err(|e| StateFamilyRegistryError::PaidResale(e.to_string()))?;
         }
         if let Some(protocol) = &registry.house_purchase {
             protocol
@@ -1279,6 +1330,11 @@ impl StateFamilyRegistryBuilder {
                 .validate_families(&registry)
                 .map_err(|e| StateFamilyRegistryError::CoreIntegration(e.to_string()))?;
         }
+        if let Some(protocol) = &registry.core_refit {
+            protocol
+                .validate_families(&registry)
+                .map_err(|e| StateFamilyRegistryError::CoreRefit(e.to_string()))?;
+        }
         Ok(registry)
     }
 }
@@ -1295,10 +1351,12 @@ pub struct StateFamilyRegistry {
     entitlement_purchase: Option<terminal_capacity::EntitlementProtocol>,
     house_purchase: Option<terminal_capacity::HouseProtocol>,
     charter_pending: Option<terminal_capacity::CharterPendingProtocol>,
+    paid_resale: Option<terminal_capacity::PaidResaleProtocol>,
     mind_renewal: Option<terminal_capacity::RenewalProtocol>,
     house_mind_renewal: Option<terminal_capacity::HouseRenewalProtocol>,
     ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
     core_integration: Option<terminal_capacity::CoreIntegrationProtocol>,
+    core_refit: Option<terminal_capacity::CoreRefitProtocol>,
     fingerprint: DefinitionDigest,
     owner_readiness: MechanicalOwnerReadiness,
 }
@@ -1331,6 +1389,9 @@ impl StateFamilyRegistry {
         if let Some(protocol) = &self.charter_pending {
             protocol.validate_composition(definitions, providers, participants)?;
         }
+        if let Some(protocol) = &self.paid_resale {
+            protocol.validate_composition(definitions, providers, participants)?;
+        }
         if let Some(protocol) = &self.house_purchase {
             protocol.validate_composition(definitions, providers, participants)?;
         }
@@ -1341,6 +1402,9 @@ impl StateFamilyRegistry {
             protocol.validate_composition(definitions, providers, participants)?;
         }
         if let Some(protocol) = &self.core_integration {
+            protocol.validate_composition(definitions, providers, participants)?;
+        }
+        if let Some(protocol) = &self.core_refit {
             protocol.validate_composition(definitions, providers, participants)?;
         }
         if let Some(protocol) = &self.ic_mind_claim {
@@ -1458,6 +1522,8 @@ fn state_family_fingerprint<'a>(
     house_purchase: Option<&terminal_capacity::HouseProtocol>,
     charter_pending: Option<&terminal_capacity::CharterPendingProtocol>,
     house_mind_renewal: Option<&terminal_capacity::HouseRenewalProtocol>,
+    paid_resale: Option<&terminal_capacity::PaidResaleProtocol>,
+    core_refit: Option<&terminal_capacity::CoreRefitProtocol>,
 ) -> Result<DefinitionDigest, CanonicalEncodingError> {
     let mut value = serde_json::Map::from_iter([
         (
@@ -1563,12 +1629,25 @@ fn state_family_fingerprint<'a>(
     } else {
         domain
     };
+    if let Some(protocol) = paid_resale {
+        value.insert("paid_resale".to_owned(), json!(protocol));
+    }
+    let domain = if let Some(protocol) = core_refit {
+        value.insert("core_refit".to_owned(), json!(protocol));
+        "state_family_registry.v15"
+    } else if paid_resale.is_some() {
+        "state_family_registry.v14"
+    } else {
+        domain
+    };
     DefinitionDigest::for_canonical_value(domain, &Value::Object(value))
 }
 
 /// State-family registration failure.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum StateFamilyRegistryError {
+    #[error("Paid resale capacity composition: {0}")]
+    PaidResale(String),
     #[error("Pending charter capacity composition: {0}")]
     CharterPending(String),
     #[error("House renewal capacity composition: {0}")]
@@ -1577,6 +1656,8 @@ pub enum StateFamilyRegistryError {
     HousePurchase(String),
     #[error("Core integration capacity composition: {0}")]
     CoreIntegration(String),
+    #[error("Core refit capacity composition: {0}")]
+    CoreRefit(String),
     #[error("IC mind claim capacity composition: {0}")]
     IcMindClaim(String),
     #[error("Mind renewal capacity composition: {0}")]
@@ -2750,6 +2831,25 @@ impl ActionTxn<'_> {
         result
     }
 
+    pub(crate) fn paid_resale_completion(
+        &mut self,
+        base: &ActionReadBase,
+        provider: &ProviderRegistrationOrdinal,
+        commit: crate::CommitToken,
+        terminal: Option<crate::CommitToken>,
+    ) -> Result<(), ActionStateError> {
+        let result = (|| {
+            self.read_preimage(base, provider).map_err(|_| {
+                ActionStateError::TerminalCapacity("paid resale transaction base differs")
+            })?;
+            terminal_capacity::paid_resale_change(self, commit, terminal)
+        })();
+        if let Err(error) = &result {
+            self.poison(error);
+        }
+        result
+    }
+
     pub(crate) fn house_mind_purchase_completion(
         &mut self,
         base: &ActionReadBase,
@@ -2780,6 +2880,26 @@ impl ActionTxn<'_> {
             protocol.require_owner_images(identity, images)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn core_refit_completion(
+        &mut self,
+        base: &ActionReadBase,
+        provider: &ProviderRegistrationOrdinal,
+        commit: crate::CommitToken,
+        order: u64,
+        admission: bool,
+    ) -> Result<(), ActionStateError> {
+        let result = (|| {
+            self.read_preimage(base, provider).map_err(|_| {
+                ActionStateError::TerminalCapacity("core refit transaction base differs")
+            })?;
+            terminal_capacity::refit_change(self, commit, order, admission)
+        })();
+        if let Err(error) = &result {
+            self.poison(error);
+        }
+        result
     }
 
     pub(crate) fn core_integration_completion(

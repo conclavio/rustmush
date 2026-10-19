@@ -11,7 +11,8 @@ use mush_core::mechanics::{
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
 };
 use mush_core::{
-    CommitToken, DefinitionDigest, Engine, GameModule, ModError, Registrar, Registry, World,
+    ActionStateError, CommitToken, DefinitionDigest, Engine, GameModule, ModError, Registrar,
+    Registry, World,
 };
 use mush_economy::{Amount, InstrumentId};
 use std::sync::{Arc, Mutex};
@@ -100,9 +101,14 @@ fn house_complete_envelope_reserves_future_generation_digits_before_money() -> T
     assert!(check(&handle, &birth).is_err());
     let mut txn = engine.action_transaction(&handle)?;
     txn.insert(&handle, &birth.key(), birth.clone())?;
-    let (ops, installation) = txn.prepare()?.into_parts();
-    assert_eq!(ops.len(), 1);
-    engine.install_prepared_action(installation)?;
+    // Insertion uses the real registered complete-envelope encoder. Publishing
+    // this isolated economics row is deliberately not paid authority.
+    assert!(matches!(
+        txn.prepare(),
+        Err(ActionStateError::TerminalCapacity(
+            "house writes require registered protocol"
+        ))
+    ));
     let future = row(width, u64::MAX)?;
     assert_eq!(future.key().len(), birth.key().len());
     let mut txn = engine.action_transaction(&handle)?;
@@ -126,8 +132,14 @@ fn house_complete_envelope_reserves_future_generation_digits_before_money() -> T
             .ok_or("handle")?;
         let mut txn = independent.action_transaction(&independent_handle)?;
         txn.insert(&independent_handle, &future.key(), future)?;
-        let (_, installation) = txn.prepare()?.into_parts();
-        independent.install_prepared_action(installation)?;
+        // Capacity acceptance is tested at the actual typed insertion boundary;
+        // the paid protocol must still refuse an isolated protected row.
+        assert!(matches!(
+            txn.prepare(),
+            Err(ActionStateError::TerminalCapacity(
+                "house writes require registered protocol"
+            ))
+        ));
     }
     Ok(())
 }

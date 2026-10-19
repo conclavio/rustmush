@@ -437,7 +437,7 @@ pub struct BootedEngine {
 /// purpose: a boot that admitted a write before it could sign one would be a
 /// world whose first offers, resolutions and decisions are unverifiable.
 ///
-/// `_validated_spool` is not read — it is the K0 preflight's evidence, borrowed
+/// `validated_spool` is not read — it is the K0 preflight's evidence, borrowed
 /// so this cannot be called on a boot path that never opened one.
 ///
 /// # Errors
@@ -445,7 +445,20 @@ pub struct BootedEngine {
 /// Unprovisionable key rings, a store that is not K3-durable, a failed recovery
 /// barrier, failed migrations or accounts import, a rejected config stanza, a
 /// module registration clash, or a module boot pass that fails.
-pub async fn build_engine(
+pub fn build_engine<'a>(
+    config: &'a Config,
+    store: &'a Arc<dyn ObjectStore>,
+    validated_spool: &'a QuarantineSpool,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<BootedEngine, String>> + 'a>> {
+    // Boot retains the composed engine and registry across store awaits. Keep
+    // that state on the heap so each caller's async frame does not embed it
+    // again. Nested boot/logging futures otherwise exhaust a normal thread's
+    // stack in debug builds. Construction remains lazy: no boot work runs until
+    // the returned future is polled, and the validated spool stays borrowed.
+    Box::pin(build_engine_inner(config, store, validated_spool))
+}
+
+async fn build_engine_inner(
     config: &Config,
     store: &Arc<dyn ObjectStore>,
     _validated_spool: &QuarantineSpool,

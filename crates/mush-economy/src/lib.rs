@@ -83,6 +83,7 @@
 // E2a — the pure library.
 mod amount;
 pub mod core_integration;
+pub mod core_refit;
 mod engine;
 mod hash;
 mod ids;
@@ -90,6 +91,7 @@ pub mod managed_charter_transfer;
 pub mod managed_entitlement;
 pub mod managed_house_purchase;
 pub mod managed_house_renewal;
+pub mod managed_paid_resale;
 pub mod managed_purchase;
 pub mod managed_renewal;
 mod managed_title;

@@ -6,16 +6,19 @@ use super::*;
 
 mod charter_pending;
 mod core_integration;
+mod core_refit;
 mod entitlement;
 mod house;
 mod house_renewal;
 mod ic_claim;
 mod paid;
+mod paid_resale;
 mod registry;
 mod renewal;
 use crate::{CommitToken, DefinitionRef};
 pub(super) use charter_pending::{Protocol as CharterPendingProtocol, charter_pending_change};
 pub(super) use core_integration::{Protocol as CoreIntegrationProtocol, core_integration_change};
+pub(super) use core_refit::{Protocol as CoreRefitProtocol, refit_change};
 pub(super) use entitlement::{Protocol as EntitlementProtocol, entitlement_change};
 pub(super) use house::{Protocol as HouseProtocol, house_change};
 pub(super) use house_renewal::{
@@ -23,6 +26,7 @@ pub(super) use house_renewal::{
 };
 pub(super) use ic_claim::{Protocol as IcClaimProtocol, ic_claim_change};
 pub(super) use paid::{Protocol as PurchaseProtocol, purchase_change};
+pub(super) use paid_resale::{Protocol as PaidResaleProtocol, paid_resale_change};
 pub(super) use registry::registry_change;
 pub(super) use registry::{Protocol, RegisteredTxnIdentity};
 pub(super) use renewal::{Protocol as RenewalProtocol, renewal_change};
@@ -211,6 +215,12 @@ impl Verifiers {
                 verify: charter_pending::verify,
             });
         }
+        if let Some(protocol) = &registry.paid_resale {
+            rows.push(Verifier {
+                effect: protocol.admission_action().clone(),
+                verify: paid_resale::verify,
+            });
+        }
         if let Some(protocol) = &registry.house_purchase {
             for action in protocol.admission_actions() {
                 rows.push(Verifier {
@@ -241,6 +251,12 @@ impl Verifiers {
             rows.push(Verifier {
                 effect: protocol.admission_action().clone(),
                 verify: core_integration::verify,
+            });
+        }
+        if let Some(protocol) = &registry.core_refit {
+            rows.push(Verifier {
+                effect: protocol.admission_action().clone(),
+                verify: core_refit::verify,
             });
         }
         Self(rows)
@@ -286,6 +302,7 @@ impl Verifiers {
                             && protocol.recognizes_historical(&reservation.effect)
                     })
                     || registry.core_integration.as_ref().is_some_and(|protocol| { v.effect == *protocol.admission_action() && protocol.recognizes_historical(&reservation.effect) })
+                    || registry.core_refit.as_ref().is_some_and(|protocol| { v.effect == *protocol.admission_action() && protocol.recognizes_historical(&reservation.effect) })
                     || registry.mind_renewal.as_ref().is_some_and(|protocol| {
                         v.effect == *protocol.admission_action()
                             && protocol.recognizes_historical(&reservation.effect)
@@ -500,10 +517,12 @@ pub(super) fn hydrate(
     entitlement::audit_boot(&view, &records)?;
     house::audit_boot(&view, &records)?;
     charter_pending::audit_boot(&view, &records)?;
+    paid_resale::audit_boot(&view, &records)?;
     renewal::audit_boot(&view, &records)?;
     house_renewal::audit_boot(&view, &records)?;
     ic_claim::audit_boot(&view, &records)?;
     core_integration::audit_boot(&view, &records)?;
+    core_refit::audit_boot(&view, &records)?;
     let state = CapacityState::rebuild(registry, records, &view)?;
     let usage = charged(
         &state,
@@ -564,10 +583,12 @@ pub(super) fn prepare(
     entitlement::validate_changes(store, mutations, &changes, identity)?;
     house::validate_changes(store, mutations, &changes, identity)?;
     charter_pending::validate_changes(store, mutations, &changes, identity)?;
+    paid_resale::validate_changes(store, mutations, &changes, identity)?;
     renewal::validate_changes(store, mutations, &changes, identity)?;
     house_renewal::validate_changes(store, mutations, &changes, identity)?;
     ic_claim::validate_changes(store, mutations, &changes, identity)?;
     core_integration::validate_changes(store, mutations, &changes, identity)?;
+    core_refit::validate_changes(store, mutations, &changes, identity)?;
     let mut replacement = None;
     let mut writes = Vec::new();
     let mut write_bytes = 0;
@@ -672,7 +693,16 @@ pub(super) fn prepare(
             .records
             .get(id)
             .ok_or_else(|| refused("missing reservation"))?;
-        if metadata_owner(&stored.record) != owner {
+        let terminal_metadata_owner = metadata_owner(&stored.record);
+        if terminal_metadata_owner != owner
+            && !paid_resale::compound_terminal_owner(
+                store,
+                mutations,
+                &stored.record,
+                identity,
+                owner,
+            )?
+        {
             return Err(refused("terminal owner"));
         }
         let sponsor = stored.record.sponsor.resolve(&store.registry)?;
@@ -691,6 +721,12 @@ pub(super) fn prepare(
                 // two exact new cause/status rows. Ordinary typed accounting
                 // still charges them before custody; they were never reserved.
                 if charter_pending::extra_terminal_key(
+                    store,
+                    mutations,
+                    &stored.record,
+                    identity,
+                    key,
+                )? || paid_resale::extra_terminal_key(
                     store,
                     mutations,
                     &stored.record,
@@ -715,13 +751,13 @@ pub(super) fn prepare(
         replacement = Some(records);
         writes.push(MetadataWrite {
             module_op: ModuleOp {
-                ns: SmolStr::new(owner.as_str()),
+                ns: SmolStr::new(terminal_metadata_owner.as_str()),
                 op: ModuleWrite::Del {
                     key: SmolStr::new(stored.path.as_str()),
                 },
             },
             replay: ReplayWrite::ModuleDelete {
-                namespace: owner.clone(),
+                namespace: terminal_metadata_owner.clone(),
                 key: stored.path.clone(),
             },
         });

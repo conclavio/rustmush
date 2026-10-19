@@ -18,6 +18,7 @@ pub struct CoreFactoryConfig {
     pub(crate) payment: CorePaymentPolicy,
     pub(crate) recipes: Arc<dyn CoreRecipeAuthority>,
     pub(crate) economy_owner: DefinitionRef,
+    pub(crate) refit: Option<super::super::refit::CoreRefitFactoryConfig>,
 }
 impl CoreFactoryConfig {
     pub fn new(
@@ -39,7 +40,27 @@ impl CoreFactoryConfig {
             payment,
             recipes,
             economy_owner,
+            refit: None,
         })
+    }
+    pub fn with_refits(
+        mut self,
+        config: super::super::refit::CoreRefitFactoryConfig,
+    ) -> Result<Self, Error> {
+        if config.mode != self.mode || config.payment.factory != self.payment.factory {
+            return Err(Error::Invalid);
+        }
+        self.refit = Some(config);
+        Ok(self)
+    }
+    pub fn economy_refit_config(
+        &self,
+        origin: &OriginPolicy,
+    ) -> Result<mush_economy::core_refit::CoreRefitConfig, Error> {
+        self.refit
+            .as_ref()
+            .ok_or(Error::Unavailable)?
+            .economy_config(self.owner_definition(origin)?)
     }
     pub fn payment(&self) -> &CorePaymentPolicy {
         &self.payment
@@ -74,6 +95,19 @@ impl CoreFactoryConfig {
         refs.push(origin.content.clone());
         refs.sort();
         refs.dedup();
+        if let Some(refit) = &self.refit {
+            let refit_actions = super::super::refit::ACTIONS
+                .iter()
+                .map(|a| refit.action(a))
+                .collect::<Result<Vec<_>, _>>()?;
+            refs.extend(refit_actions.iter().cloned());
+            refs.push(refit.tactics_owner.clone());
+            refs.sort();
+            refs.dedup();
+            return DefinitionDescriptor::new(DefinitionKind::new("owner_participant").map_err(bad)?,DefinitionId::new("core_production").map_err(bad)?,3,
+                serde_json::json!({"format":3,"protocol":"certified_origin_integration_refit_v1","origin_index":super::super::INDEX_KEY,"origin_actions":origin_actions,"origin_content":origin.content,"origin_max":super::super::MAX_CERTIFICATES,"index":INDEX_KEY,"actions":actions,"payment":self.payment,"max_orders":MAX_ORDERS,"order_bytes":ORDER_BYTES,"refit_index":super::super::refit::records::INDEX_KEY,"refit_policy":refit.payment,"refit_component":refit.component,"refit_actions":refit_actions,"refit_order_bytes":super::super::refit::records::ORDER_BYTES}))
+                .map(|d|d.with_references(refs)).map_err(bad);
+        }
         DefinitionDescriptor::new(DefinitionKind::new("owner_participant").map_err(bad)?,DefinitionId::new("core_production").map_err(bad)?,2,
    serde_json::json!({"format":2,"protocol":"certified_origin_and_integration_v1","origin_index":super::super::INDEX_KEY,"origin_actions":origin_actions,"origin_content":origin.content,"origin_max":super::super::MAX_CERTIFICATES,"index":INDEX_KEY,"actions":actions,"payment":self.payment,"max_orders":MAX_ORDERS,"order_bytes":ORDER_BYTES}))
    .map(|d|d.with_references(refs)).map_err(bad)

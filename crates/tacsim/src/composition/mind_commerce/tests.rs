@@ -751,11 +751,16 @@ fn house_purchase_requires_explicit_active_house_and_all_actual_owners() -> Test
         "action",
         "purchase_house_mind"
     ));
-    let selected = ordinary.with_house_minds(house_policy()?)?;
+    // Actual writer handles are installed once, including when a later owner
+    // composition check refuses. Each independent boot needs a fresh handle.
+    let missing_provider = prepare(CommerceMode::Active)?
+        .with_house_filings()?
+        .with_house_minds(house_policy()?)?;
     assert!(
-        house_engine(&selected, false).is_err(),
+        house_engine(&missing_provider, false).is_err(),
         "actual provider is mandatory"
     );
+    let selected = ordinary.with_house_minds(house_policy()?)?;
     let actual = house_engine(&selected, true)?;
     for id in [
         "list_house_mind",
@@ -838,8 +843,16 @@ fn house_renewal_requires_explicit_active_purchase_and_all_three_owners() -> Tes
         "action",
         "draft_house_mind_renewal"
     ));
-    let selected = ordinary.with_house_mind_renewals(house_renewal_policy()?)?;
-    assert!(house_engine(&selected, false).is_err());
+    // The ordinary boot already installed its House purchase writer. Negative
+    // and positive renewal boots must each compose fresh actual owner handles.
+    let configured = || -> Result<MindCommerce, ModError> {
+        prepare(CommerceMode::Active)?
+            .with_house_filings()?
+            .with_house_minds(house_policy()?)?
+            .with_house_mind_renewals(house_renewal_policy()?)
+    };
+    assert!(house_engine(&configured()?, false).is_err());
+    let selected = configured()?;
     let actual = house_engine(&selected, true)?;
     for id in [
         "draft_house_mind_renewal",

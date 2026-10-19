@@ -1494,8 +1494,9 @@ fn e7c3_wiring_the_custody_provider_holds_quantity_not_objects() {
 fn e7c3_wiring_the_crates_edge_set_is_exactly_what_it_declares() {
     // `cargo tree -p mush-industry` is the test, and this is its checked-in
     // half: the manifest's own declaration list, asserted directly so a new
-    // edge cannot arrive unnoticed. **No sim, market, faction, tacsim or party
-    // edge**, in production or in dev.
+    // edge cannot arrive unnoticed. M7.10 adds the real Tactics replacement
+    // owner in production and uses the real Sim module only in Engine fixtures.
+    // All other prohibited edges remain absent; production still has no Sim edge.
     let manifest = include_str!("../Cargo.toml");
     let declared: Vec<&str> = manifest
         .lines()
@@ -1503,12 +1504,10 @@ fn e7c3_wiring_the_crates_edge_set_is_exactly_what_it_declares() {
         .map(|(name, _)| name.trim())
         .collect();
     for forbidden in [
-        "mush-sim",
         "mush-market",
         "mush-faction",
         "tacsim",
         "mush-party",
-        "mush-tactics",
         "mush-scenes",
         "mush-jobs",
         "mush-housing",
@@ -1524,12 +1523,39 @@ fn e7c3_wiring_the_crates_edge_set_is_exactly_what_it_declares() {
         "mush-org",
         "mush-inventory",
         "mush-proto",
+        "mush-tactics",
     ] {
         assert!(
             declared.contains(&required),
             "mush-industry declares {required}"
         );
     }
+    let mut section = "";
+    let mut tactics_production = false;
+    let mut sim_fixture = false;
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            section = line;
+        }
+        if line == "mush-tactics.workspace = true" {
+            assert_eq!(
+                section, "[dependencies]",
+                "actual Tactics owner must be a production dependency"
+            );
+            tactics_production = true;
+        }
+        if line == "mush-sim.workspace = true" {
+            assert_eq!(
+                section, "[dev-dependencies]",
+                "Industry production must not depend on Sim"
+            );
+            sim_fixture = true;
+        }
+    }
+    assert!(
+        tactics_production && sim_fixture,
+        "refit owner and real fixture dependencies are explicit"
+    );
     // DECIDED (d): cut 3 lifts no market refusal and changes no market file —
     // the inventory-backed `Supply` arm is cut 11's. The absence of the edge is
     // what makes that true by construction.

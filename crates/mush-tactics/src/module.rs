@@ -1091,17 +1091,7 @@ impl GameModule for TacticsModule {
             1,
             json!({"encoding": "legacy_untagged_tactical_unit", "strict": true}),
         )?;
-        let v2_descriptor = mechanics_descriptor(
-            "record",
-            "unit",
-            UNIT_RECORD_VERSION,
-            json!({
-                "record": UNIT_RECORD_NAME,
-                "record_version": UNIT_RECORD_VERSION,
-                "strict": true
-            }),
-        )?
-        .as_current();
+        let v2_descriptor = current_unit_record_descriptor()?;
         reg.definition_validator(
             DefinitionKind::new("record").map_err(|error| ModError::msg(error.to_string()))?,
             exact_definition_validator(&[v1_descriptor.clone(), v2_descriptor.clone()]),
@@ -3264,4 +3254,15 @@ fn unit_remove(
         format!("{} is no longer a tactical unit.", display_name(ctx.w, obj)),
     );
     Ok(())
+}
+
+/// Shared pure descriptor used by the owner and composition-selected adapters.
+pub(crate) fn current_unit_record_descriptor() -> Result<DefinitionDescriptor, ModError> {
+    mechanics_descriptor(
+        "record",
+        "unit",
+        UNIT_RECORD_VERSION,
+        json!({"record":UNIT_RECORD_NAME,"record_version":UNIT_RECORD_VERSION,"strict":true}),
+    )
+    .map(DefinitionDescriptor::as_current)
 }
