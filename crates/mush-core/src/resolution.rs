@@ -350,7 +350,77 @@ impl<'a> PrepareCtx<'a> {
         result
     }
 
-    /// Reserve the fixed actual Industry order's future terminal rows at Accept.
+    /// Reserve the exact execution/result keys with the actual admitted job.
+    pub fn reserve_conduct_trial_completion(
+        &mut self,
+        txn: &mut crate::ActionTxn<'_>,
+    ) -> Result<(), crate::ActionStateError> {
+        self.conduct_trial_completion(txn, None)
+    }
+    /// Actual post-images determine whether progress retains or consumes capacity.
+    pub fn advance_conduct_trial_completion(
+        &mut self,
+        txn: &mut crate::ActionTxn<'_>,
+        job: crate::CommitToken,
+    ) -> Result<(), crate::ActionStateError> {
+        self.conduct_trial_completion(txn, Some(job))
+    }
+    fn conduct_trial_completion(
+        &mut self,
+        txn: &mut crate::ActionTxn<'_>,
+        job: Option<crate::CommitToken>,
+    ) -> Result<(), crate::ActionStateError> {
+        let result = match (self.owner_error.is_none(), self.registered_transaction) {
+            (true, Some((base, provider))) => {
+                txn.conduct_trial_completion(base, provider, self.commit_token, job)
+            }
+            _ => Err(crate::ActionStateError::TerminalCapacity(
+                "Conduct preparation unavailable",
+            )),
+        };
+        if result.is_err() {
+            txn.poison_owner_read();
+            self.owner_error
+                .get_or_insert(crate::participant::ParticipantError::Authority);
+        }
+        result
+    }
+    /// Reserve six fixed completion keys before the native coverage Bind installs.
+    pub fn reserve_hull_coverage_completion(
+        &mut self,
+        txn: &mut crate::ActionTxn<'_>,
+    ) -> Result<(), crate::ActionStateError> {
+        self.hull_coverage_completion(txn, None)
+    }
+    /// Consume the original policy's reservation only with its paired terminal.
+    pub fn finish_hull_coverage_completion(
+        &mut self,
+        txn: &mut crate::ActionTxn<'_>,
+        binding: crate::CommitToken,
+    ) -> Result<(), crate::ActionStateError> {
+        self.hull_coverage_completion(txn, Some(binding))
+    }
+    fn hull_coverage_completion(
+        &mut self,
+        txn: &mut crate::ActionTxn<'_>,
+        binding: Option<crate::CommitToken>,
+    ) -> Result<(), crate::ActionStateError> {
+        let result = match (self.owner_error.is_none(), self.registered_transaction) {
+            (true, Some((base, provider))) => {
+                txn.hull_coverage_completion(base, provider, self.commit_token, binding)
+            }
+            _ => Err(crate::ActionStateError::TerminalCapacity(
+                "coverage preparation unavailable",
+            )),
+        };
+        if result.is_err() {
+            txn.poison_owner_read();
+            self.owner_error
+                .get_or_insert(crate::participant::ParticipantError::Authority);
+        }
+        result
+    }
+
     pub fn reserve_core_refit_completion(
         &mut self,
         txn: &mut crate::ActionTxn<'_>,

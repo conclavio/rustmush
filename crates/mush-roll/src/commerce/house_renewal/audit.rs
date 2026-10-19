@@ -40,7 +40,9 @@ pub(crate) fn verify_current_pointer(
     )?;
     if head != &RenewalHeadV1::for_operation(last)?
         || head.current() != licence.term()
-        || !last.binding().matches_birth(licence)
+        || (last.state().pending() && !last.binding().matches_birth(licence))
+        || last.binding().licence() != licence.id()
+        || last.binding().birth_operation() != licence.operation()
     {
         return Err(PublicationError::Mismatch);
     }
@@ -68,7 +70,12 @@ pub(crate) fn verify_current_pointer(
         row
     };
     let (expected_licence, expected_term, expected_economics) = granted.granted_rows()?;
-    if licence != &expected_licence || term != &expected_term || economics != &expected_economics {
+    if expected_licence.id() != licence.id()
+        || expected_licence.operation() != licence.operation()
+        || expected_licence.term() != licence.term()
+        || term != &expected_term
+        || economics != &expected_economics
+    {
         return Err(PublicationError::Mismatch);
     }
     for row in [last, granted] {
@@ -153,6 +160,31 @@ pub(crate) fn audit(
             .map_err(|_| PublicationError::Missing)?;
         super::history::verify(row, &view)?;
         let licence = read(ctx, &f.paid_licences, row.binding.licence.key())?;
+        if let Some(basis) = row.binding().holder_basis() {
+            let holder = super::super::paid_resale::history::historical(
+                ctx,
+                f,
+                ratings,
+                licence,
+                &basis.ownership,
+            )?;
+            let captured = read(
+                ctx,
+                &f.paid_holders,
+                super::super::paid_resale::PaidHolderRecord::key_for(
+                    licence.id(),
+                    basis.ownership.generation,
+                ),
+            )?;
+            if holder != row.binding().holder() || captured.acceptance() != basis.acceptance {
+                return Err(PublicationError::Mismatch);
+            }
+        } else if birth_history::resolve(ctx, f, licence.operation())?.holder()
+            != row.binding().holder()
+        {
+            return Err(PublicationError::Mismatch);
+        }
+
         let predecessor = read(
             ctx,
             &f.paid_terms,

@@ -3443,9 +3443,43 @@ impl<'a> Registrar<'a> {
             .map_err(|e| ModError::msg(e.to_string()))
     }
 
-    /// Fixed Industry future completion: Industry/Economy owner refs followed
-    /// by Accept, Reserve, Advance, Complete and Cancel action refs. No targets
-    /// or ceilings are supplied by the module.
+    /// Fixed Conduct result capacity with three actual registered owner images.
+    pub fn conduct_trial_capacity(
+        &mut self,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 3],
+        actions: [crate::DefinitionRef; 5],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "roll" || self.reg.state_families.is_some() {
+            return Err(ModError::msg("Conduct requires unfrozen Roll registrar"));
+        }
+        let owner =
+            crate::OwnerId::new(self.module.as_str()).map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .conduct_trial_capacity(&owner, manifest, participants, actions)
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+    /// Fixed coverage completion; actual Economy and Roll images are mandatory.
+    pub fn hull_coverage_capacity(
+        &mut self,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 3],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "tacsim" || self.reg.state_families.is_some() {
+            return Err(ModError::msg("coverage requires unfrozen Tacsim registrar"));
+        }
+        let owner =
+            crate::OwnerId::new(self.module.as_str()).map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .hull_coverage_capacity(&owner, manifest, participants, actions)
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
     /// Closed refit participants Industry/Economy/Tactics; actions Accept/Advance/Install/Cancel.
     pub fn core_refit_capacity(
         &mut self,

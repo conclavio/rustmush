@@ -14,6 +14,11 @@ pub(super) const MAX_CLOSE_BYTES: usize = 8192;
 pub(super) fn bad(_: impl std::fmt::Display) -> ParticipantError {
     ParticipantError::refused("IC retained execution or event identity differs")
 }
+pub(super) fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,6 +94,12 @@ pub(super) struct Opening {
     pub(super) action: DefinitionRef,
     pub(super) protocol: CapturedProtocol,
     pub(super) dispatcher: ObjId,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub(super) withheld: Option<super::host::coverage::WithheldCapture>,
     pub(super) admission_digest: DefinitionDigest,
     pub(super) at_ic: ClockStamp,
     pub(super) unit: mush_tactics::TacticalUnit,
@@ -98,6 +109,9 @@ impl Opening {
     pub(super) fn validate(&self) -> Result<(), ParticipantError> {
         world(&self.at_ic)?;
         self.execution.validate()?;
+        if let Some(withheld) = &self.withheld {
+            withheld.validate(&self.unit, self.dispatcher)?;
+        }
         if self.request.as_bytes() == &[0; 32]
             || self.action != self.protocol.action(false)?
             || self.dispatcher.0 == 0
@@ -128,6 +142,12 @@ pub(super) struct Closing {
     pub(super) at_ic: ClockStamp,
     pub(super) conditions_digest: DefinitionDigest,
     pub(super) unit_digest: DefinitionDigest,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub(super) coverage: Option<super::host::coverage::ClosedCoverageCapture>,
 }
 impl Closing {
     /// The actual host-event owner computes this after a genuine transition;
@@ -136,15 +156,36 @@ impl Closing {
         &self,
         open: &Opening,
     ) -> Result<DefinitionDigest, ParticipantError> {
-        DefinitionDigest::for_canonical_value_with_limit("tacsim.ic_host_event.v1",&serde_json::json!({
+        let mut value = serde_json::json!({
             "request":self.request,"open":open.operation,"unit":open.execution.seal.unit,"sortie":open.execution.seal.sortie.0,
             "seal":open.execution.digest(),"sequence":self.sequence,"kind":self.kind,
             "at_ic":self.at_ic,"conditions":self.conditions_digest,"unit_digest":self.unit_digest,
-        }),MAX_CLOSE_BYTES).map_err(bad)
+        });
+        if let Some(coverage) = &self.coverage {
+            value
+                .as_object_mut()
+                .ok_or_else(|| bad("close event"))?
+                .insert(
+                    "coverage".into(),
+                    serde_json::to_value(coverage).map_err(bad)?,
+                );
+        }
+        DefinitionDigest::for_canonical_value_with_limit(
+            "tacsim.ic_host_event.v1",
+            &value,
+            MAX_CLOSE_BYTES,
+        )
+        .map_err(bad)
     }
     pub(super) fn validate(&self, open: &Opening) -> Result<(), ParticipantError> {
         world(&self.at_ic)?;
         self.kind.validate(open.execution.seal.unit)?;
+        if open.withheld.is_some() != self.coverage.is_some() {
+            return Err(bad("close departure capture"));
+        }
+        if let Some(coverage) = &self.coverage {
+            coverage.validate(open)?;
+        }
         if self.request.as_bytes() == &[0; 32]
             || self.request == open.request
             || self.operation == open.operation

@@ -35,6 +35,18 @@ pub(super) fn register_profiles(
     ic: bool,
     reconformance: bool,
 ) -> Result<(RegisteredManifest, Arc<Factory>), ModError> {
+    register_profiles_with_coverage(reg, policy, ic, reconformance, false)
+}
+pub(super) fn register_profiles_with_coverage(
+    reg: &mut Registrar<'_>,
+    policy: Arc<FrozenPolicy>,
+    ic: bool,
+    reconformance: bool,
+    coverage: bool,
+) -> Result<(RegisteredManifest, Arc<Factory>), ModError> {
+    if coverage && !ic {
+        return Err(error("coverage requires real IC owners"));
+    }
     if reg.module() != crate::NS {
         return Err(ModError::msg("Registry owner"));
     }
@@ -43,6 +55,12 @@ pub(super) fn register_profiles(
     let mut expected = vec![definitions.quota().clone(), definitions.artifacts().clone()];
     if ic {
         expected.push(crate::minds::ic_sortie::protocol::participant_descriptor()?);
+    }
+    if coverage {
+        expected.push(
+            mush_roll::commerce::coverage::CoverageProtocol::publication_participant_descriptor()
+                .map_err(error)?,
+        );
     }
     reg.definition_validator(
         DefinitionKind::new("owner_participant").map_err(error)?,

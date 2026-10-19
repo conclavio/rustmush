@@ -67,6 +67,12 @@ pub(crate) struct OpenClaim {
     )]
     pub(crate) charter_ownership:
         Option<super::super::charter_transfer::records::CharterOwnershipRef>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_paid_ownership"
+    )]
+    pub(crate) paid_ownership: Option<mush_economy::managed_paid_resale::PaidHolderRefV1>,
     pub(crate) hull_title_revision: u64,
     pub(crate) licence: LicenceId,
     pub(crate) term: TermGeneration,
@@ -84,6 +90,16 @@ pub(crate) struct OpenClaim {
     pub(crate) custody_digest: DefinitionDigest,
     /// Exact Sim IC exclusion row identity in the same owner union.
     pub(crate) exclusion_digest: DefinitionDigest,
+}
+fn present_paid_ownership<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<mush_economy::managed_paid_resale::PaidHolderRefV1>, D::Error> {
+    let value = mush_economy::managed_paid_resale::PaidHolderRefV1::deserialize(d)?;
+    value.validate().map_err(serde::de::Error::custom)?;
+    if value.generation < 2 {
+        return Err(serde::de::Error::custom("transferred paid holder required"));
+    }
+    Ok(Some(value))
 }
 pub(super) fn admission_digest(
     value: &serde_json::Value,
@@ -109,12 +125,30 @@ impl OpenClaim {
                     serde_json::to_value(proof).map_err(bad)?,
                 );
         }
+        if let Some(proof) = &self.paid_ownership {
+            value
+                .as_object_mut()
+                .ok_or(PublicationError::Invalid)?
+                .insert(
+                    "paid_ownership".into(),
+                    serde_json::to_value(proof).map_err(bad)?,
+                );
+        }
         admission_digest(&value)
     }
     pub(crate) fn validate(&self) -> Result<(), PublicationError> {
         if let Some(proof) = &self.charter_ownership {
             proof.transferred()?;
             if !matches!(self.capacity, Capacity::OwnedDispatch {}) {
+                return Err(PublicationError::Invalid);
+            }
+        }
+        if let Some(proof) = &self.paid_ownership {
+            proof.validate().map_err(bad)?;
+            if proof.generation < 2
+                || self.charter_ownership.is_some()
+                || !matches!(self.capacity, Capacity::PaidSeats { .. })
+            {
                 return Err(PublicationError::Invalid);
             }
         }
@@ -250,8 +284,12 @@ impl Record for ClaimRecord {
     }
     fn validate(&self) -> Result<(), PublicationError> {
         if !matches!(
-            (self.format, self.open.charter_ownership.is_some()),
-            (1, false) | (2, true)
+            (
+                self.format,
+                self.open.charter_ownership.is_some(),
+                self.open.paid_ownership.is_some()
+            ),
+            (1, false, false) | (2, true, false) | (3, false, true)
         ) {
             return Err(PublicationError::Invalid);
         }

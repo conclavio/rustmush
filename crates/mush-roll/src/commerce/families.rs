@@ -12,6 +12,10 @@ use super::records::*;
 /// No public constructor, family-name lookup or blanket delegation is added.
 #[derive(Clone)]
 pub struct CommerceFamilies {
+    pub(crate) coverages: StateFamilyHandle<String, super::coverage::CoverageRetention>,
+    pub(crate) paid_resales: StateFamilyHandle<String, super::paid_resale::PaidResaleRecord>,
+    pub(crate) paid_resale_heads: StateFamilyHandle<String, super::paid_resale::PaidResaleHead>,
+    pub(crate) paid_holders: StateFamilyHandle<String, super::paid_resale::PaidHolderRecord>,
     pub(crate) measured_recalls:
         StateFamilyHandle<String, super::rating::reconformance::recall::records::MeasuredRecall>,
     pub(crate) reconformance_heads:
@@ -86,6 +90,10 @@ pub struct CommerceFamilies {
 impl CommerceFamilies {
     pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<Self, ModError> {
         Ok(Self {
+            coverages: register(reg)?,
+            paid_resales: register(reg)?,
+            paid_resale_heads: register(reg)?,
+            paid_holders: register(reg)?,
             measured_recalls: register(reg)?,
             reconformance_heads: register(reg)?,
             charter_pending_offers: register(reg)?,
@@ -198,10 +206,12 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
                 && parts.next().is_none()
         }
         "roll_mind_commerce" => head == "registry" && parts.next().is_none(),
-        "roll_mind_charter_pending_offers"
+        "roll_mind_paid_resales"
+        | "roll_mind_charter_pending_offers"
         | "roll_mind_charter_pending"
         | "roll_mind_charter_transfer_offers"
         | "roll_mind_ic_claim"
+        | "roll_mind_coverage"
         | "roll_mind_line_update"
         | "roll_mind_initial_filing"
         | "roll_mind_paid_purchase"
@@ -246,6 +256,15 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
                 && parts.next() == Some("0000000000000001")
                 && parts.next().is_none()
         }
+        "roll_mind_paid_holders" => {
+            head == "licence"
+                && parts.next().is_some_and(|v| hex(v, 16, true))
+                && parts.next().is_some_and(|v| {
+                    hex(v, 16, true)
+                        && u64::from_str_radix(v, 16).is_ok_and(|n| (2..=65_537).contains(&n))
+                })
+                && parts.next().is_none()
+        }
         "roll_mind_charter_transfers" => {
             head == "charter"
                 && parts.next().is_some_and(|v| {
@@ -272,12 +291,14 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
         | "roll_mind_status"
         | "roll_mind_owner_licence"
         | "roll_mind_personal_paid_licence"
+        | "roll_mind_paid_resale_heads"
         | "roll_house_mind_renewal_head"
         | "roll_mind_renewal_head" => {
             let prefix = match family {
                 "roll_mind_line" => "line",
                 "roll_mind_owner_licence"
                 | "roll_mind_personal_paid_licence"
+                | "roll_mind_paid_resale_heads"
                 | "roll_house_mind_renewal_head"
                 | "roll_mind_renewal_head" => "licence",
                 _ => "filed",

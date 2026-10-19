@@ -13,6 +13,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+pub(super) mod coverage;
+
 const MAX_PENDING: usize = 1024;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 
@@ -20,6 +22,7 @@ const MAX_BYTES: usize = 64 * 1024 * 1024;
 pub struct HostStart {
     pub(super) request: DefinitionDigest,
     pub(super) permit: Arc<StartPermit>,
+    pub(super) withheld: Option<Arc<coverage::WithheldDeparture>>,
 }
 #[derive(Clone)]
 pub struct HostClose {
@@ -286,6 +289,7 @@ impl IcHost {
                 start: HostStart {
                     request,
                     permit: Arc::clone(permit),
+                    withheld: None,
                 },
                 licence,
                 profiles,

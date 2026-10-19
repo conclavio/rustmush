@@ -11,6 +11,10 @@ mod records;
 pub(crate) mod registration;
 mod state;
 
+pub use host::coverage::{
+    AcknowledgedDeparture, CoveredDeparture, WithheldDeparture, WithheldOpen, WithheldUnadmitted,
+};
+pub(crate) use host::coverage::{CommittedCoverageClose, audit_history as audit_coverage_history};
 pub use host::{
     HostClose, HostStart, IcHost, IcHostCompletion, IcHostTicket, IcRetainedExecution,
     IcSubmissionState, IcUnadmittedOpen,
@@ -21,4 +25,6 @@ pub use participant::{
 pub use state::IcSorties;
 
 #[cfg(test)]
-pub(crate) use participant::{fixture_close, fixture_start};
+pub(crate) use participant::{
+    fixture_close, fixture_covered_close, fixture_covered_loss, fixture_start, fixture_withheld,
+};

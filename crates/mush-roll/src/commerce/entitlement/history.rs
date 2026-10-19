@@ -344,6 +344,7 @@ pub(crate) fn verify_entitlement_grant(
 #[derive(Clone, Copy)]
 pub(crate) struct Granted<'a> {
     birth: Birth<'a>,
+    accepted_holder: mush_core::ObjId,
     term: &'a PaidTermRecord,
     economics: Option<&'a PaidTermEconomicsV1>,
     terminal: CommitToken,
@@ -365,7 +366,7 @@ impl<'a> Granted<'a> {
         self.term.generation()
     }
     pub(crate) fn holder(self) -> mush_core::ObjId {
-        self.birth.holder()
+        self.accepted_holder
     }
     pub(crate) fn licence(self) -> super::super::LicenceId {
         self.birth.licence()
@@ -414,6 +415,23 @@ pub(crate) fn granted<'a>(
     audit.require_complete().map_err(invalid)?;
     let actual = audit.get(licence.operation()).map_err(invalid)?;
     let birth = resolve(ctx, f, licence.operation())?;
+    licence.validate()?;
+    if birth.licence() != licence.id()
+        || birth.charter() != licence.charter()
+        || birth.line() != licence.line()
+    {
+        return Err(PublicationError::Mismatch);
+    }
+    // Immutable birth is always checked against its original holder bytes.
+    // Current holder authority is a distinct complete transfer-chain proof.
+    let birth_pointer = PersonalPaidLicence::original(
+        birth.licence(),
+        birth.charter(),
+        birth.line(),
+        birth.holder(),
+        licence.term(),
+        birth.operation(),
+    )?;
     let rating = birth.rating();
     let receipt = ctx
         .get(&ratings.receipts, &rating.job())
@@ -449,7 +467,7 @@ pub(crate) fn granted<'a>(
                 return Err(PublicationError::Mismatch);
             }
             verify_legacy_history(row, actual, receipt.compatibility().digest())?;
-            super::super::paid_audit::verify_granted(row, licence, birth_term, actual)?;
+            super::super::paid_audit::verify_granted(row, &birth_pointer, birth_term, actual)?;
         }
         Birth::House(row) => {
             if birth_economics.is_some() || optional(ctx, &f.term_economics, term.key())?.is_some()
@@ -459,7 +477,7 @@ pub(crate) fn granted<'a>(
             let economics = read(ctx, &f.house_economics, birth_term.key())?;
             super::super::house_purchase::history::verify_grant(
                 row,
-                licence,
+                &birth_pointer,
                 birth_term,
                 economics,
                 actual,
@@ -468,27 +486,37 @@ pub(crate) fn granted<'a>(
         }
         Birth::Entitlement(row) => verify_entitlement_grant(
             row,
-            licence,
+            &birth_pointer,
             birth_term,
             birth_economics.ok_or(PublicationError::Missing)?,
             actual,
             receipt.compatibility().digest(),
         )?,
     }
-    let (economics, terminal) = if term.generation() == birth.term() {
+    let (economics, terminal, accepted_holder) = if term.generation() == birth.term() {
         if term.operation() != birth.operation() {
             return Err(PublicationError::Mismatch);
         }
         (
             birth_economics,
             actual.terminal().ok_or(PublicationError::Missing)?.commit(),
+            birth.holder(),
         )
     } else if let Birth::House(birth_row) = birth {
+        let row = read(ctx, &f.house_renewal_operations, term.operation().to_hex())?;
+        let accepted_holder = row.binding().holder();
+        let accepted_pointer = row.binding().accepted_pointer(term.generation())?;
         (
             None,
             super::super::house_renewal::history::granted_generation(
-                ctx, f, licence, term, birth_row, economy,
+                ctx,
+                f,
+                &accepted_pointer,
+                term,
+                birth_row,
+                economy,
             )?,
+            accepted_holder,
         )
     } else {
         let Birth::Entitlement(birth_row) = birth else {
@@ -504,7 +532,8 @@ pub(crate) fn granted<'a>(
         super::super::renewal::history::verify(row, &view)?;
         let (_, expected_term, expected_economics) = row.granted_rows()?;
         let b = row.binding();
-        if !b.matches_birth(licence)
+        let accepted_pointer = row.binding().accepted_pointer(term.generation())?;
+        if !b.matches_birth(&accepted_pointer)
             || term != &expected_term
             || economics != &expected_economics
             || b.product_digest() != birth_row.product_digest
@@ -520,16 +549,18 @@ pub(crate) fn granted<'a>(
             format!("{}/{}", licence.id().key(), b.predecessor().key()),
         )?;
         let prior_economics = read(ctx, &f.term_economics, prior.key())?;
-        b.check_predecessor(licence, prior, prior_economics)?;
+        b.check_predecessor(&accepted_pointer, prior, prior_economics)?;
         (
             Some(economics),
             row.state()
                 .terminal_commit()
                 .ok_or(PublicationError::Missing)?,
+            b.holder(),
         )
     };
     Ok(Granted {
         birth,
+        accepted_holder,
         term,
         economics,
         terminal,
@@ -547,6 +578,15 @@ pub(crate) fn current<'a>(
 ) -> Result<Granted<'a>, PublicationError> {
     term.matches_current(licence)?;
     let grant = granted(ctx, f, ratings, licence, term)?;
+    if let Some(ownership) = licence.ownership() {
+        if super::super::paid_resale::history::historical(ctx, f, ratings, licence, ownership)?
+            != licence.holder()
+        {
+            return Err(PublicationError::Mismatch);
+        }
+    } else if licence.holder() != grant.birth().holder() {
+        return Err(PublicationError::Mismatch);
+    }
     let personal_head = optional(ctx, &f.renewal_heads, licence.id().key())?;
     let house_head = optional(ctx, &f.house_renewal_heads, licence.id().key())?;
     if let Birth::House(birth) = grant.birth() {
@@ -561,8 +601,10 @@ pub(crate) fn current<'a>(
                     &f.house_renewal_operations,
                     head.last_operation().to_hex(),
                 )?;
+                let historical_pointer = row.binding().accepted_pointer(licence.term())?;
                 if head != &super::super::house_renewal::RenewalHeadV1::for_operation(row)?
-                    || !row.binding().matches_birth(licence)
+                    || !row.binding().matches_birth(&historical_pointer)
+                    || (row.state().pending() && !row.binding().matches_birth(licence))
                     || row.binding().issuer() != birth.issuer()
                     || head.current() != licence.term()
                 {
@@ -590,8 +632,10 @@ pub(crate) fn current<'a>(
         None if licence.term().get() == 1 => {}
         Some(head) => {
             let row = read(ctx, &f.renewal_operations, head.last_operation().to_hex())?;
+            let historical_pointer = row.binding().accepted_pointer(licence.term())?;
             if head != &super::super::renewal::RenewalHeadV1::for_operation(row)?
-                || !row.binding().matches_birth(licence)
+                || !row.binding().matches_birth(&historical_pointer)
+                || (row.state().pending() && !row.binding().matches_birth(licence))
                 || head.current() != licence.term()
             {
                 return Err(PublicationError::Mismatch);

@@ -56,6 +56,7 @@ fn row(number: u64, licence: u64, capacity: Capacity) -> TestResult<ClaimRecord>
         closed: None,
         open: OpenClaim {
             charter_ownership: None,
+            paid_ownership: None,
             operation: token(number)?,
             action: protocol.action(Transition::Open)?,
             protocol,
@@ -464,5 +465,54 @@ fn transferred_owned_claim_capture_is_strict_and_changes_both_immutable_digests(
             .insert("charter_ownership".into(), corrupt);
         assert!(serde_json::from_value::<ClaimRecord>(bad).is_err());
     }
+    Ok(())
+}
+
+#[test]
+fn transferred_paid_open_format_three_preserves_old_claims_and_rejects_crossed_forms() -> TestResult
+{
+    let old = row(1, 11, one_seat()?)?;
+    let old_bytes = serde_json::to_value(&old)?;
+    assert!(old_bytes["open"].get("paid_ownership").is_none());
+    let mut current = old.clone();
+    current.format = 3;
+    current.open.paid_ownership = Some(mush_economy::managed_paid_resale::PaidHolderRefV1 {
+        generation: 2,
+        operation: token(200)?,
+        digest: digest(8),
+    });
+    current.validate()?;
+    let value = serde_json::to_value(&current)?;
+    assert_eq!(
+        serde_json::from_value::<ClaimRecord>(value.clone())?,
+        current
+    );
+    assert_ne!(
+        current.open.admission_digest()?,
+        old.open.admission_digest()?
+    );
+    assert_eq!(serde_json::to_value(&old)?, old_bytes);
+    for format in [1, 2] {
+        let mut x = value.clone();
+        x["format"] = json!(format);
+        assert!(serde_json::from_value::<ClaimRecord>(x).is_err());
+    }
+    for ownership in [
+        serde_json::Value::Null,
+        json!({"generation":1,"operation":token(200)?,"digest":digest(8)}),
+        json!({"generation":65538,"operation":token(200)?,"digest":digest(8)}),
+    ] {
+        let mut x = value.clone();
+        x["open"]["paid_ownership"] = ownership;
+        assert!(serde_json::from_value::<ClaimRecord>(x).is_err());
+    }
+    let mut absent = value.clone();
+    absent["open"]
+        .as_object_mut()
+        .ok_or("object")?
+        .remove("paid_ownership");
+    assert!(serde_json::from_value::<ClaimRecord>(absent).is_err());
+    current.open.capacity = Capacity::OwnedDispatch {};
+    assert!(current.validate().is_err());
     Ok(())
 }

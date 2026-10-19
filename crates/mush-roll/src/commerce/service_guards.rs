@@ -14,7 +14,8 @@ impl AuthorityGuardValidator for Services {
     ) -> Result<bool, ActionError> {
         Ok(super::facts::guard_current(ctx, guard)?
             || super::rating::reconformance::recall::guard_current(ctx, guard)?
-            || super::charter_pending::service::guard_current(ctx, guard)?)
+            || super::charter_pending::service::guard_current(ctx, guard)?
+            || super::paid_resale::service::guard_current(ctx, guard)?)
     }
 }
 pub(super) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {

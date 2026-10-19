@@ -52,6 +52,8 @@ impl PreparedComposedTxn {
         if let Some(shell) = &shell {
             shell.require_owner_images(&owners)?;
         }
+        typed.require_coverage_owner_images(&owners)?;
+        typed.require_conduct_owner_images(&owners)?;
         owners.order();
         let mut writes = typed.authoritative_replay_writes();
         writes.extend(owners.writes().cloned());

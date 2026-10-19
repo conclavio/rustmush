@@ -261,6 +261,39 @@ pub struct MindQuote {
     pub(super) expires_at_utc: i64,
 }
 impl MindQuote {
+    /// Exact retained issuance rates for a later property sale. This is a data
+    /// projection only; the resale owner must prove this quote digest against
+    /// actual issuance history and recheck current recipient account bindings.
+    pub(crate) fn resale_rates(
+        &self,
+    ) -> Result<
+        (
+            InstrumentId,
+            mush_economy::managed_entitlement::GrossRecipientCut,
+            Option<mush_economy::managed_entitlement::GrossRecipientCut>,
+        ),
+        String,
+    > {
+        <Self as Row>::validate(self)?;
+        use mush_economy::managed_entitlement::{GrossRecipientCut, Recipient};
+        Ok((
+            self.instrument.clone(),
+            GrossRecipientCut {
+                permille: self.registry_permille,
+                recipient: (self.registry_permille != 0).then(|| Recipient {
+                    account: self.registry_account,
+                    owner: mush_org::PrincipalId::System(self.registry_recipient.clone()),
+                }),
+            },
+            Some(GrossRecipientCut {
+                permille: self.venue.permille,
+                recipient: (self.venue.permille != 0).then(|| Recipient {
+                    account: self.venue.account,
+                    owner: self.venue.recipient.clone(),
+                }),
+            }),
+        ))
+    }
     pub fn publication(&self) -> CommitToken {
         self.publication
     }

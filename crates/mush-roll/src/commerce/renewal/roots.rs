@@ -93,14 +93,43 @@ impl RenewalRoots {
                     return Err(PublicationError::Mismatch);
                 }
                 match (after.attempt(), prior_attempt) {
-                    (super::RenewalAttemptV1::Automatic {}, None) => Vec::new(),
-                    (super::RenewalAttemptV1::BuyerRetry { previous_operation }, Some(prior))
-                        if prior.operation() == previous_operation
-                            && prior.binding() == after.binding()
-                            && prior.state().retryable() =>
+                    (
+                        super::RenewalAttemptV1::Automatic {}
+                        | super::RenewalAttemptV1::HolderAutomatic { .. },
+                        None,
+                    ) => Vec::new(),
+                    (
+                        super::RenewalAttemptV1::BuyerRetry { previous_operation }
+                        | super::RenewalAttemptV1::HolderRetry {
+                            previous_operation, ..
+                        },
+                        Some(prior),
+                    ) if prior.operation() == previous_operation
+                        && prior.binding() == after.binding()
+                        && prior.state().retryable() =>
                     {
                         // Keep the closed attempt's permanent root; share only
                         // its exact already allocated next-generation root.
+                        super::audit::required(prior)?
+                            .into_iter()
+                            .filter(|r| {
+                                matches!(r.anchor, super::super::roots::RootAnchor::Term(..))
+                            })
+                            .collect()
+                    }
+                    (super::RenewalAttemptV1::HolderAutomatic { basis }, Some(prior))
+                        if prior.state().retryable()
+                            && prior.binding().licence() == after.binding().licence()
+                            && prior.binding().birth_operation()
+                                == after.binding().birth_operation()
+                            && prior.binding().next() == after.binding().next()
+                            && prior.binding().revision() == after.binding().revision()
+                            && basis.ownership.generation
+                                > prior
+                                    .binding()
+                                    .holder_basis()
+                                    .map_or(1, |b| b.ownership.generation) =>
+                    {
                         super::audit::required(prior)?
                             .into_iter()
                             .filter(|r| {

@@ -97,9 +97,16 @@ pub struct IcAdmissionFacts {
     parent_window: Option<TermWindow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     charter_ownership: Option<super::super::charter_transfer::records::CharterOwnershipRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    paid_ownership: Option<mush_economy::managed_paid_resale::PaidHolderRefV1>,
     observed_ic: ClockStamp,
 }
 impl IcAdmissionFacts {
+    pub(crate) fn paid_ownership(
+        &self,
+    ) -> Option<&mush_economy::managed_paid_resale::PaidHolderRefV1> {
+        self.paid_ownership.as_ref()
+    }
     pub(crate) fn charter_ownership(
         &self,
     ) -> Option<&super::super::charter_transfer::records::CharterOwnershipRef> {
@@ -142,6 +149,15 @@ impl IcAdmissionFacts {
                 .ok_or(PublicationError::Invalid)?
                 .insert(
                     "charter_ownership".into(),
+                    serde_json::to_value(proof).map_err(|_| PublicationError::Invalid)?,
+                );
+        }
+        if let Some(proof) = &self.paid_ownership {
+            value
+                .as_object_mut()
+                .ok_or(PublicationError::Invalid)?
+                .insert(
+                    "paid_ownership".into(),
                     serde_json::to_value(proof).map_err(|_| PublicationError::Invalid)?,
                 );
         }
@@ -326,12 +342,25 @@ impl OwnerReadService for IcAdmissionReader {
             (false, false) => return Err(OwnerReadError::Refused),
             (true, true) => return Err(OwnerReadError::Integrity),
         };
+        let paid_ownership = if paid {
+            use super::super::entitlement::history::read;
+            let licence = read(ctx, &self.families.paid_licences, request.licence.key())
+                .map_err(|_| OwnerReadError::Integrity)?;
+            super::super::paid_resale::history::require_not_pending(ctx, &self.families, licence)
+                .map_err(|_| OwnerReadError::Refused)?;
+            // The full paid projection already proved today's exact holder;
+            // preserve that immutable generation in this new captured warrant.
+            licence.ownership().copied()
+        } else {
+            None
+        };
         Ok(IcAdmissionFacts {
             holding,
             hull,
             charter,
             parent_window,
             charter_ownership,
+            paid_ownership,
             observed_ic: ctx.world().world_ic_now(),
         })
     }

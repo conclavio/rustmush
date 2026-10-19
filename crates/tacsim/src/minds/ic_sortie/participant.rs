@@ -21,7 +21,7 @@ use std::sync::{Arc, OnceLock};
 /// Deliberately private, non-Serde and non-Clone. There is presently no producer
 /// for a genuine IC region transition, so this module exports no constructor.
 /// A later host must supply its actual transition before any permit is minted.
-struct HostTransition {
+pub(super) struct HostTransition {
     _private: (),
 }
 pub struct StartPermit {
@@ -38,6 +38,7 @@ pub struct CloseEvent {
     kind: EventKind,
     at_ic: ClockStamp,
     pub(super) conditions: UnitMutationPlan,
+    coverage: Option<super::host::coverage::CoverageCloseEvidence>,
     _transition: HostTransition,
 }
 impl CloseEvent {
@@ -253,6 +254,11 @@ impl OwnerParticipant for IcSortieParticipant {
             } => {
                 self.config.check(ctx, false)?;
                 let request = start.request;
+                let withheld = start
+                    .withheld
+                    .as_ref()
+                    .map(|w| w.capture(request))
+                    .transpose()?;
                 let start = &start.permit;
                 if start.actor != ctx.invocation().actor()
                     || start.actor != facts.dispatcher()
@@ -277,6 +283,7 @@ impl OwnerParticipant for IcSortieParticipant {
                         action: ctx.action().clone(),
                         protocol: CapturedProtocol::capture(&self.config.claims),
                         dispatcher: start.actor,
+                        withheld,
                         admission_digest: facts.binding_digest().map_err(bad)?,
                         at_ic: ctx.world().world_ic_now(),
                         unit: start.unit.clone(),
@@ -337,6 +344,11 @@ impl OwnerParticipant for IcSortieParticipant {
                     at_ic: event.at_ic.clone(),
                     conditions_digest: digest,
                     unit_digest,
+                    coverage: event
+                        .coverage
+                        .as_ref()
+                        .map(|c| c.capture(&before.open))
+                        .transpose()?,
                 };
                 close.event_digest = close.event_digest(&before.open)?;
                 let mut row = (**before).clone();
@@ -508,6 +520,74 @@ pub(crate) fn fixture_close(
             Some("ic fixture terminal conditions".into()),
         )
         .map_err(bad)?,
+        coverage: None,
         _transition: HostTransition { _private: () },
     }))
+}
+
+/// Only a fixture models the missing region's genuine withholding transition.
+/// The caller must still execute and acknowledge the real four-owner Open.
+#[cfg(test)]
+pub(crate) fn fixture_withheld(
+    start: Arc<StartPermit>,
+    zone: DefinitionRef,
+    transition: DefinitionDigest,
+) -> Result<Arc<super::host::coverage::WithheldDeparture>, ParticipantError> {
+    Ok(Arc::new(
+        super::host::coverage::WithheldDeparture::from_transition(
+            start,
+            zone,
+            transition,
+            HostTransition { _private: () },
+        )?,
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_covered_close(
+    world: &World,
+    actor: ObjId,
+    open: CommitToken,
+    base: ObjId,
+    permit: Arc<super::host::coverage::WithheldDeparture>,
+    zone: DefinitionRef,
+    transition: DefinitionDigest,
+) -> Result<Arc<CloseEvent>, ParticipantError> {
+    let mut event = fixture_close(world, actor, open, base)?;
+    let actual = Arc::get_mut(&mut event).ok_or_else(|| bad("private fixture event"))?;
+    actual.coverage = Some(
+        super::host::coverage::CoverageCloseEvidence::from_transition(
+            permit,
+            zone,
+            transition,
+            HostTransition { _private: () },
+        )?,
+    );
+    Ok(event)
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_covered_loss(
+    world: &World,
+    actor: ObjId,
+    open: CommitToken,
+    base: ObjId,
+    permit: Arc<super::host::coverage::WithheldDeparture>,
+    zone: DefinitionRef,
+    transition: DefinitionDigest,
+) -> Result<Arc<CloseEvent>, ParticipantError> {
+    let mut event = fixture_covered_close(world, actor, open, base, permit, zone, transition)?;
+    let actual = Arc::get_mut(&mut event).ok_or_else(|| bad("private loss fixture"))?;
+    actual.kind = EventKind::Destroyed {};
+    actual.conditions = UnitMutationPlan::new(
+        vec![mush_tactics::UnitMutationOp::SetSectionCondition {
+            section: mush_tactics::SectionId::new("hull").map_err(bad)?,
+            condition: mush_tactics::ConditionId::new(crate::arena::damage::WRECK_CONDITION)
+                .map_err(bad)?,
+        }],
+        Some(actual.unit.revision()),
+        Some("private region loss fixture".into()),
+    )
+    .map_err(bad)?;
+    Ok(event)
 }

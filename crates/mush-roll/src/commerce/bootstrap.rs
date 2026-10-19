@@ -105,6 +105,9 @@ fn empty_in_txn(
             }
         };
     }
+    empty!(&f.paid_resales);
+    empty!(&f.paid_resale_heads);
+    empty!(&f.paid_holders);
     empty!(&f.charter_pending_offers);
     empty!(&f.charter_pending);
     empty!(&f.charter_pending_heads);
@@ -113,6 +116,7 @@ fn empty_in_txn(
     empty!(&f.charter_ownership);
     empty!(&f.lapse_occurrences);
     empty!(&f.ic_claims);
+    empty!(&f.coverages);
     empty!(&f.registry_recalls);
     empty!(&f.measured_recalls);
     empty!(&f.reconformance_heads);
@@ -176,6 +180,9 @@ fn validate_setup_boot(
             }
         };
     }
+    empty!(&f.paid_resales);
+    empty!(&f.paid_resale_heads);
+    empty!(&f.paid_holders);
     empty!(&f.charter_pending_offers);
     empty!(&f.charter_pending);
     empty!(&f.charter_pending_heads);
@@ -184,6 +191,7 @@ fn validate_setup_boot(
     empty!(&f.charter_ownership);
     empty!(&f.lapse_occurrences);
     empty!(&f.ic_claims);
+    empty!(&f.coverages);
     empty!(&f.registry_recalls);
     empty!(&f.measured_recalls);
     empty!(&f.reconformance_heads);

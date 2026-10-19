@@ -531,3 +531,5 @@ fn exhausted_generation_refuses_before_any_new_offer_or_money() -> TestResult {
 
 #[path = "capacity_tests.rs"]
 mod capacity_tests;
+
+mod holder;

@@ -5,8 +5,13 @@
 use super::*;
 
 mod charter_pending;
+mod conduct;
 mod core_integration;
 mod core_refit;
+mod coverage;
+pub(super) use conduct::{
+    Protocol as ConductProtocol, RequiredImages as ConductRequiredImages, conduct_change,
+};
 mod entitlement;
 mod house;
 mod house_renewal;
@@ -19,6 +24,9 @@ use crate::{CommitToken, DefinitionRef};
 pub(super) use charter_pending::{Protocol as CharterPendingProtocol, charter_pending_change};
 pub(super) use core_integration::{Protocol as CoreIntegrationProtocol, core_integration_change};
 pub(super) use core_refit::{Protocol as CoreRefitProtocol, refit_change};
+pub(super) use coverage::{
+    Protocol as CoverageProtocol, RequiredImages as CoverageRequiredImages, coverage_change,
+};
 pub(super) use entitlement::{Protocol as EntitlementProtocol, entitlement_change};
 pub(super) use house::{Protocol as HouseProtocol, house_change};
 pub(super) use house_renewal::{
@@ -259,6 +267,18 @@ impl Verifiers {
                 verify: core_refit::verify,
             });
         }
+        if let Some(protocol) = &registry.hull_coverage {
+            rows.push(Verifier {
+                effect: protocol.admission_action().clone(),
+                verify: coverage::verify,
+            });
+        }
+        if let Some(p) = &registry.conduct_trial {
+            rows.push(Verifier {
+                effect: p.admission_action().clone(),
+                verify: conduct::verify,
+            });
+        }
         Self(rows)
     }
 
@@ -303,6 +323,8 @@ impl Verifiers {
                     })
                     || registry.core_integration.as_ref().is_some_and(|protocol| { v.effect == *protocol.admission_action() && protocol.recognizes_historical(&reservation.effect) })
                     || registry.core_refit.as_ref().is_some_and(|protocol| { v.effect == *protocol.admission_action() && protocol.recognizes_historical(&reservation.effect) })
+                    || registry.hull_coverage.as_ref().is_some_and(|protocol| {v.effect==*protocol.admission_action() && protocol.recognizes_historical(&reservation.effect)})
+                    || registry.conduct_trial.as_ref().is_some_and(|p|{v.effect==*p.admission_action() && p.recognizes_historical(&reservation.effect)})
                     || registry.mind_renewal.as_ref().is_some_and(|protocol| {
                         v.effect == *protocol.admission_action()
                             && protocol.recognizes_historical(&reservation.effect)
@@ -523,6 +545,8 @@ pub(super) fn hydrate(
     ic_claim::audit_boot(&view, &records)?;
     core_integration::audit_boot(&view, &records)?;
     core_refit::audit_boot(&view, &records)?;
+    coverage::audit_boot(&view, &records)?;
+    conduct::audit_boot(&view, &records)?;
     let state = CapacityState::rebuild(registry, records, &view)?;
     let usage = charged(
         &state,
@@ -589,6 +613,8 @@ pub(super) fn prepare(
     ic_claim::validate_changes(store, mutations, &changes, identity)?;
     core_integration::validate_changes(store, mutations, &changes, identity)?;
     core_refit::validate_changes(store, mutations, &changes, identity)?;
+    coverage::validate_changes(store, mutations, &changes, identity)?;
+    conduct::validate_changes(store, mutations, &changes, identity)?;
     let mut replacement = None;
     let mut writes = Vec::new();
     let mut write_bytes = 0;

@@ -67,18 +67,24 @@ impl OfferRecord {
         self.attempt.unwrap_or(RenewalAttemptV1::Automatic)
     }
     pub(super) fn previous(&self) -> Option<CommitToken> {
-        match self.attempt {
-            Some(RenewalAttemptV1::BuyerRetry { previous_operation }) => Some(previous_operation),
-            _ => None,
-        }
+        self.attempt().previous_operation()
     }
     pub(super) fn validate(&self) -> Result<(), ParticipantError> {
         self.offer.validate()?;
         let terms = &self.offer.terms;
         let shape = matches!(
             (self.format, self.attempt),
-            (1, None) | (2, Some(RenewalAttemptV1::BuyerRetry { .. }))
+            (1, None)
+                | (2, Some(RenewalAttemptV1::BuyerRetry { .. }))
+                | (3, Some(RenewalAttemptV1::HolderAutomatic { .. }))
+                | (4, Some(RenewalAttemptV1::HolderRetry { .. }))
         );
+        if let Some(basis) = self.attempt().holder_basis() {
+            basis.validate()?;
+            if self.operation == basis.acceptance || self.operation == basis.ownership.operation {
+                return Err(refused());
+            }
+        }
         if !shape
             || self.previous().is_some_and(|p| {
                 p == self.operation
@@ -118,7 +124,7 @@ impl OfferRecord {
         } else {
             0
         };
-        let record_limit = if self.format == 2 {
+        let record_limit = if self.format >= 2 {
             MAX_RECORD_BYTES
         } else {
             MAX_RECORD_BYTES - reserve
@@ -134,7 +140,7 @@ impl OfferRecord {
         {
             return Err(refused());
         }
-        if self.format == 2 && self.closure.is_none() {
+        if self.format >= 2 && self.closure.is_none() {
             self.require_close_room()?;
         }
         Ok(())
@@ -228,7 +234,9 @@ pub(crate) struct OfferBook {
     rows: BTreeMap<CommitToken, OfferRecord>,
     contracts: BTreeMap<ContractId, CommitToken>,
     services: BTreeMap<CommitToken, super::service::ServiceRecord>,
-    predecessors: BTreeMap<(u64, u64), CommitToken>,
+    // The legacy holder uses generation1. A transferred holder has its own
+    // automatic/retry chain within the same unchanged total inventory bound.
+    predecessors: BTreeMap<(u64, u64, u64), CommitToken>,
     generation: u64,
     // Runtime-only: the old unfunded-only document path cannot mint this.
     combined_verified: bool,
@@ -273,17 +281,35 @@ impl OfferBook {
         }
         let highest = self
             .predecessors
-            .range((basis.licence, 0)..=(basis.licence, u64::MAX))
+            .range(
+                (
+                    basis.licence,
+                    row.attempt()
+                        .holder_basis()
+                        .map_or(1, |b| b.ownership.generation),
+                    0,
+                )
+                    ..=(
+                        basis.licence,
+                        row.attempt()
+                            .holder_basis()
+                            .map_or(1, |b| b.ownership.generation),
+                        u64::MAX,
+                    ),
+            )
             .next_back()
-            .map(|(key, op)| (key.1, *op));
+            .map(|(key, op)| (key.2, *op));
         match row.attempt() {
-            RenewalAttemptV1::Automatic => {
+            RenewalAttemptV1::Automatic | RenewalAttemptV1::HolderAutomatic { .. } => {
                 if highest.is_some_and(|(generation, _)| generation >= basis.predecessor_generation)
                 {
                     return Err(refused());
                 }
             }
-            RenewalAttemptV1::BuyerRetry { previous_operation } => {
+            RenewalAttemptV1::BuyerRetry { previous_operation }
+            | RenewalAttemptV1::HolderRetry {
+                previous_operation, ..
+            } => {
                 if highest != Some((basis.predecessor_generation, previous_operation)) {
                     return Err(refused());
                 }
@@ -318,6 +344,9 @@ impl OfferBook {
         self.predecessors.insert(
             (
                 row.offer.basis.licence,
+                row.attempt()
+                    .holder_basis()
+                    .map_or(1, |b| b.ownership.generation),
                 row.offer.basis.predecessor_generation,
             ),
             row.operation,
@@ -333,7 +362,7 @@ impl OfferBook {
         receipts: &super::receipt::RenewalReceiptAudit,
     ) -> Result<Self, ParticipantError> {
         receipts.require_complete().map_err(|_| refused())?;
-        Self::reconstruct(snapshot, documents, Some(receipts))
+        Self::reconstruct(snapshot, documents, Some(receipts), None)
     }
     /// Old unfunded-only reconstruction cannot mint the combined audit latch.
     /// A format2 unfunded link still needs its actual closed predecessor image.
@@ -341,12 +370,41 @@ impl OfferBook {
         snapshot: &EconomySnapshot,
         documents: &[(String, Vec<u8>)],
     ) -> Result<Self, ParticipantError> {
-        Self::reconstruct(snapshot, documents, None)
+        Self::reconstruct(snapshot, documents, None, None)
+    }
+    pub(crate) fn from_documents_with_resale(
+        snapshot: &EconomySnapshot,
+        documents: &[(String, Vec<u8>)],
+        receipts: &super::receipt::RenewalReceiptAudit,
+        resale: &crate::managed_paid_resale::book::PaidResaleBook,
+    ) -> Result<Self, ParticipantError> {
+        receipts.require_complete().map_err(|_| refused())?;
+        Self::reconstruct(snapshot, documents, Some(receipts), Some(resale))
+    }
+    pub(super) fn require_holder_origin(
+        row: &OfferRecord,
+        resale: &crate::managed_paid_resale::book::PaidResaleBook,
+    ) -> Result<(), ParticipantError> {
+        if let Some(basis) = row.attempt().holder_basis() {
+            basis.require_origin(
+                resale,
+                row.offer.basis.licence,
+                row.offer.terms.buyer,
+                row.offer.terms.charter,
+                row.offer.basis.predecessor_generation,
+                row.offer.basis.predecessor_operation,
+                &row.created_at_ic,
+                row.created_at_utc,
+                crate::managed_paid_resale::PaidBirthRouteV1::Entitlement,
+            )?;
+        }
+        Ok(())
     }
     fn reconstruct(
         snapshot: &EconomySnapshot,
         documents: &[(String, Vec<u8>)],
         receipts: Option<&super::receipt::RenewalReceiptAudit>,
+        resale: Option<&crate::managed_paid_resale::book::PaidResaleBook>,
     ) -> Result<Self, ParticipantError> {
         if documents.len() > MAX_RECORDS * 2 {
             return Err(refused());
@@ -377,6 +435,9 @@ impl OfferBook {
             .filter(|(k, _)| !k.starts_with(super::service::PREFIX))
         {
             let row = OfferRecord::decode(bytes)?;
+            if row.attempt().holder_basis().is_some() {
+                Self::require_holder_origin(&row, resale.ok_or_else(refused)?)?;
+            }
             if book.rows.len() == MAX_RECORDS
                 || *name != key(row.operation)
                 || book.rows.contains_key(&row.operation)
@@ -423,6 +484,9 @@ impl OfferBook {
         for row in self.rows.values() {
             let group = (
                 row.offer.basis.licence,
+                row.attempt()
+                    .holder_basis()
+                    .map_or(1, |b| b.ownership.generation),
                 row.offer.basis.predecessor_generation,
             );
             if let Some(previous) = row.previous() {
@@ -514,6 +578,7 @@ fn require_link(
     if row.previous() != Some(before.operation)
         || row.operation == before.operation
         || row.contract == before.contract
+        || row.attempt().holder_basis() != before.attempt().holder_basis()
         || row.offer.basis != before.offer.basis
         || row.offer.terms.buyer != before.offer.terms.buyer
         || row.offer.terms.charter != before.offer.terms.charter

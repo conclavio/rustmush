@@ -1,0 +1,59 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.governed_hardware",
+    "version": 1,
+    "kind": "rules_definition",
+    "requires": [],
+    "digest": "cf2312086dfd7a3b5c93000c97ac292ab6522f966d0d3bcc8bec1e7ee71aa7cc"
+  },
+  "entries": {
+    "tacsim.hardware.catalogue": {
+      "kind": "hardware_catalogue",
+      "def": {
+        "format": 1,
+        "instrument": "tacsim.credit",
+        "scale": 2,
+        "tank": "tacsim.unit.line_tank",
+        "tank_minor": 10000000,
+        "core_minor": [
+          300000,
+          800000,
+          2500000
+        ],
+        "integration_permille": 100,
+        "fitting_minor": 10000,
+        "monthly_dies": [
+          64,
+          16,
+          4
+        ]
+      }
+    },
+    "core_integrate": {
+      "kind": "hardware_recipe",
+      "def": {
+        "format": 1,
+        "label": "Certified governed core integration",
+        "process": "integrate",
+        "work_units": [
+          24,
+          48,
+          96
+        ]
+      }
+    },
+    "core_refit": {
+      "kind": "hardware_recipe",
+      "def": {
+        "format": 1,
+        "label": "Governed line-tank core fitting",
+        "process": "refit",
+        "work_units": [
+          1,
+          2,
+          4
+        ]
+      }
+    }
+  }
+}

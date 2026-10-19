@@ -133,7 +133,42 @@ impl RenewalMarkerV1 {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RenewalAttemptV1 {
     Automatic,
-    BuyerRetry { previous_operation: CommitToken },
+    BuyerRetry {
+        previous_operation: CommitToken,
+    },
+    HolderAutomatic {
+        basis: crate::managed_paid_resale::RenewalHolderBasisV1,
+    },
+    HolderRetry {
+        basis: crate::managed_paid_resale::RenewalHolderBasisV1,
+        previous_operation: CommitToken,
+    },
+}
+
+impl RenewalAttemptV1 {
+    pub const fn holder_basis(self) -> Option<crate::managed_paid_resale::RenewalHolderBasisV1> {
+        match self {
+            Self::HolderAutomatic { basis } | Self::HolderRetry { basis, .. } => Some(basis),
+            _ => None,
+        }
+    }
+    pub const fn previous_operation(self) -> Option<CommitToken> {
+        match self {
+            Self::BuyerRetry { previous_operation }
+            | Self::HolderRetry {
+                previous_operation, ..
+            } => Some(previous_operation),
+            _ => None,
+        }
+    }
+    pub const fn record_format(self) -> u16 {
+        match self {
+            Self::Automatic => 1,
+            Self::BuyerRetry { .. } => 2,
+            Self::HolderAutomatic { .. } => 3,
+            Self::HolderRetry { .. } => 4,
+        }
+    }
 }
 
 /// Opaque actual owner output; no decoder, clone or public constructor.
@@ -229,6 +264,29 @@ pub(crate) fn prepare_retry(
         state,
         &install::OfferContext::from(context),
         request,
+        previous_operation,
+    )
+}
+
+pub(crate) fn prepare_holder_offer(
+    state: &EconomyStore,
+    context: &OwnerPrepareContext<'_>,
+    offer: RenewalOffer,
+    basis: crate::managed_paid_resale::RenewalHolderBasisV1,
+    previous_operation: Option<CommitToken>,
+) -> Result<
+    (
+        RenewalOfferOutput,
+        install::OfferPatch,
+        Vec<mush_core::authoritative::ReplayWrite>,
+    ),
+    ParticipantError,
+> {
+    install::holder_offer(
+        state,
+        &install::OfferContext::from(context),
+        offer,
+        basis,
         previous_operation,
     )
 }

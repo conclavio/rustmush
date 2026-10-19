@@ -132,7 +132,6 @@ fn underwriting_product_rejects_unbounded_ambiguous_and_unknown_declarations() -
         ("/loss_rule", json!("any_journey_failure")),
         ("/hulls", json!([])),
         ("/zones", json!([])),
-        ("/approvals", json!([])),
         ("/hulls/0/digest", json!(digest(0))),
         ("/approvals/0/format", json!(2)),
         ("/approvals/0/certification", json!(digest(0))),
@@ -205,6 +204,31 @@ fn underwriting_product_accepts_real_zero_based_org_scope_and_account_ids() -> T
     assert_eq!(
         CoverageProductV1::decode(&serde_json::to_vec(&product)?)?,
         product
+    );
+    Ok(())
+}
+
+#[test]
+fn underwriting_ordinary_product_accepts_empty_approvals_without_qualification() -> TestResult {
+    let original = product()?;
+    let mut value = serde_json::to_value(&original)?;
+    value["approvals"] = json!([]);
+    let ordinary = CoverageProductV1::decode(&serde_json::to_vec(&value)?)?;
+    assert!(ordinary.approvals().is_empty());
+    assert_ne!(ordinary.digest()?, original.digest()?);
+    assert_eq!(
+        ordinary
+            .illustrate(Amount::from_minor(1_000_000))?
+            .ordinary()
+            .premium(),
+        Amount::from_minor(10_000)
+    );
+    // The conditional illustration is arithmetic only. No actual approved
+    // selection exists, and the ordinary producer never accepts one.
+    assert_eq!(serde_json::to_value(&ordinary)?, value);
+    assert_eq!(
+        CoverageProductV1::decode(&serde_json::to_vec(&original)?)?,
+        original
     );
     Ok(())
 }

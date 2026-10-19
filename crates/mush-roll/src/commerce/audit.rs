@@ -328,6 +328,94 @@ pub(crate) fn audit_and_open_house_renewal_configured(
     registry: Option<&dyn super::rating::registration::Installer>,
     pending_charters: bool,
 ) -> Result<(), PublicationError> {
+    audit_and_open_paid_resale_configured(
+        ctx,
+        families,
+        ratings,
+        shells,
+        paid,
+        forks,
+        dependent_owners,
+        entitlements,
+        renewals,
+        update,
+        owner_qualification,
+        owner_attestations,
+        ic,
+        houses,
+        house_renewals,
+        registry,
+        pending_charters,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn audit_and_open_paid_resale_configured(
+    ctx: &mut ModuleCtx<'_>,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    shells: &ShellReservations,
+    paid: bool,
+    forks: bool,
+    dependent_owners: bool,
+    entitlements: bool,
+    renewals: bool,
+    update: Option<&mush_core::DefinitionRef>,
+    owner_qualification: bool,
+    owner_attestations: bool,
+    ic: Option<&dyn super::ic_claims::registration::Installer>,
+    houses: bool,
+    house_renewals: bool,
+    registry: Option<&dyn super::rating::registration::Installer>,
+    pending_charters: bool,
+    paid_resales: bool,
+) -> Result<(), PublicationError> {
+    audit_and_open_coverage_configured(
+        ctx,
+        families,
+        ratings,
+        shells,
+        paid,
+        forks,
+        dependent_owners,
+        entitlements,
+        renewals,
+        update,
+        owner_qualification,
+        owner_attestations,
+        ic,
+        houses,
+        house_renewals,
+        registry,
+        pending_charters,
+        paid_resales,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn audit_and_open_coverage_configured(
+    ctx: &mut ModuleCtx<'_>,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    shells: &ShellReservations,
+    paid: bool,
+    forks: bool,
+    dependent_owners: bool,
+    entitlements: bool,
+    renewals: bool,
+    update: Option<&mush_core::DefinitionRef>,
+    owner_qualification: bool,
+    owner_attestations: bool,
+    ic: Option<&dyn super::ic_claims::registration::Installer>,
+    houses: bool,
+    house_renewals: bool,
+    registry: Option<&dyn super::rating::registration::Installer>,
+    pending_charters: bool,
+    paid_resales: bool,
+    coverage: bool,
+) -> Result<(), PublicationError> {
     ctx.state_mut::<RollStore>()
         .ok_or(PublicationError::Unavailable)?
         .close_commerce_for_audit()
@@ -374,6 +462,7 @@ pub(crate) fn audit_and_open_house_renewal_configured(
             None if stopped.is_empty() => {}
             None => return Err(PublicationError::Unavailable),
         }
+        super::coverage::audit::all(ctx, roll, families, coverage)?;
         let ic_inventory = match ic {
             Some(owner) => Some(owner.audit(ctx, roll, families, ratings)?),
             None => {
@@ -385,6 +474,13 @@ pub(crate) fn audit_and_open_house_renewal_configured(
             ctx,
             families,
             pending_charters,
+            ic_inventory.as_ref(),
+        )?;
+        super::paid_resale::audit::audit(
+            ctx,
+            families,
+            ratings,
+            paid_resales,
             ic_inventory.as_ref(),
         )?;
         (stamp, ic_inventory)
@@ -729,6 +825,9 @@ fn audit(
             RootAnchor::UpdateOperation(token) => {
                 read(ctx, &f.line_updates, token.to_string())?.revision
             }
+            RootAnchor::Coverage(commit, digest) => {
+                super::coverage::audit::root(ctx, f, *commit, *digest)?
+            }
             RootAnchor::IcClaim(commit, digest) => {
                 let claim = read(ctx, &f.ic_claims, commit.to_hex())?;
                 if claim.open.digest()? != *digest {
@@ -782,6 +881,13 @@ fn audit(
             }
             RootAnchor::CharterTransferOffer(_, _) | RootAnchor::CharterTransfer(_, _, _, _) => {
                 let actual = super::charter_transfer::audit::root(ctx, f, &anchor)?;
+                if actual.anchor != anchor {
+                    return Err(PublicationError::Mismatch);
+                }
+                actual.identity
+            }
+            RootAnchor::PaidResaleFunding(..) | RootAnchor::PaidResaleTerminal(..) => {
+                let actual = super::paid_resale::audit::root(ctx, f, ratings, &anchor)?;
                 if actual.anchor != anchor {
                     return Err(PublicationError::Mismatch);
                 }

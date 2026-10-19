@@ -32,6 +32,7 @@ use crate::{TacsimRuleset, minds::registry::composition::Registration};
 /// catalog and genuine application of the fixed shipped Registry ground.
 pub struct MindCommerce {
     registry: Registration,
+    coverage: Option<crate::underwriting::CoverageConfiguration>,
     minds_facts: Option<mush_roll::commerce::facts::MindsFactProvider>,
     ic: Option<crate::minds::ic_sortie::registration::Composition>,
     mode: CommerceMode,
@@ -41,6 +42,7 @@ pub struct MindCommerce {
     compatible_update_action: Option<DefinitionRef>,
     charter_transfer_action: Option<DefinitionRef>,
     registry_revocation_action: Option<DefinitionRef>,
+    paid_resales: Option<mush_market::mind_paid_resale::PaidResaleConfig>,
     pending_charters: Option<(
         mush_roll::commerce::PendingCharterTransferConfig,
         mush_economy::managed_charter_transfer::CharterPendingConfig,
@@ -85,6 +87,7 @@ impl MindCommerce {
         let filing_action = roll.initial_filing_action()?;
         Ok(Self {
             registry,
+            coverage: None,
             minds_facts: None,
             ic: None,
             mode,
@@ -95,6 +98,7 @@ impl MindCommerce {
             charter_transfer_action: None,
             registry_revocation_action: None,
             pending_charters: None,
+            paid_resales: None,
             house_filing_action: None,
             house_purchases: None,
             house_purchase_actions: None,
@@ -203,6 +207,46 @@ impl MindCommerce {
                 ic.writer.clone(),
             )?;
         self.ic = Some(ic);
+        Ok(self)
+    }
+    /// Explicit ordinary hull cover. This composes real owners but produces no
+    /// region event, withheld departure permit or qualified conduct proof.
+    pub fn with_hull_coverage(
+        mut self,
+        service: mush_core::ObjId,
+        products: Vec<crate::underwriting::CoverageProductV1>,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.ic.is_none() || self.coverage.is_some() {
+            return Err(ModError::msg(
+                "coverage requires one actual Active IC composition",
+            ));
+        }
+        let economy = DefinitionRegistryBuilder::new()
+            .register(
+                OwnerId::new("economy").map_err(error)?,
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("owner_participant").map_err(error)?,
+                    DefinitionId::new("initial_filing").map_err(error)?,
+                    1,
+                    self.filing.definition_payload(),
+                )
+                .map_err(error)?,
+            )
+            .map_err(error)?;
+        let retention = DefinitionRegistryBuilder::new()
+            .register(
+                OwnerId::new("roll").map_err(error)?,
+                commercial_roots_descriptor()?,
+            )
+            .map_err(error)?;
+        let coverage = crate::underwriting::CoverageConfiguration::new(
+            self.manifest().clone(),
+            PurchaseParticipants::new(economy, retention).map_err(error)?,
+            service,
+            products,
+        )?;
+        self.roll = coverage.configure_roll(self.roll)?;
+        self.coverage = Some(coverage);
         Ok(self)
     }
     pub fn configure_ic_physical(
@@ -418,6 +462,45 @@ impl MindCommerce {
         Ok(self)
     }
 
+    /// Optional transfer of an existing personal paid instrument. Captured
+    /// term dates, seats, source form, royalty basis and old warrants survive.
+    /// No offer is accepted and no account is selected by this constructor.
+    pub fn with_paid_mind_resales(
+        mut self,
+        service: mush_core::ObjId,
+        offer_seconds: i64,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.paid_resales.is_some() {
+            return Err(ModError::msg(
+                "paid resale requires one Active configuration",
+            ));
+        }
+        let participants = self
+            .purchases
+            .as_ref()
+            .map(|p| p.participants().clone())
+            .or_else(|| {
+                self.house_purchases
+                    .as_ref()
+                    .map(|p| p.participants().clone())
+            })
+            .ok_or_else(|| ModError::msg("paid resale requires an actual purchase composition"))?;
+        let writer = mush_roll::commerce::paid_resale::writer::PaidResaleWriter::new();
+        let config = mush_market::mind_paid_resale::PaidResaleConfig::new(
+            self.filing.issuer().clone(),
+            service,
+            offer_seconds,
+            participants.clone(),
+            writer.clone(),
+            self.registry_revocation_action.clone(),
+        )?;
+        self.roll = self
+            .roll
+            .with_paid_mind_resale(writer, participants, service)?;
+        self.paid_resales = Some(config);
+        Ok(self)
+    }
+
     /// Explicit scoped Registry authority for one current accepted term.
     /// Existing terms and captured sorties are not rewritten or reclaimed.
     pub fn with_registry_revocation(
@@ -431,6 +514,9 @@ impl MindCommerce {
                 self.filing.catalog().clone(),
                 Some(action.clone()),
             )?;
+        }
+        if let Some(config) = self.paid_resales.take() {
+            self.paid_resales = Some(config.with_registry_revocation(action.clone())?);
         }
         self.registry_revocation_action = Some(action);
         self.roll = self.roll.with_registry_revocation(policy)?;
@@ -552,6 +638,9 @@ impl MindCommerce {
             .map(|ic| ic.layer(&layer.cfg))
             .transpose()?;
         layer.registry_commerce = Some(self.registry.clone());
+        if let Some(coverage) = &self.coverage {
+            layer = layer.with_hull_coverage(coverage.clone())?;
+        }
         Ok(layer)
     }
 
@@ -624,13 +713,24 @@ impl MindCommerce {
             ),
             _ => module,
         };
-        match &self.house_renewal_service {
+        let module = match &self.house_renewal_service {
             // This private option is produced only by the checked Market/Roll
             // builder. The preceding branch installs those same immutable
             // participants and manifest afresh, with no service yet attached.
             Some(action) => module
                 .with_house_mind_renewal_service(action.clone())
                 .expect("checked House renewal composition has the same service reference"),
+            None => module,
+        };
+        let module = match &self.paid_resales {
+            Some(config) => module
+                .with_paid_mind_resale(config.economy().expect("checked paid resale composition")),
+            None => module,
+        };
+        match &self.coverage {
+            Some(coverage) => coverage
+                .configure_economy(module)
+                .expect("checked fixed native coverage actions"),
             None => module,
         }
     }
@@ -651,8 +751,12 @@ impl MindCommerce {
             Some(config) => module.with_house_minds(config.clone()),
             None => module,
         };
-        match &self.house_renewals {
+        let module = match &self.house_renewals {
             Some(config) => module.with_house_mind_renewals(config.clone()),
+            None => module,
+        };
+        match &self.paid_resales {
+            Some(config) => module.with_paid_mind_resale(config.clone()),
             None => module,
         }
     }

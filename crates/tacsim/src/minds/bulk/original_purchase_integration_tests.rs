@@ -267,6 +267,7 @@ fn reference(owner: &str, kind: &str, id: &str, payload: Value) -> TestResult<De
 }
 #[derive(Clone)]
 struct PurchaseConfiguration {
+    paid_resales: Option<mush_market::mind_paid_resale::PaidResaleConfig>,
     quotes: OriginalQuoteConfig,
     purchases: OriginalPurchaseConfig,
     participants: PurchaseParticipants,
@@ -277,6 +278,18 @@ struct PurchaseConfiguration {
     entitlements: Option<mush_market::mind_entitlement::EntitlementConfig>,
     renewals: Option<mush_market::mind_renewal::RenewalConfig>,
     minds_facts: Option<mush_roll::commerce::facts::MindsFactProvider>,
+}
+fn resale_configuration(
+    participants: PurchaseParticipants,
+) -> Result<mush_market::mind_paid_resale::PaidResaleConfig, ModError> {
+    mush_market::mind_paid_resale::PaidResaleConfig::new(
+        issuer().map_err(module_error)?,
+        GOD,
+        600,
+        participants,
+        mush_roll::commerce::paid_resale::writer::PaidResaleWriter::new(),
+        None,
+    )
 }
 fn configuration(manifest: DefinitionRef, source_forms: bool) -> TestResult<PurchaseConfiguration> {
     let quotes = OriginalQuoteConfig::new(
@@ -320,6 +333,7 @@ fn configuration(manifest: DefinitionRef, source_forms: bool) -> TestResult<Purc
     let purchases =
         OriginalPurchaseConfig::new(quotes.clone(), participants.clone(), writer.clone())?;
     Ok(PurchaseConfiguration {
+        paid_resales: None,
         quotes,
         purchases,
         participants,
@@ -401,6 +415,7 @@ fn renewal_configuration(
 type PurchaseShared = Arc<Mutex<Option<PurchaseConfiguration>>>;
 
 struct PurchaseRoll {
+    paid_resales: bool,
     minds_facts: Option<mush_roll::commerce::facts::MindsFactProvider>,
     source_forms: bool,
     authored_forks: bool,
@@ -553,6 +568,18 @@ impl GameModule for PurchaseRoll {
         } else {
             config
         };
+        let config = if self.paid_resales {
+            let resale = resale_configuration(purchase.participants.clone())?;
+            let config = config.with_paid_mind_resale(
+                resale.writer(),
+                purchase.participants.clone(),
+                GOD,
+            )?;
+            purchase.paid_resales = Some(resale);
+            config
+        } else {
+            config
+        };
         // Every genuine story that changes a charter title uses the actual
         // closed seller/buyer protocol. Ordinary production composition remains
         // explicit; this is the Active commerce fixture's declared option.
@@ -617,6 +644,9 @@ impl GameModule for PurchaseEconomy {
             .with_title_issuers(vec![issuer().map_err(module_error)?])
             .with_initial_filing(filing_policy().map_err(module_error)?, action)
             .with_original_mind_purchases(purchase.purchases.actions()?);
+        if let Some(resale) = purchase.paid_resales {
+            module = module.with_paid_mind_resale(resale.economy()?);
+        }
         if let Some(provider) = purchase.minds_facts {
             module = module.with_fact_provider(Arc::new(provider));
         }
@@ -724,6 +754,9 @@ impl GameModule for PurchaseMarket {
         let mut module = MarketModule::new()
             .with_venue_gate(Arc::new(Venue))
             .with_original_mind_purchases(config.purchases);
+        if let Some(resale) = config.paid_resales {
+            module = module.with_paid_mind_resale(resale);
+        }
         if let Some(entitlement) = config.entitlements {
             module = module.with_mind_entitlements(entitlement);
         }
@@ -872,6 +905,7 @@ impl PurchaseFixture {
                     source_forms,
                 )),
                 Box::new(PurchaseRoll {
+                    paid_resales: false,
                     minds_facts: None,
                     source_forms,
                     authored_forks: false,

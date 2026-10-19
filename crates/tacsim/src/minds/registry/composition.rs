@@ -79,16 +79,18 @@ impl Registration {
         cfg: &TacsimConfig,
         catalog: &Catalog,
         ic: bool,
+        coverage: bool,
     ) -> Result<(), ModError> {
         self.check(cfg, catalog)?;
         // Every content descriptor has already entered this actual Tacsim
         // registrar. Its manifest validator resolves their exact references.
         let registered = if self.mode == CommerceMode::Active {
-            super::registration::register_profiles(
+            super::registration::register_profiles_with_coverage(
                 reg,
                 Arc::clone(&self.policy),
                 ic,
                 self.reconformance,
+                coverage,
             )?
             .0
         } else {

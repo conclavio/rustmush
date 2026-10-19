@@ -911,3 +911,6 @@ fn house_renewal_service_is_optional_and_retains_exact_purchase_refs() -> TestRe
     assert!(selected.with_house_mind_renewal_service().is_err());
     Ok(())
 }
+
+#[path = "paid_resale_tests.rs"]
+mod paid_resale;

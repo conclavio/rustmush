@@ -619,6 +619,97 @@ hash-verified and reconciled, with its full source census unchanged: SHA-256
 `f3b6d16a6bbf2d3af889f34ae10f554b61e01b3b993f84f761d5a99002d67211`
 (5,708 bytes, two files). Runtime and acceptance remain open.
 
+
+N87 also stopped at compilation, on a missing native-coverage test import and
+an inaccessible filing fixture helper. Its unchanged source and two-file
+archive verify: SHA-256
+`2f060cae7361afc353be21564763f873574883310a060ff588a5fa090d7b7eab`
+(6,426 bytes). The narrow two-file repair allowed N88 to compile. N88's exact
+tree `b3f4f29a51b00f5a10e70b97e22e7f341e22a65a` is committed and pushed as `3654f439`.
+Its completed run reports 2,220 passing test executions,
+0 failed assertions and 2 ignored tests across
+53 stages; overlapping focused and full suites are not
+unique tests. Native coverage, Industry and Economy aborted with stack
+overflows, so their incomplete stages are failures even where preceding cases
+printed passes. Core executed all 694 tests successfully; its runner still
+returned failure because a six-test prefix used the file name instead of the
+Rust module name. That prefix is corrected for the next candidate; N88's raw
+failure is retained. Both genuine purchase-story stages remained unstarted.
+The full source census and every retained log verify unchanged. The archive is
+SHA-256 `ffbcdfce919a8dfa369551852ce470ff5d32bb7c58af95c43d6013135658eaa6`
+(109,928 bytes, 54 files).
+
+Reviewed source added after N88 includes the actual paid-resale producer and
+paired native/Roll/Market recovery, plus transferred-holder renewal providers.
+Receipts use the acceptance commit key reserved by Core while preserving the
+later terminal operation in their immutable history. Its genuine continuation
+and focused owner/composition cases await execution. The finite shipped
+hardware pack now publishes the class I/II/III integration and refit recipes
+through the actual enabled content ledger. Actual production composition,
+funded manufacture/delivery/refit and activation still require completion.
+
+The actual Conduct worker now measures its fixed role trials using the real
+simulation, subject interpreter, cargo and observations; ten focused checks
+await execution. This worker alone grants no qualification. The separate
+acknowledged Conduct owner, quota, retained result and current-certificate
+integration remain required. The registered-owner ceiling is now sixteen to
+fit the twelve-adapter optional roster; its exact 16/17 boundary keeps the
+ordinary three-image/two-module and closed IC four-image/four-module limits.
+
+The native hull-coverage owner and reviewed Core completion reservation are
+integrated. Core reserves six exact Tacsim/Roll targets totaling 131,072 bytes,
+requires both real owner images and binds terminal rows to the original policy
+commit. Ten structural Core tests await execution; they do not substitute for
+the actual underwriting producer, withheld host departure, money or cold
+recovery stories. No newly prepared package is acceptance or deployment.
+
+The completed N88 binary was then reproduced under gdb without argument data or
+a larger stack allowance. Coverage and PendingTransfer measured the same
+1,279,296-byte Economy participant dispatch frame; Industry faulted while
+allocating that same frame. A reviewed split moves all 44 unchanged request
+branches into separate private typed preparation functions. Every original
+branch and argument order is retained. This repair requires execution and a
+post-change frame measurement; no passing runtime result is inferred from it.
+
+The ordinary underwriting producer is now integrated after two independent
+source reviews. It publishes through the actual scoped Org and metadata owner,
+then requires an acknowledged IC Open plus retained private departure before
+Quote/Bind. The actual E4/Roll path reserves premium/liability/collateral and
+Core completion room before one-shot departure release. A refusal-only host
+and issuer check repeats at stage and consuming take; historical terminal
+cleanup does not require fresh issuer eligibility. Its genuine child covers
+Unknown/observed NoIntent retry, cold inverse joins, real delayed destruction
+Claim and clean/cancel release. Three composition tests, one Roll close codec,
+one new product check and that child await Linux execution. Qualified Conduct
+discounts, launch publication and live-region acceptance remain separate.
+
+N89 and N90 stopped at compilation and executed no runtime tests. Both source
+censuses and evidence archives verify unchanged inputs. N89 tree
+`6282687de52493c122e696b35e1ad0e2e3b9e678` needed an explicit captured
+`Option<CommitToken>` annotation; archive SHA-256
+`3e5daf7a1b12e160e85c91f69d747096d1efe1fca3368a0dbf171ed398402e20`
+(2,700 bytes). N90 tree `e8b9f57a303b8fcbeeb23d1aa9b13e6a8b3dd6c9`
+reached Roll's resale/renewal integration and found private paths, stale API
+calls and a missing House issuer argument. Archive SHA-256
+`b354e693098762c2cfcbecdbf7379258aa1286c2dd2c4f498b2298d42e5c61ff`
+(7,149 bytes). The reviewed repair restores exact issuer checking as well as
+correcting those calls; it does not drop caller validation.
+
+Conduct Core completion is now integrated after independent Core and producer
+API reviews. Its fixed execution/result reservation is two targets and 8,192
+bytes, with all three real owner images required before preparation and again
+at composed consumption. Immutable admission, prepaid work, cancellation,
+stopped-worker recovery and cold reverse joins have ten prepared structural
+tests. Native owner/service and qualification evidence remain outstanding.
+The role worker also now checks retained movement after silent answers; its
+new adversarial case prevents an old drive order escaping the stop rule.
+Three further actual paid-resale route continuations cover OriginalV3,
+DerivedV1 and transferable HouseV1. They remain children of the existing
+genuine purchase story, not separate passed top-level tests. Two JSON content
+files are normalized to the repository's required LF line endings, preserving
+their parsed definitions. No performance exception changes these correctness
+requirements or turns an unexecuted story into acceptance.
+
 Subsequent reviewed source packages, not included in N82, add:
 
 - The actual House renewal E4/Roll/Market providers, native contract/hold inverse
@@ -692,8 +783,10 @@ focused checks; their combined genuine-story and final acceptance gates remain.
 Automatic re-conformance, current certificate selection and the scoped house
 catalogue reader now have reviewed implementations awaiting their combined
 runtime evidence. House renewal now awaits its combined runtime and genuine-story
-evidence. Remaining implementation includes the paired paid-licence resale
-producer, underwriting and production activation. The governed refit owner is
+evidence. The paired paid-licence resale producer is now integrated and needs
+its combined execution evidence. Remaining implementation includes the
+acknowledged Conduct qualification, qualified underwriting and production
+activation. The ordinary underwriting producer now awaits runtime evidence. The governed refit owner is
 source-complete and reviewed but awaits runtime and genuine-flow acceptance.
 Reviewed checkout and delivery need their combined runtime
 and genuine-story acceptance.

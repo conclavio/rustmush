@@ -17,11 +17,16 @@ use std::collections::BTreeSet;
 
 #[path = "house_renewal_integration_tests.rs"]
 mod renewal;
+#[path = "house_resale_integration_tests.rs"]
+mod resale;
+type ResaleShared = Arc<Mutex<Option<mush_market::mind_paid_resale::PaidResaleConfig>>>;
 type RenewalShared = Arc<Mutex<Option<mush_market::mind_house_renewal::RenewalConfig>>>;
 
 const FIRST: u128 = 19_000_000;
 type HouseShared = Arc<Mutex<Option<HouseConfig>>>;
 struct Roll {
+    paid_resales: bool,
+    resale: ResaleShared,
     renewals: bool,
     shared: Shared,
     house: HouseShared,
@@ -62,7 +67,7 @@ impl GameModule for Roll {
                     permille: 0,
                     recipient: None,
                 },
-                transferable: false,
+                transferable: self.paid_resales,
                 term_seconds: TERM_SECONDS,
                 grace_seconds: GRACE_SECONDS,
                 quote_seconds: QUOTE_SECONDS,
@@ -114,6 +119,14 @@ impl GameModule for Roll {
         } else {
             commerce
         };
+        let commerce = if self.paid_resales {
+            let r = resale_configuration(config.participants().clone())?;
+            let next = commerce.with_paid_mind_resale(r.writer(), r.participants().clone(), GOD)?;
+            *self.resale.lock().map_err(module_error)? = Some(r);
+            next
+        } else {
+            commerce
+        };
         self.shared.lock().map_err(module_error)?.filing = Some(commerce.initial_filing_action()?);
         *self.house.lock().map_err(module_error)? = Some(config);
         let mut inner =
@@ -140,6 +153,7 @@ impl GameModule for Roll {
     }
 }
 struct Economy {
+    resale: ResaleShared,
     shared: Shared,
     house: HouseShared,
     renewal: RenewalShared,
@@ -190,6 +204,9 @@ impl GameModule for Economy {
                         .ok_or_else(|| ModError::msg("service"))?,
                 )?;
         }
+        if let Some(r) = self.resale.lock().map_err(module_error)?.clone() {
+            inner = inner.with_paid_mind_resale(r.economy()?);
+        }
         inner.register(reg)?;
         self.inner = Some(inner);
         Ok(())
@@ -206,6 +223,7 @@ impl GameModule for Economy {
     }
 }
 struct Market {
+    resale: ResaleShared,
     house: HouseShared,
     renewal: RenewalShared,
     inner: Option<MarketModule>,
@@ -226,6 +244,9 @@ impl GameModule for Market {
             .with_house_minds(config);
         if let Some(r) = self.renewal.lock().map_err(module_error)?.clone() {
             inner = inner.with_house_mind_renewals(r);
+        }
+        if let Some(r) = self.resale.lock().map_err(module_error)?.clone() {
+            inner = inner.with_paid_mind_resale(r);
         }
         inner.register(reg)?;
         reg.command(
@@ -308,9 +329,18 @@ fn boot(registry: &Fixture, saved: &Durable) -> TestResult<PlayerWorld> {
     boot_options(registry, saved, false)
 }
 fn boot_options(registry: &Fixture, saved: &Durable, renewals: bool) -> TestResult<PlayerWorld> {
+    boot_resale_options(registry, saved, renewals, false)
+}
+fn boot_resale_options(
+    registry: &Fixture,
+    saved: &Durable,
+    renewals: bool,
+    paid_resales: bool,
+) -> TestResult<PlayerWorld> {
     let shared: Shared = Arc::new(Mutex::new(Registered::default()));
     let house: HouseShared = Arc::new(Mutex::new(None));
     let renewal: RenewalShared = Arc::new(Mutex::new(None));
+    let resale: ResaleShared = Arc::new(Mutex::new(None));
     let manifest = registry.definitions.manifest().clone();
     let mut cfg = registry.resources.config();
     cfg.enabled = true;
@@ -333,6 +363,8 @@ fn boot_options(registry: &Fixture, saved: &Durable, renewals: bool) -> TestResu
             shared: shared.clone(),
         }),
         Box::new(Roll {
+            paid_resales,
+            resale: resale.clone(),
             renewals,
             renewal: renewal.clone(),
             shared: shared.clone(),
@@ -340,12 +372,14 @@ fn boot_options(registry: &Fixture, saved: &Durable, renewals: bool) -> TestResu
             inner: None,
         }),
         Box::new(Economy {
+            resale: resale.clone(),
             renewal: renewal.clone(),
             shared: shared.clone(),
             house: house.clone(),
             inner: None,
         }),
         Box::new(Market {
+            resale,
             house,
             renewal,
             inner: None,
@@ -1153,6 +1187,7 @@ pub(super) fn exercise(
         .enable_all()
         .build()?;
     runtime.block_on(async {
+        resale::exercise(registry, saved)?;
         let (granted, licence, renewed) = flow(registry, saved, organization, scope)?;
         renewal::checkout(registry, &renewed, licence).await?;
         checkout(registry, &granted, licence).await

@@ -136,14 +136,31 @@ pub(crate) fn audit(
             .action_state(&f.house_economics, &term_key)
             .map_err(|_| PublicationError::Unavailable)?;
         match row.phase {
-            PurchasePhase::Granted { .. } => history::verify_grant(
-                row,
-                licence.ok_or(PublicationError::Missing)?,
-                term.ok_or(PublicationError::Missing)?,
-                economics.ok_or(PublicationError::Missing)?,
-                actual,
-                rated.compatibility().digest(),
-            )?,
+            PurchasePhase::Granted { .. } => {
+                let licence = licence.ok_or(PublicationError::Missing)?;
+                let birth = super::super::paid::PersonalPaidLicence::original(
+                    row.licence,
+                    row.charter,
+                    row.line,
+                    row.holder,
+                    licence.term(),
+                    row.operation,
+                )?;
+                history::verify_grant(
+                    row,
+                    &birth,
+                    term.ok_or(PublicationError::Missing)?,
+                    economics.ok_or(PublicationError::Missing)?,
+                    actual,
+                    rated.compatibility().digest(),
+                )?;
+                super::super::paid_resale::history::current_from_birth(
+                    ctx,
+                    f,
+                    licence,
+                    super::super::entitlement::history::Birth::House(row),
+                )?;
+            }
             PurchasePhase::Funded {} | PurchasePhase::Refunded { .. } => {
                 if licence.is_some() || term.is_some() || economics.is_some() {
                     return Err(PublicationError::Mismatch);
@@ -170,7 +187,9 @@ pub(crate) fn audit(
             let licence = read(ctx, &f.paid_licences, row.licence().key())?;
             let birth = read(ctx, &f.house_allocations, licence.operation().to_hex())?;
             if operation.granted_rows()?.2 != *row
-                || !operation.binding().matches_birth(licence)
+                || !operation
+                    .binding()
+                    .matches_birth(&operation.binding().accepted_pointer(licence.term())?)
                 || operation.binding().issuer() != birth.issuer()
             {
                 return Err(PublicationError::Mismatch);

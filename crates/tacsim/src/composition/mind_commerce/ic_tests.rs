@@ -126,3 +126,6 @@ fn ic_base_descriptor_is_exact_and_double_attachment_refuses() -> TestResult {
     assert!(layer().ic_host().is_none());
     Ok(())
 }
+
+#[path = "coverage_tests.rs"]
+mod coverage;

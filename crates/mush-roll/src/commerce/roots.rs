@@ -35,6 +35,8 @@ pub(crate) enum RootAnchor {
     UpdateOperation(CommitToken),
     OwnerParent(LicenceId, mush_core::ObjId),
     PaidOperation(CommitToken),
+    PaidResaleFunding(CommitToken, mush_core::DefinitionDigest),
+    PaidResaleTerminal(CommitToken, mush_core::DefinitionDigest),
     RenewalOperation(CommitToken),
     HouseRenewalOperation(CommitToken),
     DraftRetirement(CommitToken, mush_core::DefinitionDigest),
@@ -53,6 +55,7 @@ pub(crate) enum RootAnchor {
     RegistryRevocation(CommitToken, mush_core::DefinitionDigest),
     OwnerQualification(CommitToken, mush_core::DefinitionDigest),
     IcClaim(CommitToken, mush_core::DefinitionDigest),
+    Coverage(CommitToken, mush_core::DefinitionDigest),
     OwnerAttestation(CommitToken, mush_core::DefinitionDigest),
     OwnerAttestationParent(CommitToken, mush_core::DefinitionDigest),
     Rating {
@@ -80,9 +83,16 @@ impl RootAnchor {
                 format!("v1/owner_parent/{:016x}/{:08x}", licence.get(), owner.0)
             }
             Self::PaidOperation(token) => format!("v1/paid_operation/{token}"),
+            Self::PaidResaleFunding(token, digest) => {
+                format!("v1/paid_resale_funding/{token}/{digest}")
+            }
+            Self::PaidResaleTerminal(token, digest) => {
+                format!("v1/paid_resale_terminal/{token}/{digest}")
+            }
             Self::HouseRenewalOperation(token) => format!("v1/house_renewal_operation/{token}"),
             Self::RenewalOperation(token) => format!("v1/renewal_operation/{token}"),
             Self::IcClaim(token, digest) => format!("v1/ic_claim/{token}/{digest}"),
+            Self::Coverage(token, digest) => format!("v1/coverage/{token}/{digest}"),
             Self::DraftRetirement(token, digest) => format!("v1/draft_retirement/{token}/{digest}"),
             Self::OwnerAttestation(token, digest) => {
                 format!("v1/owner_attestation/{token}/{digest}")
@@ -222,6 +232,20 @@ impl RootAnchor {
                 )
                 .map_err(|_| PublicationError::Invalid)?,
             ),
+            "paid_resale_funding" => Self::PaidResaleFunding(
+                CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
+                mush_core::DefinitionDigest::from_hex(
+                    parts.next().ok_or(PublicationError::Invalid)?,
+                )
+                .map_err(|_| PublicationError::Invalid)?,
+            ),
+            "paid_resale_terminal" => Self::PaidResaleTerminal(
+                CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
+                mush_core::DefinitionDigest::from_hex(
+                    parts.next().ok_or(PublicationError::Invalid)?,
+                )
+                .map_err(|_| PublicationError::Invalid)?,
+            ),
             "charter_pending_offer" => Self::CharterPendingOffer(
                 CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
                 mush_core::DefinitionDigest::from_hex(
@@ -270,6 +294,13 @@ impl RootAnchor {
                     .map_err(|_| PublicationError::Invalid)?,
                 )
             }
+            "coverage" => Self::Coverage(
+                CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
+                mush_core::DefinitionDigest::from_hex(
+                    parts.next().ok_or(PublicationError::Invalid)?,
+                )
+                .map_err(|_| PublicationError::Invalid)?,
+            ),
             "registry_recall" => Self::RegistryRecall(
                 CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
                 mush_core::DefinitionDigest::from_hex(

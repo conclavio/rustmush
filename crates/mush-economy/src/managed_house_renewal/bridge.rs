@@ -227,9 +227,13 @@ pub(crate) fn recover(
     {
         return Err(failed());
     }
-    let book =
-        OfferBook::from_documents_with_renewals(&exact, documents, &fold.house_renewal_receipts)
-            .map_err(|_| failed())?;
+    let book = OfferBook::from_documents_with_resale(
+        &exact,
+        documents,
+        &fold.house_renewal_receipts,
+        &fold.paid_resale_receipts,
+    )
+    .map_err(|_| failed())?;
     for id in contract_ids {
         snapshot.put_contract(contracts.remove(&id).ok_or_else(failed)?);
     }

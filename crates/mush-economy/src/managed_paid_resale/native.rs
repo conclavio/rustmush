@@ -183,7 +183,11 @@ pub(super) fn recipients(c: &PaidResaleConsentV1) -> Vec<&crate::managed_entitle
     roles.push(&t.remainder);
     roles
 }
-fn recipient_available(state: &EconomyStore, world: &World, c: &PaidResaleConsentV1) -> bool {
+pub(super) fn recipient_available(
+    state: &EconomyStore,
+    world: &World,
+    c: &PaidResaleConsentV1,
+) -> bool {
     live(world, c.terms.buyer)
         && state.snapshot.account(c.payer).is_some_and(|a| {
             a.owner == PrincipalId::Object(c.terms.buyer)
@@ -193,7 +197,11 @@ fn recipient_available(state: &EconomyStore, world: &World, c: &PaidResaleConsen
                 && a.approval.is_none()
         })
 }
-fn monetary_current(state: &EconomyStore, world: &World, c: &PaidResaleConsentV1) -> bool {
+pub(super) fn monetary_current(
+    state: &EconomyStore,
+    world: &World,
+    c: &PaidResaleConsentV1,
+) -> bool {
     if !recipient_available(state, world, c)
         || state
             .snapshot

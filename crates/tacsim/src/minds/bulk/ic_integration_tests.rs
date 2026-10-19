@@ -74,8 +74,12 @@ struct IcWorld {
     field: ObjId,
     hulls: [ObjId; 2],
     pending_charters: bool,
+    paid_resales: bool,
     registry_revocation: Option<mush_roll::commerce::registry_revocation::RegistryRevocationPolicy>,
     tasks: crate::arena_bridge::ArenaTasks,
+    coverage_products: Option<Vec<crate::underwriting::CoverageProductV1>>,
+    coverage_host: Option<crate::underwriting::CoverageHost>,
+    coverage_calls: coverage::Calls,
 }
 impl Drop for IcWorld {
     fn drop(&mut self) {
@@ -144,6 +148,60 @@ impl IcWorld {
             mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
         >,
     ) -> TestResult<Self> {
+        Self::boot_all(
+            f,
+            saved,
+            base,
+            field,
+            hulls,
+            enabled,
+            pending_charters,
+            false,
+            registry_revocation,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn boot_all(
+        f: &PurchaseFixture,
+        saved: &Durable,
+        base: ObjId,
+        field: ObjId,
+        hulls: [ObjId; 2],
+        enabled: bool,
+        pending_charters: bool,
+        paid_resales: bool,
+        registry_revocation: Option<
+            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
+        >,
+    ) -> TestResult<Self> {
+        Self::boot_all_coverage(
+            f,
+            saved,
+            base,
+            field,
+            hulls,
+            enabled,
+            pending_charters,
+            paid_resales,
+            registry_revocation,
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn boot_all_coverage(
+        f: &PurchaseFixture,
+        saved: &Durable,
+        base: ObjId,
+        field: ObjId,
+        hulls: [ObjId; 2],
+        enabled: bool,
+        pending_charters: bool,
+        paid_resales: bool,
+        registry_revocation: Option<
+            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
+        >,
+        coverage_products: Option<Vec<crate::underwriting::CoverageProductV1>>,
+    ) -> TestResult<Self> {
         let mut cfg = f.resources.config();
         cfg.enabled = true;
         let layer = crate::TacsimRuleset::with_config(cfg);
@@ -167,6 +225,11 @@ impl IcWorld {
         } else {
             composition
         };
+        let composition = if paid_resales {
+            composition.with_paid_mind_resales(GOD, 60)?
+        } else {
+            composition
+        };
         // This is the production preparation path, never cfg(test) Resources::register.
         let old_manifest = f
             .engine
@@ -185,12 +248,27 @@ impl IcWorld {
         } else {
             composition
         };
+        let composition = if let Some(products) = &coverage_products {
+            composition.with_hull_coverage(GOD, products.clone())?
+        } else {
+            composition
+        };
         let (tactics, sim) = composition.configure_ic_physical(
             mush_tactics::TacticsModule::with_catalog(crate::builtin_definitions()?.units),
             mush_sim::SimulationModule::new().with_accounts(f.accounts.clone()),
         );
         let layer = composition.configure_tacsim(layer)?;
         let host = layer.ic_host();
+        let coverage_host = layer.coverage_host();
+        let coverage_calls = coverage::calls();
+        let layer: Box<dyn GameModule> = if coverage_products.is_some() {
+            Box::new(coverage::Ingress {
+                inner: layer,
+                calls: coverage_calls.clone(),
+            })
+        } else {
+            Box::new(layer)
+        };
         let selected: SelectedTicket = Arc::new(Mutex::new(None));
         let mut modules: Vec<Box<dyn GameModule>> = vec![
             Box::new(mush_org::OrgModule::new()),
@@ -199,8 +277,10 @@ impl IcWorld {
             Box::new(mush_atlas::AtlasModule::new()),
             Box::new(tactics),
             Box::new(mush_npc::NpcModule::new()),
-            Box::new(layer),
-            Box::new(composition.configure_market(MarketModule::new())),
+            layer,
+            Box::new(composition.configure_market(
+                MarketModule::new().with_venue_gate(Arc::new(crate::port::market::PortVenueGate)),
+            )),
             Box::new(composition.configure_roll(RollModule::with_writers(["tacsim"]))),
             Box::new(
                 composition.configure_economy(
@@ -246,8 +326,12 @@ impl IcWorld {
             field,
             hulls,
             pending_charters,
+            paid_resales,
             registry_revocation,
             tasks,
+            coverage_products,
+            coverage_host,
+            coverage_calls,
         };
         result.persist_setup()?;
         result.engine.step(
@@ -369,7 +453,7 @@ impl IcWorld {
         Durable::capture(&self.engine, &self.disk)
     }
     fn reboot(&self, f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_options(
+        Self::boot_all_coverage(
             f,
             saved,
             self.base,
@@ -377,7 +461,9 @@ impl IcWorld {
             self.hulls,
             true,
             self.pending_charters,
+            self.paid_resales,
             self.registry_revocation.clone(),
+            self.coverage_products.clone(),
         )
     }
     fn ticket(&self, actor: ObjId, hull: ObjId, licence: u64) -> TestResult<IcHostTicket> {
@@ -466,6 +552,16 @@ impl IcWorld {
         o: PreparedAuthoritativeAction,
         inv: &ActionInvocation,
     ) -> TestResult {
+        self.stage_action(ticket.action(), serial, p, o, inv)
+    }
+    fn stage_action(
+        &mut self,
+        action: &DefinitionRef,
+        serial: u128,
+        p: PreparedComposedTxn,
+        o: PreparedAuthoritativeAction,
+        inv: &ActionInvocation,
+    ) -> TestResult {
         let (
             outcome,
             resolution,
@@ -474,7 +570,7 @@ impl IcWorld {
             mut durable_outbox,
             semantic_events,
         ) = o.into_parts();
-        definitions.extend([ticket.action().clone(), outcome.schema().clone()]);
+        definitions.extend([action.clone(), outcome.schema().clone()]);
         definitions.sort();
         definitions.dedup();
         if witnesses.is_empty() {
@@ -490,7 +586,7 @@ impl IcWorld {
             ingress_hash: CanonicalHash::from_bytes([3; 32]),
             request_hash: inv.request_hash(),
             plan_hash: CanonicalHash::from_bytes([4; 32]),
-            action: ticket.action().clone(),
+            action: action.clone(),
             provider: p.owner().clone(),
             cause: PreparedCausalRef::new(inv.request(), None, 0)?,
             definitions,
@@ -599,7 +695,9 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
     let first = *actual.hulls.first().ok_or("first hull")?;
     let second = *actual.hulls.get(1).ok_or("second hull")?;
     let seeded = actual.snapshot();
+    coverage::exercise(f, &actual, &seeded)?;
     pending::exercise(f, &actual, &seeded)?;
+    resale::exercise(f, &actual, &seeded)?;
     expiry_fences(f, &actual, &seeded)?;
     observed_submission(f, &actual, &seeded)?;
     let start = actual.ticket(BUYER, first, 2)?;
@@ -1158,3 +1256,9 @@ fn observed_submission(f: &PurchaseFixture, actual: &IcWorld, seeded: &Durable) 
 
 #[path = "charter_pending_integration_tests.rs"]
 mod pending;
+
+#[path = "underwriting_integration_tests.rs"]
+mod coverage;
+
+#[path = "paid_resale_integration_tests.rs"]
+mod resale;

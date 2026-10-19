@@ -63,8 +63,12 @@ pub(crate) struct Revocation {
     operation: records::RevocationOperation,
     fence: RevocationFence,
     pending: Option<super::charter_pending::publication::PendingRoots>,
+    resale: Option<super::paid_resale::publication::ResaleRoots>,
 }
 impl Revocation {
+    pub(crate) fn resale(&self) -> Option<&super::paid_resale::publication::ResaleRoots> {
+        self.resale.as_ref()
+    }
     pub(crate) fn pending(&self) -> Option<&super::charter_pending::publication::PendingRoots> {
         self.pending.as_ref()
     }
@@ -116,6 +120,6 @@ impl RevocationFence {
     }
 }
 pub(crate) use authority::Readiness;
-pub(crate) use provider::register;
+pub(crate) use provider::{register, register_with_resale};
 #[cfg(test)]
 mod tests;

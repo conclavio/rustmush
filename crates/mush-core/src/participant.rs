@@ -20,10 +20,11 @@ use crate::mechanics::{
 };
 use crate::module::{ErasedSlotCapture, ModuleStateMap, StateInit};
 
-/// Four existing commerce adapters, three IC physical adapters, hardware
-/// replacement and one shared Industry production adapter. Registration grants
-/// no per-invocation expansion; both Tactics adapters share one owner slot.
-pub const MAX_OWNER_PARTICIPANTS: usize = 9;
+/// The full optional roster has twelve adapters: nine commerce, hardware and IC
+/// adapters, underwriting publication, and Conduct quota/artifact adapters.
+/// Registration headroom does not expand any invocation's images or modules;
+/// adapters sharing an actual state slot still require disjoint full action refs.
+pub const MAX_OWNER_PARTICIPANTS: usize = 16;
 /// An invocation binds at most three distinct slots belonging to two modules.
 pub const MAX_OWNER_PARTICIPANT_IMAGES: usize = 3;
 pub const MAX_OWNER_PARTICIPANT_MODULES: usize = 2;
@@ -985,6 +986,29 @@ impl OwnerImages {
         commit: CommitToken,
     ) -> Result<(), ParticipantError> {
         if self.0.len() != 2
+            || self
+                .0
+                .iter()
+                .any(|image| image.action != *action || image.commit_token != commit)
+            || participants.iter().any(|reference| {
+                self.0
+                    .iter()
+                    .filter(|image| &image.definition == reference)
+                    .count()
+                    != 1
+            })
+        {
+            return Err(ParticipantError::Authority);
+        }
+        Ok(())
+    }
+    pub(crate) fn require_exact_conduct(
+        &self,
+        participants: &[DefinitionRef; 3],
+        action: &DefinitionRef,
+        commit: CommitToken,
+    ) -> Result<(), ParticipantError> {
+        if self.0.len() != 3
             || self
                 .0
                 .iter()

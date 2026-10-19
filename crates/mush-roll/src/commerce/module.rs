@@ -38,6 +38,7 @@ pub struct CommerceConfig {
     author_withdrawal: bool,
     charter_transfers: bool,
     pending_charters: Option<PendingRegistration>,
+    paid_resales: Option<PaidResaleRegistration>,
     minds_facts: Option<super::facts::MindsFactProvider>,
     registry_recall: Option<super::registry_recall::RegistryRecallPolicy>,
     registry_revocation: Option<super::registry_revocation::RegistryRevocationPolicy>,
@@ -54,7 +55,19 @@ pub struct CommerceConfig {
     house_purchases: Option<HouseRegistration>,
     renewals: Option<RenewalRegistration>,
     house_renewals: Option<HouseRenewalRegistration>,
+    coverage: Option<CoverageRegistration>,
     ic: Option<std::sync::Arc<dyn super::ic_claims::registration::Installer>>,
+}
+#[derive(Clone, Debug)]
+struct CoverageRegistration {
+    protocol: super::coverage::CoverageProtocol,
+    writer: super::coverage::CoverageWriter,
+}
+#[derive(Clone, Debug)]
+struct PaidResaleRegistration {
+    writer: super::paid_resale::writer::PaidResaleWriter,
+    participants: super::purchase::PurchaseParticipants,
+    service: mush_core::ObjId,
 }
 #[derive(Clone, Debug)]
 struct PendingRegistration {
@@ -122,6 +135,7 @@ impl CommerceConfig {
             author_withdrawal: false,
             charter_transfers: false,
             pending_charters: None,
+            paid_resales: None,
             minds_facts: None,
             registry_recall: None,
             registry_revocation: None,
@@ -138,8 +152,55 @@ impl CommerceConfig {
             house_purchases: None,
             renewals: None,
             house_renewals: None,
+            coverage: None,
             ic: None,
         })
+    }
+
+    /// Retain source for the fixed, actually paired hull coverage protocol.
+    /// The same opaque writer is installed in Tacsim. Coverage also requires
+    /// the real IC composition; this option alone cannot release a departure.
+    pub fn with_hull_coverage(
+        mut self,
+        protocol: super::coverage::CoverageProtocol,
+        writer: super::coverage::CoverageWriter,
+    ) -> Result<Self, ModError> {
+        protocol.validate().map_err(error)?;
+        if self.mode != CommerceMode::Active
+            || self.coverage.is_some()
+            || protocol.manifest != self.manifest
+        {
+            return Err(error("coverage requires one exact Active composition"));
+        }
+        self.coverage = Some(CoverageRegistration { protocol, writer });
+        Ok(self)
+    }
+
+    /// Optional source-free transfer of existing paid property. The actual
+    /// Market providers and native Economy composition must agree at freeze.
+    pub fn with_paid_mind_resale(
+        mut self,
+        writer: super::paid_resale::writer::PaidResaleWriter,
+        participants: super::purchase::PurchaseParticipants,
+        service: mush_core::ObjId,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active
+            || self.paid_resales.is_some()
+            || service.0 == 0
+            || (self.original_purchases.is_none()
+                && self.entitlements.is_none()
+                && self.house_purchases.is_none())
+        {
+            return Err(ModError::msg(
+                "paid resale requires actual Active paid commerce",
+            ));
+        }
+        self.paid_resales = Some(PaidResaleRegistration {
+            writer,
+            participants,
+            service,
+        });
+        Ok(self)
     }
 
     /// Explicit Registry-service re-conformance of retained filed revisions.
@@ -783,6 +844,7 @@ pub(crate) struct CommerceRegistration {
     withdrawal: Option<super::withdrawal::EconomyReadiness>,
     charter_transfer: Option<super::charter_transfer::Readiness>,
     pending_charters: Option<super::charter_pending::Readiness>,
+    paid_resales: Option<super::paid_resale::writer::PaidResaleWriter>,
     facts_readiness: Option<super::facts::MindsFactProvider>,
     registry_recall: Option<super::registry_recall::Readiness>,
     registry_revocation: Option<super::registry_revocation::Readiness>,
@@ -801,6 +863,7 @@ pub(crate) struct CommerceRegistration {
     house_purchases: bool,
     renewals: bool,
     house_renewals: bool,
+    coverage: bool,
     forks: bool,
     dependent_owners: bool,
 }
@@ -878,6 +941,13 @@ pub(crate) fn register(
             "reconformance requires actual Registry owners",
         ));
     }
+    if config.coverage.is_some()
+        && (config.ic.is_none() || installer.is_none() || config.mode != CommerceMode::Active)
+    {
+        return Err(error(
+            "coverage requires actual IC and Registry owners in Active mode",
+        ));
+    }
     let reconformance = config
         .reconformance
         .then(|| {
@@ -900,6 +970,9 @@ pub(crate) fn register(
         }
         if config.ic.is_some() {
             declarations.push(super::ic_claims::reader::descriptor(&config.manifest)?);
+        }
+        if config.coverage.is_some() {
+            declarations.push(super::coverage::reader::descriptor(&config.manifest)?);
         }
         if fork.is_some() {
             declarations.push(super::parent_grant::descriptor(&config.manifest)?);
@@ -970,6 +1043,9 @@ pub(crate) fn register(
                     .as_ref()
                     .is_some_and(|r| r.service_close.is_some()),
             )?);
+        }
+        if config.paid_resales.is_some() {
+            declarations.push(super::paid_resale::reader::descriptor()?);
         }
         reg.definition_validator(
             DefinitionKind::new("owner_read").map_err(error)?,
@@ -1092,6 +1168,15 @@ pub(crate) fn register(
                     .house_renewals
                     .as_ref()
                     .is_some_and(|r| r.service_close.is_some()),
+            )?;
+        }
+        if config.coverage.is_some() {
+            super::coverage::reader::register(
+                reg,
+                families.clone(),
+                ratings.clone(),
+                &config.manifest,
+                config.compatibility.clone(),
             )?;
         }
         if config.original_market_quotes {
@@ -1265,6 +1350,19 @@ pub(crate) fn register(
             renewal.service_close.clone(),
         )?;
     }
+    if let Some(coverage) = &config.coverage {
+        if coverage.protocol.participants[1] != root_definition {
+            return Err(error("coverage retention definition differs"));
+        }
+        root_actions.extend(
+            coverage.protocol.actions().map_err(error)?[1..]
+                .iter()
+                .cloned(),
+        );
+        coverage
+            .writer
+            .install(reg, families.clone(), coverage.protocol.clone())?;
+    }
     let fork_registration = if let Some(installer) = fork {
         let [action, outcome] = super::authored_fork::definitions(&config.manifest)?;
         let action = reg.definition(action)?;
@@ -1394,6 +1492,29 @@ pub(crate) fn register(
     } else {
         None
     };
+    let paid_resales = if let Some(resale) = &config.paid_resales {
+        if resale.participants.retention() != &root_definition {
+            return Err(error("paid resale retention differs"));
+        }
+        let actions = super::paid_resale::protocol::actions()?;
+        root_actions.extend(actions.iter().skip(1).cloned());
+        super::paid_resale::reader::register(reg, families.clone(), ratings.clone())?;
+        resale.writer.install(
+            reg,
+            families.clone(),
+            actions,
+            ratings.clone(),
+            resale.service,
+            config
+                .registry_revocation
+                .as_ref()
+                .map(|p| p.action())
+                .transpose()?,
+        )?;
+        Some(resale.writer.clone())
+    } else {
+        None
+    };
     reg.owner_participant(root_definition, root_actions, RootParticipant)?;
     if let Some(definitions) = update_registration {
         super::line_update::registration::register(
@@ -1431,13 +1552,14 @@ pub(crate) fn register(
         .transpose()?;
     let registry_revocation = revocation_registration
         .map(|(policy, definitions)| {
-            super::registry_revocation::register(
+            super::registry_revocation::register_with_resale(
                 reg,
                 families.clone(),
                 ratings.clone(),
                 policy,
                 definitions,
                 pending_charters.clone(),
+                paid_resales.clone(),
             )
         })
         .transpose()?;
@@ -1624,7 +1746,11 @@ pub(crate) fn register(
             shells.clone(),
         )?;
     }
-    if facts_readiness.is_some() || measured_recall.is_some() || pending_charters.is_some() {
+    if facts_readiness.is_some()
+        || measured_recall.is_some()
+        || pending_charters.is_some()
+        || paid_resales.is_some()
+    {
         super::service_guards::register(reg)?;
     }
     let recall_readback = (config.mode == CommerceMode::Active)
@@ -1642,6 +1768,7 @@ pub(crate) fn register(
         withdrawal,
         charter_transfer,
         pending_charters,
+        paid_resales,
         facts_readiness,
         registry_recall,
         registry_revocation,
@@ -1660,6 +1787,7 @@ pub(crate) fn register(
         house_purchases: config.house_purchases.is_some(),
         renewals: config.renewals.is_some(),
         house_renewals: config.house_renewals.is_some(),
+        coverage: config.coverage.is_some(),
         forks: fork.is_some(),
         dependent_owners: config.dependent_owners,
     })
@@ -1713,7 +1841,7 @@ impl CommerceRegistration {
             .map_err(error)?;
         }
         match self.mode {
-            CommerceMode::Active => super::audit::audit_and_open_house_renewal_configured(
+            CommerceMode::Active => super::audit::audit_and_open_coverage_configured(
                 ctx,
                 &self.families,
                 &self.ratings,
@@ -1731,6 +1859,8 @@ impl CommerceRegistration {
                 self.house_renewals,
                 registry,
                 self.pending_charters.is_some(),
+                self.paid_resales.is_some(),
+                self.coverage,
             )
             .map_err(error),
             // Explicit setup remains Closed. The operator provider repeats its
@@ -1742,6 +1872,9 @@ impl CommerceRegistration {
                 &self.shells,
             ),
         }?;
+        if let Some(writer) = &self.paid_resales {
+            writer.capture_ready(ctx)?;
+        }
         if let Some(readiness) = &self.measured_recall {
             readiness.capture(ctx)?;
         }

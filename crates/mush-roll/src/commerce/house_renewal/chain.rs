@@ -1,7 +1,5 @@
-//! Complete immutable attempt/generation reconstruction, independent of token
-//! sort order. These structural joins supplement actual E4/Market provenance;
-//! they never establish it. No current issuer eligibility is read at boot.
-
+//! Bounded immutable term/holder/attempt reconstruction. The caller proves
+//! every actual native acceptance and holder row; these are structural joins.
 use super::super::{
     TermGeneration,
     house_catalogue::HouseIssuer,
@@ -13,8 +11,19 @@ use super::records::{MAX_OPERATIONS, RenewalAttemptV1, RenewalHeadV1, RenewalOpe
 use mush_core::CommitToken;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Before publishing Draft, require the current exact head and its actual last
-/// operation. A pending/unknown obligation can never be replaced by a retry.
+fn holder(row: &RenewalOperationV1) -> u64 {
+    row.binding
+        .holder_basis()
+        .map_or(1, |b| b.ownership.generation)
+}
+fn immutable(row: &RenewalOperationV1, licence: &PersonalPaidLicence) -> bool {
+    row.binding.licence() == licence.id()
+        && row.binding.charter() == licence.charter()
+        && row.binding.line() == licence.line()
+        && row.binding.birth_operation() == licence.operation()
+}
+/// The current licence is an actual transaction beforeimage. Old closed heads
+/// remain their accepted holder; a different holder needs exact newer evidence.
 pub(crate) fn check_draft(
     licence: &PersonalPaidLicence,
     row: &RenewalOperationV1,
@@ -29,49 +38,57 @@ pub(crate) fn check_draft(
     {
         return Err(PublicationError::Mismatch);
     }
-    match (head, previous, row.attempt) {
-        (None, None, RenewalAttemptV1::Automatic {}) if licence.term().get() == 1 => Ok(()),
-        (Some(head), Some(previous), attempt) => {
+    match (head, previous) {
+        (None, None) if licence.term().get() == 1 && row.attempt.previous_operation().is_none() => {
+            Ok(())
+        }
+        (Some(head), Some(previous)) => {
             if head != &RenewalHeadV1::for_operation(previous)?
                 || head.pending.is_some()
-                || head.licence != licence.id()
-                || head.holder != licence.holder()
-                || head.birth_operation != licence.operation()
+                || !immutable(previous, licence)
                 || head.current != licence.term()
                 || previous.operation == row.operation
                 || previous.contract == row.contract
+                || row.operation
+                    == previous
+                        .state
+                        .terminal_commit()
+                        .ok_or(PublicationError::Mismatch)?
             {
                 return Err(PublicationError::Mismatch);
             }
-            let at = previous
-                .state
-                .terminal_commit()
-                .ok_or(PublicationError::Mismatch)?;
-            if row.operation == at {
-                return Err(PublicationError::Mismatch);
-            }
-            let terminal_utc = match &previous.state {
+            let utc = match &previous.state {
                 super::RenewalStateV1::Granted { terminal, .. }
                 | super::RenewalStateV1::Refunded { terminal, .. } => terminal.posted_at_utc(),
                 super::RenewalStateV1::UnfundedClosed { closure } => closure.posted_at_utc,
                 super::RenewalStateV1::UnfundedServiceClosed { closure } => closure.posted_at_utc(),
                 _ => return Err(PublicationError::Mismatch),
             };
-            if row.created_at_utc < terminal_utc {
+            if row.created_at_utc < utc {
                 return Err(PublicationError::Mismatch);
             }
-            match attempt {
-                RenewalAttemptV1::Automatic {}
+            match row.attempt {
+                RenewalAttemptV1::Automatic {} | RenewalAttemptV1::HolderAutomatic { .. }
                     if previous.state.granted()
-                        && row.binding.predecessor.get() > head.attempted_predecessor.get() =>
+                        && row.binding.predecessor > previous.binding.predecessor
+                        && holder(row) >= holder(previous) =>
+                {
+                    Ok(())
+                }
+                RenewalAttemptV1::HolderAutomatic { .. }
+                    if previous.state.retryable()
+                        && row.binding.predecessor == previous.binding.predecessor
+                        && holder(row) > holder(previous) =>
                 {
                     Ok(())
                 }
                 RenewalAttemptV1::BuyerRetry { previous_operation }
-                    if previous_operation == previous.operation
-                        && previous.state.retryable()
-                        && head.current == head.attempted_predecessor
-                        && row.binding == previous.binding =>
+                | RenewalAttemptV1::HolderRetry {
+                    previous_operation, ..
+                } if previous_operation == previous.operation
+                    && previous.state.retryable()
+                    && head.current == head.attempted_predecessor
+                    && row.binding == previous.binding =>
                 {
                     Ok(())
                 }
@@ -82,9 +99,6 @@ pub(crate) fn check_draft(
     }
 }
 
-/// Checks every retained attempt and every actual granted term/economics row
-/// for one birth. The caller separately validates the birth and all real E4
-/// offer/money histories, even when these collections are empty.
 pub(crate) fn verify(
     licence: &PersonalPaidLicence,
     issuer: HouseIssuer,
@@ -116,7 +130,7 @@ pub(crate) fn verify(
     for &row in operations {
         row.validate()?;
         if row.binding.issuer != issuer
-            || !row.binding.matches_birth(licence)
+            || !immutable(row, licence)
             || !tokens.insert(row.operation)
             || !contracts.insert(row.contract)
             || !commits.insert(row.operation)
@@ -131,41 +145,32 @@ pub(crate) fn verify(
         {
             return Err(PublicationError::Mismatch);
         }
-        match row.attempt {
-            RenewalAttemptV1::Automatic {} => {
-                if automatic.insert(row.binding.predecessor, row).is_some() {
-                    return Err(PublicationError::Mismatch);
-                }
+        if let Some(previous) = row.attempt.previous_operation() {
+            if successors.insert(previous, row).is_some() {
+                return Err(PublicationError::Mismatch);
             }
-            RenewalAttemptV1::BuyerRetry { previous_operation } => {
-                if successors.insert(previous_operation, row).is_some() {
-                    return Err(PublicationError::Mismatch);
-                }
-            }
+        } else if automatic
+            .insert((row.binding.predecessor, holder(row)), row)
+            .is_some()
+        {
+            return Err(PublicationError::Mismatch);
         }
     }
     let mut generation = one;
-    let mut last = None;
+    let mut last: Option<&RenewalOperationV1> = None;
     let mut visits = BTreeSet::<CommitToken>::new();
     let mut grant_count = 0_usize;
-    // A grant advances one generation; a retry follows one unique terminal
-    // link. Each row is visited at most once and all maps are bounded above.
-    while let Some(mut row) = automatic.remove(&generation) {
-        let prior = last;
-        let old_head = prior.map(RenewalHeadV1::for_operation).transpose()?;
+    for ((predecessor, holder_generation), mut row) in automatic {
+        if predecessor != generation || last.is_some_and(|p| holder_generation < holder(p)) {
+            return Err(PublicationError::Mismatch);
+        }
+        let at_generation = row.binding.accepted_pointer(generation)?;
         let admitted = RenewalOperationV1 {
             state: super::RenewalStateV1::Drafted {},
             ..(*row).clone()
         };
-        let at_generation = PersonalPaidLicence::original(
-            licence.id(),
-            licence.charter(),
-            licence.line(),
-            licence.holder(),
-            generation,
-            licence.operation(),
-        )?;
-        check_draft(&at_generation, &admitted, old_head.as_ref(), prior)?;
+        let prior_head = last.map(RenewalHeadV1::for_operation).transpose()?;
+        check_draft(&at_generation, &admitted, prior_head.as_ref(), last)?;
         loop {
             if !visits.insert(row.operation) {
                 return Err(PublicationError::Mismatch);
@@ -175,7 +180,7 @@ pub(crate) fn verify(
                 .get(&generation)
                 .ok_or(PublicationError::Missing)?;
             row.binding
-                .check_predecessor(licence, predecessor, predecessor_economics)?;
+                .check_predecessor(&at_generation, predecessor, predecessor_economics)?;
             last = Some(row);
             if row.state.granted() {
                 let (_, expected_term, expected_economics) = row.granted_rows()?;
@@ -202,17 +207,19 @@ pub(crate) fn verify(
             check_draft(&at_generation, &admitted, Some(&old_head), Some(row))?;
             row = next;
         }
-        if last.is_some_and(|row| !row.state.granted()) {
-            break;
-        }
     }
     if visits.len() != operations.len()
-        || !automatic.is_empty()
         || !successors.is_empty()
         || terms.len() != grant_count + 1
         || economics.len() != grant_count + 1
         || licence.term() != generation
     {
+        return Err(PublicationError::Mismatch);
+    }
+    if last.is_some_and(|r| {
+        holder(r) > licence.ownership().map_or(1, |b| b.generation)
+            || (r.state.pending() && !r.binding.matches_birth(licence))
+    }) {
         return Err(PublicationError::Mismatch);
     }
     match (last, head) {

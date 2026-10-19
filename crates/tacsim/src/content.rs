@@ -58,9 +58,11 @@ pub const CORRIDOR_MODE: &str = "spacecraft";
 /// registered by [`crate::verify_sources`], and there is no world state in a
 /// weapon. **17b cut M3.1** adds the core (doc 17 §9), so an operator's `core`
 /// pack reaches the latch on the same applier.
-const DEFINITION_KINDS: [&str; 12] = [
+const DEFINITION_KINDS: [&str; 14] = [
     "commodity",
     "recipe",
+    "hardware_recipe",
+    "hardware_catalogue",
     "deposit",
     "facility",
     "formation",

@@ -9,6 +9,7 @@
 //! schema cannot silently stand in for that path.
 
 use mush_core::{CommitToken, ObjId};
+use mush_economy::managed_paid_resale::{PaidBirthRefV1, PaidHolderRefV1};
 use serde::{Deserialize, Serialize};
 
 use super::rating::RatingClass;
@@ -92,6 +93,8 @@ pub struct PersonalPaidLicence {
     holder: ObjId,
     term: TermGeneration,
     operation: CommitToken,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ownership: Option<PaidHolderRefV1>,
 }
 
 #[derive(Deserialize)]
@@ -104,10 +107,22 @@ struct PersonalPaidLicenceWire {
     holder: ObjId,
     term: TermGeneration,
     operation: CommitToken,
+    #[serde(default, deserialize_with = "present_paid_ownership")]
+    ownership: Option<Option<PaidHolderRefV1>>,
+}
+fn present_paid_ownership<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<PaidHolderRefV1>>, D::Error> {
+    Option::<PaidHolderRefV1>::deserialize(d).map(Some)
 }
 impl TryFrom<PersonalPaidLicenceWire> for PersonalPaidLicence {
     type Error = PublicationError;
     fn try_from(row: PersonalPaidLicenceWire) -> Result<Self, Self::Error> {
+        let ownership = match (row.format, row.ownership) {
+            (1, None) => None,
+            (2, Some(Some(reference))) if reference.generation >= 2 => Some(reference),
+            _ => return Err(PublicationError::Invalid),
+        };
         let value = Self {
             format: row.format,
             id: row.id,
@@ -116,6 +131,7 @@ impl TryFrom<PersonalPaidLicenceWire> for PersonalPaidLicence {
             holder: row.holder,
             term: row.term,
             operation: row.operation,
+            ownership,
         };
         value.validate()?;
         Ok(value)
@@ -138,9 +154,72 @@ impl PersonalPaidLicence {
             holder,
             term,
             operation,
+            ownership: None,
         };
         value.validate()?;
         Ok(value)
+    }
+    /// Structural next-term pointer. The actual renewal owner separately proves
+    /// the granted generation; this preserves an existing transferred holder.
+    /// Structural projection for an already proved historical acceptance.
+    /// Current publication must retain the actual pointer and owner fence.
+    pub(crate) fn with_captured_ownership(
+        mut self,
+        ownership: Option<mush_economy::managed_paid_resale::PaidHolderRefV1>,
+    ) -> Result<Self, PublicationError> {
+        self.format = if ownership.is_some() { 2 } else { 1 };
+        self.ownership = ownership;
+        self.validate()?;
+        Ok(self)
+    }
+    pub(crate) fn with_next_term(&self, term: TermGeneration) -> Result<Self, PublicationError> {
+        self.validate()?;
+        if self.term.get().checked_add(1) != Some(term.get()) {
+            return Err(PublicationError::Mismatch);
+        }
+        let next = Self {
+            term,
+            ..self.clone()
+        };
+        next.validate()?;
+        Ok(next)
+    }
+    /// Exact structural transfer relation, never a source of publication authority.
+    /// The writer must obtain this holder row from the actual opaque E4 output.
+    pub(crate) fn transferred(
+        &self,
+        birth: &PaidBirthRefV1,
+        row: &super::paid_resale::PaidHolderRecord,
+    ) -> Result<Self, PublicationError> {
+        self.validate()?;
+        birth.validate().map_err(|_| PublicationError::Invalid)?;
+        row.validate()?;
+        let before = self.ownership.clone().unwrap_or_else(|| PaidHolderRefV1 {
+            generation: 1,
+            operation: self.operation,
+            digest: birth.digest,
+        });
+        if birth.operation != self.operation
+            || row.birth() != birth
+            || row.licence() != self.id
+            || row.predecessor() != &before
+            || row.holder() == self.holder
+            || row.term_generation() != self.term
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        let next = Self {
+            format: 2,
+            holder: row.holder(),
+            ownership: Some(row.ownership()?),
+            ..self.clone()
+        };
+        next.validate()?;
+        Ok(next)
+    }
+    #[must_use]
+    pub fn ownership(&self) -> Option<&PaidHolderRefV1> {
+        self.ownership.as_ref()
     }
     /// Bounded data decoder. A decoded row is not proof of payment or authority.
     pub fn decode(bytes: &[u8]) -> Result<Self, PublicationError> {
@@ -181,8 +260,17 @@ impl Record for PersonalPaidLicence {
         self.id.key()
     }
     fn validate(&self) -> Result<(), PublicationError> {
-        if self.format != PAID_RECORD_FORMAT || self.holder.0 == 0 {
+        if self.holder.0 == 0 || !matches!((self.format, &self.ownership), (1, None) | (2, Some(_)))
+        {
             return Err(PublicationError::Invalid);
+        }
+        if let Some(reference) = &self.ownership {
+            reference
+                .validate()
+                .map_err(|_| PublicationError::Invalid)?;
+            if reference.generation < 2 || reference.operation == self.operation {
+                return Err(PublicationError::Invalid);
+            }
         }
         Ok(())
     }

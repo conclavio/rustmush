@@ -253,7 +253,9 @@ where
         }
         let h = facts.holding();
         let row = ClaimRecord {
-            format: if facts.charter_ownership().is_some() {
+            format: if facts.paid_ownership().is_some() {
+                3
+            } else if facts.charter_ownership().is_some() {
                 2
             } else {
                 1
@@ -266,6 +268,7 @@ where
                 sortie: SortieNumber::try_from(seal.sortie())?,
                 dispatcher: facts.dispatcher(),
                 charter_ownership: facts.charter_ownership().cloned(),
+                paid_ownership: facts.paid_ownership().copied(),
                 hull_title_revision: facts.hull_title_revision(),
                 licence: h.licence(),
                 term: h.term(),

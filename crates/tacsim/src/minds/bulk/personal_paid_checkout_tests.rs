@@ -5,6 +5,8 @@
 use super::*;
 #[path = "house_purchase_integration_tests.rs"]
 mod house_purchase;
+#[path = "paid_resale_route_integration_tests.rs"]
+mod resale_routes;
 pub(super) fn exercise_house(
     registry: &Fixture,
     saved: &Durable,
@@ -434,6 +436,53 @@ impl PlayerWorld {
         >,
         enable_facts: bool,
     ) -> TestResult<Self> {
+        Self::boot_options_with_resales(
+            f,
+            saved,
+            authored_forks,
+            marked_registry,
+            dependent_owners,
+            entitlements,
+            renewals,
+            author_withdrawal,
+            renewal_service,
+            compatible_updates,
+            owner_qualification,
+            qualification_short_parent,
+            owner_attestations,
+            registry_recall,
+            registry_revocation,
+            enable_facts,
+            false,
+        )
+    }
+    fn boot_paid_resales(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
+        Self::boot_options_with_resales(
+            f, saved, true, true, true, true, true, false, false, false, false, false, false, None,
+            None, false, true,
+        )
+    }
+    fn boot_options_with_resales(
+        f: &PurchaseFixture,
+        saved: &Durable,
+        authored_forks: bool,
+        marked_registry: bool,
+        dependent_owners: bool,
+        entitlements: bool,
+        renewals: bool,
+        author_withdrawal: bool,
+        renewal_service: bool,
+        compatible_updates: bool,
+        owner_qualification: bool,
+        qualification_short_parent: bool,
+        owner_attestations: bool,
+        registry_recall: Option<mush_roll::commerce::registry_recall::RegistryRecallPolicy>,
+        registry_revocation: Option<
+            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
+        >,
+        enable_facts: bool,
+        paid_resales: bool,
+    ) -> TestResult<Self> {
         let minds_facts = enable_facts.then(mush_roll::commerce::facts::MindsFactProvider::new);
         let manifest = f
             .engine
@@ -496,6 +545,7 @@ impl PlayerWorld {
                 shared: shared.clone(),
             }),
             Box::new(PurchaseRoll {
+                paid_resales,
                 minds_facts: minds_facts.clone(),
                 source_forms: f.source_forms,
                 authored_forks,

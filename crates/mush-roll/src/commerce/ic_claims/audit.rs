@@ -170,7 +170,13 @@ pub(super) fn local(
                 )?;
                 let grant =
                     super::super::entitlement::history::granted(ctx, f, ratings, licence, term)?;
-                if grant.holder() != open.dispatcher
+                let captured_holder = match &open.paid_ownership {
+                    None => grant.holder(),
+                    Some(ownership) => super::super::paid_resale::history::historical(
+                        ctx, f, ratings, licence, ownership,
+                    )?,
+                };
+                if captured_holder != open.dispatcher
                     || grant.filed() != open.filed
                     || grant.revision() != open.revision
                     || term.terms().class() < rating.minimum()

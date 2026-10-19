@@ -22,6 +22,10 @@ struct Provider {
         super::super::charter_pending::Readiness,
         ParticipantHandle<mush_economy::registry_filing::InitialFilingParticipant>,
     )>,
+    resale: Option<(
+        super::super::paid_resale::writer::PaidResaleWriter,
+        ParticipantHandle<mush_economy::registry_filing::InitialFilingParticipant>,
+    )>,
     refusal: ActionError,
 }
 impl Provider {
@@ -130,12 +134,32 @@ impl Provider {
             .transpose()?
             .flatten();
         let funding = pending.as_ref().map(|(funding, _)| *funding);
+        let resale = self
+            .resale
+            .as_ref()
+            .map(|(writer, economy)| {
+                super::super::paid_resale::compound::prepare(
+                    writer,
+                    economy,
+                    txn,
+                    ctx,
+                    &operation,
+                    fence.clone(),
+                )
+            })
+            .transpose()?
+            .flatten();
+        let resale_funding = resale.as_ref().map(|(funding, _)| *funding);
+        if pending.is_some() && resale.is_some() {
+            return Err(PublicationError::Mismatch);
+        }
         ctx.prepare_owner(
             &self.roots,
             RootRequest::RegistryRevocation(Revocation {
                 operation: operation.clone(),
                 fence,
                 pending: pending.map(|(_, roots)| roots),
+                resale: resale.map(|(_, roots)| roots),
             }),
         )
         .map_err(bad)?;
@@ -161,6 +185,10 @@ impl Provider {
         }
         if let Some(funding) = funding {
             ctx.close_charter_pending_completion(txn, funding)
+                .map_err(bad)?;
+        }
+        if let Some(funding) = resale_funding {
+            ctx.close_paid_resale_completion(txn, funding)
                 .map_err(bad)?;
         }
         Ok(AuthoritativeActionOutput::new(
@@ -244,16 +272,40 @@ pub(crate) fn register(
     definitions: [DefinitionRef; 3],
     pending: Option<super::super::charter_pending::Readiness>,
 ) -> Result<Readiness, ModError> {
+    register_with_resale(reg, families, ratings, policy, definitions, pending, None)
+}
+pub(crate) fn register_with_resale(
+    reg: &mut Registrar<'_>,
+    families: CommerceFamilies,
+    ratings: super::super::rating::RatingFamilies,
+    policy: RegistryRevocationPolicy,
+    definitions: [DefinitionRef; 3],
+    pending: Option<super::super::charter_pending::Readiness>,
+    resale: Option<super::super::paid_resale::writer::PaidResaleWriter>,
+) -> Result<Readiness, ModError> {
     let [authority, action, outcome] = definitions;
     if reg.module() != crate::NS || action != policy.action()? {
         return Err(error("Registry revocation registration differs"));
     }
     let roots = reg.request_owner_participant::<RootParticipant>(action.clone())?;
     let readiness = Readiness::default();
+    let economy = if pending.is_some() || resale.is_some() {
+        Some(reg.request_owner_participant::<mush_economy::registry_filing::InitialFilingParticipant>(action.clone())?)
+    } else {
+        None
+    };
     let pending = pending.map(|ready| {
-        reg.request_owner_participant::<mush_economy::registry_filing::InitialFilingParticipant>(
-            action.clone()).map(|economy| (ready, economy))
-    }).transpose()?;
+        (
+            ready,
+            economy.as_ref().expect("configured owner handle").clone(),
+        )
+    });
+    let resale = resale.map(|writer| {
+        (
+            writer,
+            economy.as_ref().expect("configured owner handle").clone(),
+        )
+    });
     reg.action_provider(
         action.clone(),
         Provider {
@@ -267,6 +319,7 @@ pub(crate) fn register(
             roots,
             readiness: readiness.clone(),
             pending,
+            resale,
             refusal: ActionError::new(
                 ActionErrorCode::ProviderRejected,
                 false,

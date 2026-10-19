@@ -270,6 +270,18 @@ fn closed_attempt_can_precede_exact_retry_grant_without_eternal_next_absence() -
         )
         .is_err()
     );
+    // The accepted House issuer is immutable across holder and term history.
+    assert!(
+        chain::verify(
+            &current.licence,
+            HouseIssuer::new(mush_org::OrgId(1), mush_org::OrgScopeId(0))?,
+            Some(&RenewalHeadV1::for_operation(&granted)?),
+            &[&granted, &closed],
+            &terms,
+            &economics,
+        )
+        .is_err()
+    );
     let mut wrong = current.term.clone();
     let mut wire = serde_json::to_value(&wrong)?;
     wire.as_object_mut()
@@ -545,3 +557,5 @@ fn exhausted_generation_refuses_before_any_new_offer_or_money() -> TestResult {
 
 #[path = "capacity_tests.rs"]
 mod capacity_tests;
+
+mod holder;

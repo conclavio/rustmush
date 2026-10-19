@@ -75,7 +75,7 @@ fn registration<const ID: u8, const SLOT: u8>(
     Ok(())
 }
 #[test]
-fn nine_distinct_registered_slots_fit_and_tenth_refuses_without_changing_invocation_caps()
+fn sixteen_distinct_registered_slots_fit_and_seventeenth_refuses_without_changing_invocation_caps()
 -> TestResult {
     let owner = OwnerId::new("fixture")?;
     let action = reference(&owner, "action", "write")?;
@@ -89,13 +89,20 @@ fn nine_distinct_registered_slots_fit_and_tenth_refuses_without_changing_invocat
     registration::<6, 6>(&mut builder, &owner, &action)?;
     registration::<7, 7>(&mut builder, &owner, &action)?;
     registration::<8, 8>(&mut builder, &owner, &action)?;
-    assert_eq!(builder.registrations.len(), 9);
+    registration::<9, 9>(&mut builder, &owner, &action)?;
+    registration::<10, 10>(&mut builder, &owner, &action)?;
+    registration::<11, 11>(&mut builder, &owner, &action)?;
+    registration::<12, 12>(&mut builder, &owner, &action)?;
+    registration::<13, 13>(&mut builder, &owner, &action)?;
+    registration::<14, 14>(&mut builder, &owner, &action)?;
+    registration::<15, 15>(&mut builder, &owner, &action)?;
+    assert_eq!(builder.registrations.len(), 16);
     assert!(matches!(
         builder.register(
             owner.clone(),
-            reference(&owner, "owner_participant", "slot_9")?,
+            reference(&owner, "owner_participant", "slot_16")?,
             BTreeSet::from([action]),
-            Adapter::<9, 9>
+            Adapter::<16, 16>
         ),
         Err(ParticipantError::RegistrationLimit)
     ));

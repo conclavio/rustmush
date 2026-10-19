@@ -26,6 +26,7 @@ pub(crate) struct RootParticipant;
 pub(crate) enum RootRequest {
     TermLapse(super::facts::publication::Lapse),
     Ic(super::ic_claims::roots::IcRoots),
+    Coverage(super::coverage::roots::CoverageRoots),
     InitialFiling(InitialRoots),
     CompatibleUpdate(super::line_update::publication::UpdateRoots),
     DependentFiling(super::dependent_filing::DependentRoots),
@@ -40,6 +41,7 @@ pub(crate) enum RootRequest {
     Withdrawal(super::withdrawal::Withdrawal),
     CharterTransfer(super::charter_transfer::TransferRoots),
     CharterPending(super::charter_pending::publication::PendingRoots),
+    PaidResale(super::paid_resale::publication::ResaleRoots),
     RegistryRecall(super::registry_recall::Recall),
     MeasuredRecall(super::rating::reconformance::recall::publication::Recall),
     RegistryRevocation(super::registry_revocation::Revocation),
@@ -52,6 +54,7 @@ impl RootRequest {
         match self {
             Self::TermLapse(request) => request.commit(),
             Self::Ic(request) => request.commit(),
+            Self::Coverage(request) => request.commit(),
             Self::InitialFiling(request) => request.commit(),
             Self::CompatibleUpdate(request) => request.commit(),
             Self::DependentFiling(request) => request.commit(),
@@ -66,6 +69,7 @@ impl RootRequest {
             Self::Withdrawal(request) => request.commit(),
             Self::CharterTransfer(request) => request.commit(),
             Self::CharterPending(request) => request.commit(),
+            Self::PaidResale(request) => request.commit(),
             Self::RegistryRecall(request) => request.commit(),
             Self::MeasuredRecall(request) => request.commit(),
             Self::RegistryRevocation(request) => request.commit(),
@@ -104,6 +108,7 @@ pub(crate) struct RootPatch {
     term_lapse: Option<super::facts::publication::LapseFence>,
     commit: CommitToken,
     ic: Option<super::ic_claims::roots::IcFence>,
+    coverage: Option<super::coverage::roots::CoverageFence>,
     change: PreparedChange,
     fresh_paid: Option<super::sale_reader::OriginalSaleFacts>,
     entitlement: Option<super::entitlement::roots::EntitlementFence>,
@@ -118,6 +123,7 @@ pub(crate) struct RootPatch {
     withdrawal: Option<super::withdrawal::WithdrawalFence>,
     charter_transfer: Option<super::charter_transfer::TransferFence>,
     charter_pending: Option<super::charter_pending::publication::PendingFence>,
+    paid_resale: Option<super::paid_resale::publication::ResaleFence>,
     registry_recall: Option<super::registry_recall::RecallFence>,
     measured_recall: Option<super::rating::reconformance::recall::publication::RecallFence>,
     registry_revocation: Option<super::registry_revocation::RevocationFence>,
@@ -240,6 +246,16 @@ impl OwnerParticipant for RootParticipant {
             }
             _ => None,
         };
+        let coverage = match &request {
+            RootRequest::Coverage(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
         let house = match &request {
             RootRequest::House(request) => {
                 request
@@ -292,6 +308,25 @@ impl OwnerParticipant for RootParticipant {
         };
         let registry_revocation = match &request {
             RootRequest::RegistryRevocation(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
+        let paid_resale = match &request {
+            RootRequest::RegistryRevocation(request) => request
+                .resale()
+                .map(|r| {
+                    r.fence()
+                        .check(context)
+                        .map_err(|_| ParticipantError::Authority)?;
+                    Ok(r.fence().clone())
+                })
+                .transpose()?,
+            RootRequest::PaidResale(request) => {
                 request
                     .fence()
                     .check(context)
@@ -406,6 +441,10 @@ impl OwnerParticipant for RootParticipant {
             RootRequest::House(request) => {
                 (state.prepare_house_roots(request).map_err(refusal)?, None)
             }
+            RootRequest::Coverage(request) => (
+                state.prepare_coverage_roots(request).map_err(refusal)?,
+                None,
+            ),
             RootRequest::Renewal(request) => {
                 (state.prepare_renewal_roots(request).map_err(refusal)?, None)
             }
@@ -443,6 +482,10 @@ impl OwnerParticipant for RootParticipant {
                 state
                     .prepare_registry_revocation_root(request)
                     .map_err(refusal)?,
+                None,
+            ),
+            RootRequest::PaidResale(request) => (
+                state.prepare_paid_resale_roots(request).map_err(refusal)?,
                 None,
             ),
             RootRequest::CharterPending(request) => (
@@ -511,6 +554,7 @@ impl OwnerParticipant for RootParticipant {
                 term_lapse,
                 commit: request.commit(),
                 ic,
+                coverage,
                 change,
                 fresh_paid,
                 entitlement,
@@ -525,6 +569,7 @@ impl OwnerParticipant for RootParticipant {
                 withdrawal,
                 charter_transfer,
                 charter_pending,
+                paid_resale,
                 registry_recall,
                 measured_recall,
                 registry_revocation,
@@ -585,6 +630,11 @@ impl OwnerParticipant for RootParticipant {
                 .check(context)
                 .map_err(|_| ParticipantError::Authority)?;
         }
+        if let Some(fence) = &patch.coverage {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
         if let Some(fence) = &patch.house {
             fence
                 .check(context)
@@ -622,6 +672,11 @@ impl OwnerParticipant for RootParticipant {
                 .map_err(|_| ParticipantError::Authority)?;
         }
         if let Some(fence) = &patch.registry_revocation {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+        }
+        if let Some(fence) = &patch.paid_resale {
             fence
                 .check(context)
                 .map_err(|_| ParticipantError::Authority)?;
@@ -752,8 +807,11 @@ impl OwnerParticipant for RootParticipant {
                     | RootAnchor::Operation(_)
                     | RootAnchor::UpdateOperation(_)
                     | RootAnchor::PaidOperation(_)
+                    | RootAnchor::PaidResaleFunding(_, _)
+                    | RootAnchor::PaidResaleTerminal(_, _)
                     | RootAnchor::RenewalOperation(_)
                     | RootAnchor::HouseRenewalOperation(_)
+                    | RootAnchor::Coverage(_, _)
                     | RootAnchor::DraftRetirement(_, _)
                     | RootAnchor::CharterPendingOffer(_, _)
                     | RootAnchor::CharterPendingFunding(_, _)

@@ -58,6 +58,7 @@ impl PaidBirthRefV1 {
     }
 }
 closed!(PaidHolderRefV1,HolderWire,{generation:u64,operation:CommitToken,digest:DefinitionDigest});
+impl Copy for PaidHolderRefV1 {}
 impl PaidHolderRefV1 {
     pub fn validate(&self) -> Result<(), ParticipantError> {
         if !(1..=MAX_HOLDER_GENERATION).contains(&self.generation) {

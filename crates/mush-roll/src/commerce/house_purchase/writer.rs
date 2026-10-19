@@ -353,9 +353,15 @@ impl HousePurchaseWriter {
                 current_licence.id(),
                 current_licence.charter(),
                 current_licence.line(),
-                current_licence.holder(),
+                row.holder,
                 row.term,
                 current_licence.operation(),
+            )?;
+            super::super::paid_resale::history::current_from_birth(
+                ctx,
+                &r.families,
+                current_licence,
+                super::super::entitlement::history::Birth::House(row),
             )?;
             if birth_licence != expected_licence
                 || current_licence.term().get() < row.term.get()

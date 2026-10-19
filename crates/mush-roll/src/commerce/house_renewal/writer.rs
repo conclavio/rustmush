@@ -433,9 +433,13 @@ impl RegisteredRenewalWriter {
             .transpose()?;
         super::chain::check_draft(&licence, &row, head.as_ref(), previous.as_ref())?;
         let next = RenewalHeadV1::for_operation(&row)?;
-        let prior_retry = matches!(attempt, RenewalAttemptV1::BuyerRetry { .. })
-            .then_some(previous.as_ref())
-            .flatten();
+        let prior_retry = (attempt.previous_operation().is_some()
+            || (matches!(attempt, RenewalAttemptV1::HolderAutomatic { .. })
+                && previous.as_ref().is_some_and(|p| {
+                    p.state().retryable() && p.binding().next() == row.binding().next()
+                })))
+        .then_some(previous.as_ref())
+        .flatten();
         let roots = RenewalRoots::prepare(
             &self.action,
             ctx.commit_token(),
@@ -617,7 +621,7 @@ impl RegisteredRenewalWriter {
             return Err(PublicationError::Mismatch);
         }
         after.follows(before)?;
-        self.predecessor(txn, before.binding())?;
+        let current_licence = self.predecessor(txn, before.binding())?;
         self.absent_next(txn, before.binding())?;
         let f = &self.registration()?.families;
         let old = RenewalHeadV1::for_operation(before)?;
@@ -639,7 +643,11 @@ impl RegisteredRenewalWriter {
             facts,
         )?;
         if transition == Publication::Ordinary(Transition::Grant) {
-            let (licence, term, economics) = after.granted_rows()?;
+            let (expected_licence, term, economics) = after.granted_rows()?;
+            let licence = current_licence.with_next_term(after.binding().next())?;
+            if licence != expected_licence {
+                return Err(PublicationError::Mismatch);
+            }
             super::super::house_purchase::admission_capacity::check(
                 &f.house_economics,
                 &economics,

@@ -10,6 +10,7 @@ use super::super::{
     records::{PublicationError, Record, RevisionPolicy},
 };
 use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest, DefinitionRef, ObjId};
+use mush_economy::managed_paid_resale::RenewalHolderBasisV1;
 use mush_economy::{
     ContractId,
     managed_renewal::{
@@ -70,12 +71,12 @@ fn decode<T: serde::de::DeserializeOwned + Serialize>(
 }
 
 macro_rules! checked {
-    ($name:ident,$wire:ident,{$($field:ident:$ty:ty),* $(,)?}) => {
+    ($name:ident,$wire:ident,{$($(#[$attr:meta])* $field:ident:$ty:ty),* $(,)?}) => {
         #[derive(Clone,Debug,PartialEq,Eq,Serialize)]
-        pub struct $name {$(pub(crate) $field:$ty),*}
+        pub struct $name {$($(#[$attr])* pub(crate) $field:$ty),*}
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
-        struct $wire {$($field:$ty),*}
+        struct $wire {$($(#[$attr])* $field:$ty),*}
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D:serde::Deserializer<'de>>(d:D)->Result<Self,D::Error> {
                 let row=$wire::deserialize(d)?;
@@ -87,6 +88,11 @@ macro_rules! checked {
     };
 }
 
+fn present_holder<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<RenewalHolderBasisV1>, D::Error> {
+    RenewalHolderBasisV1::deserialize(d).map(Some)
+}
 checked!(RenewalBindingV1,BindingWire,{
     format:u16,licence:LicenceId,holder:ObjId,charter:CharterId,line:LineId,
     birth_operation:CommitToken,predecessor:TermGeneration,next:TermGeneration,
@@ -94,12 +100,17 @@ checked!(RenewalBindingV1,BindingWire,{
     predecessor_economics:DefinitionDigest,filed:FiledRevisionId,revision:RevisionIdentity,
     terms:PaidTerms,term_seconds:i64,grace_seconds:i64,grant:GrantEconomicsV1,
     product_digest:DefinitionDigest,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "present_holder")]
+    holder_basis:Option<RenewalHolderBasisV1>,
 });
 impl RenewalBindingV1 {
     pub fn validate(&self) -> Result<(), PublicationError> {
         self.grant.validate()?;
         let template = self.grant.renewal();
-        if self.format != 1
+        if let Some(basis) = self.holder_basis {
+            basis.validate().map_err(invalid)?;
+        }
+        if !matches!((self.format, self.holder_basis), (1, None) | (2, Some(_)))
             || self.holder.0 == 0
             || self.terms.seats().get() != 1
             || self.predecessor.get().checked_add(1) != Some(self.next.get())
@@ -119,6 +130,14 @@ impl RenewalBindingV1 {
         term: &PaidTermRecord,
         economics: &PaidTermEconomicsV1,
     ) -> Result<Self, PublicationError> {
+        Self::capture_holder(licence, term, economics, None)
+    }
+    pub(crate) fn capture_holder(
+        licence: &PersonalPaidLicence,
+        term: &PaidTermRecord,
+        economics: &PaidTermEconomicsV1,
+        holder_basis: Option<RenewalHolderBasisV1>,
+    ) -> Result<Self, PublicationError> {
         term.matches_current(licence)?;
         economics.validate()?;
         let RevisionPolicy::Pin { filed, revision } = term.policy() else {
@@ -126,7 +145,8 @@ impl RenewalBindingV1 {
         };
         let template = economics.grant().renewal();
         let row = Self {
-            format: 1,
+            format: if holder_basis.is_some() { 2 } else { 1 },
+            holder_basis,
             licence: licence.id(),
             holder: licence.holder(),
             charter: licence.charter(),
@@ -198,6 +218,25 @@ impl RenewalBindingV1 {
             && licence.charter() == self.charter
             && licence.line() == self.line
             && licence.operation() == self.birth_operation
+            && licence.ownership().copied() == self.holder_basis.map(|b| b.ownership)
+    }
+    pub const fn holder_basis(&self) -> Option<RenewalHolderBasisV1> {
+        self.holder_basis
+    }
+    /// Historical data projection, never a current owner observation.
+    pub(crate) fn accepted_pointer(
+        &self,
+        generation: TermGeneration,
+    ) -> Result<PersonalPaidLicence, PublicationError> {
+        PersonalPaidLicence::original(
+            self.licence,
+            self.charter,
+            self.line,
+            self.holder,
+            generation,
+            self.birth_operation,
+        )?
+        .with_captured_ownership(self.holder_basis.map(|b| b.ownership))
     }
     pub const fn charter(&self) -> CharterId {
         self.charter
@@ -262,15 +301,58 @@ impl RenewalBindingV1 {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RenewalAttemptV1 {
     Automatic {},
-    BuyerRetry { previous_operation: CommitToken },
+    BuyerRetry {
+        previous_operation: CommitToken,
+    },
+    HolderAutomatic {
+        basis: RenewalHolderBasisV1,
+    },
+    HolderRetry {
+        basis: RenewalHolderBasisV1,
+        previous_operation: CommitToken,
+    },
 }
 
 impl RenewalAttemptV1 {
+    pub const fn holder_basis(self) -> Option<RenewalHolderBasisV1> {
+        match self {
+            Self::HolderAutomatic { basis } | Self::HolderRetry { basis, .. } => Some(basis),
+            _ => None,
+        }
+    }
+    pub const fn previous_operation(self) -> Option<CommitToken> {
+        match self {
+            Self::BuyerRetry { previous_operation }
+            | Self::HolderRetry {
+                previous_operation, ..
+            } => Some(previous_operation),
+            _ => None,
+        }
+    }
+    pub const fn record_format(self) -> u16 {
+        match self {
+            Self::Automatic {} => 1,
+            Self::BuyerRetry { .. } => 2,
+            Self::HolderAutomatic { .. } => 3,
+            Self::HolderRetry { .. } => 4,
+        }
+    }
+
     /// Pure closed data mapping. Only an actual opaque E4 output/audit view
     /// supplies the attempt used at the publication and recovery boundaries.
     pub(crate) fn from_economy(value: mush_economy::managed_renewal::RenewalAttemptV1) -> Self {
         match value {
             mush_economy::managed_renewal::RenewalAttemptV1::Automatic => Self::Automatic {},
+            mush_economy::managed_renewal::RenewalAttemptV1::HolderAutomatic { basis } => {
+                Self::HolderAutomatic { basis }
+            }
+            mush_economy::managed_renewal::RenewalAttemptV1::HolderRetry {
+                basis,
+                previous_operation,
+            } => Self::HolderRetry {
+                basis,
+                previous_operation,
+            },
             mush_economy::managed_renewal::RenewalAttemptV1::BuyerRetry { previous_operation } => {
                 Self::BuyerRetry { previous_operation }
             }
@@ -493,14 +575,7 @@ impl RenewalOperationV1 {
         .map_err(invalid)?;
         let b = &self.binding;
         Ok((
-            PersonalPaidLicence::original(
-                b.licence,
-                b.charter,
-                b.line,
-                b.holder,
-                b.next,
-                b.birth_operation,
-            )?,
+            b.accepted_pointer(b.next)?,
             PaidTermRecord::original(
                 b.licence,
                 b.next,
@@ -527,12 +602,15 @@ impl Record for RenewalOperationV1 {
     }
     fn validate(&self) -> Result<(), PublicationError> {
         self.binding.validate()?;
+        if self.attempt.holder_basis() != self.binding.holder_basis {
+            return Err(PublicationError::Mismatch);
+        }
         if self.format != 1
             || !action(&self.action, "draft_mind_renewal")
             || !versioned(&self.created_at_ic)
             || self.operation == self.binding.birth_operation
             || self.operation == self.binding.predecessor_operation
-            || matches!(self.attempt,RenewalAttemptV1::BuyerRetry{previous_operation} if previous_operation==self.operation)
+            || self.attempt.previous_operation() == Some(self.operation)
         {
             return Err(PublicationError::Invalid);
         }
@@ -578,7 +656,7 @@ impl Record for RenewalOperationV1 {
             closure.validate().map_err(invalid)?;
             if !distinct(closure.commit())
                 || closure.posted_at_utc() < self.created_at_utc
-                || matches!(self.attempt, RenewalAttemptV1::BuyerRetry { previous_operation } if previous_operation == closure.commit())
+                || self.attempt.previous_operation() == Some(closure.commit())
                 || match closure.reason() {
                     RenewalServiceCloseReason::DeadlineReached => {
                         closure.at_ic().clock != self.created_at_ic.clock

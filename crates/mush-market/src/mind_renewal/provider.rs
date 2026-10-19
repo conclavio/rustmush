@@ -183,12 +183,39 @@ impl Provider {
                     _ => return Err(super::records::invalid()),
                 };
                 let observed = self.observed(ctx, txn, licence)?;
+                let attempt = match (attempt, observed.facts().binding().holder_basis()) {
+                    (RenewalAttemptV1::Automatic {}, Some(basis)) => {
+                        RenewalAttemptV1::HolderAutomatic { basis }
+                    }
+                    (RenewalAttemptV1::BuyerRetry { previous_operation }, Some(basis)) => {
+                        RenewalAttemptV1::HolderRetry {
+                            basis,
+                            previous_operation,
+                        }
+                    }
+                    (attempt, None) => attempt,
+                    _ => return Err(super::records::invalid()),
+                };
                 let offer = super::offer::build(
                     &self.config,
                     ctx.world().map_err(invalid)?,
                     observed.facts(),
                 )?;
                 let request = match attempt {
+                    RenewalAttemptV1::HolderAutomatic { basis } => {
+                        EconomyRequest::RenewalHolderDraft {
+                            offer: offer.clone(),
+                            basis,
+                        }
+                    }
+                    RenewalAttemptV1::HolderRetry {
+                        basis,
+                        previous_operation,
+                    } => EconomyRequest::RenewalHolderRetry {
+                        offer: offer.clone(),
+                        basis,
+                        previous_operation,
+                    },
                     RenewalAttemptV1::Automatic {} => EconomyRequest::RenewalDraft(offer.clone()),
                     RenewalAttemptV1::BuyerRetry { previous_operation } => {
                         EconomyRequest::RenewalRetry {

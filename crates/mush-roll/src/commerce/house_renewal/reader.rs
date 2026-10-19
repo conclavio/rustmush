@@ -105,6 +105,8 @@ pub struct RenewalInventoryEntry {
     term_end: WorldIcSeconds,
     last_operation: Option<CommitToken>,
     attempted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    holder_generation: Option<u64>,
 }
 impl RenewalInventoryEntry {
     pub const fn licence(&self) -> LicenceId {
@@ -121,6 +123,9 @@ impl RenewalInventoryEntry {
     }
     pub const fn last_operation(&self) -> Option<CommitToken> {
         self.last_operation
+    }
+    pub fn holder_generation(&self) -> u64 {
+        self.holder_generation.unwrap_or(1)
     }
     pub const fn attempted(&self) -> bool {
         self.attempted
@@ -338,8 +343,23 @@ impl OwnerReadService for RenewalReader {
         }
         let economics =
             history::read(ctx, &self.families.house_economics, term.key()).map_err(integrity)?;
-        let binding = RenewalBindingV1::capture(licence, term, economics, birth.issuer())
+        super::super::paid_resale::history::require_not_pending(ctx, &self.families, licence)
             .map_err(integrity)?;
+        let holder_basis = super::super::paid_resale::history::renewal_basis(
+            ctx,
+            &self.families,
+            &self.ratings,
+            licence,
+        )
+        .map_err(integrity)?;
+        let binding = RenewalBindingV1::capture_holder(
+            licence,
+            term,
+            economics,
+            birth.issuer(),
+            holder_basis,
+        )
+        .map_err(integrity)?;
         let filed =
             history::read(ctx, &self.families.filed, binding.filed.key()).map_err(integrity)?;
         let filing = super::super::line_update::audit::birth(ctx, &self.families, filed)
@@ -382,16 +402,28 @@ impl RenewalReader {
         ctx: &OwnerReadContext<'_>,
         operation: CommitToken,
     ) -> Result<super::RenewalOperationV1, OwnerReadError> {
+        let row = self.verified_operation(roll, ctx, operation)?;
+        if ctx.actor() != mush_core::GOD && row.binding().holder() != ctx.actor() {
+            return Err(OwnerReadError::Refused);
+        }
+        Ok(row)
+    }
+    // Called for an already proved current own licence inventory. A terminal
+    // seller head remains historical and is not exposed as the buyer's offer.
+    fn verified_operation(
+        &self,
+        roll: &RollStore,
+        ctx: &OwnerReadContext<'_>,
+        operation: CommitToken,
+    ) -> Result<super::RenewalOperationV1, OwnerReadError> {
         let row = history::read(
             ctx,
             &self.families.house_renewal_operations,
             operation.to_hex(),
         )
         .map_err(integrity)?;
-        if row.operation() != operation
-            || (ctx.actor() != mush_core::GOD && row.binding().holder() != ctx.actor())
-        {
-            return Err(OwnerReadError::Refused);
+        if row.operation() != operation {
+            return Err(OwnerReadError::Integrity);
         }
         let e = ctx
             .world()
@@ -464,16 +496,22 @@ impl RenewalReader {
         let head = ctx.action_state(&self.families.house_renewal_heads, &licence.id().key())?;
         let (last_operation, attempted) = if let Some(head) = head {
             head.validate().map_err(integrity)?;
-            let last = self.operation(roll, ctx, head.last_operation())?;
+            let last = self.verified_operation(roll, ctx, head.last_operation())?;
             if head != &super::RenewalHeadV1::for_operation(&last).map_err(integrity)?
                 || head.current() != licence.term()
-                || !last.binding().matches_birth(licence)
+                || last.binding().licence() != licence.id()
+                || last.binding().birth_operation() != licence.operation()
+                || (last.state().pending() && !last.binding().matches_birth(licence))
             {
                 return Err(OwnerReadError::Integrity);
             }
             (
-                Some(last.operation()),
-                head.attempted_predecessor == licence.term(),
+                (last.binding().holder_basis().map(|b| b.ownership)
+                    == licence.ownership().copied())
+                .then_some(last.operation()),
+                head.attempted_predecessor == licence.term()
+                    && last.binding().holder_basis().map(|b| b.ownership)
+                        == licence.ownership().copied(),
             )
         } else {
             (None, false)
@@ -485,6 +523,7 @@ impl RenewalReader {
             term_end: term.window().term_end(),
             last_operation,
             attempted,
+            holder_generation: licence.ownership().map(|b| b.generation),
         }))
     }
 }

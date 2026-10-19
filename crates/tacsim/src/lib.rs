@@ -117,6 +117,7 @@ pub mod deliberation;
 pub mod economy;
 pub mod ephemeris;
 pub mod fixture;
+pub mod hardware;
 pub mod ic_return;
 /// Doc 19 cut A.1: **the Kepler propagation** behind the moving sky — element
 /// tables, the calendar's Julian Day, the two-body solver (D-19-2 … D-19-4).
@@ -350,6 +351,8 @@ fn requires_cycle(
 /// The TacSim layer (`"tacsim"`).
 pub struct TacsimRuleset {
     ic_minds: Option<minds::ic_sortie::registration::Registration>,
+    coverage: Option<underwriting::registration::Registration>,
+    coverage_families: Option<underwriting::families::Families>,
     registry_commerce: Option<minds::registry::composition::Registration>,
     fork_material: Option<mush_core::DefinitionRef>,
     marked_registry: Option<mush_core::DefinitionRef>,
@@ -387,6 +390,22 @@ pub use minds::ic_sortie::{
     IcSubmissionState, IcUnadmittedOpen, StartPermit as IcStartPermit,
 };
 impl TacsimRuleset {
+    /// Explicit actual owner composition; an absent region transition producer
+    /// still cannot mint a withheld departure or charge any premium.
+    pub fn with_hull_coverage(
+        mut self,
+        config: underwriting::CoverageConfiguration,
+    ) -> Result<Self, ModError> {
+        if self.coverage.is_some() {
+            return Err(ModError::msg("coverage already configured"));
+        }
+        self.coverage = Some(config.layer(&self)?);
+        Ok(self)
+    }
+    pub fn coverage_host(&self) -> Option<underwriting::CoverageHost> {
+        self.coverage.as_ref().map(|r| r.host.clone())
+    }
+
     /// The actual host retains opaque transition capabilities. This handle
     /// creates no start/event and ordinary compositions return None.
     pub fn ic_host(&self) -> Option<IcHost> {
@@ -435,6 +454,8 @@ impl TacsimRuleset {
         };
         TacsimRuleset {
             ic_minds: None,
+            coverage: None,
+            coverage_families: None,
             registry_commerce: None,
             fork_material: None,
             marked_registry: None,
@@ -612,6 +633,7 @@ impl GameModule for TacsimRuleset {
         };
         slot.install_packs(packs);
         reg.state(slot);
+        self.coverage_families = Some(underwriting::registration::register_base(reg)?);
         reg.state(
             match_::mind_tape::TapeStore::new(self.cfg.arena.tape_retained_max_bytes)
                 .map_err(|e| ModError::msg(e.to_string()))?,
@@ -707,6 +729,9 @@ impl GameModule for TacsimRuleset {
         for descriptor in &catalog.descriptors {
             reg.definition(descriptor.clone())?;
         }
+        hardware::PublishedHardware::shipped()
+            .map_err(|error| ModError::msg(error.to_string()))?
+            .register(reg)?;
         // 16b cut T.2: the arena's world side — the `arena.cockpit` and
         // `arena.map` feeds (16b cut Q.3 named the first for doc 16 and added the
         // second), the
@@ -757,12 +782,13 @@ impl GameModule for TacsimRuleset {
         // neighbours: the tick returns at once while the layer is off.
         // Doc 18 cut IC9: the departure burn's provider holds the drive table built
         // here from the fielded catalog and the layer's goods table (D-18-11).
-        port_tick::register_with_ic(
+        port_tick::register_with_coverage(
             reg,
             self.test_world,
             self.inventory.as_ref(),
             port::burn::burn_table(&catalog, self.goods.clone()),
             self.ic_minds.as_ref(),
+            self.coverage.as_ref(),
         )?;
         // Doc 18 cut IC6 (§4.2, 18a §3): the hull rooms' status line and
         // gauges. Registered unconditionally like its neighbours; the hook
@@ -772,9 +798,23 @@ impl GameModule for TacsimRuleset {
         // the boards. Registered unconditionally; silent while the layer is off.
         port::board::register_hooks(reg)?;
         if let Some(registry) = &self.registry_commerce {
-            registry.register(reg, &self.cfg, &catalog, self.ic_minds.is_some())?;
+            registry.register(
+                reg,
+                &self.cfg,
+                &catalog,
+                self.ic_minds.is_some(),
+                self.coverage.is_some(),
+            )?;
             if let Some(ic) = &self.ic_minds {
                 ic.register(reg, &self.cfg, registry.reference())?;
+                if let Some(coverage) = &self.coverage {
+                    coverage.register(
+                        reg,
+                        self.coverage_families
+                            .clone()
+                            .ok_or_else(|| ModError::msg("coverage families unavailable"))?,
+                    )?;
+                }
             }
             if let Some(manifest) = &self.fork_material {
                 if manifest != registry.reference() {
@@ -795,6 +835,7 @@ impl GameModule for TacsimRuleset {
         } else if self.fork_material.is_some()
             || self.marked_registry.is_some()
             || self.ic_minds.is_some()
+            || self.coverage.is_some()
         {
             return Err(ModError::msg(
                 "fork material requires actual Registry registration",
@@ -813,6 +854,7 @@ impl GameModule for TacsimRuleset {
             Err(detail) => return Err(ModError::msg(detail.clone())),
         };
         minds::ic_sortie::boot::load(ctx, &data, self.ic_minds.as_ref())?;
+        underwriting::boot::load(ctx, &data, self.coverage.as_ref())?;
         let kv: Vec<(smol_str::SmolStr, serde_json::Value)> = data
             .kv
             .iter()
@@ -923,6 +965,15 @@ impl GameModule for TacsimRuleset {
             );
         }
         Ok(())
+    }
+    fn finalize_owner_composition(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        underwriting::boot::finalize(
+            ctx,
+            self.coverage_families
+                .as_ref()
+                .ok_or_else(|| ModError::msg("coverage families unavailable"))?,
+            self.coverage.as_ref(),
+        )
     }
 }
 

@@ -198,17 +198,32 @@ fn paid_current(
     {
         return Err(PublicationError::Mismatch);
     }
+    let birth = match (&old, &new, &house) {
+        (Some(a), None, None) => h::Birth::Legacy(a),
+        (None, Some(a), None) => h::Birth::Entitlement(a),
+        (None, None, Some(a)) => h::Birth::House(a),
+        _ => return Err(PublicationError::Mismatch),
+    };
+    let birth_pointer = super::super::paid::PersonalPaidLicence::original(
+        birth.licence(),
+        birth.charter(),
+        birth.line(),
+        birth.holder(),
+        licence.term(),
+        birth.operation(),
+    )?;
+    super::super::paid_resale::history::current_in_txn(txn, world, f, licence, birth)?;
     match (&old, &new, &house) {
         (Some(row), None, None) => {
             if birth_economics.is_some() || actual.entitlement().map_err(bad)?.is_some() {
                 return Err(PublicationError::Mismatch);
             }
             h::verify_legacy_history(row, actual, receipt.compatibility().digest())?;
-            super::super::paid_audit::verify_granted(row, licence, &birth_term, actual)?;
+            super::super::paid_audit::verify_granted(row, &birth_pointer, &birth_term, actual)?;
         }
         (None, Some(row), None) => h::verify_entitlement_grant(
             row,
-            licence,
+            &birth_pointer,
             &birth_term,
             birth_economics.as_ref().ok_or(PublicationError::Missing)?,
             actual,
@@ -216,7 +231,7 @@ fn paid_current(
         )?,
         (None, None, Some(row)) => super::super::house_purchase::history::verify_grant(
             row,
-            licence,
+            &birth_pointer,
             &birth_term,
             house_economics.as_ref().ok_or(PublicationError::Missing)?,
             actual,
@@ -224,83 +239,173 @@ fn paid_current(
         )?,
         _ => return Err(PublicationError::Mismatch),
     }
-    if term.generation() == birth_generation {
-        if term != &birth_term {
-            return Err(PublicationError::Mismatch);
-        }
-    } else {
-        let row = txn
-            .get(&f.renewal_operations, &term.operation().to_hex())
-            .map_err(bad)?
-            .cloned()
-            .ok_or(PublicationError::Missing)?;
-        let economy_row = txn
-            .get(&f.term_economics, &term.key())
-            .map_err(bad)?
-            .cloned()
-            .ok_or(PublicationError::Missing)?;
-        let view = economy
-            .renewal_audit()
-            .map_err(bad)?
-            .get(row.operation())
-            .map_err(bad)?;
-        super::super::renewal::history::verify(&row, &view)?;
-        let (_, expected_term, expected_economics) = row.granted_rows()?;
-        let Some(birth) = new.as_ref() else {
-            return Err(PublicationError::Mismatch);
-        };
-        if !row.binding().matches_birth(licence)
-            || term != &expected_term
-            || economy_row != expected_economics
-            || row.binding().product_digest() != birth.product_digest
-            || row.binding().grant() != birth.economics.grant()
-            || view.offer().basis.prior_quote != birth.quote
-            || view.offer().basis.prior_quote_digest != birth.quote_digest
-        {
-            return Err(PublicationError::Mismatch);
-        }
-        let prior = txn
-            .get(
-                &f.paid_terms,
-                &OwnerTerm::encoded_key(licence.id(), row.binding().predecessor()),
-            )
-            .map_err(bad)?
-            .cloned()
-            .ok_or(PublicationError::Missing)?;
-        let prior_economics = txn
-            .get(&f.term_economics, &prior.key())
-            .map_err(bad)?
-            .cloned()
-            .ok_or(PublicationError::Missing)?;
-        row.binding()
-            .check_predecessor(licence, &prior, &prior_economics)?;
-    }
-    let head = txn
-        .get(&f.renewal_heads, &licence.id().key())
-        .map_err(bad)?
-        .cloned();
-    match head {
-        None if licence.term().get() == 1 => {}
-        Some(head) => {
+    if house.is_some() {
+        if term.generation() == birth_generation {
+            if term != &birth_term {
+                return Err(PublicationError::Mismatch);
+            }
+        } else {
             let row = txn
-                .get(&f.renewal_operations, &head.last_operation().to_hex())
+                .get(&f.house_renewal_operations, &term.operation().to_hex())
                 .map_err(bad)?
                 .cloned()
                 .ok_or(PublicationError::Missing)?;
-            if head != super::super::renewal::RenewalHeadV1::for_operation(&row)?
-                || head.current() != licence.term()
-                || !row.binding().matches_birth(licence)
+            let economy_row = txn
+                .get(&f.house_economics, &term.key())
+                .map_err(bad)?
+                .cloned()
+                .ok_or(PublicationError::Missing)?;
+            let view = economy
+                .house_renewal_audit()
+                .map_err(bad)?
+                .get(row.operation())
+                .map_err(bad)?;
+            super::super::house_renewal::history::verify(&row, &view)?;
+            let (_, expected_term, expected_economics) = row.granted_rows()?;
+            let Some(birth) = house.as_ref() else {
+                return Err(PublicationError::Mismatch);
+            };
+            let accepted_pointer = row.binding().accepted_pointer(licence.term())?;
+            if !row.binding().matches_birth(&accepted_pointer)
+                || term != &expected_term
+                || economy_row != expected_economics
+                || row.binding().issuer() != birth.issuer()
+                || row.binding().product_digest() != birth.product_digest()
+                || row.binding().grant() != birth.economics().grant()
+                || view.offer().basis.prior_quote != birth.quote()
+                || view.offer().basis.prior_quote_digest != birth.quote_digest()
             {
                 return Err(PublicationError::Mismatch);
             }
+            let prior = txn
+                .get(
+                    &f.paid_terms,
+                    &OwnerTerm::encoded_key(licence.id(), row.binding().predecessor()),
+                )
+                .map_err(bad)?
+                .cloned()
+                .ok_or(PublicationError::Missing)?;
+            let prior_economics = txn
+                .get(&f.house_economics, &prior.key())
+                .map_err(bad)?
+                .cloned()
+                .ok_or(PublicationError::Missing)?;
+            row.binding()
+                .check_predecessor(&accepted_pointer, &prior, &prior_economics)?;
+        }
+        let head = txn
+            .get(&f.house_renewal_heads, &licence.id().key())
+            .map_err(bad)?
+            .cloned();
+        match head {
+            None if licence.term().get() == 1 => {}
+            Some(head) => {
+                let row = txn
+                    .get(&f.house_renewal_operations, &head.last_operation().to_hex())
+                    .map_err(bad)?
+                    .cloned()
+                    .ok_or(PublicationError::Missing)?;
+                if head != super::super::house_renewal::RenewalHeadV1::for_operation(&row)?
+                    || head.current() != licence.term()
+                    || !row
+                        .binding()
+                        .matches_birth(&row.binding().accepted_pointer(licence.term())?)
+                    || (row.state().pending() && !row.binding().matches_birth(licence))
+                {
+                    return Err(PublicationError::Mismatch);
+                }
+                let view = economy
+                    .house_renewal_audit()
+                    .map_err(bad)?
+                    .get(row.operation())
+                    .map_err(bad)?;
+                super::super::house_renewal::history::verify(&row, &view)?;
+            }
+            _ => return Err(PublicationError::Mismatch),
+        }
+    } else {
+        if term.generation() == birth_generation {
+            if term != &birth_term {
+                return Err(PublicationError::Mismatch);
+            }
+        } else {
+            let row = txn
+                .get(&f.renewal_operations, &term.operation().to_hex())
+                .map_err(bad)?
+                .cloned()
+                .ok_or(PublicationError::Missing)?;
+            let economy_row = txn
+                .get(&f.term_economics, &term.key())
+                .map_err(bad)?
+                .cloned()
+                .ok_or(PublicationError::Missing)?;
             let view = economy
                 .renewal_audit()
                 .map_err(bad)?
                 .get(row.operation())
                 .map_err(bad)?;
             super::super::renewal::history::verify(&row, &view)?;
+            let (_, expected_term, expected_economics) = row.granted_rows()?;
+            let Some(birth) = new.as_ref() else {
+                return Err(PublicationError::Mismatch);
+            };
+            let accepted_pointer = row.binding().accepted_pointer(licence.term())?;
+            if !row.binding().matches_birth(&accepted_pointer)
+                || term != &expected_term
+                || economy_row != expected_economics
+                || row.binding().product_digest() != birth.product_digest
+                || row.binding().grant() != birth.economics.grant()
+                || view.offer().basis.prior_quote != birth.quote
+                || view.offer().basis.prior_quote_digest != birth.quote_digest
+            {
+                return Err(PublicationError::Mismatch);
+            }
+            let prior = txn
+                .get(
+                    &f.paid_terms,
+                    &OwnerTerm::encoded_key(licence.id(), row.binding().predecessor()),
+                )
+                .map_err(bad)?
+                .cloned()
+                .ok_or(PublicationError::Missing)?;
+            let prior_economics = txn
+                .get(&f.term_economics, &prior.key())
+                .map_err(bad)?
+                .cloned()
+                .ok_or(PublicationError::Missing)?;
+            row.binding()
+                .check_predecessor(&accepted_pointer, &prior, &prior_economics)?;
         }
-        _ => return Err(PublicationError::Mismatch),
+        let head = txn
+            .get(&f.renewal_heads, &licence.id().key())
+            .map_err(bad)?
+            .cloned();
+        match head {
+            None if licence.term().get() == 1 => {}
+            Some(head) => {
+                let row = txn
+                    .get(&f.renewal_operations, &head.last_operation().to_hex())
+                    .map_err(bad)?
+                    .cloned()
+                    .ok_or(PublicationError::Missing)?;
+                if head != super::super::renewal::RenewalHeadV1::for_operation(&row)?
+                    || head.current() != licence.term()
+                    || !row
+                        .binding()
+                        .matches_birth(&row.binding().accepted_pointer(licence.term())?)
+                    || (row.state().pending() && !row.binding().matches_birth(licence))
+                {
+                    return Err(PublicationError::Mismatch);
+                }
+                let view = economy
+                    .renewal_audit()
+                    .map_err(bad)?
+                    .get(row.operation())
+                    .map_err(bad)?;
+                super::super::renewal::history::verify(&row, &view)?;
+            }
+            _ => return Err(PublicationError::Mismatch),
+        }
     }
     Ok(())
 }

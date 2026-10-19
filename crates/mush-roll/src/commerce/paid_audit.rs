@@ -200,7 +200,24 @@ pub(super) fn audit_with_house_renewals(
             PurchasePhase::Granted { .. } => {
                 let licence = licence.ok_or(PublicationError::Missing)?;
                 let term = term.ok_or(PublicationError::Missing)?;
-                verify_granted(row, licence, term, actual)?;
+                let birth = PersonalPaidLicence::original(
+                    row.licence,
+                    row.charter,
+                    row.line,
+                    row.holder,
+                    row.term,
+                    row.operation,
+                )?;
+                verify_granted(row, &birth, term, actual)?;
+                if licence.term() != row.term {
+                    return Err(PublicationError::Mismatch);
+                }
+                super::paid_resale::history::current_from_birth(
+                    ctx,
+                    f,
+                    licence,
+                    super::entitlement::history::Birth::Legacy(row),
+                )?;
             }
             PurchasePhase::Funded {} | PurchasePhase::Refunded { .. } => {
                 if licence.is_some() || term.is_some() {

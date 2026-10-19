@@ -178,7 +178,6 @@ impl TryFrom<ProductWire> for CoverageProductV1 {
             || !(1..=3600).contains(&w.quote_seconds)
             || w.hulls.0.is_empty()
             || w.zones.0.is_empty()
-            || w.approvals.0.is_empty()
             || w.hulls.0.len() > 32
             || w.zones.0.len() > 32
             || w.approvals.0.len() > 16

@@ -172,6 +172,30 @@ impl ClaimInventory {
     ) -> Result<u32, PublicationError> {
         self.owned_charter_at(charter, self.next_transition)
     }
+    /// Count at a proved historical transition boundary, regardless of the
+    /// dispatcher's later holder or term. No current-clock inference is used.
+    pub(crate) fn paid_at(&self, licence: LicenceId, next: u64) -> Result<u32, PublicationError> {
+        if next == 0 || next > self.next_transition {
+            return Err(PublicationError::Mismatch);
+        }
+        let count = self
+            .history
+            .values()
+            .filter(|row| {
+                row.open.licence == licence
+                    && matches!(row.open.capacity, Capacity::PaidSeats { .. })
+                    && row.open.sortie.get() < next
+                    && row
+                        .closed
+                        .as_ref()
+                        .is_none_or(|close| close.transition >= next)
+            })
+            .count();
+        if count > MAX_OPEN_IC_CLAIMS {
+            return Err(PublicationError::Mismatch);
+        }
+        u32::try_from(count).map_err(|_| PublicationError::Capacity)
+    }
     pub(crate) fn paid_open(&self, licence: LicenceId) -> usize {
         self.open_paid.get(&licence).copied().unwrap_or(0)
     }

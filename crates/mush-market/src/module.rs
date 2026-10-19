@@ -393,6 +393,8 @@ pub struct MarketModule {
     mind_renewals: Option<crate::mind_renewal::RenewalConfig>,
     renewal_families: Option<crate::mind_renewal::Families>,
     house_renewals: Option<crate::mind_house_renewal::RenewalConfig>,
+    paid_resales: Option<crate::mind_paid_resale::PaidResaleConfig>,
+    paid_resale_families: Option<crate::mind_paid_resale::Families>,
     house_renewal_families: Option<crate::mind_house_renewal::Families>,
 }
 
@@ -450,8 +452,16 @@ impl MarketModule {
         self
     }
 
-    /// Explicit paired renewal providers. The optional service adds bounded
-    /// continuations and controls; acceptance is always explicit.
+    /// Explicit paid-property resale and bounded retained-escrow continuations.
+    /// Seller offers and buyer acceptance remain separate actual actions.
+    pub fn with_paid_mind_resale(
+        mut self,
+        config: crate::mind_paid_resale::PaidResaleConfig,
+    ) -> Self {
+        self.paid_resales = Some(config);
+        self
+    }
+    /// Explicit paired renewal providers. Acceptance is always explicit.
     pub fn with_mind_renewals(mut self, config: crate::mind_renewal::RenewalConfig) -> Self {
         self.mind_renewals = Some(config);
         self
@@ -716,11 +726,18 @@ impl GameModule for MarketModule {
                 return Err(ModError::msg("House renewal composition differs"));
             }
         }
+        let resale_definitions = self
+            .paid_resales
+            .as_ref()
+            .map(crate::mind_paid_resale::PaidResaleConfig::declarations)
+            .transpose()?
+            .unwrap_or_default();
         let mut purchase_definitions = purchase_definitions;
         purchase_definitions.extend(entitlement_definitions.iter().cloned());
         purchase_definitions.extend(house_definitions.iter().cloned());
         purchase_definitions.extend(renewal_definitions.iter().cloned());
         purchase_definitions.extend(house_renewal_definitions.iter().cloned());
+        purchase_definitions.extend(resale_definitions.iter().cloned());
         quote_definitions.extend(purchase_definitions.iter().cloned());
         crate::mind_entitlement::register_capabilities_with_house(
             reg,
@@ -787,6 +804,7 @@ impl GameModule for MarketModule {
                     &house_definitions
                         .iter()
                         .chain(house_renewal_definitions.iter())
+                        .chain(resale_definitions.iter())
                         .cloned()
                         .collect::<Vec<_>>(),
                 )?);
@@ -804,7 +822,11 @@ impl GameModule for MarketModule {
                     || self.original_mind_quotes.is_some()
                     || self.mind_entitlements.is_some(),
                 self.mind_entitlements.is_some(),
-                &house_renewal_definitions,
+                &house_renewal_definitions
+                    .iter()
+                    .chain(resale_definitions.iter())
+                    .cloned()
+                    .collect::<Vec<_>>(),
             )?);
         }
         if let Some(config) = &self.mind_renewals {
@@ -812,6 +834,26 @@ impl GameModule for MarketModule {
         }
         if let Some(config) = &self.house_renewals {
             self.house_renewal_families = Some(crate::mind_house_renewal::register(reg, config)?);
+        }
+        if let Some(config) = &self.paid_resales {
+            if !lot_registered
+                && self.original_mind_quotes.is_none()
+                && self.mind_entitlements.is_none()
+                && self.house_minds.is_none()
+            {
+                for kind in ["action", "outcome"] {
+                    reg.definition_validator(
+                        mush_core::DefinitionKind::new(kind)
+                            .map_err(|e| ModError::msg(e.to_string()))?,
+                        crate::lot::exact_validator(&resale_definitions),
+                    )?;
+                }
+            }
+            self.paid_resale_families = Some(crate::mind_paid_resale::register(
+                reg,
+                config,
+                self.original_mind_families.clone(),
+            )?);
         }
         crate::commands::register(reg)?;
         Ok(())
@@ -899,6 +941,14 @@ impl GameModule for MarketModule {
             crate::mind_house_renewal::enable_service(ctx)?;
         } else {
             crate::mind_house_renewal::require_disabled(ctx)?;
+        }
+        if let Some(config) = &self.paid_resales {
+            self.paid_resale_families
+                .as_ref()
+                .ok_or_else(|| ModError::msg("paid resale families unavailable"))?
+                .audit(ctx, config, self.original_mind_families.as_ref())?;
+        } else {
+            crate::mind_paid_resale::require_disabled(ctx)?;
         }
         Ok(())
     }

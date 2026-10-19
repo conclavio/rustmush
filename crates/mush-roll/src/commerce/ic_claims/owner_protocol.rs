@@ -20,6 +20,34 @@ pub enum IcCloseKind {
     RecoveredToBase { base: ObjId },
 }
 
+// Reuse the existing closed historical wire rather than deriving a second
+// codec for the public data view. This creates no opaque event authority.
+impl serde::Serialize for IcCloseKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use super::records::CloseKind;
+        let wire = match *self {
+            Self::ReturnedToBase { base } => CloseKind::ReturnedToBase { base },
+            Self::PoweredDownInBase { base } => CloseKind::PoweredDownInBase { base },
+            Self::Destroyed => CloseKind::Destroyed {},
+            Self::RecoveredToBase { base } => CloseKind::RecoveredToBase { base },
+        };
+        serde::Serialize::serialize(&wire, serializer)
+    }
+}
+impl<'de> serde::Deserialize<'de> for IcCloseKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use super::records::CloseKind;
+        Ok(
+            match <CloseKind as serde::Deserialize>::deserialize(deserializer)? {
+                CloseKind::ReturnedToBase { base } => Self::ReturnedToBase { base },
+                CloseKind::PoweredDownInBase { base } => Self::PoweredDownInBase { base },
+                CloseKind::Destroyed {} => Self::Destroyed,
+                CloseKind::RecoveredToBase { base } => Self::RecoveredToBase { base },
+            },
+        )
+    }
+}
+
 /// Implemented by the actual Tacsim opaque owner output. Knowledge of these
 /// getters does not construct that output or supply a typed preparation grant.
 pub trait IcSealOutput {
@@ -63,4 +91,43 @@ where
         claims: &[super::IcClaimHistory],
         next_transition: u64,
     ) -> Result<(), mush_core::ModError>;
+}
+
+#[cfg(test)]
+mod close_data_tests {
+    use super::IcCloseKind;
+    #[test]
+    fn public_close_data_uses_exact_existing_closed_history_wire()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use serde_json::json;
+        for (data, wire) in [
+            (IcCloseKind::Destroyed, json!({"kind":"destroyed"})),
+            (
+                IcCloseKind::ReturnedToBase {
+                    base: mush_core::ObjId(7),
+                },
+                json!({"kind":"returned_to_base","base":7}),
+            ),
+            (
+                IcCloseKind::PoweredDownInBase {
+                    base: mush_core::ObjId(7),
+                },
+                json!({"kind":"powered_down_in_base","base":7}),
+            ),
+            (
+                IcCloseKind::RecoveredToBase {
+                    base: mush_core::ObjId(7),
+                },
+                json!({"kind":"recovered_to_base","base":7}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(data)?, wire);
+            assert_eq!(serde_json::from_value::<IcCloseKind>(wire.clone())?, data);
+            let mut extra = wire;
+            extra["authority"] = json!(true);
+            assert!(serde_json::from_value::<IcCloseKind>(extra).is_err());
+        }
+        assert!(serde_json::from_value::<IcCloseKind>(json!({"kind":"expired"})).is_err());
+        Ok(())
+    }
 }

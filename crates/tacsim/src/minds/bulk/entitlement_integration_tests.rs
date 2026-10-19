@@ -637,6 +637,16 @@ fn original_v3(f: &PurchaseFixture, filed: &Durable) -> TestResult {
     let snapshot = capture(&world, &disk(&world));
     let _ = PlayerWorld::boot_entitlements(f, &snapshot)?;
     renewal::service_tests::unavailable_buyer(f, &snapshot, &a)?;
+    resale_routes::exercise(
+        &f.accounts,
+        &snapshot,
+        a.licence(),
+        BUYER,
+        false,
+        "purchase.fixture",
+        63_000_000,
+        |saved| PlayerWorld::boot_paid_resales(f, saved),
+    )?;
     Ok(())
 }
 fn lapse_refund(f: &PurchaseFixture, filed: &Durable, owner: LicenceId) -> TestResult {
@@ -820,6 +830,16 @@ pub(super) async fn exercise(
     original_v3(f, &filed)?;
     lapse_refund(f, &filed, owner)?;
     let (granted, allocation) = transactions(f, &filed, owner)?;
+    resale_routes::exercise(
+        &f.accounts,
+        &granted,
+        allocation.licence(),
+        GOD,
+        false,
+        "purchase.fixture",
+        64_000_000,
+        |saved| PlayerWorld::boot_paid_resales(f, saved),
+    )?;
     story_phase("owner.qualification", || {
         owner_qualification::exercise(f, &granted, owner, &allocation)
     })?

@@ -44,10 +44,7 @@ pub(crate) fn verify(
 ) -> Result<(), PublicationError> {
     check_offer(row, actual.offer())?;
     let attempt = RenewalAttemptV1::from_economy(actual.attempt());
-    let format = match attempt {
-        RenewalAttemptV1::Automatic {} => 1,
-        RenewalAttemptV1::BuyerRetry { .. } => 2,
-    };
+    let format = attempt.record_format();
     if actual.format() != format
         || row.attempt != attempt
         || actual.operation() != row.operation

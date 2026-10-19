@@ -5,9 +5,11 @@
 use mush_core::DefinitionRef;
 use mush_core::participant::ParticipantError;
 
+mod availability;
 pub(crate) mod book;
 pub(crate) mod bridge;
 mod contract;
+pub use availability::PaidResaleAvailability;
 mod decision;
 mod history;
 pub(crate) mod install;
@@ -67,3 +69,6 @@ fn registry_action(action: &DefinitionRef) -> bool {
 mod owner_tests;
 #[cfg(test)]
 mod tests;
+
+mod renewal;
+pub use renewal::RenewalHolderBasisV1;

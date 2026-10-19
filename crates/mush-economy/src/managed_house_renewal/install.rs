@@ -90,7 +90,7 @@ pub(super) fn offer(
     context: &OfferContext<'_>,
     request: RenewalOffer,
 ) -> Result<(RenewalOfferOutput, OfferPatch, Vec<ReplayWrite>), ParticipantError> {
-    create(state, context, request, None)
+    create(state, context, request, super::RenewalAttemptV1::Automatic)
 }
 pub(super) fn retry(
     state: &EconomyStore,
@@ -98,13 +98,35 @@ pub(super) fn retry(
     request: RenewalOffer,
     previous_operation: CommitToken,
 ) -> Result<(RenewalOfferOutput, OfferPatch, Vec<ReplayWrite>), ParticipantError> {
-    create(state, context, request, Some(previous_operation))
+    create(
+        state,
+        context,
+        request,
+        super::RenewalAttemptV1::BuyerRetry { previous_operation },
+    )
+}
+pub(super) fn holder_offer(
+    state: &EconomyStore,
+    context: &OfferContext<'_>,
+    request: RenewalOffer,
+    basis: crate::managed_paid_resale::RenewalHolderBasisV1,
+    previous_operation: Option<CommitToken>,
+) -> Result<(RenewalOfferOutput, OfferPatch, Vec<ReplayWrite>), ParticipantError> {
+    basis.validate()?;
+    let attempt = match previous_operation {
+        None => super::RenewalAttemptV1::HolderAutomatic { basis },
+        Some(previous_operation) => super::RenewalAttemptV1::HolderRetry {
+            basis,
+            previous_operation,
+        },
+    };
+    create(state, context, request, attempt)
 }
 fn create(
     state: &EconomyStore,
     context: &OfferContext<'_>,
     request: RenewalOffer,
-    previous_operation: Option<CommitToken>,
+    attempt: super::RenewalAttemptV1,
 ) -> Result<(RenewalOfferOutput, OfferPatch, Vec<ReplayWrite>), ParticipantError> {
     request.validate()?;
     offer_current(state, context, &request)?;
@@ -114,9 +136,8 @@ fn create(
         return Err(refused());
     }
     let mut row = OfferRecord {
-        format: if previous_operation.is_some() { 2 } else { 1 },
-        attempt: previous_operation
-            .map(|previous_operation| super::RenewalAttemptV1::BuyerRetry { previous_operation }),
+        format: attempt.record_format(),
+        attempt: (attempt != super::RenewalAttemptV1::Automatic).then_some(attempt),
         operation: context.commit,
         action: context.action.clone(),
         offer: request,
@@ -126,6 +147,7 @@ fn create(
         created_at_utc: context.world.now(),
         closure: None,
     };
+    OfferBook::require_holder_origin(&row, &state.fold.paid_resale_receipts)?;
     let after = contract(&row)?;
     row.consent_hash = after.consent_hash;
     state.house_renewal_offers.admits(&row)?;
@@ -449,6 +471,7 @@ impl OfferPatch {
         // A previous money terminal lives in journal/fold state, not in the
         // OfferBook generation. Repeat its exact proof before custody as well.
         if self.before_record.is_none() {
+            OfferBook::require_holder_origin(&self.row, &state.fold.paid_resale_receipts)?;
             state.house_renewal_offers.admits(&self.row)?;
             state.house_renewal_offers.require_retry(
                 &self.row,

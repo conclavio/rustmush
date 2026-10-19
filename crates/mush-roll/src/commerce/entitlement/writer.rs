@@ -249,7 +249,21 @@ impl EntitlementPurchaseWriter {
                 },
                 row.operation,
             )?;
-            if current_licence != &expected_licence
+            let birth_pointer = PersonalPaidLicence::original(
+                current_licence.id(),
+                current_licence.charter(),
+                current_licence.line(),
+                row.holder,
+                current_licence.term(),
+                current_licence.operation(),
+            )?;
+            super::super::paid_resale::history::current_from_birth(
+                ctx,
+                &r.families,
+                current_licence,
+                super::super::entitlement::history::Birth::Entitlement(row),
+            )?;
+            if birth_pointer != expected_licence
                 || term != Some(&expected_term)
                 || economics != Some(&row.economics)
             {

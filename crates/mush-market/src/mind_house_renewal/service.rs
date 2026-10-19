@@ -74,7 +74,7 @@ impl CloseIntent {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Selection {
-    Due(LicenceId, TermGeneration),
+    Due(LicenceId, TermGeneration, u64),
     Retry(LicenceId, TermGeneration, CommitToken),
     Pending(CommitToken),
 }
@@ -243,7 +243,8 @@ fn checked(
 }
 fn key(selection: Selection) -> String {
     match selection {
-        Selection::Due(l, g) => format!("d/{}/{}", l.get(), g.get()),
+        Selection::Due(l, g, 1) => format!("d/{}/{}", l.get(), g.get()),
+        Selection::Due(l, g, holder) => format!("d/{}/{}/{}", l.get(), g.get(), holder),
         Selection::Pending(op) => format!("p/{}", op.to_hex()),
         Selection::Retry(l, g, previous) => {
             format!("r/{}/{}/{}", l.get(), g.get(), previous.to_hex())
@@ -416,7 +417,7 @@ fn scan(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
         {
             let _ = admit(
                 &mut r,
-                Selection::Due(item.licence(), item.generation()),
+                Selection::Due(item.licence(), item.generation(), item.holder_generation()),
                 item.holder(),
             );
         }
@@ -484,7 +485,8 @@ fn continuation(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
         return Err(unavailable());
     }
     let complete = match e.selection {
-        Selection::Due(l, g) => own(ctx, s, l).is_ok_and(|v| v.generation() != g || v.attempted()),
+        Selection::Due(l, g, holder) => own(ctx, s, l)
+            .is_ok_and(|v| v.generation() != g || v.holder_generation() != holder || v.attempted()),
         Selection::Pending(op) => checked(ctx, s, op).is_ok_and(|v| !v.state().pending()),
         Selection::Retry(l, g, previous) => own(ctx, s, l)
             .is_ok_and(|v| v.generation() != g || v.last_operation() != Some(previous)),
@@ -514,9 +516,12 @@ fn continuation(ctx: &mut Ctx<'_>, s: &Service) -> Result<(), CmdError> {
         return Ok(());
     }
     match e.selection {
-        Selection::Due(l, g) => {
+        Selection::Due(l, g, holder) => {
             let v = own(ctx, s, l)?;
-            if v.generation() != g || v.attempted() || ctx.w.world_ic_now().at < v.term_end().get()
+            if v.generation() != g
+                || v.holder_generation() != holder
+                || v.attempted()
+                || ctx.w.world_ic_now().at < v.term_end().get()
             {
                 return Err(unavailable());
             }
@@ -638,7 +643,7 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let (selection, t, parameters) = if ctx.switches.has("request") && !item.attempted() {
         (
-            Selection::Due(licence, item.generation()),
+            Selection::Due(licence, item.generation(), item.holder_generation()),
             Transition::Draft,
             serde_json::json!({"licence":licence.get()}),
         )

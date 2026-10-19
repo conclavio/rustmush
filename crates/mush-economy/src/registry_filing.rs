@@ -8,6 +8,7 @@
 mod boot_tests;
 pub mod charter_transfer;
 mod house;
+mod prepare;
 mod receipt;
 pub mod update;
 pub use house::{
@@ -1168,6 +1169,15 @@ pub enum EconomyRequest {
     EntitlementGrant(crate::managed_entitlement::EntitlementTerminal),
     EntitlementRefund(crate::managed_entitlement::EntitlementTerminal),
     RenewalDraft(crate::managed_renewal::RenewalOffer),
+    RenewalHolderDraft {
+        offer: crate::managed_renewal::RenewalOffer,
+        basis: crate::managed_paid_resale::RenewalHolderBasisV1,
+    },
+    RenewalHolderRetry {
+        offer: crate::managed_renewal::RenewalOffer,
+        basis: crate::managed_paid_resale::RenewalHolderBasisV1,
+        previous_operation: CommitToken,
+    },
     RenewalRetry {
         offer: crate::managed_renewal::RenewalOffer,
         previous_operation: CommitToken,
@@ -1184,6 +1194,15 @@ pub enum EconomyRequest {
         reason: crate::managed_renewal::UnfundedCloseReason,
     },
     HouseRenewalDraft(crate::managed_house_renewal::RenewalOffer),
+    HouseRenewalHolderDraft {
+        offer: crate::managed_house_renewal::RenewalOffer,
+        basis: crate::managed_paid_resale::RenewalHolderBasisV1,
+    },
+    HouseRenewalHolderRetry {
+        offer: crate::managed_house_renewal::RenewalOffer,
+        basis: crate::managed_paid_resale::RenewalHolderBasisV1,
+        previous_operation: CommitToken,
+    },
     HouseRenewalRetry {
         offer: crate::managed_house_renewal::RenewalOffer,
         previous_operation: CommitToken,
@@ -1660,434 +1679,158 @@ impl OwnerParticipant for InitialFilingParticipant {
         context: &OwnerPrepareContext<'_>,
         request: EconomyRequest,
     ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
-        use crate::managed_purchase::{PurchaseOutcome, install};
         match request {
-            EconomyRequest::CoverageBind(request) => self.prepare_coverage(
+            EconomyRequest::CoverageBind(request) => {
+                self.prepare_coverage_bind_request(state, context, request)
+            }
+            EconomyRequest::CoverageTerminal(request) => {
+                self.prepare_coverage_terminal_request(state, context, request)
+            }
+            EconomyRequest::PaidResaleAcceptance(request) => {
+                self.prepare_paid_resale_acceptance_request(state, context, request)
+            }
+            EconomyRequest::PaidResaleTerminal(request) => {
+                self.prepare_paid_resale_terminal_request(state, context, request)
+            }
+            EconomyRequest::CharterPendingFunding(request) => {
+                self.prepare_charter_pending_funding_request(state, context, request)
+            }
+            EconomyRequest::CharterPendingTerminal(request) => {
+                self.prepare_charter_pending_terminal_request(state, context, request)
+            }
+            EconomyRequest::CoreFunding(request) => {
+                self.prepare_core_funding_request(state, context, request)
+            }
+            EconomyRequest::CoreCompletion(request) => {
+                self.prepare_core_completion_request(state, context, request)
+            }
+            EconomyRequest::CoreCancellation(request) => {
+                self.prepare_core_cancellation_request(state, context, request)
+            }
+            EconomyRequest::RenewalHolderDraft { offer, basis } => {
+                self.prepare_renewal_holder_draft_request(state, context, offer, basis)
+            }
+            EconomyRequest::RenewalHolderRetry {
+                offer,
+                basis,
+                previous_operation,
+            } => self.prepare_renewal_holder_retry_request(
                 state,
                 context,
-                crate::managed_coverage::native::Request::Bind(request),
+                offer,
+                basis,
+                previous_operation,
             ),
-            EconomyRequest::CoverageTerminal(request) => self.prepare_coverage(
-                state,
-                context,
-                crate::managed_coverage::native::Request::Terminal(request),
-            ),
-            EconomyRequest::PaidResaleAcceptance(request) => self.prepare_resale(
-                state,
-                context,
-                crate::managed_paid_resale::native::Request::Accept(request),
-            ),
-            EconomyRequest::PaidResaleTerminal(request) => self.prepare_resale(
-                state,
-                context,
-                crate::managed_paid_resale::native::Request::Terminal(request),
-            ),
-            EconomyRequest::CharterPendingFunding(request) => self.prepare_pending(
-                state,
-                context,
-                crate::managed_charter_transfer::native::Request::Fund(request),
-            ),
-            EconomyRequest::CharterPendingTerminal(request) => self.prepare_pending(
-                state,
-                context,
-                crate::managed_charter_transfer::native::Request::Terminal(request),
-            ),
-            EconomyRequest::CoreFunding(request) => self.prepare_core(
-                state,
-                context,
-                crate::core_integration::money::Request::Fund(request),
-            ),
-            EconomyRequest::CoreCompletion(request) => self.prepare_core(
-                state,
-                context,
-                crate::core_integration::money::Request::Complete(request),
-            ),
-            EconomyRequest::CoreCancellation(request) => self.prepare_core(
-                state,
-                context,
-                crate::core_integration::money::Request::Cancel(request),
-            ),
-            EconomyRequest::RefitFunding(request) => self.prepare_refit(
-                state,
-                context,
-                crate::core_refit::money::Request::Fund(request),
-            ),
-            EconomyRequest::RefitInstallation(request) => self.prepare_refit(
-                state,
-                context,
-                crate::core_refit::money::Request::Install(request),
-            ),
-            EconomyRequest::RefitCancellation(request) => self.prepare_refit(
-                state,
-                context,
-                crate::core_refit::money::Request::Cancel(request),
-            ),
+            EconomyRequest::RefitFunding(request) => {
+                self.prepare_refit_funding_request(state, context, request)
+            }
+            EconomyRequest::RefitInstallation(request) => {
+                self.prepare_refit_installation_request(state, context, request)
+            }
+            EconomyRequest::RefitCancellation(request) => {
+                self.prepare_refit_cancellation_request(state, context, request)
+            }
             EconomyRequest::RenewalDraft(request) => {
-                self.require_renewal(context, crate::managed_renewal::DRAFT_ACTION)?;
-                let (output, patch, writes) =
-                    crate::managed_renewal::prepare_offer(state, context, request)?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::RenewalOffer(output),
-                    EconomyPatch::RenewalOffer(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_renewal_draft_request(state, context, request)
             }
             EconomyRequest::RenewalRetry {
                 offer,
                 previous_operation,
-            } => {
-                self.require_renewal(context, crate::managed_renewal::DRAFT_ACTION)?;
-                let (output, patch, writes) = crate::managed_renewal::prepare_retry(
-                    state,
-                    context,
-                    offer,
-                    previous_operation,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::RenewalOffer(output),
-                    EconomyPatch::RenewalOffer(Box::new(patch)),
-                    writes,
-                ))
-            }
+            } => self.prepare_renewal_retry_request(state, context, offer, previous_operation),
             EconomyRequest::RenewalServiceClose { operation, reason } => {
-                self.require_renewal(context, crate::managed_renewal::SERVICE_CLOSE_ACTION)?;
-                let (output, patch, writes) = crate::managed_renewal::prepare_service_close(
-                    state, context, operation, reason,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::RenewalOffer(output),
-                    EconomyPatch::RenewalOffer(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_renewal_service_close_request(state, context, operation, reason)
             }
             EconomyRequest::RenewalClose { operation, reason } => {
-                self.require_renewal(context, crate::managed_renewal::CLOSE_ACTION)?;
-                let (output, patch, writes) =
-                    crate::managed_renewal::prepare_close(state, context, operation, reason)?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::RenewalOffer(output),
-                    EconomyPatch::RenewalOffer(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_renewal_close_request(state, context, operation, reason)
             }
             EconomyRequest::RenewalFunding(request) => {
-                self.require_renewal(context, crate::managed_renewal::FUND_ACTION)?;
-                let (output, patch, writes) =
-                    crate::managed_renewal::prepare_funding(state, context, request)?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::RenewalFunding(output),
-                    EconomyPatch::RenewalMoney(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_renewal_funding_request(state, context, request)
             }
             EconomyRequest::RenewalGrant(request) => {
-                self.require_renewal(context, crate::managed_renewal::GRANT_ACTION)?;
-                let (output, patch, writes) = crate::managed_renewal::prepare_terminal(
-                    state,
-                    context,
-                    request,
-                    crate::managed_renewal::RenewalOutcome::Granted,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::RenewalTerminal(output),
-                    EconomyPatch::RenewalMoney(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_renewal_grant_request(state, context, request)
             }
             EconomyRequest::RenewalRefund(request) => {
-                self.require_renewal(context, crate::managed_renewal::REFUND_ACTION)?;
-                let (output, patch, writes) = crate::managed_renewal::prepare_terminal(
-                    state,
-                    context,
-                    request,
-                    crate::managed_renewal::RenewalOutcome::Refunded,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::RenewalTerminal(output),
-                    EconomyPatch::RenewalMoney(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_renewal_refund_request(state, context, request)
             }
+            EconomyRequest::HouseRenewalHolderDraft { offer, basis } => {
+                self.prepare_house_renewal_holder_draft_request(state, context, offer, basis)
+            }
+            EconomyRequest::HouseRenewalHolderRetry {
+                offer,
+                basis,
+                previous_operation,
+            } => self.prepare_house_renewal_holder_retry_request(
+                state,
+                context,
+                offer,
+                basis,
+                previous_operation,
+            ),
             EconomyRequest::HouseRenewalDraft(request) => {
-                self.require_house_renewal(context, crate::managed_house_renewal::DRAFT_ACTION)?;
-                let (output, patch, writes) =
-                    crate::managed_house_renewal::prepare_offer(state, context, request)?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::HouseRenewalOffer(output),
-                    EconomyPatch::HouseRenewalOffer(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_house_renewal_draft_request(state, context, request)
             }
             EconomyRequest::HouseRenewalRetry {
                 offer,
                 previous_operation,
             } => {
-                self.require_house_renewal(context, crate::managed_house_renewal::DRAFT_ACTION)?;
-                let (output, patch, writes) = crate::managed_house_renewal::prepare_retry(
-                    state,
-                    context,
-                    offer,
-                    previous_operation,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::HouseRenewalOffer(output),
-                    EconomyPatch::HouseRenewalOffer(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_house_renewal_retry_request(state, context, offer, previous_operation)
             }
             EconomyRequest::HouseRenewalServiceClose { operation, reason } => {
-                self.require_house_renewal(
-                    context,
-                    crate::managed_house_renewal::SERVICE_CLOSE_ACTION,
-                )?;
-                let (output, patch, writes) = crate::managed_house_renewal::prepare_service_close(
-                    state, context, operation, reason,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::HouseRenewalOffer(output),
-                    EconomyPatch::HouseRenewalOffer(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_house_renewal_service_close_request(state, context, operation, reason)
             }
             EconomyRequest::HouseRenewalClose { operation, reason } => {
-                self.require_house_renewal(context, crate::managed_house_renewal::CLOSE_ACTION)?;
-                let (output, patch, writes) =
-                    crate::managed_house_renewal::prepare_close(state, context, operation, reason)?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::HouseRenewalOffer(output),
-                    EconomyPatch::HouseRenewalOffer(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_house_renewal_close_request(state, context, operation, reason)
             }
             EconomyRequest::HouseRenewalFunding(request) => {
-                self.require_house_renewal(context, crate::managed_house_renewal::FUND_ACTION)?;
-                let (output, patch, writes) =
-                    crate::managed_house_renewal::prepare_funding(state, context, request)?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::HouseRenewalFunding(output),
-                    EconomyPatch::HouseRenewalMoney(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_house_renewal_funding_request(state, context, request)
             }
             EconomyRequest::HouseRenewalGrant(request) => {
-                self.require_house_renewal(context, crate::managed_house_renewal::GRANT_ACTION)?;
-                let (output, patch, writes) = crate::managed_house_renewal::prepare_terminal(
-                    state,
-                    context,
-                    request,
-                    crate::managed_house_renewal::RenewalOutcome::Granted,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::HouseRenewalTerminal(output),
-                    EconomyPatch::HouseRenewalMoney(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_house_renewal_grant_request(state, context, request)
             }
             EconomyRequest::HouseRenewalRefund(request) => {
-                self.require_house_renewal(context, crate::managed_house_renewal::REFUND_ACTION)?;
-                let (output, patch, writes) = crate::managed_house_renewal::prepare_terminal(
-                    state,
-                    context,
-                    request,
-                    crate::managed_house_renewal::RenewalOutcome::Refunded,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::HouseRenewalTerminal(output),
-                    EconomyPatch::HouseRenewalMoney(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_house_renewal_refund_request(state, context, request)
             }
             EconomyRequest::CharterTransfer(request) => {
-                let action = self.charter_transfer.as_ref().ok_or_else(refused)?;
-                let (output, patch, writes) =
-                    charter_transfer::prepare(&self.policy, action, state, context, request)?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::CharterTransfer(output),
-                    EconomyPatch::CharterTransfer(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_charter_transfer_request(state, context, request)
             }
             EconomyRequest::CompatibleUpdate(request) => {
-                let action = self.compatible_update.as_ref().ok_or_else(refused)?;
-                let (output, patch, writes) =
-                    update::prepare(&self.policy, action, state, context, request)?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::CompatibleUpdate(output),
-                    EconomyPatch::CompatibleUpdate(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_compatible_update_request(state, context, request)
             }
             EconomyRequest::InitialFiling(request) => {
-                let action = context.action();
-                if action.key().owner.as_str() != "roll"
-                    || action.key().kind.as_str() != "action"
-                    || action.key().id.as_str() != "initial_filing"
-                    || action.version() != 1
-                {
-                    return Err(refused());
-                }
-                let (output, patch, writes) = self.prepare_images(
-                    state,
-                    context.world(),
-                    context.invocation().actor(),
-                    context.commit_token(),
-                    request,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::InitialFiling(output),
-                    patch.into(),
-                    writes,
-                ))
+                self.prepare_initial_filing_request(state, context, request)
             }
             EconomyRequest::DependentInitialFiling(request) => {
-                let action = context.action();
-                if action.key().owner.as_str() != "roll"
-                    || action.key().kind.as_str() != "action"
-                    || action.key().id.as_str() != "dependent_initial_filing"
-                    || action.version() != 1
-                {
-                    return Err(refused());
-                }
-                let (output, patch, writes) = self.prepare_images(
-                    state,
-                    context.world(),
-                    context.invocation().actor(),
-                    context.commit_token(),
-                    request,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::InitialFiling(output),
-                    patch.into(),
-                    writes,
-                ))
+                self.prepare_dependent_initial_filing_request(state, context, request)
             }
             EconomyRequest::HouseInitialFiling(request) => {
-                let action = context.action();
-                if action.key().owner.as_str() != "roll"
-                    || action.key().kind.as_str() != "action"
-                    || action.key().id.as_str() != HOUSE_FILING_ACTION
-                    || action.version() != 1
-                {
-                    return Err(refused());
-                }
-                let (request, house) = request.into_request(context.invocation().actor())?;
-                let (output, patch, writes) = self.prepare_filing_images(
-                    state,
-                    context.world(),
-                    context.invocation().actor(),
-                    context.commit_token(),
-                    request,
-                    Some(house),
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::InitialFiling(output),
-                    patch.into(),
-                    writes,
-                ))
+                self.prepare_house_initial_filing_request(state, context, request)
             }
             EconomyRequest::HouseFunding(request) => {
-                let (output, patch, writes) =
-                    crate::managed_house_purchase::prepare_funding(state, context, request)?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::HouseFunding(output),
-                    EconomyPatch::Purchase(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_house_funding_request(state, context, request)
             }
             EconomyRequest::HouseGrant(request) => {
-                let (output, patch, writes) = crate::managed_house_purchase::prepare_terminal(
-                    state,
-                    context,
-                    request,
-                    PurchaseOutcome::Granted,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::HouseTerminal(output),
-                    EconomyPatch::Purchase(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_house_grant_request(state, context, request)
             }
             EconomyRequest::HouseRefund(request) => {
-                let (output, patch, writes) = crate::managed_house_purchase::prepare_terminal(
-                    state,
-                    context,
-                    request,
-                    PurchaseOutcome::Refunded,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::HouseTerminal(output),
-                    EconomyPatch::Purchase(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_house_refund_request(state, context, request)
             }
             EconomyRequest::EntitlementFunding(request) => {
-                let (output, patch, writes) =
-                    crate::managed_entitlement::prepare_funding(state, context, request)?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::EntitlementFunding(output),
-                    EconomyPatch::Purchase(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_entitlement_funding_request(state, context, request)
             }
             EconomyRequest::EntitlementGrant(request) => {
-                let (output, patch, writes) = crate::managed_entitlement::prepare_terminal(
-                    state,
-                    context,
-                    request,
-                    PurchaseOutcome::Granted,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::EntitlementTerminal(output),
-                    EconomyPatch::Purchase(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_entitlement_grant_request(state, context, request)
             }
             EconomyRequest::EntitlementRefund(request) => {
-                let (output, patch, writes) = crate::managed_entitlement::prepare_terminal(
-                    state,
-                    context,
-                    request,
-                    PurchaseOutcome::Refunded,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::EntitlementTerminal(output),
-                    EconomyPatch::Purchase(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_entitlement_refund_request(state, context, request)
             }
             EconomyRequest::PurchaseFunding(request) => {
-                let (output, patch, writes) = install::prepare_images(state, context, request)?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::PurchaseFunding(output),
-                    EconomyPatch::Purchase(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_purchase_funding_request(state, context, request)
             }
             EconomyRequest::PurchaseGrant(request) => {
-                let (output, patch, writes) = install::prepare_terminal_images(
-                    state,
-                    context,
-                    request,
-                    PurchaseOutcome::Granted,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::PurchaseTerminal(output),
-                    EconomyPatch::Purchase(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_purchase_grant_request(state, context, request)
             }
             EconomyRequest::PurchaseRefund(request) => {
-                let (output, patch, writes) = install::prepare_terminal_images(
-                    state,
-                    context,
-                    request,
-                    PurchaseOutcome::Refunded,
-                )?;
-                Ok(OwnerPreparation::new(
-                    EconomyOutput::PurchaseTerminal(output),
-                    EconomyPatch::Purchase(Box::new(patch)),
-                    writes,
-                ))
+                self.prepare_purchase_refund_request(state, context, request)
             }
         }
     }

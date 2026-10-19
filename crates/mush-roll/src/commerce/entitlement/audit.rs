@@ -121,14 +121,31 @@ pub(crate) fn audit(
             .action_state(&f.term_economics, &term_key)
             .map_err(|_| PublicationError::Unavailable)?;
         match row.phase {
-            PurchasePhase::Granted { .. } => history::verify_entitlement_grant(
-                row,
-                licence.ok_or(PublicationError::Missing)?,
-                term.ok_or(PublicationError::Missing)?,
-                economics.ok_or(PublicationError::Missing)?,
-                actual,
-                rated.compatibility().digest(),
-            )?,
+            PurchasePhase::Granted { .. } => {
+                let licence = licence.ok_or(PublicationError::Missing)?;
+                let birth = super::super::paid::PersonalPaidLicence::original(
+                    row.licence,
+                    row.charter,
+                    row.line,
+                    row.holder,
+                    licence.term(),
+                    row.operation,
+                )?;
+                history::verify_entitlement_grant(
+                    row,
+                    &birth,
+                    term.ok_or(PublicationError::Missing)?,
+                    economics.ok_or(PublicationError::Missing)?,
+                    actual,
+                    rated.compatibility().digest(),
+                )?;
+                super::super::paid_resale::history::current_from_birth(
+                    ctx,
+                    f,
+                    licence,
+                    super::super::entitlement::history::Birth::Entitlement(row),
+                )?;
+            }
             PurchasePhase::Funded {} | PurchasePhase::Refunded { .. } => {
                 if licence.is_some() || term.is_some() || economics.is_some() {
                     return Err(PublicationError::Mismatch);

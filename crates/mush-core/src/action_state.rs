@@ -756,6 +756,8 @@ pub struct StateFamilyRegistryBuilder {
     ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
     core_integration: Option<terminal_capacity::CoreIntegrationProtocol>,
     core_refit: Option<terminal_capacity::CoreRefitProtocol>,
+    hull_coverage: Option<terminal_capacity::CoverageProtocol>,
+    conduct_trial: Option<terminal_capacity::ConductProtocol>,
 }
 
 impl fmt::Debug for StateFamilyRegistryBuilder {
@@ -1050,6 +1052,47 @@ impl StateFamilyRegistryBuilder {
         Ok(())
     }
 
+    pub(crate) fn conduct_trial_capacity(
+        &mut self,
+        owner: &OwnerId,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 3],
+        actions: [crate::DefinitionRef; 5],
+    ) -> Result<(), ActionStateError> {
+        if self.conduct_trial.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate Conduct protocol",
+            ));
+        }
+        self.conduct_trial = Some(terminal_capacity::ConductProtocol::new(
+            owner,
+            manifest,
+            participants,
+            actions,
+        )?);
+        Ok(())
+    }
+    pub(crate) fn hull_coverage_capacity(
+        &mut self,
+        owner: &OwnerId,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        actions: [crate::DefinitionRef; 3],
+    ) -> Result<(), ActionStateError> {
+        if self.hull_coverage.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate hull coverage protocol",
+            ));
+        }
+        self.hull_coverage = Some(terminal_capacity::CoverageProtocol::new(
+            owner,
+            manifest,
+            participants,
+            actions,
+        )?);
+        Ok(())
+    }
+
     pub(crate) fn core_refit_capacity(
         &mut self,
         owner: &OwnerId,
@@ -1261,6 +1304,8 @@ impl StateFamilyRegistryBuilder {
             self.house_mind_renewal.as_ref(),
             self.paid_resale.as_ref(),
             self.core_refit.as_ref(),
+            self.hull_coverage.as_ref(),
+            self.conduct_trial.as_ref(),
         )?;
         let registry = StateFamilyRegistry {
             entries: self.entries,
@@ -1274,6 +1319,8 @@ impl StateFamilyRegistryBuilder {
             ic_mind_claim: self.ic_mind_claim,
             core_integration: self.core_integration,
             core_refit: self.core_refit,
+            hull_coverage: self.hull_coverage,
+            conduct_trial: self.conduct_trial,
             house_purchase: self.house_purchase,
             charter_pending: self.charter_pending,
             paid_resale: self.paid_resale,
@@ -1335,6 +1382,15 @@ impl StateFamilyRegistryBuilder {
                 .validate_families(&registry)
                 .map_err(|e| StateFamilyRegistryError::CoreRefit(e.to_string()))?;
         }
+        if let Some(protocol) = &registry.hull_coverage {
+            protocol
+                .validate_families(&registry)
+                .map_err(|e| StateFamilyRegistryError::HullCoverage(e.to_string()))?;
+        }
+        if let Some(p) = &registry.conduct_trial {
+            p.validate_families(&registry)
+                .map_err(|e| StateFamilyRegistryError::Conduct(e.to_string()))?;
+        }
         Ok(registry)
     }
 }
@@ -1357,6 +1413,8 @@ pub struct StateFamilyRegistry {
     ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
     core_integration: Option<terminal_capacity::CoreIntegrationProtocol>,
     core_refit: Option<terminal_capacity::CoreRefitProtocol>,
+    hull_coverage: Option<terminal_capacity::CoverageProtocol>,
+    conduct_trial: Option<terminal_capacity::ConductProtocol>,
     fingerprint: DefinitionDigest,
     owner_readiness: MechanicalOwnerReadiness,
 }
@@ -1402,6 +1460,12 @@ impl StateFamilyRegistry {
             protocol.validate_composition(definitions, providers, participants)?;
         }
         if let Some(protocol) = &self.core_integration {
+            protocol.validate_composition(definitions, providers, participants)?;
+        }
+        if let Some(p) = &self.conduct_trial {
+            p.validate_composition(definitions, providers, participants)?;
+        }
+        if let Some(protocol) = &self.hull_coverage {
             protocol.validate_composition(definitions, providers, participants)?;
         }
         if let Some(protocol) = &self.core_refit {
@@ -1524,6 +1588,8 @@ fn state_family_fingerprint<'a>(
     house_mind_renewal: Option<&terminal_capacity::HouseRenewalProtocol>,
     paid_resale: Option<&terminal_capacity::PaidResaleProtocol>,
     core_refit: Option<&terminal_capacity::CoreRefitProtocol>,
+    hull_coverage: Option<&terminal_capacity::CoverageProtocol>,
+    conduct_trial: Option<&terminal_capacity::ConductProtocol>,
 ) -> Result<DefinitionDigest, CanonicalEncodingError> {
     let mut value = serde_json::Map::from_iter([
         (
@@ -1640,12 +1706,28 @@ fn state_family_fingerprint<'a>(
     } else {
         domain
     };
+    let domain = if let Some(protocol) = hull_coverage {
+        value.insert("hull_coverage".to_owned(), json!(protocol));
+        "state_family_registry.v16"
+    } else {
+        domain
+    };
+    let domain = if let Some(protocol) = conduct_trial {
+        value.insert("conduct_trial".to_owned(), json!(protocol));
+        "state_family_registry.v17"
+    } else {
+        domain
+    };
     DefinitionDigest::for_canonical_value(domain, &Value::Object(value))
 }
 
 /// State-family registration failure.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum StateFamilyRegistryError {
+    #[error("Conduct capacity composition: {0}")]
+    Conduct(String),
+    #[error("Hull coverage capacity composition: {0}")]
+    HullCoverage(String),
     #[error("Paid resale capacity composition: {0}")]
     PaidResale(String),
     #[error("Pending charter capacity composition: {0}")]
@@ -2879,7 +2961,60 @@ impl ActionTxn<'_> {
         ) {
             protocol.require_owner_images(identity, images)?;
         }
+        if let (Some(protocol), Some(identity)) = (
+            &self.store.registry.hull_coverage,
+            &self.registered_identity,
+        ) {
+            if let Some(required) = protocol.required_images(identity) {
+                required.check(images)?;
+            }
+        }
+        if let (Some(p), Some(id)) = (
+            &self.store.registry.conduct_trial,
+            &self.registered_identity,
+        ) {
+            if let Some(required) = p.required_images(id) {
+                required.check(images)?;
+            }
+        }
         Ok(())
+    }
+
+    pub(crate) fn conduct_trial_completion(
+        &mut self,
+        base: &ActionReadBase,
+        provider: &ProviderRegistrationOrdinal,
+        commit: crate::CommitToken,
+        job: Option<crate::CommitToken>,
+    ) -> Result<(), ActionStateError> {
+        let result = (|| {
+            self.read_preimage(base, provider).map_err(|_| {
+                ActionStateError::TerminalCapacity("Conduct transaction base differs")
+            })?;
+            terminal_capacity::conduct_change(self, commit, job)
+        })();
+        if let Err(e) = &result {
+            self.poison(e);
+        }
+        result
+    }
+    pub(crate) fn hull_coverage_completion(
+        &mut self,
+        base: &ActionReadBase,
+        provider: &ProviderRegistrationOrdinal,
+        commit: crate::CommitToken,
+        binding: Option<crate::CommitToken>,
+    ) -> Result<(), ActionStateError> {
+        let result = (|| {
+            self.read_preimage(base, provider).map_err(|_| {
+                ActionStateError::TerminalCapacity("coverage transaction base differs")
+            })?;
+            terminal_capacity::coverage_change(self, commit, binding)
+        })();
+        if let Err(error) = &result {
+            self.poison(error);
+        }
+        result
     }
 
     pub(crate) fn core_refit_completion(
@@ -3477,7 +3612,19 @@ impl ActionTxn<'_> {
             .slot
             .pending
             .store(reservation, Ordering::Relaxed);
+        let coverage_images = self.store.registry.hull_coverage.as_ref().and_then(|p| {
+            self.registered_identity
+                .as_ref()
+                .and_then(|id| p.required_images(id))
+        });
+        let conduct_images = self.store.registry.conduct_trial.as_ref().and_then(|p| {
+            self.registered_identity
+                .as_ref()
+                .and_then(|id| p.required_images(id))
+        });
         Ok(PreparedTxn {
+            conduct_images,
+            coverage_images,
             owner,
             provider_ordinal,
             operation_count,
@@ -3650,6 +3797,8 @@ impl PreparedRecord {
 /// [`ActionStateError::CommitPending`] (core-action-8).
 #[must_use = "a prepared transaction must be staged for persistence or explicitly aborted"]
 pub struct PreparedTxn {
+    conduct_images: Option<Box<terminal_capacity::ConductRequiredImages>>,
+    coverage_images: Option<Box<terminal_capacity::CoverageRequiredImages>>,
     owner: OwnerId,
     provider_ordinal: Option<u32>,
     operation_count: usize,
@@ -3679,6 +3828,24 @@ impl fmt::Debug for PreparedTxn {
 }
 
 impl PreparedTxn {
+    pub(crate) fn require_conduct_owner_images(
+        &self,
+        images: &crate::participant::OwnerImages,
+    ) -> Result<(), crate::participant::ParticipantError> {
+        if let Some(r) = &self.conduct_images {
+            r.check(images)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn require_coverage_owner_images(
+        &self,
+        images: &crate::participant::OwnerImages,
+    ) -> Result<(), crate::participant::ParticipantError> {
+        if let Some(required) = &self.coverage_images {
+            required.check(images)?;
+        }
+        Ok(())
+    }
     #[must_use]
     pub const fn owner(&self) -> &OwnerId {
         &self.owner

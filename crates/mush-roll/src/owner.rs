@@ -1310,6 +1310,57 @@ impl RollStore {
         )
     }
 
+    /// Actual final audit distinguishes disabled-empty from an unavailable book.
+    /// A live claim from any captured holder/term still occupies this licence.
+    pub(crate) fn paid_resale_claims(
+        &self,
+        licence: crate::commerce::LicenceId,
+    ) -> Result<crate::commerce::paid_resale::ResaleClaimObservation, RollError> {
+        self.commerce_ready()?;
+        let (generation, next_transition, open_paid) = match &self.ic_claims {
+            Some(book) => (
+                book.generation(),
+                book.next_transition(),
+                u32::try_from(book.paid_open(licence))
+                    .map_err(|_| invalid("paid resale", "claim census differs"))?,
+            ),
+            None => (0, 1, 0),
+        };
+        Ok(crate::commerce::paid_resale::ResaleClaimObservation {
+            generation,
+            next_transition,
+            open_paid,
+        })
+    }
+
+    pub(crate) fn prepare_paid_resale_roots(
+        &self,
+        request: &crate::commerce::paid_resale::publication::ResaleRoots,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        if request.added().is_empty() || request.added().len() > 2 || request.old().len() > 4 {
+            return Err(invalid("paid resale", "closed root dimensions"));
+        }
+        for root in request.old() {
+            self.check_required_root(root)?;
+        }
+        let mut changes = Vec::with_capacity(request.added().len());
+        let mut keys = BTreeSet::new();
+        for required in request.added() {
+            self.check_root_subject(required)?;
+            let row = ReferenceRecord {
+                format: FORMAT,
+                key: required.anchor.key(),
+                revisions: vec![required.target()],
+            };
+            if self.occupied.contains(&row.key.key()) || !keys.insert(row.key.key()) {
+                return Err(invalid("paid resale", "cause already retained"));
+            }
+            changes.push(Change::Reference(row));
+        }
+        self.prepare(changes)
+    }
+
     pub(crate) fn prepare_charter_pending_roots(
         &self,
         request: &crate::commerce::charter_pending::publication::PendingRoots,
@@ -1364,6 +1415,20 @@ impl RollStore {
             .as_ref()
             .map(|book| book.next_transition())
             .ok_or_else(|| invalid("IC claim", "actual composition audit missing"))
+    }
+
+    /// Actual final-audited inventory, updated only by the closed four-owner
+    /// transition. The caller must still compare its checked typed preimage.
+    pub(crate) fn coverage_ic_claim(
+        &self,
+        operation: mush_core::CommitToken,
+    ) -> Result<&crate::commerce::ic_claims::ClaimRecord, RollError> {
+        self.commerce_ready()?;
+        self.ic_claims
+            .as_ref()
+            .ok_or_else(|| invalid("IC claim", "actual composition audit missing"))?
+            .claim(operation)
+            .ok_or_else(|| invalid("IC claim", "acknowledged claim missing"))
     }
 
     pub(crate) fn install_ic_claim_audit(
@@ -1627,6 +1692,46 @@ impl RollStore {
         self.prepare(changes)
     }
 
+    /// Only the closed coverage writer can request this immutable source root.
+    /// Bind checks the acknowledged IC root; terminal republishes the same
+    /// coverage root. Existing IC/filing/rating obligations are never removed.
+    pub(crate) fn prepare_coverage_roots(
+        &self,
+        request: &crate::commerce::coverage::roots::CoverageRoots,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        let mut before_keys = std::collections::BTreeSet::new();
+        for before in request.before() {
+            if !before_keys.insert(before.anchor.clone()) {
+                return Err(invalid("coverage retention", "duplicate preimage"));
+            }
+            self.check_required_root(before)?;
+        }
+        let mut after_keys = std::collections::BTreeSet::new();
+        let mut changes = Vec::new();
+        for after in request.after() {
+            if !after_keys.insert(after.anchor.clone()) {
+                return Err(invalid("coverage retention", "duplicate obligation"));
+            }
+            self.check_root_subject(after)?;
+            let record = ReferenceRecord {
+                format: FORMAT,
+                key: after.anchor.key(),
+                revisions: vec![after.target()],
+            };
+            if before_keys.contains(&after.anchor) {
+                self.check_required_root(after)?;
+            } else if self.occupied.contains(&record.key.key()) {
+                return Err(invalid(
+                    "coverage retention",
+                    "new obligation already exists",
+                ));
+            }
+            changes.push(Change::Reference(record));
+        }
+        self.prepare(changes)
+    }
+
     pub(crate) fn prepare_house_renewal_roots(
         &self,
         request: &crate::commerce::house_renewal::roots::RenewalRoots,
@@ -1768,6 +1873,22 @@ impl RollStore {
             }
             added.extend_from_slice(pending.added());
         }
+        if let Some(resale) = request.resale() {
+            if request.pending().is_some()
+                || resale.commit() != request.commit()
+                || resale.old().len() != 1
+                || resale.added().len() != 1
+            {
+                return Err(invalid(
+                    "Registry revocation retention",
+                    "invalid paid resale refund",
+                ));
+            }
+            for root in resale.old() {
+                self.check_required_root(root)?;
+            }
+            added.extend_from_slice(resale.added());
+        }
         let mut changes = Vec::with_capacity(added.len());
         let mut keys = BTreeSet::new();
         for required in added {
@@ -1875,6 +1996,18 @@ impl RollStore {
             return Err(invalid("term lapse", "occurrence exists"));
         }
         self.prepare(vec![Change::Reference(record)])
+    }
+
+    /// Read-only final audit prerequisite. It deliberately accepts either final
+    /// hook order, without opening the commercial latch or issuing live rights.
+    pub(crate) fn coverage_audit_ready(&self) -> Result<(), RollError> {
+        if self.commerce == CommerceReadiness::Disabled
+            || self.source_audit_epoch == 0
+            || !self.quarantine.is_empty()
+        {
+            return Err(RollError::Quarantined("coverage retention recovery".into()));
+        }
+        Ok(())
     }
 
     pub(crate) fn check_root_subject(&self, required: &RequiredRoot) -> Result<(), RollError> {
