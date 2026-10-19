@@ -1197,7 +1197,8 @@ fn ic11_the_verbs_edit_the_plan() {
             "buy unobtainium 5",
             UNKNOWN_GOOD.replace(
                 "{list}",
-                "metals, volatiles, structural_alloys, industrial_parts, propellant, provisions",
+                "metals, volatiles, structural_alloys, industrial_parts, propellant, provisions, \
+                 instrument_boards, carbon_feedstock",
             ),
         ),
         (

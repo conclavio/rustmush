@@ -23,7 +23,7 @@
       "code": "CAR",
       "label": "Carbon feedstock",
       "scale": 0,
-      "note": "Doc 10 S4A, raw. The Venus Aerostat Compact's export, and the input to composites."
+      "note": "Doc 10 S4A, raw. The Venus Aerostat Compact's export and, since doc 19 cut A.8, the Titan Concession's billet; the input to composites."
     },
     {
       "id": "tacsim.strategic_elements",

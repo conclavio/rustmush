@@ -183,7 +183,7 @@ fn ic2_the_locker_limits_agree_on_crew_days() {
 fn ic2_the_catalog_rows_derive_from_the_goods_table() {
     let table = table();
     let entries = table.catalog_entries().expect("the rows derive");
-    assert_eq!(entries.len(), 6);
+    assert_eq!(entries.len(), 8, "six rows and doc 19 cut A.8's two");
     for (entry, good) in entries.iter().zip(&table.goods) {
         mush_market::check_entry(entry).unwrap_or_else(|error| panic!("{}: {error:?}", good.id));
         assert_eq!(entry.catalog.code.as_str(), good.id.as_str());

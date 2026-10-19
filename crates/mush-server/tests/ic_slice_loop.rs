@@ -1228,6 +1228,9 @@ async fn ic12_part_one_a_leg_by_hand() {
         cell("volatiles", ice),
         cell("structural_alloys", 0),
         cell("industrial_parts", 0),
+        // Doc 19 cut A.8: the moon goods.
+        cell("instrument_boards", 0),
+        cell("carbon_feedstock", 0),
         format!(
             "    TOTAL: {} t · {} m³",
             tacsim::port::capacity::format_tonnes(mass),

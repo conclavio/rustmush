@@ -2492,7 +2492,7 @@ const DRAY_DIGEST: &str = "b40cfff4943616ec798534fee10a7a995433477ef248a5875a87b
 /// **The goods table's pin** (doc 18 cut IC2; doc 18 §4.3): the canonical digest
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
 /// `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const GOODS_DIGEST: &str = "bc28e435bcef2717a4122c4a2b2c9d648a6292d1445bcdfa8f9bbb9271a6d4d9";
+const GOODS_DIGEST: &str = "50cb8d9fbf56710f15ac0caaa9419e9d9d7100de95aba01e6e9a3cfe2e518c57";
 
 /// A canonical id, for the tests below.
 fn cid(word: &str) -> mush_core::CanonicalId {
@@ -2997,7 +2997,7 @@ fn ic2_logistics_refuses_a_rail_below_the_stowage_maxima() {
 }
 
 /// **The goods table is pinned** (doc 18 cut IC2; doc 18 §4.3): its canonical
-/// digest under `tacsim.goods.v1`, the six rows in the table's order with their
+/// digest under `tacsim.goods.v1`, the eight rows in the table's order with their
 /// per-unit figures, and the cross-check against the Dray the fielded catalog
 /// holds.
 #[test]
@@ -3017,7 +3017,8 @@ fn ic2_the_goods_table_is_pinned() {
         "goods.json moved; re-review the content and re-pin it"
     );
     let table = goods_table().expect("the shipped goods table loads");
-    assert_eq!(table.version, 1);
+    // Doc 19 cut A.8: v2 (the two moon goods).
+    assert_eq!(table.version, 2);
     let measures: Vec<(&str, &str, &str)> = table
         .measures
         .iter()
@@ -3135,8 +3136,33 @@ fn ic2_the_goods_table_is_pinned() {
                 Some(Consumable::Provisions),
                 10
             ),
+            // Doc 19 cut A.8 (D-19-20): the moon ports' two goods.
+            (
+                "instrument_boards",
+                "instrument boards, crated",
+                Some("electronics"),
+                GoodClass::Trade,
+                "t",
+                1_000,
+                2_550,
+                "stow.bulk",
+                None,
+                900
+            ),
+            (
+                "carbon_feedstock",
+                "carbon billet, pressed",
+                Some("carbon_feedstock"),
+                GoodClass::Trade,
+                "t",
+                1_000,
+                600,
+                "stow.bulk",
+                None,
+                250
+            ),
         ],
-        "doc 18 section 4.3's six rows, in its order"
+        "doc 18 section 4.3's six rows and doc 19 cut A.8's two, in its order"
     );
     for good in &table.goods {
         assert_eq!(good.ledger_unit, good.quote_unit, "{}", good.id);
