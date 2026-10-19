@@ -99,7 +99,7 @@ fn offer_current(view: &View<'_>, o: &Value) -> Result<(), ActionStateError> {
     }
     no_pending_renewal(view, id)
 }
-pub(super) fn validate_changes(
+pub(in crate::action_state::terminal_capacity) fn validate_changes(
     store: &ActionStateStore,
     mutations: &BTreeMap<StateKey, TxnMutation>,
     changes: &Changes,
@@ -280,7 +280,7 @@ pub(super) fn validate_changes(
 /// reservation from Roll. Typed transition validation has already checked the
 /// full ordinary cause/status union; this independently pins the paired old
 /// custody and new terminal to the captured reservation and actual invocation.
-pub(super) fn compound_terminal_owner(
+pub(in crate::action_state::terminal_capacity) fn compound_terminal_owner(
     store: &ActionStateStore,
     mutations: &BTreeMap<StateKey, TxnMutation>,
     record: &Reservation,
@@ -332,7 +332,7 @@ pub(super) fn compound_terminal_owner(
     }
     Ok(true)
 }
-pub(super) fn extra_terminal_key(
+pub(in crate::action_state::terminal_capacity) fn extra_terminal_key(
     store: &ActionStateStore,
     mutations: &BTreeMap<StateKey, TxnMutation>,
     record: &Reservation,
@@ -373,7 +373,7 @@ pub(super) fn extra_terminal_key(
     }
     Ok(false)
 }
-pub(super) fn audit_boot(
+pub(in crate::action_state::terminal_capacity) fn audit_boot(
     view: &View<'_>,
     reservations: &BTreeMap<ReservationId, Arc<StoredReservation>>,
 ) -> Result<(), ActionStateError> {

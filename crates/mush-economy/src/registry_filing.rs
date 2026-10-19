@@ -152,6 +152,7 @@ pub struct InitialFilingParticipant {
     core_refit: Option<crate::core_refit::CoreRefitConfig>,
     charter_pending: Option<crate::managed_charter_transfer::CharterPendingConfig>,
     paid_resale: Option<crate::managed_paid_resale::PaidResaleConfig>,
+    coverage: Option<crate::managed_coverage::CoverageConfig>,
 }
 impl InitialFilingParticipant {
     pub fn new(policy: InitialFilingPolicy) -> Self {
@@ -165,6 +166,7 @@ impl InitialFilingParticipant {
             core_refit: None,
             charter_pending: None,
             paid_resale: None,
+            coverage: None,
         }
     }
 }
@@ -373,6 +375,45 @@ pub(crate) fn register_with_core_refits(
     paid_resale: Option<&crate::managed_paid_resale::PaidResaleConfig>,
     core_refit: Option<&crate::core_refit::CoreRefitConfig>,
 ) -> Result<(), mush_core::ModError> {
+    register_with_coverage(
+        reg,
+        policy,
+        action,
+        purchases,
+        entitlements,
+        house_action,
+        dependent_action,
+        renewals,
+        compatible_update,
+        charter_transfer,
+        core_integration,
+        charter_pending,
+        house_purchases,
+        house_renewals,
+        paid_resale,
+        core_refit,
+        None,
+    )
+}
+pub(crate) fn register_with_coverage(
+    reg: &mut mush_core::Registrar<'_>,
+    policy: InitialFilingPolicy,
+    action: mush_core::mechanics::DefinitionRef,
+    purchases: Option<&[mush_core::mechanics::DefinitionRef; 3]>,
+    entitlements: Option<&[[mush_core::mechanics::DefinitionRef; 3]; 2]>,
+    house_action: Option<&mush_core::mechanics::DefinitionRef>,
+    dependent_action: Option<&mush_core::mechanics::DefinitionRef>,
+    renewals: Option<&crate::managed_renewal::bridge::Configuration>,
+    compatible_update: Option<&mush_core::DefinitionRef>,
+    charter_transfer: Option<&mush_core::DefinitionRef>,
+    core_integration: Option<&crate::core_integration::CoreIntegrationConfig>,
+    charter_pending: Option<&crate::managed_charter_transfer::CharterPendingConfig>,
+    house_purchases: Option<&[mush_core::DefinitionRef; 3]>,
+    house_renewals: Option<&crate::managed_house_renewal::bridge::Configuration>,
+    paid_resale: Option<&crate::managed_paid_resale::PaidResaleConfig>,
+    core_refit: Option<&crate::core_refit::CoreRefitConfig>,
+    coverage: Option<&crate::managed_coverage::CoverageConfig>,
+) -> Result<(), mush_core::ModError> {
     use mush_core::mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionValidationContext,
     };
@@ -559,6 +600,12 @@ pub(crate) fn register_with_core_refits(
         ]);
         actions.extend(config.revoke.iter().cloned());
     }
+    if let Some(config) = coverage {
+        config.validate().map_err(|e| bad(&e))?;
+        // The registered Tacsim producer owns qualification and host evidence;
+        // this existing E4 slot owns all premium, liability and title effects.
+        actions.extend(config.actions.iter().cloned());
+    }
     if let Some(config) = paid_resale {
         config.validate().map_err(|e| bad(&e))?;
         if config.issuer != policy.issuer {
@@ -594,6 +641,7 @@ pub(crate) fn register_with_core_refits(
             core_refit: core_refit.cloned(),
             charter_pending: charter_pending.cloned(),
             paid_resale: paid_resale.cloned(),
+            coverage: coverage.cloned(),
         },
     )
 }
@@ -1093,6 +1141,8 @@ impl InitialFilingParticipant {
 /// original filing request/output wrappers avoids sharing money authority
 /// through a second adapter or generic plan callback.
 pub enum EconomyRequest {
+    CoverageBind(crate::managed_coverage::CoverageBindRequest),
+    CoverageTerminal(crate::managed_coverage::CoverageTerminalRequest),
     PaidResaleAcceptance(crate::managed_paid_resale::PaidResaleAcceptanceRequest),
     PaidResaleTerminal(crate::managed_paid_resale::PaidResaleTerminalRequest),
     HouseFunding(crate::managed_house_purchase::HousePurchase),
@@ -1156,6 +1206,7 @@ impl From<RegistryInitialFiling> for EconomyRequest {
     }
 }
 pub enum EconomyOutput {
+    Coverage(crate::managed_coverage::CoverageOutput),
     PaidResale(crate::managed_paid_resale::PaidResaleOutput),
     HouseFunding(crate::managed_house_purchase::HouseFundingOutput),
     HouseTerminal(crate::managed_house_purchase::HouseTerminalOutput),
@@ -1179,6 +1230,13 @@ pub enum EconomyOutput {
     HouseRenewalTerminal(crate::managed_house_renewal::RenewalTerminalOutput),
 }
 impl EconomyOutput {
+    pub fn coverage(self) -> Result<crate::managed_coverage::CoverageOutput, ParticipantError> {
+        match self {
+            Self::Coverage(out) => Ok(out),
+            _ => Err(refused()),
+        }
+    }
+
     pub fn paid_resale(
         self,
     ) -> Result<crate::managed_paid_resale::PaidResaleOutput, ParticipantError> {
@@ -1340,6 +1398,7 @@ impl EconomyOutput {
     }
 }
 pub enum EconomyPatch {
+    Coverage(Box<crate::managed_coverage::CoveragePatch>),
     PaidResale(Box<crate::managed_paid_resale::PaidResalePatch>),
     CharterPending(Box<crate::managed_charter_transfer::CharterPendingPatch>),
     CharterTransfer(Box<charter_transfer::CharterTransferPatch>),
@@ -1359,6 +1418,7 @@ impl From<InitialFilingPatch> for EconomyPatch {
     }
 }
 pub enum BoundEconomy<'a> {
+    Coverage(crate::managed_coverage::BoundCoverage<'a>),
     PaidResale(crate::managed_paid_resale::BoundPaidResale<'a>),
     CharterPending(crate::managed_charter_transfer::BoundCharterPending<'a>),
     CharterTransfer(charter_transfer::BoundCharterTransfer<'a>),
@@ -1376,6 +1436,7 @@ impl BoundParticipant for BoundEconomy<'_> {
     fn apply(self) {
         match self {
             Self::PaidResale(bound) => bound.apply(),
+            Self::Coverage(bound) => bound.apply(),
             Self::InitialFiling(bound) => bound.apply(),
             Self::CompatibleUpdate(bound) => bound.apply(),
             Self::CharterTransfer(bound) => bound.apply(),
@@ -1392,6 +1453,21 @@ impl BoundParticipant for BoundEconomy<'_> {
 }
 
 impl InitialFilingParticipant {
+    fn prepare_coverage(
+        &self,
+        state: &EconomyStore,
+        context: &OwnerPrepareContext<'_>,
+        request: crate::managed_coverage::native::Request,
+    ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
+        let config = self.coverage.as_ref().ok_or_else(refused)?;
+        let (output, patch, writes) =
+            crate::managed_coverage::install::prepare(config, state, context, request)?;
+        Ok(OwnerPreparation::new(
+            EconomyOutput::Coverage(output),
+            EconomyPatch::Coverage(Box::new(patch)),
+            writes,
+        ))
+    }
     fn prepare_resale(
         &self,
         state: &EconomyStore,
@@ -1586,6 +1662,16 @@ impl OwnerParticipant for InitialFilingParticipant {
     ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
         use crate::managed_purchase::{PurchaseOutcome, install};
         match request {
+            EconomyRequest::CoverageBind(request) => self.prepare_coverage(
+                state,
+                context,
+                crate::managed_coverage::native::Request::Bind(request),
+            ),
+            EconomyRequest::CoverageTerminal(request) => self.prepare_coverage(
+                state,
+                context,
+                crate::managed_coverage::native::Request::Terminal(request),
+            ),
             EconomyRequest::PaidResaleAcceptance(request) => self.prepare_resale(
                 state,
                 context,
@@ -2012,6 +2098,9 @@ impl OwnerParticipant for InitialFilingParticipant {
         patch: &EconomyPatch,
     ) -> Result<(), ParticipantError> {
         match patch {
+            EconomyPatch::Coverage(patch) => {
+                patch.recheck(self.coverage.as_ref().ok_or_else(refused)?, state, context)
+            }
             EconomyPatch::PaidResale(patch) => patch.recheck(
                 self.paid_resale.as_ref().ok_or_else(refused)?,
                 state,
@@ -2073,6 +2162,7 @@ impl OwnerParticipant for InitialFilingParticipant {
     ) -> Result<BoundEconomy<'a>, ParticipantError> {
         match patch {
             EconomyPatch::PaidResale(patch) => (*patch).bind(state).map(BoundEconomy::PaidResale),
+            EconomyPatch::Coverage(patch) => (*patch).bind(state).map(BoundEconomy::Coverage),
             EconomyPatch::CharterPending(patch) => {
                 (*patch).bind(state).map(BoundEconomy::CharterPending)
             }

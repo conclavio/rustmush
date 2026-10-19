@@ -21,6 +21,9 @@ pub struct ManagedConsent {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ManagedWire {
+    HullCoverageV1 {
+        coverage: crate::managed_coverage::CoverageMarkerV1,
+    },
     OriginalPersonal {
         operation: CommitToken,
         effect: DefinitionRef,
@@ -62,6 +65,11 @@ impl TryFrom<ManagedWire> for ManagedConsent {
     type Error = &'static str;
     fn try_from(wire: ManagedWire) -> Result<Self, Self::Error> {
         match &wire {
+            ManagedWire::HullCoverageV1 { coverage } => {
+                coverage
+                    .validate()
+                    .map_err(|_| "invalid hull coverage consent")?;
+            }
             ManagedWire::OriginalPersonal {
                 operation,
                 effect,
@@ -130,6 +138,19 @@ impl From<ManagedConsent> for ManagedWire {
     }
 }
 impl ManagedConsent {
+    pub(crate) fn hull_coverage(
+        coverage: crate::managed_coverage::CoverageMarkerV1,
+    ) -> Result<Self, mush_core::participant::ParticipantError> {
+        Self::try_from(ManagedWire::HullCoverageV1 { coverage })
+            .map_err(mush_core::participant::ParticipantError::refused)
+    }
+    pub fn hull_coverage_marker(&self) -> Option<&crate::managed_coverage::CoverageMarkerV1> {
+        match &self.wire {
+            ManagedWire::HullCoverageV1 { coverage } => Some(coverage),
+            _ => None,
+        }
+    }
+
     pub(crate) fn paid_resale(
         resale: crate::managed_paid_resale::PaidResaleMarkerV1,
     ) -> Result<Self, mush_core::participant::ParticipantError> {
@@ -268,6 +289,7 @@ impl ManagedConsent {
             ManagedWire::HouseMindRenewalOfferV1 { renewal } => renewal.operation(),
             ManagedWire::MindCharterTransferV1 { pending } => pending.operation(),
             ManagedWire::PaidResaleV1 { resale } => resale.operation,
+            ManagedWire::HullCoverageV1 { coverage } => coverage.operation(),
         }
     }
     #[must_use]
@@ -280,6 +302,7 @@ impl ManagedConsent {
             ManagedWire::HouseMindRenewalOfferV1 { renewal } => renewal.effect(),
             ManagedWire::MindCharterTransferV1 { pending } => pending.effect(),
             ManagedWire::PaidResaleV1 { resale } => &resale.effect,
+            ManagedWire::HullCoverageV1 { coverage } => coverage.effect(),
         }
     }
     /// Actual retained quote basis. Renewal returns its accepted prior quote;
@@ -294,6 +317,7 @@ impl ManagedConsent {
             ManagedWire::HouseMindRenewalOfferV1 { renewal } => renewal.basis().prior_quote,
             ManagedWire::MindCharterTransferV1 { pending } => pending.offer(),
             ManagedWire::PaidResaleV1 { resale } => resale.offer,
+            ManagedWire::HullCoverageV1 { coverage } => coverage.quote(),
         }
     }
     #[must_use]
@@ -306,6 +330,7 @@ impl ManagedConsent {
             ManagedWire::HouseMindRenewalOfferV1 { renewal } => renewal.basis().prior_quote_digest,
             ManagedWire::MindCharterTransferV1 { pending } => pending.offer_digest(),
             ManagedWire::PaidResaleV1 { resale } => resale.offer_digest,
+            ManagedWire::HullCoverageV1 { coverage } => coverage.quote_digest(),
         }
     }
     #[must_use]
@@ -318,6 +343,7 @@ impl ManagedConsent {
             ManagedWire::HouseMindRenewalOfferV1 { renewal } => renewal.basis().product_digest,
             ManagedWire::MindCharterTransferV1 { pending } => pending.terms_digest(),
             ManagedWire::PaidResaleV1 { resale } => resale.consent_digest,
+            ManagedWire::HullCoverageV1 { coverage } => coverage.product_digest(),
         }
     }
 }
@@ -363,7 +389,8 @@ fn key(snapshot: &EconomySnapshot, key: &IdempotencyKey) -> bool {
 }
 
 fn closed_money_namespace(namespace: &str) -> bool {
-    namespace == crate::managed_charter_transfer::NAMESPACE
+    namespace == crate::managed_coverage::NAMESPACE
+        || namespace == crate::managed_charter_transfer::NAMESPACE
         || namespace == crate::managed_paid_resale::NAMESPACE
         || crate::managed_purchase::closed_namespace(namespace)
         || namespace == crate::managed_renewal::NAMESPACE

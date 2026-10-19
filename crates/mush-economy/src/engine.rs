@@ -577,8 +577,16 @@ pub(crate) fn validate_core_refit(
 ) -> PlanResult {
     validate_guarded(proof.plan(), snapshot, env, PlanGuard::CoreRefit(proof))
 }
+pub(crate) fn validate_hull_coverage(
+    proof: &crate::managed_coverage::ClosedCoveragePlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
+    validate_guarded(proof.plan(), snapshot, env, PlanGuard::HullCoverage(proof))
+}
 #[derive(Clone, Copy)]
 enum PlanGuard<'a> {
+    HullCoverage(&'a crate::managed_coverage::ClosedCoveragePlan),
     PaidResale(&'a crate::managed_paid_resale::ClosedPaidResalePlan),
     Legacy,
     CharterTransfer(&'a crate::registry_filing::charter_transfer::ClosedCharterTransferPlan),
@@ -605,6 +613,7 @@ impl PlanGuard<'_> {
     fn check(self, plan: &EconomyPlan, snapshot: &EconomySnapshot) -> Result<(), EconomyError> {
         match self {
             Self::Legacy => crate::contract::managed::require_legacy_plan(plan, snapshot),
+            Self::HullCoverage(proof) => proof.check(plan, snapshot),
             Self::PaidResale(proof) => proof.check(plan, snapshot),
             Self::Purchase(proof) => proof.check(plan, snapshot),
             Self::CoreIntegration(proof) => proof.check(plan, snapshot),

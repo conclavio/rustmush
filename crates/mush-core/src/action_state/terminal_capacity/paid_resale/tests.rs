@@ -1056,7 +1056,11 @@ mod registration;
 
 // Actual typed coordinator history; native monetary images remain structural
 // fixtures. The Economy owner/genuine paid-holder story tests supply authority.
-fn transfer_seed(seed: Seed, offer_byte: u8, buyer: u32) -> TestResult<Seed> {
+fn transfer_seed(
+    seed: Seed,
+    offer_byte: u8,
+    buyer: u32,
+) -> Result<Seed, Box<dyn std::error::Error>> {
     let mut f = from_seed(seed)?;
     let offer = publish_offer(&mut f, token(offer_byte), buyer)?;
     let id = token(offer_byte + 1);
@@ -1066,7 +1070,7 @@ fn transfer_seed(seed: Seed, offer_byte: u8, buyer: u32) -> TestResult<Seed> {
     reboot(&f, None)?;
     Ok((f.store, f.handles, f.disk))
 }
-fn closed_seed(house: bool, funded: bool) -> TestResult<Seed> {
+fn closed_seed(house: bool, funded: bool) -> Result<Seed, Box<dyn std::error::Error>> {
     if house {
         house_renewal::tests::closed_holder_seed(funded)
     } else {
@@ -1079,7 +1083,7 @@ fn renew_seed(
     byte: u8,
     previous: Option<CommitToken>,
     terminal: usize,
-) -> TestResult<Seed> {
+) -> Result<Seed, Box<dyn std::error::Error>> {
     if house {
         house_renewal::tests::continue_holder_seed(seed, byte, previous, terminal)
     } else {

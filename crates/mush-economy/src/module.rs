@@ -622,6 +622,49 @@ impl EconomyStore {
         &self.fold.update_receipts
     }
 
+    /// Actual complete native coverage history. Structural rows alone do not
+    /// prove a qualifying role, covered departure, destruction or clean close.
+    pub fn coverage_history(
+        &self,
+        operation: mush_core::CommitToken,
+    ) -> Result<&crate::managed_coverage::CoverageHistory, mush_core::participant::ParticipantError>
+    {
+        let unavailable =
+            || mush_core::participant::ParticipantError::refused("coverage owner unavailable");
+        if self.frozen {
+            return Err(unavailable());
+        }
+        let row = self.fold.coverage_receipts.get(operation)?;
+        row.verify_documents(
+            self.snapshot
+                .contract(row.contract_id())
+                .ok_or_else(unavailable)?,
+            self.snapshot
+                .hold(row.binding().hold())
+                .ok_or_else(unavailable)?,
+        )?;
+        let title = self
+            .snapshot
+            .asset(row.consent().basis.hull)
+            .ok_or_else(unavailable)?;
+        if row.terminal().is_none() && title != row.binding().title() {
+            return Err(unavailable());
+        }
+        Ok(row)
+    }
+    pub fn coverage_histories(
+        &self,
+    ) -> Result<
+        impl ExactSizeIterator<Item = &crate::managed_coverage::CoverageHistory>,
+        mush_core::participant::ParticipantError,
+    > {
+        if self.frozen {
+            return Err(mush_core::participant::ParticipantError::refused(
+                "coverage owner unavailable",
+            ));
+        }
+        self.fold.coverage_receipts.histories()
+    }
     /// Complete actual paid-resale monetary history; this supplies no holder authority.
     pub fn paid_resale_history(
         &self,
@@ -1646,6 +1689,7 @@ pub(crate) fn note_window_debits(
 pub struct EconomyModule {
     charter_pending: Option<crate::managed_charter_transfer::CharterPendingConfig>,
     paid_resale: Option<crate::managed_paid_resale::PaidResaleConfig>,
+    coverage: Option<crate::managed_coverage::CoverageConfig>,
     core_integration: Option<crate::core_integration::CoreIntegrationConfig>,
     core_refit: Option<crate::core_refit::CoreRefitConfig>,
     initial_filing: Option<(
@@ -1681,6 +1725,14 @@ pub struct EconomyModule {
 }
 
 impl EconomyModule {
+    /// Enable the exact three native hull-coverage actions on the existing owner
+    /// slot. The actual Tacsim producer and Roll retention owner must accompany it.
+    #[must_use]
+    pub fn with_hull_coverage(mut self, config: crate::managed_coverage::CoverageConfig) -> Self {
+        self.coverage = Some(config);
+        self
+    }
+
     /// Explicit paired resale owner only; no default service or acceptance.
     pub fn with_paid_mind_resale(
         mut self,
@@ -2110,7 +2162,7 @@ impl GameModule for EconomyModule {
                     "initial filing issuer is not in the composition title-issuer table",
                 ));
             }
-            crate::registry_filing::register_with_core_refits(
+            crate::registry_filing::register_with_coverage(
                 reg,
                 policy.clone(),
                 action.clone(),
@@ -2127,6 +2179,7 @@ impl GameModule for EconomyModule {
                 self.house_mind_renewals.as_ref(),
                 self.paid_resale.as_ref(),
                 self.core_refit.as_ref(),
+                self.coverage.as_ref(),
             )?;
         }
         if (self.house_purchases.is_some()
@@ -2139,7 +2192,8 @@ impl GameModule for EconomyModule {
             || self.core_integration.is_some()
             || self.core_refit.is_some()
             || self.charter_pending.is_some()
-            || self.paid_resale.is_some())
+            || self.paid_resale.is_some()
+            || self.coverage.is_some())
             && self.initial_filing.is_none()
         {
             return Err(ModError::msg(
@@ -2263,7 +2317,7 @@ impl GameModule for EconomyModule {
         } else {
             self.config.tx_tail_max
         };
-        let mut store = boot::load_boot_with_core_refit(
+        let mut store = boot::load_boot_with_coverage(
             ctx,
             data,
             &self.providers,
@@ -2282,6 +2336,7 @@ impl GameModule for EconomyModule {
             self.house_mind_renewals.is_some(),
             self.paid_resale.is_some(),
             self.core_refit.is_some(),
+            self.coverage.is_some(),
         )?;
         // C17 (08g §12.1 item 5): the cold replay is the whole boot cost until a
         // durability checkpoint exists. Say what it cost, every boot, and say loudly

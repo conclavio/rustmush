@@ -3,7 +3,7 @@ mod authority;
 mod capacity;
 mod config;
 mod families;
-mod policies;
+pub(super) mod policies;
 mod progress;
 mod recipe;
 pub(crate) mod records;

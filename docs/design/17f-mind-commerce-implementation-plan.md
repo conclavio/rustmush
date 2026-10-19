@@ -607,6 +607,18 @@ source-owner contract checks selected by that run. Both combined purchase-story
 stages were unstarted because earlier stages failed. N83 and N84 were frozen
 drafts only, never launched, and are superseded by the N85 candidate.
 
+N85 and N86 both stopped at compilation, so neither ran runtime gates. N85
+exposed Core paid-resale helper visibility, a fixture action-set type mismatch
+and three test helper result aliases. The narrow reviewed repairs allowed N86
+to reach a House-renewal iterator borrow and refit policy visibility/missing test
+import errors. Those four errors now have reviewed source repairs for N87;
+admission predicates and test assertions are unchanged. N86's archive is
+hash-verified and reconciled, with its full source census unchanged: SHA-256
+`57452abef253368a1cf11c355589f7c4574de86005bec2c85b8d1f187fe0d36e`
+(6,315 bytes, two files). N85's archive is likewise verified: SHA-256
+`f3b6d16a6bbf2d3af889f34ae10f554b61e01b3b993f84f761d5a99002d67211`
+(5,708 bytes, two files). Runtime and acceptance remain open.
+
 Subsequent reviewed source packages, not included in N82, add:
 
 - The actual House renewal E4/Roll/Market providers, native contract/hold inverse

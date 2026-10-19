@@ -137,7 +137,7 @@ impl<const N: usize> GameModule for Module<N> {
                 return Ok(());
             }
             reg.state(Cell::<1>);
-            reg.owner_participant(reference, all, Adapter::<1>)?;
+            reg.owner_participant(reference, all.into_iter().collect(), Adapter::<1>)?;
         }
         let families = super::super::FAMILIES.into_iter().chain([
             ("market", super::super::QUOTE, 16384),

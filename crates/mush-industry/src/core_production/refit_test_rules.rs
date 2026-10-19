@@ -3,6 +3,7 @@ use super::*;
 use crate::core_production::refit::{
     self, CoreRefitFactoryConfig, PublishedRefitRecipe, RefitRecipeAuthority,
 };
+use mush_core::RulesValue;
 use mush_tactics::{
     CellId, CellSpec, ComponentId, ComponentSpec, ConditionId, InstallPoint, SectionId,
     SectionSpec, UnitSpec, UnitSpecBody,

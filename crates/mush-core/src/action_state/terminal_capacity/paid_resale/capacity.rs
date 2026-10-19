@@ -116,7 +116,7 @@ pub(super) fn require_terminal_room(view: &View<'_>, p: &Pair) -> Result<(), Act
         8192,
     )
 }
-pub(super) fn verify(
+pub(in crate::action_state::terminal_capacity) fn verify(
     phase: Phase,
     reservation: &Reservation,
     view: &View<'_>,

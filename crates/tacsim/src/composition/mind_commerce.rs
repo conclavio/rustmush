@@ -625,7 +625,12 @@ impl MindCommerce {
             _ => module,
         };
         match &self.house_renewal_service {
-            Some(action) => module.with_house_mind_renewal_service(action.clone()),
+            // This private option is produced only by the checked Market/Roll
+            // builder. The preceding branch installs those same immutable
+            // participants and manifest afresh, with no service yet attached.
+            Some(action) => module
+                .with_house_mind_renewal_service(action.clone())
+                .expect("checked House renewal composition has the same service reference"),
             None => module,
         }
     }

@@ -33,6 +33,11 @@ use crate::record::{AssetEffectKind, EconomicAsset, EconomicTransaction, Hold, H
 pub struct FoldState {
     #[serde(
         default,
+        skip_serializing_if = "crate::managed_coverage::book::CoverageBook::uninitialized"
+    )]
+    pub(crate) coverage_receipts: crate::managed_coverage::book::CoverageBook,
+    #[serde(
+        default,
         skip_serializing_if = "crate::managed_paid_resale::book::PaidResaleBook::uninitialized"
     )]
     pub(crate) paid_resale_receipts: crate::managed_paid_resale::book::PaidResaleBook,
@@ -138,6 +143,7 @@ impl FoldState {
     /// live post path both call; a change here changes both.
     pub fn fold_entry(&mut self, seq: u64, tx: &EconomicTransaction) {
         self.paid_resale_receipts.observe(tx);
+        self.coverage_receipts.observe(tx);
         self.core_receipts.observe(tx);
         self.refit_receipts.observe(tx);
         self.filing_receipts.observe(tx);

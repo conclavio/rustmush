@@ -336,6 +336,45 @@ pub(crate) fn load_boot_with_core_refit(
     require_paid_resale: bool,
     require_refit_receipts: bool,
 ) -> Result<EconomyStore, ModError> {
+    load_boot_with_coverage(
+        ctx,
+        data,
+        providers,
+        outcomes,
+        tail_max,
+        window_secs,
+        require_filing_receipts,
+        require_purchase_receipts,
+        require_renewal_receipts,
+        require_update_receipts,
+        require_charter_transfer_receipts,
+        require_core_receipts,
+        require_charter_pending,
+        require_house_renewal_receipts,
+        require_paid_resale,
+        require_refit_receipts,
+        false,
+    )
+}
+pub(crate) fn load_boot_with_coverage(
+    ctx: &mut ModuleCtx<'_>,
+    data: ModuleBootData,
+    providers: &CustodyTable,
+    outcomes: &crate::contract::CanonOutcomeKinds,
+    tail_max: usize,
+    window_secs: i64,
+    require_filing_receipts: bool,
+    require_purchase_receipts: bool,
+    require_renewal_receipts: bool,
+    require_update_receipts: bool,
+    require_charter_transfer_receipts: bool,
+    require_core_receipts: bool,
+    require_charter_pending: bool,
+    require_house_renewal_receipts: bool,
+    require_paid_resale: bool,
+    require_refit_receipts: bool,
+    require_coverage: bool,
+) -> Result<EconomyStore, ModError> {
     let ModuleBootData {
         kv,
         ledger: mut ledger_docs,
@@ -566,7 +605,13 @@ pub(crate) fn load_boot_with_core_refit(
             // Refuse before journal healing or any queued container rewrite; the
             // closed paid-operation replay lane must be installed first.
             if let Some(managed) = c.consent.managed.as_ref() {
-                if managed.paid_resale_marker().is_some() {
+                if managed.hull_coverage_marker().is_some() {
+                    if !require_coverage {
+                        return Err(ModError::msg(
+                            "economy: hull coverage requires complete paired recovery",
+                        ));
+                    }
+                } else if managed.paid_resale_marker().is_some() {
                     if !require_paid_resale {
                         return Err(ModError::msg(
                             "economy: paid resale requires complete paired recovery",
@@ -756,6 +801,18 @@ pub(crate) fn load_boot_with_core_refit(
             "checkpoint lacks exact original-purchase receipt coverage; full replay required"
                 .into(),
         );
+        checkpoint = None;
+    }
+    if checkpoint.as_ref().is_some_and(|saved| {
+        !saved
+            .head
+            .body
+            .fold
+            .coverage_receipts
+            .checkpoint_complete(&saved.rows)
+    }) {
+        checkpoint_notes
+            .push("checkpoint lacks exact hull coverage inventory; full replay required".into());
         checkpoint = None;
     }
     if checkpoint.as_ref().is_some_and(|saved| {
@@ -1133,6 +1190,17 @@ pub(crate) fn load_boot_with_core_refit(
                 ModError::msg("economy: charter-transfer history requires paired recovery")
             })?;
     }
+    crate::managed_coverage::bridge::recover(
+        &mut state.coverage_receipts,
+        &state.journal_holds,
+        &state.journal_assets,
+        &mut snapshot,
+        &mut stored_contracts,
+        &stored_holds,
+        &stored_assets,
+        require_coverage,
+    )
+    .map_err(|_| ModError::msg("economy: hull coverage requires exact paired recovery"))?;
     crate::managed_paid_resale::bridge::recover(
         &mut state.paid_resale_receipts,
         &state.journal_holds,

@@ -1,5 +1,7 @@
 use super::*;
-use mush_core::{DefinitionDigest, DefinitionKey, DefinitionRef, ObjId};
+use mush_core::{
+    DefinitionDigest, DefinitionId, DefinitionKey, DefinitionKind, DefinitionRef, ObjId, OwnerId,
+};
 use mush_economy::{AccountId, Amount, InstrumentId};
 use mush_org::{OrgId, OrgScopeId};
 use mush_roll::commerce::{CharterId, FiledRevisionId, LineId, RevisionIdentity};
@@ -11,7 +13,11 @@ fn digest(byte: u8) -> DefinitionDigest {
 }
 fn reference(id: &str, byte: u8) -> Result<DefinitionRef, Box<dyn std::error::Error>> {
     Ok(DefinitionRef::new(
-        DefinitionKey::new("tacsim", "coverage_fixture", id)?,
+        DefinitionKey::new(
+            OwnerId::new("tacsim")?,
+            DefinitionKind::new("coverage_fixture")?,
+            DefinitionId::new(id)?,
+        ),
         1,
         digest(byte),
     )?)

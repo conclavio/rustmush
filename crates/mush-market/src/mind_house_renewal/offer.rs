@@ -78,19 +78,22 @@ pub(super) fn build(
     let issuer = binding.issuer();
     let principal = issuer.principal();
     let snapshot = e.snapshot();
-    let mut treasuries = snapshot.accounts_of(&principal).filter(|a| {
-        a.instrument == *instrument
-            && a.owner == principal
-            && a.scope == Some(issuer.scope())
-            && a.status == AccountStatus::Active
-            && a.approval.is_none()
-    });
-    let treasury = treasuries.next().ok_or_else(super::records::invalid)?;
-    if treasuries.next().is_some() {
-        return Err(super::records::invalid());
-    }
+    let treasury = {
+        let mut treasuries = snapshot.accounts_of(&principal).filter(|a| {
+            a.instrument == *instrument
+                && a.owner == principal
+                && a.scope == Some(issuer.scope())
+                && a.status == AccountStatus::Active
+                && a.approval.is_none()
+        });
+        let treasury = treasuries.next().ok_or_else(super::records::invalid)?;
+        if treasuries.next().is_some() {
+            return Err(super::records::invalid());
+        }
+        treasury.id
+    };
     let remainder = Recipient {
-        account: treasury.id,
+        account: treasury,
         owner: principal,
     };
     cut(e, instrument, &config.policy.registry)?;
