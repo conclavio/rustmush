@@ -4,7 +4,7 @@
 //! The host loads the geology key (`mush_config::geology_keys`) and hands it to this layer after
 //! composition and before the module boot pass ([`super::install_geology`], the post-composition
 //! device `mush_server::boot::build_engine` already uses for the ground cell size). The boot
-//! pass ([`boot`], called from `TacsimRuleset::on_world_loaded`) then decides, once:
+//! pass (`boot`, called from `TacsimRuleset::on_world_loaded`) then decides, once:
 //!
 //! - **the first keyed boot pins** the key's fingerprint (SHA-256 of its 32 bytes) in the
 //!   module document [`GEOLOGY_PIN_KEY`] — a boot-time module document on
@@ -15,7 +15,7 @@
 //! **A lost key is a disabled layer, not a corrupted one** (§16): a key that will not load, a
 //! fingerprint that differs, an unreadable pin, a layer that is off and a key directory that is
 //! not configured each leave [`GeologyDisabled`] with its reason, which the readiness report's
-//! `geology:` line prints ([`geology_line`]; reported, never gated, in D-18-50's sky manner) and
+//! `geology:` line prints (`geology_line`; reported, never gated, in D-18-50's sky manner) and
 //! which every later consumer (SM.4's instruments, SM.6's opener, SM.7's drill) refuses on
 //! through [`live`]. The status is computed here and never recomputed after boot.
 

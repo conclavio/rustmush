@@ -3,25 +3,25 @@
 //!
 //! The world gets a ground to mine before it gets a site, a vehicle or a player verb:
 //!
-//! - [`geology`] — the **keyed geology function** (D-20-4): HMAC-SHA256 under the fourth durable
+//! - [`geology`](crate::surface::geology) — the **keyed geology function** (D-20-4): HMAC-SHA256 under the fourth durable
 //!   key family over a body-fixed pocket lattice, generated top-down (province → field →
 //!   pocket) so every reading nests; one word set (barren, lean, fair, rich); integers only, no
 //!   RNG;
-//! - [`reading`] — **the reading rule, version 1** (§5): R0, R1 (sharpened by footing) and R2
+//! - [`reading`](crate::surface::reading) — **the reading rule, version 1** (§5): R0, R1 (sharpened by footing) and R2
 //!   as pure quantisations of that function;
-//! - [`key`] — the key's **boot, its fingerprint pin** (`tacsim:geology`) and the RAM-only
-//!   disabled state every later consumer refuses on ([`live`]); the readiness report's
+//! - [`key`](crate::surface::key) — the key's **boot, its fingerprint pin** (`tacsim:geology`) and the RAM-only
+//!   disabled state every later consumer refuses on ([`live`](crate::surface::key::live)); the readiness report's
 //!   `geology:` line (reported, never gated);
-//! - [`ground`] — a site's **geology table** and terrain composite, held in an in-RAM LRU of
+//! - [`ground`](crate::surface::ground) — a site's **geology table** and terrain composite, held in an in-RAM LRU of
 //!   sixteen, with a synchronous build door;
-//! - [`commands`] — `@geology`, staff truth over the body-fixed lattice.
+//! - [`commands`](crate::surface::commands) — `@geology`, staff truth over the body-fixed lattice.
 //!
 //! What later cuts add: SM.2 the Ceres and Vesta tables as lane data (replacing
-//! [`install_body_geology`]'s test-only caller), sites, their block shifts and `@geology <site>
+//! [`install_body_geology`](crate::surface::install_body_geology)'s test-only caller), sites, their block shifts and `@geology <site>
 //! <addr>`; SM.4 the off-loop site driver, footing from composite cells and the instruments; SM.6
 //! reserves from the geology table; SM.7 mining.
 //!
-//! The slot ([`GeologyState`]) is RAM only and never persisted: the key, its status, the bodies'
+//! The slot ([`GeologyState`](crate::surface::GeologyState)) is RAM only and never persisted: the key, its status, the bodies'
 //! tables and the site cache. Both installers write it through `World::module_state_mut` from
 //! inside this crate (the `mush_tactics::ground::configure` pattern), so the state-slot owner
 //! census needs no row.
