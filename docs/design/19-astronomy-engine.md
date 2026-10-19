@@ -295,9 +295,31 @@ samples (Ceres–Mars's 1,162 days every three), computed at each posting rather
 boot; under the constant sky (rate 0) one sample, so every bid posts at its authored price. The
 port entry's block is `"premium": { "k_permille": 300, "cap_permille": 500 }`, each `0..=10,000`,
 absent = authored prices (lane **v5**; both ports carry it). `MarketStore` holds the posted price;
-the port map's `BidRow.price_major` stays the authored figure. **Not built**: the emergency Wanted
-bids and `emergency_ratio` (cut **A.4b**), and the per-boot median cache (not needed at these
-costs).
+the port map's `BidRow.price_major` stays the authored figure. **Not built**: the per-boot median
+cache (not needed at these costs).
+
+**As built (cut A.4b, 2026-10-19; the emergency bids).** The port entry's block is
+`"emergency": { "org", "ratio_permille", "goods", "intake" }` (lane **v6**: the Exchange at Ceres
+and the Yards at Stickney, 1,500 ‰, provisions / volatiles / propellant, 100 units), bounded in
+`PortDef::check` (a premium to take the cap from; the ratio in 1,000..=100,000 ‰; one to sixteen
+goods of the goods table, none twice; an intake the market buys; an org that is one of the port's
+vendors and neither asks nor bids any of the goods). **The stock clerk** reads the port once a real
+hour (`EMERGENCY_CHECK_SECS`; one IC day at rate 24), before its stock steps: a good whose reach is
+at or past the ratio of its synodic median (`emergency_crossed`) and has no standing emergency bid
+gets one — the org's vendor posts a Wanted for the intake at the premium's **cap** over the good's
+**reference** (the port's highest authored ask or bid for it, else the goods table's
+`reference_major`; Stickney's volatiles 200 → 300, provisions 10 → 15, propellant 60 → 90), as the
+clerk, signed as every bid is; a house that cannot fund one unit posts nothing and is warned once a
+boot (`board::vendor_funds`); a bid gone before its recorded deadline (its intake taken) is not
+posted again until the deadline passes. A good whose reach fell back under the ratio while its bid
+stands has it withdrawn. One act a fire, authored order; the hour is spent only when nothing was
+due. The rows live in `PortMap.emergencies` (good → `BidRow`, the reference as `price_major`); a
+port retire withdraws them with the standing bids. A good no other port supplies has no reach and no
+emergency (Ceres's volatiles: nobody at Stickney asks volatiles). **`+chart <port>`** gained the
+destination's demand side: each standing bid's list price and what it posts at with the premium and
+the reach against the median, then the emergency line (which goods are due at the cap, or none and
+where the reach stands). The emergency bids carry no `boards` (no room board renders them;
+`+market/list` does).
 
 ## 7. Comms (cut A.5) — D-19-15
 
@@ -329,7 +351,7 @@ within rounding, the latitude term measured) and the drift per IC year recorded 
 | **A.3** chart (**landed 2026-10-18**; the cut note "A.3") | `+chart` (the sky table, each port's passage now at this load and empty, the direct chord priced beside the listed route), `+chart <port>` (the window: fastest, cheapest, worst day of the next IC year against now), `+chart/body`, the `+ship/plan` window line; the direct comparison computed from the sky, so lane v5 stays uncut | S | `tests/chart.rs`: the scan ≤ 365 evaluations, the worst day no shorter than the fastest; 120 columns |
 | **A.3b** chart panel | the web cockpit panel and the TUI screen on the OutputEvent/Panel protocol | M | later |
 | **A.4** prices (**landed 2026-10-18**; the cut note "A.4") | `port/price.rs`: reach (`choose_route`, the Dray empty, the least over the suppliers), the synodic median (`Sky::period_days`, `synodic_days`, `scan_days`, `median_of`; ≤ 400 samples; one under the constant sky), `premium_permille`, `priced`, `bid_price_major`; read at posting by the applier and the stock clerk; `PortDef.premium { k_permille, cap_permille }` with bounds; lane **v5** (both ports at 300 / 500); the trade help | M | `tests/price.rs`: both ports carry the block; rate 0 posts 280 / 520 (reach now = median); rate 1000 posts `priced(authored, premium(reach))` for every bid, never below authored, never above the cap; a port without the block posts authored prices; k past the bound refused; Ceres–Mars synodic ≈ 1,162 days, Ceres–Kirkwood capped |
-| **A.4b** emergency bids | the emergency Wanted bids for life-support goods at the cap when reach crosses `emergency_ratio`, funded from finite capital; `+chart <port>` naming the premium | S | later |
+| **A.4b** emergency bids (**landed 2026-10-19**; the cut note "A.4b") | `PortDef.emergency { org, ratio_permille, goods, intake }` with bounds; the stock clerk's emergency step (once an hour; post at the cap over the reference when the reach crosses the ratio, withdraw when it falls back, one act a fire; funded or nothing); `PortMap.emergencies`; `emergency_readings` and the `+chart <port>` demand-side lines; lane **v6** (both ports at 1,500 ‰, provisions / volatiles / propellant, 100 units); the trade help | S | `tests/price.rs`: the block and its refusals; rate 0 posts none (reach = median); a revision at 1,000 ‰ posts a Wanted per supplied good (the org's vendor, 100 units, `priced(reference, 500)`), the capital rows unchanged; a revision at 100,000 ‰ after a reboot withdraws them; `tests/chart.rs`: the demand-side and emergency lines under both skies |
 | **A.5** comms (**closed 2026-10-18 as a seam**) | `Sky::light_lag_s` shipped in A.1 and read by `+chart` in A.3; doc 15 §3.5 amended — the backbone (R1–R10) is not started, so there is no live lag table yet; R5 consumes the seam when built | S | `tests/sky.rs`: the lag is `distance / c` rounded up; `tests/chart.rs`: every body's lag from Ceres |
 | **A.6** flip (**landed 2026-10-18**; the cut note "A.6") | templates at rate 1000 (real motion; the Rust default stays 0); the readiness Sky line names the motion and the model; the migration tests of IC9/IC14 stand; docs 10/18/README amended; a drive-by: the stale dev1 clock pin in `shipped_configs.rs` | S | the two voyage tests; `shipped_configs` parity (12) |
 
@@ -351,8 +373,9 @@ file), pushed when green. No deploy without the owner.
   direct every season (the depot becomes a stop a captain chooses) until P4's customs compel it.
 - **Q-19-4 The throttle floor.** Default 250‰ (a passage at most twice its full-thrust length).
 - **Q-19-5 The price policy's caps.** Default: premium `k = 300‰` per unit of reach ratio, cap 500‰
-  (cut A.4, lane v5's `premium` block on both ports; a lane data edit); `emergency_ratio 1.5`,
-  life-support goods = provisions, volatiles, propellant (cut A.4b, not built).
+  (cut A.4, lane v5's `premium` block on both ports; a lane data edit); the emergency ratio 1,500 ‰,
+  life-support goods = provisions, volatiles, propellant, 100 units deep, posted by the Exchange at
+  Ceres and the Yards at Stickney (cut A.4b, lane v6's `emergency` block; a lane data edit).
 - **Q-19-6 The keep-out radius.** Default 0.3 AU (Mercury's orbit is 0.39 AU).
 - **Q-19-7 The chart panel.** Default: text first (A.3), the panel as A.3b after A.6.
 - **Q-19-8 Re-fitting the elements.** Default: one set per body for 2340–2400; a second era is a lane

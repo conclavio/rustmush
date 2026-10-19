@@ -2126,11 +2126,13 @@ fn ic3_port_entries_refuse_what_the_applier_cannot_bind() {
     }
     // Doc 18 cut IC8 (lead ruling L23): the same reference in an entry that authors no
     // vendors loads — the rule is scoped to an entry with vendors, so the published v2
-    // (references, no vendors) keeps loading.
+    // (references, no vendors) keeps loading. Doc 19 cut A.4b: an emergency block needs
+    // a vendor to post from, so the v2 shape has none.
     assert_eq!(
         refusal(|doc| {
             if let Some(def) = doc["entries"]["ceres_port"]["def"].as_object_mut() {
                 def.remove("vendors");
+                def.remove("emergency");
             }
             doc["entries"]["ceres_port"]["def"]["programme"]["reference"]["metals"] =
                 json!("ceres_port/coop");

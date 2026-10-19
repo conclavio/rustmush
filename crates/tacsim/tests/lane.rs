@@ -52,7 +52,7 @@ use support::ground::{UNSIGNED, sign};
 /// the legs re-timed to the three-dimensional chords): a new version beside the
 /// v1, v2 and v3 ledger rows, never an earlier version re-signed in place (lead
 /// ruling L0b).
-const LANE_DIGEST: &str = "319aa8a0d273dc6980937d7b8ec7682eab25c37be964ceaaef687bff3562744e";
+const LANE_DIGEST: &str = "f7f568f43ac917131c029c3cbffbcc4917448f6157a6486dce97142a5a4a8e15";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -155,7 +155,7 @@ fn coast_kms(class: &CanonicalId) -> u32 {
 // ---------------------------------------------------------------------------
 
 /// **The lane is pinned** (doc 18 cut IC2; R4; cut IC3, L0a/L0b; doc 19 cut A.1):
-/// a campaign seed at version 5 requiring nothing, exactly the twenty entries —
+/// a campaign seed at version 6 requiring nothing, exactly the twenty entries —
 /// the `sol` region, twelve bodies on element tables, three places, two routes
 /// timed to the Kepler sky's three-dimensional chords at the epoch for 226 km/s
 /// and the two ports; every body carries the same `epoch_ic`, which is
@@ -187,8 +187,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        5,
-        "lane v5 since doc 19 cut A.4 (v4 at A.1)"
+        6,
+        "lane v6 since doc 19 cut A.4b (v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
     assert!(manifest.requires().is_empty(), "the lane requires nothing");

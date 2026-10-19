@@ -30,6 +30,9 @@ use crate::port::def::PortDef;
 use crate::port::passage::{
     PassagePlan, PlanError, choose_route, leg_distance_km, leg_seconds, passage_burn,
 };
+use crate::port::price::{
+    emergency_readings, premium_permille, priced, reach_for, reach_ratio_permille,
+};
 use crate::port::readiness::report_ports;
 use crate::port::ship::{Berth, berth_of, hull_view};
 use crate::port::voyage::{
@@ -379,6 +382,7 @@ fn chart_window(ctx: &mut Ctx<'_>, word: &str) -> Result<Vec<String>, CmdError> 
         today.burn_t,
         today.crew_days
     ));
+    lines.extend(demand_lines(w, &dest.venue));
     if v.sky.ephemeris().rate_permille() == 0 {
         lines.push("  The sky is constant on this server: every day is today.".to_owned());
         return Ok(lines);
@@ -427,6 +431,98 @@ fn chart_window(ctx: &mut Ctx<'_>, word: &str) -> Result<Vec<String>, CmdError> 
     }
     lines.push(describe("worst", worst));
     Ok(lines)
+}
+
+/// **The destination's demand side under its season** (doc 19 §6, cut A.4b): for
+/// the port at `venue`, each standing bid's list price and what it posts at — the
+/// premium against the median reach — then the emergency line: which life-support
+/// goods are due at the cap, or that none are and where the reach stands.
+fn demand_lines(w: &World, venue: &CanonicalId) -> Vec<String> {
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return Vec::new();
+    };
+    let (_, ports) = report_ports(store, w);
+    let Some((_, def)) = ports.iter().find(|(_, def)| &def.venue == venue) else {
+        return Vec::new();
+    };
+    let name = port_name(def);
+    let mut lines = Vec::new();
+    let Some(premium) = def.premium else {
+        lines.push(format!(
+            "  {name} posts its list prices whatever the season."
+        ));
+        return lines;
+    };
+    let org_name = |org: &CanonicalId| -> String {
+        def.orgs
+            .iter()
+            .find(|o| &o.id == org)
+            .map_or_else(|| org.to_string(), |o| o.name.clone())
+    };
+    for vendor in &def.vendors {
+        for bid in &vendor.bids {
+            let line = match reach_for(w, def, &bid.good) {
+                Some(reach) => {
+                    let p = premium_permille(premium.k_permille, premium.cap_permille, reach);
+                    format!(
+                        "  {} bids {}: list {}, posts {} (+{p} permille; reach {} now against a \
+                         median of {}).",
+                        org_name(&vendor.org),
+                        bid.good,
+                        bid.price_major,
+                        priced(bid.price_major, p),
+                        hours_text(w, reach.now_s),
+                        hours_text(w, reach.median_s)
+                    )
+                }
+                None => format!(
+                    "  {} bids {}: list {}, posts {} (no port supplies it).",
+                    org_name(&vendor.org),
+                    bid.good,
+                    bid.price_major,
+                    bid.price_major
+                ),
+            };
+            lines.push(line);
+        }
+    }
+    if let Some(emergency) = &def.emergency {
+        let readings = emergency_readings(w, def);
+        let ratio = readings
+            .iter()
+            .filter_map(|r| r.reach)
+            .filter_map(reach_ratio_permille)
+            .max();
+        let where_it_stands = ratio.map_or_else(
+            || "no port supplies them".to_owned(),
+            |ratio| format!("reach is {ratio} permille of the median"),
+        );
+        let due: Vec<String> = readings
+            .iter()
+            .filter(|r| r.crossed)
+            .map(|r| match r.price_major {
+                Some(price) => format!("{} at {price}", r.good),
+                None => r.good.to_string(),
+            })
+            .collect();
+        if due.is_empty() {
+            lines.push(format!(
+                "  emergency bids (at {} permille of the median): none due; {where_it_stands}.",
+                emergency.ratio_permille
+            ));
+        } else {
+            lines.push(format!(
+                "  emergency bids (at {} permille of the median; {where_it_stands}): {} — {} each, \
+                 at the cap (+{} permille), posted by {}.",
+                emergency.ratio_permille,
+                due.join(", "),
+                emergency.intake,
+                premium.cap_permille,
+                org_name(&emergency.org)
+            ));
+        }
+    }
+    lines
 }
 
 /// `+chart/body <id>`: one body and its elements.

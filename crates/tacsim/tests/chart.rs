@@ -200,3 +200,53 @@ fn a3_chart_body_shows_pallas_off_the_ecliptic() {
     );
     assert!(refused.contains("pallas"), "{refused}");
 }
+
+/// **`+chart <port>` names the destination's demand side under its season** (doc
+/// 19 §6, cut A.4b): under the moving sky each of Stickney's standing bids prints
+/// its list price and what it posts at, with the premium and the reach against the
+/// median; the emergency line says none are due at the shipped ratio and where the
+/// reach stands. Under the constant sky the same lines print at a zero premium,
+/// before "every day is today".
+#[test]
+fn a4b_chart_window_names_the_demand_side_and_the_emergency_line() {
+    let mut tw = world(1_000);
+    let walker = tw.spawn_player("Walker");
+    let out = run(&mut tw, walker, "+chart stickney");
+    let metals = out
+        .lines()
+        .find(|l| l.starts_with("  Kasei Metals bids metals: list 280, posts "))
+        .unwrap_or_else(|| panic!("a metals line:\n{out}"));
+    assert!(
+        metals.contains(" permille; reach ") && metals.contains(" now against a median of "),
+        "{metals}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("  Kasei Metals bids volatiles: list 200, posts ")),
+        "{out}"
+    );
+    let emergency = out
+        .lines()
+        .find(|l| l.starts_with("  emergency bids (at 1500 permille of the median): "))
+        .unwrap_or_else(|| panic!("an emergency line:\n{out}"));
+    assert!(
+        emergency.contains("none due; reach is ")
+            && emergency.ends_with(" permille of the median."),
+        "{emergency}"
+    );
+    let mut constant = world(0);
+    let walker = constant.spawn_player("Walker");
+    let out = run(&mut constant, walker, "+chart stickney");
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("  Kasei Metals bids metals: list 280, posts 280 (+0 permille;")),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "emergency bids (at 1500 permille of the median): none due; reach is 1000 permille"
+        ),
+        "{out}"
+    );
+    assert!(out.contains("every day is today"), "{out}");
+}

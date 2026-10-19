@@ -7369,3 +7369,110 @@ deploy without the owner**.
 - **A.4b** the emergency Wanted bids (life-support goods at the cap when reach crosses
   `emergency_ratio`, funded from finite capital) and `+chart <port>` naming the premium; **A.3b**
   the chart panel.
+
+## A.4b
+
+**The emergency Wanted bids** ([doc 19](19-astronomy-engine.md) §6, cut A.4b; D-19-14; doc 18
+Q-18-39's second half; Q-19-5's defaults), built 2026-10-19 on main. One commit with the Fable
+trailer, pushed when green. Nothing here touches a running world until the next deploy, and **no
+deploy without the owner**.
+
+### What landed
+
+1. **The port entry's block** (`port/def.rs`): `PortDef.emergency: Option<EmergencyDef { org,
+   ratio_permille, goods, intake }>`, serde default and skipped when absent, `deny_unknown_fields`;
+   `PortDef::check` refuses an emergency without a `premium` (the cap comes from it), a ratio
+   outside `1000..=MAX_EMERGENCY_RATIO_PERMILLE` (100,000), no goods or more than
+   `MAX_EMERGENCY_GOODS` (16) or one named twice, an intake outside `1..=mush_market::MAX_QUANTITY`,
+   an `org` that is not one of the port's vendors, and an org that already asks or bids any of the
+   goods (a storefront holds one line per good; `post_wanted` would refuse the duplicate);
+   `check_ports` refuses a good the goods table does not know, as it does a vendor's. The types and
+   bounds are exported with the def types.
+2. **The clerk's emergency step** (`port/stock.rs` `emergency_step`, ahead of the stock steps:
+   life support before stock). Once a real hour per port (`EMERGENCY_CHECK_SECS` 3,600 — one IC day
+   at the shipped rate 24; `PortTickState.emergency_checked` by entry id, spent only when nothing
+   was due) the clerk reads each emergency good's reach against its synodic median
+   (`price::reach_for`, the A.4 reading). A good at or past the ratio (`emergency_crossed`:
+   `now·1000 ≥ median·ratio`, integer arithmetic) with no standing emergency bid gets one: the org's
+   vendor posts a Wanted for `intake` units at the premium's **cap** over the good's **reference**
+   (`emergency_reference_major`: the port's highest authored ask or bid for the good, else the goods
+   table's `reference_major`) — through the applier's own `wanted_spec`, as the clerk under
+   `Fire::as_principal`, signed as every bid is — and the row goes into `PortMap.emergencies` (good →
+   `BidRow`, the reference as `price_major`). A house that cannot fund one unit
+   (`board::vendor_funds`, factored out of `funds_one`) posts nothing and is warned once a boot; a
+   row gone before its recorded deadline (its intake taken) is not posted again until the deadline
+   passes. A good whose reach fell back under the ratio while its bid stands has it withdrawn
+   (`withdraw_listing` as the clerk) and the row forgotten. One act a fire, authored order; the
+   swap's refusals map exactly as the bid re-post's (a clerk with a mint in flight defers). A good no
+   other port supplies has no reach and no emergency — Ceres's volatiles, which nobody at Stickney
+   asks. A port retire withdraws the emergency bids with the standing bids and forgets their rows.
+3. **The readings** (`port/price.rs`): `EmergencyReading { good, reach, crossed, price_major }`,
+   `emergency_readings(w, def)` (authored order; empty without the block or a premium),
+   `reach_ratio_permille`; exported.
+4. **`+chart <port>`** (`port/chart.rs` `demand_lines`): after the "now" line, the destination's
+   demand side — each standing bid as `<org> bids <good>: list <authored>, posts <posted> (+<p>
+   permille; reach <now> now against a median of <median>).` (or `(no port supplies it)`), then
+   `emergency bids (at <ratio> permille of the median): none due; reach is <r> permille of the
+   median.` or `… : <good> at <price>, … — <intake> each, at the cap (+<cap> permille), posted by
+   <org>.`; a port without a premium says it posts its list prices whatever the season. Under the
+   constant sky the same lines print at a zero premium before "every day is today".
+5. **Lane v6** (`content/lane/ceres_phobos.json`, `LANE_VERSION` 6): both ports gain
+   `"emergency": { "org": …, "ratio_permille": 1500, "goods": ["provisions", "volatiles",
+   "propellant"], "intake": 100 }` — the Freeport Exchange at Ceres, Stickney Yards at Stickney (each
+   the port's one vendor that neither asks nor bids any of the three) — and nothing else moves;
+   signed, digest `f7f568f43ac917131c029c3cbffbcc4917448f6157a6486dce97142a5a4a8e15` pinned in
+   `tests/lane.rs`. The commerce suite's v2 rebuild drops `emergency` as it drops `premium`.
+6. **Docs and help**: doc 19 §6 "As built (cut A.4b)", §9's row landed, §10 Q-19-5; README; the
+   trade help's second season paragraph (the emergency bids, `+chart <port>` says whether they are
+   up).
+
+### Verified
+
+- **`tests/price.rs`** (7, the A.4 four plus three): both ports author the block as above and
+  `check` passes; the nine refusals (ratio 999 and 100,001, no goods, a good twice, intake 0, an org
+  that is not a vendor, Kasei — which asks propellant — as the org, an emergency without a premium,
+  `unobtainium` at load); under the constant sky four fires post nothing on either port, every
+  Stickney reading has a reach equal to its median and is not crossed, Ceres's volatiles has none,
+  and the prices the bids would post at are the port's own highest authored price under the cap
+  (Stickney volatiles 200 → 300, provisions 10 → 15, propellant 60 → 90; Ceres provisions 15,
+  propellant 60); **the clerk**: a lane at 1,000 ‰ booted as an operator seed under the moving sky
+  has Stickney's clerk post, one a fire, a Wanted of the Yards' vendor for each of the three goods —
+  100 units at `priced(reference, 500)` (propellant 40 → 60, provisions 10 → 15, volatiles 200 →
+  300), recorded in the map, the capital rows unchanged — and a reboot into a revision at
+  100,000 ‰ taken as an update has it withdraw all three and forget the rows. The rig lands no
+  authoritative submission, so the variant strips Stickney's stock rows and asks (and the Co-op's
+  margin references that read them): a clerk with a stock mint in flight defers every act, which is
+  what the first attempt measured (the readings crossed, the house funded, the vendor registered,
+  nothing posted) — the deferral is right in production, where mints land within a fire.
+- Unit tests in `price.rs` (4): the crossing at the ratio, a ratio of 1,000 always on, a zero
+  median never, the ratio for the chart.
+- **`tests/chart.rs`** (5): `+chart stickney` under the moving sky prints Kasei's metals and
+  volatiles lines with the premium and the reach against the median, and the emergency line "none
+  due; reach is … permille of the median"; under the constant sky the metals line posts 280 at
+  +0 permille and the emergency line reads 1000 permille before "every day is today".
+- `tests/lane.rs` (10) at v6; `tests/hulls.rs`, `ports.rs`, `commerce.rs`, `sale.rs` through the
+  version constant.
+- `cargo fmt --check` clean; `cargo clippy -p tacsim --all-targets -- -D warnings` clean; the whole
+  tacsim suite (`--no-fail-fast`, 49 suites, 2,666 passed) had one red — `ports.rs`'s
+  `ic3_port_entries_refuse_what_the_applier_cannot_bind`, twice: the emergency check ran before the
+  vendors' own rules, so a vendor's fault was named as the emergency's (the check now runs last), and
+  the suite's no-vendors acceptance case kept the emergency block (it now drops it, as the v2 shape
+  has none) — after which `ports` 21, `price` 7, `hulls` 15, `commerce` 24 and the lib (1,249) ran
+  green again; mush-server `boot_parity` 19 and the story `ic_slice_loop` 6 green (the story's
+  figures unchanged: the shipped ratio is not crossed, and a constant sky posts nothing); mush-config
+  `shipped_configs` 12 green.
+
+### What the owner decides
+
+- **The ratio and the depth** (Q-19-5): 1,500 ‰ of the median and 100 units, lane data on each
+  port. At Ceres–Mars's season (reach about 15–27 h empty, median near 21 h) the worst day runs to
+  about 1,300 ‰, so the shipped ratio never fires on the lane as authored — it is the Pallas-like
+  port's lever, and a lane edit brings it into the lane's own season if wanted.
+- **Which house posts them**: the Exchange and the Yards (the one vendor at each port with no line
+  for the three goods). A port with no such vendor needs a new one authored before it can carry the
+  block.
+
+### Deferred
+
+- **A.3b** the chart panel. The emergency bids on the room boards (they carry no `boards`;
+  `+market/list` shows them). Readiness has no line for them.

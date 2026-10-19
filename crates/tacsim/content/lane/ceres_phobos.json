@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 5,
+    "version": 6,
     "kind": "campaign_seed",
-    "digest": "319aa8a0d273dc6980937d7b8ec7682eab25c37be964ceaaef687bff3562744e",
+    "digest": "f7f568f43ac917131c029c3cbffbcc4917448f6157a6486dce97142a5a4a8e15",
     "requires": []
   },
   "entries": {
@@ -1757,7 +1757,8 @@
             "bids":  [ { "good": "industrial_parts", "price_major": 560, "intake": 5400, "boards": ["chandlery"] } ] }
         ],
         "routes": { "stickney": [ "ceres_stickney" ] },
-        "premium": { "k_permille": 300, "cap_permille": 500 }
+        "premium": { "k_permille": 300, "cap_permille": 500 },
+        "emergency": { "org": "freeport_exchange", "ratio_permille": 1500, "goods": ["provisions", "volatiles", "propellant"], "intake": 100 }
       }
     },
     "stickney_port": {
@@ -1801,7 +1802,8 @@
             "asks":  [ { "good": "provisions", "price_major": 10, "boards": ["commissary"] } ] }
         ],
         "routes": { "ceres": [ "stickney_ceres" ] },
-        "premium": { "k_permille": 300, "cap_permille": 500 }
+        "premium": { "k_permille": 300, "cap_permille": 500 },
+        "emergency": { "org": "stickney_yards", "ratio_permille": 1500, "goods": ["provisions", "volatiles", "propellant"], "intake": 100 }
       }
     }
   }

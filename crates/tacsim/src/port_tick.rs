@@ -415,6 +415,10 @@ pub struct PortTickState {
     /// Doc 18 cut IC10: the bid re-posts the market refused this boot, by `(vault,
     /// good)` — each is logged once.
     pub(crate) bid_warned: BTreeSet<(u64, CanonicalId)>,
+    /// Doc 19 cut A.4b: when each port's emergency reading was last taken with
+    /// nothing to do, by entry id (real seconds); the clerk reads it again
+    /// `crate::port::price::EMERGENCY_CHECK_SECS` later.
+    pub(crate) emergency_checked: BTreeMap<CanonicalId, i64>,
     /// Doc 18 cut IC11: hulls whose unreadable queued sailing plan has paged this
     /// boot (once each).
     pub(crate) orders_warned: BTreeSet<u32>,

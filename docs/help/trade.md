@@ -66,7 +66,13 @@ Every figure below is one you read off the game, not one to remember.
   standing bid for that good is posted above its list price, up to half again;
   when the passage is short, the bid is the list price. The price is set when the
   bid is posted and holds until it lapses and is posted anew, so `+market/list`
-  is the word; `+chart <port>` shows how the passage runs over the coming year.
+  is the word; `+chart <port>` shows how the passage runs over the coming year,
+  and what each of the port's bids posts at today.
+
+  When a port's season runs long enough — the passage half again its usual — the
+  port's house posts emergency bids for provisions, volatiles and propellant at
+  half again their worth, a hundred units each, and withdraws them when the
+  season turns. `+chart <port>` says whether they are up.
 
   On the materials exchange: buy the fittings and the alloy for Ceres the same
   way — bulky first if money is tight — then bunker for the return and fly home.

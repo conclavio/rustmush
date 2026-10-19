@@ -125,10 +125,43 @@ pub struct PortDef {
     /// prices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub premium: Option<ReachPremiumDef>,
+    /// **The emergency Wanted bids** (doc 19 §6, cut A.4b; D-19-14): the
+    /// life-support goods this port bids for at the premium's cap when its reach
+    /// crosses the ratio. Requires `premium`. Absent, the port posts none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emergency: Option<EmergencyDef>,
 }
 
 /// The most a premium's slope or cap may be, permille (ten times the price).
 pub const MAX_PREMIUM_PERMILLE: u32 = 10_000;
+
+/// The most an emergency ratio may be, permille (a hundred times the median).
+pub const MAX_EMERGENCY_RATIO_PERMILLE: u32 = 100_000;
+
+/// The most goods an emergency block may name.
+pub const MAX_EMERGENCY_GOODS: usize = 16;
+
+/// **A port's emergency bids** (doc 19 §6, cut A.4b; D-19-14; Q-19-5's default
+/// ratio 1,500 ‰): when the port's reach for one of `goods` is at or past
+/// `ratio_permille` of its synodic median, `org`'s vendor posts a Wanted bid for
+/// it at the premium's cap over the good's reference (the port's highest authored
+/// price for it, else the goods table's), `intake` units deep; withdrawn when the
+/// reach falls back. A good no other port supplies has no reach and no emergency.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmergencyDef {
+    /// The vendor (one of `vendors[].org`) whose storefront posts the bids; it
+    /// may not ask or bid any of `goods` itself.
+    pub org: CanonicalId,
+    /// `reach_now / reach_median` in permille at or past which the bids post;
+    /// `1000..=MAX_EMERGENCY_RATIO_PERMILLE`.
+    pub ratio_permille: u32,
+    /// The life-support goods, unique, `1..=MAX_EMERGENCY_GOODS`.
+    pub goods: Vec<CanonicalId>,
+    /// Each bid's intake in the good's quote units,
+    /// `1..=mush_market::MAX_QUANTITY`.
+    pub intake: u64,
+}
 
 /// **A port's reach premium** (doc 19 §6; D-19-14; Q-19-5's defaults 300 / 500):
 /// `premium‰ = min(cap, k · (reach_now / reach_epoch − 1))`, never below zero,
@@ -509,6 +542,72 @@ impl PortDef {
                 "vendors: every vendor of a port names the port's one stock clerk".to_owned(),
             );
         }
+        // Doc 19 cut A.4b: the emergency block, after the vendors' own rules so a
+        // vendor's fault is named as the vendor's.
+        if let Some(emergency) = &self.emergency {
+            self.check_emergency(emergency)?;
+        }
+        Ok(())
+    }
+
+    /// **The emergency block's bounds** (doc 19 cut A.4b): a premium to take the
+    /// cap from; the ratio in `1000..=MAX_EMERGENCY_RATIO_PERMILLE`; one to
+    /// `MAX_EMERGENCY_GOODS` goods, none twice; an intake the market buys; an
+    /// `org` that is one of the port's vendors and neither asks nor bids any of
+    /// the goods (its storefront would hold two lines for one good).
+    fn check_emergency(&self, emergency: &EmergencyDef) -> Result<(), String> {
+        if self.premium.is_none() {
+            return Err("emergency: needs a premium block to take its cap from".to_owned());
+        }
+        if emergency.ratio_permille < 1_000
+            || emergency.ratio_permille > MAX_EMERGENCY_RATIO_PERMILLE
+        {
+            return Err(format!(
+                "emergency: ratio_permille is 1000..={MAX_EMERGENCY_RATIO_PERMILLE}, not {}",
+                emergency.ratio_permille
+            ));
+        }
+        if emergency.goods.is_empty() || emergency.goods.len() > MAX_EMERGENCY_GOODS {
+            return Err(format!(
+                "emergency: 1..={MAX_EMERGENCY_GOODS} goods, not {}",
+                emergency.goods.len()
+            ));
+        }
+        let mut seen: BTreeSet<&CanonicalId> = BTreeSet::new();
+        if let Some(good) = emergency.goods.iter().find(|good| !seen.insert(good)) {
+            return Err(format!("emergency: {good} is named twice"));
+        }
+        if emergency.intake == 0 || emergency.intake > mush_market::MAX_QUANTITY {
+            return Err(format!(
+                "emergency: intake is 1..={}, not {}",
+                mush_market::MAX_QUANTITY,
+                emergency.intake
+            ));
+        }
+        let Some(vendor) = self
+            .vendors
+            .iter()
+            .find(|vendor| vendor.org == emergency.org)
+        else {
+            return Err(format!(
+                "emergency: org {} is not one of this port's vendors",
+                emergency.org
+            ));
+        };
+        let lines = vendor
+            .asks
+            .iter()
+            .map(|ask| ("asks", &ask.good))
+            .chain(vendor.bids.iter().map(|bid| ("bids", &bid.good)));
+        for (side, good) in lines {
+            if emergency.goods.contains(good) {
+                return Err(format!(
+                    "emergency: org {} already {side} {good}; its storefront cannot hold the \
+                     emergency bid too",
+                    emergency.org
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -795,6 +894,17 @@ pub fn check_ports(
                 }
             }
         }
+        // Doc 19 cut A.4b: every emergency good is a row of the goods table.
+        if let Some(emergency) = &def.emergency
+            && let Some(good) = emergency
+                .goods
+                .iter()
+                .find(|good| goods.good(good).is_none())
+        {
+            return fail(format!(
+                "emergency: {good} is not a good of the goods table"
+            ));
+        }
         if let Some(programme) = references {
             for (good, listing) in &programme.reference {
                 let trade = goods
@@ -895,6 +1005,7 @@ mod tests {
             vendors: Vec::new(),
             routes: BTreeMap::from([(cid("stickney"), vec![cid("out")])]),
             premium: None,
+            emergency: None,
         }
     }
 

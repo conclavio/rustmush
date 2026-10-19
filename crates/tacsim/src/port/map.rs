@@ -92,6 +92,11 @@ pub struct PortMap {
     /// finds its rooms here, never by a scan at look time.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub boards: BTreeMap<CanonicalId, u32>,
+    /// **Doc 19 cut A.4b**: good → the emergency Wanted bid the clerk posted for
+    /// it (`price_major` the reference it was priced from, `intake` the authored
+    /// intake), kept while the listing stands or until the clerk re-posts it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub emergencies: BTreeMap<CanonicalId, BidRow>,
 }
 
 /// **The port's stock clerk** (doc 18 cut IC8; D-18-26): the Thing the
@@ -184,6 +189,7 @@ impl PortMap {
             clerk: None,
             vendors: BTreeMap::new(),
             boards: BTreeMap::new(),
+            emergencies: BTreeMap::new(),
         }
     }
 
