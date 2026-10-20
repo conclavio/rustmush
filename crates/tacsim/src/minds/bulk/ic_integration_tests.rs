@@ -80,6 +80,7 @@ struct IcWorld {
     coverage_products: Option<Vec<crate::underwriting::CoverageProductV1>>,
     coverage_host: Option<crate::underwriting::CoverageHost>,
     coverage_calls: coverage::Calls,
+    transfer_facts: Option<resale::transfer_facts::Calls>,
 }
 impl Drop for IcWorld {
     fn drop(&mut self) {
@@ -283,6 +284,38 @@ impl IcWorld {
         coverage_products: Option<Vec<crate::underwriting::CoverageProductV1>>,
         two_seat_house: bool,
     ) -> TestResult<Self> {
+        Self::boot_source_facts(
+            f,
+            saved,
+            base,
+            field,
+            hulls,
+            enabled,
+            pending_charters,
+            paid_resales,
+            registry_revocation,
+            coverage_products,
+            two_seat_house,
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn boot_source_facts(
+        f: IcFixture<'_>,
+        saved: &Durable,
+        base: ObjId,
+        field: ObjId,
+        hulls: [ObjId; 2],
+        enabled: bool,
+        pending_charters: bool,
+        paid_resales: bool,
+        registry_revocation: Option<
+            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
+        >,
+        coverage_products: Option<Vec<crate::underwriting::CoverageProductV1>>,
+        two_seat_house: bool,
+        transfer_facts: Option<resale::transfer_facts::Calls>,
+    ) -> TestResult<Self> {
         let mut cfg = f.resources.config();
         cfg.enabled = true;
         let layer = crate::TacsimRuleset::with_config(cfg);
@@ -323,6 +356,11 @@ impl IcWorld {
         };
         let composition = if paid_resales {
             composition.with_paid_mind_resales(GOD, 60)?
+        } else {
+            composition
+        };
+        let composition = if transfer_facts.is_some() {
+            composition.with_minds_facts()?
         } else {
             composition
         };
@@ -378,11 +416,12 @@ impl IcWorld {
                 MarketModule::new().with_venue_gate(Arc::new(crate::port::market::PortVenueGate)),
             )),
             Box::new(composition.configure_roll(RollModule::with_writers(["tacsim"]))),
-            Box::new(
+            resale::transfer_facts::economy(
                 composition.configure_economy(
                     EconomyModule::with_custody(vec![Arc::new(mush_sim::InteriorCustodyProvider)])
                         .with_title_issuers(vec![issuer()?]),
                 ),
+                transfer_facts.clone(),
             ),
             paid_checkout::content()?,
         ];
@@ -428,6 +467,7 @@ impl IcWorld {
             coverage_products,
             coverage_host,
             coverage_calls,
+            transfer_facts,
         };
         result.persist_setup()?;
         result.engine.step(
@@ -567,8 +607,8 @@ impl IcWorld {
         Durable::capture(&self.engine, &self.disk)
     }
     fn reboot(&self, f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_all_coverage(
-            f,
+        Self::boot_source_facts(
+            f.into(),
             saved,
             self.base,
             self.field,
@@ -578,6 +618,8 @@ impl IcWorld {
             self.paid_resales,
             self.registry_revocation.clone(),
             self.coverage_products.clone(),
+            false,
+            self.transfer_facts.clone(),
         )
     }
     fn reboot_house(&self, f: &Fixture, saved: &Durable) -> TestResult<Self> {

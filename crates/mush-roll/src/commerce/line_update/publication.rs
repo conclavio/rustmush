@@ -68,6 +68,7 @@ impl UpdateFence {
     }
 }
 pub(crate) struct UpdateRoots {
+    follow: Option<crate::commerce::follow::Change>,
     commit: CommitToken,
     fence: UpdateFence,
     before: [RequiredRoot; 2],
@@ -92,6 +93,7 @@ impl UpdateRoots {
         }
         Ok(Self {
             commit: op.commit,
+            follow: None,
             fence: UpdateFence {
                 action: op.action.clone(),
                 commit: op.commit,
@@ -115,6 +117,28 @@ impl UpdateRoots {
             ],
             after: super::audit::required(op),
         })
+    }
+    pub(super) fn with_follow(
+        mut self,
+        filed: &FiledRecord,
+        rating: &crate::commerce::rating::RatingReceipt,
+        previous: &FiledRecord,
+    ) -> Result<Self, PublicationError> {
+        if filed.operation != self.commit
+            || self.after[0].anchor != RootAnchor::Filed(filed.content.id())
+            || self.before[0].anchor != RootAnchor::Filed(previous.content.id())
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        self.follow = Some(crate::commerce::follow::Change::filing(
+            filed,
+            rating,
+            Some(previous.content.id()),
+        )?);
+        Ok(self)
+    }
+    pub(crate) fn follow(&self) -> Option<&crate::commerce::follow::Change> {
+        self.follow.as_ref()
     }
     pub(crate) fn commit(&self) -> CommitToken {
         self.commit

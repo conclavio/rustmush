@@ -310,6 +310,9 @@ fn paid_term(
     let key = format!("{}/{}", licence.id().key(), generation.key());
     let term = read(ctx, &f.paid_terms, key)?;
     let actual = granted(ctx, f, ratings, licence, term)?;
+    // Current scope follows the actual complete holder chain, independently of
+    // the person who accepted this historical term generation.
+    super::super::paid_resale::history::current(ctx, f, ratings, licence)?;
     let revision = actual.revision();
     roll.check_required_root(&RequiredRoot {
         anchor: RootAnchor::Term(licence.id(), generation),

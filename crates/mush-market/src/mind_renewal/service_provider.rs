@@ -182,7 +182,7 @@ impl ActionProvider for Provider {
             required_channels: vec![],
             expires: None,
             presentation: mush_core::ActionPresentation::new(
-                "market-mind-renewal-service",
+                "mind-renewal-service",
                 "Close an unavailable renewal offer",
                 "Process the exact retained unfunded offer.",
             )

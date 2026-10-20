@@ -371,7 +371,8 @@ impl UpdateProvider {
         {
             return Err(PublicationError::Mismatch);
         }
-        let roots = UpdateRoots::new(&operation, &previous, term.window)?;
+        let roots = UpdateRoots::new(&operation, &previous, term.window)?
+            .with_follow(&file, &rating, &previous)?;
         ctx.prepare_owner(&self.roots, RootRequest::CompatibleUpdate(roots))
             .map_err(bad)?;
         Ok(AuthoritativeActionOutput::new(

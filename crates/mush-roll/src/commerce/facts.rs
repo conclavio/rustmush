@@ -8,6 +8,7 @@ pub(crate) mod publication;
 pub(crate) mod reader;
 pub(crate) mod records;
 mod service;
+mod transfer;
 use super::records::{PublicationError, Record};
 use mush_core::mechanics::{DefinitionRegistry, OwnerId};
 use mush_core::read_service::OwnerReadHandle;
@@ -35,6 +36,14 @@ impl Readiness {
         self.0
             .set(defs.clone())
             .map_err(|_| error("minds facts already captured"))
+    }
+    fn check_transfer(&self, world: &World) -> Result<(), PublicationError> {
+        self.check(world)?;
+        self.0
+            .get()
+            .ok_or(PublicationError::Unavailable)?
+            .require_owner_ready(&OwnerId::new("market").map_err(invalid)?)
+            .map_err(|_| PublicationError::Unavailable)
     }
     fn check(&self, world: &World) -> Result<(), PublicationError> {
         let defs = self.0.get().ok_or(PublicationError::Unavailable)?;

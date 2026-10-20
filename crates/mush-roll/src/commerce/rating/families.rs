@@ -200,7 +200,7 @@ impl RatingFamilies {
         Ok(row)
     }
 
-    fn complete_receipt(
+    pub(crate) fn complete_receipt(
         &self,
         ctx: &impl CommerceRead,
         row: &RatingReceipt,

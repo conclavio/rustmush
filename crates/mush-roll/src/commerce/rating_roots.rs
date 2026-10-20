@@ -11,6 +11,7 @@ use super::rating::{RatingError, RatingJob, RatingJobState, RatingReceipt};
 use super::roots::{RequiredRoot, RootAnchor};
 
 pub(crate) struct RatingRoots {
+    follow: Option<super::follow::Change>,
     commit: CommitToken,
     before: Vec<RequiredRoot>,
     after: Vec<RequiredRoot>,
@@ -67,6 +68,7 @@ impl RatingRoots {
         }
         Ok(Self {
             commit,
+            follow: None,
             before: required(job)?,
             after: required(job)?,
             marked: None,
@@ -81,6 +83,7 @@ impl RatingRoots {
         }
         Ok(Self {
             commit,
+            follow: None,
             before: Vec::new(),
             after: required(job)?,
             marked: None,
@@ -153,6 +156,7 @@ impl RatingRoots {
         }
         Ok(Self {
             commit,
+            follow: None,
             before: required(before)?,
             after: required(after)?,
             marked: None,
@@ -160,6 +164,13 @@ impl RatingRoots {
         })
     }
 
+    pub(crate) fn with_follow(mut self, change: super::follow::Change) -> Self {
+        self.follow = Some(change);
+        self
+    }
+    pub(crate) fn follow(&self) -> Option<&super::follow::Change> {
+        self.follow.as_ref()
+    }
     pub(crate) const fn commit(&self) -> CommitToken {
         self.commit
     }

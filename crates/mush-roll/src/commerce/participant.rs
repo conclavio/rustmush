@@ -405,7 +405,7 @@ impl OwnerParticipant for RootParticipant {
             _ => None,
         };
         let mut retired = None;
-        let (change, selection) = match &request {
+        let (mut change, selection) = match &request {
             RootRequest::TermLapse(request) => (
                 state.prepare_term_lapse_root(request).map_err(refusal)?,
                 None,
@@ -516,6 +516,46 @@ impl OwnerParticipant for RootParticipant {
                 (change, Some(selection))
             }
         };
+        let follow = match &request {
+            RootRequest::InitialFiling(request) => Some(
+                request
+                    .follow()
+                    .cloned()
+                    .ok_or(ParticipantError::NotReady)?,
+            ),
+            RootRequest::DependentFiling(request) => Some(
+                request
+                    .roots()
+                    .follow()
+                    .cloned()
+                    .ok_or(ParticipantError::NotReady)?,
+            ),
+            RootRequest::CompatibleUpdate(request) => Some(
+                request
+                    .follow()
+                    .cloned()
+                    .ok_or(ParticipantError::NotReady)?,
+            ),
+            RootRequest::Rating(request) => request.follow().cloned(),
+            RootRequest::Withdrawal(request) => Some(
+                super::follow::Change::blocked(&request.filed_root())
+                    .map_err(|_| ParticipantError::Authority)?,
+            ),
+            RootRequest::RegistryRecall(request) => Some(
+                super::follow::Change::blocked(&request.filed_root())
+                    .map_err(|_| ParticipantError::Authority)?,
+            ),
+            RootRequest::MeasuredRecall(request) => Some(
+                super::follow::Change::blocked(&request.filed_root())
+                    .map_err(|_| ParticipantError::Authority)?,
+            ),
+            _ => None,
+        };
+        if let Some(follow) = follow {
+            state
+                .prepare_follow(&mut change, &follow)
+                .map_err(refusal)?;
+        }
         let usage = change.usage().ok_or(ParticipantError::NotReady)?;
         let writes = change
             .operations()

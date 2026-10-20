@@ -485,6 +485,16 @@ where
             stage = "readback";
             exact(txn, &self.ratings.jobs, &job.job(), &job)?;
             exact(txn, &self.ratings.executions, &job.job(), &execution)?;
+            if let Some(admission) = execution.admission().reconformance.as_ref() {
+                let filed = txn
+                    .get(&self.commerce.filed, &admission.filed().key())
+                    .map_err(invalid)?
+                    .cloned()
+                    .ok_or(RatingError::Incomplete)?;
+                let change = crate::commerce::follow::Change::certificate(&filed, &job, &execution)
+                    .map_err(invalid)?;
+                roots = roots.with_follow(change);
+            }
             stage = "root-owner";
             context
                 .prepare_owner(&self.roots, RootRequest::Rating(roots))

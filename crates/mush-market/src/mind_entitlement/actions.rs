@@ -66,12 +66,7 @@ pub(super) fn offer(
         targets: mush_core::ProjectedTargetSchema::None,
         required_channels: vec![],
         expires: None,
-        presentation: mush_core::ActionPresentation::new(
-            "market-mind-entitlement",
-            "Mind licence terms",
-            "Record exact personal licence terms or complete their funded purchase.",
-        )
-        .map_err(|_| bad())?,
+        presentation: presentation(action).map_err(|_| bad())?,
         guards: guards.finish().map_err(|_| bad())?,
     }))
 }
@@ -84,4 +79,90 @@ pub(super) fn parameter(
         required: true,
         kind,
     })
+}
+
+// Called only after matching the provider's exact registered action. These
+// names select an offer; its full definition and current guards still authorize it.
+fn presentation(action: &DefinitionRef) -> Result<mush_core::ActionPresentation, String> {
+    if action.key().owner.as_str() != crate::NS || action.key().kind.as_str() != "action" {
+        return Err("unknown entitlement presentation".into());
+    }
+    let (product, version, transition) = match (action.key().id.as_str(), action.version()) {
+        ("list_original_mind", 3) => ("original", 3, "list"),
+        ("quote_original_mind", 3) => ("original", 3, "quote"),
+        ("purchase_original_mind", 3) => ("original", 3, "fund"),
+        ("settle_original_mind", 3) => ("original", 3, "grant"),
+        ("refund_original_mind", 3) => ("original", 3, "refund"),
+        ("list_derived_mind", 1) => ("derived", 1, "list"),
+        ("quote_derived_mind", 1) => ("derived", 1, "quote"),
+        ("purchase_derived_mind", 1) => ("derived", 1, "fund"),
+        ("settle_derived_mind", 1) => ("derived", 1, "grant"),
+        ("refund_derived_mind", 1) => ("derived", 1, "refund"),
+        _ => return Err("unknown entitlement presentation".into()),
+    };
+    mush_core::ActionPresentation::new(
+        format!("{product}-{transition}-v{version}"),
+        format!("{product} licence: {transition}"),
+        "Use the exact current listing, quote or funded operation returned by the service.",
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    use mush_core::mechanics::{
+        DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
+    };
+    use std::collections::BTreeSet;
+
+    // Structural caller vocabulary; the genuine flow resolves actual signed offers.
+    #[test]
+    fn entitlement_protocols_and_transitions_have_unique_line_selectors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut verbs = BTreeSet::new();
+        for (product, version) in [("original", 3), ("derived", 1)] {
+            for id in ["list", "quote", "purchase", "settle", "refund"] {
+                let action = DefinitionRegistryBuilder::new().register(
+                    OwnerId::new(crate::NS)?,
+                    DefinitionDescriptor::new(
+                        DefinitionKind::new("action")?,
+                        DefinitionId::new(format!("{id}_{product}_mind"))?,
+                        version,
+                        serde_json::json!({"presentation_probe":true}),
+                    )?,
+                )?;
+                let p = presentation(&action)?;
+                assert!(verbs.insert(p.verb), "ambiguous entitlement line selector");
+            }
+        }
+        let expected: BTreeSet<_> = [("original", 3), ("derived", 1)]
+            .into_iter()
+            .flat_map(|(product, version)| {
+                ["list", "quote", "fund", "grant", "refund"]
+                    .into_iter()
+                    .map(move |t| format!("{product}-{t}-v{version}"))
+            })
+            .collect();
+        assert_eq!(verbs, expected);
+        for (owner, kind, id, version) in [
+            ("roll", "action", "list_original_mind", 3),
+            ("market", "outcome", "list_original_mind", 3),
+            ("market", "action", "list_original_mind", 2),
+            ("market", "action", "list_derived_mind", 3),
+            ("market", "action", "list_house_mind", 1),
+        ] {
+            let action = DefinitionRegistryBuilder::new().register(
+                OwnerId::new(owner)?,
+                DefinitionDescriptor::new(
+                    DefinitionKind::new(kind)?,
+                    DefinitionId::new(id)?,
+                    version,
+                    serde_json::json!({"presentation_probe":true}),
+                )?,
+            )?;
+            assert!(presentation(&action).is_err());
+        }
+        Ok(())
+    }
 }

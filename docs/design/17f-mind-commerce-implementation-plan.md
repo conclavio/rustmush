@@ -753,6 +753,35 @@ departure/loss/return producer remains the specific conditional live integration
 it does not excuse Conduct or service-composition gates. Timing remains
 report-only, while provenance, bounds, privacy and replay gates stay required.
 
+The next main integration is merge `2feaf6cced628c4254119b0912d592caf2846151`,
+including `origin/main` at `6f79797409f6792447d0fb1ed2d15335d2214387`
+(moon ports and SM.1 geology). The additive Tacsim registration conflicts retain
+both underwriting and geology. The merged implementation checkpoint is pushed
+to the authorized branch; it is not deployed or accepted as M7.
+
+N94 tree `6b784e90b04f2a9b196666dda5f9696471e5c4ad` included that merge,
+distinct personal purchase/renewal callers and the committed-transfer fact
+bridge. Compilation stopped on three references to a fixture's source filename
+instead of its actual Rust module name. The source remained unchanged; no runtime
+tests executed. Verified archive SHA-256
+`69f75dd2fcd59c57f46677342d66d4ba4b41d24f8717d10a60015aa38a7071e5`
+(9,922 bytes), compile-log SHA-256
+`9ad29be877c71b46dbef746668c6be2e579db45bcf3ce0a0b584c98b3af57629`.
+The narrow repair changes only those module references and leaves assertions
+and production behavior intact.
+
+The reviewed transfer fact now joins actual acceptance, holder generation,
+settlement and scoped historical parties; pending/refunded sales remain false.
+The public callers retain exact signed-offer resolution with distinct verbs.
+Newest-eligible Follow is also integrated: a bounded nonserialized locator is
+rebuilt from audited history, updated only with acknowledged owner state, and
+the selected revision is fully rechecked. Its prepared actual second-certificate
+story covers withdrawal/recall fallback, cold restart, stale preparation and
+unchanged paid Pin use. These additions still need runtime evidence. Conduct's
+actual owner/service and qualified discount, explicit major/paid-Follow producers,
+dependent/scoped House lifecycle, named production publication and final exact-tree
+M7/L acceptance remain outstanding.
+
 Subsequent reviewed source packages, not included in N82, add:
 
 - The actual House renewal E4/Roll/Market providers, native contract/hold inverse

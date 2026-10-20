@@ -497,7 +497,8 @@ impl InitialFilingBuilder {
         .map_err(invalid)?;
         rows.check_staged(txn, &self.families)?;
         // Derive roots from the checked actual post-images, not caller tuples.
-        let roots = InitialRoots::from_records(&rows.filed, &rows.term, &rows.operation)?;
+        let roots = InitialRoots::from_records(&rows.filed, &rows.term, &rows.operation)?
+            .with_follow(&rows.filed, &rating)?;
         context
             .consume_initial_filing_shell(&self.shells, txn, shell)
             .map_err(invalid)?;

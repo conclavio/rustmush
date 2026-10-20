@@ -379,6 +379,7 @@ impl RequiredRoot {
 /// records. The filing builder additionally checks the actual rating/E4 result
 /// and reads back those exact ActionTxn post-images before requesting roots.
 pub(crate) struct InitialRoots {
+    follow: Option<super::follow::Change>,
     commit: CommitToken,
     roots: Vec<RequiredRoot>,
 }
@@ -444,8 +445,28 @@ impl InitialRoots {
         }
         Ok(Self {
             commit: operation.commit,
+            follow: None,
             roots,
         })
+    }
+    pub(crate) fn with_follow(
+        mut self,
+        filed: &FiledRecord,
+        rating: &super::rating::RatingReceipt,
+    ) -> Result<Self, PublicationError> {
+        if filed.operation != self.commit
+            || !self.roots.iter().any(|r| {
+                r.anchor == RootAnchor::Filed(filed.content.id())
+                    && r.identity == filed.content.revision()
+            })
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        self.follow = Some(super::follow::Change::filing(filed, rating, None)?);
+        Ok(self)
+    }
+    pub(crate) fn follow(&self) -> Option<&super::follow::Change> {
+        self.follow.as_ref()
     }
     pub(crate) fn roots(&self) -> &[RequiredRoot] {
         &self.roots

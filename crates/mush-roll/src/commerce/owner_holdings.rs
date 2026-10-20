@@ -203,7 +203,16 @@ fn project_owner_for(
     }
     let (filed_id, pin) = match term.revision {
         RevisionPolicy::Pin { filed, revision } => (filed, Some(revision)),
-        RevisionPolicy::Follow { line: selected } if selected == line.id => (line.head, None),
+        RevisionPolicy::Follow { line: selected } if selected == line.id => (
+            roll.follow_index()
+                .map_err(|_| OwnerProjectionError::Unavailable)?
+                .select(line, expected, WorldIcSeconds(ctx.world().game_now_unix()))
+                .map_err(|error| match error {
+                    super::records::PublicationError::Unavailable => OwnerProjectionError::NotHeld,
+                    _ => OwnerProjectionError::Integrity,
+                })?,
+            None,
+        ),
         RevisionPolicy::Follow { .. } => return Err(OwnerProjectionError::Integrity),
     };
     let filed = read(ctx, &families.filed, filed_id.key())?;
@@ -266,6 +275,18 @@ fn project_owner_for(
         || rating.subject().schema() != line.schema_digest
     {
         return Err(OwnerProjectionError::Integrity);
+    }
+    if pin.is_none() {
+        roll.follow_index()
+            .map_err(|_| OwnerProjectionError::Unavailable)?
+            .check_selected(
+                filed,
+                expected,
+                &rating
+                    .reference()
+                    .map_err(|_| OwnerProjectionError::Integrity)?,
+            )
+            .map_err(|_| OwnerProjectionError::Integrity)?;
     }
     roll.check_required_root(&RequiredRoot {
         anchor: RootAnchor::Filed(filed_id),

@@ -29,3 +29,10 @@ Refund does not require the house to regain current selling eligibility.
 The server rechecks current authority when resolving and preparing the chosen
 offer. Old quotes, a different character's offer or changed terms may be refused.
 The old ambiguous `market-mind-house` name is no longer a selectable action.
+
+House renewals use `house-renewal-draft`, `house-renewal-fund`,
+`house-renewal-grant`, `house-renewal-refund`, and `house-renewal-close`.
+Draft takes a `licence` or a `previous_operation` for a permitted retry. The
+other steps take the acknowledged renewal `operation`; Close also takes
+`reason` (`declined` or `expired`). Requesting an offer does not accept it.
+Both seat products use these same renewal actions with their captured terms.

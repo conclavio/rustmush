@@ -307,7 +307,18 @@ impl OwnerReadService for HouseSaleReader {
         }
         let (filed_id, pin) = match term.revision {
             RevisionPolicy::Pin { filed, revision } => (filed, Some(revision)),
-            RevisionPolicy::Follow { line: selected } if selected == line.id => (line.head, None),
+            RevisionPolicy::Follow { line: selected } if selected == line.id => (
+                roll.follow_index()
+                    .map_err(|_| OwnerReadError::Unavailable)?
+                    .select(line, &self.expected, at)
+                    .map_err(|error| match error {
+                        crate::commerce::records::PublicationError::Unavailable => {
+                            OwnerReadError::Refused
+                        }
+                        _ => OwnerReadError::Integrity,
+                    })?,
+                None,
+            ),
             _ => return Err(OwnerReadError::Integrity),
         };
         let filed = row(ctx, &self.f.filed, filed_id.key())?;
@@ -346,6 +357,16 @@ impl OwnerReadService for HouseSaleReader {
             || rating.subject().schema() != line.schema_digest
         {
             return Err(OwnerReadError::Integrity);
+        }
+        if pin.is_none() {
+            roll.follow_index()
+                .map_err(|_| OwnerReadError::Unavailable)?
+                .check_selected(
+                    filed,
+                    &self.expected,
+                    &rating.reference().map_err(integrity)?,
+                )
+                .map_err(integrity)?;
         }
         for anchor in [
             RootAnchor::Filed(filed_id),

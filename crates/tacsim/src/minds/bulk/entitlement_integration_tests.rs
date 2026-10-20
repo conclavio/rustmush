@@ -70,6 +70,89 @@ fn prepare(
             token(number),
         )?)
 }
+// Ordinary commerce steps exercise the same public unique-verb choice as +act.
+// The separate direct prepare helper remains for owner-fence boundary tests.
+#[allow(clippy::too_many_arguments)]
+fn prepare_public(
+    world: &mut PlayerWorld,
+    owner: &str,
+    id: &str,
+    version: u32,
+    actor: ObjId,
+    number: u128,
+    parameters: Value,
+) -> TestResult<(
+    PreparedComposedTxn,
+    mush_core::action::PreparedAuthoritativeAction,
+)> {
+    let verb = match (owner, id, version) {
+        ("market", "list_original_mind", 3) => "original-list-v3",
+        ("market", "quote_original_mind", 3) => "original-quote-v3",
+        ("market", "purchase_original_mind", 3) => "original-fund-v3",
+        ("market", "settle_original_mind", 3) => "original-grant-v3",
+        ("market", "refund_original_mind", 3) => "original-refund-v3",
+        ("market", "list_derived_mind", 1) => "derived-list-v1",
+        ("market", "quote_derived_mind", 1) => "derived-quote-v1",
+        ("market", "purchase_derived_mind", 1) => "derived-fund-v1",
+        ("market", "settle_derived_mind", 1) => "derived-grant-v1",
+        ("market", "refund_derived_mind", 1) => "derived-refund-v1",
+        ("market", "draft_mind_renewal", 1) => "mind-renewal-draft",
+        ("market", "fund_mind_renewal", 1) => "mind-renewal-fund",
+        ("market", "settle_mind_renewal", 1) => "mind-renewal-grant",
+        ("market", "refund_mind_renewal", 1) => "mind-renewal-refund",
+        ("market", "close_mind_renewal", 1) => "mind-renewal-close",
+        _ => return prepare(world, owner, id, version, actor, number, parameters),
+    };
+    world.engine.set_offer_keys(mush_core::OfferKeyRing::new(
+        mush_core::OfferSecret::new(1, [0x66; 32])?,
+        [],
+    )?);
+    let exact = action(world, owner, id, version)?;
+    let principal = PrincipalId::Object { id: actor };
+    let query =
+        world
+            .engine
+            .legal_action_query(principal.clone(), actor, PerceivedRef::SelfActor)?;
+    let offers = world.engine.project_legal_actions(&query)?;
+    let projected = offers.projected();
+    let mut matching = projected
+        .iter()
+        .filter(|offer| offer.presentation().verb.eq_ignore_ascii_case(verb));
+    let offer = matching
+        .next()
+        .ok_or("signed personal licence public offer")?;
+    assert!(
+        matching.next().is_none(),
+        "ambiguous actual personal licence line offer"
+    );
+    let req = invocation(number, actor, owner, parameters.clone())?;
+    let resolved = world.engine.resolve_legal_action(
+        &offers,
+        mush_core::OfferExecutionContext {
+            request: req.request(),
+            principal,
+            actor,
+            idempotency: req.idempotency().clone(),
+            viewer_scope: query.viewer_scope(),
+            now: None,
+        },
+        mush_core::OfferSubmission {
+            offer: offer.offer(),
+            subject: PerceivedRef::SelfActor,
+            targets: vec![],
+            parameters,
+        },
+    )?;
+    let (actual, request, _) = resolved.into_authoritative_parts();
+    assert_eq!(actual, exact);
+    Ok(world
+        .engine
+        .prepare_registered_composed_resolved_authoritative_action(
+            &exact,
+            &request,
+            token(number),
+        )?)
+}
 fn commit(
     world: &mut PlayerWorld,
     owner: &str,
@@ -79,7 +162,7 @@ fn commit(
     number: u128,
     params: Value,
 ) -> TestResult {
-    let (prepared, _) = prepare(world, owner, id, version, actor, number, params)?;
+    let (prepared, _) = prepare_public(world, owner, id, version, actor, number, params)?;
     let (writes, install) = prepared.into_parts();
     apply(world, &writes, install)
 }

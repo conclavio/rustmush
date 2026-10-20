@@ -420,7 +420,7 @@ pub(crate) fn audit_and_open_coverage_configured(
         .ok_or(PublicationError::Unavailable)?
         .close_commerce_for_audit()
         .map_err(|_| PublicationError::Unavailable)?;
-    let ((generation, source_epoch), ic_inventory) = {
+    let ((generation, source_epoch), ic_inventory, follow) = {
         let roll = ctx
             .state::<RollStore>()
             .ok_or(PublicationError::Unavailable)?;
@@ -483,11 +483,16 @@ pub(crate) fn audit_and_open_coverage_configured(
             paid_resales,
             ic_inventory.as_ref(),
         )?;
-        (stamp, ic_inventory)
+        let follow = super::follow::rebuild(ctx, families, ratings)?;
+        (stamp, ic_inventory, follow)
     };
     ctx.state_mut::<RollStore>()
         .ok_or(PublicationError::Unavailable)?
         .install_ic_claim_audit((generation, source_epoch), ic_inventory)
+        .map_err(|_| PublicationError::Stale)?;
+    ctx.state_mut::<RollStore>()
+        .ok_or(PublicationError::Unavailable)?
+        .install_follow_audit((generation, source_epoch), follow)
         .map_err(|_| PublicationError::Stale)?;
     ctx.state_mut::<RollStore>()
         .ok_or(PublicationError::Unavailable)?

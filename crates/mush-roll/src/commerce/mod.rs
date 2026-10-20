@@ -14,6 +14,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{Revision, RevisionRef};
 
+pub(crate) mod follow;
 /// Version of these source-free value envelopes, independent of M6 workflow JSON.
 pub(crate) mod line_update;
 pub const VALUE_FORMAT: u16 = 1;

@@ -5,7 +5,7 @@ use mush_core::action::{ActionInvocation, PerceivedRef, PrincipalId};
 use mush_core::mechanics::{
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, OwnerId,
 };
-use mush_core::{DefinitionRef, GOD, ModError};
+use mush_core::{CommitToken, DefinitionRef, GOD, ModError};
 use mush_economy::ExternalRef;
 use serde::Deserialize;
 use serde_json::json;
@@ -13,11 +13,13 @@ use serde_json::json;
 pub(super) const PROVIDER: &str = "minds";
 pub(super) const FILED: &str = "filed";
 pub(super) const LAPSED: &str = "licence.lapsed";
+pub(super) const TRANSFERRED: &str = "licence.transferred";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FactKey {
     Filed(FiledRevisionId),
     Lapsed(LicenceId, TermGeneration),
+    Transferred(CommitToken, u64),
 }
 impl FactKey {
     pub(super) fn parse(reference: &ExternalRef) -> Option<Self> {
@@ -34,6 +36,14 @@ impl FactKey {
                 let generation = TermGeneration::new(reference.revision?).ok()?;
                 (id.key() == reference.id.as_str()).then_some(Self::Lapsed(id, generation))
             }
+            TRANSFERRED => {
+                let operation = CommitToken::from_hex(reference.id.as_str()).ok()?;
+                let generation = reference.revision?;
+                (operation.to_hex() == reference.id.as_str()
+                    && (2..=mush_economy::managed_paid_resale::MAX_HOLDER_GENERATION)
+                        .contains(&generation))
+                .then_some(Self::Transferred(operation, generation))
+            }
             _ => None,
         }
     }
@@ -41,6 +51,9 @@ impl FactKey {
         let (kind, id, revision) = match self {
             Self::Filed(id) => (FILED, id.key(), 1),
             Self::Lapsed(id, generation) => (LAPSED, id.key(), generation.get()),
+            Self::Transferred(operation, generation) => {
+                (TRANSFERRED, operation.to_hex(), generation)
+            }
         };
         ExternalRef {
             provider: PROVIDER.into(),
@@ -116,7 +129,16 @@ mod tests {
             LicenceId::new(9).unwrap(),
             TermGeneration::new(u64::MAX).unwrap(),
         );
-        for key in [filed, lapse] {
+        let transfer = FactKey::Transferred(
+            CommitToken::from_bytes([0x19; 16]),
+            mush_economy::managed_paid_resale::MAX_HOLDER_GENERATION,
+        );
+        for key in [
+            filed,
+            lapse,
+            transfer,
+            FactKey::Transferred(CommitToken::from_bytes([0; 16]), 2),
+        ] {
             assert_eq!(FactKey::parse(&key.reference()), Some(key));
         }
         for id in [
@@ -134,15 +156,24 @@ mod tests {
             bad.revision = revision;
             assert!(FactKey::parse(&bad).is_none());
         }
-        for kind in [
-            "licence.transferred",
-            "seized",
-            "unwarranted",
-            "claimed",
-            "",
-        ] {
+        for kind in ["seized", "unwarranted", "claimed", ""] {
             let mut bad = lapse.reference();
             bad.kind = kind.into();
+            assert!(FactKey::parse(&bad).is_none());
+        }
+        for revision in [None, Some(0), Some(1), Some(u64::MAX)] {
+            let mut bad = transfer.reference();
+            bad.revision = revision;
+            assert!(FactKey::parse(&bad).is_none());
+        }
+        for id in [
+            "a".repeat(31),
+            "A".repeat(32),
+            "a".repeat(33),
+            lapse.reference().id.to_string(),
+        ] {
+            let mut bad = transfer.reference();
+            bad.id = id.into();
             assert!(FactKey::parse(&bad).is_none());
         }
         let mut bad = lapse.reference();

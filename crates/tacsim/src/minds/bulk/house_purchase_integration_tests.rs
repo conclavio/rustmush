@@ -527,19 +527,23 @@ fn signed(
     let offers = w.engine.project_legal_actions(&query)?;
     // Use the same public single-verb selection as line +act. Selecting by
     // the internal DefinitionRef would conceal an ambiguous caller surface.
-    let transition = match id {
-        "list_house_mind" => "list",
-        "quote_house_mind" => "quote",
-        "purchase_house_mind" => "fund",
-        "settle_house_mind" => "grant",
-        "refund_house_mind" => "refund",
+    let verb = match id {
+        "list_house_mind" => "house-list-one-seat",
+        "quote_house_mind" => "house-quote-one-seat",
+        "purchase_house_mind" => "house-fund-one-seat",
+        "settle_house_mind" => "house-grant-one-seat",
+        "refund_house_mind" => "house-refund-one-seat",
+        "draft_house_mind_renewal" => "house-renewal-draft",
+        "fund_house_mind_renewal" => "house-renewal-fund",
+        "settle_house_mind_renewal" => "house-renewal-grant",
+        "refund_house_mind_renewal" => "house-renewal-refund",
+        "close_house_mind_renewal" => "house-renewal-close",
         _ => return Err("unknown House caller transition".into()),
     };
-    let verb = format!("house-{transition}-one-seat");
     let projected = offers.projected();
     let mut matching = projected
         .iter()
-        .filter(|offer| offer.presentation().verb.eq_ignore_ascii_case(&verb));
+        .filter(|offer| offer.presentation().verb.eq_ignore_ascii_case(verb));
     let offer = matching.next().ok_or("signed house public offer")?;
     assert!(
         matching.next().is_none(),

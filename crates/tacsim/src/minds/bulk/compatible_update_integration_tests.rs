@@ -11,6 +11,8 @@ use mush_roll::commerce::records::{FiledRecord, OwnerTerm, canonical_duplicate_d
 mod attested;
 #[path = "compatible_update_integration_tests/captured.rs"]
 mod captured;
+#[path = "compatible_update_integration_tests/follow.rs"]
+mod follow;
 #[path = "compatible_update_integration_tests/registry.rs"]
 mod registry;
 const START: u128 = 20_000_000;
@@ -324,6 +326,10 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
     runtime.block_on(super::fork_tests::boxed_story_phase(
         "compatible_update.attested",
         || attested::exercise(f, &certified, &revision, rating),
+    )?)?;
+    runtime.block_on(super::fork_tests::boxed_story_phase(
+        "compatible_update.follow",
+        || follow::exercise(f, &certified, &revision, rating),
     )?)?;
     refusals(f, &certified, &revision, rating)?;
     runtime.block_on(captured::exercise(f, &certified, &revision, rating))?;

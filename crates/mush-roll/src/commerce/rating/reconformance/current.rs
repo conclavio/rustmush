@@ -12,7 +12,7 @@ use crate::commerce::{
 };
 use mush_core::action_state::ActionTxn;
 
-fn selected(
+pub(crate) fn selected(
     head: &ReconformanceHead,
     filed: &FiledRecord,
     expected: &RatingCompatibility,

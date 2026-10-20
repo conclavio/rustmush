@@ -5,6 +5,8 @@ use super::*;
 use mush_core::{AuthoritativeSubmit, DefinitionRef, OfferExecutionContext, OfferSubmission};
 use mush_roll::commerce::paid::PersonalPaidLicence;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[path = "paid_resale_transfer_facts.rs"]
+pub(super) mod transfer_facts;
 const START: u128 = 62_000_000;
 const OFFER: &str = "offer_paid_mind_resale";
 const ACCEPT: &str = "accept_paid_mind_resale";
@@ -745,6 +747,7 @@ fn compound(f: &PurchaseFixture, template: &IcWorld, saved: &Durable) -> TestRes
 
 pub(super) fn exercise(f: &PurchaseFixture, template: &IcWorld, saved: &Durable) -> TestResult {
     eprintln!("M7_STORY phase=paid_resale event=begin");
+    transfer_facts::exercise(f, template, saved)?;
     immediate(f, template, saved)?;
     lapsed(f, template, saved)?;
     compound(f, template, saved)?;

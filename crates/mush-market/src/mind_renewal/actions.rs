@@ -105,11 +105,49 @@ pub(super) fn offer(
         required_channels: vec![],
         expires: None,
         presentation: mush_core::ActionPresentation::new(
-            "market-mind-renewal",
+            verb(p.kind),
             label,
             "Use the exact acknowledged offer. Requesting an offer does not accept or pay it.",
         )
         .map_err(|_| bad())?,
         guards: guards.finish().map_err(|_| bad())?,
     }))
+}
+
+fn verb(kind: Transition) -> &'static str {
+    match kind {
+        Transition::Draft => "mind-renewal-draft",
+        Transition::Fund => "mind-renewal-fund",
+        Transition::Grant => "mind-renewal-grant",
+        Transition::Refund => "mind-renewal-refund",
+        Transition::Close => "mind-renewal-close",
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    #[test]
+    fn renewal_transitions_have_unique_line_selectors() {
+        let verbs: std::collections::BTreeSet<_> = [
+            Transition::Draft,
+            Transition::Fund,
+            Transition::Grant,
+            Transition::Refund,
+            Transition::Close,
+        ]
+        .into_iter()
+        .map(verb)
+        .collect();
+        assert_eq!(
+            verbs,
+            std::collections::BTreeSet::from([
+                "mind-renewal-draft",
+                "mind-renewal-fund",
+                "mind-renewal-grant",
+                "mind-renewal-refund",
+                "mind-renewal-close",
+            ])
+        );
+    }
 }
