@@ -54,7 +54,16 @@ fn act(
     let mut matching = projected
         .iter()
         .filter(|offer| offer.presentation().verb.eq_ignore_ascii_case(&verb));
-    let offer = matching.next().ok_or("actual HouseV2 public offer")?;
+    let offer = matching.next().ok_or_else(|| {
+        // TEMP M7 diag
+        let verbs: Vec<_> = projected.iter().map(|o| o.presentation().verb.to_string()).collect();
+        let room = w.engine.world.containing_room(actor);
+        let kind = w.engine.world.get(actor).map(|o| (o.kind, o.flags));
+        format!(
+            "actual HouseV2 public offer (wanted {verb} for {id} v{version}; actor {actor:?} kind {kind:?} room {room:?} base {:?}; projected {verbs:?})",
+            w.base
+        )
+    })?;
     assert!(matching.next().is_none(), "ambiguous HouseV2 public offer");
     let request = request(n, actor, "market", params.clone())?;
     let resolved = w.engine.resolve_legal_action(

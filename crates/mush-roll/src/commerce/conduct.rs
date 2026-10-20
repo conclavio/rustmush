@@ -30,7 +30,8 @@ pub const MAX_RESULT_ARTIFACT_BYTES: u64 = 256 * 1024;
 pub const REPETITIONS: u16 = 60;
 pub const MAXIMUM_SIMULATION_MS: u64 = 120_000;
 
-fn invalid(_: impl std::fmt::Display) -> PublicationError {
+fn invalid(e: impl std::fmt::Display) -> PublicationError {
+    if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG invalid: {e}"); } // TEMP M7 diag
     PublicationError::Invalid
 }
 pub(crate) fn digest<T: Serialize>(

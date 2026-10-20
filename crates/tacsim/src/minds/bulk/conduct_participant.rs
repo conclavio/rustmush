@@ -22,7 +22,8 @@ use mush_roll::commerce::conduct::protocol::{
 };
 use std::sync::Arc;
 
-fn refuse(_: impl std::fmt::Display) -> ParticipantError {
+fn refuse(e: impl std::fmt::Display) -> ParticipantError {
+    if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG refuse: {e}"); } // TEMP M7 diag
     ParticipantError::refused("Conduct owner evidence is unavailable or changed")
 }
 fn utc_now() -> Result<i64, ParticipantError> {
