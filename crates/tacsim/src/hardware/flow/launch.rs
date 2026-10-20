@@ -129,7 +129,9 @@ fn setup() -> Result<(Rig, LaunchDeployment)> {
         command(
             r.world_mut(),
             GOD,
-            &format!("@econ/mint {}={} 1000", faucet.0, treasury.0),
+            // Exactly one launch filing fee (`launch::content::FILING_MINOR`, in
+            // minor units); the story asserts the treasury pays exactly that.
+            &format!("@econ/mint {}={} 10000", faucet.0, treasury.0),
         )?;
         houses.push(HouseDeployment {
             organization,
