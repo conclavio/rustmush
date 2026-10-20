@@ -1821,7 +1821,8 @@ fn sm2_each_site_lays_up_sixteen_places_and_a_clerk() {
             (line.state, line.text.as_str()),
             (
                 LineState::Ready,
-                format!("{entry} site: 16 block places and the site clerk laid up.").as_str()
+                format!("{entry} site: 16 block places, the site clerk and the spoil laid up.")
+                    .as_str()
             )
         );
         assert!(report.sites.contains(&cid(entry)), "{entry}");
@@ -1874,7 +1875,7 @@ fn sm2_a_site_update_lays_up_nothing_and_a_gone_place_refuses() {
         (line.state, line.text.as_str()),
         (
             LineState::Missing,
-            "kerwan_port site: 15 of 16 block places and the site clerk laid up."
+            "kerwan_port site: 15 of 16 block places, the site clerk and the spoil laid up."
         )
     );
     assert!(!report.is_ready(), "the summary counts it");
@@ -1903,7 +1904,7 @@ fn sm2_a_site_update_lays_up_nothing_and_a_gone_place_refuses() {
         (line.state, line.text.as_str()),
         (
             LineState::Missing,
-            "kerwan_port site: 16 of 16 block places and no site clerk laid up."
+            "kerwan_port site: 16 of 16 block places, no site clerk and the spoil laid up."
         )
     );
     assert!(tacsim::port::enrol_gate(&report).is_ok());
@@ -2126,7 +2127,7 @@ fn sm2_a_hull_landed_ten_days_still_lifts() {
     let ship = run(&mut rig.tw, pilot, "+ship");
     assert!(
         ship.contains("Salt Moth (Dray): settled on the pad at Ahuna Flank; departs ")
-            && ship.contains(" UTC (in 2 h 0 m)."),
+            && ship.contains(" UTC (in 2 h 0 min)."),
         "{ship}"
     );
     let look = run(&mut rig.tw, pilot, "look");

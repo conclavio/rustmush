@@ -14,6 +14,7 @@
 //! | `tacsim:voyage:{hull}` | per-hull sailing plan (doc 18 cut IC9: `crate::port::voyage`) — the filed passage and the hull's burn sequence | **skipped loudly, and the key stays claimed**: that hull's `+ship/undock` refuses (its papers cannot be read) and the launch arm skips it, logged once; staff repair the document |
 //! | `tacsim:orders:{hull}` | per-hull sailing plan (doc 18 cut IC11: `crate::port::orders`) — the queued orders, their log and the step in flight | **skipped loudly, and the key stays claimed**: that hull's `+ship/orders` and `+ship/order` refuse (its plan cannot be read), the order arm skips it and pages once a boot; staff repair the document by editing it (a deleted one restarts its order ids only past the hull's recent tickets) |
 //! | `tacsim:tvlease:{lease}` | per-lease rig record (doc 20 cut SM.3a: `crate::port::tv`) — a terrain vehicle Occator leased into a Dray-P's bay, its slot, its deposit hold and its term | **skipped loudly, and the key stays claimed**: the record reads unreadable, which bars only its own lease — its pilot's `+tv` reads dark and the recall holds the hull for staff; staff repair the document |
+//! | `tacsim:tv:{tv}` | per-rig projection (doc 20 cut SM.3b: `crate::surface::excursion::TvRec`) — where a rig is, its open excursion, the act in flight, what the tick applied and told, a sixteen-line log | **skipped loudly, read unreadable, and it bars nothing**: the projection decides nothing (every decision reads the typed `tacsim.excursion` family), and the `tacsim.surface` tick's next write replaces it |
 //! | `tacsim:geology` | world pin (doc 20 cut SM.1; Q-20-12) — the geology key's fingerprint | **skipped loudly, and the key still bars a rewrite**: the geology layer reads disabled ("tacsim:geology cannot be read") on the readiness line; staff repair the document, after restoring the key directory |
 //! | `tacsim:meta` | allocators | tolerated field by field, floors re-derived from every **parsed key**, loaded or not (E6b's R8 finding). Losing it costs nothing |
 //!
@@ -318,6 +319,12 @@ pub struct TacsimStore {
     /// Persisted on the enrolment pattern: one whole-document post-image per lease
     /// through [`put_tv_lease`]; an unreadable one bars only its own lease.
     pub(crate) tv_leases: BTreeMap<u64, crate::port::tv::TvLeaseState>,
+    /// **Doc 20 cut SM.3b** (§8; lead ruling 1) — `tacsim:tv:{tv}`: each rig's
+    /// normal-lane projection ([`crate::surface::excursion::TvRec`]), keyed by the
+    /// terrain vehicle's id. Written only by the `tacsim.surface` tick through
+    /// [`put_tv_rec`]; an unreadable body is [`crate::surface::excursion::TvRecState::Unreadable`]
+    /// and bars nothing (the projection decides nothing; the tick's next write replaces it).
+    pub(crate) tv_recs: BTreeMap<u32, crate::surface::excursion::TvRecState>,
 }
 
 impl TacsimStore {
@@ -490,6 +497,13 @@ impl TacsimStore {
             }
             crate::port::tv::TvLeaseState::Present(_) => false,
         })
+    }
+
+    /// **One rig's projection** (doc 20 cut SM.3b; §8): `tacsim:tv:{tv}` as the store
+    /// holds it; `None` when no key claims it. It decides nothing.
+    #[must_use]
+    pub fn tv_rec(&self, tv: ObjId) -> Option<&crate::surface::excursion::TvRecState> {
+        self.tv_recs.get(&tv.0)
     }
 
     /// **One hull's sailing plan** (doc 18 cut IC9): absent, readable, or a key
@@ -1645,6 +1659,38 @@ pub(crate) fn put_tv_lease(ctx: &mut Ctx<'_>, record: &crate::port::tv::TvLease)
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
+/// **Install a rig's projection into RAM and queue its document** (doc 20 cut SM.3b; §8,
+/// lead ruling 1) — the single write path, [`put_tv_lease`]'s shape: the RAM install, then
+/// one whole-document `JsonSet`. Only the `tacsim.surface` tick calls it, in its own outbox
+/// batch beside the placement. The serialize failure is structurally unreachable; if it ever
+/// happened it logs and writes nothing (the projection decides nothing, and the tick's next
+/// write replaces it).
+pub(crate) fn put_tv_rec(ctx: &mut Ctx<'_>, rec: &crate::surface::excursion::TvRec) {
+    let value = match serde_json::to_value(rec) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                tv = rec.tv.0, %error,
+                "tacsim: a rig projection did not serialize; nothing was written"
+            );
+            return;
+        }
+    };
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.tv_recs.insert(
+            rec.tv.0,
+            crate::surface::excursion::TvRecState::Present(rec.clone()),
+        );
+    }
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: rec.key(),
+            value,
+        },
+    );
+}
+
 /// **Install a sailing plan into RAM and queue its document** (doc 18 cut IC9) —
 /// the single write path, [`put_enrolment`]'s exact pattern: the RAM install (the
 /// record and its key), then one whole-document `JsonSet`. The serialize failure
@@ -1933,6 +1979,16 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                 continue;
             };
             load_tv_lease(&mut store, key, lease, value);
+        } else if key.starts_with(crate::surface::excursion::TV_REC_PREFIX) {
+            // Doc 20 cut SM.3b. After the `tacsim:tvlease:` arm, though the prefixes differ at
+            // the colon and neither ever reads the other's keys. A projection that will not
+            // read is claimed as unreadable and bars nothing: it decides nothing, and the
+            // `tacsim.surface` tick's next write replaces it.
+            let Some(tv) = crate::surface::excursion::tv_rec_key_owner(key) else {
+                tracing::warn!(%key, "tacsim: a rig projection has an unreadable key; skipped");
+                continue;
+            };
+            load_tv_rec(&mut store, key, tv, value);
         } else if key.starts_with(crate::port_tick::NOTICE_PREFIX) {
             // Doc 18 cut IC5 (lead ruling L10). A queue that will not read costs
             // that character its queued notices and nothing else: the key bars
@@ -2200,6 +2256,39 @@ fn load_tv_lease(store: &mut TacsimStore, key: &str, lease: u64, value: &serde_j
                     tv: obj("tv"),
                 },
             );
+        }
+    }
+}
+
+/// One `tacsim:tv:{tv}` body (doc 20 cut SM.3b): decoded strictly, checked, and held to the
+/// identity rule (`rec.tv` is its key's). Any failure is logged once and reads
+/// [`crate::surface::excursion::TvRecState::Unreadable`], which bars nothing.
+fn load_tv_rec(store: &mut TacsimStore, key: &str, tv: ObjId, value: &serde_json::Value) {
+    let rec = serde_json::from_value::<crate::surface::excursion::TvRec>(value.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|rec| rec.check().map(|()| rec))
+        .and_then(|rec| {
+            if rec.tv == tv {
+                Ok(rec)
+            } else {
+                Err("the projection disagrees with its own key".to_owned())
+            }
+        });
+    match rec {
+        Ok(rec) => {
+            store
+                .tv_recs
+                .insert(tv.0, crate::surface::excursion::TvRecState::Present(rec));
+        }
+        Err(error) => {
+            tracing::error!(
+                %key, %error,
+                "tacsim: a rig projection is unreadable; it bars nothing and the surface tick's \
+                 next write replaces it"
+            );
+            store
+                .tv_recs
+                .insert(tv.0, crate::surface::excursion::TvRecState::Unreadable);
         }
     }
 }
@@ -2850,5 +2939,74 @@ mod tests {
         let mut bad = notice_doc(8);
         bad["schema"] = serde_json::json!(99);
         only_seven_survives((notice_key(8), bad));
+    }
+    /// Doc 20 cut SM.3b: a `tacsim:tv:` projection and a `tacsim:tvlease:` record each load
+    /// into their own map (the prefixes differ at the colon); a projection whose body
+    /// disagrees with its key, or does not read, is claimed `Unreadable`.
+    #[test]
+    fn sm3b_the_projection_and_the_lease_record_load_into_their_own_maps() {
+        let rec = crate::surface::excursion::TvRec::new(ObjId(5), 1);
+        let lease = crate::port::tv::TvLease {
+            schema: crate::port::tv::TV_LEASE_SCHEMA,
+            lease: 7,
+            tv: ObjId(5),
+            mark: "OWP-TV-01".to_owned(),
+            pilot: ObjId(42),
+            hull: ObjId(500),
+            slot: 1,
+            hold: 3,
+            fee_minor: 140_000,
+            deposit_minor: 500_000,
+            term_secs: 86_400,
+            leased_at_ic: 0,
+            term_ends_ic: 86_400,
+            terms_paid: 1,
+            status: crate::port::tv::TvLeaseStatus::Active,
+            ended_at_ic: None,
+            repossessed: false,
+        };
+        let docs = vec![
+            (
+                crate::surface::excursion::tv_rec_key(ObjId(5)),
+                serde_json::to_value(&rec).expect("serializes"),
+            ),
+            (
+                crate::port::tv::tv_lease_key(7),
+                serde_json::to_value(&lease).expect("serializes"),
+            ),
+            (
+                crate::surface::excursion::tv_rec_key(ObjId(6)),
+                serde_json::to_value(&rec).expect("serializes"),
+            ),
+            (
+                crate::surface::excursion::tv_rec_key(ObjId(8)),
+                serde_json::json!({ "schema": 1 }),
+            ),
+        ];
+        let store = load(&docs, TacsimConfig::default());
+        assert_eq!(
+            store.tv_rec(ObjId(5)),
+            Some(&crate::surface::excursion::TvRecState::Present(rec))
+        );
+        assert_eq!(
+            store.tv_rec(ObjId(6)),
+            Some(&crate::surface::excursion::TvRecState::Unreadable),
+            "a body naming another rig"
+        );
+        assert_eq!(
+            store.tv_rec(ObjId(8)),
+            Some(&crate::surface::excursion::TvRecState::Unreadable),
+            "a body that does not read"
+        );
+        assert_eq!(
+            store.tv_recs.len(),
+            3,
+            "the lease record is not a projection"
+        );
+        assert!(matches!(
+            store.tv_lease(7),
+            Some(crate::port::tv::TvLeaseState::Present(_))
+        ));
+        assert_eq!(store.tv_leases.len(), 1, "no projection is a lease record");
     }
 }

@@ -153,6 +153,16 @@ pub struct SiteRow {
     pub blocks: BTreeMap<String, u32>,
     /// The site clerk Thing, `ObjId.0` (SM.6's opener grant names it).
     pub clerk: Option<u32>,
+    /// **Doc 20 cut SM.3b (§4.3; decision 6)**: the spoil Thing, `ObjId.0` — a `DARK` Thing
+    /// in the host room backing the spoil vault. Skipped when absent, so a row from before
+    /// the cut decodes unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spoil: Option<u32>,
+    /// **Doc 20 cut SM.3b**: the spoil vault, `VaultId.0` — owned by `System(tacsim.sites)`
+    /// with no scope, backed by `Container(spoil)`; every `+tv/<n> dump` moves a hopper's
+    /// pools into it, conserved and unrecoverable. Skipped when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spoil_vault: Option<u64>,
 }
 
 /// **The port's stock clerk** (doc 18 cut IC8; D-18-26): the Thing the

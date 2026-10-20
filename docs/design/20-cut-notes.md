@@ -1139,3 +1139,544 @@ Logs are in C:/Users/faeni/AppData/Local/Temp/claude/C--Users-faeni-cc-rustmush/
 - **§18 amendments owed.**
   - Doc 18 §4.1/§4.2: the Dray-P beside the Dray, `+coop/refit`, `RECALL_BAY`/`BUYOUT_BAY`, every hull's bay room.
   - Doc 11 §7: Occator's terrain-vehicle lease, eight rigs `OWP-TV-01..08`, 1,400 a term and 5,000 deposit.
+
+## SM.3b
+
+**The clock** (doc 20 §13's SM.3 row, split by the lead into SM.3a and SM.3b; this is the second
+half): the excursion state family `tacsim.excursion` (one `RigRecord` a rig: the lazy charge, the act
+in flight with its charge reserved at the start, the open excursion, the last outcome) and the
+`tacsim:tv` projection beside the placement, the 1 s Coarse `tacsim.surface` tick that completes every
+act as its operator through `Fire::as_principal`, the act framework on one start action
+(`tacsim_surface_act`) and one finish action (`tacsim_surface_done`), `+tv/launch`, `+tv/recover`
+(the placement half: from the ramp's cell or beside it; the drive home is SM.4b's), `+tv/dump` onto the
+site's spoil vault, the `go` rule and the slot selector `/1`..`/4`, and the departure refusals
+`TV_OUT`, `TV_BUSY`, `TV_AWAY` and `HOPPER_LOADED` on `+ship/plan`, `+ship/undock`, `+ship/lift` and
+the queued depart. No lane, pack or digest moved (`LANE_VERSION` 10 stands; SM.5 is v11). Built
+2026-10-20 on main from `96cc7303`. Judged **ship-with-notes**; the lead accepted the six owner-critical
+defaults (`RECOVER_S` 300 IC s, `DUMP_S` 0, a past-term Active lease still launches, a charter's end
+with a rig out holds and pages, the "control lease" read as the live lessee aboard the settled hull
+with no F3 lease on the TV, `tacsim_surface_mine` folded into `tacsim_surface_act` as `act = mine` in
+SM.7) and ran a fix round before the commit. One commit, pushed.
+
+### What landed
+
+1. **The excursion record** (`crates/tacsim/src/surface/excursion.rs`, new; re-exported from `surface/mod.rs`):
+   - constants:
+     - `EXCURSION_FAMILY` "tacsim.excursion", schema 1;
+     - `TV_REC_PREFIX` "tacsim:tv:";
+     - `LAUNCH_S` 300, `RECOVER_S` 300, `DUMP_S` 0;
+     - caps 4 / 32 / 1,024;
+     - `MAX_DUMP_GOODS` 8, a 16-line × 160-byte log, a 4,096-byte projection, `MAX_LEG_WAYPOINTS` 32;
+     - `PAD_CENTRE_CM` 128,000, `IC_HOUR`;
+   - `RigKey(ObjId)`, with strict decimal key text;
+   - `RigRecord { schema, tv, ordinal, charge, act?, excursion?, last? }`, strict, with `check`, `fresh` and `key`;
+   - `Charge { value_cu, at_ic, in_bay }`, lazy;
+   - `ActKind { Launch, Recover, Dump, Probe }`;
+   - `ActParams`, tagged `kind`: `None {}`, `Dump { hopper, spoil, goods }`, `Probe { cost_cu }`;
+   - `Act`; `ExcursionId { tv, launch_ic }` (Display `tv@launch_ic`); `Excursion`;
+   - `Outcome`, carrying `moved` for a dump's line;
+   - `ActResult`: `Done` or `Refused { NeverLeft | NotBeside | HopperChanged }`;
+   - pure functions:
+     - `charge_at`;
+     - `reserve_check`: a 5 % floor, exactly the floor fits, a zero spend always passes;
+     - `reserved_total`: always 0 at the SM.3b check;
+     - `cap_refusal`, checking operator, then site, then world;
+     - `ramp_pose`: the pad centre plus the bay egress, so the Dray-P's ramp is (128,000, 124,500, 180,000);
+     - `site_cell`, and `cells_apart` (Chebyshev);
+   - the bounded projection `TvRec` with `TvState` / `TvPose` / `ActView` / `FrozenLeg` (SM.4's slot, always None) / `TvLogLine`, `push_log` ring and `check`.
+2. **The family and the handles** (`crates/tacsim/src/port/families.rs`, `crates/tacsim/src/port_tick.rs`):
+   - `tacsim.excursion` is registered unconditionally, and `PortFamilies.excursions` holds it;
+   - two outcomes, `tacsim_surface_act_result` and `tacsim_surface_done_result`, and two actions, `tacsim_surface_act` and `tacsim_surface_done`, all under the crate's one validator per kind;
+   - the tools table is built once and never raises a `ModError`;
+   - `PortHandles` gains `surface_act`, `surface_done` and `surface_tools`;
+   - both providers register only when the inventory cell is filled and the table built;
+   - `Fire::new` is now `pub(crate)`;
+   - `surface::tick::register` is called at the end.
+3. **The world plans and the two providers** (`crates/tacsim/src/surface/act.rs`, new):
+   - `operator_rigs`, `where_is` (`Bay` / `Ground` / `Elsewhere`) and `site_berth`;
+   - `Refusal`: 19 variants, each with a wire word, a prepare message and a line;
+   - `launch_plan`, in the fixed order SM.4 prepends: view/held, under way, an unreadable voyage, cleared, not a site, not aboard, Forfeit, ended, not in the bay;
+   - `recover_plan`, `dump_plan` and the test-world `probe_plan`;
+   - `rig_battery_id` and `battery_of`, so the battery has one source;
+   - `world_rigs`;
+   - `act_cmd`: the preview, plus `go` as one submission keyed `tacsim.surface/{tv}/{ordinal}/act`;
+   - `SurfaceActProvider` and `SurfaceDoneProvider`. The finish records `Done` or `Refused` from the facts at landing, stamps at `due_ic`, settles the charge, and moves a dump's frozen `available` quantities hopper → spoil through `InventoryFamilies::transfer`.
+4. **The tick** (`crates/tacsim/src/surface/tick.rs`, new):
+   - `tacsim.surface` runs Coarse every 1 s. Each fire scans in pages of 256 up to 1,024 records, takes candidates due or untold oldest-first, visits at most 64 and works at most 16;
+   - the tell writes the projection and `notify`;
+   - the due step does the idempotent `mush_sim::place` / `place_interior`, then writes the projection, then the finish through `Fire::as_principal`;
+   - the attempt rule (`attempt_visit` / `note_step`): 8 attempts, a once-a-boot page, a 60-fire back-off, then a retry;
+   - `still_due` over the whole scan;
+   - God/Gone is logged once per act;
+   - `SurfaceTickState`, `SurfaceFireStats`, `last_surface_fire`.
+5. **The projection's store** (`crates/tacsim/src/store.rs`):
+   - `tv_recs`, `tv_rec()` and `put_tv_rec`;
+   - a `tacsim:tv:` load arm after the `tacsim:tvlease:` arm; an unreadable body is `Unreadable` and bars nothing;
+   - a doc-table row.
+6. **The verb** (`crates/tacsim/src/commands.rs`, `crates/tacsim/src/port/tv.rs`):
+   - `+tv` moves into an `Authoritative` bracket. Its switches are `SLOT_SWITCHES` `1..4`, then `lease`, `launch`, `recover` and `dump`;
+   - the grammar is rewritten, and `TV_USAGE` replaces `LEASE_USAGE`;
+   - the RAM `RigPointer` slot selector holds at most 4,096 entries;
+   - 37 new texts, plus `ACT_FAILED`'s three `WHY_*`;
+   - status gains `{where}` / `{charge}` and an act line;
+   - a slot past the bay answers `NO_RIG`;
+   - the lease return refuses `RIG_BUSY`;
+   - `repossess` holds a rig that is out or busy, failing closed;
+   - four help lines.
+7. **The departure refusals** (`crates/tacsim/src/port/voyage.rs`, `crates/tacsim/src/port/executor.rs`):
+   - `TV_OUT`, `TV_BUSY` and `HOPPER_LOADED`, under `DepartRefusalKind::{TvOut, HopperLoaded}`;
+   - `bay_gate`, called right after `site_gate` in `prepare_departure`, `plan_block` and `plan_queue`'s dry run;
+   - the order fire waits on both kinds.
+8. **The spoil** (`crates/tacsim/src/port/map.rs`, `crates/tacsim/src/port/site.rs`):
+   - `SiteRow.spoil` and `spoil_vault`, both optional and skipped when absent;
+   - `lay_up` lays a DARK "{site} spoil" Thing and a vault owned by `System(tacsim.sites)`, with no scope and `Container`-backed;
+   - `preflight` refuses a recorded spoil, or a spoil vault, that is gone or foreign;
+   - `spoil_vault()`;
+   - the Site line names the spoil, so a missing spoil closes the pad.
+9. **The page and the gates:**
+   - `crates/tacsim/src/port/recall.rs` `BAY_PAGE` gains the rig-out cause and its remedy;
+   - `crates/mush-contract-tests/legacy-handlers.toml`: the `+tv` stanza is now `authoritative`, `family` is dropped, and it carries the SM.3b note;
+   - `crates/mush-contract-tests/state-slot-owners.toml`: a `tests/excursions.rs` `AccountOracle` row;
+   - `docs/help/ships.md`: a launch / recover / dump paragraph and the lift rule.
+10. **Tests:**
+    - `crates/tacsim/tests/excursions.rs` (new) holds 17 world tests: the brief's 1–13 and 15–16, plus 17 (the refused finishes) and 18 (the planner gates at the command and the prepare);
+    - unit tests in `excursion.rs`, `act.rs`, `tick.rs` (the attempt rule, `still_due`), `store.rs`, `site.rs` and `tv.rs`;
+    - pins changed in `tests/vehicles.rs`, `tests/ports.rs` and `tests/sites.rs`.
+
+### Deferred, and why
+
+**Deferred by the brief's §5:**
+- **SM.4:** `+tv/scan`, `sound` and `drive`, the frozen leg (`TvRec.leg` stays None), A*, the implied launch (SM.4 prepends `launch_plan`), `+tv/map`, the grid caps.
+- **SM.5:** the licence (`licence_seam` stays always-Ok) and lane v11.
+- **SM.6:** deposits and claims.
+- **SM.7:** mining and the cycle slot. SM.7 must prove `reserved_total` in the world: in SM.3b "two acts cannot both start" holds only through the one act slot and the ordinal.
+- **SM.8:** the unload half of recover, `+tv/unload`, `HOPPER_LOADED`'s unload remedy, and `docs/help/mining.md` (it does not exist).
+- **SM.9:** screen `q`, the `tv.status` keyframe per act change (doc 20 §10), and the `RUN_ALLOWLIST` entries (left untouched).
+- **SM.11:** `+tv/plan`, `await tv`, idle return-and-park, the notice budget.
+- **Phase 3:** promotion, `Held`, and an F3 control lease on the TV.
+
+**Lead rulings and builder forks taken:**
+- **Two records on two lanes.** The typed family is authoritative; the projection decides nothing.
+- **Two actions.** Every act's start and finish share one pair of actions.
+- **The site pose.** The pad centre plus the egress offset; "within one cell" is Chebyshev.
+- **One act slot per rig.**
+- **The finish.** Its facts come from its offer at landing.
+- **The spoil.** A Container-backed system vault, laid by part (g).
+- **The departure gate.** `bay_gate` sits beside `site_gate`.
+- **The caps.** Counted in the start's prepare over `world_rigs`.
+- **Lazy charge.**
+- **The tick.** It reuses `port_tick::Fire` with an empty owed map each fire. Only a `Submitted` finish that did not land counts toward retry; after 8 the tick pages once a boot and backs off 60 fires.
+- **The rig pointer.** It is RAM; after a restart, a two-rig act with no number refuses.
+- **The tools table.** One table; a bad table leaves the acts unwired (`TV_UNWIRED`), never a `ModError`.
+- **The finish offer.** Only to live-lease pilots, over their own rigs.
+- **A launch fails closed** on an unreadable sailing plan.
+- **A rig can always come home.** A zero spend is exempt. A recover from beside the ramp needs no open excursion. A recover of a rig in the bay with an excursion open closes it.
+
+**The builder's forks:**
+- `Outcome.moved`, so `DUMPED` can name the load.
+- `ActParams::None {}`, a struct variant, for strictness.
+- The fixed plan wire gains `from_bay` and `goods`.
+- A key-mismatch record is paged under the sentinel `(tv, 0)`.
+- A probe's tell logs and says nothing.
+- `bay_gate` names an unlisted rig `?` and fails closed on an unreadable record or pool.
+- `repossess` treats an unreadable record as out.
+- `site_line_text` is factored out as a pure function.
+
+**Fixer change:** the dump freezes each pool's `available`, not its `quantity`.
+
+**Owner-critical defaults, standing until the owner rules:**
+- **Decision 9:** `RECOVER_S` = 300 IC s. Doc 20 gives no figure for the placement half.
+- **Decision 10:** `DUMP_S` = 0.
+- **Decision 11:** a past-term Active lease still launches; recover and dump are never lease-gated.
+- **Decision 13:** a charter's end with a rig out or mid-act holds and pages the hull; it never strips the rig.
+- **Decision 14:** "the operator's control lease" (doc 20 §4.1 line 393, §8 lines 702–704, §19 item 3 line 1172) is read as the live lessee aboard the settled hull. No mush-sim F3 lease is taken on the TV. "Aboard" gates launch, recover and dump alike.
+- **Decision 25:**
+  - `tacsim_surface_mine` (§6 line 537) folds into `tacsim_surface_act` with `act = mine` in SM.7;
+  - §4.3's egress is the tick's `mush_sim::place` at `ramp_pose`, not `egress_parent`;
+  - the implied launch is SM.4's.
+
+**Decision 16, corrected (the brief's remedy was false):**
+- No lane version moves. A world that latched v10 before SM.3b reads its Site lines Missing and its pads closed.
+- Re-applying v10 (`@atlas/pack apply`, or a seed re-apply) plans nothing, because the latch skips unchanged entries.
+- The remedy is a store wipe, or a later lane that changes every site entry.
+- This is harmless today: dev1 is at 8c648527, before SM.
+
+**Named residuals:**
+- The lease return checks only the act and fails open; a staff-move case is described below.
+- `bay_gate`'s `TV_OUT` can name a remedy that refuses: a staff move while the hull is docked at a port.
+- A zero-cost recover still needs a readable battery id.
+- A failed dump transfer wedges the act instead of recording `Refused`.
+- Back-off acts can starve the 64-visit window.
+- The tell projects `Bay` for a rig on the ground that has no excursion.
+- "Within 10 m" vs the cell rule, and "about 5 m" (minutes) — both for the lead.
+- The `@coop/revoke` stanza in `legacy-handlers.toml` was not refreshed to mention the new hold.
+- `common-sm.md` line 8 is stale (it says SM.2 is lane v8 and SM.5 lane v9); the lead should correct it before SM.4.
+
+### Residual risks the judge named
+
+- The lease return (`plan_return` step 11, `crates/tacsim/src/port/tv.rs` `act_in_flight`) refuses only an act in flight. It does not refuse an open excursion, and it fails open when the record cannot be read; `repossess` and `bay_gate` count an excursion and fail closed. Reaching this takes staff: put a launched rig back in the bay and move the hull to Ceres. The rig then goes back to Occator with `excursion` still open. That stale excursion counts against the old pilot's operator cap and the site cap, and the next lessee meets `TV_OUT` at Ceres with a remedy (`+tv/n recover`) that refuses at a port.
+- `bay_gate`'s `TV_OUT` (`crates/tacsim/src/port/voyage.rs`) can name a remedy that refuses. If a staff move leaves a rig elsewhere while the hull is docked at a port, the line names the port and says `+tv/{n} recover`, which answers `LAUNCH_NOT_SITE` there. It is staff-only, but decision 21's "always names a remedy that works" does not hold for it.
+- A zero-cost recover or dump still needs a readable battery id (`crates/tacsim/src/surface/act.rs`). Both the offer (every plan `tv_dark`) and the finish's Launch/Recover arms (`battery()?` returns Integrity) depend on it. If tools or pool data change so the battery row stops resolving, a rig on the ground cannot start a recover, an in-flight recover never lands, and the hull stays held by `TV_OUT`/`TV_BUSY`. That is against §4.1's "never stranded by its battery".
+- When the dump finish's `inventory.transfer` errors on the spoil side or in the lineage carry, it returns `ProviderRejected` instead of recording a `Refused` outcome. The act then wedges: the rig reads busy and the hull is held. The tick retries every 60 fires and pages once. No such transfer error is reachable today.
+- Tick fairness: an act in back-off keeps its old `due_ic`, so it stays at the head of the oldest-due window of 64. If 64 or more finishes cannot land at once, newer acts world-wide starve, and their rigs and hulls stay held. The prune itself is now correct (`still_due` over the whole scan).
+- The tell sets the projection's `state` from the excursion: `Bay` when none is open, `Out` otherwise. A rig on the ground with no open excursion is therefore projected `Bay` while `pose` reads the ground (`crates/tacsim/src/surface/tick.rs` `tell`). This is the brief's rule, and the projection decides nothing, but SM.9's screen must read it with this in mind.
+- The recover distance text does not match its rule. `RECOVER_FAR`, `WHERE_GROUND` and `docs/help/ships.md` say "within 10 m" and print cells × 10 m, but the rule is Chebyshev ≤ 1 cell from the ramp's cell, so a rig nearly 20 m east is accepted and one 15 m south is told "20 m". The text is the brief's, so this is the lead's call.
+- `{real}` and `{when}` print real minutes as "about 5 m" (`voyage::real_span`), and the same verb family uses "m" for metres.
+- A world that latched lane v10 before SM.3b reads every `Site` line as Missing and keeps its pads closed (`SITE_CLOSED`). Re-applying v10 by `@atlas/pack apply` or a seed re-apply plans nothing, because the latch skips unchanged entries, so the only remedy is a wipe or a lane version that changes every site entry. dev1 is at 8c648527, before SM, so this is harmless today.
+- Thin test coverage:
+- Test 12's "a reboot lays nothing twice" leg never calls `lay_up`. The real coverage is SM.2's `sm2_a_site_update_lays_up_nothing_and_a_gone_place_refuses`, whose row and object-count equality now includes the spoil; it does not count vaults.
+- Test 5 asserts `TV_BUSY` with a recover in flight, where the brief names a landed launch.
+- `TV_UNWIRED`, the God/Gone once-a-boot log and the spoil preflight refusals have no world test.
+- Test 16 does not pin the back-off length in the world; the binding unit test does.
+- The dump preview reads each pool's balance (`read_pool`), while the start freezes `available`. With a live hold on a hopper pool, the preview would name more than moves. No hopper hold is reachable today.
+- A4's cross-world equality (`tests/excursions.rs` test 4) depends on two independently built worlds allocating identical ids. It passes here.
+
+### The lead's fix round (before the commit)
+
+the lease return and the departure gate fail closed on a rig still logged out (one `rig_flight` reader for the return, the repossession and `bay_gate`), a rig comes home and dumps without its battery row, a dump the spoil will not take records `SpoilGone` instead of wedging, acts in back-off never starve the tick's window, the projection reads the ground, the recover text says "about N m … beside it", real minutes print `min` game-wide, the dump preview reads the figure its start freezes, and the thin coverage was filled.
+
+The lead's rulings on the round's review notes, with four hand fixes made after the gate (re-verified with clippy, the cut's suites, the contract tests and the strict rustdoc check; the full sweep ran before them on the round's tree 76f88ed1):
+
+- **F2, ratified.** A refused dump cannot be recorded inside its own failing bundle: `ActionTxn` has no savepoint and a second mutation of one key (`require_fresh_mutation`) poisons the transaction. The refusal is decided before anything is staged — the offer's live-spoil fact, a read-only check of every spoil pool, and a server-authored `failed` list of the act ordinals the tick has already counted a landed-nothing finish for (`tick::finish_retried`, keyed by the act after the review's F1) — so a genuine mid-bundle refusal writes nothing and is recorded `SpoilGone` one fire later. A dump whose first finish failed for any other reason is recorded refused too, with nothing moved, and the pilot dumps again.
+- **F3, owed before SM.7 (an inventory finding).** `mush_inventory`'s `add_pool` writes the destination endpoint's census once per new pool, so one bundle that opens two or more new pools on one endpoint always refuses. A hopper holding two ores a spoil has never held can therefore never be dumped onto it (it refuses cleanly now, and `HOPPER_LOADED` then holds the hull). Only staff fill hoppers today; SM.7's multi-ore mining cannot live with it. The fix is inventory-owned (a `transfer_many` writing the census once) or a mush-core way to re-stage a key; test 21(b) then needs another way to make a real mid-bundle refusal.
+- **F4, residual (staff-only).** On a site's pad `TV_OUT` still names `+tv/{n} recover` for three staff-made states where recover cannot work (a rig moved `Elsewhere`, or standing on another site's ground, or on this site's ground beyond the ramp with no excursion). Routed to `TV_AWAY` later if it ever matters.
+- **F5, fixed by hand.** `TV_AWAY`'s `{where}` with no site to name reads `away from her bay`, not `away` ("logged out away" was not English); test 19 re-pinned.
+- **F6, residual: no staff verb closes an excursion.** The remedy `TV_AWAY` and `RIG_LOGGED_OUT` name is two steps today: `@spatial/place/interior` puts the rig back in the bay, and the open `tacsim.excursion` record then needs a finish that lands (a recover from the bay with the excursion open closes it, which the lessee can file once the hull is back on a site's pad). A staff close verb (`@tacsim/tv close <tv>`) is scheduled for SM.12's operator runbook.
+- **F7, fixed by hand.** One `projected_state(w, record, hull)` rule for both projection writers (`project_due` and `tell`): `Bay` only with no excursion open and the rig aboard its hull's bay; a recovering rig reads `Out` from the placement step until its finish lands and is told.
+- **F8, ruled and the doc softened.** `real_span` is the one spelling of a real wall-clock span; the arena's match durations (`match_::record::duration_words`, `1 h 2 m 3 s`) and the chart's light lag (`chart::lag_text`, `23m 28s light`) are other quantities with their own renders and were not touched.
+- **F9, residual.** A launch whose battery row stops resolving between its start and its finish cannot settle (`settle_free` gives nothing when leaving the bay), so it stays busy and holds the hull until the row reads again; a tools table does not change under a running world, so this is a content fault, paged by the attempt rule.
+- **F10, fixed by hand.** `read_available` answers `Corrupt` for a book without its scalar, the half pool `InventoryFamilies::pool` refuses, so the dump's preview and its start agree on a corrupt hopper.
+
+1. **1. The lease return fails closed on a rig that is out** — fixed: crates/tacsim/src/port/tv.rs: new pub(crate) `RigFlight { Idle, Busy{kind,due_ic}, Out{site} }` and `rig_flight(ctx, tv) -> Result<RigFlight, String>`. This is now the one reader of `tacsim.excursion`. It re-checks the key; with no PortHandles it reads Idle. `act_in_flight` is deleted. `rig_out_or_busy` (used by repossess) is now `rig_flight` with Err counting as out. `bay_gate` also reads through it. `plan_return` step 11 now answers as follows. Busy gives RIG_BUSY, unchanged. Out gives the new `pub const RIG_LOGGED_OUT` = "Rig {n} is still logged out on {site} and staff must bring it in; nothing changes." Err logs tracing::error with tv, lease and the record, then returns LEASE_FAILED. New world test 19, `sm3b_a_rig_still_logged_out_holds_the_return_and_the_hull_at_a_port` (tests/excursions.rs). It launches and finishes on Ahuna, then staff_bay puts the rig back with its excursion open. The hull is staff-placed on Ceres's domain (berth reads Docked ceres_port), and the pilot runs `+ship/leave` and walks to the counter. `+tv/1 lease return` and `+tv/1 lease return go` each answer exactly RIG_LOGGED_OUT. The lease record, the deposit hold status, the typed record and the rig's bay placement are all unchanged. A record written under the rig's key that names another tv (unreadable) answers LEASE_FAILED and still changes nothing.
+2. **2. bay_gate's TV_OUT names a remedy that works where the hull is** — fixed: crates/tacsim/src/port/voyage.rs: new `pub const TV_AWAY` = "Rig {n} is logged out {where}; the {name} lifts only with every rig in her bay: staff must bring it in." `{where}` is "on {site}" (the open excursion's site, else the site whose ground it stands on), or "away". It uses the same `DepartRefusalKind::TvOut`, so +ship/plan, +ship/undock, +ship/lift and the queued depart all refuse the same way. When the hull is Docked at a port whose def.site is Some, TV_OUT keeps its exact old logic and words. Anywhere else, TV_AWAY is used. A missing PortHandles still returns PLAN_DARK, as an explicit check. The doc comment was updated. Test 19 covers the port branch: `+ship/undock ahuna` answers exactly TV_AWAY(on Ahuna Flank), and `+ship/plan ahuna` line 2 shows the same. With the rig staff-placed on Ceres's own ground and no excursion, the line reads `away`. The site-pad branch is still pinned by tests 5 and 15.
+3. **3. A rig can always come home without its battery row** — fixed: excursion.rs adds three pure items:
+- `needs_battery(kind, cost, home)`: true for Launch, or when cost + home > 0.
+- `settle_free(&Charge, at_ic, in_bay) -> Option<Charge>`: the charge stays unchanged when the bay state is unchanged; ground to bay keeps the value with recharge starting at the stamp; bay to ground returns None.
+- `RigRecord::fresh_unread(tv)`: value_cu u32::MAX at IC 0 in the bay, which reads full under any battery.
+Both helpers are re-exported from surface. Changes in act.rs:
+- **Command:** reads the battery only where `needs_battery`. The record falls back to fresh_unread. The reserve check runs only with a battery. The recover preview uses the new `tv::RECOVER_PREVIEW_UNREAD` ("...; its charge cannot be read; hopper {hopper}...").
+- **Start offer:** recover and dump plan with or without a battery id; launch and probe get `tv_dark` without one.
+- **Start prepare:** refuses "that rig cannot be read" only when `needs_battery`.
+- **Finish:** settles through the battery when it resolves; otherwise uses `settle_free` for a zero reserved spend. A launch therefore still fails closed, and a dump never touches charge.
+- **tv.rs status:** the ACT_LINE no longer needs the battery; charge still reads `?`.
+The launch's cost_cu is 0 in SM.3b, so it fails closed under the "leaves the bay" half of the rule (its bay recharge must be settled), not the spend half. Tests:
+- Unit test `excursion::tests::sm3b_a_zero_spend_settles_without_the_battery`.
+- World test 20, `sm3b_a_rig_is_never_stranded_by_its_battery`. The test takes every battery out of PortHandles.surface_tools. Status reads `charge ? %`. The recover previews RECOVER_PREVIEW_UNREAD, starts, lands and finishes Done; the charge is {launched value, due, in_bay}. A 2 t dump starts and finishes Done, with the spoil +2. A launch answers TV_DARK at the command, and a built start refuses "that rig cannot be read" at the prepare with nothing written.
+4. **4. A failed dump transfer records a refusal, never wedges** — fixed: New `RefusedCode::SpoilGone` (serde `spoil_gone`) and `tv::WHY_SPOIL_GONE` = "the spoil would not take the load; it stays in the hopper and nothing moved". The tick's completion_line handles it. DEVIATION, forced by the engine: `ActionTxn` has no savepoint, and it refuses a second mutation of one key (DuplicateMutation poisons the txn). So a transfer that errors mid-bundle cannot be turned into a Refused record inside its own bundle: the staged debit would commit, or the poisoned txn would refuse everything. The refusal is therefore decided before anything is staged, in three ways:
+- (a) The finish offer's `DoneRig` gains `spoil: Option<u64>`, the live `spoil_vault` of the site the hull is settled on. A frozen spoil that differs records SpoilGone.
+- (b) Every spoil pool must read (a read-only `inventory.pool`).
+- (c) `DoneRig.failed`, from the new `tick::finish_retried`: the attempt rule has counted at least one finish of this rig's act that did not land. A dump whose transfer refused mid-bundle therefore records SpoilGone on the tick's next submission, one fire later.
+The refusal is stamped at `due_ic`, releases the act, spends no charge, and pages once with tracing::error naming tv, act, the spoil vault, the site and why. A mid-bundle transfer error is logged as a warn and still refuses the whole bundle, which writes nothing.
+No lane bump; this only adds the serde variant.
+World test 21, `sm3b_a_dump_the_spoil_will_not_take_is_refused_and_never_wedges`:
+- (a) The spoil Thing is flagged GOING between start and finish. The finish lands Refused{SpoilGone} at due with nothing moved. ACT_FAILED/WHY_SPOIL_GONE is heard once. `+ship/lift ceres` reads HOPPER_LOADED, not TV_BUSY. After the spoil is mended, the next dump runs Done.
+- (b) A REAL spoil-side transfer error: metal_ore plus ice_ore onto a spoil that has neither pool. The first finish does not land (verified `expect_err`) and writes nothing: the hopper is (2,1), the spoil (0,0), and the act is still in flight. The next fire's finish lands SpoilGone with the hopper exact. The hull then reads HOPPER_LOADED, not TV_BUSY.
+NEW FINDING for the lead: (b) shows that mush-inventory's `add_pool` writes the endpoint census once per new pool. A dump of two or more goods the spoil has never held can therefore NEVER land. It now refuses cleanly instead of wedging, but such a hopper can never be dumped onto a fresh spoil, and HOPPER_LOADED then holds the hull for good. Today only staff fill hoppers; SM.7 (multi-ore mining) cannot live with it. Suggested fix: an inventory-owned `transfer_many` that writes the destination census once.
+5. **5. The tick's window skips acts in back-off** — fixed: In tick.rs, candidate selection moves into a new pure function, `pub(crate) fn candidates(records, now, told, &state) -> (Vec<Candidate>, u32)`, with a private `backing_off`. An act whose back-off has not expired has its due-ness dropped before the sort and the 64-cap. It stays a candidate only if its outcome is untold, and then only for the tell. The order is still the total `(instant, tv)`. Acts left out are counted into `stats.passed_over`, so test 16's world assertion holds unchanged. Unit test `tick::tests::sm3b_acts_in_their_back_off_never_starve_the_window`:
+- 64 backed-off acts plus one fresh due act: only the fresh act is picked, and passed_over is 64.
+- One fire before the back-off ends: the same.
+- At DONE_BACKOFF_FIRES: the 64 come back oldest first, the window is full and the fresh act waits.
+- A backed-off act with an untold outcome stays for the tell, not as due.
+6. **6. The projection reads the ground** — fixed: In tick.rs `tell`, `state` is now Bay only when no excursion is open and `where_is` reads Bay{hull} for the tell's hull (any bay when the hull is unknown). Otherwise it is Out. The projection still decides nothing. Test 17(ii), `sm3b_a_finish_the_world_refuses_is_told_and_keeps_what_it_should`, gained assertions: after the NeverLeft refusal the rig stands on the ground 3 cells off with no excursion, and the projection state is `TvState::Out`.
+7. **7. The recover distance text matches its rule** — fixed: The rule is unchanged (Chebyshev ≤ 1 cell, cells × 10 m). New words:
+- `RECOVER_FAR` = "Rig {n} is about {m} m from the {ramp}; it climbs aboard from beside it."
+- `WHERE_GROUND` = "on the ground on {site}, about {m} m from the {ramp}".
+- docs/help/ships.md now reads "brings it back up when it stands beside the ramp, on the ramp's own cell or the next (300 IC s); a rig further off is told about how far it is."
+Re-pinned: `act::tests::sm3b_every_refusal_word_has_a_message`, OLD "Rig 1 is 20 m from the stern ramp; it climbs aboard from within 10 m of it." → NEW "Rig 1 is about 20 m from the stern ramp; it climbs aboard from beside it." excursions test 3 builds from the const, so it needed no edit. No test pinned WHERE_GROUND.
+8. **8. Minutes are `min`, game-wide** — fixed: `voyage::real_span` now prints `{h} h {m} min`, `{m} min` or `under a minute`. No second formatter was added and no distance spelling was touched. Re-pinned (OLD → NEW):
+- voyage.rs `ic9_time_renders`: "4 m" → "4 min"; "1 h 2 m" → "1 h 2 min".
+- when.rs unit tests: "20:00 UTC today (IC clock stopped; in 1 h 0 m)" → "... in 1 h 0 min)"; `ends_with("; in 30 m)")` → "; in 30 min)".
+- tests/orders.rs: ", until 1 h 0 m after." → "1 h 0 min after."; "; in 2 h 0 m)" → "; in 2 h 0 min)"; two "...UTC (in 2 h 0 m)." lines → "(in 2 h 0 min)."; "; departs {} UTC (in 2 h 0 m)." → "(in 2 h 0 min).".
+- tests/sites.rs: " UTC (in 2 h 0 m)." → " UTC (in 2 h 0 min).".
+- tests/voyage.rs: "Passage 18.5 IC days ≈ 7 m real; arrives about " → "≈ 7 min real; ...".
+- tests/excursions.rs: ", about 5 m" → ", about 5 min" in tests 1 and 3.
+Re-blessed `web/src/lib/fixtures/chart/sky_chart.json` (37 lines, every "N h M m" now "N h M min") with `TACSIM_BLESS=1 cargo test -p tacsim --test chart`. Reason: the chart lines carry real_span. No docs/help example used real_span's spelling. The match-record and TUI formatters (`4 m 32 s`, `2 m 14 s` in docs/help/simulator.md, mush-bot and mush-net-ssh) are separate formatters and were left alone, as instructed.
+9. **9. The dump preview names what moves** — fixed: New `pub fn port_tick::read_available(ctx, endpoint, commodity)`. It is `read_pool`'s lens and rule over the pool scalar and its book: `book.checked_available(scalar)`; absent is 0; a half pool or bad arithmetic is Corrupt. `act::hopper_contents`, the preview and its DUMP_EMPTY check, now reads it, so the preview names exactly the `available` the start freezes. World test 22, `sm3b_the_dump_preview_names_what_the_start_freezes`: 3 t in the hopper, with 1 t held by a live inventory hold placed through `InventoryFamilies::reserve`. The preview names 2 t, the start freezes {metal_ore: 2}, the finish moves 2, and the held tonne stays.
+10. **10. Thin coverage, filled** — fixed: (a) Test 12, `sm3b_a_site_lays_up_its_spoil_and_no_player_may_take_from_it`, now censuses all six sites: objects, all vaults, the six spoil vaults owned by System(tacsim.sites), and every site map row. The census runs before and after the reboot. It then runs the REAL lay-up pass again: `EntryApplier::update` of `tacsim::port::apply::PortApplier` over each site entry of the shipped lane (LANE_JSON, with the latch's `placed`), through support::with_ctx. Each update must be Ok and the census unchanged.
+(b) Test 5 now asserts TV_BUSY ("going down the stern ramp") with a landed LAUNCH in flight, both in `+ship/lift ceres` (exact, nothing queued, nothing pending) and in `+ship/plan ceres` line 2. The recover case is kept.
+(c) New test 23, `sm3b_every_act_answers_tv_unwired_without_the_tools_table`. The tools table is compiled-in content a test cannot break, so the test gives the world exactly the PortHandles such a roster registers: surface_tools, surface_act and surface_done all None. The six act lines (launch, recover and dump, each bare and with go) each answer TV_UNWIRED whole, queue nothing, write no record and no tacsim: document; `+tv` still reads. No test was renamed. teleport's assertion message now includes the command reply.
+11. **11. The @coop/revoke stanza, refreshed** — fixed: crates/mush-contract-tests/legacy-handlers.toml: one sentence was appended to the @coop/revoke note: "Doc 20 cut SM.3b: the repossess also holds the hull (and pages) when a rig in the bay has an act in flight or an open tacsim.excursion, or its tacsim.excursion record will not read -- it never strips the rig (decision 13)." No other stanza or baseline count was touched; mush-contract-tests is green (29 binaries, 130 passed).
+
+**The round's review.** I reviewed the delta c9887f27 -> 4562b6b5 (15 files, +1466/-277; computed with a scratch index, and the real index was never touched). All 11 items are done and done correctly. Each has a real test, and no assertion was weakened. The only pins that moved are the chart fixture (verified: all 37 changed lines differ only in the minute spelling) and the @coop/revoke note (one sentence; no other stanza or baseline count changed). Nothing new leaks truth or uses RNG, and the new texts are in the established voice. One should-fix and several notes follow.
+
+Per item:
+1. DONE. `rig_flight` (tv.rs) is now the one reader of `tacsim.excursion`. `plan_return` step 11 answers RIG_BUSY, the new RIG_LOGGED_OUT, or LEASE_FAILED with a tracing::error page. `rig_out_or_busy` and `bay_gate` read through the same function. Test 19 proves both the preview and `go` refuse, and that the lease record, deposit hold, typed record and bay placement are unchanged. It also proves that a mis-keyed record fails closed.
+2. DONE. TV_AWAY is under the same TvOut kind. The site-pad branch is byte-identical to before (I checked the fallbacks). Test 19 covers the port branch, both the site case and the `away` case.
+3. DONE. `needs_battery` and `settle_free`, plus world test 20, show that a recover and a dump start and land with the battery row gone, and that a launch refuses at both the command and the prepare. The launch is held by `needs_battery` (a launch always reads the battery), not by its cost: the lead's premise was wrong, the launch's cost is 0 in SM.3b.
+4. DONE, WITH AN ENGINE-FORCED DEVIATION THE FIXER REPORTED. I verified the cause: `ActionTxn::require_fresh_mutation` at mush-core action_state.rs:2085-2089, and `add_pool`'s census write at mush-inventory pool.rs:416-429. The refusal is therefore decided before staging, or one fire later through a RAM `failed` flag. Test 21(a) and 21(b) are real: 21(b) checks that a genuine mid-bundle refusal writes nothing, that the next finish lands SpoilGone at `due_ic`, and that the hull then reads HOPPER_LOADED, not TV_BUSY.
+5. DONE. The pure `candidates()` drops acts in back-off before the 64-cap, and its unit test covers the fresh act, the fire before expiry, the expiry itself and an untold act.
+6. DONE in `tell`. Test 17 asserts `Out` for a rig on the ground with no excursion. One note below: `project_due` still uses another rule.
+7. DONE. The rule is unchanged. RECOVER_FAR, WHERE_GROUND and ships.md now say "beside". There was one re-pin, and test 3 builds its line from the const.
+8. DONE. `real_span` prints `min`, and every re-pin is listed. My grep of crates/*/src, crates/*/tests, web/src and docs/help finds no remaining old spelling built from `real_span`. The workspace sweep (mushd, mush-bot) was not run by the fixer and is the gate runner's.
+9. DONE. `read_available` uses the same `checked_available` as `InventoryFamilies::pool`. Test 22 places a real inventory hold and shows preview, freeze and move all name 2 t.
+10. DONE. (a) The real `PortApplier::update`, which calls `put`, runs again over all six site entries, with a census of objects, vaults, the six spoil vaults and the map rows. (b) TV_BUSY is now asserted with a landed launch in flight. (c) Test 23 covers TV_UNWIRED.
+11. DONE. One sentence was added to the @coop/revoke note and nothing else changed.
+
+Recommendation: fix F1 (small) before commit, and have the lead rule on F2 (the item-4 deviation) and F3 (the census defect, owed before SM.7).
+
+- **F1** (should-fix): tick.rs:129-136 `finish_retried(w, tv)` returns true if ANY `attempts` key has `key_tv == tv.0 && ordinal != 0`. It ignores the act's ordinal, so it does not do what its doc says ("a finish of `tv`'s act"). act.rs:1952 fixes it per rig in the finish offer, and act.rs:2130 then records `SpoilGone` for any dump whose rig has a counted attempt. Attempts are pruned only when the scan is complete (tick.rs:452-455; a capped scan over MAX_RIG_RECORDS "prunes nothing"). In that case a stale `(tv, n-1)` attempt, for example from a launch whose finish needed two tries, makes every later dump on that rig refuse SpoilGone on its first finish, with an error page each time, for the rest of the boot. The `ordinal != 0` filter is a no-op for `attempts`: ordinal-0 keys only ever go into `paged`. There is also a forward hazard: SM.7's cycle slot gives one rig two live act keys, and this check would then fire across them.
+- **F2** (note): act.rs:2121-2158. As reported, the item-4 design departs from the brief's "inside the same ActionTxn". I confirmed the cause in the engine: mush-core action_state.rs:2085-2089 refuses a second mutation of one key (DuplicateMutation), and mush-inventory pool.rs:60-61 documents the same rule. The `failed` branch fires after ANY first finish of a dump that did not land, not only a transfer refusal. port_tick.rs:1093-1098 documents one such case: the operator's own `@wait` line later in the same slice voids the finish as a fan-out. Another is a store error. In those cases the pilot hears "the spoil would not take the load" and staff get a tracing::error saying the spoil is at fault when it is fine. The outcome is still safe: nothing moves and a second dump works.
+- **F3** (note): excursions.rs:3016 (test 21(b)) makes its mid-bundle error by seeding `ice_ore` next to `metal_ore` on a spoil that has neither pool. That relies on the inventory defect the fixer found: `add_pool` writes the destination census once per new pool (pool.rs:416-429). As a result, any hopper holding two or more goods new to a site's spoil can never be dumped. The finish refuses SpoilGone every time, and HOPPER_LOADED (voyage.rs:413), whose remedy is `+tv/{n} dump`, then holds the Dray-P for good, which breaks decision 21. Today this is reachable only through staff-filled hoppers. It cannot stay once SM.7 brings multi-ore mining.
+- **F4** (note): voyage.rs:2539-2549. The on-pad branch keeps the old TV_OUT, as the lead ordered, so it still names `+tv/{n} recover` in three staff-made cases where recover cannot work: a rig staff moved `Where::Elsewhere` (the line names the pad, and recover answers RECOVER_ELSEWHERE); a rig on another site's ground (also RECOVER_ELSEWHERE); and a rig on this site's ground more than one cell off (RECOVER_FAR, with no drive in SM.3b). Decision 21's "names a remedy that works" therefore still fails on the pad for these.
+- **F5** (note): voyage.rs:408 and 2554. When no site can be named, TV_AWAY renders "Rig 1 is logged out away; the Salt Moth lifts only with every rig in her bay: staff must bring it in." This follows the lead's literal wording ('away' when the site cannot be named), but "logged out away" does not read as English. Test 19 pins it.
+- **F6** (note): tv.rs:248 RIG_LOGGED_OUT and voyage.rs:408 TV_AWAY name staff as the remedy. No staff verb writes the `tacsim.excursion` family: only tv.rs, port_tick.rs, surface/act.rs and surface/tick.rs touch `families.excursions`. Staff can re-place the rig with `@spatial/place/interior`, but that does not close an open excursion. The only working path is for staff to `@spatial/place/domain` the hull back onto the site's pad so the pilot can `+tv/{n} recover`, which closes it.
+- **F7** (note): tick.rs:705-712 (`tell`) now projects `Bay` only when no excursion is open and the rig is aboard its own hull's bay. tick.rs:618-621 (`project_due`) still projects `Bay` for any `Where::Bay`, ignoring both the excursion and the hull. In the staff-made 'in the bay with an excursion open' state, `tacsim:tv`'s `state` therefore flips Bay -> Out across one fire, depending on which writer ran last.
+- **F8** (note): voyage.rs:434-436: the `real_span` doc says it is "the game's one spelling of real time". Other formatters still spell minutes `m`: `match_::record::duration_words` (record.rs:1636-1638, "1 h 2 m 3 s"), mush-net-ssh tui/render.rs:3768, and chart.rs:117-118 `lag_text` ("23m 28s light"). `lag_text` prints in the same `+chart` output as the passages that now read "1 h 0 min". Doc 18's player-text table (18-trade-run-vertical-slice.md rows 9 and 15) still quotes "≈ 19 h 38 m real" and "(in 31 m)". The fixer stayed within the item's instructions, so this is a scope question.
+- **F9** (note): act.rs:2047-2063 and 2070-2072. If a launch's battery row stops resolving between its start and its finish, the beside branch's `settle` returns Integrity on every attempt (`settle_free` gives None when leaving the bay). The rig is then placed on the ground by `world_step`, stays busy, and its hull is held by TV_BUSY behind the 8-try page and back-off. The lead's 'launch keeps failing closed' covers this, but it is the one remaining place a battery row can strand a rig.
+- **F10** (note): port_tick.rs:1291: `read_available` reads a missing scalar with a book present as 0. `InventoryFamilies::pool`'s `load_pair` (mush-inventory pool.rs:264-271) refuses that same half pool with HalfPool. So in that corrupt state the dump preview silently drops the good, while the start's freeze answers Integrity "the hopper cannot be read". This is reachable only with corrupt data.
+
+**Re-fixed after the review:**
+
+- **F1** — fixed: The retried-finish flag now belongs to the act, not the rig. In crates/tacsim/src/surface/tick.rs, `finish_retried(w, tv)` now returns `Vec<u32>`: the ordinals of the act attempts counted for that rig, ascending. It is built by a pure helper, `retried_ordinals(state, tv)`, which ranges over `attempts` from `(tv,1)` to `(tv,u32::MAX)`, so ordinal 0 is still excluded. The list keeps at most the highest `MAX_RETRIED_ORDINALS` (8, `pub(crate)`) ordinals; a rig's ordinals only grow, so the live act is always kept. In crates/tacsim/src/surface/act.rs, `DoneRig.failed` is now `Vec<u32>` with `#[serde(default, skip_serializing_if = "Vec::is_empty")]` and `deny_unknown_fields` kept. The finish's prepare refuses an offer whose `failed` has more than `MAX_RETRIED_ORDINALS` entries, and the dump branch tests `rig.failed.contains(&act.ordinal)`. A stale `(tv, n-1)` attempt left by a capped scan therefore no longer marks act n, and a second live act on one rig (SM.7's cycle slot) never marks the other. New unit test `surface::tick::tests::sm3b_a_retried_finish_is_keyed_by_the_act_not_the_rig` checks: a stale `(tv,1)` attempt with a fresh dump at ordinal 2 reads not-failed for 2; an attempt at `(tv,2)` reads failed; another rig's attempts and an ordinal-0 key in `paged` never count; and the list is capped at the 8 highest ordinals. The excursions integration test of the mid-transfer refused-then-SpoilGone path (excursions.rs around line 2933) still passes.
+
+**Pins the round moved.** Two pins moved; everything else is verified unmoved.
+- **The chart fixture:** `web/src/lib/fixtures/chart/sky_chart.json` was re-blessed with `TACSIM_BLESS=1 cargo test -p tacsim --test chart`. Item 8 changes `real_span`'s minute spelling, and the chart's passage, reach and window lines carry it. 37 lines changed. The chart test then passes un-blessed, and mush-net-ssh `--test chart_screen` passes. The web vitest suite (`web/src/lib/chart.test.ts`) was not run here; it has no minute-spelling assertion.
+- **`legacy-handlers.toml`:** the `@coop/revoke` note text changed (item 11). The baseline count did not move.
+- **Unmoved:** the lane digest and signatures (LANE_VERSION stays 10, no content touched), the sites table, the geology pins, the goods/TV/Dray-P digests, `state-slot-owners.toml` (the new `module_state_mut::<PortHandles>` reaches in excursions.rs are same-crate, so the scan passes), the panic budget (no new production unwrap/expect/panic), and the module-ns owners.
+
+### Pins re-blessed
+
+- **`crates/mush-contract-tests/legacy-handlers.toml`, the `+tv` stanza.**
+  - Category `legacy-post-image` → `authoritative`, and `family = "tacsim.vehicles"` is dropped (`+ship`'s authoritative stanza carries none).
+  - The new SM.3b note goes before "Earlier:", with SM.3a's text kept after it.
+  - Reason: `+tv/<n> launch|recover|dump go` stages exactly one `tacsim_surface_act`.
+  - `PINNED_BASELINE` does not move: `/1../4` and the act switches are switches of the existing verb.
+- **`crates/mush-contract-tests/state-slot-owners.toml`.** One new `[[site]]` row for `crates/tacsim/tests/excursions.rs` (`World::module_state_mut`, `AccountOracle`, owner `sim`), in the `vehicles.rs` row's shape. Reason: the new file installs the fixed account map for `+coop/enrol`.
+- **The four rig lines in `crates/tacsim/tests/vehicles.rs`.** `RIG_LINE`, `RIG_LEASE_ENDED`, `RIG_FORFEIT` and `RIG_PAST_TERM` each gain `.replace("{where}", WHERE_BAY).replace("{charge}", "100")`. Reason: the constants now carry where the rig is and its charge (lead ruling 9).
+- **`sm3a_the_tv_grammar_answers_lease_usage`.**
+  - `LEASE_USAGE` → `TV_USAGE` (no second constant is kept).
+  - Nine SM.3b cases added, and no existing case changed.
+- **`sm3a_tv_three_is_an_unknown_switch` → `sm3a_tv_slots_past_the_bay_answer_no_rig`.**
+  - It now runs on a stocked Dray-P: `+tv/3` answers `NO_RIG` (Salt Moth), and `+tv/5` is the unknown switch.
+  - Reason: the slot switches are generalised to `MAX_BAY_ITEMS`.
+- **`sm3a_a_filed_passage_burns_with_its_rigs`, rewritten.** `HOPPER_LOADED` now refuses a loaded filing.
+  - The loaded `+ship/undock` answers exactly `HOPPER_LOADED{1,2,Salt Moth}` and files nothing.
+  - Staff then empty the hopper with a new `take_pool` helper, and both hulls file at equal payloads.
+  - 2 t put back before the burn make the pilot's burn refuse "the hold changed since the passage was planned". That still proves the burn prepare re-reads and weighs the hoppers.
+- **The Site readiness line.** Reason: the spoil is part of a ready site (decision 6).
+  - `crates/tacsim/tests/ports.rs` `ic3_the_readiness_report…` now reads "16 block places, the site clerk and the spoil laid up. [ready]".
+  - `crates/tacsim/tests/sites.rs`: three pins (Ready, "15 of 16 … the site clerk and the spoil", "16 of 16 … no site clerk and the spoil").
+- **Unmoved, and verified unmoved:**
+  - `LANE_VERSION` 10, `LANE_DIGEST`, `GOODS_DIGEST`;
+  - `TV_DIGEST`, `DRAY_P_DIGEST`, the tool digests and the site-pack pins;
+  - `module-ns-owners.toml`, the composition-edge pin, the panic budget (no new production panics), `provider_rng_policy` and `truth_serialization_policy`;
+  - `RUN_ALLOWLIST`, the TUI screen counts, and `boot_parity`'s counts (no test pins the family, outcome or action counts).
+
+### How it was verified
+
+**Builder, three reviewers, fixer, final gate**
+
+The cut went through a builder, three reviewers (correctness, conformance, tests), a fixer and a final gate.
+
+Reviewers raised one must-fix:
+- **tests/T1:** test 13 never reached `repossess`.
+
+They also raised five should-fix findings:
+- **tests/T2–T6**: the depth of the world tests.
+- **conformance/F1:** the God/Gone log fired on every fire.
+- **conformance/F2:** the prune ran after the visit cut.
+- **correctness/F1:** decision 16's re-apply remedy was wrong.
+
+The fixer closed all of them. tests/T4's freeze asymmetry was a real code fix: the dump now freezes `available`. correctness/F1 was corrected in the note, not in code (see Deferred).
+
+The fixer mutation-checked two fixes, then restored the code:
+- With `repossess`'s guard disabled, test 13 fails.
+- With the zero-spend exemption removed, test 8 fails with `RESERVE_LOW`.
+
+**Final gate, round 1, all green on the first run**
+
+The gate ran at HEAD 96cc7303. `git status` was the same 21 paths before and after the sweep, with no peer edits.
+- `cargo fmt --all -- --check`: exit 0.
+- `cargo clippy --workspace --all-targets -j 8 -- -D warnings`: Finished, exit 0, no warnings.
+- `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items -j 8`: exit 0.
+- `cargo test -j 8 -p tacsim --lib surface`: test result: ok. 16 passed; 0 failed; 1277 filtered out.
+- `cargo test -j 8 -p tacsim --test excursions`: test result: ok. 17 passed; 0 failed; finished in 7.97s.
+- `--test vehicles --test sites --test ports --test voyage --test orders --test landing`: vehicles 41, sites 24, ports 21, voyage 25, orders 33 and landing 7 passed, all ok.
+- `cargo test -j 8 -p tacsim --no-fail-fast`: 55 binaries all ok, 2,841 passed, 0 failed, 13 ignored (lib 1,292 passed, 1 ignored).
+- `cargo test -j 8 -p mush-contract-tests`: 29 result lines all ok, 130 passed. This covers:
+  - legacy_handler_allowlist 4;
+  - state_slot_owners 5;
+  - help_commands 4;
+  - scale_harness 6 (8 ignored).
+- `cargo test -j 8 -p mush-server --test boot_parity --test ic_slice_loop`: 21 passed and 6 passed.
+- `cargo test --workspace --exclude mush-bot --no-fail-fast -j 8`: 413 result lines all ok, 8,229 passed, 0 failed, 93 ignored.
+- `cargo test -p mush-bot -j 8`: 717 passed, 0 failed, 7 ignored. This includes arena_e2e (230 s), arena_mind_isolation and playtesting.
+- No load flakes, no LNK1104, and no peer-attributed failures.
+
+**The judge's lenses**
+
+I read the whole diff and all four new files myself. I checked:
+- **Each fix against its finding:** tick `still_due` and the paged God/Gone log; act.rs's `available` freeze; tests 1, 4, 6, 8, 9 and 13; new tests 17 and 18; vehicles.rs's grammar additions.
+- **No existing assertion weakened** beyond the changes the brief forces.
+- **The surface matches the code.** Three small mismatches: `MAX_POINTERS` is `pub`, not `pub(crate)`; the prepare messages "that rig is not yours to work" and "the hopper could not be emptied onto the spoil" are unlisted.
+- **No RNG:** no `rand` in the new code, and no `w.now()` in either provider.
+- **No applier submission:** `lay_up` issues only `dark_thing`, `create_vault` and `put_port_map`.
+- **No truth leak:** `+tv` reads only the actor's own leases and helm hull. Fixed parameters carry the world list and the facts. Choice values name only the actor's rigs.
+- **No new production `unwrap`, `expect` or `panic`.**
+
+**Gate notes.** Cut SM.3b passed gate round 1: all 12 commands green on the first run. No reruns were needed, and there were no load flakes, hangs, LNK1104 errors or failures blamed on the peer session.
+
+- **Base and tree:** the base is 96cc7303. The working tree held 21 changed paths (17 modified, 4 untracked: surface/act.rs, surface/excursion.rs, surface/tick.rs, tests/excursions.rs), with a diff stat of 17 files, +1363/-112. Every changed file is named in the cut's brief, so all of it belongs to SM.3b and none to the astronomy session.
+- **No peer edits during the run:** I re-checked git status before the workspace sweep and again at the end. It was unchanged both times: same 21 paths, HEAD still 96cc7303.
+- **Clippy and rustdoc were cached:** steps 2 and 3 each finished in under a second. Cargo's fingerprints were already current, most likely because the builder ran both after the last edit. With -D warnings, a cached clean pass is still a valid pass. Both logs have 0 warning or error lines, and the strict RUSTDOCFLAGS doc run (CI's Workspace documentation job, verbatim) exited 0.
+- **Totals:**
+  - tacsim, all 55 binaries: 2841 passed, 0 failed, 13 ignored. The lib alone is 1292 passed, 1 ignored.
+  - Workspace excluding mush-bot, 413 binaries: 8229 passed, 0 failed, 93 ignored. The build took 4m54s and the whole sweep about 35 minutes.
+  - mush-bot, 25 binaries: 717 passed, 0 failed, 7 ignored. That includes arena_e2e (230s), arena_mind_isolation (131s) and playtesting (124s).
+- **Load-sensitive suites:** none of the listed ones failed in the sweep.
+- **No changes to the repo:** I did not edit, stage, stash or commit anything. The only file I wrote is the helper script run.sh, in the gate1 log directory.
+
+All logs are in C:/Users/faeni/AppData/Local/Temp/claude/C--Users-faeni-cc-rustmush/0afc2ac2-d687-46e8-b233-de9758bdcbf4/scratchpad/cuts/SM.3b/gate1/ (01-fmt.log through 12-mush-bot.log).
+
+**The lead round's gate, all first run unless noted:**
+
+- pass: `cargo fmt --all -- --check` — exit=0, no output (log 01-fmt.log)
+- pass: `cargo clippy --workspace --all-targets -j 8 -- -D warnings` — Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.71s; exit=0; zero warning/error lines (fresh from cache, replayed diagnostics empty) (log 02-clippy.log)
+- pass: `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items -j 8` — Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.67s; Generated C:\Users\faeni\cc\rustmush\target\doc\mush_ansi\index.html and 45 other files; exit=0; zero warning/error lines (log 03-doc.log)
+- pass: `cargo test -j 8 -p tacsim --lib surface` — test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 1277 filtered out; finished in 0.15s (log 04-surface.log)
+- pass: `cargo test -j 8 -p tacsim --test excursions` — test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.46s (log 05-excursions.log)
+- pass: `cargo test -j 8 -p tacsim --test vehicles --test sites --test ports --test voyage --test orders --test landing` — landing: test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 36.43s | orders: test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.56s | ports: test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.24s | sites: test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.79s | vehicles: test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.00s | voyage: test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.95s (log 06-tacsim-integ.log)
+- pass: `cargo test -j 8 -p tacsim --no-fail-fast` — 55 test-result lines, all ok; lib: test result: ok. 1295 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 84.06s; last (doc-tests): test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s; summed: 2849 passed, 0 failed, 13 ignored; exit=0 (log 07-tacsim-all.log)
+- pass: `cargo test -j 8 -p mush-server --test boot_parity --test ic_slice_loop` — boot_parity: test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.30s | ic_slice_loop: test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.30s (log 08-mush-server.log)
+- pass: `cargo test -p mush-contract-tests -j 8` — 29 binaries, all ok; e.g. state_slot_owners: test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s; scale_harness: test result: ok. 6 passed; 0 failed; 8 ignored; ...; summed: 130 passed, 0 failed, 8 ignored; exit=0 (log 09-contract.log)
+- pass: `cargo test --workspace --exclude mush-bot --no-fail-fast -j 8` — 413 test-result lines, every one 'test result: ok.'; summed: 8237 passed, 0 failed, 93 ignored; final line: test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s; exit=0. The 'panicked at crates\mush-server\src\process_fault.rs:197:9' line in the log is an intended panic inside a passing process-fault test. (log 10-workspace.log)
+- pass: `cargo test -p mush-bot -j 8` — 25 test-result lines, all ok; summed: 717 passed, 0 failed, 7 ignored; exit=0 (adversarial_reduction_final_rerun_and_blind_packet ran over 60 s and passed) (log 11-mush-bot.log)
+
+All 11 gates passed on the first run. None needed a rerun, there were no load flakes and no LNK1104. Logs are in C:/Users/faeni/AppData/Local/Temp/claude/C--Users-faeni-cc-rustmush/0afc2ac2-d687-46e8-b233-de9758bdcbf4/scratchpad/cuts/SM.3b/leadgate1/ (01-fmt.log through 11-mush-bot.log, plus the run.sh helper).
+
+Tree under test: HEAD 96cc7303 with the working tree at scratch-index tree 76f88ed1e3c53355d4b50726ff75c7143c5e5fc9. I computed it the same way before and after the run and got the same id both times, so the checkout did not change during the gates. git status had 25 entries throughout: the cut's 21 M and 4 ?? files.
+
+This tree is not the judge's tree c9887f27. git diff c9887f27 76f88ed1 shows 15 files, +1523/-277: legacy-handlers.toml, port/tv.rs, port/voyage.rs, port/when.rs, port_tick.rs, surface/act.rs, excursion.rs, surface/mod.rs, surface/tick.rs, tests/excursions.rs, orders.rs, sites.rs, voyage.rs, docs/help/ships.md and web fixture sky_chart.json. I take these to be the lead-round edits. All of them are inside the cut's files. I found no modified file outside this cut, so nothing is peer-attributed.
+
+The sky_chart.json change re-spells the duration text from "1 h 0 m" to "1 h 0 min". That fits a when.rs/real_span change aimed at the judge's residual about "m" also meaning metres.
+
+clippy and cargo doc both ran from fresh cache (0.71 s and 0.67 s) with no diagnostics replayed. Every test binary was already built except mush-server's, which recompiled tacsim and mush-server under that package's feature set.
+
+Totals:
+- tacsim full suite: 2849 passed, 13 ignored.
+- Workspace without mush-bot: 8237 passed, 93 ignored, 413 binaries.
+- mush-bot: 717 passed, 7 ignored.
+- Contract tests: 130 passed, 8 ignored.
+
+### Surface for the next cuts
+
+**Record and arithmetic** — `tacsim::surface::excursion`, all re-exported from `tacsim::surface`:
+- `RigKey(pub ObjId)`: `key_text()` and a strict `parse`.
+- `RigRecord { schema, tv, ordinal: u32, charge: Charge, act: Option<Act>, excursion: Option<Excursion>, last: Option<Outcome> }`: `fresh(tv, &BatteryDef)`, `key()`, `check()`.
+- `Charge { value_cu, at_ic, in_bay }`.
+- `ActKind { Launch, Recover, Dump, Probe }`: `word()` and `from_word()`. SM.7 adds Mine as `act = mine` on the same action.
+- `Act { ordinal, kind, operator, hull, slot, site, started_ic, due_ic, reserved_cu, params }`.
+- `ActParams`, tagged `kind`: `None {}`, `Dump { hopper, spoil, goods }`, `Probe { cost_cu }`.
+- `ExcursionId { tv, launch_ic }` and `Excursion { id, operator, hull, slot, site }`.
+- `Outcome { ordinal, kind, operator, slot, site, at_ic, result, moved }`.
+- `ActResult::{Done, Refused { code: RefusedCode::{NeverLeft, NotBeside, HopperChanged} }}`.
+- `reserved_total(&RigRecord) -> u32`: **SM.7 extends this one function** with the cycle slot's reservation and proves the sum in the world.
+- `charge_at(&Charge, now_ic, &BatteryDef) -> u32`.
+- `reserve_check(now, reserved, cost, home, &BatteryDef) -> Result<ChargeAfter{after_act, after_home}, ReserveShort{after_home: i64, floor}>`. A zero spend always passes; SM.4 supplies a real `home_cu`.
+- `ExcursionCounts`, `CapRefused`, `cap_refusal`.
+- `ramp_pose(&BayDef) -> Result<Pose, String>`, `site_cell`, `cells_apart` (Chebyshev).
+- Constants: `LAUNCH_S` 300, `RECOVER_S` 300, `DUMP_S` 0, `MAX_EXCURSIONS_*` 4/32/1,024, `PAD_CENTRE_CM`, `IC_HOUR`, `MAX_LEG_WAYPOINTS` 32.
+
+**Projection:**
+- `TvRec { schema, tv, slot, operator?, hull?, excursion?, state: TvState{Bay,Out,Held,Parked}, site?, pose?: TvPose, act?: ActView, leg?: FrozenLeg{started_ic, waypoints: Vec<LegWaypoint{x_cm,y_cm,at_s}>}, applied, told, log }`: `new`, `key`, `push_log`, `check` (≤ 16 lines × 160 B, ≤ 4,096 B, ≤ 32 waypoints).
+- **SM.4 fills `leg`.** The tick writes the projection through the private `write_projection`/`project_due`, so SM.4 extends `tick.rs`.
+- `tv_rec_key`, `tv_rec_key_owner`, `TvRecState::{Present, Unreadable}`.
+- Store: `TacsimStore::tv_rec(tv)` and `pub(crate) store::put_tv_rec(ctx, &TvRec)`.
+
+**Acts** — `tacsim::surface::act`:
+- Public:
+  - `SURFACE_ACT_ACTION` "tacsim_surface_act", with outcome fields `act, actor, due_ic, ordinal, tv`.
+  - `SURFACE_DONE_ACTION` "tacsim_surface_done", with outcome fields `actor, ordinal, result, tv`.
+  - `act_key`/`done_key`: `tacsim.surface/{tv}/{ordinal}/act|done`.
+  - `MAX_PROBE_CU`, `MAX_PROBE_S`.
+  - `RigAt { tv, slot, mark, hull, record: TvLease }`.
+  - `Where { Bay{hull}, Ground{domain,x_cm,y_cm,heading_mdeg}, Elsewhere }`.
+  - `Refusal`, with `word`/`code`/`line`.
+- `pub(crate)`:
+  - `operator_rigs`, `where_is`.
+  - `SiteBerth { entry, name, def, map, domain, ramp, ramp_label, bay_room, bay_slot }` and `site_berth(w, &HullView)`.
+  - `ActPlan { kind, rig, site, secs, cost_cu, home_cu, params, from_bay }`.
+  - **`launch_plan(w, actor, &RigAt)`**, which SM.4 prepends for the implied launch. Its refusal order is fixed: dark/held, under way, voyage dark, cleared, not a site, not aboard, Forfeit, ended, not in the bay.
+  - `recover_plan`, `dump_plan`, `probe_plan`.
+  - `rig_battery_id`, `battery_of`, `world_rigs`, `percent`, `doing_words`, `ramp_label`, `site_name`, `site_of_domain`, `load_words`, `code_of_word`, `act_cmd`.
+  - `SurfaceActProvider` and `SurfaceDoneProvider`. Fixed parameters:
+    - start: `now`; `rigs{tv:{slot,hull,battery_id?,plans{launch|recover|dump:FixedPlan},probe?}}`; `world`.
+    - finish: `now`; `rigs{tv:{battery_id?,facts}}`.
+  - The start prepare's refusal messages:
+    - "that rig is not yours to work"
+    - "that rig's orders moved on" (Conflict)
+    - "that rig is busy" (Conflict)
+    - "that rig has an excursion open"
+    - the three cap lines
+    - "that rig is in the bay"
+    - "the rig's charge is under the reserve"
+    - "the hopper is empty"
+    - "that rig cannot be read"
+  - The finish prepare's refusal messages:
+    - "that act is already finished"
+    - "that act is another pilot's"
+    - "not due"
+    - "that rig is not yours to work"
+    - "the hopper could not be emptied onto the spoil"
+
+**Tick** — `tacsim::surface::tick`:
+- `SURFACE_TICK` "tacsim.surface", Coarse 1 s.
+- `MAX_EXCURSIONS_VISITED_PER_FIRE` 64, `MAX_EXCURSIONS_WORKED_PER_FIRE` 16.
+- `MAX_DONE_ATTEMPTS` 8, `DONE_BACKOFF_FIRES` 60, `SCAN_PAGE` 256, `MAX_RIG_RECORDS` 1,024.
+- `SurfaceTickState`, `SurfaceFireStats { visited, worked, submitted, deferred, passed_over, told }`, `last_surface_fire(w)`.
+- The per-kind world step (`world_step`) and the completion line (`completion_line`) are private. SM.4 and SM.7 add their kinds there.
+
+**Handles** — `port::families`:
+- `PortFamilies.excursions: StateFamilyHandle<RigKey, RigRecord>`.
+- `PortHandles.surface_act` and `surface_done: Option<DefinitionRef>`.
+- `PortHandles.surface_tools: Option<Arc<BTreeMap<CanonicalId, ToolDef>>>`, the one battery source.
+- `port_tick::Fire::new` is `pub(crate)`.
+
+**The verb** — `port::tv`:
+- `TV_USAGE` replaces `LEASE_USAGE`. `SLOT_SWITCHES` is `["1","2","3","4"]`; `+tv` is Authoritative with switches 1–4, lease, launch, recover and dump.
+- The act texts:
+  - `WHICH_RIG_ACT`, `TV_UNWIRED`, `TV_NOT_ABOARD`
+  - `LAUNCH_NOT_SITE`, `LAUNCH_UNDER_WAY`, `LAUNCH_CLEARED`, `LAUNCH_OUT`, `LAUNCH_OPEN`, `LAUNCH_FORFEIT`, `LAUNCH_ENDED`, `LAUNCH_PREVIEW`, `LAUNCH_FILED`, `LAUNCHED`
+  - `RECOVER_IN_BAY`, `RECOVER_ELSEWHERE`, `RECOVER_FAR`, `RECOVER_PREVIEW`, `RECOVER_FILED`, `RECOVERED`
+  - `DUMP_NOT_SITE`, `DUMP_NO_SPOIL`, `DUMP_EMPTY`, `DUMP_PREVIEW`, `DUMP_FILED`, `DUMPED`
+  - `ACT_FAILED` with `WHY_NEVER_LEFT`, `WHY_NOT_BESIDE` and `WHY_HOPPER_CHANGED`
+  - `RIG_BUSY`, `RESERVE_LOW`, `CAP_OPERATOR`, `CAP_SITE`, `CAP_WORLD`
+  - `WHERE_BAY`, `WHERE_RAMP`, `WHERE_GROUND`, `WHERE_AWAY`, `ACT_LINE`
+- `RIG_LINE`, `RIG_PAST_TERM`, `RIG_FORFEIT` and `RIG_LEASE_ENDED` now carry `{where}` and `{charge}`.
+- `pub MAX_POINTERS` 4,096.
+- `pub(crate)`: `RigPointer`, `hopper_text`, `hopper_goods_of`, `hopper_load_of`, `counter_words`, `rig_lease_live`, `span_words`, `due_words`, `live_on_hull`.
+
+**Departures and sites:**
+- `port::voyage`: `TV_OUT`, `TV_BUSY`, `HOPPER_LOADED`, `DepartRefusalKind::{TvOut, HopperLoaded}`, and `pub(crate) bay_gate(ctx, &HullView, name)`.
+- `port::map::SiteRow.spoil` and `spoil_vault`, both `Option`.
+- `port::site::spoil_vault(w, &PortMap) -> Option<VaultId>` (`pub(crate)`).
+- The Site line reads "{entry} site: 16 block places, the site clerk and the spoil laid up."
+
+**Unchanged:** no lane, pack or digest moved; `LANE_VERSION` is 10, and SM.5's lane is v11.
+
+### Doc 20 amendments owed
+
+- **§4.1, line 393** ("teleoperated from the settled hull's bridge under the operator's control lease"): as built (decision 14, pending the owner), the control lease is read as the live lessee (`TvLease.pilot`) aboard the settled hull. No mush-sim F3 lease is taken on the TV, and "aboard" gates launch, recover and dump alike.
+- **§4.1, the reserve rule:** as built, a spend of zero (cost plus home equals 0) always passes, so a recover or a dump is never refused by the rule. The rule is enforced only in `tacsim_surface_act`'s prepare. `reserved_total` reads only the act in flight in SM.3b; SM.7's cycle slot extends it.
+- **§4.3, "`+tv/launch` is an egress to `Direct` on the site's passive domain at the ramp pose (mush-sim/src/commands.rs:2060-2159)":** as built, the launch is the surface tick's `mush_sim::place` at `ramp_pose`. That pose is the pad centre (128,000, 128,000 cm, facing north) plus the bay's `EgressDef` offset; the Dray-P's stern ramp sits at (128,000, 124,500, 180,000). mush-sim's `egress_parent` is not used, because it folds the egress pose into a posture at the origin.
+- **§4.3, "its slot number (1 or 2) is its name on every verb":** as built, the slot switches are `/1` to `/4` (`MAX_BAY_ITEMS`). A slot past the hull's bay answers `NO_RIG`, and a bare act addresses the rig last named, else the only rig.
+- **§4.3, `TV_OUT` and `HOPPER_LOADED`:** as built, there is also a third text, `TV_BUSY` (a rig mid-act), under the same `TvOut` kind. All three refuse `+ship/plan`, `+ship/undock`, `+ship/lift` and the queued depart. `HOPPER_LOADED`'s remedy names only the dump until SM.8 adds the unload.
+- **§4.3, "the site's spoil pool, a system vault per site":** as built, each site has a DARK "{site} spoil" Thing in its host room, backing a vault owned by `System(tacsim.sites)` with no scope (`CustodyRef::Container`). Both are laid by part (g) and named on the Site readiness line; a missing spoil closes the pad.
+- **§4.3, "An excursion runs from launch to park":** as built in SM.3b, an excursion runs from a launch's start to a recover's `Done`; parking is SM.11's. A refused launch (`NeverLeft`) closes it. A recover from beside the ramp needs no open excursion. A recover of a rig in the bay with one still open closes it.
+- **§6, line 537 (`tacsim_surface_mine`):** as built, every act's start is the one action `tacsim_surface_act` (`act` a `Choice`), and every finish is `tacsim_surface_done`, submitted by the tick as the operator. Mining becomes `act = mine` in SM.7, with no second start action.
+- **§8, "each fire visits at most 64 excursions whose `due_ic ≤ now`":** as built, a fire also visits records whose last outcome is untold. Candidates are ordered by `(due_ic or last.at_ic, tv)`. The tick reads the whole family (at most 1,024 records) each fire.
+- **§8, the state family:** as built, there is one `RigRecord` per terrain vehicle, not per excursion. It holds:
+  - a monotonic act ordinal;
+  - the lazy charge `{value_cu, at_ic, in_bay}`;
+  - the act in flight with `reserved_cu`;
+  - the open excursion;
+  - the last `Outcome`.
+- **§8, "A scan, a sounding, a drive, a mine run, a recover and an unload each begin as an authoritative submission":** the launch and the dump also start this way.
+- **§8, "each verified by pull the way the executor verifies an order (a refused completion releases the lock and the charge and writes the public line)":** as built, the finish is an authoritative submission. It records `Done`, or `Refused{NeverLeft|NotBeside|HopperChanged}`, from the world its offer reads at landing, and stamps it at the act's own `due_ic`. A refused finish never spends charge. The next fire tells the operator one line (`ACT_FAILED`). A finish that does not land is retried, with a page after 8 attempts and a back-off of 60 fires.
+- **§8, lines 702–704, "need the operator's control lease and the hull settled, nothing more":** read as the lessee aboard; see the §4.1 amendment.
+- **§10, line 855, "A small pushed `tv.status` keyframe per act change":** not built in SM.3b (it is SM.9's). Act changes reach the operator only through the completion lines and `+tv` status.
+- **§11:** the figures need adding or confirming:
+  - **Tick row:** `RECOVER_S` 300 IC s and `DUMP_S` 0 (owner-critical defaults); the 8-attempt and 60-fire retry figures. "≤ 8 writes a completion, ≤ 3 for any other act" is unmeasured.
+  - **Caps row:** confirm the caps count open excursions in the start's prepare over every lessor pool's rigs.
+- **§13, the SM.3 row:** the lead split it into SM.3a and SM.3b. The implied launch (on the first scan, sound or drive) moves to SM.4, which prepends `launch_plan`.
+- **§19, item 3, line 1172:** this item names the control lease too; read it as the lessee aboard, as in §4.1.

@@ -35,8 +35,16 @@
 //!
 //! **A live record** is one whose status is not `Returned` (Active or Forfeit;
 //! reviewer F2): it holds its slot, so a Forfeit rig still in the bay keeps its
-//! number. Nothing here submits anything authoritative; cut SM.3b moves `+tv` to the
-//! authoritative class with its act switches.
+//! number.
+//!
+//! **Doc 20 cut SM.3b** gives the verb its acts (§1 beats 4 and 9, §4.3, §8, §10): `+tv/<n>
+//! launch|recover|dump` previews and commits nothing; `go` commits exactly the preview, as
+//! ONE `tacsim_surface_act` submission by the operator (`crate::surface::act`), so the verb
+//! moves to the authoritative class. A leading slot switch `/1`…`/4` names the rig, else the
+//! rig the actor named last (`RigPointer`, RAM, a convenience), else the only rig. `+tv`
+//! status prints per rig where it is and its charge now, and an act in flight on a second
+//! line. A charter's end holds the hull (never strips a rig) while a rig is out on a site or
+//! mid-act (`repossess`, decision 13).
 
 use mush_core::{CanonicalId, CmdError, Ctx, ObjId, World};
 use mush_economy::{
@@ -68,7 +76,11 @@ pub const TV_HELP: &str = "+tv  --  Your Dray-P's rigs: each bay slot's terrain 
 +tv/<n>  the same for rig n.
 +tv/lease [go]  at Occator's counter in Ceres Freeport, with your Dray-P docked: lease a terrain vehicle into a free bay slot, 1400.00cr a term of 168 IC days and a 5000.00cr deposit held on your account. Without go it shows the terms and signs nothing.
 +tv/<n> lease return [go]  at the same counter: hand rig n back, its hopper empty, and the deposit is released.
-A lease past its term is re-debited at your next +tv/lease, or the deposit is forfeit.";
+A lease past its term is re-debited at your next +tv/lease, or the deposit is forfeit.
++tv/<n> launch [go]  with your Dray-P settled on a site's pad and you aboard: send rig n down the stern ramp onto the site (300 IC s).
++tv/<n> recover [go]  bring rig n up the ramp into the bay from beside it (300 IC s).
++tv/<n> dump [go]  empty rig n's hopper onto the site's spoil, for good.
+Each act shows what it would do and commits nothing; go commits it. Without a number it addresses the rig you named last, or your only rig.";
 
 /// A hull with no bay: `{name}`, `{office}`, `{port}`.
 pub const NO_BAY: &str =
@@ -119,29 +131,149 @@ pub const TERM_FORFEIT: &str = "{mark}'s lease ran past its term and your accoun
 /// A step that should not fail did.
 pub const LEASE_FAILED: &str =
     "Occator could not complete it; nothing of the lease or the return was signed.";
-/// The grammar.
-pub const LEASE_USAGE: &str = "Usage: +tv[/<n>]  or  +tv[/<n>]/lease [return] [go]";
-/// A rig within its term: `{n}`, `{mark}`, `{span}`, `{hopper}`.
-pub const RIG_LINE: &str =
-    "Rig {n}: {mark}, in the bay; leased from Occator for {span} more; hopper {hopper}.";
-/// A rig past its term: `{n}`, `{mark}`, `{fee}`, `{hopper}`.
-pub const RIG_PAST_TERM: &str = "Rig {n}: {mark}, in the bay; past its term: {fee} is owed at your next +tv/lease, or the deposit is forfeit; hopper {hopper}.";
-/// A forfeit rig: `{n}`, `{mark}`, `{hopper}`.
-pub const RIG_FORFEIT: &str =
-    "Rig {n}: {mark}, in the bay; its deposit is forfeit: return it to Occator; hopper {hopper}.";
+/// **The grammar** (doc 20 cut SM.3b; §10): the status, the three acts and the lease.
+/// Replaces SM.3a's `LEASE_USAGE`; no second constant is kept.
+pub const TV_USAGE: &str =
+    "Usage: +tv[/<n>]  or  +tv[/<n>]/<launch|recover|dump> [go]  or  +tv[/<n>]/lease [return] [go]";
+/// A rig within its term (doc 20 cut SM.3b: where it is and its charge): `{n}`, `{mark}`,
+/// `{where}`, `{charge}`, `{span}`, `{hopper}`.
+pub const RIG_LINE: &str = "Rig {n}: {mark}, {where}; charge {charge} %; leased from Occator for {span} more; hopper {hopper}.";
+/// A rig past its term: `{n}`, `{mark}`, `{where}`, `{charge}`, `{fee}`, `{hopper}`.
+pub const RIG_PAST_TERM: &str = "Rig {n}: {mark}, {where}; charge {charge} %; past its term: {fee} is owed at your next +tv/lease, or the deposit is forfeit; hopper {hopper}.";
+/// A forfeit rig: `{n}`, `{mark}`, `{where}`, `{charge}`, `{hopper}`.
+pub const RIG_FORFEIT: &str = "Rig {n}: {mark}, {where}; charge {charge} %; its deposit is forfeit: return it to Occator; hopper {hopper}.";
 /// A rig in the bay with no live record: `{mark}`.
 pub const RIG_UNLISTED: &str = "Rig ?: {mark}, in the bay; Occator's books for it cannot be read.";
 /// An empty slot: `{n}`, `{counter}`, `{port}`.
 pub const RIG_EMPTY: &str = "Rig {n}: empty. Occator leases rigs at the {counter} in {port}.";
 /// A live record whose economy lease staff ended (reviewer F15): `{n}`, `{mark}`,
-/// `{counter}`, `{port}`, `{hopper}`.
-pub const RIG_LEASE_ENDED: &str = "Rig {n}: {mark}, in the bay; its lease from Occator has ended: hand it back at the {counter} in {port}; hopper {hopper}.";
+/// `{where}`, `{charge}`, `{counter}`, `{port}`, `{hopper}`.
+pub const RIG_LEASE_ENDED: &str = "Rig {n}: {mark}, {where}; charge {charge} %; its lease from Occator has ended: hand it back at the {counter} in {port}; hopper {hopper}.";
 /// The rigs cannot be read: `{name}`.
 pub const TV_DARK: &str = "The {name}'s rigs cannot be read right now; nothing changes.";
 /// A repossession within the term: `{mark}`, `{name}`, `{deposit}`.
 pub const REPOSSESSED: &str = "Occator took {mark} back out of the {name}'s bay when her charter ended; your {deposit} deposit is released.";
 /// A repossession past the term or of a forfeit rig: `{mark}`, `{name}`.
 pub const REPOSSESSED_FORFEIT: &str = "Occator took {mark} back out of the {name}'s bay when her charter ended; its deposit was forfeit.";
+
+// ---- doc 20 cut SM.3b: the acts (§1 beats 4 and 9, §4.3, §8, §10) ----------------------
+//
+// Placeholders: `{n}` the slot, `{mark}`, `{name}` the hull, `{site}` the site's name,
+// `{ramp}` the egress label, `{port}`, `{counter}`, `{secs}` IC seconds, `{real}` ", about
+// {span}" (empty at world rate 0), `{when}` (`due_words`), `{now}`/`{after}`/`{floor}`/
+// `{charge}` whole percent, `{load}` "{q} t of {good}" joined ", ", `{m}` metres, `{cap}`,
+// `{act}` the act word, `{slots}` "1 or 2", `{doing}` (`act::doing_words`), `{hopper}`
+// (`hopper_text`).
+
+/// Two rigs and none named: `{act}`, `{slots}`.
+pub const WHICH_RIG_ACT: &str = "Which rig? +tv/<n> {act}, with n {slots}.";
+/// The surface providers are not registered on this roster.
+pub const TV_UNWIRED: &str = "Rigs cannot be worked on this server right now; nothing changes.";
+/// Not aboard: `{name}`.
+pub const TV_NOT_ABOARD: &str = "You work the rigs from aboard the {name}.";
+/// Not on a site's pad: `{name}`.
+pub const LAUNCH_NOT_SITE: &str =
+    "The {name} is not settled on a site's pad; rigs go down the ramp only onto a site.";
+/// Under way: `{name}`.
+pub const LAUNCH_UNDER_WAY: &str = "The {name} is under way; nothing leaves the bay.";
+/// A clearance filed: `{name}`, `{port}`.
+pub const LAUNCH_CLEARED: &str = "The {name} is cleared for {port}; nothing leaves the bay.";
+/// The rig is not in the bay: `{n}`.
+pub const LAUNCH_OUT: &str = "Rig {n} is already out of the bay.";
+/// An excursion still open: `{n}`.
+pub const LAUNCH_OPEN: &str = "Rig {n} still has an excursion open; +tv/{n} recover closes it.";
+/// A forfeit deposit: `{n}`, `{counter}`, `{port}`.
+pub const LAUNCH_FORFEIT: &str = "Rig {n}'s deposit is forfeit; it stays in the bay until it goes back to the {counter} in {port}.";
+/// An ended lease: `{n}`, `{counter}`, `{port}`.
+pub const LAUNCH_ENDED: &str = "Rig {n}'s lease from Occator has ended; it stays in the bay until it goes back to the {counter} in {port}.";
+/// The launch's preview: `{n}`, `{mark}`, `{ramp}`, `{site}`, `{secs}`, `{real}`, `{now}`,
+/// `{after}`.
+pub const LAUNCH_PREVIEW: &str = "Rig {n} ({mark}) would go down the {ramp} onto {site}: {secs} IC s{real}; charge {now} → {after} %. +tv/{n} launch go sends it.";
+/// The launch, filed: `{n}`, `{ramp}`, `{when}`.
+pub const LAUNCH_FILED: &str = "Rig {n} starts down the {ramp}: on the ground {when}.";
+/// The launch, done: `{n}`, `{ramp}`, `{site}`.
+pub const LAUNCHED: &str = "Rig {n} is down the {ramp} on {site}.";
+/// A recover with the rig in the bay already: `{n}`.
+pub const RECOVER_IN_BAY: &str = "Rig {n} is in the bay already.";
+/// A recover with the rig not on this hull's ground: `{n}`, `{name}`.
+pub const RECOVER_ELSEWHERE: &str = "Rig {n} is not on the ground beside the {name}.";
+/// A recover too far from the ramp: `{n}`, `{m}`, `{ramp}`. The rule is the ramp's cell or one
+/// of the eight beside it (Chebyshev ≤ 1 cell) and `{m}` is that cell count × 10, so the words
+/// promise no radius (the lead's ruling in the SM.3b fixer round, item 7).
+pub const RECOVER_FAR: &str =
+    "Rig {n} is about {m} m from the {ramp}; it climbs aboard from beside it.";
+/// The recover's preview: `{n}`, `{mark}`, `{ramp}`, `{name}`, `{secs}`, `{real}`, `{now}`,
+/// `{after}`, `{hopper}`.
+pub const RECOVER_PREVIEW: &str = "Rig {n} ({mark}) would climb the {ramp} into the {name}'s bay: {secs} IC s{real}; charge {now} → {after} %; hopper {hopper}. +tv/{n} recover go brings it in.";
+/// The recover's preview when the rig's battery row cannot be read (§4.1 "a TV cannot be
+/// stranded by its battery": a recover spends nothing, so it never needs the battery — the
+/// fixer round's item 3): `{n}`, `{mark}`, `{ramp}`, `{name}`, `{secs}`, `{real}`, `{hopper}`.
+pub const RECOVER_PREVIEW_UNREAD: &str = "Rig {n} ({mark}) would climb the {ramp} into the {name}'s bay: {secs} IC s{real}; its charge cannot be read; hopper {hopper}. +tv/{n} recover go brings it in.";
+/// The recover, filed: `{n}`, `{ramp}`, `{when}`.
+pub const RECOVER_FILED: &str = "Rig {n} starts up the {ramp}: in the bay {when}.";
+/// The recover, done: `{n}`, `{name}`.
+pub const RECOVERED: &str = "Rig {n} is back in the {name}'s bay.";
+/// A dump away from a site: `{n}`, `{name}`.
+pub const DUMP_NOT_SITE: &str =
+    "Rig {n} dumps only onto a site's spoil, with the {name} settled on its pad.";
+/// A site with no spoil laid: `{site}`.
+pub const DUMP_NO_SPOIL: &str = "{site} has no spoil heap laid out; nothing is dumped.";
+/// An empty hopper: `{n}`.
+pub const DUMP_EMPTY: &str = "Rig {n}'s hopper is empty.";
+/// The dump's preview: `{n}`, `{mark}`, `{load}`, `{site}`.
+pub const DUMP_PREVIEW: &str = "Rig {n} ({mark}) would dump {load} onto the spoil at {site}; it cannot be taken back. +tv/{n} dump go dumps it.";
+/// The dump, filed: `{n}`.
+pub const DUMP_FILED: &str = "Rig {n} opens its hopper over the spoil.";
+/// The dump, done: `{n}`, `{load}`, `{site}`.
+pub const DUMPED: &str = "Rig {n} dumps {load} onto the spoil at {site}.";
+/// A refused finish: `{n}`, `{act}`, `{why}` (one of [`WHY_NEVER_LEFT`],
+/// [`WHY_NOT_BESIDE`], [`WHY_HOPPER_CHANGED`], [`WHY_SPOIL_GONE`]).
+pub const ACT_FAILED: &str = "Rig {n}'s {act} did not happen: {why}.";
+/// `ACT_FAILED`'s `{why}` for a launch whose rig never left the bay.
+pub const WHY_NEVER_LEFT: &str = "it never left the bay";
+/// `ACT_FAILED`'s `{why}` for a recover whose rig was not beside the ramp: `{ramp}`.
+pub const WHY_NOT_BESIDE: &str = "it was not beside the {ramp}";
+/// `ACT_FAILED`'s `{why}` for a dump whose hopper changed.
+pub const WHY_HOPPER_CHANGED: &str = "its hopper no longer held what was to be dumped";
+/// `ACT_FAILED`'s `{why}` for a dump the site's spoil would not take (the fixer round's item
+/// 4: the spoil gone, or its pools refusing the transfer).
+pub const WHY_SPOIL_GONE: &str =
+    "the spoil would not take the load; it stays in the hopper and nothing moved";
+/// An act in flight: `{n}`, `{doing}`, `{when}`.
+pub const RIG_BUSY: &str = "Rig {n} is {doing}: done {when}.";
+/// **The lease return with a rig still logged out** (the fixer round's item 1): its
+/// `tacsim.excursion` record holds an open excursion but no act. A rig can only be in
+/// Occator's reach that way after a staff move (every act needs a site's pad), so the remedy
+/// is staff's: `{n}`, `{site}`.
+pub const RIG_LOGGED_OUT: &str =
+    "Rig {n} is still logged out on {site} and staff must bring it in; nothing changes.";
+/// The reserve: `{n}`, `{now}`, `{after}`, `{floor}`.
+pub const RESERVE_LOW: &str =
+    "Rig {n} has {now} % charge; that would leave {after} %, under the {floor} % reserve.";
+/// The operator's cap: `{cap}`.
+pub const CAP_OPERATOR: &str =
+    "You have {cap} rigs out already; that is as many as one pilot may run.";
+/// The site's cap: `{site}`, `{cap}`.
+pub const CAP_SITE: &str = "{site} has {cap} rigs out already; no more go down until one comes in.";
+/// The world's cap: `{cap}`.
+pub const CAP_WORLD: &str =
+    "The Registry has {cap} rigs out across the sites; no more go down until one comes in.";
+/// `{where}`: in this hull's bay.
+pub const WHERE_BAY: &str = "in the bay";
+/// `{where}`: on this hull's site within the ramp's cell: `{ramp}`, `{site}`.
+pub const WHERE_RAMP: &str = "on the ground at the {ramp} on {site}";
+/// `{where}`: on this hull's site further off: `{site}`, `{m}` (cells × 10, as
+/// [`RECOVER_FAR`]), `{ramp}`.
+pub const WHERE_GROUND: &str = "on the ground on {site}, about {m} m from the {ramp}";
+/// `{where}`: anywhere else (a staff move): `{name}`.
+pub const WHERE_AWAY: &str = "not in the {name}'s bay";
+/// The status's line under a rig with an act in flight: `{doing}`, `{when}`.
+pub const ACT_LINE: &str = "  {doing}: done {when}.";
+
+/// **The slot switches** (doc 20 cut SM.3b; SM.3a's residual F10): `/1`…`/4`, one per
+/// `MAX_BAY_ITEMS`.
+pub const SLOT_SWITCHES: [&str; crate::definitions::logistics::MAX_BAY_ITEMS as usize] =
+    ["1", "2", "3", "4"];
 
 /// The prefix of every rig lease record (`tacsim:tvlease:{lease}`).
 pub const TV_LEASE_PREFIX: &str = "tacsim:tvlease:";
@@ -453,7 +585,7 @@ fn hopper_capacity(w: &World, tv: ObjId, pool_unit: Option<&CanonicalId>) -> Opt
 }
 
 /// `{hopper}`: `empty`, or `{t} of {cap} t` in whole tonnes, floored.
-fn hopper_text(kg: u64, capacity_kg: u64) -> String {
+pub(crate) fn hopper_text(kg: u64, capacity_kg: u64) -> String {
     if kg == 0 {
         "empty".to_owned()
     } else {
@@ -474,7 +606,7 @@ fn live_records(w: &World, actor: ObjId) -> Vec<TvLease> {
 }
 
 /// The live records on `hull` (any lessee), lease order.
-fn live_on_hull(w: &World, hull: ObjId) -> Vec<TvLease> {
+pub(crate) fn live_on_hull(w: &World, hull: ObjId) -> Vec<TvLease> {
     w.module_state::<TacsimStore>()
         .map_or_else(Vec::new, |store| {
             store
@@ -494,6 +626,78 @@ fn live_on_hull(w: &World, hull: ObjId) -> Vec<TvLease> {
 /// the record's own contract (reviewer F15).
 fn economy_lease_live(w: &World, lessor: &PrincipalId, record: &TvLease) -> bool {
     occator_lease_on(w, lessor, record.tv).is_some_and(|c| c.id.0 == record.lease)
+}
+
+/// The programme port's rig pool's unit (the unit a rig without a live unit record reads
+/// as).
+fn pool_unit(w: &World) -> Option<CanonicalId> {
+    programme_port(w).and_then(|port| port.def.vehicles.as_deref().map(|pool| pool.unit.clone()))
+}
+
+/// **A rig's hopper's accepted goods and mass limit** (doc 20 cut SM.3b): `hopper_goods`
+/// with the programme port's pool unit — what the dump freezes over and the bay gate reads.
+#[must_use]
+pub(crate) fn hopper_goods_of(w: &World, tv: ObjId) -> Option<(Vec<CanonicalId>, u64)> {
+    hopper_goods(w, tv, pool_unit(w).as_ref())
+}
+
+/// **What a rig's hopper holds**, `(kilograms, capacity kilograms)` (doc 20 cut SM.3b):
+/// `hopper_load` with the programme port's pool unit.
+///
+/// # Errors
+///
+/// The rig has no hopper, or a pool will not read.
+pub(crate) fn hopper_load_of(ctx: &Ctx<'_>, tv: ObjId) -> Result<(u64, u64), String> {
+    let unit = pool_unit(ctx.w);
+    hopper_load(ctx, tv, unit.as_ref())
+}
+
+/// **Occator's counter and its port, by name** (doc 20 cut SM.3b's `LAUNCH_FORFEIT` and
+/// `LAUNCH_ENDED`): the lessor's counter room's name and the port's, else the authored
+/// words.
+#[must_use]
+pub(crate) fn counter_words(w: &World) -> (String, String) {
+    programme_port(w)
+        .and_then(|port| lessor_of(w, &port))
+        .map_or_else(
+            || ("counter".to_owned(), "Ceres Freeport".to_owned()),
+            |lessor| (lessor.counter_name, lessor.port),
+        )
+}
+
+/// **Whether a live record's economy lease is live** (doc 20 cut SM.3b; SM.3a's operate
+/// gate R7): Occator's live lease on its TV is the record's own contract.
+#[must_use]
+pub(crate) fn rig_lease_live(w: &World, record: &TvLease) -> bool {
+    programme_port(w)
+        .and_then(|port| lessor_of(w, &port))
+        .is_some_and(|lessor| economy_lease_live(w, &lessor.principal, record))
+}
+
+/// **Real seconds as a short span** (doc 20 cut SM.3b's `{span}`): `{s} s` under a minute,
+/// else [`crate::port::voyage::real_span`].
+#[must_use]
+pub(crate) fn span_words(real_secs: i64) -> String {
+    if real_secs < 60 {
+        format!("{} s", real_secs.max(0))
+    } else {
+        crate::port::voyage::real_span(real_secs)
+    }
+}
+
+/// **An act's due instant in words** (doc 20 cut SM.3b's `{when}`): `"{HH:MM} UTC (IC
+/// {civil}; in {span})"`, or `"IC {civil}; the IC clock is stopped"` at world rate 0.
+#[must_use]
+pub(crate) fn due_words(w: &World, due_ic: i64) -> String {
+    let civil = mush_core::CivilDate::from_ic_seconds(due_ic);
+    match crate::port::voyage::real_until(w, due_ic) {
+        Some(real) => format!(
+            "{} UTC (IC {civil}; in {})",
+            crate::port::voyage::utc_hhmm(w.now().saturating_add(real)),
+            span_words(real)
+        ),
+        None => format!("IC {civil}; the IC clock is stopped"),
+    }
 }
 
 /// `{name}` and the other hull words.
@@ -534,47 +738,75 @@ enum Act {
     Take { go: bool },
     /// A return, committed or previewed.
     Return { go: bool },
+    /// **Doc 20 cut SM.3b**: a launch, a recover or a dump, committed or previewed.
+    Work {
+        /// Which act.
+        kind: crate::surface::excursion::ActKind,
+        /// Committed.
+        go: bool,
+    },
 }
 
-/// **The grammar** (doc 20 §1's slot rule): `+tv[/<n>]`, `+tv[/<n>]/lease [take]
-/// [go]`, `+tv[/<n>]/lease return [go]`, and the same with `lease` as the first
-/// word instead of the switch. Two slot switches, or an unknown word, is
-/// [`LEASE_USAGE`]; `/3` and above never reach here (the dispatcher refuses the
-/// undeclared switch).
+/// The act words a `+tv` switch or first word may name (the lease's and the three acts').
+const ACT_WORDS: [&str; 4] = ["lease", "launch", "recover", "dump"];
+
+/// **The grammar** (doc 20 §10, cut SM.3b, replacing SM.3a's): `+tv[/<n>]` (status),
+/// `+tv[/<n>][/<act>] [<act>] [go]` with `<act>` one of `launch`, `recover`, `dump` either
+/// as a switch or as the first word (SM.3a's `lease` rule), and `+tv[/<n>]/lease
+/// [take|return] [go]` unchanged. Two slot switches, two act words, an unknown word, or a
+/// word after `go` is [`TV_USAGE`]. The slot switches are [`SLOT_SWITCHES`]; `/5` and above
+/// never reach here (the dispatcher refuses the undeclared switch).
 fn parse(ctx: &Ctx<'_>) -> Result<(Option<u8>, Act), CmdError> {
-    let usage = || CmdError::msg(LEASE_USAGE);
-    let slot = match (ctx.switches.has("1"), ctx.switches.has("2")) {
-        (true, true) => return Err(usage()),
-        (true, false) => Some(1),
-        (false, true) => Some(2),
-        (false, false) => None,
+    let usage = || CmdError::msg(TV_USAGE);
+    let mut slot: Option<u8> = None;
+    for (index, word) in SLOT_SWITCHES.iter().enumerate() {
+        if ctx.switches.has(word) {
+            if slot.is_some() {
+                return Err(usage());
+            }
+            slot = u8::try_from(index.saturating_add(1)).ok();
+        }
+    }
+    let switched: Vec<&str> = ACT_WORDS
+        .iter()
+        .copied()
+        .filter(|word| ctx.switches.has(word))
+        .collect();
+    let mut act: Option<String> = match switched.as_slice() {
+        [] => None,
+        [one] => Some((*one).to_owned()),
+        _ => return Err(usage()),
     };
     let mut words = ctx
         .args
         .raw()
         .split_whitespace()
         .map(str::to_ascii_lowercase);
-    let mut lease = ctx.switches.has("lease");
     let mut next = words.next();
-    if !lease && next.as_deref() == Some("lease") {
-        lease = true;
+    if act.is_none()
+        && let Some(word) = next.as_deref()
+        && ACT_WORDS.contains(&word)
+    {
+        act = Some(word.to_owned());
         next = words.next();
     }
-    if !lease {
+    let Some(act) = act else {
         return if next.is_none() {
             Ok((slot, Act::Status))
         } else {
             Err(usage())
         };
-    }
+    };
     let mut back = false;
-    match next.as_deref() {
-        Some("take") => next = words.next(),
-        Some("return") => {
-            back = true;
-            next = words.next();
+    if act == "lease" {
+        match next.as_deref() {
+            Some("take") => next = words.next(),
+            Some("return") => {
+                back = true;
+                next = words.next();
+            }
+            _ => {}
         }
-        _ => {}
     }
     let go = match next.as_deref() {
         None => false,
@@ -584,17 +816,58 @@ fn parse(ctx: &Ctx<'_>) -> Result<(Option<u8>, Act), CmdError> {
     if words.next().is_some() {
         return Err(usage());
     }
-    Ok((
-        slot,
-        if back {
-            Act::Return { go }
-        } else {
-            Act::Take { go }
+    let parsed = match act.as_str() {
+        "lease" if back => Act::Return { go },
+        "lease" => Act::Take { go },
+        word => match crate::surface::excursion::ActKind::from_word(word) {
+            Some(kind) => Act::Work { kind, go },
+            None => return Err(usage()),
         },
-    ))
+    };
+    Ok((slot, parsed))
 }
 
-/// **`+tv`, `+tv/<n>`, `+tv/lease`** (doc 20 §4.3; Q-20-6, Q-20-8).
+/// **The last rig each operator named** (doc 20 cut SM.3b; lead ruling 6): a RAM slot,
+/// **a convenience, never a fact** — bounded at `MAX_POINTERS` operators (the smallest key
+/// dropped past it). A restart forgets it, so a two-rig act without a number then refuses
+/// `WHICH_RIG_ACT` rather than guessing (decision 12).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RigPointer(std::collections::BTreeMap<ObjId, u8>);
+
+/// The most operators `RigPointer` remembers.
+pub const MAX_POINTERS: usize = 4_096;
+
+/// Remember that `actor` named slot `n`.
+fn point(ctx: &mut Ctx<'_>, actor: ObjId, n: u8) {
+    if let Some(pointer) = ctx.w.module_state_mut::<RigPointer>() {
+        pointer.0.insert(actor, n);
+        while pointer.0.len() > MAX_POINTERS {
+            if pointer.0.pop_first().is_none() {
+                break;
+            }
+        }
+    }
+}
+
+/// The slot `actor` named last, if any.
+fn pointed(w: &World, actor: ObjId) -> Option<u8> {
+    w.module_state::<RigPointer>()
+        .and_then(|pointer| pointer.0.get(&actor).copied())
+}
+
+/// `{slots}`: `1 or 2`, `1, 2 or 3`, from the slots the actor's rigs hold.
+fn slots_words(slots: &[u8]) -> String {
+    let words: Vec<String> = slots.iter().map(u8::to_string).collect();
+    match words.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        Some((last, _)) => last.clone(),
+        None => String::new(),
+    }
+}
+
+/// **`+tv`, `+tv/<n>`, `+tv/lease`, `+tv/<n> launch|recover|dump [go]`** (doc 20 §4.3, §10;
+/// Q-20-6, Q-20-8; cut SM.3b). Any command that names a slot records it for the actor
+/// (`RigPointer`, the status included).
 ///
 /// # Errors
 ///
@@ -605,10 +878,68 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg(NOT_OPEN_HERE));
     }
     let (slot, act) = parse(ctx)?;
+    if let Some(n) = slot {
+        let actor = ctx.actor;
+        point(ctx, actor, n);
+    }
     match act {
         Act::Status => status(ctx, slot),
         Act::Take { go } => take(ctx, slot, go),
         Act::Return { go } => give_back(ctx, slot, go),
+        Act::Work { kind, go } => {
+            let rig = select(ctx, slot, kind).map_err(CmdError::msg)?;
+            crate::surface::act::act_cmd(ctx, &rig, kind, go)
+        }
+    }
+}
+
+/// **The slot selector** (doc 20 cut SM.3b; lead ruling 6; SM.3a's finding F10): a named
+/// slot must hold one of the actor's rigs (`NO_RIG`, also past the bay's slots); with none
+/// named, the slot the actor named last if a rig is still there, else the only rig, else
+/// [`WHICH_RIG_ACT`] with two or more; with no rig at all, the line the status answers in
+/// its own order (no charter, dark, `NO_BAY`), else `NO_RIG` for slot 1.
+fn select(
+    ctx: &Ctx<'_>,
+    named: Option<u8>,
+    kind: crate::surface::excursion::ActKind,
+) -> Result<crate::surface::act::RigAt, String> {
+    let w: &World = ctx.w;
+    let rigs = crate::surface::act::operator_rigs(w, ctx.actor);
+    let no_rig = |n: u8, hull: ObjId| {
+        NO_RIG
+            .replace("{n}", &n.to_string())
+            .replace("{name}", &hull_name(w, hull))
+    };
+    if rigs.is_empty() {
+        status_lines(ctx, named)?;
+        let hull = crate::port::coop::helm_of(w, ctx.actor)
+            .map(|helm| helm.hull)
+            .or_else(|| live_records(w, ctx.actor).first().map(|record| record.hull));
+        return Err(match hull {
+            Some(hull) => no_rig(named.unwrap_or(1), hull),
+            None => NO_CHARTER.to_owned(),
+        });
+    }
+    if let Some(n) = named {
+        return rigs
+            .iter()
+            .find(|rig| rig.slot == n)
+            .cloned()
+            .ok_or_else(|| no_rig(n, rigs.first().map_or(ObjId(0), |rig| rig.hull)));
+    }
+    if let Some(n) = pointed(w, ctx.actor)
+        && let Some(rig) = rigs.iter().find(|rig| rig.slot == n)
+    {
+        return Ok(rig.clone());
+    }
+    match rigs.as_slice() {
+        [only] => Ok(only.clone()),
+        _ => {
+            let slots: Vec<u8> = rigs.iter().map(|rig| rig.slot).collect();
+            Err(WHICH_RIG_ACT
+                .replace("{act}", kind.word())
+                .replace("{slots}", &slots_words(&slots)))
+        }
     }
 }
 
@@ -701,6 +1032,17 @@ fn status_lines(ctx: &Ctx<'_>, only: Option<u8>) -> Result<Vec<String>, String> 
     let rigs = rigs_in_bay(w, &view);
     let unlisted: Vec<&RigInBay> = rigs.iter().filter(|rig| rig.slot == 0).collect();
     let max = u8::try_from(bay.slot.maximum_items).unwrap_or(u8::MAX);
+    // Doc 20 cut SM.3b: a slot past the bay's names no rig (the switches run to
+    // `MAX_BAY_ITEMS`, the bay may hold fewer).
+    if let Some(n) = only.filter(|n| *n > max) {
+        return Err(NO_RIG
+            .replace("{n}", &n.to_string())
+            .replace("{name}", &name));
+    }
+    // Doc 20 cut SM.3b (lead ruling 9): where each rig is and its charge now, read from
+    // the one tools table and the rig's typed record; the hull's site berth, once.
+    let berth = crate::surface::act::site_berth(w, &view).ok();
+    let handles = w.module_state::<crate::port::families::PortHandles>();
     // Slots no live record names, in order: the first `unlisted.len()` are filled by
     // the unlisted rigs, the rest are empty.
     let free: Vec<u8> = (1..=max)
@@ -750,11 +1092,17 @@ fn status_lines(ctx: &Ctx<'_>, only: Option<u8>) -> Result<Vec<String>, String> 
                 }
             }
         };
+        let (place, charge, act) = rig_state(ctx, handles, &view, berth.as_ref(), record.tv, now);
         lines.push(
             line.replace("{n}", &n.to_string())
                 .replace("{mark}", &record.mark)
+                .replace("{where}", &place)
+                .replace("{charge}", &charge)
                 .replace("{hopper}", &hopper),
         );
+        if let Some(act) = act {
+            lines.push(act);
+        }
     }
     if only.is_none() {
         for rig in unlisted {
@@ -766,6 +1114,90 @@ fn status_lines(ctx: &Ctx<'_>, only: Option<u8>) -> Result<Vec<String>, String> 
         lines.push(stores);
     }
     Ok(lines)
+}
+
+/// **One rig's `{where}`, `{charge}` and act line** (doc 20 cut SM.3b; lead ruling 9,
+/// finding F9): `WHERE_BAY` in this hull's bay; on this hull's site domain `WHERE_RAMP`
+/// within the ramp's cell, else `WHERE_GROUND` (`{m}` = cells × 10); anything else
+/// `WHERE_AWAY` (a staff move). `{charge}` is `⌊charge now × 100 / capacity⌋`, or `?` when
+/// the rig's battery or its record cannot be read. The act line (`ACT_LINE`) when an act
+/// is in flight.
+fn rig_state(
+    ctx: &Ctx<'_>,
+    handles: Option<&crate::port::families::PortHandles>,
+    view: &HullView<'_>,
+    berth: Option<&crate::surface::act::SiteBerth<'_>>,
+    tv: ObjId,
+    now: i64,
+) -> (String, String, Option<String>) {
+    use crate::surface::act::{Where, where_is};
+    use crate::surface::excursion::{RigKey, RigRecord, cells_apart, charge_at, site_cell};
+    let w: &World = ctx.w;
+    let name = hull_name(w, view.hull());
+    let ramp = crate::surface::act::ramp_label(w, view.hull());
+    let place = match (where_is(w, tv), berth) {
+        (Where::Bay { hull }, _) if hull == view.hull() => WHERE_BAY.to_owned(),
+        (
+            Where::Ground {
+                domain, x_cm, y_cm, ..
+            },
+            Some(berth),
+        ) if domain == berth.domain => {
+            let cells = cells_apart(
+                site_cell(x_cm, y_cm),
+                site_cell(berth.ramp.x_cm, berth.ramp.y_cm),
+            );
+            if cells == 0 {
+                WHERE_RAMP
+                    .replace("{ramp}", &ramp)
+                    .replace("{site}", &berth.name)
+            } else {
+                WHERE_GROUND
+                    .replace("{site}", &berth.name)
+                    .replace("{m}", &cells.saturating_mul(10).to_string())
+                    .replace("{ramp}", &ramp)
+            }
+        }
+        _ => WHERE_AWAY.replace("{name}", &name),
+    };
+    let battery = handles
+        .and_then(|handles| handles.surface_tools.clone())
+        .and_then(|tools| {
+            crate::surface::act::rig_battery_id(w, tv)
+                .and_then(|id| crate::surface::act::battery_of(&tools, &id).cloned())
+        });
+    let record = handles.and_then(|handles| {
+        match ctx.action_state(&handles.families.excursions, &RigKey(tv)) {
+            Ok(found) => Some(found.cloned()),
+            Err(error) => {
+                tracing::warn!(tv = tv.0, %error, "tacsim: +tv could not read a rig's record");
+                None
+            }
+        }
+    });
+    // The act line reads the record alone: a rig whose battery row stops resolving still shows
+    // what it is doing (§4.1 "never stranded by its battery"; the fixer round's item 3).
+    let act = record
+        .as_ref()
+        .and_then(|found| found.as_ref())
+        .and_then(|record| record.act.as_ref())
+        .map(|act| {
+            ACT_LINE
+                .replace(
+                    "{doing}",
+                    &crate::surface::act::doing_words(act.kind, &ramp),
+                )
+                .replace("{when}", &due_words(w, act.due_ic))
+        });
+    let charge = match (battery, record) {
+        (Some(battery), Some(record)) => {
+            let record = record.unwrap_or_else(|| RigRecord::fresh(tv, &battery));
+            let now_cu = charge_at(&record.charge, now, &battery);
+            crate::surface::act::percent(now_cu, &battery).to_string()
+        }
+        _ => "?".to_owned(),
+    };
+    (place, charge, act)
 }
 
 // ---- the term settle --------------------------------------------------------------------
@@ -1203,7 +1635,11 @@ fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, String> {
         .map(|record| record.slot)
         .collect();
     let slot = match named {
-        Some(n) if n > max => return Err(LEASE_USAGE.to_owned()),
+        Some(n) if n > max => {
+            return Err(NO_RIG
+                .replace("{n}", &n.to_string())
+                .replace("{name}", &name));
+        }
         Some(n) if taken.contains(&n) => {
             return Err(SLOT_TAKEN
                 .replace("{n}", &n.to_string())
@@ -1668,6 +2104,36 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
         );
         return Err(LEASE_FAILED.to_owned());
     }
+    // 11. Doc 20 cut SM.3b: no act in flight and no excursion open (a backstop against a
+    // staff move: every act needs the hull on a site's pad, the return Occator's counter at
+    // Ceres). Read through `rig_flight`, the reader `repossess` and the bay gate share, and
+    // fail closed (the fixer round's item 1): a record that will not read refuses and pages,
+    // so a rig never goes back to the shed with an excursion still counted against the caps.
+    match rig_flight(ctx, record.tv) {
+        Ok(RigFlight::Idle) => {}
+        Ok(RigFlight::Busy { kind, due_ic }) => {
+            let ramp = crate::surface::act::ramp_label(w, record.hull);
+            return Err(RIG_BUSY
+                .replace("{n}", &slot)
+                .replace("{doing}", &crate::surface::act::doing_words(kind, &ramp))
+                .replace("{when}", &due_words(w, due_ic)));
+        }
+        Ok(RigFlight::Out { site }) => {
+            return Err(RIG_LOGGED_OUT
+                .replace("{n}", &slot)
+                .replace("{site}", &crate::surface::act::site_name(w, &site)));
+        }
+        Err(error) => {
+            tracing::error!(
+                tv = record.tv.0,
+                lease = record.lease,
+                %error,
+                "tacsim: +tv/lease return: the rig's tacsim.excursion record does not read; \
+                 the return is refused until staff repair the record"
+            );
+            return Err(LEASE_FAILED.to_owned());
+        }
+    }
     let funds = funds(w, actor);
     let now = w.world_ic_now().at;
     let (settle, _) = plan_settle(
@@ -1864,6 +2330,11 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
         }
     }
     for record in &records {
+        // Doc 20 cut SM.3b (decision 13): a rig out on a site or mid-act holds the hull
+        // (`BAY_PAGE`) rather than being pulled off the ground under a live record.
+        if rig_out_or_busy(ctx, record.tv) {
+            return Err(format!("rig {} is out on a site or busy", record.mark));
+        }
         match hopper_load(ctx, record.tv, Some(&lessor.pool.unit)) {
             Ok((0, _)) => {}
             Ok(_) => {
@@ -1979,6 +2450,79 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
     Ok(done)
 }
 
+/// **What a rig's `tacsim.excursion` record says it is doing** (doc 20 cut SM.3b; the fixer
+/// round's item 1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RigFlight {
+    /// No record, or one with neither an act nor an open excursion.
+    Idle,
+    /// An act in flight — it outranks an open excursion: its kind and due instant.
+    Busy {
+        /// What act.
+        kind: crate::surface::excursion::ActKind,
+        /// Its due instant, IC seconds.
+        due_ic: i64,
+    },
+    /// No act, but an excursion open on `site` (the site port entry).
+    Out {
+        /// The excursion's site.
+        site: CanonicalId,
+    },
+}
+
+/// **One reader of a rig's `tacsim.excursion` record** (doc 20 cut SM.3b; the fixer round's
+/// item 1): the lease return's step 11, `repossess` and the departure's bay gate
+/// (`crate::port::voyage::bay_gate`) all read through it, so the three cannot drift. A roster
+/// without the port tick's handles has no family and reads `Idle`.
+///
+/// # Errors
+///
+/// The record will not read, or disagrees with its own key (the families rule: readers
+/// re-check the key). Every caller fails closed on it.
+pub(crate) fn rig_flight(ctx: &Ctx<'_>, tv: ObjId) -> Result<RigFlight, String> {
+    let Some(handles) = ctx.w.module_state::<crate::port::families::PortHandles>() else {
+        return Ok(RigFlight::Idle);
+    };
+    let found = ctx
+        .action_state(
+            &handles.families.excursions,
+            &crate::surface::excursion::RigKey(tv),
+        )
+        .map_err(|error| error.to_string())?;
+    let Some(record) = found else {
+        return Ok(RigFlight::Idle);
+    };
+    if record.tv != tv {
+        return Err(format!(
+            "the record under rig #{}'s key names rig #{}",
+            tv.0, record.tv.0
+        ));
+    }
+    Ok(match (&record.act, &record.excursion) {
+        (Some(act), _) => RigFlight::Busy {
+            kind: act.kind,
+            due_ic: act.due_ic,
+        },
+        (None, Some(excursion)) => RigFlight::Out {
+            site: excursion.site.clone(),
+        },
+        (None, None) => RigFlight::Idle,
+    })
+}
+
+/// **Whether a rig is out on a site or mid-act** (doc 20 cut SM.3b, decision 13): [`rig_flight`]
+/// reads an act or an open excursion. A record that will not read counts as out (fail closed:
+/// the hull is held and paged, never stripped).
+fn rig_out_or_busy(ctx: &Ctx<'_>, tv: ObjId) -> bool {
+    match rig_flight(ctx, tv) {
+        Ok(flight) => flight != RigFlight::Idle,
+        Err(error) => {
+            tracing::warn!(tv = tv.0, %error, "tacsim: a rig's excursion record does not read");
+            true
+        }
+    }
+}
+
 /// **Whether `view`'s hull still carries a rig, and its `{n}`** (doc 20 cut SM.3a;
 /// reviewer finding correctness/F2): a placement in the bay **or a live lease
 /// record naming the hull**, so a rig whose record outlives its placement in the
@@ -2078,6 +2622,25 @@ mod tests {
             assert!(broken.check().is_err(), "{broken:?} passed its check");
         }
         assert_eq!(tv_lease_key(41).as_str(), "tacsim:tvlease:41");
+    }
+
+    /// Doc 20 cut SM.3b: the slot switches are `1..=MAX_BAY_ITEMS` spelled, and `{slots}`
+    /// reads as a list.
+    #[test]
+    fn sm3b_the_slot_switches_are_the_bay_items() {
+        let spelled: Vec<String> = (1..=crate::definitions::logistics::MAX_BAY_ITEMS)
+            .map(|n| n.to_string())
+            .collect();
+        assert_eq!(
+            SLOT_SWITCHES
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect::<Vec<_>>(),
+            spelled
+        );
+        assert_eq!(slots_words(&[1, 2]), "1 or 2");
+        assert_eq!(slots_words(&[1, 2, 4]), "1, 2 or 4");
+        assert_eq!(slots_words(&[3]), "3");
     }
 
     /// Doc 20 cut SM.3a (lead ruling 9): the terms due past the end are whole

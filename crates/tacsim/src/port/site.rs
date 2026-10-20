@@ -24,12 +24,17 @@
 //!   covers the leg home; every stores line prints the **effective** figure, the locker
 //!   less the charge a lift now would make;
 //! - `lay_up` — the `PortApplier`'s part (g): the sixteen block place Things and the site
-//!   clerk, `DARK`, in the site's host room, recorded in the port map; **it submits
-//!   nothing** (doc 18's refusal; §3.4's site clerk is the pattern). SM.6 makes
-//!   [`SITES_PRINCIPAL`](crate::port::site::SITES_PRINCIPAL) their industry owner and
-//!   grants the clerk.
+//!   clerk, `DARK`, in the site's host room, recorded in the port map; since doc 20 cut
+//!   SM.3b also **the spoil** — a `DARK` Thing backing a vault owned by
+//!   [`SITES_PRINCIPAL`](crate::port::site::SITES_PRINCIPAL) with no scope (§4.3, decision
+//!   6: the storefront's `Container` backing), into which `+tv/<n> dump` moves a hopper's
+//!   pools; **it submits nothing** (doc 18's refusal; §3.4's site clerk is the pattern).
+//!   SM.6 makes `SITES_PRINCIPAL` the block places' industry owner and grants the clerk.
 
 use mush_core::{CanonicalId, Ctx, Flags, ObjId, ObjKind, World};
+use mush_economy::{CustodyRef, EconomyStore, Vault, VaultId, VaultStatus};
+use mush_org::{PrincipalId, SystemPrincipalId};
+use smol_str::SmolStr;
 
 use crate::pack::{LocationDef, PackEntry, RulesPack};
 use crate::port::def::{BLOCK_LETTERS, SiteDef, Tenure};
@@ -362,7 +367,56 @@ pub(crate) fn preflight(w: &World, id: &CanonicalId, map: Option<&PortMap>) -> R
              repair the map by hand"
         ));
     }
+    // Doc 20 cut SM.3b (decision 6): a recorded spoil Thing gone, or a recorded spoil vault
+    // gone or not the sites' system principal's, refuses — never re-created.
+    if let Some(spoil) = row.spoil
+        && !live(w, spoil)
+    {
+        return Err(format!(
+            "{id}: the site's spoil #{spoil} in the port map is gone; it is never re-created — \
+             repair the map by hand"
+        ));
+    }
+    if let Some(vault) = row.spoil_vault
+        && !spoil_vault_is_ours(w, vault, false)
+    {
+        return Err(format!(
+            "{id}: the site's spoil vault #{vault} in the port map is gone or not owned by \
+             {SITES_PRINCIPAL}; it is never re-created — repair the map by hand"
+        ));
+    }
     Ok(())
+}
+
+/// The owner every spoil vault has: `System(tacsim.sites)`.
+fn spoil_owner() -> Option<PrincipalId> {
+    SystemPrincipalId::new(SITES_PRINCIPAL).map(PrincipalId::System)
+}
+
+/// Whether vault `id` exists, is owned by `System(tacsim.sites)` with no scope, and (when
+/// `active` is asked) is Active.
+fn spoil_vault_is_ours(w: &World, id: u64, active: bool) -> bool {
+    let Some(owner) = spoil_owner() else {
+        return false;
+    };
+    w.module_state::<EconomyStore>()
+        .and_then(|economy| economy.snapshot().vault(VaultId(id)).cloned())
+        .is_some_and(|vault| {
+            vault.owner == owner
+                && vault.scope.is_none()
+                && (!active || vault.status == VaultStatus::Active)
+        })
+}
+
+/// **A site's spoil vault, checked** (doc 20 cut SM.3b; the read `+tv/<n> dump` plans
+/// with): the map's spoil Thing live and its vault the sites' system principal's, no scope,
+/// Active; `None` otherwise (the dump then refuses `DUMP_NO_SPOIL`).
+#[must_use]
+pub(crate) fn spoil_vault(w: &World, map: &PortMap) -> Option<VaultId> {
+    let row = map.site.as_ref()?;
+    let thing = row.spoil?;
+    let vault = row.spoil_vault?;
+    (live(w, thing) && spoil_vault_is_ours(w, vault, true)).then_some(VaultId(vault))
 }
 
 /// One `DARK` Thing named `name` in `host`, owned by the applying actor.
@@ -414,12 +468,51 @@ pub(crate) fn lay_up(
         map.site.get_or_insert_with(SiteRow::default).clerk = Some(thing);
         put_port_map(ctx, map);
     }
+    // Doc 20 cut SM.3b (§4.3; decision 6): the spoil — a DARK Thing, then the vault it
+    // backs, owned by `System(tacsim.sites)` with no scope (so `may_take` refuses every
+    // player and `live_endpoints` never offers it), each recorded and the map written.
+    if map.site.as_ref().is_none_or(|row| row.spoil.is_none()) {
+        let thing = dark_thing(ctx, id, &format!("{} spoil", site.name), host)?;
+        map.site.get_or_insert_with(SiteRow::default).spoil = Some(thing);
+        put_port_map(ctx, map);
+    }
+    if map
+        .site
+        .as_ref()
+        .is_none_or(|row| row.spoil_vault.is_none())
+    {
+        let thing = map
+            .site
+            .as_ref()
+            .and_then(|row| row.spoil)
+            .ok_or_else(|| format!("{id}: the spoil Thing is not recorded"))?;
+        let owner = spoil_owner()
+            .ok_or_else(|| format!("{id}: {SITES_PRINCIPAL} is not a system principal id"))?;
+        let vault = crate::port::apply::alloc_vault_id(ctx)
+            .map_err(|e| format!("{id}: the spoil vault: {e}"))?;
+        mush_economy::create_vault(
+            ctx,
+            Vault {
+                id: vault,
+                owner,
+                scope: None,
+                name: SmolStr::new(format!("{} spoil", site.name)),
+                backing: CustodyRef::Container(ObjId(thing)),
+                status: VaultStatus::Active,
+                revision: 1,
+            },
+        );
+        map.site.get_or_insert_with(SiteRow::default).spoil_vault = Some(vault.0);
+        put_port_map(ctx, map);
+    }
     Ok(())
 }
 
-/// **The readiness `Site` line** (the SM.2 brief's item 9; reported, never gated): Ready
-/// with all sixteen block places and the clerk live, else Missing with the count (a
-/// recorded Thing gone counts as missing).
+/// **The readiness `Site` line** (the SM.2 brief's item 9; reported, never gated on the
+/// desk): Ready with all sixteen block places, the clerk and (doc 20 cut SM.3b) the spoil
+/// live — its Thing live and its vault the sites' system principal's and Active — else
+/// Missing with the count (a recorded Thing gone counts as missing). `port_ready` reads it,
+/// so a Missing line closes the pad (`SITE_CLOSED`): fail-closed, decision 6.
 #[must_use]
 pub(crate) fn site_line(
     w: &World,
@@ -437,11 +530,22 @@ pub(crate) fn site_line(
             .count();
         (blocks, row.clerk.is_some_and(|clerk| live(w, clerk)))
     });
+    site_line_text(entry, blocks, clerk, spoil_vault(w, map).is_some())
+}
+
+/// [`site_line`]'s words, pure: Ready with every block place, the clerk and the spoil,
+/// else Missing with what is there.
+fn site_line_text(
+    entry: &CanonicalId,
+    blocks: usize,
+    clerk: bool,
+    spoil: bool,
+) -> (crate::port::LineState, String) {
     let count = crate::port::def::SITE_BLOCK_COUNT;
-    if blocks == count && clerk {
+    if blocks == count && clerk && spoil {
         (
             crate::port::LineState::Ready,
-            format!("{entry} site: {count} block places and the site clerk laid up."),
+            format!("{entry} site: {count} block places, the site clerk and the spoil laid up."),
         )
     } else {
         let clerk = if clerk {
@@ -449,9 +553,10 @@ pub(crate) fn site_line(
         } else {
             "no site clerk"
         };
+        let spoil = if spoil { "the spoil" } else { "no spoil" };
         (
             crate::port::LineState::Missing,
-            format!("{entry} site: {blocks} of {count} block places and {clerk} laid up."),
+            format!("{entry} site: {blocks} of {count} block places, {clerk} and {spoil} laid up."),
         )
     }
 }
@@ -513,6 +618,37 @@ mod tests {
                 .map(|(l, b)| ((*l).to_owned(), b.clone()))
                 .collect(),
         }
+    }
+
+    /// Doc 20 cut SM.3b: the `Site` line's three texts — Ready with the spoil, Missing for
+    /// a missing spoil, Missing for a missing clerk and blocks.
+    #[test]
+    fn sm3b_the_site_line_names_the_spoil() {
+        let entry = cid("kerwan_port");
+        assert_eq!(
+            site_line_text(&entry, 16, true, true),
+            (
+                crate::port::LineState::Ready,
+                "kerwan_port site: 16 block places, the site clerk and the spoil laid up."
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            site_line_text(&entry, 16, true, false),
+            (
+                crate::port::LineState::Missing,
+                "kerwan_port site: 16 of 16 block places, the site clerk and no spoil laid up."
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            site_line_text(&entry, 15, false, true),
+            (
+                crate::port::LineState::Missing,
+                "kerwan_port site: 15 of 16 block places, no site clerk and the spoil laid up."
+                    .to_owned()
+            )
+        );
     }
 
     /// `pad_span`'s three shapes.

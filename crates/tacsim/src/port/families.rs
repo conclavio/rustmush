@@ -1,7 +1,7 @@
 //! **The port's typed families** (doc 18 cut IC5; §4.2 "the ticket", §4.3
 //! "Finite seeded stock", §4.8 "the seams", D-18-11, D-18-33, D-18-46).
 //!
-//! Two production families, both registered unconditionally (a family is a fact
+//! Three production families, all registered unconditionally (a family is a fact
 //! about the composition, and hydrating a later cut's records must never depend
 //! on a flag):
 //!
@@ -13,6 +13,13 @@
 //!   (D-18-11 as extended by D-18-46). Written in the burn's own bundle by IC9's
 //!   `tacsim_port_burn` (`crate::port::burn`) and read by the launch arm
 //!   (`crate::port::voyage`).
+//! - **`tacsim.excursion`** (doc 20 cut SM.3b; §8, D-20-11) — one
+//!   [`crate::surface::excursion::RigRecord`] per rig, keyed by its terrain vehicle
+//!   ([`crate::surface::excursion::RigKey`]): the act in flight with the charge it
+//!   reserved, the open excursion, the lazy charge and the last finished act. Written
+//!   in the start's and the finish's own bundles (`tacsim_surface_act`,
+//!   `tacsim_surface_done`, `crate::surface::act`) and read by the `tacsim.surface`
+//!   tick, `+tv` and the departure's bay gate.
 //!
 //! The ticket carries the whole [`PassagePlan`] of §4.8, **declared here as
 //! data** (lead ruling L6): IC9's `port/passage.rs` writes it, but the ticket's
@@ -463,13 +470,16 @@ impl StockReceipt {
 
 // ---- the families and the handles ------------------------------------------
 
-/// The port's two production family handles.
+/// The port's three production family handles.
 #[derive(Clone, Debug)]
 pub struct PortFamilies {
     /// `tacsim.port_stock`.
     pub port_stock: StateFamilyHandle<StockIssueId, StockReceipt>,
     /// `tacsim.ticket`.
     pub tickets: StateFamilyHandle<TicketId, Ticket>,
+    /// **`tacsim.excursion`** (doc 20 cut SM.3b; §8): one rig record per terrain vehicle.
+    pub excursions:
+        StateFamilyHandle<crate::surface::excursion::RigKey, crate::surface::excursion::RigRecord>,
 }
 
 /// Published in module state by `crate::port_tick::register` — read-only capabilities, the
@@ -487,6 +497,21 @@ pub struct PortHandles {
     /// exactly when its provider registered (the inventory cell filled and the burn table
     /// built), so `+ship/undock` refuses `UNDOCK_UNWIRED` on a roster without it.
     pub burn: Option<mush_core::DefinitionRef>,
+    /// **Doc 20 cut SM.3b**: the registered `tacsim_surface_act` action (every act's start,
+    /// `crate::surface::act`); `Some` exactly when its provider registered (the inventory
+    /// cell filled and the tools table built — the burn rule), so every `+tv` act answers
+    /// `TV_UNWIRED` on a roster without it.
+    pub surface_act: Option<mush_core::DefinitionRef>,
+    /// **Doc 20 cut SM.3b**: the registered `tacsim_surface_done` action (every act's
+    /// finish, submitted by the `tacsim.surface` tick as the operator); `Some` exactly
+    /// when its provider registered.
+    pub surface_done: Option<mush_core::DefinitionRef>,
+    /// **Doc 20 cut SM.3b** (finding F5): the one tools table the surface providers, the
+    /// command's preview, `+tv` status and the departure's bay gate read — the battery
+    /// has one source. `None` when the table did not build (logged; the providers are
+    /// then unregistered and the verb answers `TV_UNWIRED`).
+    pub surface_tools:
+        Option<std::sync::Arc<BTreeMap<CanonicalId, crate::definitions::tools::ToolDef>>>,
 }
 
 pub(crate) fn canonical(text: &str) -> Result<CanonicalId, ModError> {
@@ -513,7 +538,8 @@ pub(crate) fn family_descriptor(
     .map_err(|error| ModError::msg(error.to_string()))
 }
 
-/// Register the two production families (doc 18 cut IC5), unconditionally.
+/// Register the three production families (doc 18 cut IC5; doc 20 cut SM.3b's
+/// `tacsim.excursion`), unconditionally.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError> {
     let port_stock = reg.state_family::<StockIssueId, StockReceipt, _, _, _, _>(
         family_descriptor(
@@ -533,9 +559,31 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
         |value: &Ticket| value.check(),
         |value: &Ticket| serde_json::to_value(value).map_err(|e| e.to_string()),
     )?;
+    // Doc 20 cut SM.3b (§8, D-20-11): the rigs' excursion records.
+    let excursions = reg.state_family::<
+        crate::surface::excursion::RigKey,
+        crate::surface::excursion::RigRecord,
+        _,
+        _,
+        _,
+        _,
+    >(
+        family_descriptor(
+            crate::surface::excursion::EXCURSION_FAMILY,
+            "tacsim.excursion_key.v1",
+            "tacsim.excursion",
+        )?,
+        |key: &crate::surface::excursion::RigKey| Ok(key.key_text()),
+        |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+        |value: &crate::surface::excursion::RigRecord| value.check(),
+        |value: &crate::surface::excursion::RigRecord| {
+            serde_json::to_value(value).map_err(|e| e.to_string())
+        },
+    )?;
     Ok(PortFamilies {
         port_stock,
         tickets,
+        excursions,
     })
 }
 

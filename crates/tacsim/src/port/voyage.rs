@@ -399,6 +399,18 @@ pub const LIFT_USAGE: &str = "Usage: +ship/lift <port>";
 /// **Doc 20 cut SM.2 (lead override 3)**: a departure to a site whose readiness lines are
 /// not all ready: `{site}`.
 pub const SITE_CLOSED: &str = "{site} is closed: its pad is not ready.";
+/// **Doc 20 cut SM.3b (§4.3, D-20-7)**: a rig out on a site: `{n}`, `{site}`, `{name}`.
+pub const TV_OUT: &str = "Rig {n} is out on {site}; the {name} lifts only with every rig in her bay: +tv/{n} recover brings it in.";
+/// **Doc 20 cut SM.3b (D-20-7; decision 21: the refusal names a remedy that works)**: a rig
+/// logged out while its hull is **not** on a site's pad — at a port, or anywhere a recover
+/// cannot reach (only a staff move gets it there): `{n}`, `{where}` (`on {site}`, or `away
+/// from her bay` when no site can be named), `{name}`. Under the same `DepartRefusalKind::TvOut`.
+pub const TV_AWAY: &str = "Rig {n} is logged out {where}; the {name} lifts only with every rig in her bay: staff must bring it in.";
+/// **Doc 20 cut SM.3b**: a rig mid-act: `{n}`, `{doing}`, `{name}`.
+pub const TV_BUSY: &str = "Rig {n} is {doing}; the {name} lifts once it is done.";
+/// **Doc 20 cut SM.3b (§4.3)**: a hopper with ore in it: `{n}`, `{t}` whole tonnes, `{name}`.
+/// (SM.8 adds the unload to the remedy.)
+pub const HOPPER_LOADED: &str = "Rig {n}'s hopper holds {t} t of ore; the {name} lifts with every hopper empty: +tv/{n} dump empties it onto the spoil.";
 
 /// **The waypoint details** (lead ruling L9: code data keyed by the lane place id,
 /// so no pack version moves): the clause [`BOUNDARY`]'s `{detail}` takes.
@@ -419,15 +431,19 @@ pub(crate) fn ic_days(secs: i64) -> String {
     format!("{}.{}", tenths / 10, tenths % 10)
 }
 
-/// Real seconds as `{h} h {m} m`, `{m} m` or `under a minute`.
+/// Real seconds as `{h} h {m} min`, `{m} min` or `under a minute` — **the one spelling of a
+/// real wall-clock span** (doc 20 cut SM.3b, the lead's ruling in its fixer round: minutes are
+/// `min`, so a real span never reads as the metres doc 20's texts print as `m`). The arena's
+/// match durations (`match_::record::duration_words`) and the chart's light lag
+/// (`chart::lag_text`) are other quantities with their own renders.
 #[must_use]
 pub(crate) fn real_span(secs: i64) -> String {
     let secs = secs.max(0);
     let (hours, minutes) = (secs / 3_600, (secs % 3_600) / 60);
     if hours > 0 {
-        format!("{hours} h {minutes} m")
+        format!("{hours} h {minutes} min")
     } else if minutes > 0 {
-        format!("{minutes} m")
+        format!("{minutes} min")
     } else {
         "under a minute".to_owned()
     }
@@ -1868,6 +1884,10 @@ fn plan_block(
         Ok(site_dest) => site_dest,
         Err(closed) => return Ok(vec![format!("Plan for {}:", dest.port), closed.line]),
     };
+    // Doc 20 cut SM.3b (lead ruling 7): a rig out or a loaded hopper plans nothing either.
+    if let Err(refused) = bay_gate(ctx, view, &name_of(w, view.hull())) {
+        return Ok(vec![format!("Plan for {}:", dest.port), refused.line]);
+    }
     let mut plan = plan_on(w, basis, &dest.routes);
     // Doc 20 cut SM.2 (Q-20-7): at a site berth the plan carries the stay's charge the
     // filing would make.
@@ -2369,6 +2389,11 @@ pub(crate) enum DepartRefusalKind {
     Landing,
     /// **Doc 20 cut SM.2 (lead override 3)**: the destination site's pad is not ready.
     SiteClosed,
+    /// **Doc 20 cut SM.3b (§4.3, D-20-7)**: a rig is out of the bay or mid-act
+    /// ([`TV_OUT`], [`TV_BUSY`]).
+    TvOut,
+    /// **Doc 20 cut SM.3b (§4.3)**: a rig's hopper holds ore ([`HOPPER_LOADED`]).
+    HopperLoaded,
 }
 
 /// A typed refusal: its kind and the line `+ship/undock` answers with.
@@ -2413,6 +2438,147 @@ pub(crate) fn site_gate<'w>(
         ));
     }
     Ok(site_dest)
+}
+
+/// **The bay gate** (doc 20 cut SM.3b; §4.3's two typed departure refusals, D-20-7; lead
+/// ruling 7, decision 7): beside [`site_gate`], called right after it by
+/// [`prepare_departure`] (so `+ship/undock`, `+ship/lift` and the order fire refuse),
+/// `+ship/plan`'s block and the queue's dry run (`executor::plan_queue`). The hull's rigs are
+/// the placements in its bay and the live lease records naming it, by slot. Each rig not
+/// `Interior` in this hull's bay, or whose `tacsim.excursion` record holds an act or an open
+/// excursion, refuses — [`TV_BUSY`] with an act in flight; else, with the hull on a site's
+/// pad, [`TV_OUT`] (`{site}` where it stands, or the open excursion's site: a rig a staff move
+/// left in the bay with its excursion open reads `TV_OUT`, and its remedy, `+tv/{n} recover`,
+/// closes it — decision 21); else (the hull at a port or anywhere a recover cannot reach, which
+/// only a staff move makes) [`TV_AWAY`], whose remedy is staff's (the fixer round's item 2).
+/// The record is read through `crate::port::tv::rig_flight`, the reader the lease return and
+/// the repossession share. Then each rig in the bay whose hopper holds anything refuses [`HOPPER_LOADED`]. A
+/// record or a pool that will not read is `PlanDark`, logged. A standard Dray (no bay, no
+/// records) answers `Ok(())` at once.
+///
+/// # Errors
+///
+/// [`DepartRefusalKind::TvOut`], [`DepartRefusalKind::HopperLoaded`] or
+/// [`DepartRefusalKind::PlanDark`].
+pub(crate) fn bay_gate(
+    ctx: &Ctx<'_>,
+    view: &HullView<'_>,
+    name: &str,
+) -> Result<(), DepartRefusal> {
+    use crate::port::tv::RigFlight;
+    use crate::surface::act::{
+        Where, doing_words, ramp_label, site_name, site_of_domain, where_is,
+    };
+    use DepartRefusalKind as K;
+    let w: &World = ctx.w;
+    let hull = view.hull();
+    let dark = || refusal(K::PlanDark, PLAN_DARK.replace("{name}", name));
+    // The rigs: the bay's placements and the live records naming the hull, by slot.
+    let mut rigs: Vec<(u8, ObjId)> = crate::port::vehicle::rigs_in_bay(w, view)
+        .iter()
+        .map(|rig| (rig.slot, rig.tv))
+        .collect();
+    for record in crate::port::tv::live_on_hull(w, hull) {
+        if !rigs.iter().any(|(_, tv)| *tv == record.tv) {
+            rigs.push((record.slot, record.tv));
+        }
+    }
+    if rigs.is_empty() {
+        return Ok(());
+    }
+    rigs.sort_by_key(|(slot, tv)| (*slot == 0, *slot, *tv));
+    if w.module_state::<PortHandles>().is_none() {
+        return Err(dark());
+    }
+    let n_of = |slot: u8| {
+        if slot == 0 {
+            "?".to_owned()
+        } else {
+            slot.to_string()
+        }
+    };
+    let ramp = ramp_label(w, hull);
+    // The pad the hull is settled on, when it is a site's: there `+tv/{n} recover` works, so
+    // `TV_OUT` names it; anywhere else only staff can bring a rig in (`TV_AWAY`; decision 21,
+    // the fixer round's item 2).
+    let pad = match berth_of(w, hull) {
+        Berth::Docked { def, .. } if def.site.is_some() => Some(port_name(def)),
+        Berth::Docked { .. } | Berth::UnderWay | Berth::Elsewhere => None,
+    };
+    for (slot, tv) in &rigs {
+        // The one reader the lease return and the repossession share (the fixer round's
+        // item 1), so the three cannot drift.
+        let flight = match crate::port::tv::rig_flight(ctx, *tv) {
+            Ok(flight) => flight,
+            Err(error) => {
+                tracing::warn!(tv = tv.0, %error, "tacsim: a departure could not read a rig's excursion record");
+                return Err(dark());
+            }
+        };
+        let place = where_is(w, *tv);
+        let in_bay = place == (Where::Bay { hull });
+        if let RigFlight::Busy { kind, .. } = flight {
+            return Err(refusal(
+                K::TvOut,
+                TV_BUSY
+                    .replace("{n}", &n_of(*slot))
+                    .replace("{doing}", &doing_words(kind, &ramp))
+                    .replace("{name}", name),
+            ));
+        }
+        let open = match &flight {
+            RigFlight::Out { site } => Some(site),
+            RigFlight::Idle | RigFlight::Busy { .. } => None,
+        };
+        if !in_bay || open.is_some() {
+            let named = match (open, place) {
+                (Some(site), _) => Some(site_name(w, site)),
+                (None, Where::Ground { domain, .. }) => {
+                    site_of_domain(w, domain).map(|entry| site_name(w, &entry))
+                }
+                (None, Where::Bay { .. } | Where::Elsewhere) => None,
+            };
+            let line = match &pad {
+                Some(pad) => {
+                    let site = named.unwrap_or_else(|| match place {
+                        Where::Ground { .. } => "the ground".to_owned(),
+                        Where::Bay { .. } | Where::Elsewhere => pad.clone(),
+                    });
+                    TV_OUT
+                        .replace("{n}", &n_of(*slot))
+                        .replace("{site}", &site)
+                        .replace("{name}", name)
+                }
+                None => TV_AWAY
+                    .replace("{n}", &n_of(*slot))
+                    .replace(
+                        "{where}",
+                        &named.map_or_else(
+                            || "away from her bay".to_owned(),
+                            |site| format!("on {site}"),
+                        ),
+                    )
+                    .replace("{name}", name),
+            };
+            return Err(refusal(K::TvOut, line));
+        }
+    }
+    for (slot, tv) in &rigs {
+        let (kg, _) = crate::port::tv::hopper_load_of(ctx, *tv).map_err(|error| {
+            tracing::warn!(tv = tv.0, %error, "tacsim: a departure could not read a rig's hopper");
+            dark()
+        })?;
+        if kg > 0 {
+            return Err(refusal(
+                K::HopperLoaded,
+                HOPPER_LOADED
+                    .replace("{n}", &n_of(*slot))
+                    .replace("{t}", &(kg / 1_000).to_string())
+                    .replace("{name}", name),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// **A planner refusal the departure names** (doc 20 cut SM.2, D-20-3; doc 18 cut IC9):
@@ -2637,6 +2803,8 @@ pub(crate) fn prepare_departure(
     // Doc 20 cut SM.2 (lead override 3): a site whose pad is not ready takes no
     // departure (its lines never gate the desk, so they gate the passage here).
     let site_dest = site_gate(w, &dest)?;
+    // Doc 20 cut SM.3b (lead ruling 7): every rig in the bay, every hopper empty.
+    bay_gate(ctx, &view, &name)?;
     // Lead ruling L13: promised goods hold the hull.
     if let Some(vault) = hold_vault(w, &view) {
         match goods_pending_aboard(w, EndpointRef(vault)) {
@@ -3334,8 +3502,8 @@ mod tests {
         assert_eq!(ic_days(-5), "0.0");
         assert_eq!(real_span(0), "under a minute");
         assert_eq!(real_span(59), "under a minute");
-        assert_eq!(real_span(267), "4 m");
-        assert_eq!(real_span(3_600 + 120), "1 h 2 m");
+        assert_eq!(real_span(267), "4 min");
+        assert_eq!(real_span(3_600 + 120), "1 h 2 min");
         assert_eq!(utc_hhmm(0), "00:00");
         assert_eq!(utc_hhmm(54_360), "15:06");
         assert_eq!(utc_hhmm(-60), "23:59");

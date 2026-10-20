@@ -1372,6 +1372,14 @@ pub(crate) fn plan_queue(
                         continue;
                     }
                 };
+                // Doc 20 cut SM.3b (lead ruling 7): the filing's bay gate, read now.
+                if let Err(refused) = crate::port::voyage::bay_gate(ctx, view, &name) {
+                    lines.push(format!(
+                        "  Order {id}, depart for {port}: it would hold: {}.",
+                        inline_reason(&refused.line)
+                    ));
+                    continue;
+                }
                 let Ok(basis) = crate::port::voyage::basis(ctx, view, occupants) else {
                     return dark;
                 };
@@ -3028,7 +3036,9 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
                         | K::StoresShort
                         | K::PortClosed
                         | K::Landing
-                        | K::SiteClosed => refusal.line.clone(),
+                        | K::SiteClosed
+                        | K::TvOut
+                        | K::HopperLoaded => refusal.line.clone(),
                         K::PlanDark | K::VoyageDark | K::Unwired => {
                             if state.depart_dark_warned.insert(hull.0) {
                                 tracing::error!(hull = hull.0, order = id, line = %refusal.line, "tacsim: a queued departure meets a dark plan; it waits");

@@ -23,16 +23,33 @@
 //! with the off-loop site driver, footing from composite cells and the instruments; SM.6
 //! reserves from the geology table; SM.7 mining.
 //!
+//! **Doc 20 cut SM.3b** gives the terrain vehicle its clock:
+//!
+//! - [`excursion`](crate::surface::excursion) — the typed `tacsim.excursion` family (one
+//!   [`RigRecord`](crate::surface::excursion::RigRecord) per rig: the act in flight, the
+//!   charge it reserved, the open excursion, the lazy charge) and the normal-lane projection
+//!   `tacsim:tv:<tv>` ([`TvRec`](crate::surface::excursion::TvRec)), with the pure charge,
+//!   reserve, cap and ramp arithmetic;
+//! - [`act`](crate::surface::act) — the acts' world plans and the two authoritative
+//!   providers, `tacsim_surface_act` (every act's start) and `tacsim_surface_done` (every
+//!   act's finish);
+//! - [`tick`](crate::surface::tick) — `tacsim.surface`, the Coarse 1 s pull tick that writes
+//!   each act's placement and projection at its due instant and submits its finish as the
+//!   operator.
+//!
 //! The slot ([`GeologyState`](crate::surface::GeologyState)) is RAM only and never persisted: the key, its status, the bodies'
 //! tables and the site cache. Both installers write it through `World::module_state_mut` from
 //! inside this crate (the `mush_tactics::ground::configure` pattern), so the state-slot owner
 //! census needs no row.
 
+pub mod act;
 pub mod commands;
+pub mod excursion;
 pub mod geology;
 pub mod ground;
 pub mod key;
 pub mod reading;
+pub mod tick;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -48,6 +65,26 @@ pub use key::{
     GEOLOGY_PIN_KEY, GeologyBoot, GeologyDisabled, GeologyPinRecord, GeologyStatus, live,
 };
 pub use reading::{FieldReading, Footing, READING_RULE_VERSION};
+
+pub use act::{
+    MAX_PROBE_CU, MAX_PROBE_S, Refusal, RigAt, SURFACE_ACT_ACTION, SURFACE_ACT_OUTCOME,
+    SURFACE_DONE_ACTION, SURFACE_DONE_OUTCOME, SURFACE_KEY_PREFIX, Where, act_key, done_key,
+};
+pub use excursion::{
+    Act, ActKind, ActParams, ActResult, ActView, CapRefused, Charge, ChargeAfter, DUMP_S,
+    EXCURSION_FAMILY, EXCURSION_SCHEMA, Excursion, ExcursionCounts, ExcursionId, FrozenLeg,
+    IC_HOUR, LAUNCH_S, LegWaypoint, MAX_DUMP_GOODS, MAX_EXCURSIONS_PER_OPERATOR,
+    MAX_EXCURSIONS_PER_SITE, MAX_EXCURSIONS_WORLD, MAX_LEG_WAYPOINTS, MAX_TV_LOG_BYTES,
+    MAX_TV_LOG_LINES, MAX_TV_REC_BYTES, Outcome, PAD_CENTRE_CM, RECOVER_S, RefusedCode,
+    ReserveShort, RigKey, RigRecord, TV_REC_PREFIX, TV_REC_SCHEMA, TvLogLine, TvPose, TvRec,
+    TvRecState, TvState, cap_refusal, cells_apart, charge_at, needs_battery, ramp_pose,
+    reserve_check, reserved_total, settle_free, site_cell, tv_rec_key, tv_rec_key_owner,
+};
+pub use tick::{
+    DONE_BACKOFF_FIRES, MAX_DONE_ATTEMPTS, MAX_EXCURSIONS_VISITED_PER_FIRE,
+    MAX_EXCURSIONS_WORKED_PER_FIRE, MAX_RIG_RECORDS, SCAN_PAGE, SURFACE_TICK, SURFACE_TICK_PERIOD,
+    SurfaceFireStats, SurfaceTickState, last_surface_fire,
+};
 
 /// The most body tables one world holds.
 pub const MAX_BODY_GEOLOGIES: usize = 32;

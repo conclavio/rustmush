@@ -134,7 +134,7 @@ pub const RECALL_BAY: &str =
     "The {name} still carries a rig in her bay; she goes back to the Co-op with an empty bay.";
 /// **The page a bay block raises** on the recall arm (doc 20 cut SM.3a; reviewer F1:
 /// the hold-and-revoke advice cannot clear a rig, so the page says what does).
-pub const BAY_PAGE: &str = "tacsim: the hull's charter is ending but a rig in its bay cannot go back to Occator (its hopper is not empty, or its lease record cannot be read, or its lease will not end, or the hull's unit is bound to a definition that is not a hull (not fielded, or fielded with no interior or no logistics) so its bay cannot be read); staff empty the hopper (staff may take from a hopper vault), repair the tacsim:tvlease: record, or bind the hull's unit back to the Dray or the Dray-P; the recall retries";
+pub const BAY_PAGE: &str = "tacsim: the hull's charter is ending but a rig in its bay cannot go back to Occator (its hopper is not empty, or its lease record cannot be read, or its lease will not end, or the hull's unit is bound to a definition that is not a hull (not fielded, or fielded with no interior or no logistics) so its bay cannot be read, or a rig is out on a site or mid-act (its tacsim.excursion record holds an act or an open excursion)); staff empty the hopper (staff may take from a hopper vault), repair the tacsim:tvlease: record, or bind the hull's unit back to the Dray or the Dray-P; a rig out on a site holds until its pilot recovers it (+tv/<n> recover) or its act finishes; the recall retries";
 
 /// Why a hull goes back (maps to [`EndCause`]).
 #[derive(Clone, Debug, PartialEq, Eq)]

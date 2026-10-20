@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(plan_instant(&w, now - 60), w.world_ic_now().at);
         let line = render_due(&w, now + 1_800);
         assert!(line.starts_with("19:30 UTC today (IC "), "{line}");
-        assert!(line.ends_with("; in 30 m)"), "{line}");
+        assert!(line.ends_with("; in 30 min)"), "{line}");
         assert_eq!(render_due(&w, now), "now");
         assert_eq!(render_due(&w, now - 5), "now");
         // At rate 0 the IC clock stands still: every instant maps to the anchor.
@@ -379,7 +379,7 @@ mod tests {
         assert_eq!(plan_instant(&stopped, now + 3_600), 1_000_000);
         assert_eq!(
             render_due(&stopped, now + 3_600),
-            "20:00 UTC today (IC clock stopped; in 1 h 0 m)"
+            "20:00 UTC today (IC clock stopped; in 1 h 0 min)"
         );
     }
 

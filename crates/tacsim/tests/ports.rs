@@ -1691,7 +1691,7 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
         ));
         if def.site.is_some() {
             want.push(format!(
-                "  {entry} site: 16 block places and the site clerk laid up. [ready]"
+                "  {entry} site: 16 block places, the site clerk and the spoil laid up. [ready]"
             ));
         }
         for org in &def.orgs {

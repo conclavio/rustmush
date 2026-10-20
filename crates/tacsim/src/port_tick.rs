@@ -37,6 +37,13 @@
 //!   submission), with its pull verification at the top of every fire
 //!   ([`crate::port::executor`]); a hull with a filed passage is the launch arm's.
 //!
+//! **Doc 20 cut SM.3b** registers the surface layer's two providers here too, beside the
+//! burn and under the crate's one `outcome` and one `action` validator:
+//! `tacsim_surface_act` (every rig act's start) and `tacsim_surface_done` (every act's
+//! finish, submitted by the `tacsim.surface` tick as the operator), each only when the
+//! inventory cell is filled and the tools table built (`crate::surface::act`); and, at the
+//! end of [`crate::port_tick::register`], the surface tick itself (`crate::surface::tick`).
+//!
 //! **The probe** (lead ruling L3) is registered only in a test world: an agent
 //! that acts as its principal once per remaining count, submitting
 //! `tacsim_port_probe`, whose provider writes one mark into the test-only family
@@ -162,7 +169,20 @@ pub fn register(
         .cloned()
         .ok_or_else(|| ModError::msg("the burn outcome did not register"))?;
     // One `action` validator for the whole crate, likewise.
-    let actions = action_descriptors(&stock_outcome, &burn_outcome, probe_outcome.as_ref())?;
+    let surface_act_outcome = outcome_refs
+        .get(crate::surface::act::SURFACE_ACT_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the surface act's outcome did not register"))?;
+    let surface_done_outcome = outcome_refs
+        .get(crate::surface::act::SURFACE_DONE_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the surface finish's outcome did not register"))?;
+    let actions = action_descriptors(
+        &stock_outcome,
+        &burn_outcome,
+        (&surface_act_outcome, &surface_done_outcome),
+        probe_outcome.as_ref(),
+    )?;
     reg.definition_validator(
         kind("action")?,
         crate::definitions::exact_validator(actions.clone()),
@@ -224,11 +244,69 @@ pub fn register(
         }
         _ => None,
     };
+    // Doc 20 cut SM.3b (finding F5): the one tools table, built once — never a `ModError`
+    // (the burn precedent: a bad table leaves one feature unwired, it does not fail the
+    // layer's registration).
+    let surface_tools = match crate::definitions::tools::tools_table() {
+        Ok(table) => Some(Arc::new(table)),
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "tacsim: the tools table does not build; the rig acts are not registered (every \
+                 +tv act answers TV_UNWIRED on this server)"
+            );
+            None
+        }
+    };
+    // Doc 20 cut SM.3b: `tacsim_surface_act` and `tacsim_surface_done` — registered only when
+    // the inventory cell is filled (the dump moves pools through the delegated families) and
+    // the tools table built; the definitions register regardless.
+    let surface_act_action = action_refs
+        .get(crate::surface::act::SURFACE_ACT_ACTION)
+        .cloned();
+    let surface_done_action = action_refs
+        .get(crate::surface::act::SURFACE_DONE_ACTION)
+        .cloned();
+    let (surface_act, surface_done) = match (
+        surface_act_action,
+        surface_done_action,
+        inventory_families.clone(),
+        surface_tools.clone(),
+    ) {
+        (Some(act), Some(done), Some(inventory), Some(tools)) => {
+            reg.action_provider(
+                act.clone(),
+                crate::surface::act::SurfaceActProvider {
+                    action: act.clone(),
+                    outcome: surface_act_outcome,
+                    excursions: port_families.excursions.clone(),
+                    inventory: inventory.clone(),
+                    tools: Arc::clone(&tools),
+                    test_world,
+                },
+            )?;
+            reg.action_provider(
+                done.clone(),
+                crate::surface::act::SurfaceDoneProvider {
+                    action: done.clone(),
+                    outcome: surface_done_outcome,
+                    excursions: port_families.excursions.clone(),
+                    inventory,
+                    tools,
+                },
+            )?;
+            (Some(act), Some(done))
+        }
+        _ => (None, None),
+    };
     reg.state(PortHandles {
         families: port_families,
         inventory: inventory_families,
         probe,
         burn: burn_registered,
+        surface_act,
+        surface_done,
+        surface_tools,
     });
     reg.state(PortTickState::new(probe_action, stock_action));
     reg.tick(
@@ -237,6 +315,8 @@ pub fn register(
         Arc::new(port_tick),
     )?;
     reg.hook(HookPoint::Connected, Arc::new(ReconnectNotices));
+    // Doc 20 cut SM.3b: the `tacsim.surface` tick and its slots.
+    crate::surface::tick::register(reg)?;
     Ok(())
 }
 
@@ -257,8 +337,9 @@ fn descriptor(kind_word: &str, id: &str, payload: Value) -> Result<DefinitionDes
 }
 
 /// **Every `outcome` definition this crate registers** — doc 18 cut IC8's
-/// `tacsim_port_stock_result` and cut IC9's `tacsim_port_burn_result` on every
-/// roster, and the probe's in a test world: a second `definition_validator` call
+/// `tacsim_port_stock_result`, cut IC9's `tacsim_port_burn_result` and doc 20 cut SM.3b's
+/// `tacsim_surface_act_result` and `tacsim_surface_done_result` on every roster, and the
+/// probe's in a test world: a second `definition_validator` call
 /// for one kind is a registration conflict, so there is exactly one validator per
 /// kind for the crate.
 fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, ModError> {
@@ -273,6 +354,17 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
             crate::port::burn::BURN_OUTCOME,
             json!({ "fields": ["actor", "burn_t", "crew_days", "hull", "seq"] }),
         )?,
+        // Doc 20 cut SM.3b: the rig act's start and finish.
+        descriptor(
+            "outcome",
+            crate::surface::act::SURFACE_ACT_OUTCOME,
+            json!({ "fields": ["act", "actor", "due_ic", "ordinal", "tv"] }),
+        )?,
+        descriptor(
+            "outcome",
+            crate::surface::act::SURFACE_DONE_OUTCOME,
+            json!({ "fields": ["actor", "ordinal", "result", "tv"] }),
+        )?,
     ];
     if test_world {
         descriptors.push(descriptor(
@@ -285,12 +377,14 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
 }
 
 /// **Every `action` definition this crate registers**, each referencing its
-/// outcome's exact `DefinitionRef` — doc 18 cut IC8's `tacsim_port_stock` and cut
-/// IC9's `tacsim_port_burn` on every roster, and the probe's when its outcome is
+/// outcome's exact `DefinitionRef` — doc 18 cut IC8's `tacsim_port_stock`, cut
+/// IC9's `tacsim_port_burn` and doc 20 cut SM.3b's `tacsim_surface_act` and
+/// `tacsim_surface_done` on every roster, and the probe's when its outcome is
 /// registered (a test world); one validator per kind for the crate.
 fn action_descriptors(
     stock_outcome: &DefinitionRef,
     burn_outcome: &DefinitionRef,
+    surface_outcomes: (&DefinitionRef, &DefinitionRef),
     probe_outcome: Option<&DefinitionRef>,
 ) -> Result<Vec<DefinitionDescriptor>, ModError> {
     let mut descriptors = vec![
@@ -314,6 +408,28 @@ fn action_descriptors(
             }),
         )?
         .with_references(vec![burn_outcome.clone()]),
+        // Doc 20 cut SM.3b: every rig act's start and its finish, both writing the rig's
+        // `tacsim.excursion` record.
+        descriptor(
+            "action",
+            crate::surface::act::SURFACE_ACT_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::surface::excursion::EXCURSION_FAMILY,
+            }),
+        )?
+        .with_references(vec![surface_outcomes.0.clone()]),
+        descriptor(
+            "action",
+            crate::surface::act::SURFACE_DONE_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::surface::excursion::EXCURSION_FAMILY,
+            }),
+        )?
+        .with_references(vec![surface_outcomes.1.clone()]),
     ];
     if let Some(outcome) = probe_outcome {
         descriptors.push(
@@ -1016,7 +1132,9 @@ pub(crate) enum SwapRefused {
 }
 
 impl Fire {
-    fn new(owed: BTreeMap<ObjId, ObjId>) -> Fire {
+    /// A fire's ledger, starting from `owed` (doc 20 cut SM.3b: the surface tick starts
+    /// every fire from an empty map, finding F8).
+    pub(crate) fn new(owed: BTreeMap<ObjId, ObjId>) -> Fire {
         Fire {
             acted: BTreeSet::new(),
             owed,
@@ -1138,6 +1256,46 @@ pub fn read_pool(
     let key = mush_inventory::pool_key(endpoint, commodity)
         .map_err(|error| PoolReadError::Key(error.to_string()))?;
     pool_value(ctx.action_state(&inventory.pools, &key))
+}
+
+/// **One pool's availability** — its balance less every live hold, the figure
+/// `InventoryFamilies::pool`'s `available` gives a prepare — read through the same lens and
+/// rule as [`read_pool`] (doc 20 cut SM.3b; the fixer round's item 9: the dump's preview
+/// names exactly what its start freezes). An absent pool is 0; a scalar without its book, a
+/// book without its scalar (the half pool `InventoryFamilies::pool` refuses; the round's
+/// review F10), or a book that refuses the arithmetic, is `Corrupt`; a refusal is never 0.
+///
+/// # Errors
+///
+/// [`PoolReadError`], as its variants say.
+pub fn read_available(
+    ctx: &Ctx<'_>,
+    endpoint: mush_inventory::record::EndpointRef,
+    commodity: &CanonicalId,
+) -> Result<u64, PoolReadError> {
+    let Some(inventory) = ctx
+        .w
+        .module_state::<PortHandles>()
+        .and_then(|handles| handles.inventory.as_ref())
+    else {
+        return Err(PoolReadError::Unwired);
+    };
+    let key = mush_inventory::pool_key(endpoint, commodity)
+        .map_err(|error| PoolReadError::Key(error.to_string()))?;
+    let scalar = ctx
+        .action_state(&inventory.pools, &key)
+        .map_err(|error| pool_read_error(&error))?;
+    let book = ctx
+        .action_state(&inventory.books, &key)
+        .map_err(|error| pool_read_error(&error))?;
+    match (scalar, book) {
+        (None, None) => Ok(0),
+        (None, Some(_)) => Err(PoolReadError::Corrupt),
+        (Some(scalar), Some(book)) => book
+            .checked_available(*scalar)
+            .map_err(|_| PoolReadError::Corrupt),
+        (Some(_), None) => Err(PoolReadError::Corrupt),
+    }
 }
 
 /// **One pool's balance, read from a hook** (doc 18 cut IC6: the ship gauges'

@@ -161,4 +161,16 @@ the bay and its hopper empty, and your deposit is released. Without go it says
 what would happen. A rig never sells from its hopper, and nobody takes ore out of
 a hopper by hand.
 
+With your Dray-P settled on a site's pad and you aboard, you work the rigs from
+the bridge. `+tv/1 launch` says what sending rig 1 down the stern ramp would do
+and commits nothing; `+tv/1 launch go` sends it: 300 IC s later it stands on the
+ground at the foot of the ramp. `+tv/1 recover` brings it back up when it stands
+beside the ramp, on the ramp's own cell or the next (300 IC s); a rig further off
+is told about how far it is. `+tv/1 dump go` empties its hopper onto the
+site's spoil heap, for good. Without a number, `+tv/launch` addresses the rig you
+named last, or your only rig. `+tv` shows where each rig is, its charge and any
+act it is in the middle of. The Dray-P lifts only with every rig in her bay and
+every hopper empty: `+ship/lift`, `+ship/plan` and a queued depart all say which
+rig holds her.
+
 See also: `help orders`, `help ports`, `help trade`, `help coop`.

@@ -50,10 +50,11 @@ use tacsim::port::refit::{
 };
 use tacsim::port::tv::{
     BAY_FULL, HOPPER_FULL, LEASE_FAILED, LEASE_FUNDS, LEASE_NOT_HERE, LEASE_PREVIEW,
-    LEASE_UNDER_WAY, LEASE_USAGE, LEASE_WHERE, LEASED, NO_BAY, NO_RIG, NO_RIG_FREE, REPOSSESSED,
+    LEASE_UNDER_WAY, LEASE_WHERE, LEASED, NO_BAY, NO_RIG, NO_RIG_FREE, REPOSSESSED,
     REPOSSESSED_FORFEIT, RETURN_PREVIEW, RETURN_PREVIEW_FORFEIT, RETURNED, RETURNED_FORFEIT,
     RIG_EMPTY, RIG_FORFEIT, RIG_LEASE_ENDED, RIG_LINE, RIG_OUT, RIG_PAST_TERM, SLOT_TAKEN,
-    TERM_FORFEIT, TERM_RENEWED, TV_DARK, TvLease, TvLeaseState, TvLeaseStatus, WHICH_RIG,
+    TERM_FORFEIT, TERM_RENEWED, TV_DARK, TV_USAGE, TvLease, TvLeaseState, TvLeaseStatus, WHERE_BAY,
+    WHICH_RIG,
 };
 use tacsim::port::voyage::{Voyage, VoyageState};
 use tacsim::port::{
@@ -1439,6 +1440,8 @@ fn sm3a_lease_takes_two_rigs_into_the_bay() {
     let line1 = RIG_LINE
         .replace("{n}", "1")
         .replace("{mark}", "OWP-TV-01")
+        .replace("{where}", WHERE_BAY)
+        .replace("{charge}", "100")
         .replace("{span}", "168 d 0 h")
         .replace("{hopper}", "empty");
     assert!(status.contains(&line1), "{status}\nwanted: {line1}");
@@ -1667,6 +1670,8 @@ fn sm3a_a_staff_ended_rig_lease_reads_ended_and_still_returns() {
     let want = at_counter(&rig.tw, RIG_LEASE_ENDED)
         .replace("{n}", "1")
         .replace("{mark}", "OWP-TV-01")
+        .replace("{where}", WHERE_BAY)
+        .replace("{charge}", "100")
         .replace("{hopper}", "empty");
     assert!(status.contains(&want), "{status}\nwanted: {want}");
     skip_days(&mut rig, 170);
@@ -1743,6 +1748,8 @@ fn sm3a_a_forfeit_rig_keeps_its_slot() {
     let forfeit = RIG_FORFEIT
         .replace("{n}", "2")
         .replace("{mark}", "OWP-TV-02")
+        .replace("{where}", WHERE_BAY)
+        .replace("{charge}", "100")
         .replace("{hopper}", "empty");
     assert!(status.contains(&forfeit), "{status}\nwanted: {forfeit}");
     assert!(!status.contains("Rig ?:"), "{status}");
@@ -1771,14 +1778,22 @@ fn sm3a_a_forfeit_rig_keeps_its_slot() {
 // 7. The dispatcher (reviewer F10)
 // ---------------------------------------------------------------------------
 
-/// **`+tv/3` is an unknown switch** (reviewer F10): the dispatcher refuses the undeclared
-/// switch before `+tv`'s handler runs.
+/// **A slot past the bay names no rig** (reviewer F10; doc 20 cut SM.3b generalises the
+/// switches to `MAX_BAY_ITEMS`): `+tv/3` on the Dray-P's two-slot bay answers `NO_RIG`, the
+/// whole reply; `+tv/5` is still the dispatcher's unknown switch, refused before `+tv`'s
+/// handler runs.
 #[test]
-fn sm3a_tv_three_is_an_unknown_switch() {
-    let mut rig = boot(Roster::bare());
-    let pilot = rig.tw.spawn_player("Pilot");
+fn sm3a_tv_slots_past_the_bay_answer_no_rig() {
+    let mut rig = stocked();
+    let (pilot, _) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
     let out = run(&mut rig.tw, pilot, "+tv/3");
-    assert_eq!(out.trim(), "Unknown switch \"/3\" for +tv.", "{out}");
+    assert_eq!(
+        out.trim(),
+        NO_RIG.replace("{n}", "3").replace("{name}", "Salt Moth"),
+        "{out}"
+    );
+    let out = run(&mut rig.tw, pilot, "+tv/5");
+    assert_eq!(out.trim(), "Unknown switch \"/5\" for +tv.", "{out}");
 }
 
 // ---------------------------------------------------------------------------
@@ -2266,6 +2281,8 @@ fn sm3a_a_term_past_due_is_re_debited_or_the_deposit_forfeit() {
     let past = RIG_PAST_TERM
         .replace("{n}", "1")
         .replace("{mark}", "OWP-TV-01")
+        .replace("{where}", WHERE_BAY)
+        .replace("{charge}", "100")
         .replace("{fee}", FEE)
         .replace("{hopper}", "empty");
     assert!(status.contains(&past), "{status}\nwanted: {past}");
@@ -2439,12 +2456,15 @@ fn sm3a_a_dray_p_with_two_rigs_plans_as_a_dray_at_equal_payload() {
     no_refused_writes(&rig.tw);
 }
 
-/// **A filed passage burns with its rigs** (A1; D13; reviewer finding tests/T1): two Dray-Ps
-/// with two rigs each and equal holds, one rig's hopper staff-filled with 2 t of metal ore;
-/// `+ship/undock` files two carried rows on each, every row naming its rig's hopper vault and
-/// the four ores it accepts, and the loaded hull's payload is the other's plus exactly
-/// 2,000 kg; each burn's prepare re-reads the hoppers and passes, its ticket's payload equal
-/// to the filing's; a return while the clearance is filed refuses with the cleared line.
+/// **A filed passage burns with its rigs** (A1; D13; reviewer finding tests/T1; doc 20 cut
+/// SM.3b's `HOPPER_LOADED`): two Dray-Ps with two rigs each and equal holds. With one rig's
+/// hopper staff-filled with 2 t of metal ore, `+ship/undock` refuses with `HOPPER_LOADED`
+/// (cut SM.3b: a hull lifts with every hopper empty) and files nothing. Emptied, both file
+/// two carried rows, every row naming its rig's hopper vault and the four ores it accepts,
+/// at equal payloads. Then staff put the 2 t back between the filing and the burn: the
+/// pilot's burn prepare re-reads the hoppers, weighs the ore and refuses ("the hold
+/// changed"), while the other's lands at its filing's payload; a return while the clearance
+/// is filed refuses with the cleared line.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn sm3a_a_filed_passage_burns_with_its_rigs() {
@@ -2463,6 +2483,19 @@ fn sm3a_a_filed_passage_burns_with_its_rigs() {
     board(&mut rig, other);
     let hull = ObjId(row.hull);
     let hull_o = ObjId(row_o.hull);
+    // Doc 20 cut SM.3b: a loaded hopper holds the hull.
+    let (out, queued) = command(&mut rig, pilot, "+ship/undock stickney");
+    let loaded = tacsim::port::voyage::HOPPER_LOADED
+        .replace("{n}", "1")
+        .replace("{t}", "2")
+        .replace("{name}", "Salt Moth");
+    assert_eq!(out.trim(), loaded, "{out}");
+    assert!(queued.is_empty(), "nothing is burned");
+    assert!(tacsim::port::voyage::pending_of(rig.tw.world(), hull).is_none());
+    // Staff empty it through the inventory's own path (a dump is cut SM.3b's player act,
+    // from a site's pad only).
+    let hopper1 = hopper(&rig.tw, tv1);
+    take_pool(&mut rig, hopper1, "metal_ore", 2);
     let (out, queued) = command(&mut rig, pilot, "+ship/undock stickney");
     assert!(out.contains("Clearance filed for "), "{out}");
     let (out_o, queued_o) = command(&mut rig, other, "+ship/undock stickney");
@@ -2476,9 +2509,8 @@ fn sm3a_a_filed_passage_burns_with_its_rigs() {
     assert_eq!(filed.carried.len(), 2);
     assert_eq!(filed_o.carried.len(), 2);
     assert_eq!(
-        filed.payload_kg,
-        filed_o.payload_kg + 2_000,
-        "the loaded hopper weighs its 2 t of ore"
+        filed.payload_kg, filed_o.payload_kg,
+        "equal holds, empty hoppers"
     );
     let ores = ["metal_ore", "ice_ore", "carbon_ore", "strategic_ore"].map(cid);
     for carried in filed.carried.iter().chain(&filed_o.carried) {
@@ -2492,21 +2524,69 @@ fn sm3a_a_filed_passage_burns_with_its_rigs() {
     }
     assert!(
         filed.carried.iter().any(|carried| carried.tv == tv1.0),
-        "the loaded rig is carried"
+        "the rig is carried"
     );
-    land_all(&mut rig, &queued);
+    // 2 t back in the hopper between the filing and the burn: the prepare re-reads the
+    // hoppers and weighs the ore, so the pilot's burn refuses and burns nothing.
+    fill_hopper(&mut rig, tv1, 2, 9_060);
+    assert_eq!(queued.len(), 1);
+    let refused = land(&mut rig, &queued[0]).expect_err("the hold changed");
+    assert!(
+        refused.contains("the hold changed since the passage was planned"),
+        "{refused}"
+    );
+    assert!(
+        ticket(&mut rig.tw, hull, filed.seq).is_none(),
+        "nothing burned"
+    );
     land_all(&mut rig, &queued_o);
-    let t = ticket(&mut rig.tw, hull, filed.seq).expect("the burn landed");
-    assert_eq!(
-        t.payload_kg, filed.payload_kg,
-        "the prepare recomputed the same payload, the hopper's ore included"
-    );
     let t_o = ticket(&mut rig.tw, hull_o, filed_o.seq).expect("the burn landed");
-    assert_eq!(t_o.payload_kg, filed_o.payload_kg);
+    assert_eq!(
+        t_o.payload_kg, filed_o.payload_kg,
+        "the prepare recomputed the same payload, the empty hoppers included"
+    );
     let out = run(&mut rig.tw, pilot, "+tv/2 lease return go");
     let cleared = tacsim::port::buyout::CLEARED_WAIT.replace("{name}", "Salt Moth");
     assert!(out.contains(&cleared), "{out}");
     no_refused_writes(&rig.tw);
+}
+
+/// Debit `qty` of `good` from `vault`'s pool through the inventory's own path (staff's
+/// hand; `seed_pool`'s shape).
+fn take_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64) {
+    let endpoint = EndpointRef(vault);
+    let good = cid(good);
+    let families = rig
+        .tw
+        .world()
+        .module_state::<InventoryHandles>()
+        .expect("inventory handles")
+        .0
+        .clone();
+    let engine = rig.tw.engine_mut();
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&families.pools)
+            .expect("inventory transaction");
+        families
+            .debit(&mut txn, endpoint, &good, qty)
+            .map(|_| ())
+            .expect("the pool is debited");
+        txn.prepare().expect("prepares")
+    };
+    let (ops, install) = prepared.into_parts();
+    engine.install_prepared_action(install).expect("installs");
+    for op in ops {
+        match op.op {
+            ModuleWrite::JsonSet { key, value } => {
+                rig.typed.insert((op.ns, key), value);
+            }
+            ModuleWrite::Del { key } => {
+                rig.typed.remove(&(op.ns, key));
+            }
+            ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
 }
 
 /// **The queue plans a Dray-P with its rigs** (reviewer finding tests/T4: the queue's
@@ -3001,9 +3081,11 @@ fn sm3a_the_lease_help_names_money_as_the_receipts_do() {
     }
 }
 
-/// **The `+tv` grammar** (the pre-commit round, item 6): two slot switches, a stray word on
-/// the bare status, an unknown act and a word after `go` each answer `LEASE_USAGE`, the
-/// whole reply, before anything is read.
+/// **The `+tv` grammar** (the pre-commit round, item 6; doc 20 cut SM.3b: `LEASE_USAGE`
+/// became `TV_USAGE`): two slot switches, a stray word on the bare status, an unknown act
+/// and a word after `go` each answer `TV_USAGE`, the whole reply, before anything is read;
+/// so do SM.3b's two act words (as switches, words or both), an act with a lease word, and
+/// a word after an act's `go`.
 #[test]
 fn sm3a_the_tv_grammar_answers_lease_usage() {
     let mut rig = boot(Roster::bare());
@@ -3015,9 +3097,20 @@ fn sm3a_the_tv_grammar_answers_lease_usage() {
         "+tv/lease sideways",
         "+tv/lease go now",
         "+tv lease return go twice",
+        // Doc 20 cut SM.3b (review finding tests/T6): two act words, an act and a lease
+        // word, two slots before an act, and a word after an act's `go`.
+        "+tv/launch dump",
+        "+tv/launch/dump",
+        "+tv launch dump",
+        "+tv/lease/launch",
+        "+tv/lease launch",
+        "+tv/recover lease",
+        "+tv/1/2 launch",
+        "+tv/1 launch go now",
+        "+tv/dump go go",
     ] {
         let out = run(&mut rig.tw, pilot, line);
-        assert_eq!(out.trim(), LEASE_USAGE, "{line}");
+        assert_eq!(out.trim(), TV_USAGE, "{line}");
     }
 }
 

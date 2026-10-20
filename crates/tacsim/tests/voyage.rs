@@ -858,7 +858,7 @@ fn ic9_undock_flies_the_lane_and_docks_at_stickney() {
     assert!(
         lines
             .iter()
-            .any(|l| l.starts_with("Passage 18.5 IC days ≈ 7 m real; arrives about ")),
+            .any(|l| l.starts_with("Passage 18.5 IC days ≈ 7 min real; arrives about ")),
         "line 7: {plan}"
     );
     assert_eq!(
