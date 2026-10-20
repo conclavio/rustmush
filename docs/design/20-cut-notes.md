@@ -1681,6 +1681,24 @@ Totals:
 - **§13, the SM.3 row:** the lead split it into SM.3a and SM.3b. The implied launch (on the first scan, sound or drive) moves to SM.4, which prepends `launch_plan`.
 - **§19, item 3, line 1172:** this item names the control lease too; read it as the lessee aboard, as in §4.1.
 
+## Lead rulings between SM.3b and SM.5 (2026-10-20)
+
+- **SM.4 is split in two**, as SM.3 was: **SM.4a, knowing** — the chart state family and its
+  provenance, `+tv/scan` and `+tv/sound [quiet]` as timed acts on SM.3b's two actions, the implied
+  launch through `ActPlan.from_bay`, the site-wide notice and its budget, `+tv/quiet`, `+tv/forget`,
+  the `+tv` status line's block, tenure word, field and footing, reading rule v1 pinned literally
+  (SM.1's residual T8), and the outline of `docs/help/mining.md` (doc 20 §10 said it would land with
+  SM.0 and it did not; SM.1's and SM.3b's deferrals put it in SM.8 — it moves to SM.4a); **SM.4b,
+  driving and the map** — `+tv/drive` with every target kind, A*, the frozen leg, the real `home_cu`
+  for the reserve rule, recover's drive-to-ramp half, the `site.map` feed and `+tv/map`, the grid caps
+  raised to 118 by 32 with the `tui.md` correction, the fixtures, the arrival line and the observer-rule
+  witness over SSH and the web. Where a note above says "SM.4" without a half it means both.
+- **Build order.** SM.5 builds before SM.4a (its brief was ready first and it depends on nothing of
+  SM.4's); SM.6 depends only on SM.1 and SM.5 and builds after SM.4a, since its brief leans on SM.4a's
+  chart module; SM.7 then needs SM.4b and SM.6.
+- **Doc 20 Draft 0.5** folds the four landed cuts' "Doc 20 amendments owed" in as "As built (SM.*n*)"
+  notes (the docs commit after SM.5); SM.5's own amendments wait for the next fold.
+
 ## SM.5
 
 **Legal and market plumbing** (doc 20 §13's SM.5 row): the Freeport licence — `+licence/buy` (a preview;
