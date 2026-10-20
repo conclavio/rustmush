@@ -16833,13 +16833,13 @@ mod tests {
     }
 
     #[test]
-    fn prepared_action_receipt_mismatch_or_rejection_aborts_installation() {
+    fn prepared_action_integrity_failure_blocks_reuse_without_installation() {
         enum BadReceipt {
             WrongSerial,
-            StoreRejected,
+            StoreIntegrityFailure,
         }
 
-        for bad_receipt in [BadReceipt::WrongSerial, BadReceipt::StoreRejected] {
+        for bad_receipt in [BadReceipt::WrongSerial, BadReceipt::StoreIntegrityFailure] {
             let (mut engine, handle) = prepared_lane_fixture();
             let installation = prepare_lane_installation(&mut engine, &handle, 17, 3);
             let pending = pending_with_prepared_installation(7, installation);
@@ -16847,8 +16847,8 @@ mod tests {
                 BadReceipt::WrongSerial => Err(AuthoritativeCommitFailure::Integrity(
                     "commit receipt identity mismatch: expected serial 7, received 8".to_owned(),
                 )),
-                BadReceipt::StoreRejected => Err(AuthoritativeCommitFailure::Integrity(
-                    "deterministic store rejection".to_owned(),
+                BadReceipt::StoreIntegrityFailure => Err(AuthoritativeCommitFailure::Integrity(
+                    "indeterminate store receipt".to_owned(),
                 )),
             };
             let gateway: Gateway = Arc::new(BlackholeGateway);
@@ -16870,7 +16870,10 @@ mod tests {
 
             assert_eq!(completed.outcome, DeliveryOutcome::Aborted);
             assert_eq!(engine.action_state().revision(), 0);
-            assert!(!engine.action_state().has_prepared());
+            assert!(
+                engine.action_state().has_prepared(),
+                "without a proven refusal the typed reservation must remain poisoned"
+            );
             assert!(
                 engine
                     .action_state()
@@ -16882,8 +16885,8 @@ mod tests {
             assert!(health.mode.integrity_frozen());
             assert!(persistence_integrity.is_latched());
             assert!(
-                engine.action_transaction(&handle).is_ok(),
-                "abort must release the state-store reservation"
+                engine.action_transaction(&handle).is_err(),
+                "an indeterminate receipt must block another transaction"
             );
         }
     }

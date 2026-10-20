@@ -31,7 +31,7 @@ fn modules(c: &MindCommerce, layer: TacsimRuleset) -> TestResult<Vec<Box<dyn Gam
         Box::new(
             c.configure_economy(EconomyModule::new().with_title_issuers(vec![
                 SystemPrincipalId::new("roll.registry").ok_or("issuer")?,
-            ])),
+            ]))?,
         ),
         Box::new(c.configure_roll(RollModule::with_writers([crate::NS]))),
         Box::new(c.configure_tacsim(layer)?),

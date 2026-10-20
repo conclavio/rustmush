@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Continues the genuine scoped house filing and its actual measured certificate.
 //! Signed Market offers, actual E4 funds and complete owner/core installation;
 //! no synthetic grant, certificate, source privilege or server ACK claim.

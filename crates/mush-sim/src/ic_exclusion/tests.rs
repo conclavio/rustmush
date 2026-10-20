@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Real Sim owner preparation/custody/boot tests. The other definition owners
 //! are inert fixture catalogues: this proves the physical exclusion adapter,
 //! not a genuine MindSeal, four-owner IC admission or a region close event.

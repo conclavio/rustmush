@@ -37,7 +37,7 @@ fn composed(config: &MindCommerce, omit: Option<&str>) -> Result<Engine, ModErro
     }
     modules.push(Box::new(config.configure_economy(
         EconomyModule::new().with_title_issuers(vec![issuer()?]),
-    )));
+    )?));
     if omit != Some("tacsim") {
         modules.push(Box::new(config.configure_tacsim(layer())?));
     }

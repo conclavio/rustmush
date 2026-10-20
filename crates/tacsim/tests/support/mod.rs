@@ -44,6 +44,7 @@
 /// **16b cut I.1**: the fixture yard both fixture blessers draw on.
 pub mod yard;
 
+mod api4_identity;
 /// **16b cut AE.1**: the proving ground's generator, moved here from
 /// `tests/content.rs` so the version-1 ground a shelf test boots on can be
 /// built ([`ground::atlas_pack_at`]).
@@ -55,6 +56,7 @@ pub mod holdings;
 pub mod moon;
 pub mod rig;
 pub mod scripted;
+pub use api4_identity::Api4SealHashControl;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -1001,6 +1003,26 @@ pub fn shipped_arena_seeded(world: &TestWorld, sides: &[&[Muster]], seed: u64) -
     .expect("the shipped-scale arena checks out");
     install_sealed(&mut arena, &sources);
     arena
+}
+
+/// The same real shipped check-out and arena construction, retaining the actual
+/// custody seals for an identity-only hash control after the run has settled.
+pub fn shipped_arena_with_api4_hash_control(
+    world: &TestWorld,
+    sides: &[&[Muster]],
+) -> (Arena, Api4SealHashControl) {
+    let custody = shipped_custody_seeded(world, sides, SEED);
+    let identity = Api4SealHashControl::capture(&custody.units);
+    let sources = sealed_sources(&custody.units);
+    let mut arena = Arena::new(
+        custody,
+        &ArenaConfig::default(),
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the shipped-scale arena checks out");
+    install_sealed(&mut arena, &sources);
+    (arena, identity)
 }
 
 /// **The source a fixture's seal may name, by its SHA-256** (17b cut M3.5):

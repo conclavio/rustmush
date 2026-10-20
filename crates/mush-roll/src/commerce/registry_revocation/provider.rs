@@ -289,23 +289,18 @@ pub(crate) fn register_with_resale(
     }
     let roots = reg.request_owner_participant::<RootParticipant>(action.clone())?;
     let readiness = Readiness::default();
-    let economy = if pending.is_some() || resale.is_some() {
-        Some(reg.request_owner_participant::<mush_economy::registry_filing::InitialFilingParticipant>(action.clone())?)
+    let (pending, resale) = if pending.is_some() || resale.is_some() {
+        let economy = reg
+            .request_owner_participant::<mush_economy::registry_filing::InitialFilingParticipant>(
+                action.clone(),
+            )?;
+        (
+            pending.map(|ready| (ready, economy.clone())),
+            resale.map(|writer| (writer, economy.clone())),
+        )
     } else {
-        None
+        (None, None)
     };
-    let pending = pending.map(|ready| {
-        (
-            ready,
-            economy.as_ref().expect("configured owner handle").clone(),
-        )
-    });
-    let resale = resale.map(|writer| {
-        (
-            writer,
-            economy.as_ref().expect("configured owner handle").clone(),
-        )
-    });
     reg.action_provider(
         action.clone(),
         Provider {

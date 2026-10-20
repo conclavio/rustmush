@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual certified paid mind, IC owners and registered coverage publication /
 //! money / retention. Only the missing region transitions and submission-runtime
 //! disposition are explicit private fixture boundaries, never owner receipts.

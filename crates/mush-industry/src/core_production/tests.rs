@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Real Org commands, scoped E4 vaults, Inventory and Industry publication.
 //! No certification row, quota, grant or readiness bit is seeded by this rig.
 use super::*;

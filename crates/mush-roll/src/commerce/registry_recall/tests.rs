@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Pure codec bounds and the actual Org/Engine authority seam. No certificate,
 //! commerce readiness, recall publication, or durable business receipt is faked.
 use super::*;

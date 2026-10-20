@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Native payment/title owner contract, driven through actual Engine composition.
 //! This test provider is not the production signed Roll resale offer protocol.
 use super::*;

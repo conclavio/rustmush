@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Genuine seller offer and named-buyer acceptance used by title-loss fixtures.
 //! The exact prepared unions are persisted before owner installation. This
 //! models the writer ACK boundary, not server transport or a pending transfer.

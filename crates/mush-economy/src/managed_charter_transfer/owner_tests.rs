@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual registered Economy owner funding/terminal/recovery tests. The typed
 //! Roll fixture is inert evidence of the actual opaque owner output. It does not
 //! claim production seller offers, claim census, Registry sanction or service intent.

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Real private execution, not qualification authority or a certificate fixture.
 use super::super::subject::PreparedSubject;
 use super::{

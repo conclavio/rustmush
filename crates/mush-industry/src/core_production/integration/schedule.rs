@@ -7,14 +7,9 @@ use mush_core::{
     ScheduleDriveCause, ScheduleEvaluation,
 };
 #[derive(Clone)]
-struct Adapter(Runtime);
-fn stale() -> ActionError {
-    ActionError::new(
-        ActionErrorCode::Stale,
-        false,
-        "Core production schedule is no longer current.",
-    )
-    .expect("fixed bounded schedule error")
+struct Adapter {
+    runtime: Runtime,
+    refusal: ActionError,
 }
 impl ScheduleActionAdapter for Adapter {
     fn plan(
@@ -23,7 +18,8 @@ impl ScheduleActionAdapter for Adapter {
         advance: &ScheduleAdvance,
         engine: &Engine,
     ) -> Result<ScheduleActionDraft, ActionError> {
-        let r = &self.0;
+        let r = &self.runtime;
+        let stale = || self.refusal.clone();
         if action != &r.actions[4]
             || r.config.mode != crate::core_production::CoreOriginMode::Active
             || advance.observed_at() != &engine.world.world_ic_now()
@@ -96,6 +92,14 @@ pub(crate) fn register(reg: &mut Registrar<'_>, runtime: Runtime) -> Result<(), 
         CanonicalId::new("core.production").map_err(|e| ModError::msg(e.to_string()))?,
         runtime.actions[4].clone(),
         runtime.families.schedules.clone(),
-        Adapter(runtime),
+        Adapter {
+            runtime,
+            refusal: ActionError::new(
+                ActionErrorCode::Stale,
+                false,
+                "Core production schedule is no longer current.",
+            )
+            .map_err(|e| ModError::msg(e.to_string()))?,
+        },
     )
 }

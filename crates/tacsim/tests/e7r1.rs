@@ -674,6 +674,11 @@ fn e7r1_r5_the_time_block_still_seeds_no_timeline() {
                 continue;
             }
             let text = std::fs::read_to_string(&path).expect("a source file");
+            // A leading inner attribute gates the entire file out of production.
+            // Match the exact source line, never attribute text in prose or strings.
+            if text.lines().next() == Some("#![cfg(test)]") {
+                continue;
+            }
             let boundary = text.find("#[cfg(test)]").unwrap_or(text.len());
             // Comment lines are prose, not reach: this module's own doc comments name
             // the function they deliberately do NOT call.

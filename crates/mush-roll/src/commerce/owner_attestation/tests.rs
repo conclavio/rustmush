@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Codec/registration evidence only. Genuine generation transitions are covered
 //! by the additive Tacsim child using the existing measured certificate/grants.
 use super::records::*;

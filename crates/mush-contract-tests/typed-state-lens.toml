@@ -79,6 +79,42 @@ The `#[cfg(test)]` module's `DETACHED` constant.
 """
 
 [[detached]]
+file = "crates/mush-core/src/composed.rs"
+count = 1
+reason = """
+The `#[cfg(test)] PreparedComposedTxn::recheck` compatibility helper names
+`DetachedTypedState::Test`. Production stage and take call recheck_with_lens
+with the Engine's live action state instead.
+"""
+
+[[detached]]
+file = "crates/mush-core/src/core_exchange/tests/carry_context_tests.rs"
+count = 1
+reason = """
+The cfg(test) CoreExchange suite deliberately passes CompatibilityCtx to
+ordinary CarryCheck::capture and asserts refusal. It cannot create the
+private exchange context or replace the actual live carry checks.
+"""
+
+[[detached]]
+file = "crates/mush-core/src/read_service/tests.rs"
+count = 1
+reason = """
+The cfg(test) owner-read suite passes CompatibilityCtx to the actual
+registered reader and requires OwnerReadError::Unavailable. The neighboring
+positive and crossed-handle cases use the Engine's live action state.
+"""
+
+[[detached]]
+file = "crates/mush-core/src/read_service/batch_tests.rs"
+count = 1
+reason = """
+The cfg(test) owner-read batch suite deliberately constructs a detached
+CompatibilityCtx and requires the exact batch read to refuse with Integrity,
+while retaining the read/row accounting and unchanged live-store assertion.
+"""
+
+[[detached]]
 file = "crates/mush-scenes/src/lib.rs"
 count = 1
 reason = """

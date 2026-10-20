@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Real Origin issuance, supplier offer, buyer payment, exact Inventory hold,
 //! native K production and Core output. The unrelated Roll filing action is
 //! registered only as a refusing prerequisite; it creates no filing or grant.

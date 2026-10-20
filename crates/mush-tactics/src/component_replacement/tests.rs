@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual Engine registration/preparation/installation tests. The test policy
 //! checks live core object ownership only; this is not a commercial title,
 //! certified core, fee, facility, work-order or custody publication fixture.

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Codec and real registration/refusal tests. The successful paid operation,
 //! real Registry certification and funding/restart gates remain separate.
 use super::*;

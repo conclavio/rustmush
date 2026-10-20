@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Data/registration bounds only. The Tacsim child uses actual purchased grants.
 use super::records::{QualificationHead, QualificationOperation};
 use super::*;

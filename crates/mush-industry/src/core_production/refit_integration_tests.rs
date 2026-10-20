@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual certified Origin -> manufacture -> delivery -> fitting pipeline.
 //! No owner receipt, certified asset, native hold, unit replacement or readiness
 //! bit is seeded. Captured ACK writes are folded after install, as in the factory

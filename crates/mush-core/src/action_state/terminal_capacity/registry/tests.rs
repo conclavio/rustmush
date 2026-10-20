@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Coordinator protocol tests. These exercise actual typed transactions and
 //! durable hydration; real paid worker/producer certification is tested by Roll.
 use super::*;

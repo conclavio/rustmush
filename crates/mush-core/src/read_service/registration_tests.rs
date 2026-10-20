@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual Registrar/Engine capacity boundary. Invocation budgets stay covered by
 //! the existing read/scan/request/result exhaustion tests in the parent module.
 use super::*;

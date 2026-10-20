@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Locator arithmetic only. Structural references do not certify or file a
 //! revision. The real paired publication/cold story is in Tacsim's update child.
 use super::*;

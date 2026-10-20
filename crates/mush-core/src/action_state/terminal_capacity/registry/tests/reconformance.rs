@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Real coordinator transactions and canonical hydration with inert business
 //! codecs. Roll's genuine worker/filing tests supply certification authority.
 use super::*;

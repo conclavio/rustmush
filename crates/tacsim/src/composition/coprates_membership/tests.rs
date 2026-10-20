@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual faction commands and registered Engine guards. The tiny typed action
 //! records admission only; it is not a Coprates certificate or purchase.
 use super::*;

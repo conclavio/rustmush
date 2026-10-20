@@ -389,34 +389,8 @@ typist. A human's account takes an NPC's seat as a proxy, which production does
 through `+seat/activate`; the test seeds that same `ActiveFocus` through
 `FocusState::claim_for_test`, the `testkit`-fenced door mush-propagation's and
 mush-campaign's proxy-seat tests already use, rather than drive a whole campaign
-seat offer the arena roster has no NPC for. 16b cut AF.3 adds the second
-site: the reboot rig resets the map to the empty one a new server half starts
-with (`FocusState` is never hydrated at boot).
-"""
-
-[[site]]
-path = "crates/tacsim/tests/match_lifecycle.rs"
-accessor = "World::module_state_mut"
-slot = "DeployedUnits"
-owner = "sim"
-reason = """
-16b cut AF.3: the in-process reboot rig (`Rig::reboot_mid_match`) stands for a
-restart of the server half, and a new process starts with `mush-sim`'s custody
-index empty — it is RAM, rebuilt by `mush-tactics`' boot from the markers on
-the unit records. The rig empties it before the boot so the markers the boot
-keeps are the only ones in it, exactly as a fresh process would hold them.
-"""
-
-[[site]]
-path = "crates/tacsim/tests/match_lifecycle.rs"
-accessor = "World::module_state_mut"
-slot = "FocusState"
-owner = "sim"
-reason = """
-16b cut AF.3, for the reason one row above: `FocusState` is never hydrated at
-boot (D-E7-34), so a restarted server half holds no pilot's focus. The reboot
-rig resets it to the empty map a new process starts with; without it a resumed
-pilot would still appear to fly a tank the resume released.
+seat offer the arena roster has no NPC for. The reboot fixture instead
+registers a fresh production composition, so it no longer writes this slot.
 """
 
 [[site]]
@@ -432,16 +406,6 @@ no longer registered), so the test plants it in the tactics store's RAM index
 (`UnitStore.units`, a pub field) as the boot's hydration would have, then runs
 `match_::reset_stock_tanks` — the production path under test — which refits it
 through `mush_tactics::module::refit_unit`. Test-only; no production write.
-"""
-
-[[site]]
-path = "crates/tacsim/tests/cockpit.rs"
-accessor = "World::module_state_mut"
-slot = "DeployedUnits"
-owner = "sim"
-reason = """
-16b cut AF.3: this file's copy of `match_lifecycle.rs`'s reboot rig empties
-`mush-sim`'s custody index before the boot, as a new process holds it.
 """
 
 [[site]]

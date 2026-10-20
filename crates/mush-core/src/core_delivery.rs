@@ -478,7 +478,7 @@ impl<P: CoreOutputPolicy, D: CoreDeliveryPolicy> CoreOutputDeliveries<P, D> {
             .map_err(|_| ParticipantError::ImageLimit)?;
         txn.insert(&self.records, &order, row.clone())
             .map_err(state_error)?;
-        Ok((DeliveredCoreOutput { row }, image))
+        Ok((DeliveredCoreOutput::from_record(row)?, image))
     }
     /// The full output birth census is retained. This closed path recognizes
     /// only its own actual delivery family; every row is reverse-joined and
@@ -530,7 +530,7 @@ impl<P: CoreOutputPolicy, D: CoreDeliveryPolicy> CoreOutputDeliveries<P, D> {
         }
         for row in rows.into_values() {
             delivery(CoreDeliveryHistory {
-                receipt: DeliveredCoreOutput { row },
+                receipt: DeliveredCoreOutput::from_record(row)?,
             })?;
         }
         Ok(())

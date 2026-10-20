@@ -3447,9 +3447,9 @@ fn m1a5_the_production_hash_does_not_move() {
     assert_eq!(
         actual,
         [
-            Some(0x9a92_d1a3_e3d7_284c),
-            Some(0xade7_0222_c151_7f03),
-            Some(0xd763_0ae7_1acf_63f7)
+            Some(0x2fde_0a11_f694_234e),
+            Some(0x8dcb_ccd8_aeed_9ed9),
+            Some(0xf93e_4819_dcdc_9eab)
         ],
         "production encoding pins (first, last, shipped duel): {actual:x?}"
     );
@@ -6791,15 +6791,15 @@ const M1B5_TWO_T1_EVENTS: &[(i64, &str)] = &[
     (0, "{\"kind\":\"match_started\"}"),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"9b330c0f5ccd8610\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":4,\"sortie\":4,\"mind\":\"Standard Doctrine\",\"source\":\"d318e09bd821a0d9\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"9b330c0f5ccd8610\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":6,\"sortie\":6,\"mind\":\"Standard Doctrine\",\"source\":\"d318e09bd821a0d9\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         0,
-        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"9b330c0f5ccd8610\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
+        "{\"kind\":\"mind_sealed\",\"unit\":9,\"sortie\":9,\"mind\":\"Standard Doctrine\",\"source\":\"d318e09bd821a0d9\",\"card_digest\":\"f2491a868a5707936f2abf1db211ed6bba20971b2c364e31433bafb33fc07f90\",\"class\":\"I\",\"governed\":true,\"licence\":\"doctrine\"}",
     ),
     (
         4,

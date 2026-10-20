@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual family codec/envelope boundary, not a licence or paid authority.
 use super::*;
 use crate::commerce::{

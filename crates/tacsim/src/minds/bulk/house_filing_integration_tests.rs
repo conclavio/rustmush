@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Child of the genuine full Registry gate. Nothing below constructs a rating
 //! or grants a house title except the actual registered scoped filing action.
 use super::*;

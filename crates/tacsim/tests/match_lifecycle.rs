@@ -6746,19 +6746,21 @@ impl Rig {
     ///    not drained yet is **dropped on purpose** — a process that crashed
     ///    never handled it, and the stop signal sends no `Ended` — and the writes
     ///    the world had already queued are folded into the image;
-    /// 2. the registry slot is replaced by `ArenaRegistry::fresh` (a new
-    ///    process's registry) and its egress taken, as `boot_on` takes it;
-    /// 3. the match book is reset, and so are `mush-sim`'s custody index and
-    ///    its focus map (`FocusState`, never hydrated at boot) — each a new
-    ///    process's empty RAM;
-    /// 4. the boot data is the image per namespace, each run through
-    ///    `ModuleBootData::normalize` (mush-core `module.rs`: every `log:` key
-    ///    moved into `ledger` as text, the loader's own shape);
-    /// 5. every module's boot runs again (`modules_loaded`: every
-    ///    `on_world_loaded`, then every `on_all_loaded`) and the account oracle
-    ///    is wired again, as `boot_on` wires it. Connected flags are untouched.
+    /// 2. edit and normalize the retained image after the old tasks stop;
+    /// 3. register the actual roster afresh over the same World and configured
+    ///    Tacsim owner, then run every module's boot and restore the account map;
+    /// 4. claim the fresh registry's egress and return the real boot writes.
+    ///
+    /// The split-server fixture retains its clock and connection flags. No
+    /// reconnect or tick consumes the resume/hatch notices under assertion.
     async fn reboot_mid_match_editing(&mut self, edit: impl FnOnce(&mut StoreImage)) -> Vec<Write> {
-        // (1)
+        let cfg = self
+            .tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .expect("the configured Tacsim owner")
+            .config()
+            .clone();
         let old = self
             .tw
             .world()
@@ -6770,38 +6772,6 @@ impl Rig {
             while rx.try_recv().is_ok() {}
         }
         let _ = self.pump_ops();
-        // (2)
-        {
-            let registry = self
-                .tw
-                .world_mut()
-                .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
-                .expect("the arena registry");
-            *registry = tacsim::arena_bridge::ArenaRegistry::fresh(registry);
-        }
-        self.egress = self
-            .tw
-            .world()
-            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
-            .map(|registry| registry.tasks().clone())
-            .and_then(|tasks| tasks.take_egress());
-        // (3)
-        *self
-            .tw
-            .world_mut()
-            .module_state_mut::<match_::MatchBook>()
-            .expect("the match book") = match_::MatchBook::new();
-        *self
-            .tw
-            .world_mut()
-            .module_state_mut::<mush_sim::deployed::DeployedUnits>()
-            .expect("the custody index") = mush_sim::deployed::DeployedUnits::new();
-        *self
-            .tw
-            .world_mut()
-            .module_state_mut::<mush_sim::FocusState>()
-            .expect("the focus map") = mush_sim::FocusState::default();
-        // (4)
         edit(self.store_image());
         let data: std::collections::HashMap<smol_str::SmolStr, mush_core::ModuleBootData> = self
             .image
@@ -6818,7 +6788,10 @@ impl Rig {
                 (ns.clone(), data)
             })
             .collect();
-        // (5)
+        let (empty, registry) = mush_testkit::boot_world();
+        let world = std::mem::replace(self.tw.world_mut(), empty);
+        *self.tw.engine_mut() = mush_core::Engine::with_modules(world, registry, roster_with(cfg))
+            .expect("the same production roster registers afresh");
         self.tw.modules_loaded(data);
         let mut map = Accounts::default();
         for (n, pilot) in self.pilots.iter().enumerate() {
@@ -6832,6 +6805,13 @@ impl Rig {
             .world_mut()
             .module_state_mut::<mush_sim::AccountOracle>()
             .expect("the simulation is composed") = mush_sim::AccountOracle::new(Arc::new(map));
+        self.egress = self
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .map(|registry| registry.tasks().clone())
+            .and_then(|tasks| tasks.take_egress());
+        assert!(self.egress.is_some(), "the fresh process owns arena egress");
         writes_of(self.pump_ops())
     }
 
@@ -7419,6 +7399,16 @@ fn tacsim_docs(image: &mut StoreImage) -> &mut BTreeMap<smol_str::SmolStr, serde
     image.entry(smol_str::SmolStr::new(tacsim::NS)).or_default()
 }
 
+/// Keep each refusal case's owned world on the heap. The lazy future also
+/// keeps construction out of the enclosing sixteen-case test future.
+#[inline(never)]
+fn af3_match_boxed(
+    chunks: u64,
+    moved: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Box<Af3Match>>>> {
+    Box::pin(async move { Box::new(af3_match(chunks, moved).await) })
+}
+
 /// What a void's reason must be.
 enum Reason {
     /// These words exactly.
@@ -7562,7 +7552,7 @@ fn af3_reencode(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     // No snapshot document.
-    let mut m = af3_match(0, true).await;
+    let mut m = af3_match_boxed(0, true).await;
     let key = match_::snapshot_key(m.match_id).to_string();
     af3_void(
         &mut m,
@@ -7574,7 +7564,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     .await;
 
     // No live record.
-    let mut m = af3_match(0, true).await;
+    let mut m = af3_match_boxed(0, true).await;
     let key = match_::live_key(m.match_id).to_string();
     af3_void(
         &mut m,
@@ -7586,7 +7576,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     .await;
 
     // The live record's state edited without a new digest.
-    let mut m = af3_match(0, true).await;
+    let mut m = af3_match_boxed(0, true).await;
     let key = match_::live_key(m.match_id).to_string();
     af3_void(
         &mut m,
@@ -7604,7 +7594,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     .await;
 
     // The live record parked `stopping` (an abort before the restart).
-    let mut m = af3_match(0, true).await;
+    let mut m = af3_match_boxed(0, true).await;
     let said = m.rig.staff(&format!("@arena/abort {}", m.match_id.0));
     assert!(said.contains("is stopping"), "{said}");
     af3_void(
@@ -7617,7 +7607,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     // The check-out's own live record beside the opening snapshot (16b cut
     // AF.2's carried constraint: `at_ms` is 0 for both, so only the centre
     // tells them apart): its centre still `boarding`.
-    let mut m = af3_match(0, true).await;
+    let mut m = af3_match_boxed(0, true).await;
     let key = match_::live_key(m.match_id).to_string();
     af3_void(
         &mut m,
@@ -7633,7 +7623,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     .await;
 
     // The snapshot's state edited without a new digest (phase B's decode).
-    let mut m = af3_match(0, true).await;
+    let mut m = af3_match_boxed(0, true).await;
     let key = match_::snapshot_key(m.match_id).to_string();
     af3_void(
         &mut m,
@@ -7651,7 +7641,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     .await;
 
     // Edited and stamped again: the hash refuses it (phase B).
-    let mut m = af3_match(0, true).await;
+    let mut m = af3_match_boxed(0, true).await;
     let key = match_::snapshot_key(m.match_id).to_string();
     let recorded = m.head.state_hash;
     af3_void(
@@ -7673,7 +7663,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     );
 
     // Another ground on the head.
-    let mut m = af3_match(0, true).await;
+    let mut m = af3_match_boxed(0, true).await;
     let key = match_::snapshot_key(m.match_id).to_string();
     af3_void(
         &mut m,
@@ -7687,7 +7677,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     .await;
 
     // Another locomotion table.
-    let mut m = af3_match(0, true).await;
+    let mut m = af3_match_boxed(0, true).await;
     let key = match_::snapshot_key(m.match_id).to_string();
     af3_void(
         &mut m,
@@ -7705,7 +7695,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     .await;
 
     // The two documents from two moments.
-    let mut m = af3_match(0, true).await;
+    let mut m = af3_match_boxed(0, true).await;
     let key = match_::live_key(m.match_id).to_string();
     let at_ms = m.head.at_ms;
     af3_void(
@@ -7725,7 +7715,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
 
     // A marker on a unit the record does not field: red's second pod's tank,
     // marked as the match's with its own cells as the snapshot.
-    let mut m = af3_match(0, true).await;
+    let mut m = af3_match_boxed(0, true).await;
     let stray = match_::tank_for_slot(m.rig.tw.world(), Team::Red, 2).expect("red's second tank");
     let (id, arena) = (m.match_id.0, m.head.arena.clone());
     af3_void(
@@ -7751,7 +7741,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     );
 
     // Already resumed from this very snapshot: the resume-once rule.
-    let mut m = af3_match(0, true).await;
+    let mut m = af3_match_boxed(0, true).await;
     let key = match_::live_key(m.match_id).to_string();
     let at_ms = m.head.at_ms;
     af3_void(
@@ -7769,7 +7759,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     .await;
 
     // A breach in the resumed log: its last chunk is not a chunk.
-    let mut m = af3_match(1, true).await;
+    let mut m = af3_match_boxed(1, true).await;
     let last = af3_log_docs(&m.rig, m.match_id)
         .keys()
         .next_back()
@@ -7787,7 +7777,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
 
     // The tape behind the snapshot: every chunk document from the one holding
     // the snapshot's last closed chunk on is lost.
-    let mut m = af3_match(1, true).await;
+    let mut m = af3_match_boxed(1, true).await;
     let chunk_seq = m.head.chunk_seq;
     let lost: Vec<smol_str::SmolStr> = af3_log_docs(&m.rig, m.match_id)
         .into_iter()
@@ -7815,7 +7805,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     .await;
 
     // Another snapshot format.
-    let mut m = af3_match(0, true).await;
+    let mut m = af3_match_boxed(0, true).await;
     let key = match_::snapshot_key(m.match_id).to_string();
     af3_void(
         &mut m,
@@ -7838,7 +7828,7 @@ async fn af3_a_boot_voids_a_match_it_cannot_resume_for_each_reason() {
     // Phase B: the ground the two documents name is not the one loaded — the
     // replay's own mechanism (a foreign digest recorded), on both documents so
     // phase A's agreement check passes.
-    let mut m = af3_match(0, true).await;
+    let mut m = af3_match_boxed(0, true).await;
     let (live_key, snapshot_key) = (
         match_::live_key(m.match_id).to_string(),
         match_::snapshot_key(m.match_id).to_string(),

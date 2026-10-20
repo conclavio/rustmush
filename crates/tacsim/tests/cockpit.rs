@@ -12366,16 +12366,27 @@ impl Rig {
         ops
     }
 
-    /// **A restart of the server half with a match running, in process** (16b
-    /// cut AF.3), by `match_lifecycle.rs`' steps: the old tasks stopped and
-    /// joined and their undrained egress dropped on purpose (a crashed process
-    /// never handled it), the queued writes folded into the image, a fresh
-    /// registry (`ArenaRegistry::fresh`) and its egress taken, the match book
-    /// , `mush-sim`'s custody index and focus map reset, the image handed to every module
-    /// as its boot data through `ModuleBootData::normalize`, and the account
-    /// oracle wired again. Connected flags are untouched. What the boot said is
-    /// recorded into [`Rig::log`] — nothing, since boot output reaches nobody.
+    /// Restart the server half over the retained module image with fresh owner
+    /// slots, including the one-shot BulkService. Stop/join old arena tasks and
+    /// discard undrained egress as a crashed process would. The real config,
+    /// account map and previously connected pilots survive this split-server
+    /// fixture; a pilot deliberately disconnected before boot stays disconnected.
+    /// Boot/reannouncement output is discarded, while the actual deferred-resume
+    /// fence keeps notices owed to the existing first-tick assertions.
     async fn reboot_mid_match(&mut self) {
+        let cfg = self
+            .tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .expect("the configured Tacsim owner")
+            .config()
+            .clone();
+        let connected: Vec<ObjId> = self
+            .pilots
+            .iter()
+            .copied()
+            .filter(|pilot| self.tw.world().is_connected(*pilot))
+            .collect();
         let old = self
             .tw
             .world()
@@ -12387,35 +12398,6 @@ impl Rig {
             while rx.try_recv().is_ok() {}
         }
         let _ = self.pump_ops();
-        {
-            let registry = self
-                .tw
-                .world_mut()
-                .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
-                .expect("the arena registry");
-            *registry = tacsim::arena_bridge::ArenaRegistry::fresh(registry);
-        }
-        self.egress = self
-            .tw
-            .world()
-            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
-            .map(|registry| registry.tasks().clone())
-            .and_then(|tasks| tasks.take_egress());
-        *self
-            .tw
-            .world_mut()
-            .module_state_mut::<match_::MatchBook>()
-            .expect("the match book") = match_::MatchBook::new();
-        *self
-            .tw
-            .world_mut()
-            .module_state_mut::<mush_sim::deployed::DeployedUnits>()
-            .expect("the custody index") = mush_sim::deployed::DeployedUnits::new();
-        *self
-            .tw
-            .world_mut()
-            .module_state_mut::<mush_sim::FocusState>()
-            .expect("the focus map") = mush_sim::FocusState::default();
         let data: std::collections::HashMap<smol_str::SmolStr, mush_core::ModuleBootData> = self
             .image
             .iter()
@@ -12431,7 +12413,10 @@ impl Rig {
                 (ns.clone(), data)
             })
             .collect();
-        self.tw.modules_loaded(data);
+        let old_world = std::mem::replace(&mut self.tw, TestWorld::new());
+        self.tw = old_world
+            .reboot_into(roster_with(cfg), data)
+            .expect("actual fresh production boot");
         let mut map = Accounts::default();
         for (n, pilot) in self.pilots.iter().enumerate() {
             map.0.insert(
@@ -12444,6 +12429,23 @@ impl Rig {
             .world_mut()
             .module_state_mut::<mush_sim::AccountOracle>()
             .expect("the simulation is composed") = mush_sim::AccountOracle::new(Arc::new(map));
+        for pilot in &connected {
+            self.tw.connect(*pilot);
+        }
+        for pilot in &self.pilots {
+            assert_eq!(
+                self.tw.world().is_connected(*pilot),
+                connected.contains(pilot),
+                "the split-server fixture preserves each pilot's session presence"
+            );
+        }
+        self.egress = self
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .map(|registry| registry.tasks().clone())
+            .and_then(|tasks| tasks.take_egress());
+        assert!(self.egress.is_some(), "the fresh process owns arena egress");
         let _ = self.pump_ops();
     }
 
@@ -16677,10 +16679,23 @@ async fn m1b5_mind_set_reads_sets_and_refuses_by_name() {
         "@mind/live: no slider or preset named \"berserker\"."
     );
     let usage = "Usage: @mind/live <unit>[=<preset> | =<slider> <value>]";
-    // M6 gives the bare dispatcher to authoring. A live card read requires
-    // the explicit staff-only /live form, even when its argument is a dbref.
+    // M7 leads the workshop help with free teaching pages. Private authoring
+    // must remain discoverable; live card reads still require staff-only /live,
+    // even when the bare dispatcher's argument is a dbref.
     let author_help = rig.staff(&format!("@mind #{id}"));
-    assert!(author_help.starts_with("@mind/new <name>"), "{author_help}");
+    assert_eq!(
+        author_help.lines().next(),
+        Some(
+            "@mind/doctrine [Line|Sentry|Sniper|Skirmisher|Hunter|Rearguard] (free teaching pages)"
+        ),
+        "bare @mind must retain free teaching discovery"
+    );
+    assert!(
+        author_help
+            .lines()
+            .any(|line| line == "@mind/new <name> [FROM Standard|<owned mind>]"),
+        "bare @mind must retain private authoring discovery"
+    );
     assert!(
         author_help.contains(usage.trim_start_matches("Usage: ")),
         "{author_help}"

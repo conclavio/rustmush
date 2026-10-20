@@ -120,7 +120,7 @@ pub fn server_modules_with(
     game: &crate::economy::GameEconomyConfig,
     recovery: mush_campaign::RecoveryConfig,
 ) -> Vec<Box<dyn GameModule>> {
-    compose_server_modules(
+    let composed = compose_server_modules(
         weather,
         economy,
         atlas,
@@ -128,8 +128,12 @@ pub fn server_modules_with(
         game,
         recovery,
         TacsimComposition::Absent,
-    )
-    .0
+        Ok::<_, std::convert::Infallible>,
+    );
+    match composed {
+        Ok(composed) => composed.0,
+        Err(never) => match never {},
+    }
 }
 
 /// [`server_modules_with`] for a roster that ALSO composes the TacSim layer (doc 18 cut IC5,
@@ -150,7 +154,7 @@ pub fn server_modules_with_tacsim(
     Vec<Box<dyn GameModule>>,
     mush_inventory::InventoryHandleCell,
 ) {
-    compose_server_modules(
+    let composed = compose_server_modules(
         weather,
         economy,
         atlas,
@@ -158,7 +162,12 @@ pub fn server_modules_with_tacsim(
         game,
         recovery,
         TacsimComposition::Standard,
-    )
+        Ok::<_, std::convert::Infallible>,
+    );
+    match composed {
+        Ok(composed) => composed,
+        Err(never) => match never {},
+    }
 }
 
 /// The existing full built-in roster with an explicit, prepared Registry and
@@ -169,7 +178,9 @@ pub fn server_modules_with_tacsim(
 /// Compose the returned inventory cell with
 /// [`tacsim_module_wired_with_mind_commerce`] using this same configuration.
 /// This creates no acknowledged deployment or commercial grant.
-#[must_use]
+///
+/// # Errors
+/// The actual native Economy configuration error from the supplied composition.
 pub fn server_modules_with_tacsim_and_mind_commerce(
     weather: mush_weather::WeatherConfig,
     economy: mush_economy::EconomyConfig,
@@ -178,10 +189,13 @@ pub fn server_modules_with_tacsim_and_mind_commerce(
     game: &crate::economy::GameEconomyConfig,
     recovery: mush_campaign::RecoveryConfig,
     commerce: &mind_commerce::MindCommerce,
-) -> (
-    Vec<Box<dyn GameModule>>,
-    mush_inventory::InventoryHandleCell,
-) {
+) -> Result<
+    (
+        Vec<Box<dyn GameModule>>,
+        mush_inventory::InventoryHandleCell,
+    ),
+    mush_core::ModError,
+> {
     compose_server_modules(
         weather,
         economy,
@@ -190,11 +204,14 @@ pub fn server_modules_with_tacsim_and_mind_commerce(
         game,
         recovery,
         TacsimComposition::Commerce(commerce),
+        |module| commerce.configure_economy(module),
     )
 }
 
 /// Explicit named M7 host entry using the same ordinary roster and owner order.
-#[must_use]
+///
+/// # Errors
+/// The actual native Economy configuration error from the supplied launch.
 pub fn server_modules_with_launch(
     weather: mush_weather::WeatherConfig,
     economy: mush_economy::EconomyConfig,
@@ -203,10 +220,13 @@ pub fn server_modules_with_launch(
     game: &crate::economy::GameEconomyConfig,
     recovery: mush_campaign::RecoveryConfig,
     launch: &crate::launch::LaunchComposition,
-) -> (
-    Vec<Box<dyn GameModule>>,
-    mush_inventory::InventoryHandleCell,
-) {
+) -> Result<
+    (
+        Vec<Box<dyn GameModule>>,
+        mush_inventory::InventoryHandleCell,
+    ),
+    mush_core::ModError,
+> {
     compose_server_modules(
         weather,
         economy,
@@ -215,6 +235,7 @@ pub fn server_modules_with_launch(
         game,
         recovery,
         TacsimComposition::Launch(launch),
+        |module| launch.commerce().configure_economy(module),
     )
 }
 
@@ -229,7 +250,7 @@ enum TacsimComposition<'a> {
 /// IC5): `tacsim_delegate` adds [`crate::NS`] to `mush-inventory`'s quantity delegates, and
 /// the returned cell is the roster's inventory handle cell (filled by `mush-inventory`'s own
 /// `register`, so any module composed after it finds it filled).
-fn compose_server_modules(
+fn compose_server_modules<E>(
     weather: mush_weather::WeatherConfig,
     mut economy: mush_economy::EconomyConfig,
     atlas: mush_atlas::AtlasConfig,
@@ -237,10 +258,16 @@ fn compose_server_modules(
     game: &crate::economy::GameEconomyConfig,
     recovery: mush_campaign::RecoveryConfig,
     composition: TacsimComposition<'_>,
-) -> (
-    Vec<Box<dyn GameModule>>,
-    mush_inventory::InventoryHandleCell,
-) {
+    configure_economy: impl FnOnce(
+        mush_economy::EconomyModule,
+    ) -> Result<mush_economy::EconomyModule, E>,
+) -> Result<
+    (
+        Vec<Box<dyn GameModule>>,
+        mush_inventory::InventoryHandleCell,
+    ),
+    E,
+> {
     let (tacsim_delegate, commerce, launch) = match composition {
         TacsimComposition::Absent => (false, None, None),
         TacsimComposition::Standard => (true, None, None),
@@ -563,10 +590,7 @@ fn compose_server_modules(
             // every roster — game-neutral, it refuses only a seller disputing their
             // own sale into a bid and answers nothing with no market store.
             .with_dispute_guard(Arc::new(mush_market::SaleDisputeGuard));
-            let module = match commerce {
-                Some(commerce) => commerce.configure_economy(module),
-                None => module,
-            };
+            let module = configure_economy(module)?;
             match launch {
                 Some(launch) => launch.roster.economy(module),
                 None => module,
@@ -786,7 +810,7 @@ fn compose_server_modules(
         }),
         Box::new(mush_script::ScriptModule::new()),
     ];
-    (modules, Arc::clone(&inventory_handles))
+    Ok((modules, Arc::clone(&inventory_handles)))
 }
 
 /// **Doc 18 cut IC8's economy seam, composed only where the TacSim layer is**

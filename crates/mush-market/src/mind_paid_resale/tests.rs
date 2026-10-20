@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Public selector shape is distinct from persistent typed identifier strings.
 use super::provider::{Kind, Request, decode};
 use serde_json::json;

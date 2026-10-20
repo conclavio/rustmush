@@ -5587,6 +5587,8 @@ pub enum ActionProviderPrepareError {
     State(#[from] ActionStateError),
     #[error("durable schedule advance was not admissible: {0}")]
     Schedule(#[source] Box<crate::schedule_source::ScheduleAdvanceAdmissionError>),
+    #[error("successful delayed-decision preparation omitted its seed result")]
+    DecisionSeedResultMissing,
     #[error("delayed-decision lease was not admissible: {0}")]
     DecisionLease(#[source] Box<crate::decision_source::DecisionSourcePlanError>),
     #[error("delayed-decision lifecycle transition was not admissible: {0}")]

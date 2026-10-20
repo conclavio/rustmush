@@ -152,12 +152,11 @@ impl Rig {
 
     /// **A restart of the server half, in place** (16b cut U.4).
     ///
-    /// The match book is RAM (D-16-3) and starts fresh. Everything else comes
-    /// back the way a real boot brings it back: every module is handed the
-    /// documents this world has written so far and the engine's boot runs again
-    /// over the same objects — every `on_world_loaded`, then every
-    /// `on_all_loaded`. The account oracle is the host's post-composition wiring,
-    /// so it is wired again exactly as [`Rig::boot`] wired it.
+    /// Register every owner slot afresh, then load this world's documents
+    /// over the same objects through every `on_world_loaded` and `on_all_loaded`.
+    /// The split-server fixture retains its clock and connection flags, including
+    /// a deliberately disconnected pilot; no reconnect or tick consumes a hatch
+    /// notice. The account oracle is wired again exactly as [`Rig::boot`] wired it.
     fn reboot(&mut self) {
         self.reboot_with(Vec::new());
     }
@@ -166,11 +165,6 @@ impl Rig {
     /// `(key, document)` a `tacsim` document some earlier process left behind
     /// (16b cut V.2: the result documents the history ring is filled from).
     fn reboot_with(&mut self, seeded: Vec<(smol_str::SmolStr, serde_json::Value)>) {
-        *self
-            .tw
-            .world_mut()
-            .module_state_mut::<match_::MatchBook>()
-            .expect("the match book") = match_::MatchBook::new();
         let mut kv: BTreeMap<smol_str::SmolStr, Vec<(smol_str::SmolStr, serde_json::Value)>> =
             BTreeMap::new();
         kv.entry(smol_str::SmolStr::new(tacsim::NS))
@@ -199,6 +193,10 @@ impl Rig {
                 )
             })
             .collect();
+        let (empty, registry) = mush_testkit::boot_world();
+        let world = std::mem::replace(self.tw.world_mut(), empty);
+        *self.tw.engine_mut() = mush_core::Engine::with_modules(world, registry, roster())
+            .expect("the same production roster registers afresh");
         self.tw.modules_loaded(data);
         let mut map = Accounts::default();
         for (n, pilot) in self.pilots.iter().enumerate() {

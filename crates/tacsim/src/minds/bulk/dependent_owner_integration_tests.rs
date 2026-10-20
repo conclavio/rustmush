@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Runs only after the actual marked Save and complete Registry worker. All
 //! filings below use real E4/roots/typed/shell installation; no certificate or
 //! qualifying parent grant is constructed here.

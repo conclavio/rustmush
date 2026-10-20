@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use mush_core::action::{
     ActionInvocationDraft, ActionOfferId, PreparedAuthoritativeAction, PreparedCausalRef,

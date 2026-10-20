@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual shipped content -> Origin -> paid integration -> delivery -> refit.
 //! Commands create ordinary setup; every certified/money/physical transition is
 //! the real registered provider and prepared ACK union. No synthetic receipt.
@@ -73,7 +75,7 @@ fn modules(
         native,
     )?;
     owners.tacsim = commerce.configure_tacsim(owners.tacsim)?;
-    owners.economy = commerce.configure_economy(owners.economy);
+    owners.economy = commerce.configure_economy(owners.economy)?;
     Ok(vec![
         Box::new(OrgModule::new()),
         Box::new(mush_sim::SimulationModule::new()),

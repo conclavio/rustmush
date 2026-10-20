@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Continues actual acknowledged entitlement/House purchases. A third actual
 //! player/account buys the existing instrument, then accepts its own renewal.
 //! No fabricated grant, term, certificate, transfer or account authority.

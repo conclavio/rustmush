@@ -214,7 +214,7 @@ fn modules(d: &LaunchDeployment) -> Result<Vec<Box<dyn GameModule>>> {
         },
         Default::default(),
         &launch,
-    );
+    )?;
     modules.push(Box::new(
         launch.configure_tacsim(layer.with_inventory(handles))?,
     ));

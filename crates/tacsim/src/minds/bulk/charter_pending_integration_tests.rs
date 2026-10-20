@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Genuine pending personal title transfers over the actual paid/owner fixture.
 //! The absent region event uses the parent's explicitly private event adapter;
 //! all four claims owners, escrow, service selectors and Registry causes are real.

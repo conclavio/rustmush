@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Structural rows and real registration/capsule boundaries; no certificate is minted here.
 use super::{
     records::{UpdateOperation, UpdatePosition},

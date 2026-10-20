@@ -1,40 +1,57 @@
 # 17f — Mind commerce, Registry rights and IC hardware: implementation plan
 
-## Current status — integration first, 2026-10-19
+## Current status — integration first, 2026-10-20
 
 **M6 is complete and merged. M7 has not yet passed a clean integrated run.**
-The amount of code written is not a reliable completion percentage. New feature
-work is paused at the owner's request until the existing code passes together.
+New feature work is paused at the owner's request. Code volume is not a useful
+completion percentage; the immediate goal is one candidate passing together.
 
-The latest full integration attempt, N108, tested source tree
-`dcd25ff21690ca39131f24b5ad16c935429b77e7`. Its first 61 stages passed,
-including all failures repaired after N107. The commerce-roster stage then
-encountered two stale module-order assertions and a geology boot-test stack
-overflow. The remaining 14 stages did not run. **This is a failed integration
-run, not acceptance.**
+The latest full integration attempt, N109, tested source tree
+`5f122cc4531c0224e822c46a0741e58711f0ad14`. Compilation and all
+29 commerce-roster/boot-parity tests passed. The default workspace
+suite then found 51 assertion or source-contract failures and 3 test-process
+stack overflows. The remaining 73 stages did not run. **This is failed
+integration evidence, not acceptance.**
 
-| Check | Latest result |
+| Check | N109 result |
 | --- | --- |
-| Compile all selected production and test targets | Passed in N108 |
-| Core, Roll, commerce composition and server submission disposition | Passed in N108: 732, 282, 33 and 13 tests |
-| Conduct, hardware, Industry and Economy | Passed in N108: 10, 5, 57 and 236 tests |
-| Commerce roster and server boot parity | Failed: two module-order assertions and a geology fixture stack overflow |
-| Remaining selected checks, default workspace and separate bot suites | Not reached in N108 |
-| Genuine purchase, server recovery, Conduct and named launch stories | Not reached in N108 |
+| Compile selected production and test targets | Passed |
+| Commerce roster and server boot parity | Passed, including the earlier geology stack failure |
+| Default workspace suite | Failed: 51 assertions/contracts and 3 stack overflows |
+| Remaining selected gates and separate bot suite | Not reached |
+| Genuine purchase, server recovery, Conduct and named launch stories | Not reached |
 | Live Redis recovery on an isolated instance | Still required on the same passing candidate |
 | Lint, frontend, remaining feature-specific and cross-host final acceptance | Still required before M7 closes |
 
-N108's source and all logs were independently verified unchanged. Its evidence
-archive SHA-256 is
-`119ff8515e9075bcfa8ef9d7e8bf59b99914f8993f84b8d10470283416c95020`.
+The failures include stale module/capability and wire-format expectations, source
+scans that mishandle test modules or new directories, production panic paths,
+an outdated integrity-receipt expectation, warmed-service reboot fixtures, and
+mind identity/hash expectations. Three test binaries aborted on stack overflow.
+Stack repairs must work at the ordinary stack size.
+
+A later isolated N109 diagnostic reproduced all five original hash failures with
+unchanged failure output. All 89 recorded hash comparisons matched the retained
+expectations after accounting for the reviewed mind-identity changes. This
+supports the hash repairs for those measured cases; it is not a passing run.
+
+The same diagnostic explained the authored lance failure for seed 2350:
+of 48 order requests, 24 were accepted, 11 living recipients were refused because
+their commander was wrecked (`NoCommander`), and 13 recipients were themselves
+wrecked. The fixture had incorrectly expected all 35 living recipients to receive
+an order. A further diagnostic passed all three seeds' unchanged behavioral
+checks, including Engage and Hold, with zero divergences. An isolated control
+recovered the old coverage counts only by removing the commander check. The
+fixture repair keeps that check, verifies each actual acceptance or refusal,
+and pins the measured 6,001 scripted and 164 stand-in thinks.
+
+N109's exact source and all logs were verified unchanged. Its evidence archive
+SHA-256 is `f0f0d7289d009ac12026cbc2e819f982d9dc4a4f07227339f478c204d40e9701`.
 Older passes cannot be combined with a newer candidate to claim acceptance.
 
-**What happens next:** verify the remaining repairs, then repeat the full run
-until one candidate passes every selected integration stage, the
-default workspace suite, the separate bot pass, live Redis recovery, and all four
-genuine stories. The workspace run alone does not prove Redis: its service-gated
-tests can skip when no Redis URL is present. Runner errors count as errors to fix;
-they do not justify ignoring tests. The final record will distinguish passing,
+**What happens next:** the corrected fixtures still await all 76 integration
+stages and the eight live Redis scopes on one candidate. The workspace suite alone
+does not prove Redis: its service-gated tests can skip when no Redis URL is present.
+Runner errors count as errors to fix. The final record will distinguish passing,
 failing and unexecuted checks.
 
 **What a green baseline will mean:** the code currently included works together

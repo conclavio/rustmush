@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual Engine delivery tests with a registered Industry fixture policy.
 //! Real Core birth/consumption/carry hooks; no certificate, payment or title claim.
 use super::*;

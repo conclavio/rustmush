@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual factory payment, native completion, current receiving eligibility and
 //! Core delivery. The controls below use real Economy APIs to model independent
 //! instrument/lifecycle changes; they do not mint factory or delivery evidence.

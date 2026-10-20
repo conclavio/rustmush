@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! One actual shipped-source certificate, registered filing and Conduct owner
 //! run. The submission-disposition runtime is a labeled fixture boundary; all
 //! qualification evidence comes from the real worker and installed owners.

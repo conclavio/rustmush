@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Additional genuine original revision, certificate, fee and line publication.
 //! No receipt/rating/title is fabricated; cold mutations below are corruption tests.
 use super::*;

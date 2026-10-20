@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Invoked only by the parent's real measured-certificate and paid-Grant gate.
 //! Uses actual Tacsim source service, Roll provider/participant and typed store.
 //! The in-process complete union models ACK; server writer/Unknown is separate.

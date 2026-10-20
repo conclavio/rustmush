@@ -40,9 +40,17 @@ impl DeliveryRecord {
 /// The Industry owner retains this exact receipt in its own acknowledged index.
 #[derive(Debug)]
 pub struct DeliveredCoreOutput {
-    pub(crate) row: DeliveryRecord,
+    row: DeliveryRecord,
+    completion: crate::CommitToken,
 }
 impl DeliveredCoreOutput {
+    pub(super) fn from_record(row: DeliveryRecord) -> Result<Self, ParticipantError> {
+        row.validate()?;
+        let OutputState::Consumed { completion, .. } = row.output.state else {
+            return Err(ParticipantError::Authority);
+        };
+        Ok(Self { row, completion })
+    }
     pub fn order(&self) -> &crate::core_output::CoreOutputOrder {
         &self.row.output.order
     }
@@ -52,11 +60,8 @@ impl DeliveredCoreOutput {
     pub const fn reservation(&self) -> crate::CommitToken {
         self.row.output.reservation
     }
-    pub fn completion(&self) -> crate::CommitToken {
-        match self.row.output.state {
-            OutputState::Consumed { completion, .. } => completion,
-            OutputState::Reserved {} => unreachable!("checked consumed output"),
-        }
+    pub const fn completion(&self) -> crate::CommitToken {
+        self.completion
     }
     pub const fn commit(&self) -> crate::CommitToken {
         self.row.operation

@@ -1730,10 +1730,20 @@ impl Coverage {
 /// (twelve enemies within Class I's twelve rows; the ROM's stand-in thinks,
 /// at eight rows, measured unmoved too); every figure it prints,
 /// per seed and in total, reads the same with the seat and without it.
+///
+/// **N109 lance remeasurement:** the landing-time commander check correctly
+/// refuses a persona's later orders after its commander is wrecked. With that
+/// check intact, the three seeds run 6,001 scripted and 164 stand-in thinks.
+/// An isolated control removing only that check restored the old 6,054 / 154
+/// pair and passed the original fixture. The current behavior separately passed
+/// every unchanged parity, Engage/Hold, release, expiry, cap and binding check
+/// before the old pair was replaced. Orders are reconciled against their actual
+/// acceptance or refusal; neither the commander's authority nor the lane's
+/// script, timing and coverage requirements are changed to recover the old pair.
 const COVERAGE: [(&str, (usize, usize)); 3] = [
     ("pooled", (10_042, 256)),
     ("mixed", (12_492, 310)),
-    ("lance", (6_054, 154)),
+    ("lance", (6_001, 164)),
 ];
 
 /// **The pooled lane's matches with a stand-in think** (17b cut M3.6; the
@@ -2153,10 +2163,12 @@ struct LanceFlown {
     releases: usize,
     /// The releases issued (every one, or the run ended early).
     releases_issued: usize,
-    /// The hulls each scripted order and release reached while they were no
-    /// wreck: the lines the arena must journal for them.
+    /// The living recipients of the scripted orders and releases.
     ordered_living: usize,
     released_living: usize,
+    /// Living order recipients refused because their persona has no capable
+    /// commander. Those requests must produce no `ordered` line.
+    ordered_no_commander: usize,
     /// The substeps played (one hash each, accumulated and asserted).
     substeps: usize,
     /// Every ledger line, flushed.
@@ -2181,6 +2193,8 @@ fn fly_lance(arena: &mut Arena) -> LanceFlown {
     let (mut next, mut next_release) = (0_usize, 0_usize);
     let mut seq = 0_u64;
     let (mut ordered_living, mut released_living) = (0_usize, 0_usize);
+    let mut ordered_no_commander = 0_usize;
+    let mut order_receipts: Vec<(i64, ObjId, Option<Refusal>)> = Vec::new();
     let living = |arena: &Arena, intents: &[tacsim::arena::intents::Intent]| {
         intents
             .iter()
@@ -2203,6 +2217,47 @@ fn fly_lance(arena: &mut Arena) -> LanceFlown {
             }
             let ordered = support::lance_intents(arena, *squad, *objective, *horizon, &mut seq);
             ordered_living += living(arena, &ordered);
+            // The scripted persona retains its actual commander. A surviving
+            // recipient is not authority to replace a fallen commander.
+            let commands = arena
+                .squads
+                .iter()
+                .find(|roster| roster.id == *squad)
+                .and_then(|roster| arena.unit(roster.commander))
+                .is_some_and(|unit| {
+                    !unit.limits.wreck
+                        && !unit.disabled
+                        && (!unit.weapons.is_empty() || unit.mobility.max_speed_cms != 0)
+                });
+            for intent in &ordered {
+                let IntentKind::Order(order) = &intent.kind else {
+                    panic!("the scripted order helper produced another intent kind");
+                };
+                assert_eq!(order.squad, *squad);
+                assert!(
+                    matches!(&order.by, tacsim::deliberation::CharacterRef::Persona { squad: by } if by == squad),
+                    "the script retains its own lance commander's persona"
+                );
+                assert_eq!(intent.channel, intent.kind.channel_required());
+                assert!(
+                    arena
+                        .epochs
+                        .authorises(intent.unit, intent.channel, intent.epoch)
+                );
+                let unit = arena
+                    .unit(intent.unit)
+                    .expect("a scripted roster recipient");
+                assert_eq!(unit.controller, tacsim::arena::state::Controller::Mind);
+                let refused = if unit.limits.wreck {
+                    Some(Refusal::Wreck)
+                } else if !commands {
+                    ordered_no_commander += 1;
+                    Some(Refusal::NoCommander)
+                } else {
+                    None
+                };
+                order_receipts.push((arena.now_ms, intent.unit, refused));
+            }
             intents.extend(ordered);
             next += 1;
         }
@@ -2234,6 +2289,20 @@ fn fly_lance(arena: &mut Arena) -> LanceFlown {
         wall = arena.now_ms + arena.substep_len_ms();
     };
     let events = support::ledger_events(arena, &mut bytes);
+    for (at, unit, refused) in &order_receipts {
+        let lines = events
+            .iter()
+            .filter(|event| {
+                event.t_ms == *at
+                    && matches!(&event.kind, tacsim::arena::ledger::EventKind::Ordered { unit: actual, .. } if actual == unit)
+            })
+            .count();
+        assert_eq!(
+            lines,
+            usize::from(refused.is_none()),
+            "each scripted order at {at} for {unit:?} has its own receipt; refusal {refused:?}"
+        );
+    }
     LanceFlown {
         start_ms,
         orders: orders.len(),
@@ -2241,6 +2310,7 @@ fn fly_lance(arena: &mut Arena) -> LanceFlown {
         releases_issued: next_release,
         ordered_living,
         released_living,
+        ordered_no_commander,
         substeps: hashes.len(),
         events,
         ended,
@@ -2285,8 +2355,9 @@ fn fly_lance(arena: &mut Arena) -> LanceFlown {
 /// (`STOCK_ODDS_ROWS`, counted), the notice buffer of a twelve-a-side fight,
 /// and squads under standing orders — every scripted order and release
 /// reconciled against the arena's own lines (one `ordered` line for each
-/// hull ordered while it was no wreck, one `order_released` line for each
-/// hull released while it was no wreck). Printed and asserted: the thinks
+/// living hull whose commander can still order it; none for wrecks or
+/// `NoCommander` refusals; one `order_released` line for each living hull
+/// released). Printed and asserted: the thinks
 /// compared and the ORDERED thinks (the view's `order` present) with their
 /// objectives, nonzero.
 ///
@@ -2355,6 +2426,7 @@ fn m2_gate_a_over_the_authored_lance_field() {
             releases_issued,
             ordered_living,
             released_living,
+            ordered_no_commander,
             substeps,
             events,
             ended,
@@ -2368,12 +2440,13 @@ fn m2_gate_a_over_the_authored_lance_field() {
         let seed_ordered = lines_of("ordered");
         let seed_released = lines_of("order_released");
         let seed_expired = lines_of("order_expired");
-        // Every scripted order reached every hull it was given while that
-        // hull stood (none refused for a stale epoch or a channel); every
-        // release likewise.
+        // A living recipient takes the order only while its actual
+        // commander can issue it. `fly_lance` checks every individual receipt,
+        // including absence for each named refusal, before this reconciliation.
         assert_eq!(
-            seed_ordered, ordered_living,
-            "seed {seed}: one `ordered` line a living hull ordered"
+            seed_ordered + ordered_no_commander,
+            ordered_living,
+            "seed {seed}: every living recipient is ordered or refused NoCommander"
         );
         assert_eq!(
             seed_released, released_living,
@@ -2408,7 +2481,8 @@ fn m2_gate_a_over_the_authored_lance_field() {
         ops.extend(thoughts.iter().map(|thought| thought.ops));
         println!(
             "m2_lance_match: seed={seed} end={} t_ms={} thinks={} ordered_thinks={} \
-             ordered_lines={seed_ordered} released_lines={seed_released} \
+             ordered_lines={seed_ordered} no_commander={ordered_no_commander} \
+             released_lines={seed_released} \
              expired_lines={seed_expired} orders_scripted={} releases_scripted={} substeps={}",
             ended.map_or_else(|| "cap".to_owned(), |ended| end_word(ended.reason)),
             arena.now_ms,

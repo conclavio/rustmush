@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Coordinator-only evidence using real typed installation and hydration.
 //! Quote/E4 values here are fixture data, not proof of a real funded purchase.
 use super::*;

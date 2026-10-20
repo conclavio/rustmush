@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Real Engine composition, registered action preparation, four owner binds,
 //! typed installation and cold hydration. Claim JSON is inert fixture data;
 //! these tests do not certify a physical host event or commercial entitlement.

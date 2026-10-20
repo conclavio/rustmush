@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Required expensive cross-owner gate. The certificate below comes only from
 //! the complete actual Registry Machine and acknowledged registered actions.
 //! No synthetic rating rows, source-readiness setter, or grant constructor is

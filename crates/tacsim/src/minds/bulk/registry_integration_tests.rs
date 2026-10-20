@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Registered producer/owner integration, using the real worker for one paid
 //! quantum. `install_composed_action` is core's fixture analogue of receipt
 //! installation; these tests do not claim a server writer/Unknown transport run

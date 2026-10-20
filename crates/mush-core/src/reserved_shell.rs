@@ -264,6 +264,12 @@ impl ShellReservations {
                     service: service.clone(),
                     action,
                     outcome,
+                    refusal: ActionError::new(
+                        ActionErrorCode::ProviderRejected,
+                        false,
+                        "The filing reservation is unavailable.",
+                    )
+                    .map_err(|e| ModError::msg(e.to_string()))?,
                 },
             )?;
         }
@@ -883,20 +889,18 @@ struct ShellProvider {
     service: ShellReservations,
     action: DefinitionRef,
     outcome: DefinitionRef,
+    refusal: ActionError,
 }
-fn action_error() -> ActionError {
-    ActionError::new(
-        ActionErrorCode::ProviderRejected,
-        false,
-        "The filing reservation is unavailable.",
-    )
-    .expect("fixed bounded shell refusal")
+impl ShellProvider {
+    fn action_error(&self) -> ActionError {
+        self.refusal.clone()
+    }
 }
 impl ActionProvider for ShellProvider {
     fn validate_invocation(&self, inv: &ActionInvocation) -> Result<(), ActionError> {
         require_action(inv, &self.action, RESERVE_ACTION)
             .and_then(|()| require_empty(inv))
-            .map_err(|_| action_error())
+            .map_err(|_| self.action_error())
     }
     fn project_offer(
         &self,
@@ -911,18 +915,21 @@ impl ActionProvider for ShellProvider {
         {
             return Ok(None);
         }
-        let definitions = engine.registry.definitions().ok_or_else(action_error)?;
+        let definitions = engine
+            .registry
+            .definitions()
+            .ok_or_else(|| self.action_error())?;
         let mut guards = engine
             .registry
             .server_guard_set_builder(crate::RevisionSet::default())
-            .map_err(|_| action_error())?;
+            .map_err(|_| self.action_error())?;
         guards
             .add_definition(action.clone(), definitions)
-            .map_err(|_| action_error())?;
+            .map_err(|_| self.action_error())?;
         Ok(Some(crate::ProviderOfferDraft {
             fixed_parameters: json!({}),
             parameters: crate::ProjectedParameterSchema::new(Vec::new())
-                .map_err(|_| action_error())?,
+                .map_err(|_| self.action_error())?,
             targets: crate::ProjectedTargetSchema::None,
             required_channels: Vec::new(),
             expires: None,
@@ -931,8 +938,8 @@ impl ActionProvider for ShellProvider {
                 "Reserve a mind charter",
                 "Reserve the charter object for an initial mind filing.",
             )
-            .map_err(|_| action_error())?,
-            guards: guards.finish().map_err(|_| action_error())?,
+            .map_err(|_| self.action_error())?,
+            guards: guards.finish().map_err(|_| self.action_error())?,
         }))
     }
     fn prepare_authoritative_with_context(
@@ -944,12 +951,12 @@ impl ActionProvider for ShellProvider {
         self.validate_invocation(inv)?;
         let (key, object) = context
             .reserve_initial_filing_shell(&self.service, txn)
-            .map_err(|_| action_error())?;
+            .map_err(|_| self.action_error())?;
         let result = RulesValue::new(
             self.outcome.clone(),
             json!({"reservation":key,"object":object}),
         )
-        .map_err(|_| action_error())?;
+        .map_err(|_| self.action_error())?;
         Ok(AuthoritativeActionOutput::new(result)
             .with_definitions(vec![self.outcome.clone()])
             .with_eligible_witnesses(vec![inv.principal().clone()]))

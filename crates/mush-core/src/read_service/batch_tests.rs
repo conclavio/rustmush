@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual registered reads exercise the shared row/call budget. Internal lens
 //! refusal cases additionally prove that batching cannot replace owner checks.
 use super::*;

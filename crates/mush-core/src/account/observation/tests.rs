@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Real provider/capsule tests; the test backend follows the production map-lock
 //! contract. No public readiness constructor or prevalidated account request.
 use super::*;

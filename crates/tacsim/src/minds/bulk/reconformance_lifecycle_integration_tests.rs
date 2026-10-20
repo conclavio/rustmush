@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Real changed-policy re-conformance from the parent's acknowledged filed and
 //! paid snapshot. No certificate, worker result or recall authority is fabricated.
 //! A fixture driver delivers the actual registered continuation commands promptly;

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Real signed offers and native consideration over the parent's genuinely
 //! certified original filing and paid Grant. No additional Registry run or
 //! structural receipt is substituted for owner evidence.

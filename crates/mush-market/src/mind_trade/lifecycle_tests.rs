@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Real typed transactions, registered retirement/query paths and boot index
 //! audits. Seeded offer bodies are structural fixtures, never paid authority.
 use super::*;

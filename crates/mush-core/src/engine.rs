@@ -2969,7 +2969,7 @@ impl Engine {
         Ok((
             prepared,
             output,
-            worker.expect("successful decision lease seed returns worker custody"),
+            worker.ok_or(crate::action::ActionProviderPrepareError::DecisionSeedResultMissing)?,
         ))
     }
 
@@ -3256,7 +3256,8 @@ impl Engine {
         Ok((
             prepared,
             output,
-            fallback_fence.expect("seed callback records fallback fence"),
+            fallback_fence
+                .ok_or(crate::action::ActionProviderPrepareError::DecisionSeedResultMissing)?,
         ))
     }
 

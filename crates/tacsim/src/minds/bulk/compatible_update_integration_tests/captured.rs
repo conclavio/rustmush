@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Real pre-update checkout retained across the actual new line publication.
 use super::*;
 pub(super) fn apply(

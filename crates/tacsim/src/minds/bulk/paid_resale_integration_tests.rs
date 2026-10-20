@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Real signed resale over an acknowledged personal purchase and actual IC owners.
 //! Only the existing private absent-region event boundary is used for IC claims;
 //! all payment, holder changes, retention, native history and recovery are real.

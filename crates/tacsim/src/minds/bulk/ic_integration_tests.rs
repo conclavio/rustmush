@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Genuine paid/owner history and the actual production four-owner IC union.
 //! Only the absent region start/terminal event is a private fixture boundary.
 //! It supplies no receipt, seal, grant, readiness or physical owner image.
@@ -517,7 +519,7 @@ impl IcWorld {
                 composition.configure_economy(
                     EconomyModule::with_custody(vec![Arc::new(mush_sim::InteriorCustodyProvider)])
                         .with_title_issuers(vec![issuer()?]),
-                ),
+                )?,
                 transfer_facts.clone(),
             ),
             paid_checkout::content()?,

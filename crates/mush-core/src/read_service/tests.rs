@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::action_state::{StateFamilyDescriptor, StateFamilyId};
 use crate::mechanics::{

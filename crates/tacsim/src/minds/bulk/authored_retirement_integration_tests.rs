@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual Registry -> paid Grant -> fork -> worker Save supplies these branches.
 //! Complete owner+typed union and cold boot are tested; server writer transport
 //! and ordinary @mind/remove UX remain separate, explicitly unclaimed work.

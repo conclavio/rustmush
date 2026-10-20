@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual committed filing + registered Market read. This reuses the structural
 //! rating fixture only to test the owner boundary, never worker certification.
 use super::*;

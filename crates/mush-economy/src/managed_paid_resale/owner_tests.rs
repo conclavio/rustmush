@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Real registered Economy monetary owner and cold-recovery tests. The Market
 //! receipt fixture is inert: it does not prove a paid licence, seller offer,
 //! claim census, Registry sanction or a production service intent.

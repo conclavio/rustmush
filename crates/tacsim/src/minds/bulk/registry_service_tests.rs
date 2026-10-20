@@ -871,6 +871,7 @@ impl GameModule for DispatchFixture {
     }
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.state(Artifacts::default());
+        reg.state(BulkStore::new(BulkConfig::default()).map_err(|e| ModError::msg(e.to_string()))?);
         reg.state(Dispatches::default());
         reg.classify_commands(CommandCompatibility::Authoritative);
         reg.command(
@@ -952,6 +953,14 @@ fn real_scheduler_preserves_the_actor_and_projection_refuses_foreign_principal()
         character: actor,
         ..binding(7)?
     };
+    // Existing-run selectors classify the retained real quota plan.
+    admit(
+        world
+            .world_mut()
+            .module_state_mut::<BulkStore>()
+            .ok_or("quota owner")?,
+        binding,
+    )?;
     world
         .world_mut()
         .module_state_mut::<Artifacts>()

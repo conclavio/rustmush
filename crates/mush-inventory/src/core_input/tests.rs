@@ -1,6 +1,7 @@
+#![cfg(test)]
+
 //! Actual registered Industry adapter + Inventory K state. The fixture mints
 //! ordinary Origin matter through Inventory; it makes no certification/payment claim.
-#![allow(clippy::unwrap_used, clippy::panic, clippy::panic_in_result_fn)]
 use super::*;
 use crate::{
     EndpointRef, Grade, InventoryFamilies, InventoryHandleCell, InventoryModule, InventoryStore,

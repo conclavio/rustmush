@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Structural maximum-page evidence through the actual registered owner reader.
 //! This tests bounded complete readback, not measured Registry certification.
 use super::*;

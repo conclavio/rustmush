@@ -59,7 +59,7 @@ fn engine(config: &MindCommerce) -> Result<Engine, ModError> {
     // references are validated by the final registry, not constructor order.
     let modules: Vec<Box<dyn GameModule>> = vec![
         Box::new(
-            config.configure_economy(EconomyModule::new().with_title_issuers(vec![issuer()?])),
+            config.configure_economy(EconomyModule::new().with_title_issuers(vec![issuer()?]))?,
         ),
         Box::new(config.configure_roll(RollModule::with_writers([crate::NS]))),
         Box::new(config.configure_tacsim(layer())?),
@@ -175,7 +175,7 @@ fn different_configuration_missing_owner_and_double_attachment_refuse() -> TestR
                 Box::new(
                     prepared.configure_economy(
                         EconomyModule::new().with_title_issuers(vec![issuer()?]),
-                    )
+                    )?
                 ),
                 Box::new(prepared.configure_roll(RollModule::with_writers([crate::NS]))),
                 Box::new(changed_after_attachment),
@@ -192,7 +192,7 @@ fn different_configuration_missing_owner_and_double_attachment_refuse() -> TestR
                 Box::new(
                     prepared.configure_economy(
                         EconomyModule::new().with_title_issuers(vec![issuer()?])
-                    )
+                    )?
                 ),
                 Box::new(prepared.configure_roll(RollModule::with_writers([crate::NS]))),
                 Box::new(layer()),
@@ -232,7 +232,7 @@ fn purchase_configuration_is_active_only_and_keeps_exact_shared_actions() -> Tes
         vec![
             Box::new(
                 prepared
-                    .configure_economy(EconomyModule::new().with_title_issuers(vec![issuer()?])),
+                    .configure_economy(EconomyModule::new().with_title_issuers(vec![issuer()?]))?,
             ),
             Box::new(prepared.configure_roll(RollModule::with_writers([crate::NS]))),
             Box::new(
@@ -283,7 +283,7 @@ fn source_forms_are_an_explicit_host_protocol_with_a_distinct_paid_reader() -> T
                 vec![
                     Box::new(prepared.configure_economy(
                         EconomyModule::new().with_title_issuers(vec![issuer()?]),
-                    )),
+                    )?),
                     Box::new(prepared.configure_roll(RollModule::with_writers([crate::NS]))),
                     Box::new(prepared.configure_market(
                         MarketModule::new().with_venue_gate(std::sync::Arc::new(
@@ -353,7 +353,7 @@ fn authored_forks_require_explicit_source_forms_and_register_exact_real_services
                 vec![
                     Box::new(prepared.configure_economy(
                         EconomyModule::new().with_title_issuers(vec![issuer()?]),
-                    )),
+                    )?),
                     Box::new(prepared.configure_market(
                         MarketModule::new().with_venue_gate(std::sync::Arc::new(
                             crate::port::market::PortVenueGate,
@@ -416,7 +416,7 @@ fn authored_forks_require_explicit_source_forms_and_register_exact_real_services
                 Box::new(
                     prepared.configure_economy(
                         EconomyModule::new().with_title_issuers(vec![issuer()?])
-                    )
+                    )?
                 ),
                 Box::new(
                     prepared.configure_market(
@@ -475,7 +475,7 @@ fn marked_registry_is_explicit_saved_admission_with_unchanged_rating_protocol() 
                 vec![
                     Box::new(prepared.configure_economy(
                         EconomyModule::new().with_title_issuers(vec![issuer()?]),
-                    )),
+                    )?),
                     Box::new(prepared.configure_market(
                         MarketModule::new().with_venue_gate(std::sync::Arc::new(
                             crate::port::market::PortVenueGate,
@@ -715,7 +715,7 @@ fn house_policy() -> Result<mush_market::mind_house::HousePolicy, ModError> {
 fn house_engine(c: &MindCommerce, market: bool) -> Result<Engine, ModError> {
     let mut modules: Vec<Box<dyn GameModule>> = vec![
         Box::new(mush_org::OrgModule::new()),
-        Box::new(c.configure_economy(EconomyModule::new().with_title_issuers(vec![issuer()?]))),
+        Box::new(c.configure_economy(EconomyModule::new().with_title_issuers(vec![issuer()?]))?),
         Box::new(c.configure_roll(RollModule::with_writers([crate::NS]))),
         Box::new(c.configure_tacsim(layer())?),
     ];
@@ -908,6 +908,11 @@ fn house_renewal_service_is_optional_and_retains_exact_purchase_refs() -> TestRe
         "close_house_mind_renewal_service"
     ));
     assert!(!has(&actual, "market", "action", "draft_mind_renewal"));
+    // A missing paired native configuration must return its original error,
+    // including at host composition, rather than panic on a private invariant.
+    let mut missing = prepare(CommerceMode::Active)?;
+    missing.house_renewal_service = selected.house_renewal_service.clone();
+    assert!(missing.configure_economy(EconomyModule::new()).is_err());
     assert!(selected.with_house_mind_renewal_service().is_err());
     Ok(())
 }
@@ -955,7 +960,7 @@ fn derived_updates_require_real_dependent_services_and_the_distinct_fee_action()
         if fee_owner {
             modules.push(Box::new(prepared.configure_economy(
                 EconomyModule::new().with_title_issuers(vec![issuer()?]),
-            )));
+            )?));
         }
         let result = Engine::with_modules(World::new_minimal(), Registry::new(), modules);
         if !fee_owner {

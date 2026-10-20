@@ -1272,8 +1272,8 @@ mod m5_tests {
         )
     }
 
-    /// Default seal identities, re-blessed at M5rules for API 2 and the stock
-    /// source's API header. The Line card alone is pinned under
+    /// Default seal identities retain the reviewed API 4 custody pins as an
+    /// exact identity-only migration control. The Line card alone is pinned under
     /// [`SealTerms::fixture`] ([`MindSeal::fixture`]) and
     /// under [`SealTerms::production_fixture`] (what `crate::match_::start`
     /// seals an unchosen hull under), on an armed line tank, the heavy (the
@@ -1282,7 +1282,18 @@ mod m5_tests {
     #[test]
     fn m5rules_default_seal_identities_are_pinned() {
         use crate::definitions::content::{HEAVY_MK1, LINE_TANK, TARGET_MK1};
+        assert_eq!(crate::minds::MIND_ABI, "rhai=1.26.0;api=5;stock=2");
+        let api4_source = crate::arena::snapshot::digest_from_text(
+            "9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b",
+        )
+        .expect("the retained API 4 Standard source digest");
+        let api5_source = crate::arena::snapshot::digest_from_text(
+            "d318e09bd821a0d933e273309f32608fe422041c059e762377cae0551673b2af",
+        )
+        .expect("the reviewed API 5 Standard source digest");
+        assert_eq!(crate::minds::content::standard_digest().0, api5_source);
         let mut got = Vec::new();
+        let mut api4_got = Vec::new();
         for (entry, id) in [(LINE_TANK, 4_u32), (HEAVY_MK1, 5), (TARGET_MK1, 9)] {
             for (which, terms) in [
                 ("fixture", SealTerms::fixture()),
@@ -1300,6 +1311,25 @@ mod m5_tests {
                 if which == "fixture" {
                     assert_eq!(unit.seal, MindSeal::fixture(&unit), "{entry}");
                 }
+                assert!(
+                    unit.seal.abi == crate::minds::MIND_ABI
+                        && unit.seal.source_sha256 == api5_source
+                        && unit.seal.requested.source_sha256 == api5_source
+                        && unit.seal.rom_identity.source_sha256 == api5_source,
+                    "the actual default seal must carry all reviewed API 5 identities"
+                );
+                // Only the declared ABI and Standard's one-byte comment change
+                // may differ. Hash the actual seal type through its real digest
+                // path; every other custody byte remains covered by the old pins.
+                let mut api4 = unit.seal.clone();
+                api4.abi = "rhai=1.26.0;api=4;stock=2".into();
+                api4.source_sha256 = api4_source;
+                api4.requested.source_sha256 = api4_source;
+                api4.rom_identity.source_sha256 = api4_source;
+                api4_got.push(format!(
+                    "{entry} {which} {}",
+                    crate::arena::snapshot::digest_text(&api4.digest())
+                ));
                 let text = serde_json::to_string(&unit.seal).expect("a seal writes");
                 assert!(
                     serde_json::from_str::<serde_json::Value>(&text).unwrap()["card"].is_array()
@@ -1314,7 +1344,7 @@ mod m5_tests {
         // weapon facts/ROM and API 4. Standard's body is unchanged from M5r;
         // its API header alone changes the source digest. Cross-host gates must
         // reproduce this complete array before accepting the release.
-        let pinned = [
+        let api4_pinned = [
             "tacsim.unit.line_tank fixture \
              5d0a8af7688090e1ccb4cb8f38f2f610ecf82be8919f684cd341a79613811d8b",
             "tacsim.unit.line_tank production_fixture \
@@ -1333,6 +1363,34 @@ mod m5_tests {
              c0357d93bdb8e08be06819155c5cc2a4d1801afb4d22992607b32aa0a8a5f8c0",
             "tacsim.unit.target_mk1 production_principal \
              0e3ea202b9b5bb3179245ab95357f673e13b831bf49f13a462eabc5aff5436b3",
+        ];
+        assert_eq!(
+            api4_got, api4_pinned,
+            "default seal custody changed beyond the declared ABI/source migration"
+        );
+        // N109 emitted these exact API 5 identities for the same nine actual
+        // checkouts. The old pins above independently reject any other custody
+        // change. These are Linux observations; cross-host reproduction remains
+        // required before release acceptance.
+        let pinned = [
+            "tacsim.unit.line_tank fixture \
+             39e929340f50b674f1af350ab6f9eebab55428fd195088d7b23ef11560809b5b",
+            "tacsim.unit.line_tank production_fixture \
+             39e929340f50b674f1af350ab6f9eebab55428fd195088d7b23ef11560809b5b",
+            "tacsim.unit.line_tank production_principal \
+             b908ec2ff3302187c848725e492d944b49ba2582b26231eb0122880e8751d830",
+            "tacsim.unit.heavy_mk1 fixture \
+             d1afd5882c9385f32f89c1470b5cf390b274148cf6d38f068ec010d499f0774e",
+            "tacsim.unit.heavy_mk1 production_fixture \
+             d1afd5882c9385f32f89c1470b5cf390b274148cf6d38f068ec010d499f0774e",
+            "tacsim.unit.heavy_mk1 production_principal \
+             6bea8cd8289c331449cf266c4f3e24a19b80999176a894d653449b719114e810",
+            "tacsim.unit.target_mk1 fixture \
+             b0ebb4b258b15c1405b0196a2c4cca364cda938bcf2d980493d47bffcac57528",
+            "tacsim.unit.target_mk1 production_fixture \
+             b0ebb4b258b15c1405b0196a2c4cca364cda938bcf2d980493d47bffcac57528",
+            "tacsim.unit.target_mk1 production_principal \
+             879a3cdaee7b6c57d42da2a1b94dd38f9fc8dd465fdb192cf8de354bc7dffb02",
         ];
         assert_eq!(got, pinned, "a default seal's digest moved: a STOP");
     }

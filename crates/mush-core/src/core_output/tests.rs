@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Structural Core owner tests: real registered Engine actions and World
 //! objects, with a test Industry policy. No certificate, money or title claim.
 use super::*;

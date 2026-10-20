@@ -27,7 +27,7 @@ fn actual_on(
     if omit != Some("economy") {
         modules.push(Box::new(c.configure_economy(
             EconomyModule::new().with_title_issuers(vec![issuer()?]),
-        )));
+        )?));
     }
     if omit != Some("tacsim") {
         modules.push(Box::new(c.configure_tacsim(layer)?));

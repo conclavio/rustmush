@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual B2-saved fork -> Registry providers/owners/worker. The first parent
 //! certificate, paid grant, fork and save have already run through their real
 //! producers. This file constructs no grant, result row or parent capability.

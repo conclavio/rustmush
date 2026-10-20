@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual Engine/registered transaction tests of Core's fixed capacity proof.
 //! Inert Value codecs stand in for business rows: these tests confer no E4,
 //! certified die, physical output or supplier authority.

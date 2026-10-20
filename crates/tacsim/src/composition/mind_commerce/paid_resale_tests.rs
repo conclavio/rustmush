@@ -7,7 +7,7 @@ fn configured() -> Result<MindCommerce, ModError> {
 }
 fn modules(c: &MindCommerce) -> Result<Vec<Box<dyn GameModule>>, ModError> {
     Ok(vec![
-        Box::new(c.configure_economy(EconomyModule::new().with_title_issuers(vec![issuer()?]))),
+        Box::new(c.configure_economy(EconomyModule::new().with_title_issuers(vec![issuer()?]))?),
         Box::new(c.configure_roll(RollModule::with_writers([crate::NS]))),
         Box::new(
             c.configure_market(
@@ -88,7 +88,7 @@ fn paid_resale_requires_all_real_owner_providers_and_the_same_service_binding() 
                 vec![
                     Box::new(e.configure_economy(
                         EconomyModule::new().with_title_issuers(vec![issuer()?]),
-                    )),
+                    )?),
                     Box::new(r.configure_roll(RollModule::with_writers([crate::NS]))),
                     Box::new(m.configure_market(
                         MarketModule::new().with_venue_gate(std::sync::Arc::new(
@@ -114,7 +114,9 @@ fn paid_resale_requires_all_real_owner_providers_and_the_same_service_binding() 
         World::new_minimal(),
         Registry::new(),
         vec![
-            Box::new(c.configure_economy(EconomyModule::new().with_title_issuers(vec![issuer()?]))),
+            Box::new(
+                c.configure_economy(EconomyModule::new().with_title_issuers(vec![issuer()?]))?,
+            ),
             Box::new(c.configure_roll(RollModule::with_writers([crate::NS]))),
             Box::new(
                 c.configure_market(

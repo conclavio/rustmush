@@ -378,7 +378,8 @@ fn game_modules_with_optional_commerce(
             &game,
             recovery,
             launch,
-        ),
+        )
+        .map_err(|e| e.to_string())?,
         (_, Some(commerce)) => modules::server_modules_with_tacsim_and_mind_commerce(
             weather,
             economy,
@@ -387,7 +388,8 @@ fn game_modules_with_optional_commerce(
             &game,
             recovery,
             commerce,
-        ),
+        )
+        .map_err(|e| e.to_string())?,
         (None, None) => modules::server_modules_with_tacsim(
             weather,
             economy,

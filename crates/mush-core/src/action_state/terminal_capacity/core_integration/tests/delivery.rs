@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Real registered Core coordinator evidence. Value codecs are deliberately
 //! inert; this proves capacity accounting, not physical/E4 business authority.
 use super::*;

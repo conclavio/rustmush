@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! A single real Safe Conduct certificate and completed Transit trial feed the
 //! actual coverage owners. Only region events and submission dispositions use
 //! the parent's labeled fixture boundaries; no decoded approval grants rights.

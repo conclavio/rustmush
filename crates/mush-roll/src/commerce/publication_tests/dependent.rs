@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Codec/root coherence only. These deliberately structural rows are not a
 //! certificate, grant or healthy deployment; the Tacsim child uses real owners.
 use super::*;

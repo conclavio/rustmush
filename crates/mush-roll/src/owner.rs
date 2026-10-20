@@ -194,7 +194,10 @@ pub struct RollStore {
     // Derived only by the mandatory full owner audit and same-ack closed
     // writer. Default/unloaded absence is never an empty healthy inventory.
     ic_claims: Option<crate::commerce::ic_claims::ClaimInventory>,
-    follow: Option<crate::commerce::follow::Index>,
+    // The value always exists so acknowledged apply needs no fallible lookup.
+    // Its separate private latch is set only by the complete owner audit.
+    follow: crate::commerce::follow::Index,
+    follow_audited: bool,
     libraries: BTreeMap<ObjId, Library>,
     minds: BTreeMap<(ObjId, u64), Mind>,
     revisions: BTreeMap<RevisionKey, Revision>,
@@ -1077,7 +1080,9 @@ impl RollStore {
 
     /// Check immediately before entering the final no-failure publication block.
     pub fn check_prepared(&self, prepared: &PreparedChange) -> Result<(), RollError> {
-        if self.generation != prepared.generation {
+        if self.generation != prepared.generation
+            || (prepared.follow.is_some() && !self.follow_audited)
+        {
             return Err(RollError::StaleOperation);
         }
         if prepared
@@ -1110,12 +1115,9 @@ impl RollStore {
 
     fn apply_checked(&mut self, prepared: PreparedChange) {
         if let Some(follow) = prepared.follow {
-            // prepare_follow and the same Roll generation fence establish this
-            // private index; no external state is consulted after custody.
-            self.follow
-                .as_mut()
-                .expect("prepared Follow index")
-                .apply(follow);
+            // prepare_follow and check_prepared establish the audited latch
+            // before custody; apply neither consults nor creates authority.
+            self.follow.apply(follow);
         }
         if let Some(inventory) = prepared.ic_claims {
             self.ic_claims = Some(inventory);
@@ -1452,9 +1454,10 @@ impl RollStore {
 
     pub(crate) fn follow_index(&self) -> Result<&crate::commerce::follow::Index, RollError> {
         self.commerce_ready()?;
-        self.follow
-            .as_ref()
-            .ok_or_else(|| invalid("Follow", "complete locator audit missing"))
+        if !self.follow_audited {
+            return Err(invalid("Follow", "complete locator audit missing"));
+        }
+        Ok(&self.follow)
     }
 
     pub(crate) fn prepare_follow(
@@ -1482,7 +1485,8 @@ impl RollStore {
         if self.commerce_audit_base()? != stamp || self.commerce != CommerceReadiness::Closed {
             return Err(invalid("Follow", "stale final audit"));
         }
-        self.follow = Some(index);
+        self.follow = index;
+        self.follow_audited = true;
         Ok(())
     }
 
@@ -2138,7 +2142,8 @@ impl RollStore {
             .checked_add(1)
             .ok_or(RollError::Exhausted("store generation"))?;
         self.commerce = CommerceReadiness::Closed;
-        self.follow = None;
+        self.follow = crate::commerce::follow::Index::default();
+        self.follow_audited = false;
         self.generation = next;
         Ok(())
     }

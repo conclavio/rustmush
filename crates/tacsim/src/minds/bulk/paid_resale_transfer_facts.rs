@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual transfer facts over the real signed resale and IC fixture. The probe
 //! only invokes Economy's public scoped read in its actual command dispatch;
 //! it cannot construct scope, consent, receipts, or a satisfied fact.

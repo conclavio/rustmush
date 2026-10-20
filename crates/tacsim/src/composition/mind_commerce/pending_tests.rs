@@ -112,7 +112,7 @@ fn pending_requires_matching_real_economy_and_roll_owner_configuration() -> Test
                 vec![
                     Box::new(economy.configure_economy(
                         EconomyModule::new().with_title_issuers(vec![issuer()?]),
-                    )),
+                    )?),
                     Box::new(roll.configure_roll(RollModule::with_writers([crate::NS]))),
                     Box::new(selected.configure_tacsim(layer())?),
                 ],

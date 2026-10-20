@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Single-account observations through the real registered provider/capsule.
 use super::*;
 

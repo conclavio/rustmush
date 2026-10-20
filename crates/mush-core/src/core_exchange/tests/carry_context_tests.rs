@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::action_state::{DetachedTypedState, TypedStateLens};
 fn require_context(r: &Rig) {

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Structural codecs and registered typed envelopes only. Actual authority,
 //! native receipt/replay and seller/buyer custody are tested by the genuine child.
 use super::*;

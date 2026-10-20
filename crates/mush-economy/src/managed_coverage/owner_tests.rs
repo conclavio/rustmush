@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Real native Economy owner tests. Captured product/host/role selectors below
 //! are inert fixtures: these tests do not certify a role, open a real sortie,
 //! publish a product or authorize the production Tacsim producer.

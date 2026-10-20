@@ -135,7 +135,7 @@ enum Landing {
 
 /// One booted engine over a kept store.
 struct Rig {
-    tw: TestWorld,
+    tw: Box<TestWorld>,
     cfg: Config,
     store: Arc<dyn ObjectStore>,
     spool: QuarantineSpool,
@@ -163,11 +163,23 @@ impl Drop for Rig {
 }
 
 /// **Boot the production root** over a fresh in-memory store.
+// Keep the production boot's large result out of the enclosing fixture future.
+// The heap-backed future remains lazy and propagates the actual boot result.
+fn boxed_boot_engine<'a>(
+    cfg: &'a Config,
+    store: &'a Arc<dyn ObjectStore>,
+    spool: &'a QuarantineSpool,
+) -> std::pin::Pin<
+    Box<impl std::future::Future<Output = Result<Box<boot::BootedEngine>, String>> + 'a>,
+> {
+    Box::pin(async move { boot::build_engine(cfg, store, spool).await.map(Box::new) })
+}
+
 async fn boot(tag: &str) -> Rig {
     let cfg = config(tag);
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let spool = QuarantineSpool::open(cfg.server.data_dir.join("quarantine")).expect("a spool");
-    let booted = boot::build_engine(&cfg, &store, &spool)
+    let booted = boxed_boot_engine(&cfg, &store, &spool)
         .await
         .expect("the split half boots");
     assert_eq!(
@@ -184,7 +196,7 @@ async fn boot(tag: &str) -> Rig {
             .test_world(),
         "the production composition is never a test world"
     );
-    let tw = TestWorld::from_engine(booted.engine);
+    let tw = Box::new(TestWorld::from_engine(booted.engine));
     let mut rig = Rig {
         tw,
         cfg,
@@ -234,12 +246,12 @@ async fn flush(rig: &mut Rig) {
 async fn restart(rig: &mut Rig, probe: impl FnOnce(&mut TestWorld) -> bool) {
     flush(rig).await;
     let now = rig.tw.world().now();
-    let old = std::mem::replace(&mut rig.tw, TestWorld::new());
+    let old = std::mem::replace(&mut rig.tw, Box::new(TestWorld::new()));
     drop(old);
-    let booted = boot::build_engine(&rig.cfg, &rig.store, &rig.spool)
+    let booted = boxed_boot_engine(&rig.cfg, &rig.store, &rig.spool)
         .await
         .expect("the restart boots over the kept store");
-    rig.tw = TestWorld::from_engine(booted.engine);
+    rig.tw = Box::new(TestWorld::from_engine(booted.engine));
     rig.tw.set_now(now);
     rig.epoch = rig.epoch.saturating_add(1);
     rig.boots = rig.boots.saturating_add(1);

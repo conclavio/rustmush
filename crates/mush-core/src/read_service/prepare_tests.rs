@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual registered-provider reads. The shared service deliberately permits
 //! hostile serializers and exhaustion so the production common fence is used.
 use super::*;

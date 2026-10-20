@@ -614,7 +614,7 @@
   "schema": {
     "id": "arena.cockpit",
     "retain": "latest",
-    "version": 6
+    "version": 7
   },
   "scope": "hostile",
   "sections": [

@@ -64,7 +64,7 @@ fn entitlement_opt_in_preserves_old_actions_and_freezes_actual_two_owner_protoco
         vec![
             Box::new(
                 prepared
-                    .configure_economy(EconomyModule::new().with_title_issuers(vec![issuer()?])),
+                    .configure_economy(EconomyModule::new().with_title_issuers(vec![issuer()?]))?,
             ),
             // Preserve the production Market-before-Roll writer registration order.
             Box::new(
@@ -120,7 +120,7 @@ fn entitlement_configuration_requires_the_exact_installed_roll_writer() -> TestR
                 Box::new(
                     prepared.configure_economy(
                         EconomyModule::new().with_title_issuers(vec![issuer()?])
-                    )
+                    )?
                 ),
                 Box::new(
                     prepared.configure_market(

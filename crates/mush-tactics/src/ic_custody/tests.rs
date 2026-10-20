@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual Tactics preparation, custody, installation and cold decoding. The
 //! fixture's Tacsim provider supplies structural physical requests only: these
 //! tests do not mint a real seal, host event, paid claim or four-owner union.

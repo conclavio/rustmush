@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual owner images and replay joins used by the production boot helper.
 //! These do not replace the paired Roll/Market licence audits.
 use super::*;

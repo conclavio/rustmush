@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual Core/Engine exchange with two registered inert native fixture owners.
 //! This proves atomic mechanics, not a real certificate, payment or unit refit.
 use super::*;

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual registered owner preparation and native fee posting. The Roll fixture
 //! supplies only action definitions; this is not a Registry/certificate fixture.
 use super::*;

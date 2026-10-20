@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Actual coordinator installation/recovery, with inert business codecs.
 //! Native journal values are structural fixtures, never Economy authority.
 use super::*;

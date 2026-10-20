@@ -3448,11 +3448,27 @@ fn vf_v4_the_effective_cell_id_budget_is_forty_bytes() {
 #[test]
 fn vf_c8_the_grant_helpers_are_called_only_from_view_module_and_status() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let allowed = ["status.rs", "view.rs", "module.rs"];
-    for entry in std::fs::read_dir(&src).expect("src") {
-        let path = entry.expect("entry").path();
-        let name = path.file_name().unwrap().to_string_lossy().to_string();
-        let text = std::fs::read_to_string(&path).expect("read");
+    let allowed = ["status.rs", "view.rs", "module.rs"].map(std::path::Path::new);
+    let mut directories = vec![src.clone()];
+    let mut files = Vec::new();
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(directory).expect("source directory") {
+            let entry = entry.expect("source entry");
+            let path = entry.path();
+            let kind = entry.file_type().expect("source entry type");
+            if kind.is_dir() {
+                directories.push(path);
+            } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    for path in files {
+        // Match root-relative paths: a nested module.rs is not an allowed consumer.
+        let relative = path.strip_prefix(&src).expect("source-relative path");
+        let name = relative.display();
+        let text = std::fs::read_to_string(&path).expect("Rust source");
         for needle in [
             "viewer_is_stationed(",
             "primary_stationed_unit(",
@@ -3464,7 +3480,7 @@ fn vf_c8_the_grant_helpers_are_called_only_from_view_module_and_status() {
                 .filter(|l| l.contains(needle) && !l.contains("pub fn "))
                 .count();
             assert!(
-                calls == 0 || allowed.contains(&name.as_str()),
+                calls == 0 || allowed.contains(&relative),
                 "{name} calls {needle} — a new authority consumer outside the census"
             );
         }

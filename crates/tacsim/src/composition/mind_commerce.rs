@@ -793,7 +793,10 @@ impl MindCommerce {
 
     /// Preserve custody, facts, observers and existing title issuers. The host
     /// must already allow the configured filing issuer; no issuer is added here.
-    pub fn configure_economy(&self, module: EconomyModule) -> EconomyModule {
+    ///
+    /// # Errors
+    /// The native owner's exact configuration error if a paired service differs.
+    pub fn configure_economy(&self, module: EconomyModule) -> Result<EconomyModule, ModError> {
         let module = match &self.minds_facts {
             Some(provider) => module.with_fact_provider(std::sync::Arc::new(provider.clone())),
             None => module,
@@ -856,21 +859,16 @@ impl MindCommerce {
             // This private option is produced only by the checked Market/Roll
             // builder. The preceding branch installs those same immutable
             // participants and manifest afresh, with no service yet attached.
-            Some(action) => module
-                .with_house_mind_renewal_service(action.clone())
-                .expect("checked House renewal composition has the same service reference"),
+            Some(action) => module.with_house_mind_renewal_service(action.clone())?,
             None => module,
         };
         let module = match &self.paid_resales {
-            Some(config) => module
-                .with_paid_mind_resale(config.economy().expect("checked paid resale composition")),
+            Some(config) => module.with_paid_mind_resale(config.economy()?),
             None => module,
         };
         match &self.coverage {
-            Some(coverage) => coverage
-                .configure_economy(module)
-                .expect("checked fixed native coverage actions"),
-            None => module,
+            Some(coverage) => coverage.configure_economy(module),
+            None => Ok(module),
         }
     }
 
