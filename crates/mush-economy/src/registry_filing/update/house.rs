@@ -21,6 +21,13 @@ pub(crate) struct HouseUpdateConfig {
     pub(crate) action: DefinitionRef,
     pub(crate) definitions: Arc<OnceLock<mush_core::DefinitionRegistry>>,
 }
+impl std::fmt::Debug for HouseUpdateConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HouseUpdateConfig")
+            .field("action", &self.action)
+            .finish_non_exhaustive()
+    }
+}
 impl HouseUpdateConfig {
     pub(crate) fn new(action: DefinitionRef) -> Self {
         Self {

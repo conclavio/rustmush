@@ -319,13 +319,17 @@ pub(super) async fn exercise(
                         let epoch = stale.engine.world.next_world_timeline_epoch(2)?;
                         stale.engine.world.append_world_timeline_epoch(epoch)?;
                     }
-                    _ => stale.engine.registry.freeze_mechanics_owner(
-                        &OwnerId::new("economy")?,
-                        mush_core::mechanics::IncidentId(89),
-                        mush_core::mechanics::RecoveryReason::IntegrityViolation {
-                            code: mush_core::mechanics::CanonicalId::new("derived_update_fixture")?,
-                        },
-                    )?,
+                    _ => {
+                        stale.engine.registry.freeze_mechanics_owner(
+                            &OwnerId::new("economy")?,
+                            mush_core::mechanics::IncidentId(89),
+                            mush_core::mechanics::RecoveryReason::IntegrityViolation {
+                                code: mush_core::mechanics::CanonicalId::new(
+                                    "derived_update_fixture",
+                                )?,
+                            },
+                        )?;
+                    }
                 }
                 if take {
                     assert!(stale.engine.take_staged_action().is_err());

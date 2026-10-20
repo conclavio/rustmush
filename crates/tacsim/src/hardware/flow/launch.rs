@@ -8,7 +8,10 @@ use crate::launch::{
     HardwareCoordinates, HouseDeployment, LaunchComposition, LaunchDeployment, LaunchMode,
     LaunchRecipe, LaunchVenue, NamedHouses,
 };
-use mush_core::{AccountIdentity, AccountIdentityEpoch, PersonalAccountSnapshot};
+use mush_core::{
+    AccountIdentity,
+    account::{AccountIdentityEpoch, PersonalAccountSnapshot},
+};
 use mush_economy::managed_entitlement::Recipient;
 use mush_org::{OrgId, OrgScopeId};
 use std::collections::BTreeMap;
@@ -279,7 +282,7 @@ async fn named_launch_real_initialization_cold_activation_and_private_import() -
     command(r.world_mut(), GOD, "@mind/launch coprates=Coprates Drill")?;
     command(r.world_mut(), GOD, "@mind/launch safe_conduct=Safe Conduct")?;
     r.flush();
-    assert_ne!(r.boot, before);
+    assert!(!same_boot(&r.boot, &before));
     for (recipe, house) in [
         (LaunchRecipe::Meridiani, &d.houses.meridiani),
         (LaunchRecipe::Coprates, &d.houses.coprates),

@@ -113,7 +113,7 @@ fn install_submit(r: &mut Rig, request: AuthoritativeSubmit) -> Result {
     Ok(())
 }
 fn pulse(r: &mut Rig) -> Result {
-    if let Some(when) = r.world().engine().sched.next_due() {
+    if let Some(when) = r.world_mut().engine_mut().sched.next_due() {
         r.world_mut().fire_due(when);
     }
     r.flush();
@@ -455,18 +455,32 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
         .world_mut()
         .set_now(accepted_term.window().term_end().get());
     r.flush();
-    use mush_economy::managed_house_renewal::{DRAFT_ACTION, FUND_ACTION, GRANT_ACTION};
-    fence(&mut r, DRAFT_ACTION, json!({"licence":accepted.id().get()}))?;
+    use mush_roll::commerce::house_renewal::protocol::Transition as HouseRenewal;
+    fence(
+        &mut r,
+        HouseRenewal::Draft.id(),
+        json!({"licence":accepted.id().get()}),
+    )?;
     let (draft, _) = r.perform(
         "market",
-        DRAFT_ACTION,
+        HouseRenewal::Draft.id(),
         buyer,
         json!({"licence":accepted.id().get()}),
     )?;
-    fence(&mut r, FUND_ACTION, json!({"operation":draft}))?;
-    r.perform("market", FUND_ACTION, buyer, json!({"operation":draft}))?;
-    fence(&mut r, GRANT_ACTION, json!({"operation":draft}))?;
-    r.perform("market", GRANT_ACTION, buyer, json!({"operation":draft}))?;
+    fence(&mut r, HouseRenewal::Fund.id(), json!({"operation":draft}))?;
+    r.perform(
+        "market",
+        HouseRenewal::Fund.id(),
+        buyer,
+        json!({"operation":draft}),
+    )?;
+    fence(&mut r, HouseRenewal::Grant.id(), json!({"operation":draft}))?;
+    r.perform(
+        "market",
+        HouseRenewal::Grant.id(),
+        buyer,
+        json!({"operation":draft}),
+    )?;
     assert_eq!(paid(&r)?.term().get(), 2);
     assert_eq!(before.0 - r.money(r.payer)?.0, 80000);
     member(&mut r, false)?;

@@ -371,13 +371,15 @@ fn house_update_repeats_scoped_authorization_readiness_and_money_at_all_custody_
             match drift {
                 "deny" | "revoke" => policy_command(&mut f, curator, scope, drift)?,
                 "expiry" => f.world.set_now(200),
-                "org" | "economy" => f.world.engine_mut().registry.freeze_mechanics_owner(
-                    &OwnerId::new(drift)?,
-                    mush_core::mechanics::IncidentId(19),
-                    mush_core::mechanics::RecoveryReason::IntegrityViolation {
-                        code: CanonicalId::new("house_update_fixture")?,
-                    },
-                )?,
+                "org" | "economy" => {
+                    f.world.engine_mut().registry.freeze_mechanics_owner(
+                        &OwnerId::new(drift)?,
+                        mush_core::mechanics::IncidentId(19),
+                        mush_core::mechanics::RecoveryReason::IntegrityViolation {
+                            code: CanonicalId::new("house_update_fixture")?,
+                        },
+                    )?;
+                }
                 "title" => {
                     f.state_mut()
                         .snapshot
