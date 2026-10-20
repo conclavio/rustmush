@@ -77,6 +77,7 @@ pub mod depth;
 pub mod durable_schedule;
 pub mod engine;
 pub mod flags;
+pub mod geology_key;
 pub mod ledger;
 pub mod lock;
 pub mod matchit;
@@ -257,6 +258,7 @@ pub use engine::{
     register_engine_commands,
 };
 pub use flags::{Flags, Powers, Privileges, Role};
+pub use geology_key::{GeologyMac, GeologySecret, GeologySecretError, MAX_GEOLOGY_SECRET_VERSIONS};
 pub use ledger::{
     BreachKind, ChunkFloors, ContiguityBreach, DEFAULT_ARCHIVE_PAGE_CHUNKS, Ledger,
     LedgerAppendError, LedgerApplyError, LedgerChunk, LedgerChunkOf, LedgerDoc, LedgerEntry,

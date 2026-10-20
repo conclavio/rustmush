@@ -467,12 +467,21 @@ fn sample(views: &[TileView<'_>], grid: &Grid, x: u16, y: u16) -> Option<Cell> {
         let mean = elev / n;
         return Some(Cell {
             class,
-            elev_cm: i16::try_from(mean).unwrap_or(i16::MAX),
+            // Doc 20 cut SM.1 (§3.2): a mean of i16s fits, but the cast is symmetric anyway.
+            elev_cm: saturating_i16(mean),
             cover,
             room: 0,
         });
     }
     None
+}
+
+/// An elevation in centimetres as a composite cell's `i16`, saturating at the end it overflows
+/// (doc 20 cut SM.1, §3.2): a deep low reads `i16::MIN`, a high `i16::MAX` — never the other.
+/// `RegionRec::validate` keeps an authored region's datum ± relief inside the range, so this is
+/// the defence for an input built without the validator, not a height the atlas invents.
+fn saturating_i16(v: i64) -> i16 {
+    i16::try_from(v).unwrap_or(if v < 0 { i16::MIN } else { i16::MAX })
 }
 
 fn feature_cells(grid: &Grid, f: &FeatureRec) -> Vec<(u16, u16)> {
@@ -543,7 +552,8 @@ pub fn composite(input: &CompositeInput) -> Result<Composite, String> {
                         let ground = background(&input.region, surface, c.x, c.y);
                         Cell {
                             class: ground.class,
-                            elev_cm: i16::try_from(ground.elev_cm).unwrap_or(i16::MAX),
+                            // Doc 20 cut SM.1 (§3.2): a low stays a low, never a cliff.
+                            elev_cm: saturating_i16(i64::from(ground.elev_cm)),
                             cover: 0,
                             room: 0,
                         }
@@ -2536,5 +2546,78 @@ pub fn parse_feature_state(text: &str) -> Option<FeatureState> {
             .and_then(|n| n.parse::<u8>().ok())
             .filter(|n| *n > 0)
             .map(FeatureState::Damaged),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geom::{Point2, Rect2};
+    use crate::record::{BackgroundRecipe, RegionKind};
+    use mush_core::CanonicalId;
+
+    /// Doc 20 cut SM.1 (§3.2): the composite's elevation cast saturates at the end it overflows —
+    /// a background deeper than `i16` reads the floor, never the ceiling (a low stays a low).
+    #[test]
+    fn a_deep_background_cell_saturates_low() {
+        assert_eq!(saturating_i16(40_000), i16::MAX);
+        assert_eq!(saturating_i16(-40_000), i16::MIN);
+        assert_eq!(saturating_i16(-5), -5);
+        assert_eq!(saturating_i16(0), 0);
+
+        let key = RecordKey::new(
+            CanonicalId::new("p").expect("id"),
+            CanonicalId::new("region").expect("id"),
+        );
+        // Built directly, past the validator: `composite` does not validate its input.
+        let region = RegionRec {
+            key: key.clone(),
+            name: "Deep".to_string(),
+            kind: RegionKind::Surface {
+                body: "ceres".to_string(),
+            },
+            frame: None,
+            parent: None,
+            extent: Rect2(Point2(0.0, 0.0), Point2(10.0, 10.0)),
+            datum_cm: -40_000,
+            background: BackgroundRecipe {
+                surface: TerrainClass::Regolith,
+                mix: Vec::new(),
+                relief_cm: 0,
+                relief_period_cm: 800,
+                water_cm: None,
+                seed: 1,
+            },
+            ground: Vec::new(),
+            ground_resolution_cm: 1000,
+            theme: None,
+            revision: 1,
+        };
+        let frame = WindowFrame {
+            region: key,
+            surfaces: vec![SurfaceRef::Ground],
+            bbox: RectCm {
+                min: PointCm { x: 0, y: 0 },
+                max: PointCm { x: 1_000, y: 1_000 },
+            },
+            cell_cm: 1_000,
+        };
+        let input = CompositeInput {
+            frame,
+            region,
+            tiles: Vec::new(),
+            features: Vec::new(),
+            rooms: Vec::new(),
+        };
+        let composite = composite(&input).expect("a one-cell composite");
+        let ground = composite
+            .surface(&SurfaceRef::Ground)
+            .expect("the ground surface");
+        let cell = ground.cells.get(0, 0).expect("the one cell");
+        assert_eq!(
+            cell.elev_cm,
+            i16::MIN,
+            "a deep low is the floor, not a cliff"
+        );
     }
 }

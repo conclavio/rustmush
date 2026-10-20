@@ -1,0 +1,1446 @@
+{
+  "manifest": {
+    "id": "neighborhood.voltaire_anchorage",
+    "version": 1,
+    "kind": "neighborhood",
+    "digest": "790d3363d00cdbdf72dc2c753e587b9f6f86b36cd17e89e71ded6ed02e4e4bfc",
+    "requires": [
+      {
+        "id": "region.voltaire_anchorage",
+        "version": 1
+      }
+    ]
+  },
+  "brief": {
+    "prose": "The station is the Stickney boxes, deliberately: the visiting berths and the pressure lobby at one end, the Republic Customs Post the first desk every arrival stands at, and the Roads Concourse the hall every public room opens off: the Roadsmaster's Office, the Bond Exchange (with its public stair down to the Reserve Receiving Hall on the Tank Deck), the Reserve Commissary, the Long Straw and the Ark Moorings Gallery, whose ports look out on the Long Mercy. Eleven rooms on two decks. One restricted room, the Reserve Spine, is staff-locked and hidden off the receiving hall on the staff-lobby precedent; it holds the storefront cages that back the counters and the dark desks where the Reserve Warden, the Bond Commissioner and Syrtis's managing director sit enabled:false until the faction cut binds them."
+  },
+  "entries": {
+    "neighborhood": {
+      "kind": "neighborhood",
+      "def": {
+        "region": "region.voltaire_anchorage",
+        "locality": "locality.voltaire_anchorage",
+        "name": "Voltaire Anchorage",
+        "setting": "station",
+        "representation": "authored",
+        "footprint": [
+          [
+            100,
+            80
+          ],
+          [
+            210,
+            80
+          ],
+          [
+            210,
+            190
+          ],
+          [
+            100,
+            190
+          ]
+        ],
+        "room_budget": {
+          "target": 11,
+          "maximum": 16
+        },
+        "hydration": {
+          "enabled": false,
+          "max_player_sites": 0
+        },
+        "resolution_cm": 100,
+        "theme": {
+          "name": "TacSim 2350: the Roads",
+          "style_guide": "Present tense, no second person, no named NPCs in a room desc. Each room is distinct in sound, light and smell before it is distinct in furniture. Deimos holds even less than Phobos (doc 10 §3: no artificial gravity beyond thrust and rotation): hulls settle into cradles and are tied down, decks are painted conventions, handlines run everywhere, benches have tether loops. The Roads are the Republic at its border: institutional, bonded and sealed, forms in triplicate, the Commissioner's seal on every manifest that goes on to Phobos. The arks are everywhere underfoot: salvaged plating with hull names on it, ark-era scrubbers, a galley turned bar, and the Long Mercy over the crater. The Reserve is in the floor and says little about itself; its rotation stamps and its posted prices are all it shows. Mars is a small rust disc in the sky. Desc length medium (60–120 words); details are one or two sentences, dry, with a fact in them. Exit aliases avoid the kernel words.",
+          "vocabulary": [
+            "roads",
+            "anchorage",
+            "cradle",
+            "tie-down",
+            "handline",
+            "tether loop",
+            "pressure door",
+            "inspection sticker",
+            "bond",
+            "in bond",
+            "bonded",
+            "seal",
+            "Commissioner's seal",
+            "customs post",
+            "roadsmaster",
+            "sailing plan",
+            "clearance",
+            "Reserve",
+            "rotation",
+            "warden",
+            "tank gallery",
+            "ark",
+            "hulk",
+            "moorings",
+            "Long Mercy",
+            "breakers",
+            "Voltaire",
+            "Deimos",
+            "Phobos",
+            "Stickney",
+            "Syrtis",
+            "Coprates",
+            "Kasei",
+            "the Guard",
+            "Vigil",
+            "the hop",
+            "light alloy",
+            "instrument boards",
+            "carbon billet",
+            "water ice",
+            "reaction mass",
+            "crew-day",
+            "tonne",
+            "Republic"
+          ],
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "shields",
+            "stardate",
+            "hangar bay",
+            "you see"
+          ]
+        },
+        "ambience": [
+          "A pressure door cycles toward the cradles, and the counter above it clicks over.",
+          "A hull settles into a cradle so slowly that the tie-down crew finishes its coffee before the first cable goes on.",
+          "The ark-era scrubbers change pitch, cough once, and settle back into their breathing.",
+          "Somewhere under the deck a Reserve pump starts, runs for a slow count of ten, and stops.",
+          "The approach channel mutters a Vigil's callsign and an exercise box off the Roads, then returns to static.",
+          "A long creak comes up through the anchor plates as the Long Mercy's cables take up the cold.",
+          "Someone pins a new line to the Titan card in the Long Straw and initials it.",
+          "A dolly of rotated ration crates rolls past on its rail, every crate stamped with the same date.",
+          "A clerk carries the seal press across the concourse on its tether, and conversation pauses as it passes.",
+          "Mars has turned a little, and Syrtis is coming into the light.",
+          "The berth board updates: one cradle goes from IN BOND to CLEARED FOR STICKNEY, and the room's attention goes with it.",
+          "A school group drifts through toward the moorings gallery, clipped in a line behind its teacher."
+        ]
+      }
+    },
+    "site.voltaire_roads": {
+      "kind": "site",
+      "def": {
+        "name": "Voltaire Roads",
+        "site_kind": "site.transit",
+        "footprint": [
+          [
+            110,
+            90
+          ],
+          [
+            200,
+            90
+          ],
+          [
+            200,
+            180
+          ],
+          [
+            110,
+            180
+          ]
+        ]
+      }
+    },
+    "structure.moorings_block": {
+      "kind": "structure",
+      "def": {
+        "site": "site.voltaire_roads",
+        "footprint": [
+          [
+            110,
+            90
+          ],
+          [
+            200,
+            90
+          ],
+          [
+            200,
+            180
+          ],
+          [
+            110,
+            180
+          ]
+        ],
+        "floors": [
+          {
+            "index": 0,
+            "z_offset_m": 0,
+            "height_m": 7,
+            "name": "Tank Deck"
+          },
+          {
+            "index": 1,
+            "z_offset_m": 7,
+            "height_m": 4.5,
+            "name": "Roads Deck"
+          }
+        ]
+      }
+    },
+    "room.d01_berth_gallery": {
+      "kind": "room",
+      "def": {
+        "name": "Visiting Berth Gallery",
+        "short_desc": "A long pressurised gallery along the visiting cradles, every hull beyond the ports lashed down by its tie-downs.",
+        "desc": "The gallery runs the length of the visiting cradles behind a row of thick ports, each framing a berth number, a boarding tube and a hull lashed down by four tie-downs. Deimos holds even less than Phobos, so a hull does not land here so much as settle, and the cradles keep what settles into them. The deck is a convention of painted chevrons; handlines run at shoulder height and every bench has a tether loop. The air is old scrubber air, cold off the tank steel, with new tether rubber in it. A berth board lists each cradle and its bond status. The pressure lobby is inward.",
+        "site": "site.voltaire_roads",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              100
+            ],
+            [
+              200,
+              115
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "markers": [
+          "port.dock"
+        ],
+        "details": {
+          "berth board": "Cradle by cradle: the hull, its registry, its agent of record, and IN BOND or CLEARED FOR STICKNEY. A docked hull's name lights when a pilot is aboard.",
+          "tie downs": "Four cable tie-downs to a cradle, ratcheted by hand from the boarding tube. On Deimos a hull resting on the crater floor would walk off it under the push of its own pumps.",
+          "ports": "Laminated glass with a Republic inspection sticker in each corner, dated. Beyond them the floor of Voltaire is grey and smooth, its old craters filled in with dust.",
+          "handlines": "Braided line at shoulder height with clip points every two metres. Traffic keeps right, and a stencil says so in Republic typeface."
+        }
+      }
+    },
+    "room.d02_pressure": {
+      "kind": "room",
+      "def": {
+        "name": "Pressure Lobby",
+        "short_desc": "A square chamber between two pressure doors, breathing through an ark-era scrubber.",
+        "desc": "A square chamber between two pressure doors, each with a cycle counter glowing above it and a Republic inspection sticker on its frame. Nothing is sold here and nothing opens to the side; the room exists so that nobody is ever one door from vacuum. A rail of tether clips runs beside the inner door, and a placard gives the order of operations if the gallery door fails to seal. The ventilation is older than the station, an ark-era scrubber stack with its builder's plate painted over, and it breathes audibly. The air is a little over-pressured. The berth gallery is outward; the customs post is inward.",
+        "site": "site.voltaire_roads",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              115
+            ],
+            [
+              125,
+              130
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "placard": "IN THE EVENT OF SEAL FAILURE: 1. Do not open the inner door. 2. Clip on. 3. Wait. Initialled by three inspectors of the Bond Authority.",
+          "scrubber stack": "An ark-era scrubber salvaged from a hull broken up in the roads and still in service. The builder's plate has been painted over three times and shows through each time.",
+          "cycle counter": "Six digits over each door. The gallery side runs well ahead; hulls cycle more often than people do."
+        }
+      }
+    },
+    "room.d03_customs": {
+      "kind": "room",
+      "def": {
+        "name": "Republic Customs Post",
+        "short_desc": "A narrow customs post of two queue rails and a counter, an origin board behind it under the Republic's crest.",
+        "desc": "A narrow post of two queue rails and a counter, smaller than the hall at Stickney and built for a different question. A board behind the counter divides arriving cargo by origin: goods of Concord or Company origin, taken into bond here, and Belt goods, which pass through sealed and clear at Stickney's own Customs Hall. The Republic's crest hangs over the board. Form pads in triplicate fill a rack by the door, and a brass seal press floats on a short tether at the end of the counter. The light is flat and white; the post smells of seal wax and warm toner. The pressure lobby is outward and the concourse inward.",
+        "site": "site.voltaire_roads",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              130
+            ],
+            [
+              125,
+              155
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "origin board": "CONCORD — COMPANY: INTO BOND. BELT: SEALED THROUGH, CLEAR AT STICKNEY. The Belt column is nearly always empty, because Belt hulls rarely call at the Roads.",
+          "forms": "Bond Entry, Origin Attestation, Crew Roster, in Republic typeface and in triplicate. The Bond Entry asks where each tonne was loaded and under whose charter.",
+          "seal press": "The Commissioner's seal in a brass press on a tether. Nothing bonded here goes on to the yard at Phobos without its impression on the manifest.",
+          "crest": "The Republic's crest in cast alloy with the Settlement year under it, the twin of the one in Stickney's hall."
+        }
+      }
+    },
+    "room.d04_concourse": {
+      "kind": "room",
+      "def": {
+        "name": "Roads Concourse",
+        "short_desc": "The broad hall of the Roads Deck, its walls plated with salvage from broken arks.",
+        "desc": "The concourse is the one broad room of the Roads Deck, a long hall with doors on every side: the customs post back toward the locks, the roadsmaster's office, the bond exchange, the commissary, the Long Straw and the moorings gallery. Two handlines cross it corner to corner, and a ring of tether loops circles a central pillar where a station map is posted. The walls are plated with salvage from the arks, each panel stencilled with the name of the hull it came from. The air moves slowly and carries the cardboard smell of the commissary. Over the doors a clock keeps Coprates standard, and nobody argues with it here.",
+        "site": "site.voltaire_roads",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              125,
+              115
+            ],
+            [
+              185,
+              155
+            ]
+          ]
+        },
+        "kind": "circulation",
+        "details": {
+          "ark plating": "Panels of hull plate from broken arks, each stencilled with a hull name and a frame number. The crews who broke the hulls kept the names on, and the Republic has never painted them out.",
+          "station map": "The Roads Deck above and the Tank Deck below, the Tank Deck drawn as a grey band marked RESERVE PERSONNEL except for the receiving hall, which is marked PUBLIC.",
+          "handlines": "Two lines crossing the hall corner to corner. Where they cross, a ring of painted bands tells newcomers to clip on before they let go.",
+          "patrol notice": "ORBITAL GUARD — VIGIL EXERCISES OFF THE ROADS — HOLD TO FILED PLANS. It is reissued every month with the same text and a new date.",
+          "clock": "Coprates standard, in Republic typeface. There is no Freeport clock on the concourse; that one hangs in the roadsmaster's office."
+        }
+      }
+    },
+    "room.d05_harbourmaster": {
+      "kind": "room",
+      "def": {
+        "name": "Roadsmaster's Office",
+        "short_desc": "A cramped office behind a half-door, the roads board glowing on its back wall.",
+        "desc": "A half-door with a counter on top of it closes off a cramped office that runs back toward the crater wall. A board on the back wall shows every cradle in the Roads and the two approach lanes beyond them, the old ark moorings drawn in grey. Two clocks hang under it, Coprates standard and Freeport time. A sailing-plan pad lies open on the counter beside a tray of clearance stamps, and a radio carries the Guard's approach channel at a volume that is just not words. The office smells of stamp ink and of the small heater under the desk, which ticks. The concourse is out the half-door.",
+        "site": "site.voltaire_roads",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              155
+            ],
+            [
+              132,
+              180
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "roads board": "Cradles, hulls, and two approach lanes, one marked SUNWARD for the falls from Luna and one marked OUTER for the long throttled falls from Titan. The OUTER lane is lit less often than the other.",
+          "sailing plan pad": "Departure at, destination, manifest sealed, bond seal number, agent of record, SIGNED. The bond seal number is the line Stickney's pad does not have.",
+          "clocks": "Coprates standard on the left and Freeport time on the right. The card between them gives the offset and has been corrected in pencil.",
+          "hop card": "Pinned by the counter: DEIMOS TO PHOBOS, ABOUT THREE HOURS IN A GOOD SEASON, A TONNE OF REACTION MASS. Under it, in pencil: always a good season.",
+          "radio": "Approach control in the Guard's voice, a Vigil's callsign, an exercise box off the Roads. Then static, which is most of it."
+        }
+      }
+    },
+    "room.d06_moorings": {
+      "kind": "room",
+      "def": {
+        "name": "Ark Moorings Gallery",
+        "short_desc": "A dim gallery of tall ports looking out over the crater at the last ark hulk.",
+        "desc": "The moorings gallery is a dim run of tall ports looking out across Voltaire crater. Over the crater floor, cradled on a lattice of trusses from the rim and lashed down by cables, rests the last ark hulk, the Long Mercy, its spine bare and its ring sections cut away where the breakers stopped. Beyond it Mars is a rust disc, smaller than it ever looks from Phobos. Benches with tether loops face the glass, and a plaque by the door gives the dates of the moorings. The gallery is kept dim so the view reads. The air is still and cold, quiet enough to hear the ports tick. The concourse and the Long Straw are out.",
+        "site": "site.voltaire_roads",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              185,
+              115
+            ],
+            [
+              200,
+              155
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "Long Mercy": "An Enclave ark, the last hull in the roads not broken up. Its ring sections went into the first Martian habitats; the spine stays where it lay, kept as a monument.",
+          "plaque": "THE ARK MOORINGS, 2150s TO 2200s. The Enclave arks lay in these roads; when their owners' money stopped, their crews broke the hulls up for the first Martian habitats, and stayed.",
+          "Mars": "A rust disc, less than half the size it shows from Phobos. Deimos keeps one face to it, so it never sets over the Roads.",
+          "benches": "Tether loops at every seat and a rack of small clips by the door, sized for the school groups the Republic brings out to see the hulk."
+        }
+      }
+    },
+    "room.d08_exchange": {
+      "kind": "room",
+      "def": {
+        "name": "Bond Exchange",
+        "short_desc": "A low trading room with one board of bonded buyers' bids and no ask side at all.",
+        "desc": "The bond exchange is a long room under a low ceiling with a single board on its far wall: the bonded buyers' lines for light alloy stock and crated instrument boards, each with an intake beside it. There is no ask side; the anchorage sells nothing on this floor. Below the board a cage-fronted counter carries Syrtis's mark, and a railed well in the corner drops a stair to the receiving hall on the Tank Deck. A crate stands open on a tether for inspection, shock foam spilling from it. The room is cool, lit amber, and smells of packing foam. The concourse is out; receiving is down the stair.",
+        "site": "site.voltaire_roads",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              132,
+              155
+            ],
+            [
+              155,
+              180
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "bids board": "SYRTIS BONDED IMPORTS BUYS: LIGHT ALLOY STOCK, CONCORD ORIGIN. INSTRUMENT BOARDS, CRATED. Each line carries the bid per tonne and the intake left; the figures are the board's own and change when Syrtis says so.",
+          "blank panel": "Where an ask board would hang, a blank panel stencilled NO SALES IN BOND. The Reserve's bunkers are sold at the commissary.",
+          "pencil note": "Under the alloy line, in a clerk's pencil: LUNAR. KASEI CANNOT ROLL IT. And under that, in another hand, one word: tribute.",
+          "inspection crate": "An instrument-board crate with its lid off, the foam cut to the boards' shape. A tag reads INSPECTED IN BOND and carries the Commissioner's seal number; boards cube out long before they weigh out.",
+          "stair well": "A stair in a railed well, seven metres down to the Tank Deck, with a handline beside it for those who prefer to float it. RECEIVING HALL — PUBLIC; the arrow is green."
+        }
+      }
+    },
+    "room.d09_commissary": {
+      "kind": "room",
+      "def": {
+        "name": "Reserve Commissary",
+        "short_desc": "A stores counter selling the Reserve's rotated rations, every crate stamped with two dates.",
+        "desc": "A stores counter fronts racks of ration crates stacked by the crew-day, each crate stamped with a Reserve rotation date. The Republic's posted price for provisions is stencilled on a board beside the till, and under it a second posting for reaction mass, loaded at the cradle on a filed plan. The crates are not new: the Reserve sells its oldest stock as it lays in fresh, and the room has the cardboard-and-salt smell of rotated rations. A cold-locker hums at the back. A sign gives the hours, which are the shift bells, and the cage over the counter is half closed. The concourse is out.",
+        "site": "site.voltaire_roads",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              155,
+              155
+            ],
+            [
+              177,
+              180
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "price posting": "VOYAGE PROVISIONS, per crew-day, and REACTION MASS, per tonne, posted by the Republic and dated. The reaction mass line matches Kasei's at Stickney to the credit.",
+          "rotation stamps": "Each crate carries two dates, laid in and rotated out, both in the warden's stencil. The older the first date, the sooner it sells.",
+          "crates": "Sealed crew-day crates, four kilos a day: food, potable stores, scrubber cartridges. Rotated out of the Reserve's stores below and sold as a captain's voyage stores.",
+          "cold locker": "A cold-locker at the back with a Reserve tag on its door. It hums one note, and changes it when the door opens."
+        }
+      }
+    },
+    "room.d10_long_straw": {
+      "kind": "room",
+      "def": {
+        "name": "The Long Straw",
+        "short_desc": "A bar built into a salvaged ark galley, the Titan card pinned by its hatch.",
+        "desc": "The Long Straw is a bar built into a salvaged ark galley, its curved bulkheads still carrying the ark's deck numbers. Benches with tether loops line a long table, and drinks come in squeeze bulbs from a hatch with a chalk list over it. A window at the far end looks along the moorings toward the hulk. The walls hold crew cards, a hand-drawn chart of the roads as they were in the ark years, and a card of Titan news kept by whoever heard it first. The room is warm, low-lit and loud, and smells of coffee and old galley grease. The concourse and the moorings gallery are out.",
+        "site": "site.voltaire_roads",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              177,
+              155
+            ],
+            [
+              200,
+              180
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "galley": "The galley of an ark broken up in the roads, lifted out whole and set into the deck. The ovens are gone, and the hatch where they stood serves drinks.",
+          "name board": "Over the hatch: THE LONG STRAW. Under it, smaller, in another hand: OCCATOR'S WORD FOR THE RESERVE, NOT OURS.",
+          "roads chart": "The roads in the ark years, drawn from memory in grease pencil: rows of hull shapes moored over Voltaire, each with a name. Only one shape is drawn in ink.",
+          "Titan card": "A card headed TITAN with news in several hands: a lifter's season, a Townships petition, a Company notice. The newest line is nearly always the Company agent's.",
+          "chalk list": "Coffee. Tea. Squeeze bulb, house. The house comes from a still that nobody on the Roads admits to."
+        }
+      }
+    },
+    "room.d07_receiving": {
+      "kind": "room",
+      "def": {
+        "name": "Reserve Receiving Hall",
+        "short_desc": "A receiving counter on the Tank Deck before a window onto the Reserve's tank gallery.",
+        "desc": "The receiving hall sits on the Tank Deck against the Reserve's tank wall: a long counter with assay scales and a manifest reader, and behind it a window of thick glass onto the tank gallery, which runs away into the rock in banks of insulated tanks under blue work light. A board over the counter lists what the Reserve and the bonded buyers take in, line by line. Valve wheels beyond the glass carry date tags. The air is cold and dry and smells of tank steel, and the deck hums with pumps. The exchange is up the stair; a hatch in the side wall is stencilled RESERVE PERSONNEL.",
+        "site": "site.voltaire_roads",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              150
+            ],
+            [
+              140,
+              180
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "details": {
+          "intake board": "RESERVE BUYS: WATER ICE, CARBON BILLET. SYRTIS BUYS: LIGHT ALLOY STOCK, INSTRUMENT BOARDS. Each line carries the bid per tonne and the intake left; the ice line has a note in pencil, UNDER KASEI, BY DESIGN.",
+          "assay scales": "A bench of grade scales and a core sampler. Ice is graded for salts and billet for density, and the grade goes on the manifest under the Commissioner's seal.",
+          "tank window": "Insulated tanks in banks, reaction mass, water and fixed nitrogen, each bank tagged with a valve date. Their gauges face away from the glass.",
+          "hatch": "An alloy hatch with a card reader and no handle on this side. RESERVE PERSONNEL ONLY, and under it the warden's initials."
+        }
+      }
+    },
+    "room.d15_spine": {
+      "kind": "room",
+      "def": {
+        "name": "Reserve Spine",
+        "short_desc": "A service corridor behind the tank gallery, two storefront cages and a glassed office at its end.",
+        "desc": "A service corridor runs along the back of the tank gallery, cable trays overhead and manifold valves down one wall, each tagged with a date and an initial. Two wire cages hold what backs the counters above: the Reserve's intake manifold and the Syrtis bonded cage. At the far end a glassed office looks out over the tanks: three desks, three dark terminals, nameplates face down. The air is cold and loud with pumps, and the deck plates smell of hydraulic fluid. RESERVE PERSONNEL ONLY is stencilled every ten metres. The receiving hatch is the way out.",
+        "site": "site.voltaire_roads",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            0
+          ]
+        },
+        "footprint": {
+          "rect": [
+            [
+              140,
+              150
+            ],
+            [
+              170,
+              180
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "access": "restricted",
+        "details": {
+          "cages": "RESERVE — INTAKE & STORE. SYRTIS — BONDED. Each cage carries a manifest clipped to its door, and the manifests are the station's real stock, not the boards upstairs.",
+          "office": "Three desks: the warden's, the commissioner's, and one under the Syrtis mark kept for the managing director's visits. The terminals are dark and the nameplates face down on purpose.",
+          "gauges": "Level gauges for every tank bank, repeated from the gallery. Each face is covered by a hinged plate under a seal.",
+          "manifolds": "Reaction mass, water and fixed nitrogen, each valve tagged with a date and an initial. The newest tags are the warden's own."
+        }
+      }
+    },
+    "exit.d01_d02": {
+      "kind": "exit",
+      "def": {
+        "from": "room.d01_berth_gallery",
+        "to": "room.d02_pressure",
+        "names": [
+          "Pressure Lobby <PL>;pl;lobby;in",
+          "Berth Gallery <BG>;bg;gallery;berths;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.d02_d03": {
+      "kind": "exit",
+      "def": {
+        "from": "room.d02_pressure",
+        "to": "room.d03_customs",
+        "names": [
+          "Customs Post <CP>;cp;customs;in",
+          "Pressure Lobby <PL>;pl;lobby;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.d03_d04": {
+      "kind": "exit",
+      "def": {
+        "from": "room.d03_customs",
+        "to": "room.d04_concourse",
+        "names": [
+          "Concourse <C>;c;concourse;roads;in",
+          "Customs Post <CP>;cp;customs;locks"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.d04_d05": {
+      "kind": "exit",
+      "def": {
+        "from": "room.d04_concourse",
+        "to": "room.d05_harbourmaster",
+        "names": [
+          "Roadsmaster <RM>;rm;roadsmaster;harbourmaster;harbour",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.d04_d08": {
+      "kind": "exit",
+      "def": {
+        "from": "room.d04_concourse",
+        "to": "room.d08_exchange",
+        "names": [
+          "Bond Exchange <X>;x;exchange;bond;market",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.d04_d09": {
+      "kind": "exit",
+      "def": {
+        "from": "room.d04_concourse",
+        "to": "room.d09_commissary",
+        "names": [
+          "Commissary <CM>;cm;commissary;stores",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.d04_d10": {
+      "kind": "exit",
+      "def": {
+        "from": "room.d04_concourse",
+        "to": "room.d10_long_straw",
+        "names": [
+          "Long Straw <LS>;ls;straw;commons;bar",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.d04_d06": {
+      "kind": "exit",
+      "def": {
+        "from": "room.d04_concourse",
+        "to": "room.d06_moorings",
+        "names": [
+          "Moorings Gallery <MG>;mg;moorings;arks;windows",
+          "Concourse <C>;c;concourse;out"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.d06_d10": {
+      "kind": "exit",
+      "def": {
+        "from": "room.d06_moorings",
+        "to": "room.d10_long_straw",
+        "names": [
+          "Long Straw <LS>;ls;straw;commons;bar",
+          "Moorings Gallery <MG>;mg;moorings;arks"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.d08_d07": {
+      "kind": "exit",
+      "def": {
+        "from": "room.d08_exchange",
+        "to": "room.d07_receiving",
+        "names": [
+          "Receiving Stair <RS>;rs;receiving;reserve;down;d",
+          "Exchange Stair <ES>;es;exchange;up;u"
+        ],
+        "portal": {
+          "mode": "stair",
+          "at": [
+            [
+              136,
+              167,
+              7
+            ],
+            [
+              136,
+              167,
+              0
+            ]
+          ],
+          "dz_m": -7
+        }
+      }
+    },
+    "exit.d07_d15": {
+      "kind": "exit",
+      "def": {
+        "from": "room.d07_receiving",
+        "to": "room.d15_spine",
+        "names": [
+          "Reserve Spine <SS>;ss;spine;hatch",
+          "Receiving Hatch <RH>;rh;receiving;out"
+        ],
+        "portal": {
+          "mode": "hatch",
+          "visibility": "hidden"
+        },
+        "lock": "staff"
+      }
+    },
+    "feature.wall_d01_d04": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "wall",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            125,
+            115
+          ],
+          [
+            185,
+            115
+          ]
+        ],
+        "z_range": [
+          0,
+          4.5
+        ],
+        "blocks": {
+          "movement": true,
+          "sight": true
+        }
+      }
+    },
+    "feature.wall_d01_d06": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "wall",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            185,
+            115
+          ],
+          [
+            200,
+            115
+          ]
+        ],
+        "z_range": [
+          0,
+          4.5
+        ],
+        "blocks": {
+          "movement": true,
+          "sight": true
+        }
+      }
+    },
+    "feature.wall_d02_d04": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "wall",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            125,
+            115
+          ],
+          [
+            125,
+            130
+          ]
+        ],
+        "z_range": [
+          0,
+          4.5
+        ],
+        "blocks": {
+          "movement": true,
+          "sight": true
+        }
+      }
+    },
+    "feature.wall_d03_d05": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "wall",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            110,
+            155
+          ],
+          [
+            125,
+            155
+          ]
+        ],
+        "z_range": [
+          0,
+          4.5
+        ],
+        "blocks": {
+          "movement": true,
+          "sight": true
+        }
+      }
+    },
+    "feature.wall_d05_d08": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "wall",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            132,
+            155
+          ],
+          [
+            132,
+            180
+          ]
+        ],
+        "z_range": [
+          0,
+          4.5
+        ],
+        "blocks": {
+          "movement": true,
+          "sight": true
+        }
+      }
+    },
+    "feature.wall_d08_d09": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "wall",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            155,
+            155
+          ],
+          [
+            155,
+            180
+          ]
+        ],
+        "z_range": [
+          0,
+          4.5
+        ],
+        "blocks": {
+          "movement": true,
+          "sight": true
+        }
+      }
+    },
+    "feature.wall_d09_d10": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "wall",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            177,
+            155
+          ],
+          [
+            177,
+            180
+          ]
+        ],
+        "z_range": [
+          0,
+          4.5
+        ],
+        "blocks": {
+          "movement": true,
+          "sight": true
+        }
+      }
+    },
+    "feature.counter_d03": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "counter",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            112,
+            153
+          ],
+          [
+            123,
+            153
+          ]
+        ],
+        "z_range": [
+          0,
+          1.1
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "room": "room.d03_customs"
+      }
+    },
+    "feature.counter_d05": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "counter",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            112,
+            157
+          ],
+          [
+            130,
+            157
+          ]
+        ],
+        "z_range": [
+          0,
+          1.1
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "room": "room.d05_harbourmaster"
+      }
+    },
+    "feature.counter_d07": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "counter",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            0
+          ]
+        },
+        "polyline": [
+          [
+            112,
+            177
+          ],
+          [
+            138,
+            177
+          ]
+        ],
+        "z_range": [
+          0,
+          1.1
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "room": "room.d07_receiving"
+      }
+    },
+    "feature.counter_d09": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "counter",
+        "surface": {
+          "floor": [
+            "structure.moorings_block",
+            1
+          ]
+        },
+        "polyline": [
+          [
+            157,
+            176
+          ],
+          [
+            175,
+            176
+          ]
+        ],
+        "z_range": [
+          0,
+          1.1
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": false
+        },
+        "room": "room.d09_commissary"
+      }
+    },
+    "item.reserve_manifold": {
+      "kind": "item",
+      "def": {
+        "name": "Reserve intake manifold",
+        "desc": "The Reserve's intake manifold in its wire cage: water ice and carbon billet in, reaction mass and provisions out, each valve tagged with a date and an initial. The manifest clipped to the cage door is the Reserve's real stock, not the boards upstairs.",
+        "room": "room.d15_spine"
+      }
+    },
+    "item.syrtis_cage": {
+      "kind": "item",
+      "def": {
+        "name": "Syrtis bonded cage",
+        "desc": "A wire cage under the Syrtis mark holding bonded lots of light alloy stock and crated instrument boards, each sealed by the Commissioner. The manifest on its door is what Syrtis has bought, not what the board says.",
+        "room": "room.d15_spine"
+      }
+    },
+    "npc.abiodun_fleck": {
+      "kind": "npc",
+      "def": {
+        "name": "Caspian Abiodun-Fleck",
+        "room": "room.d07_receiving",
+        "tier": "minor",
+        "profile": {
+          "persona": "a quartermaster who thinks in rotations: what came in, when, and what has to go out before it turns. Patient, exact, faintly amused by captains who think the Reserve is a market; to him it is a larder that sells its oldest shelf. Signs for every tonne the Reserve buys and every crate it rotates out, and says so plainly, because under the Warrant his name is on each of them.",
+          "background": "Quartermaster of the Republic Strategic Reserve at Voltaire Anchorage, and the Warrant signatory of the Reserve's rotation sales (reaction mass and provisions) and its water ice and carbon billet bids at the receiving counter.",
+          "speech_style": "unhurried, inventory-minded; dates before quantities; says \"rotated\", \"laid in\" and \"by design\"; looks at the tank window while he talks, never at the gauges.",
+          "knows": [
+            "the Reserve's lines: it buys water ice and carbon billet at the receiving counter and sells reaction mass and provisions at the commissary, by the board's own figures, intake and stock finite and posted",
+            "that the Reserve's ice bid sits under Kasei's by design, because the Reserve buys what the yard does not want, and the wardens say so",
+            "that carbon billet comes in from Titan for Mars's soil",
+            "that reaction mass is sold at the Republic's posted price, the same as Kasei's at Stickney, so nobody hops to save a credit",
+            "that rotation sales are the Reserve selling its oldest stores as it lays in fresh",
+            "the layout of both decks, and that the Bond Exchange is up the stair"
+          ],
+          "does_not_know": [
+            "the readings on the tank gauges, which are not his to read",
+            "the Commissioner's business beyond the seal on the manifest",
+            "Syrtis's terms with its buyers at Phobos",
+            "anything the Concord's treaty inspector writes down"
+          ],
+          "fallback": [
+            "Ice and billet, by the tonne, graded on the scales. The board says what the Reserve takes and how much more it will.",
+            "Ice under Kasei's, by design. The Reserve buys what the yard does not want.",
+            "Reaction mass and provisions are at the commissary, at the Republic's posted price. The same as Kasei's. Nobody hops to save a credit.",
+            "Rotated stores, captain. Oldest out first. That is all a reserve is."
+          ],
+          "interfaces": [
+            "market",
+            "atlas"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_voltaire"
+        ]
+      }
+    },
+    "npc.strand_villanueva": {
+      "kind": "npc",
+      "def": {
+        "name": "Emeka Strand-Villanueva",
+        "room": "room.d08_exchange",
+        "tier": "minor",
+        "profile": {
+          "persona": "a bonded buyer with a draughtsman's patience, polite to captains and faintly defensive about the premium, which he has explained to Coprates more often than to anyone. Believes the Yard cannot frame a hull without lunar alloy and that the Republic would rather pay tribute than admit it. Counts boards by the crate and alloy by the tonne and never confuses the two.",
+          "background": "Bonded Buyer for Syrtis Bonded Imports at the Bond Exchange, and the Warrant signatory of Syrtis's bids for light alloy stock and crated instrument boards.",
+          "speech_style": "courteous, measured, a little formal; names the origin before the price; says \"in bond\" and \"Concord origin\"; answers the word tribute with a smile and a pause.",
+          "knows": [
+            "Syrtis's bids for light alloy stock and crated instrument boards, by the board's own figures, intake finite and posted",
+            "that Kasei rolls ferrous stock from Belt concentrate, and the light aluminium–titanium alloy the Yard's frames and pressure hulls want comes from the lunar regolith lines and nowhere on Mars",
+            "that Syrtis bonds the alloy in over what Luna asks, and that Coprates calls the difference tribute",
+            "that instrument boards come crated in shock foam and cube out long before they weigh out",
+            "that bonded goods leave bond only by the hop to Stickney's Customs Hall, under the Commissioner's seal",
+            "that the anchorage sells nothing on the exchange floor; the Reserve's bunkers are at the commissary"
+          ],
+          "does_not_know": [
+            "the Yard's hull orders beyond what the alloy intake implies",
+            "Kasei's books or its debt",
+            "the Reserve's business",
+            "what Luna's fabs charge the Concord"
+          ],
+          "fallback": [
+            "Syrtis buys light alloy and instrument boards, Concord origin, in bond. The board has the figures; I sign the lines.",
+            "Kasei cannot roll it, and the Yard will not frame a hull without it. Coprates calls the difference tribute. Coprates pays it.",
+            "Boards cube out before they weigh out, captain. Plan the hold by the cubic metre.",
+            "Nothing leaves bond but by the hop to Stickney, under the Commissioner's seal."
+          ],
+          "interfaces": [
+            "market",
+            "help"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_voltaire"
+        ]
+      }
+    },
+    "npc.rautio_grant": {
+      "kind": "npc",
+      "def": {
+        "name": "Femi Rautio-Grant",
+        "room": "room.d03_customs",
+        "tier": "minor",
+        "profile": {
+          "persona": "a customs inspector who regards the bond as the Republic's real border and the origin board as its map. Courteous, slow, thorough; asks where a tonne was loaded before asking what it is. Proud that nothing from the Concord or the Company reaches the yard at Phobos without passing his counter, and unbothered that Belt hulls rarely call.",
+          "background": "Customs Inspector of the Republic's customs service at the Voltaire Customs Post, under the Voltaire Bond Authority.",
+          "speech_style": "even, deliberate, formal; \"origin\", \"in bond\", \"sealed through\"; repeats a question back before he answers it.",
+          "knows": [
+            "that Concord and Company goods enter Mars here, in bond, and leave bond only by the hop to Stickney's Customs Hall under the Commissioner's seal",
+            "that Belt cargo clears at Stickney's own Customs Hall, as it always has",
+            "that the Republic does not bond its own yard stock, which is why no lane to the Roads is posted from Phobos",
+            "the station's layout: the locks, the concourse, which desk does what, and the receiving hall down the exchange stair",
+            "that the hop to Phobos takes about three hours in a good season",
+            "how to reach the roadsmaster and file a sailing plan"
+          ],
+          "does_not_know": [
+            "anything about a hull's cargo he has not seen on a manifest",
+            "the Reserve's business below the deck",
+            "Syrtis's prices"
+          ],
+          "fallback": [
+            "Origin first. Concord or Company goods go into bond here; Belt goods clear at Stickney.",
+            "The concourse is through the far door. Every desk on the Roads opens off it.",
+            "Nothing leaves bond but by the hop to Phobos, under the Commissioner's seal. About three hours, in a good season."
+          ],
+          "interfaces": [
+            "atlas",
+            "travel",
+            "help"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_voltaire"
+        ]
+      }
+    },
+    "npc.szabo_mensah": {
+      "kind": "npc",
+      "def": {
+        "name": "Aurek Szabo-Mensah",
+        "room": "room.d05_harbourmaster",
+        "tier": "extra",
+        "profile": {
+          "persona": "the roadsmaster, who keeps the cradles, the approach lanes and the hop the way a ferryman keeps a river. Dry, unhurried, fond of the old ark moorings and of nobody who files late. Watches the outer lane for the long throttled falls from Titan and is quietly pleased each time one settles.",
+          "background": "Roadsmaster of the Voltaire Bond Authority: cradles, tie-downs, sailing plans and the hop to Stickney.",
+          "speech_style": "laconic, nautical, a ferryman's vocabulary; \"settle\", \"tie down\", \"the hop\"; gives the hour in Coprates standard and leaves Freeport time to the clock.",
+          "knows": [
+            "which cradles are occupied, in bond or cleared for Stickney",
+            "that a hull settles here rather than lands, and is tied down in its cradle",
+            "that the hop to Phobos takes about three hours and a tonne of reaction mass in a good season, and that the Roads post one lane out, to Stickney",
+            "that hulls fall in from Luna and from Titan, the Titan falls the longest in the system, throttled and slow",
+            "that a sailing plan is filed and amended until the burn, and that a docked hull with no plan is idle",
+            "the layout of the Roads Deck and the old ark moorings"
+          ],
+          "does_not_know": [
+            "what any hull carries",
+            "the Guard's exercise orders beyond the notice",
+            "the Reserve's business"
+          ],
+          "fallback": [
+            "One lane out of the Roads, captain: the hop to Stickney. About three hours in a good season.",
+            "File it early and amend it late. A hull with no plan sits in its cradle and the board says IDLE.",
+            "Nothing lands on Deimos. It settles, and we tie it down."
+          ],
+          "interfaces": [
+            "atlas",
+            "travel"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_voltaire"
+        ]
+      }
+    },
+    "npc.kettunen_ade": {
+      "kind": "npc",
+      "def": {
+        "name": "Marisol Kettunen-Ade",
+        "room": "room.d10_long_straw",
+        "tier": "extra",
+        "profile": {
+          "persona": "keeps the Long Straw, and keeps the ark years the way other people keep a family. Descended, she says, from a breaker crew; she drew the roads chart on the wall from her grandmother's telling. Warm, sardonic, protective of the school groups and contemptuous of anyone who calls the Long Mercy a wreck. Hears everything, repeats half of it.",
+          "background": "Keeper of the Long Straw on the Roads Deck: the bar, the crew cards, the Titan card, and the anchorage's memory.",
+          "speech_style": "low, wry, unhurried; calls captains \"crew\"; tells the ark years as if she were there; never names the Reserve's level, says \"the straw\" and changes the subject.",
+          "knows": [
+            "the ark moorings as the Roads tell them: the Enclave arks in the roads, the money stopping, the crews breaking the hulls for the first Martian habitats and staying",
+            "the Long Mercy, which is a monument and not a wreck",
+            "why the bar is called the Long Straw: Occator's word for the Reserve",
+            "who is in port and who has just come in on the long fall from Titan",
+            "the crew cards on the wall, and which are a year old"
+          ],
+          "does_not_know": [
+            "anything a warden has told her not to repeat",
+            "the bond's paperwork",
+            "prices, which she leaves to the boards"
+          ],
+          "fallback": [
+            "Sit, crew. The galley's an ark's, the coffee's ours, and the house bulb is from a still nobody admits to.",
+            "That hulk out there is the Long Mercy. A monument, not a wreck. Say wreck in here once.",
+            "Occator calls the Reserve the long straw. We took the name. They can keep the water."
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_voltaire"
+        ]
+      }
+    },
+    "npc.tsai_barros": {
+      "kind": "npc",
+      "def": {
+        "name": "Wilhelmina Tsai-Barros",
+        "room": "room.d10_long_straw",
+        "tier": "extra",
+        "profile": {
+          "persona": "the Titan Concession Company's agent at the Roads: polished, cheerful, always the first in the room with Titan's news and never the last to know what it is worth. Speaks of the Company as a proprietor speaks of an estate, and of the Selk Townships with a courtesy that is not quite warmth. Keeps the Titan card in the Long Straw more current than the Company's own notices.",
+          "background": "Agent of the Titan Concession Company at Voltaire Anchorage, for the Company's houses at Ligeia Terminal: its billet into the Reserve, its news into the Roads.",
+          "speech_style": "bright, brisk, a saleswoman's ease; \"the Company\" always capitalised in her voice; gives Titan's news first and its meaning second.",
+          "knows": [
+            "that Ligeia Terminal is the Company's unspun spar in low Titan orbit, named for the methane sea the lifters climb from",
+            "that the Company governs Titan as proprietor under the Concord's Saturn Charter of 2291, a ninety-nine-year grant recorded at the Registry, and clears through Luna",
+            "that the Selk Townships petition Shackleton for a charter of their own, and the petitions are lodged at the Registry",
+            "that Titan sells carbon billet, cheap ice and the cheapest reaction mass in the system, and provisions at the Company's price",
+            "that a Dray reaches Titan only throttled, on the longest leg it flies, mostly single-handed, and that the lane to Titan runs from Luna, not from the Roads",
+            "that the Reserve buys Titan's carbon billet for Mars's soil"
+          ],
+          "does_not_know": [
+            "the Company's books",
+            "what the Townships Board says in private",
+            "the Reserve's business beyond what it buys"
+          ],
+          "fallback": [
+            "Titan news, crew, first and fresh. The card in here is newer than anything Coprates has.",
+            "The lane to Titan runs from Luna, not from here. Come slow or don't come; that is the Company's own word.",
+            "Billet for the Reserve, ice for anyone, and the cheapest reaction mass in the system at Ligeia. The Company's price, of course."
+          ],
+          "interfaces": [
+            "help"
+          ]
+        },
+        "tags": [
+          "corridor_trade",
+          "port_voltaire"
+        ]
+      }
+    },
+    "npc.delgado_mertens": {
+      "kind": "npc",
+      "def": {
+        "name": "Radmila Delgado-Mertens",
+        "room": "room.d15_spine",
+        "tier": "major",
+        "profile": {
+          "persona": "keeps the Republic's hedge against water it does not own, and answers for it to the Assembly",
+          "background": "Reserve Warden, Republic Strategic Reserve",
+          "enabled": false
+        }
+      }
+    },
+    "npc.bergstrom_nwachukwu": {
+      "kind": "npc",
+      "def": {
+        "name": "Anders Bergström-Nwachukwu",
+        "room": "room.d15_spine",
+        "tier": "major",
+        "profile": {
+          "persona": "his seal is the Republic's border; he knows what every crate in bond is worth to Coprates",
+          "background": "Bond Commissioner, Voltaire Bond Authority",
+          "enabled": false
+        }
+      }
+    },
+    "npc.okwuosa_brandao": {
+      "kind": "npc",
+      "def": {
+        "name": "Liesel Okwuosa-Brandão",
+        "room": "room.d15_spine",
+        "tier": "major",
+        "profile": {
+          "persona": "buys from the Concord what the Republic will not admit it needs, and bills Coprates for the privilege",
+          "background": "Managing Director, Syrtis Bonded Imports",
+          "enabled": false
+        }
+      }
+    },
+    "lore.port_voltaire": {
+      "kind": "lore",
+      "def": {
+        "tag": "port_voltaire",
+        "entries": [
+          {
+            "tier": "public",
+            "subject": "The Ark Moorings",
+            "fact": "From the 2150s to the 2200s the Enclave arks lay in the roads of Voltaire crater on Deimos. When the owners' money stopped, the contract crews broke the hulls up for the first Martian habitats, and stayed. The last hulk, the Long Mercy, is kept as a monument, and the Republic's schoolchildren are brought to the Moorings Gallery to see it."
+          },
+          {
+            "tier": "public",
+            "subject": "The blockade depot",
+            "fact": "From 2308 the Concord fuelled its blockade of Mars from a depot under the floor of Voltaire. The Roads draw one lesson from it: a blockade costs more propellant than the tariffs it defends."
+          },
+          {
+            "tier": "public",
+            "subject": "The conveyance",
+            "fact": "In 2312, as part of the Settlement, the Concord conveyed the Voltaire depot to the Republic with the debt. It is now the Republic Strategic Reserve."
+          },
+          {
+            "tier": "public",
+            "subject": "The long straw",
+            "fact": "The Republic Strategic Reserve keeps reaction mass, water and fixed nitrogen against the day the Belt stops selling: the Republic's hedge against water it does not own. Occator calls it the long straw, and the bar on the Roads Deck took the name. It is the one Martian asset with no Ceres Clearing paper on it, unlike Kasei."
+          },
+          {
+            "tier": "public",
+            "subject": "The bond",
+            "fact": "Concord and Company goods enter Mars at Voltaire, in bond, and leave bond only by the hop to Stickney's Customs Hall under the Commissioner's seal; Belt cargo clears at Stickney, as it always has. The Republic does not bond its own yard stock, which is why no lane to the Roads is posted from Phobos."
+          },
+          {
+            "tier": "public",
+            "subject": "Lunar light alloy",
+            "fact": "Kasei rolls ferrous stock from Belt concentrate; the light aluminium–titanium alloy the Yard's frames and pressure hulls want comes from the lunar regolith lines and nowhere on Mars. The Yard will not frame a hull without it. Syrtis Bonded Imports pays over what Luna asks for it, and Coprates calls the difference tribute."
+          },
+          {
+            "tier": "public",
+            "subject": "The Reserve's ice",
+            "fact": "The Reserve's bid for water ice sits under Kasei's by design: the Reserve buys what the yard does not want, and the wardens say so. Its carbon billet comes from Titan."
+          },
+          {
+            "tier": "public",
+            "subject": "Bunkers at the Roads",
+            "fact": "The Reserve sells reaction mass at the Republic's posted price, the same as Kasei's at Stickney, so nobody hops to save a credit. Its provisions are rotation stock, the oldest stores sold as fresh are laid in."
+          },
+          {
+            "tier": "public",
+            "subject": "The Guard off the Roads",
+            "fact": "Orbital Guard Vigils exercise off the Roads, and Commodore Bask's Kirkwood pickets are planned from Phobos, three hours down the hop in a good season."
+          },
+          {
+            "tier": "public",
+            "subject": "The Company's agent",
+            "fact": "The Titan Concession Company keeps an agent at the Roads, and she hears Titan's news before Coprates does."
+          },
+          {
+            "tier": "guarded",
+            "subject": "Rotation sales",
+            "fact": "Rotation sales are the only public clue to the Reserve's level."
+          },
+          {
+            "tier": "guarded",
+            "subject": "The treaty inspector",
+            "fact": "Under the Settlement's clause the Concord keeps a treaty inspector on station at the Roads, and the inspector counts more than crates."
+          }
+        ]
+      }
+    },
+    "secret.reserve_level": {
+      "kind": "secret",
+      "def": {
+        "truth": "The Reserve holds a third of the figure the Assembly is told; the Office of Territorial Security writes the other two thirds.",
+        "reveal": "staff",
+        "about": [
+          "npc.delgado_mertens"
+        ]
+      }
+    }
+  }
+}

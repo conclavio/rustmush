@@ -115,6 +115,10 @@ fn config(tag: &str) -> Config {
     cfg.tacsim.seed_paths = Vec::new();
     cfg.game.ic_ratio = 24;
     cfg.tacsim.time.ephemeris.rate = 0;
+    // Doc 20 cut SM.1: a production-shaped config carries the geology key (the shipped
+    // template names one), so the readiness report's geology line reads Ready and
+    // `stock()` can wait on "Ready: every binding above is in place."
+    cfg.tacsim.geology.key_dir = Some(cfg.server.data_dir.join("geology-keys"));
     cfg
 }
 

@@ -2,13 +2,16 @@
 //! and the IC-return rule, over the production composition (doc 18 §4.5, §4.6,
 //! §4.7; D-18-3, D-18-19, D-18-35, D-18-49; 18a §0–§2).
 //!
-//! 1. the four station packs load, verify and are pinned (re-sign in place with
+//! 1. the station packs (the corridor's four and, since doc 19 cut A.8, the moon
+//!    ports' six) load, verify and are pinned (re-sign in place with
 //!    `TACSIM_WRITE_CONTENT=1`, as `tests/content.rs` does);
 //! 2. the production boot list and the atlas shelf carry them in order;
 //! 3. they validate clean on the production roster;
 //! 4. every door shares an edge and every exitless public seam is walled (pure,
 //!    over 18a §0.4's boxes);
-//! 5. the walls are walls on the rasterized floor, and a door's seam is open;
+//! 5. the walls are walls on the rasterized floor each stands on, a door's seam
+//!    is open, and every cross-deck portal point stands strictly inside both its
+//!    rooms and clear of every restricted room;
 //! 6. Stickney validates only because of its `port.dock` marker;
 //! 7. a fresh world boots them;
 //! 8. a kept world (dev1) takes them at its next boot and a third boot applies
@@ -31,7 +34,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mush_atlas::def::{ExitDef, FeatureDef, RoomDef, SurfaceDef};
+use mush_atlas::def::{ExitDef, FeatureDef, PortalAt, RoomDef, SurfaceDef};
 use mush_atlas::raster::{Grid, shared_threshold};
 use mush_atlas::{
     AtlasState, PointCm, RecordKey, Shape, SurfaceRef, TerrainClass, ValidateContext, blocking,
@@ -44,8 +47,10 @@ use mush_testkit::{TestWorld, fold_module_ops, fold_module_ops_into};
 use serde_json::Value;
 use tacsim::TacsimConfig;
 use tacsim::definitions::content::{
-    CERES_PACK, CERES_REGION_PACK, CERES_ROOMS, LANE_PACK, LANE_VERSION, STATION_SOURCES,
-    STICKNEY_PACK, STICKNEY_REGION_PACK, STICKNEY_ROOMS, boot_packs, station_packs,
+    AITKEN_PACK, AITKEN_REGION_PACK, AITKEN_ROOMS, CERES_PACK, CERES_REGION_PACK, CERES_ROOMS,
+    LANE_PACK, LANE_VERSION, LIGEIA_PACK, LIGEIA_REGION_PACK, LIGEIA_ROOMS, STATION_SOURCES,
+    STICKNEY_PACK, STICKNEY_REGION_PACK, STICKNEY_ROOMS, VOLTAIRE_PACK, VOLTAIRE_REGION_PACK,
+    VOLTAIRE_ROOMS, boot_packs, station_packs,
 };
 use tacsim::ic_return::{self, PORTS};
 
@@ -75,7 +80,7 @@ fn station_version(pack: &str) -> u32 {
 /// The pinned digests, in `STATION_SOURCES` order. An edit to a pack changes its
 /// digest; the failure message prints the new values so a *reviewed* edit is a
 /// line here plus the `digest` field in the pack itself.
-const PINNED: [(&str, &str); 4] = [
+const PINNED: [(&str, &str); 10] = [
     (
         CERES_REGION_PACK,
         "80b18bc047d703b5c6f2899155d4f914b68a190ab73a0e5695ffbaab6a4f83f0",
@@ -92,6 +97,40 @@ const PINNED: [(&str, &str); 4] = [
         STICKNEY_PACK,
         "f1bdc803c5adca043d576013fb5c94bc2b4b6f0434e91f82fe123fcbab2f16f6",
     ),
+    // Doc 19 cut A.8: the three moon stations.
+    (
+        AITKEN_REGION_PACK,
+        "4dd766c3ee4a31b0558502b93e2999366e4df3151cf878068bf61767af47f9c7",
+    ),
+    (
+        AITKEN_PACK,
+        "7835fd46cb5d2e6fb6c8110e3e17ff3173fc2abf7c16e9a2ff257eebbaf42eaa",
+    ),
+    (
+        VOLTAIRE_REGION_PACK,
+        "b95670c974f68c50eaa7ba794e0810de145ab63a81dc8df252239b6bc273b619",
+    ),
+    (
+        VOLTAIRE_PACK,
+        "790d3363d00cdbdf72dc2c753e587b9f6f86b36cd17e89e71ded6ed02e4e4bfc",
+    ),
+    (
+        LIGEIA_REGION_PACK,
+        "73123abe208afc43b9dff7424fd3d3d004c35698025db3f8b71ed09d107861fe",
+    ),
+    (
+        LIGEIA_PACK,
+        "7ef48113fdf50c208c62c102228da9f017f4ae7e8deecb4871000bb2de9436c0",
+    ),
+];
+
+/// The five neighborhood packs (doc 19 cut A.8: the three moon stations joined).
+const NEIGHBORHOODS: [&str; 5] = [
+    CERES_PACK,
+    STICKNEY_PACK,
+    AITKEN_PACK,
+    VOLTAIRE_PACK,
+    LIGEIA_PACK,
 ];
 
 /// Stickney v3's pinned digest (doc 18 cut IC12), the content [`stickney_v3_json`]
@@ -99,11 +138,17 @@ const PINNED: [(&str, &str); 4] = [
 const STICKNEY_V3_DIGEST: &str = "df2e5af11f18c4a5c71bea9e0b5b187b7cdb97c037aecc6b433b9ee3a0d1b2eb";
 
 /// The files under `crates/tacsim/content/`, in `STATION_SOURCES` order.
-const FILES: [&str; 4] = [
+const FILES: [&str; 10] = [
     "atlas/region.ceres_freeport.json",
     "atlas/neighborhood.ceres_freeport.json",
     "atlas/region.stickney_yards.json",
     "atlas/neighborhood.stickney_yards.json",
+    "atlas/region.aitken_highport.json",
+    "atlas/neighborhood.aitken_highport.json",
+    "atlas/region.voltaire_anchorage.json",
+    "atlas/neighborhood.voltaire_anchorage.json",
+    "atlas/region.ligeia_terminal.json",
+    "atlas/neighborhood.ligeia_terminal.json",
 ];
 
 fn content_dir() -> PathBuf {
@@ -127,7 +172,7 @@ fn config() -> TacsimConfig {
 
 /// The production roster, composed as `mush_server::boot` composes it, with the
 /// starter area and the game's boot packs on — `content_module_with(true, true)`,
-/// so the four station packs boot after the proving ground. A copy of
+/// so the ten station packs boot after the proving ground. A copy of
 /// `tests/cockpit.rs`'s `roster_with`: the character sheet is left out for the
 /// reason given there (its chargen payload handler cannot be registered twice in
 /// one process), which also leaves out the onboarding gate, so a spawned player
@@ -361,7 +406,11 @@ fn ic1_the_station_packs_load_and_their_digests_are_pinned() {
          pack's `digest` field:\n{}",
         report.join("\n")
     );
-    assert_eq!(station_packs().expect("the station packs verify").len(), 4);
+    assert_eq!(
+        station_packs().expect("the station packs verify").len(),
+        10,
+        "the corridor's four and doc 19 cut A.8's six"
+    );
 }
 
 #[test]
@@ -403,10 +452,15 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
         .collect();
     want.extend(ids(&boot_packs().expect("the game packs")));
     want.extend(STATION_SOURCES.iter().map(|(name, _)| (*name).to_string()));
-    // Doc 18 cut IC2: the lane after the stations (the game's seven boot packs).
+    // Doc 18 cut IC2: the lane after the stations (the game's thirteen boot packs
+    // since doc 19 cut A.8).
     want.push(LANE_PACK.to_string());
     assert_eq!(ids(&full), want);
-    assert_eq!(full.len(), 10);
+    assert_eq!(
+        full.len(),
+        16,
+        "three starter, two proving ground, ten stations, the lane"
+    );
     // Region packs require nothing; each neighborhood requires its region at 1.
     for pack in &full[5..] {
         let requires: Vec<(String, u32)> = pack
@@ -416,9 +470,14 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
             .map(|r| (r.id.to_string(), r.version))
             .collect();
         match pack.manifest().id().as_str() {
-            CERES_REGION_PACK | STICKNEY_REGION_PACK => assert!(requires.is_empty()),
+            CERES_REGION_PACK | STICKNEY_REGION_PACK | AITKEN_REGION_PACK
+            | VOLTAIRE_REGION_PACK | LIGEIA_REGION_PACK => assert!(requires.is_empty()),
             CERES_PACK => assert_eq!(requires, vec![(CERES_REGION_PACK.to_string(), 1)]),
             STICKNEY_PACK => assert_eq!(requires, vec![(STICKNEY_REGION_PACK.to_string(), 1)]),
+            // Doc 19 cut A.8: the moon stations.
+            AITKEN_PACK => assert_eq!(requires, vec![(AITKEN_REGION_PACK.to_string(), 1)]),
+            VOLTAIRE_PACK => assert_eq!(requires, vec![(VOLTAIRE_REGION_PACK.to_string(), 1)]),
+            LIGEIA_PACK => assert_eq!(requires, vec![(LIGEIA_REGION_PACK.to_string(), 1)]),
             // Doc 18 cut IC2: the lane requires nothing.
             LANE_PACK => assert!(requires.is_empty()),
             other => panic!("unexpected {other}"),
@@ -431,7 +490,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
         assert!(!starter_only.iter().any(|p| p == name));
     }
     assert!(!starter_only.iter().any(|p| p == LANE_PACK), "nor the lane");
-    // On the production roster the shelf lists all four, latched.
+    // On the production roster the shelf lists all ten, latched.
     let mut tw = booted();
     let events = tw.run(GOD, "@atlas/pack list");
     let out = said(&tw, &events, GOD);
@@ -490,7 +549,7 @@ fn ic1_the_station_packs_validate_clean() {
 
 #[test]
 fn ic1_every_door_shares_an_edge_and_every_exitless_seam_is_walled() {
-    let expected: [(&str, &[&str]); 2] = [
+    let expected: [(&str, &[&str]); 5] = [
         (
             CERES_PACK,
             &[
@@ -512,6 +571,29 @@ fn ic1_every_door_shares_an_edge_and_every_exitless_seam_is_walled() {
                 "feature.wall_p08_p11",
                 "feature.wall_p09_p12",
                 "feature.wall_p11_p12",
+            ],
+        ),
+        // Doc 19 cut A.8: the moon stations' walls.
+        (AITKEN_PACK, &["feature.wall_l01_l12"]),
+        (
+            VOLTAIRE_PACK,
+            &[
+                "feature.wall_d01_d04",
+                "feature.wall_d01_d06",
+                "feature.wall_d02_d04",
+                "feature.wall_d03_d05",
+                "feature.wall_d05_d08",
+                "feature.wall_d08_d09",
+                "feature.wall_d09_d10",
+            ],
+        ),
+        (
+            LIGEIA_PACK,
+            &[
+                "feature.wall_t01_t04",
+                "feature.wall_t01_t05",
+                "feature.wall_t05_t07",
+                "feature.wall_t10_t06",
             ],
         ),
     ];
@@ -602,22 +684,37 @@ fn ic1_every_door_shares_an_edge_and_every_exitless_seam_is_walled() {
 fn ic1_the_seams_are_walled_on_the_map() {
     let tw = booted();
     let records = &atlas(&tw).records;
+    // Doc 19 cut A.8: all five stations, each wall and each door on its own deck
+    // (Aitken's one wall stands on the Drum Deck, floor 0; every other on floor 1).
+    let mut walls_checked = 0;
     for (pack, structure) in [
         (CERES_PACK, "structure.freeport_hub"),
         (STICKNEY_PACK, "structure.yard_rim"),
+        (AITKEN_PACK, "structure.aitken_drum"),
+        (VOLTAIRE_PACK, "structure.moorings_block"),
+        (LIGEIA_PACK, "structure.ligeia_spar"),
     ] {
-        let surface = SurfaceRef::Floor {
-            structure: RecordKey::new(id(pack), id(structure)),
-            index: 1,
+        let on_structure = |surface: &SurfaceDef| -> i16 {
+            match surface {
+                SurfaceDef::Floor(s, index) if s == structure => *index,
+                other => panic!("{pack}: {other:?} is not on {structure}"),
+            }
         };
-        let tiles: Vec<_> = records
-            .tiles
-            .values()
-            .filter(|t| t.surface == surface)
-            .collect();
-        assert!(!tiles.is_empty(), "{pack}: the Public Deck rasterized");
-        let class_at = |p: PointCm| -> TerrainClass {
-            for tile in &tiles {
+        let tiles_of = |index: i16| {
+            let surface = SurfaceRef::Floor {
+                structure: RecordKey::new(id(pack), id(structure)),
+                index,
+            };
+            let tiles: Vec<_> = records
+                .tiles
+                .values()
+                .filter(|t| t.surface == surface)
+                .collect();
+            assert!(!tiles.is_empty(), "{pack}: floor {index} rasterized");
+            tiles
+        };
+        let class_at = |index: i16, p: PointCm| -> TerrainClass {
+            for tile in tiles_of(index) {
                 let bbox = tile.bbox.to_cm().expect("a bbox");
                 if p.x < bbox.min.x || p.y < bbox.min.y || p.x >= bbox.max.x || p.y >= bbox.max.y {
                     continue;
@@ -631,10 +728,13 @@ fn ic1_the_seams_are_walled_on_the_map() {
                 let (x, y) = grid.cell_of(p).expect("inside the tile");
                 return tile.cells.get(x, y).expect("a cell").class;
             }
-            panic!("{pack}: no tile holds {p:?}");
+            panic!("{pack}: no floor {index} tile holds {p:?}");
         };
-        // Every cell the rasterizer's own walk yields along a wall seam is Wall.
+        // Every cell the rasterizer's own walk yields along a wall seam is Wall,
+        // on the floor the wall is authored on.
         for (wall_id, wall) in walls_of(pack) {
+            let index = on_structure(&wall.surface);
+            let tiles = tiles_of(index);
             let line = wall.polyline.expect("a polyline");
             let ends = [cm(line[0]), cm(line[1])];
             let tile = tiles
@@ -645,7 +745,7 @@ fn ic1_the_seams_are_walled_on_the_map() {
                         p.x >= b.min.x && p.y >= b.min.y && p.x <= b.max.x && p.y <= b.max.y
                     })
                 })
-                .unwrap_or_else(|| panic!("{wall_id}: no tile holds the seam"));
+                .unwrap_or_else(|| panic!("{wall_id}: no floor {index} tile holds the seam"));
             let bbox = tile.bbox.to_cm().expect("a bbox");
             let grid = Grid {
                 origin: bbox.min,
@@ -659,19 +759,22 @@ fn ic1_the_seams_are_walled_on_the_map() {
                 assert_eq!(
                     tile.cells.get(x, y).map(|c| c.class),
                     Some(TerrainClass::Wall),
-                    "{pack}: {wall_id} cell ({x}, {y}) is not walled on +map"
+                    "{pack}: {wall_id} cell ({x}, {y}) on floor {index} is not walled on +map"
                 );
             }
+            walls_checked += 1;
         }
         // At a same-floor door's threshold midpoint, neither cell straddling the
         // seam is Wall (seams lie on whole metres, so the midpoint is on a cell
-        // boundary: never "the cell at the midpoint").
+        // boundary: never "the cell at the midpoint") — on whichever floor the
+        // door joins its two rooms.
         let rooms = rooms_of(pack);
         for (entry, exit) in exits_of(pack) {
             let (Some(a), Some(b)) = (rooms.get(&exit.from), rooms.get(&exit.to)) else {
                 continue;
             };
-            if floor_of(a) != 1 || floor_of(b) != 1 {
+            let index = on_structure(&a.surface);
+            if index != on_structure(&b.surface) {
                 continue;
             }
             let (s, e) = shared_threshold(&shape_of(a), &shape_of(b)).expect("a threshold");
@@ -705,13 +808,87 @@ fn ic1_the_seams_are_walled_on_the_map() {
             };
             for side in [p, q] {
                 assert_ne!(
-                    class_at(side),
+                    class_at(index, side),
                     TerrainClass::Wall,
-                    "{pack}: {entry}'s threshold is walled at {side:?}"
+                    "{pack}: {entry}'s threshold on floor {index} is walled at {side:?}"
                 );
             }
         }
     }
+    // 18a's thirteen corridor walls and doc 19 cut A.8's twelve.
+    assert_eq!(walls_checked, 6 + 7 + 1 + 7 + 4);
+}
+
+/// Whether `p` lies on an edge of `shape` (a disc's boundary is outside
+/// [`Shape::contains`] already).
+fn on_edge(shape: &Shape, p: PointCm) -> bool {
+    match shape {
+        Shape::Polygon(poly) => poly.edges().any(|(a, b)| {
+            let cross = i128::from(b.x - a.x) * i128::from(p.y - a.y)
+                - i128::from(b.y - a.y) * i128::from(p.x - a.x);
+            cross == 0
+                && p.x >= a.x.min(b.x)
+                && p.x <= a.x.max(b.x)
+                && p.y >= a.y.min(b.y)
+                && p.y <= a.y.max(b.y)
+        }),
+        Shape::Disc(_) => false,
+    }
+}
+
+/// **Doc 19 cut A.8 (review)**: the validator skips geometry for an exit that
+/// gives `portal.at` and the applier takes the point as given (design §4.1), so
+/// the packs must place it right: every cross-deck exit's point lies strictly
+/// inside both rooms' footprints, and outside (not on the edge of) every
+/// restricted room on the decks it spans other than its own two ends.
+#[test]
+fn ic1_every_cross_deck_portal_stands_inside_both_rooms_and_clear_of_restricted_ones() {
+    let mut checked = 0;
+    for pack in NEIGHBORHOODS {
+        let rooms = rooms_of(pack);
+        for (entry, exit) in exits_of(pack) {
+            let (Some(a), Some(b)) = (rooms.get(&exit.from), rooms.get(&exit.to)) else {
+                continue; // the Limbo door
+            };
+            let (fa, fb) = (floor_of(a), floor_of(b));
+            if fa == fb {
+                continue;
+            }
+            let ends: Vec<mush_atlas::Point3> = match exit.portal.at.clone() {
+                Some(PortalAt::Point(p)) => vec![p],
+                Some(PortalAt::Segment(p, q)) => vec![p, q],
+                None => panic!("{pack}: {entry}: a cross-deck exit gives portal.at"),
+            };
+            let (lo, hi) = (fa.min(fb), fa.max(fb));
+            for end in ends {
+                let p = cm(mush_atlas::Point2(end.0, end.1));
+                for (room, def) in [(&exit.from, a), (&exit.to, b)] {
+                    let shape = shape_of(def);
+                    assert!(
+                        shape.contains(p) && !on_edge(&shape, p),
+                        "{pack}: {entry}'s portal {p:?} is not strictly inside {room}"
+                    );
+                }
+                for (room, def) in &rooms {
+                    if room == &exit.from
+                        || room == &exit.to
+                        || def.access != mush_atlas::Access::Restricted
+                        || !(lo..=hi).contains(&floor_of(def))
+                    {
+                        continue;
+                    }
+                    let shape = shape_of(def);
+                    assert!(
+                        !shape.contains(p) && !on_edge(&shape, p),
+                        "{pack}: {entry}'s portal {p:?} stands in the restricted {room}"
+                    );
+                }
+            }
+            checked += 1;
+        }
+    }
+    // Ceres's two, Stickney's one; Aitken's two, Voltaire's one, Ligeia's one.
+    assert_eq!(checked, 2 + 1 + 2 + 1 + 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -762,7 +939,7 @@ fn ic1_stickney_validates_only_because_of_its_dock_marker() {
 // ---------------------------------------------------------------------------
 
 /// The 18a tables' NPCs (the thirteen) and principals (the nine), by entry.
-const CAST: [&str; 13] = [
+const CAST: [&str; 34] = [
     "npc.oduya",
     "npc.halvorsen",
     "npc.qureshi",
@@ -776,8 +953,30 @@ const CAST: [&str; 13] = [
     "npc.adeyinka_rusk",
     "npc.okonkwo",
     "npc.abubakar_lange",
+    // Doc 19 cut A.8: the moon stations' cast.
+    "npc.albrecht_sato",
+    "npc.batista_okeke",
+    "npc.devereux_anand",
+    "npc.ferro_wainwright",
+    "npc.holt_iversen",
+    "npc.kowalczyk_amadi",
+    "npc.mwangi_eriksen",
+    "npc.okafor_thistlewood",
+    "npc.rasmussen_oto",
+    "npc.abiodun_fleck",
+    "npc.kettunen_ade",
+    "npc.rautio_grant",
+    "npc.strand_villanueva",
+    "npc.szabo_mensah",
+    "npc.tsai_barros",
+    "npc.abara_vos",
+    "npc.adichie_brun",
+    "npc.marangoni_teague",
+    "npc.oyelowo_krauss",
+    "npc.quayle_ibekwe",
+    "npc.tupou_lindahl",
 ];
-const PRINCIPALS: [&str; 9] = [
+const PRINCIPALS: [&str; 18] = [
     "npc.wen",
     "npc.varga",
     "npc.ndiaye",
@@ -787,14 +986,24 @@ const PRINCIPALS: [&str; 9] = [
     "npc.castellanos",
     "npc.tanaka",
     "npc.bask",
+    // Doc 19 cut A.8: the moon stations' principals.
+    "npc.ferreira_lund",
+    "npc.kwarteng_fairweather",
+    "npc.moravec_ansah",
+    "npc.rourke_haddad",
+    "npc.bergstrom_nwachukwu",
+    "npc.delgado_mertens",
+    "npc.okwuosa_brandao",
+    "npc.asante_pryce",
+    "npc.varela_nwosu",
 ];
 
 fn npc_pack(entry: &str) -> &'static str {
-    if entries_of(CERES_PACK, "npc").contains_key(entry) {
-        CERES_PACK
-    } else {
-        STICKNEY_PACK
-    }
+    STATION_SOURCES
+        .iter()
+        .map(|(pack, _)| *pack)
+        .find(|pack| entries_of(pack, "npc").contains_key(entry))
+        .unwrap_or_else(|| panic!("{entry} is an NPC of no station pack"))
 }
 
 fn profile(tw: &TestWorld, npc: ObjId) -> mush_npc::AgentProfile {
@@ -815,10 +1024,11 @@ fn station_rooms(tw: &TestWorld) -> BTreeMap<ObjId, &'static str> {
         .records
         .roomgeo
         .values()
-        .filter_map(|g| match g.neighborhood.pack.as_str() {
-            CERES_PACK => Some((g.room, CERES_PACK)),
-            STICKNEY_PACK => Some((g.room, STICKNEY_PACK)),
-            _ => None,
+        .filter_map(|g| {
+            STATION_SOURCES
+                .iter()
+                .find(|(pack, _)| *pack == g.neighborhood.pack.as_str())
+                .map(|(pack, _)| (g.room, *pack))
         })
         .collect()
 }
@@ -843,16 +1053,33 @@ fn ic1_a_fresh_world_boots_the_stations() {
         rooms.values().filter(|p| **p == STICKNEY_PACK).count(),
         STICKNEY_ROOMS
     );
-    // `port.dock` on C01 and P01 and no other room.
+    // Doc 19 cut A.8: the moon stations.
+    assert_eq!(
+        rooms.values().filter(|p| **p == AITKEN_PACK).count(),
+        AITKEN_ROOMS
+    );
+    assert_eq!(
+        rooms.values().filter(|p| **p == VOLTAIRE_PACK).count(),
+        VOLTAIRE_ROOMS
+    );
+    assert_eq!(
+        rooms.values().filter(|p| **p == LIGEIA_PACK).count(),
+        LIGEIA_ROOMS
+    );
+    // `port.dock` on the five galleries and no other room (doc 19 cut A.8: L01,
+    // D01 and T01 joined C01 and P01).
     let c01 = obj(&tw, CERES_PACK, "room.c01_berth_gallery");
     let p01 = obj(&tw, STICKNEY_PACK, "room.p01_berth_gallery");
+    let l01 = obj(&tw, AITKEN_PACK, "room.l01_berth_gallery");
+    let d01 = obj(&tw, VOLTAIRE_PACK, "room.d01_berth_gallery");
+    let t01 = obj(&tw, LIGEIA_PACK, "room.t01_berth_gallery");
     let docks: BTreeSet<ObjId> = tw
         .world()
         .iter()
         .filter(|o| o.kind == ObjKind::Room && tw.world().has_marker(o.id, "port.dock"))
         .map(|o| o.id)
         .collect();
-    assert_eq!(docks, BTreeSet::from([c01, p01]));
+    assert_eq!(docks, BTreeSet::from([c01, p01, l01, d01, t01]));
     // C01's one-line description is 18a's *Short.* line, on `short_desc`.
     assert_eq!(
         tw.world()
@@ -864,7 +1091,7 @@ fn ic1_a_fresh_world_boots_the_stations() {
         )
     );
     // Hydration off; twelve ambience lines each.
-    for pack in [CERES_PACK, STICKNEY_PACK] {
+    for pack in NEIGHBORHOODS {
         let nb = atlas(&tw)
             .records
             .neighborhoods
@@ -873,15 +1100,16 @@ fn ic1_a_fresh_world_boots_the_stations() {
         assert!(!nb.hydration.enabled, "{pack}");
         assert_eq!(nb.ambience.len(), 12, "{pack}");
     }
-    // 22 NPCs in the 25 rooms: the thirteen enabled, fronting real providers, with
-    // fallbacks; the nine principals disabled.
+    // 22 NPCs in the corridor's 25 rooms and the moons' own (doc 19 cut A.8): the cast
+    // enabled, fronting real providers, with fallbacks; the principals disabled.
     let npcs: Vec<ObjId> = tw
         .world()
         .iter()
         .filter(|o| o.kind == ObjKind::Npc && o.location.is_some_and(|l| rooms.contains_key(&l)))
         .map(|o| o.id)
         .collect();
-    assert_eq!(npcs.len(), 22);
+    // Doc 19 cut A.8: the moon stations' 30 (cast and principals) joined the 22.
+    assert_eq!(npcs.len(), 52);
     let providers = ["atlas", "travel", "help", "market"];
     for entry in CAST {
         let p = profile(&tw, obj(&tw, npc_pack(entry), entry));
@@ -903,9 +1131,9 @@ fn ic1_a_fresh_world_boots_the_stations() {
         .records
         .secrets
         .keys()
-        .filter(|k| [CERES_PACK, STICKNEY_PACK].contains(&k.pack.as_str()))
+        .filter(|k| NEIGHBORHOODS.contains(&k.pack.as_str()))
         .count();
-    assert_eq!(secrets, 3);
+    assert_eq!(secrets, 6, "three of the corridor and the moons' 3");
     let c15 = obj(&tw, CERES_PACK, "room.c15_maintenance");
     let p15 = obj(&tw, STICKNEY_PACK, "room.p15_maintenance");
     let items = tw
@@ -972,7 +1200,7 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
         Some(LANE_VERSION),
         "{LANE_PACK}"
     );
-    assert_eq!(after.len(), 10);
+    assert_eq!(after.len(), 16, "five, ten stations and the lane");
     assert_eq!(
         location(&tw, walker),
         Some(ooc),
@@ -1009,7 +1237,7 @@ fn ic1_every_public_room_is_walkable_by_its_authored_aliases() {
     let mut tw = booted();
     let walker = tw.spawn_player("Walker");
     let mut locked = Vec::new();
-    for pack in [CERES_PACK, STICKNEY_PACK] {
+    for pack in NEIGHBORHOODS {
         for (entry, exit) in exits_of(pack) {
             let from = obj(&tw, pack, &exit.from);
             let to = obj(&tw, pack, &exit.to);
@@ -1068,7 +1296,17 @@ fn ic1_every_public_room_is_walkable_by_its_authored_aliases() {
         }
     }
     locked.sort();
-    assert_eq!(locked, ["exit.c05_c16", "exit.c14_c15", "exit.p07_p15"]);
+    assert_eq!(
+        locked,
+        [
+            "exit.c05_c16",
+            "exit.c14_c15",
+            "exit.d07_d15",
+            "exit.l08_l15",
+            "exit.p07_p15",
+            "exit.t11_t15"
+        ]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1353,7 +1591,7 @@ fn ic12_the_five_details_ship_under_plain_keys() {
         let out = said(&tw, &events, reader);
         assert!(out.contains(opening), "`look {key}` in {room}: {out}");
     }
-    for pack in [CERES_PACK, STICKNEY_PACK] {
+    for pack in NEIGHBORHOODS {
         for (room, def) in rooms_of(pack) {
             for (key, text) in &def.details {
                 assert!(
@@ -1370,7 +1608,7 @@ fn ic12_the_five_details_ship_under_plain_keys() {
     // three clauses by IC14's v4): no `+` directly before a letter anywhere in a
     // detail of either pack — a verb in parentheses or quotes is caught as surely
     // as one standing alone.
-    for pack in [CERES_PACK, STICKNEY_PACK] {
+    for pack in NEIGHBORHOODS {
         for (room, def) in rooms_of(pack) {
             for (key, text) in &def.details {
                 assert!(

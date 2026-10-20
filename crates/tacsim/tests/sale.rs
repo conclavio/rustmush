@@ -487,7 +487,10 @@ fn stock(rig: &mut Rig) {
         let gated: Vec<&str> = out
             .lines()
             // Doc 18 cut IC12: the gate is every report line but the sky (D-18-50).
-            .filter(|line| line.ends_with(']') && !line.starts_with("sky: "))
+            // doc 20 SM.1: the geology line is reported and never gated
+            .filter(|line| {
+                line.ends_with(']') && !line.starts_with("sky: ") && !line.starts_with("geology: ")
+            })
             .collect();
         if gated.len() > 1 && gated.iter().all(|line| line.ends_with("[ready]")) {
             return;
@@ -1346,6 +1349,110 @@ fn ic10_the_reference_falls_back_to_the_baseline_when_the_origin_ask_is_gone() {
 }
 
 // ---------------------------------------------------------------------------
+// 3b. The programme's moon reference rows (doc 19 cut A.8)
+// ---------------------------------------------------------------------------
+
+/// The shipped lane at its own version, re-signed, with Kasei bidding instrument
+/// boards at 1,100.00cr/t (100 t) so an enrolled pilot can sell boards at Stickney;
+/// with `reference` false Ceres's programme also loses its `instrument_boards`
+/// reference row (the A.7 shape).
+fn kasei_boards_lane(reference: bool) -> String {
+    lane_variant(LANE_VERSION, |doc| {
+        kasei(doc)["bids"]
+            .as_array_mut()
+            .expect("bids")
+            .push(serde_json::json!({
+                "good": "instrument_boards",
+                "price_major": 1100,
+                "intake": 100,
+                "boards": ["receiving", "exchange"]
+            }));
+        if !reference {
+            doc["entries"]["ceres_port"]["def"]["programme"]["reference"]
+                .as_object_mut()
+                .expect("the programme's reference")
+                .remove("instrument_boards")
+                .expect("the boards row");
+        }
+    })
+}
+
+/// Sell 20 t of instrument boards into Kasei's boards bid on `lane`: the posted bid
+/// price (major), the quote and the settled sale's enrolment.
+fn sell_boards(lane: String) -> (u64, mush_market::Quote, tacsim::port::Enrolment, String) {
+    let mut rig = stocked_with(Roster::seeded(lane));
+    let (pilot, _) = docked_at_stickney(&mut rig, &[("instrument_boards", 20)]);
+    let bid = kasei_bid(&rig.tw, "instrument_boards");
+    let price = market(&rig.tw)
+        .listing(bid)
+        .map(|l| l.price.minor())
+        .expect("Kasei's boards bid is posted");
+    assert_eq!(price % 100, 0, "a whole-credit bid");
+    let out = run(&mut rig.tw, pilot, &format!("+market/sell {bid}=20"));
+    assert!(out.contains("Sold 20 t of "), "{out}");
+    let q = last_sale(&rig.tw, pilot);
+    let contract = q.contract.expect("the sale contract");
+    let name = contract_name(&rig.tw, contract);
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    settle(&mut rig, contract);
+    assert_eq!(refused_settlements(&rig.tw), 0);
+    no_refused_writes(&rig.tw);
+    let e = enrolment_of(&rig.tw, pilot);
+    (
+        u64::try_from(price / 100).expect("a positive price"),
+        q,
+        e,
+        name,
+    )
+}
+
+/// **The programme's boards reference names Crisium's live ask** (doc 19 §3.8, Q8,
+/// D-19-19): an enrolled pilot sells 20 t of instrument boards into a Kasei boards bid
+/// at Stickney; Ceres's `reference.instrument_boards` is
+/// `luna_port/crisium_instruments`, a live 900.00cr/t ask, so the margin is
+/// 20 × (bid − 900), the share 250‰ of it, and the contract carries no
+/// `(baseline ref)` memo.
+#[test]
+fn a8_the_programme_reference_names_the_moon_asks() {
+    let (price, q, e, name) = sell_boards(kasei_boards_lane(true));
+    assert_eq!(
+        price, 1_100,
+        "no reach premium: no boards supplier routes to Stickney"
+    );
+    let margin = 20 * (i64::try_from(price).expect("fits") - 900) * 100;
+    assert_eq!(q.basis.minor(), margin);
+    assert_eq!(q.cuts.first().map(|c| c.amount.minor()), Some(margin / 4));
+    assert!(
+        !name.contains(&format!("({})", tacsim::port::BASELINE_MEMO)),
+        "{name}"
+    );
+    assert_eq!(
+        (e.sales, e.margin_minor, e.shares_minor),
+        (1, margin, margin / 4)
+    );
+}
+
+/// **The control: without the reference row the same sale stamps the baseline
+/// memo** — the share falls back to the goods table's `reference_major` (also 900
+/// for boards, so the figures agree) and the contract's name ends `(baseline ref)`.
+/// The memo, not the money, is what tells the live reference from the baseline.
+#[test]
+fn a8_without_the_boards_reference_row_the_sale_stamps_the_baseline_memo() {
+    let (price, q, e, name) = sell_boards(kasei_boards_lane(false));
+    let margin = 20 * (i64::try_from(price).expect("fits") - 900) * 100;
+    assert!(
+        name.ends_with(&format!("({})", tacsim::port::BASELINE_MEMO)),
+        "{name}"
+    );
+    assert_eq!(q.basis.minor(), margin);
+    assert_eq!(
+        (e.sales, e.margin_minor, e.shares_minor),
+        (1, margin, margin / 4)
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 4. Refusals before any contract
 // ---------------------------------------------------------------------------
 
@@ -1663,8 +1770,14 @@ fn ic10_an_exhausted_bid_reads_taken_and_is_never_reposted() {
         bid,
         "the clerk posted nothing"
     );
+    // Doc 19 cut A.8: Luna's Cabeus Works bids metals too, at its own port; at
+    // Stickney, Kasei's zero bid stands alone.
+    let cabeus = ListingId(
+        port_map(&rig.tw, "luna_port").vendors[&cid("cabeus_works")].bids[&cid("metals")].listing,
+    );
     let wanted_metals = market(&rig.tw)
         .live_listings()
+        .filter(|l| l.id != cabeus)
         .filter(|l| {
             matches!(&l.source, mush_market::Supply::Wanted { commodity, .. } if commodity.0.as_str() == "metals")
         })

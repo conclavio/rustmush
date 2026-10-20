@@ -1393,8 +1393,9 @@ mod tests {
         let refused = tacsim_config(&claiming).expect_err("the lane's id is the game's");
         assert!(
             refused.starts_with(&format!(
-                "[tacsim] {lane}: declares tacsim.lane.ceres_phobos@3, which <built-in \
-                 tacsim/content/lane/ceres_phobos.json> already declares"
+                "[tacsim] {lane}: declares tacsim.lane.ceres_phobos@{}, which <built-in \
+                 tacsim/content/lane/ceres_phobos.json> already declares",
+                tacsim::definitions::content::LANE_VERSION
             )),
             "{refused}"
         );

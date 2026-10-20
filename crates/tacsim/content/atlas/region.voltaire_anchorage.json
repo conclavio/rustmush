@@ -1,0 +1,82 @@
+{
+  "manifest": {
+    "id": "region.voltaire_anchorage",
+    "version": 1,
+    "kind": "region",
+    "digest": "b95670c974f68c50eaa7ba794e0810de145ab63a81dc8df252239b6bc273b619",
+    "requires": []
+  },
+  "brief": {
+    "prose": "Voltaire Anchorage is the Republic of Mars's outer anchorage, dug into the floor of Voltaire crater on Deimos, where the Enclave arks lay in the roads from the 2150s to the 2200s and their contract crews stayed to break the hulls up for the first Martian habitats. The Concord fuelled its 2308 blockade of Mars from a depot under the crater floor and the Settlement conveyed it to the Republic with the debt in 2312; it is now the Republic Strategic Reserve. Everything the Republic buys from the Concord and the outer system clears here in bond, and leaves bond only by the hop down to Phobos, three hours in a good season. Deimos holds even less than Phobos does: the berths are cradles with tie-downs, the decks are painted conventions, handlines run everywhere and every bench has a tether loop. Over the crater rests the last ark hulk, the Long Mercy, kept as a monument; beyond it Mars is a rust disc."
+  },
+  "entries": {
+    "region.voltaire_anchorage": {
+      "kind": "region",
+      "def": {
+        "name": "Deimos",
+        "kind": "surface",
+        "body": "deimos",
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            400
+          ]
+        ],
+        "datum_m": 0,
+        "background": {
+          "surface": "regolith",
+          "mix": [],
+          "relief_cm": 0,
+          "relief_period_cm": 1000,
+          "seed": 2350
+        },
+        "ground_resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350",
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "locality.voltaire_anchorage": {
+      "kind": "locality",
+      "def": {
+        "region": "region.voltaire_anchorage",
+        "name": "Voltaire Anchorage",
+        "kind": "port",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            0
+          ],
+          [
+            400,
+            400
+          ],
+          [
+            0,
+            400
+          ]
+        ]
+      }
+    }
+  }
+}

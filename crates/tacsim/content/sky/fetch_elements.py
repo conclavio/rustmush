@@ -38,9 +38,11 @@ Usage
 """
 
 import argparse
+import decimal
 import json
 import math
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -452,7 +454,17 @@ def main():
             json.dump(golden, handle, separators=(",", ":"))
             handle.write("\n")
         out["golden_written"] = args.golden_path
-    print(json.dumps(out, indent=1))
+    # serde_json prints a small float as a plain decimal (`0.000062686`), never
+    # Python's `6.2686e-05`, and a build with its `arbitrary_precision` feature
+    # (mush-bot's) digests the authored spelling, so the pack's canonical digest only
+    # agrees when the spellings do (tests/lane.rs checks every number of the lane).
+    text = json.dumps(out, indent=1)
+    text = re.sub(
+        r"-?\d+(?:\.\d+)?[eE][+-]?\d+",
+        lambda m: format(decimal.Decimal(repr(float(m.group(0)))), "f"),
+        text,
+    )
+    print(text)
 
 
 if __name__ == "__main__":

@@ -399,8 +399,20 @@ fn a1_lane_legs_at_the_epoch_are_printed() {
         Some(PackEntry::Location(def)) => def.body.clone().expect("a body"),
         other => panic!("{place}: {other:?}"),
     };
-    for id in [LANE_ROUTE_OUT, LANE_ROUTE_BACK] {
-        let Some(PackEntry::Route(route)) = pack.entry(&cid(id)) else {
+    // Doc 19 cut A.8 (Q14): every route of the lane, the shipped pair first — the
+    // moon routes' `base_s` are read off this print (Titan's table is a 2249 row
+    // propagated to the epoch, so only the engine's figure is ever authored).
+    let mut ids: Vec<String> = pack
+        .entries()
+        .iter()
+        .filter_map(|(id, entry)| match entry {
+            PackEntry::Route(_) => Some(id.to_string()),
+            _ => None,
+        })
+        .collect();
+    ids.sort_by_key(|id| (id != LANE_ROUTE_OUT && id != LANE_ROUTE_BACK, id.clone()));
+    for id in ids {
+        let Some(PackEntry::Route(route)) = pack.entry(&cid(&id)) else {
             panic!("{id} is a route");
         };
         let mut from = body_of(&route.from);

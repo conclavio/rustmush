@@ -76,5 +76,9 @@ leaves port with `+ship/undock` or its sailing plan (see "help ships" and
 "help orders"), and `+travel/status` aboard says where it has got to. The
 lane's passage time is computed by the planner when the ship departs — from
 the load aboard and the sky at that moment — and frozen on its ticket for the
-whole passage. The corridor the atlas draws between the two ports is a picture
-of the bodies at the campaign epoch, not the passage's length.
+whole passage, at the throttle the departure names. When the passage will not
+fit the tank or the locker at that throttle even with both full, `+ship/plan`
+adds a Throttle: line naming the highest throttle that would (see "help
+ships"); the departure itself refuses a short tank or locker as it always has.
+A corridor the atlas draws between ports is a picture of the bodies at the
+campaign epoch, not the passage's length.

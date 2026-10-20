@@ -52,7 +52,7 @@ use support::ground::{UNSIGNED, sign};
 /// the legs re-timed to the three-dimensional chords): a new version beside the
 /// v1, v2 and v3 ledger rows, never an earlier version re-signed in place (lead
 /// ruling L0b).
-const LANE_DIGEST: &str = "11fb2c9228799918184cc872a01d683e85de91e830104f170b966c7311f23541";
+const LANE_DIGEST: &str = "be733686a1630175e541346c693fcb2cce9f658db876121c73c4d476e04ca330";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -61,6 +61,27 @@ const LANE_DATE: &str = "2351-05-13";
 const CORE_DIGEST: &str = "db2702631983de33bf61e3018b7cede2add8c5aa127ae49ca26e0256bd1a6049";
 const CORRIDOR_DIGEST: &str = "6ad21275d8ba59a6b742cf354e2efafe840cacaa34f8e6c84ac057b9997f8d69";
 const CORRIDOR_V2_DIGEST: &str = "f89b7310b1d30e7b38a5a6cf9fe3e22330065c797dcf750e9cb8dc8554177041";
+
+/// Doc 19 cut A.8: the six direct moon routes, `(id, from, to)`.
+const MOON_ROUTES: [(&str, &str, &str); 6] = [
+    ("ceres_aitken", "ceres_freeport", "aitken_highport"),
+    ("aitken_voltaire", "aitken_highport", "voltaire_anchorage"),
+    ("aitken_ligeia", "aitken_highport", "ligeia_terminal"),
+    ("ligeia_aitken", "ligeia_terminal", "aitken_highport"),
+    ("ligeia_voltaire", "ligeia_terminal", "voltaire_anchorage"),
+    ("voltaire_stickney", "voltaire_anchorage", "stickney_yards"),
+];
+/// Every route of the lane: the shipped pair and the six.
+const ALL_ROUTES: [&str; 8] = [
+    LANE_ROUTE_OUT,
+    LANE_ROUTE_BACK,
+    "ceres_aitken",
+    "aitken_voltaire",
+    "aitken_ligeia",
+    "ligeia_aitken",
+    "ligeia_voltaire",
+    "voltaire_stickney",
+];
 
 fn content_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("content")
@@ -155,11 +176,12 @@ fn coast_kms(class: &CanonicalId) -> u32 {
 // ---------------------------------------------------------------------------
 
 /// **The lane is pinned** (doc 18 cut IC2; R4; cut IC3, L0a/L0b; doc 19 cut A.1):
-/// a campaign seed at version 7 requiring nothing, exactly the twenty-four entries —
-/// the `sol` region, twelve bodies on element tables, three places, two routes
-/// timed to the Kepler sky's three-dimensional chords at the epoch for 226 km/s
-/// and the two ports; every body carries the same `epoch_ic`, which is
-/// 2351-05-13 on the game calendar.
+/// a campaign seed at version 8 requiring nothing, exactly the thirty-six entries —
+/// the `sol` region, sixteen bodies on element tables (the four moons about their
+/// parents), six places, eight routes timed to the Kepler sky's three-dimensional
+/// chords at the epoch for 226 km/s (doc 19 cut A.8: the six direct moon routes) and
+/// the five ports; every body carries the same `epoch_ic`, which is 2351-05-13 on
+/// the game calendar.
 #[test]
 fn ic2_the_lane_pack_is_pinned() {
     let relative = "lane/ceres_phobos.json";
@@ -187,8 +209,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        7,
-        "lane v7 since doc 19 cut A.7 (v6 at A.4b, v5 at A.4, v4 at A.1)"
+        8,
+        "lane v8 since doc 19 cut A.8 (v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
     assert!(manifest.requires().is_empty(), "the lane requires nothing");
@@ -210,18 +232,27 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(
         kinds,
         vec![
+            ("aitken_highport".to_owned(), "location".to_owned()),
+            ("aitken_ligeia".to_owned(), "route".to_owned()),
+            ("aitken_voltaire".to_owned(), "route".to_owned()),
             ("ceres".to_owned(), "body".to_owned()),
+            ("ceres_aitken".to_owned(), "route".to_owned()),
             ("ceres_freeport".to_owned(), "location".to_owned()),
             ("ceres_port".to_owned(), "port".to_owned()),
             ("ceres_stickney".to_owned(), "route".to_owned()),
             ("deimos".to_owned(), "body".to_owned()),
+            ("deimos_port".to_owned(), "port".to_owned()),
             ("earth".to_owned(), "body".to_owned()),
             ("hygiea".to_owned(), "body".to_owned()),
             ("juno".to_owned(), "body".to_owned()),
             ("jupiter".to_owned(), "body".to_owned()),
             ("kirkwood".to_owned(), "body".to_owned()),
             ("kirkwood_depot".to_owned(), "location".to_owned()),
+            ("ligeia_aitken".to_owned(), "route".to_owned()),
+            ("ligeia_terminal".to_owned(), "location".to_owned()),
+            ("ligeia_voltaire".to_owned(), "route".to_owned()),
             ("luna".to_owned(), "body".to_owned()),
+            ("luna_port".to_owned(), "port".to_owned()),
             ("mars".to_owned(), "body".to_owned()),
             ("mercury".to_owned(), "body".to_owned()),
             ("pallas".to_owned(), "body".to_owned()),
@@ -232,10 +263,13 @@ fn ic2_the_lane_pack_is_pinned() {
             ("stickney_port".to_owned(), "port".to_owned()),
             ("stickney_yards".to_owned(), "location".to_owned()),
             ("titan".to_owned(), "body".to_owned()),
+            ("titan_port".to_owned(), "port".to_owned()),
             ("venus".to_owned(), "body".to_owned()),
             ("vesta".to_owned(), "body".to_owned()),
+            ("voltaire_anchorage".to_owned(), "location".to_owned()),
+            ("voltaire_stickney".to_owned(), "route".to_owned()),
         ],
-        "the twenty-four entries: v3's twelve, doc 19 cut A.1's eight more bodies and cut A.7's four moons"
+        "the thirty-six entries: v3's twelve, doc 19 cut A.1's eight more bodies, cut A.7's four moons and cut A.8's three places, six routes and three ports"
     );
     let epochs: Vec<Option<i64>> = bodies(&pack).iter().map(|(_, def)| def.epoch_ic).collect();
     assert_eq!(epochs.len(), 16);
@@ -263,6 +297,12 @@ fn ic2_the_lane_pack_is_pinned() {
         places,
         vec![
             (
+                "aitken_highport".into(),
+                "Aitken Highport".into(),
+                "port".into(),
+                Some("luna".into())
+            ),
+            (
                 "ceres_freeport".into(),
                 "Ceres Freeport".into(),
                 "port".into(),
@@ -275,10 +315,22 @@ fn ic2_the_lane_pack_is_pinned() {
                 Some("kirkwood".into())
             ),
             (
+                "ligeia_terminal".into(),
+                "Ligeia Terminal".into(),
+                "port".into(),
+                Some("titan".into())
+            ),
+            (
                 "stickney_yards".into(),
                 "Stickney Yards".into(),
                 "port".into(),
                 Some("phobos".into())
+            ),
+            (
+                "voltaire_anchorage".into(),
+                "Voltaire Anchorage".into(),
+                "port".into(),
+                Some("deimos".into())
             ),
         ]
     );
@@ -307,7 +359,16 @@ fn ic2_the_lane_pack_is_pinned() {
             ("ceres_freeport".to_owned(), 61_776)
         ]
     );
-    for id in [LANE_ROUTE_OUT, LANE_ROUTE_BACK] {
+    // Doc 19 cut A.8: the six direct moon routes, one leg each to the destination.
+    for (id, from, to) in MOON_ROUTES {
+        let route = route_of(&pack, id);
+        assert_eq!(route.from.as_str(), from, "{id}");
+        assert_eq!(route.to.as_str(), to, "{id}");
+        assert_eq!(route.legs.len(), 1, "{id}");
+        assert_eq!(route.legs[0].to.as_str(), to, "{id}");
+        assert!(route.legs[0].base_s > 0, "{id}");
+    }
+    for id in ALL_ROUTES {
         let route = route_of(&pack, id);
         assert_eq!(route.drive_class.as_str(), "coast_hauler", "{id}");
         assert_eq!(route.propellant, 0, "{id}");
@@ -322,19 +383,81 @@ fn ic2_the_lane_pack_is_pinned() {
     }
 }
 
+/// **Every number in the lane is spelled as `serde_json` prints it** (doc 19 cut
+/// A.8): the canonical digest writes each number with `Number`'s `Display`, and a
+/// build with `serde_json`'s `arbitrary_precision` feature (mush-bot's, unified into
+/// any workspace-wide build) keeps the authored text instead of re-spelling the
+/// parsed value. So an authored `6.2686e-05` — Python's spelling, which A.7's
+/// element tables carried — digests differently there than the `6.2686e-5` every
+/// other build prints, and the pin refuses the lane. Each numeric token of the file
+/// is checked against the spelling of its own value.
+#[test]
+fn a8_every_number_in_the_lane_is_spelled_as_serde_json_prints_it() {
+    let text = LANE_JSON;
+    let bytes = text.as_bytes();
+    let (mut i, mut in_string, mut numbers) = (0, false, 0);
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            match c {
+                b'\\' => i += 1,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+        if c == b'"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        if c == b'-' || c.is_ascii_digit() {
+            let start = i;
+            while i < bytes.len()
+                && matches!(bytes[i], b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
+            {
+                i += 1;
+            }
+            let token = &text[start..i];
+            let spelled = if token.contains(['.', 'e', 'E']) {
+                let value: f64 = token.parse().expect("a float");
+                serde_json::Number::from_f64(value)
+                    .expect("a finite float")
+                    .to_string()
+            } else {
+                let value: i64 = token.parse().expect("an integer");
+                value.to_string()
+            };
+            assert_eq!(
+                token, spelled,
+                "the lane spells {token} as {spelled} would digest"
+            );
+            numbers += 1;
+            continue;
+        }
+        i += 1;
+    }
+    assert!(numbers > 1_000, "{numbers} numbers checked");
+}
+
 // ---------------------------------------------------------------------------
 // The sky
 // ---------------------------------------------------------------------------
 
 /// **Every authored leg is the leg the sky derives** (doc 18 §4.8, D-18-42; doc
 /// 19 cut A.1 kept it: the sky is now Kepler's, the chords three-dimensional):
-/// both lane routes walked body to body at the origin's epoch, `ceil(km / kms)`
-/// with `kms` from the fielded drive table, within 100 s of the authored
-/// `base_s`; and a place without a body is refused by name.
+/// every route of the lane (the shipped pair and doc 19 cut A.8's six moon
+/// routes) walked body to body at the origin's epoch, `ceil(km / kms)` with
+/// `kms` from the fielded drive table, within 100 s of the authored `base_s`;
+/// and a place without a body is refused by name. The Titan legs are measured
+/// against their own propagated 2249 row (Horizons ends at 2250): the check is
+/// the pack's self-consistency with the engine's table, not accuracy against
+/// Horizons.
 #[test]
 fn lane_legs_derive_at_epoch() {
     let pack = lane();
-    for id in [LANE_ROUTE_OUT, LANE_ROUTE_BACK] {
+    for id in ALL_ROUTES {
         let route = route_of(&pack, id);
         let kms = coast_kms(&route.drive_class);
         let derived = derived_legs(&pack, route, kms).unwrap_or_else(|why| panic!("{id}: {why}"));
@@ -808,7 +931,7 @@ fn ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky() {
         .expect("the lane is latched");
     assert_eq!(applied.version(), LANE_VERSION);
     let placed = applied.placed();
-    assert_eq!(placed.len(), 3, "{placed:?}");
+    assert_eq!(placed.len(), 6, "{placed:?}");
     for (symbol, room) in &placed {
         let kind = tw.world().get(*room).map(|o| o.kind);
         assert_eq!(kind, Some(ObjKind::Room), "{symbol}");

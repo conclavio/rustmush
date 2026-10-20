@@ -1,13 +1,15 @@
 //! **The IC-return rule** (doc 18 §4.5, D-18-3; cut IC1): the Limbo door into the
 //! 2350 corridor, and the one verb that puts a pilot back where they left it.
 //!
-//! The corridor has two IC ports in the slice. Ceres Freeport has a foot route —
-//! the unlocked Limbo door `exit.limbo_arrivals` into Port Watch Arrivals — and
-//! Stickney Yards has none: it is reached by ship. Limbo's exits are global
-//! (`mush-core/src/commands/movement.rs:24-42`: a line that names no local exit
-//! is tried against Limbo's from anywhere), so without a rule a pilot who stepped
-//! out to the OOC area at Stickney could walk straight back in at Ceres and skip a
-//! two-to-three-week passage. Three pieces close that:
+//! The corridor has five IC ports (doc 19 cut A.8 added the three moon ports).
+//! Ceres Freeport has a foot route — the unlocked Limbo door `exit.limbo_arrivals`
+//! into Port Watch Arrivals — and the other four (Stickney Yards, Aitken Highport,
+//! Voltaire Anchorage, Ligeia Terminal) have none: they are reached by ship.
+//! Limbo's exits are global (`mush-core/src/commands/movement.rs:24-42`: a line
+//! that names no local exit is tried against Limbo's from anywhere), so without a
+//! rule a pilot who stepped out to the OOC area at Stickney (or any port reached
+//! by ship) could walk straight back in at Ceres and skip the passage. Three
+//! pieces close that:
 //!
 //! - **the stamp** ([`crate::ic_return::IcReturnStamp`]): a `Moved` observer that records the port a
 //!   character last stood in whenever they move from a port room to a room outside
@@ -53,7 +55,8 @@ use crate::store::TacsimStore;
 /// (venue, name, area, arrival) by test.
 #[derive(Debug, PartialEq, Eq)]
 pub struct IcPort {
-    /// The port entry's venue id: `ceres` or `stickney`. The stamp's marker is
+    /// The port entry's venue id: `ceres`, `stickney`, `luna`, `deimos` or `titan`.
+    /// The stamp's marker is
     /// [`LAST_PORT_MARKER`] followed by it.
     pub id: &'static str,
     /// The port's name in the player-facing lines.
@@ -65,15 +68,16 @@ pub struct IcPort {
     /// content latch.
     pub arrival: &'static str,
     /// Whether a door from Limbo leads here: true for Ceres (the Limbo door), false
-    /// for Stickney, which is reached by ship.
+    /// for the four ports reached by ship.
     pub foot_route: bool,
 }
 
-/// The two IC ports of the slice, Ceres first: `+ic` with no stamp goes to the
-/// first (where the Limbo door goes), and a character carrying two stamps — which
-/// [`stamp`] never writes — reads as stamped at the first port with no foot route,
-/// which fails closed.
-pub const PORTS: [IcPort; 2] = [
+/// The five IC ports, Ceres first: `+ic` with no stamp goes to the first (where
+/// the Limbo door goes), and a character carrying two stamps — which [`stamp`]
+/// never writes — reads as the first of its own stamped ports with no foot route,
+/// which fails closed (see [`last_port`]). Doc 19 cut A.8 appended the three moon
+/// ports, reached by ship.
+pub const PORTS: [IcPort; 5] = [
     IcPort {
         id: "ceres",
         name: "Ceres Freeport",
@@ -88,6 +92,27 @@ pub const PORTS: [IcPort; 2] = [
         arrival: "room.p01_berth_gallery",
         foot_route: false,
     },
+    IcPort {
+        id: "luna",
+        name: "Aitken Highport",
+        area: crate::definitions::content::AITKEN_PACK,
+        arrival: "room.l03_arrivals",
+        foot_route: false,
+    },
+    IcPort {
+        id: "deimos",
+        name: "Voltaire Anchorage",
+        area: crate::definitions::content::VOLTAIRE_PACK,
+        arrival: "room.d01_berth_gallery",
+        foot_route: false,
+    },
+    IcPort {
+        id: "titan",
+        name: "Ligeia Terminal",
+        area: crate::definitions::content::LIGEIA_PACK,
+        arrival: "room.t03_arrivals",
+        foot_route: false,
+    },
 ];
 
 /// The IC door's pack: the forward exit the content latch records for
@@ -96,7 +121,7 @@ pub const DOOR_PACK: &str = crate::definitions::content::CERES_PACK;
 /// The IC door's entry.
 pub const DOOR_ENTRY: &str = "exit.limbo_arrivals";
 /// The stamp's marker prefix: unregistered object markers, one per port —
-/// `tacsim.last_port.ceres`, `tacsim.last_port.stickney` — at most one present.
+/// `tacsim.last_port.ceres`, `tacsim.last_port.stickney`, … — at most one present.
 pub const LAST_PORT_MARKER: &str = "tacsim.last_port.";
 
 /// The verb.
@@ -105,8 +130,9 @@ pub const IC_VERB: &str = "+ic";
 /// `+ic`'s help (T-45 checks every backticked verb in `docs/help` resolves).
 pub const IC_HELP: &str = "+ic  --  Go back into the corridor where you left it. The game \
      remembers the port you last stood in when you stepped out to Limbo or the OOC area, and \
-     +ic puts you back there: Ceres Freeport's arrivals hall, or Stickney Yards' berth \
-     gallery. With no port remembered it takes you to Ceres Freeport, where the Limbo door \
+     +ic puts you back there: Ceres Freeport's arrivals hall, Stickney Yards' berth gallery, \
+     Aitken Highport's arrivals, Voltaire Anchorage's berth gallery or Ligeia Terminal's \
+     arrivals. With no port remembered it takes you to Ceres Freeport, where the Limbo door \
      goes. A port you can only reach by ship has no door from Limbo, so +ic is the way back \
      to it.";
 
@@ -150,7 +176,7 @@ fn marker_of(port: &IcPort) -> String {
 
 /// The port whose neighborhood `room` belongs to, by its `RoomGeo` (the atlas's
 /// record of the room): `None` for Limbo, the OOC area, a hull interior, or any
-/// room outside the two station packs.
+/// room outside the five ports' neighborhood packs.
 #[must_use]
 pub fn port_of_room(w: &World, room: ObjId) -> Option<&'static IcPort> {
     let atlas = w.module_state::<mush_atlas::AtlasState>()?;
@@ -160,9 +186,11 @@ pub fn port_of_room(w: &World, room: ObjId) -> Option<&'static IcPort> {
         .find(|port| geo.neighborhood.pack.as_str() == port.area)
 }
 
-/// The port `who` last stood in, by the stamp. Two markers — which [`stamp`] never
-/// writes — read as the first port in [`PORTS`] with no foot route: the door then
-/// refuses, which is the closed answer.
+/// The port `who` last stood in, by the stamp. Two or more markers — which
+/// [`stamp`] never writes — read as the first **stamped** port in [`PORTS`] with no
+/// foot route (else the first stamped): the door then refuses, which is the closed
+/// answer, and the answer is always one of the character's own stamps, so `+ic`
+/// never lands them at a port neither marker names.
 #[must_use]
 pub fn last_port(w: &World, who: ObjId) -> Option<&'static IcPort> {
     let mut stamped = PORTS
@@ -172,7 +200,11 @@ pub fn last_port(w: &World, who: ObjId) -> Option<&'static IcPort> {
     if stamped.next().is_none() {
         return Some(first);
     }
-    PORTS.iter().find(|port| !port.foot_route).or(Some(first))
+    PORTS
+        .iter()
+        .filter(|port| w.has_marker(who, &marker_of(port)))
+        .find(|port| !port.foot_route)
+        .or(Some(first))
 }
 
 /// Stamp `who` at `port`: set its marker and clear every other port's, so a
@@ -417,6 +449,30 @@ mod tests {
         let read = last_port(&w, who).expect("a port");
         assert_eq!(read.id, "stickney");
         assert!(!read.foot_route);
+    }
+
+    /// Doc 19 cut A.8 (review): with five ports the two-marker fallback is one of
+    /// the character's own stamps, never a port neither marker names.
+    #[test]
+    fn a8_two_markers_read_as_one_of_the_characters_own_stamps() {
+        let (mut w, _reg) = mush_testkit::boot_world();
+        // Ceres and Titan: Titan (the stamped port with no foot route), not Stickney.
+        let who = pilot(&mut w);
+        w.set_marker(who, "tacsim.last_port.ceres", true)
+            .expect("marker");
+        w.set_marker(who, "tacsim.last_port.titan", true)
+            .expect("marker");
+        let read = last_port(&w, who).expect("a port");
+        assert_eq!(read.id, "titan");
+        assert!(!read.foot_route);
+        // Luna and Deimos, both by ship: the first stamped in table order.
+        let (mut w, _reg) = mush_testkit::boot_world();
+        let who = pilot(&mut w);
+        w.set_marker(who, "tacsim.last_port.deimos", true)
+            .expect("marker");
+        w.set_marker(who, "tacsim.last_port.luna", true)
+            .expect("marker");
+        assert_eq!(last_port(&w, who).map(|p| p.id), Some("luna"));
     }
 
     #[test]

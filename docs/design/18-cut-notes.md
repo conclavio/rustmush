@@ -7669,3 +7669,312 @@ trailer, pushed when green. **No deploy without the owner.**
 ### Deferred
 
 - The web picture's own zoom and the TUI pane's zoom; a `.chart` feed per vantage on a moving ship.
+
+## A.8
+
+**The first ports on the moons** ([doc 19](19-astronomy-engine.md) §3.8, cut A.8; D-19-19 … D-19-25;
+the owner's ruling of Q-19-9 on 2026-10-19 — "the moons are really where the commerce is going to
+happen"), built 2026-10-19 on main: **Aitken Highport** on
+Luna, **Voltaire Anchorage** on Deimos and **Ligeia Terminal** on Titan. The design came from four
+designs (commerce, lore, engine, play) scored by three judges (arithmetic, canon, engineering): the
+play design as the base — the Concord ring plus a frontier spur, six routes, the smallest reach
+footprint, every pair a whole-tonne vertex — with the commerce design's pricing discipline (Deimos a
+pure import bond and fuel stop; no moon run beats the reference trade outright), the lore design's
+setting (the ark moorings, the 2308 blockade depot, the Republic Strategic Reserve, Concord Orbital
+Access, the Company against the townships, the three social rooms), the engine design's seams (one in
+`passage::leg_distance_km`, one line in `+ship/plan`, the strip helpers) and the judges' corrections
+(two goods, not three; the `instrument_boards` id; Titan's margins cut to a prize; a names pass;
+Titan's `base_s` and throttle from the engine; the 600 s convergence bound). Two commits with the
+Fable trailer, each pushed when green: **A.8a** (`b0d036d3`) goods v2 and the two engine seams,
+green alone; **A.8b** the content — lane v8, the six station packs, the registrations, the pins, the
+new suite and the docs. Nothing here touches a running world until the next deploy, and **no deploy
+without the owner**.
+
+### What landed
+
+1. **Goods v2** (`content/goods.json`, A.8a): two rows, eight in all, no new family —
+   `instrument_boards` ("instrument boards, crated", family `electronics`, 1,000 kg / 2,550 L,
+   reference 900: crated boards from the chartered Earth-basin fabs, forwarded through Luna) and
+   `carbon_feedstock` ("carbon billet, pressed", family `carbon_feedstock`, 1,000 kg / 600 L,
+   reference 250: Titan's billet). **The integrality finding**: among the six shipped hold goods only
+   {metals, volatiles} and {structural_alloys, industrial_parts} give a whole-tonne both-limits
+   vertex, and those are the reference loop's two directions, so a moon port of shipped goods is a
+   second Ceres or Stickney or flies empty; boards at 2,550 L pair with the shipped alloys at 40 t
+   of boards and 60 t of alloy, billet at 600 L with the shipped ice at 25 t of billet and 75 t of
+   ice. The id is not `electronics`:
+   doc 17 §16 and 17f M7.9 keep `tacsim.electronics` for quantity-one certified die lots graded
+   die.c1..c3, and a 1,000 kg bulk row under that id would make a die lot weigh a tonne. The table's
+   `version` 2, `GOODS_DIGEST` `50cb8d9fbf56710f15ac0caaa9419e9d9d7100de95aba01e6e9a3cfe2e518c57`,
+   the catalog count 8, one zero load-cell line per new good (`gauges.rs`'s unit tests,
+   `tests/coop.rs`'s `load_cells()`, `ic_slice_loop`'s cells), `UNKNOWN_GOOD`'s list eight ids, the
+   goods module doc, `resources.json`'s carbon gloss naming Titan.
+2. **Sibling moons in the parent's frame** (`passage::leg_distance_km`, A.8a; D-19-21): when both
+   bodies of a leg share a parent, the leg is each body less its primary at its own instant, with no
+   solar keep-out; `Sky::distance_km`, light lag and `scan_days` are untouched. In the Sun's frame
+   Mars's 24 km/s turned the 29,500 km Deimos–Phobos hop into about 1.7 IC days (40 hours) and five tonnes, still
+   diverging at twenty intercept passes; in Mars's frame it plans in hours, a tonne and a crew-day both
+   ways. A same-instant chord is frame-invariant, so every authored `base_s` and every pinned leg
+   stands. **The convergence exception**: five passes and twenty agree within 600 s, not doc 19
+   §4.4's 60 s — Phobos turns about half its orbit during the hop (Phobos→Deimos converges inside
+   2 s); §4.4 records it. The 2,000-day scan cap for the Phobos–Deimos pair stays.
+3. **The `Throttle:` line** (`+ship/plan` only, A.8a; D-19-22): when the plan at the asked throttle
+   still fails with the tank and the locker filled to capacity, one line after the Stores line names
+   the highest throttle that fits — bisection over 250..=1000 on the flip law's monotone burn, the
+   locker then checked at it — as `Throttle: with the tank and locker full, throttle={throttle}
+   fits: burn {burn} t, {days} crew-days, {passage} IC days.` (`THROTTLE_FITS`), or `Throttle: no
+   throttle from {min} permille fits this load even with the tank and locker full.`
+   (`THROTTLE_NONE`). It never starts with `Burn ` or `Stores `, so `plan_numbers` and its copies
+   stand; TANK_SHORT, STORES_SHORT and the queue's hold line are unchanged, so no refusal pin moves.
+4. **Lane v8** (`content/lane/ceres_phobos.json`, `LANE_VERSION` 8; D-19-19): thirty-six entries.
+   **Three places** — `aitken_highport` on `luna`, `voltaire_anchorage` on `deimos`,
+   `ligeia_terminal` on `titan`, each role `port`. **Six direct routes**, one leg each, `coast_hauler`,
+   `base_s` from the engine (`tests/sky.rs`'s a1 print widened to every route): `ceres_aitken`
+   1,609,856 s; `aitken_voltaire` 728,633 s; `aitken_ligeia` and `ligeia_aitken` 6,803,208 s;
+   `ligeia_voltaire` 6,477,235 s; `voltaire_stickney` 131 s (the hop, declared empty: Deimos asks no
+   hold good Stickney bids). The graph: Ceres lists {luna, stickney}, Stickney {ceres} as before, Luna
+   {deimos, titan}, Deimos {stickney}, Titan {deimos, luna}; no Luna→Ceres (nothing at Ceres buys what
+   Luna sells), no Stickney→Deimos (the Republic does not bond its own yard stock), no Ceres↔Titan
+   (ceiling about 430). **Three ports**, each `premium {300, 500}` and an `emergency` block at
+   1,500 ‰ and intake 100: `luna_port` — Concord Orbital Access (the port authority, no vendor),
+   Cabeus Works (asks alloys 400, 3,120 t; bids concentrate 270 for 800 t), the Lunar Habitat Board
+   (bid-only: ice 195 for 4,100 t, billet 380 for 300 t), Crisium Instruments (asks boards 900,
+   2,080 t; the emergency org for provisions, volatiles and propellant), the Highport Victualling
+   Office (reaction mass 60, provisions 10); 1,400,000 cr in six tranches. `deimos_port` — the
+   Voltaire Bond Authority (operator, no vendor), the Republic Strategic Reserve (reaction mass 60,
+   provisions 10; bids ice 190 for 900 t, an authored floor, and billet 380 for 300 t), Syrtis Bonded
+   Imports (bid-only: alloys 460 for 2,400 t, boards 1,100 for 1,600 t; the emergency org for the
+   three goods); 3,450,000 cr in six. `titan_port` — the Titan Concession Company (asks billet 250,
+   600 t; ice 40, 1,800 t; reaction mass 30, 5,000 t; faction `company`), Concession Stores (provisions 20,
+   2,600 crew-days; `company`), the Selk Townships Board (bid-only: alloys 760 for 720 t, boards
+   1,500 for 480 t; faction `townships`; the emergency org for provisions alone); 1,450,000 cr in
+   four. **Ceres's `luna` key** (`ceres_port.routes.luna = ["ceres_aitken"]`, direct: the charter's
+   depot rule binds Ceres-bound legs and the Ceres–Mars corridor, not a Concord-bound leg out of
+   Ceres). **Two programme reference rows** (`instrument_boards` → `luna_port/crisium_instruments`,
+   `carbon_feedstock` → `titan_port/titan_concession`), so an enrolled sale of a new good logs no
+   false "reference listing is gone". 6,300,000 cr new in sixteen tranches, eleven new orgs (twenty in
+   all), three new clerks; no recorded row of v7 changes, so v8 applies over a kept world. Signed,
+   digest `be733686a1630175e541346c693fcb2cce9f658db876121c73c4d476e04ca330` pinned in
+   `tests/lane.rs`.
+5. **The six station packs** (`content/atlas/`; region `region.<location>` v1 with one `surface`
+   region on the moon body and a `locality.<location>` of kind `port`; neighborhood v1 requiring it).
+   Common: the gallery "Visiting Berth Gallery" with `markers ["port.dock"]`; a restricted spine
+   holding the storefront items and the principals (`profile.enabled: false`, no interfaces), reached
+   by one hatch with `lock: "staff"`; every signatory an enabled NPC in a public room with a non-LLM
+   fallback; a social room with a keeper drawing the port's lore pool; exit words drawn from the two
+   shipped stations' alias set plus each station's own codes.
+   - **Aitken Highport** (`neighborhood.aitken_highport`): the Concord's spun civil drum in low polar
+     orbit over the South Pole–Aitken basin; site "Aitken Drum", decks "Hub Deck" (zero-g) and "Drum
+     Deck" (spin at lunar g); 12 rooms, the spoke ladder between the decks; fifteen exits. Cast nine,
+     four of them signatories (Lorcan Mwangi-Eriksen of Cabeus, Thandiwe Albrecht-Sato of the Board,
+     Anneliese Okafor-Thistlewood of Crisium, Imogen Batista-Okeke of the Victualling Office), with
+     Dockmaster Aurelio Kowalczyk-Amadi, Deputy Registrar Kwabena Holt-Iversen, Mireille
+     Devereux-Anand, Maren Ferro-Wainwright and Ngozi Rasmussen-Oto keeping the Cold Trap; four
+     principals (Cosima Ferreira-Lund, Odile Kwarteng-Fairweather, Benedikt Rourke-Haddad, Ingrid
+     Moravec-Ansah). Four storefront items (the Cabeus stock cage, the Board's intake manifold, the
+     Crisium bonded cage, the Victualling stores locker). `lore.port_aitken`, thirteen entries (ten
+     public, three guarded); `secret.half_afloat` about the Board's Chair. One wall (`l01|l12`) and
+     five counters. The staff hatch `exit.l08_l15`, Habitat Board Receiving to the Rim Service Spine.
+   - **Voltaire Anchorage** (`neighborhood.voltaire_anchorage`): the Republic's bonded anchorage in
+     Voltaire crater over the Strategic Reserve; site "Voltaire Roads", structure "Moorings Block",
+     decks "Tank Deck" and "Roads Deck"; 11 rooms on the Stickney boxes, the Ark Moorings Gallery with
+     the *Long Mercy* in its window; eleven exits. Cast six, two signatories (Caspian Abiodun-Fleck,
+     Quartermaster of the Reserve; Emeka Strand-Villanueva of Syrtis), with Femi Rautio-Grant at
+     customs, Aurek Szabo-Mensah the Roadsmaster, Marisol Kettunen-Ade keeping the Long Straw and
+     Wilhelmina Tsai-Barros, the Company's agent; three principals (Radmila Delgado-Mertens, Anders
+     Bergström-Nwachukwu, Liesel Okwuosa-Brandão). Two storefront items (the Reserve intake manifold,
+     the Syrtis bonded cage). `lore.port_voltaire`, twelve entries (ten public, two guarded);
+     `secret.reserve_level` about the Reserve Warden. Seven walls and four counters. The staff hatch
+     `exit.d07_d15`, the Reserve Receiving Hall to the Reserve Spine.
+   - **Ligeia Terminal** (`neighborhood.ligeia_terminal`): the Titan Concession Company's unspun spar
+     in low Titan orbit; site "Ligeia Spar", decks "Cargo Deck" and "Company Deck"; 12 rooms, the
+     Lifter Gallery's long window and the Ninety-Four; fourteen exits. Cast six, three signatories
+     (Ysolde Marangoni-Teague of the Company, Barnabas Oyelowo-Krauss of the Stores, Saoirse
+     Tupou-Lindahl of the Townships Board), with Kenji Abara-Vos the dockmaster, Noor Adichie-Brun at
+     the arrivals desk and Ottoline Quayle-Ibekwe keeping the Ninety-Four; two principals (Augustin
+     Varela-Nwosu, Chief Factor; Hallgerd Asante-Pryce, Speaker of the Selk Townships). Three
+     storefront items (the Concession export manifold, the Company Store locker, the Townships
+     receiving cage). `lore.port_ligeia`, twelve entries (nine public, three guarded);
+     `secret.retainer` about the Chief Factor. Four walls and four counters. The staff hatch
+     `exit.t11_t15`, the Bunkering Yard to the Spar Service Spine.
+   Signed digests: `region.aitken_highport` `4dd766c3…`, `neighborhood.aitken_highport` `2d412668…`,
+   `region.voltaire_anchorage` `b95670c9…`, `neighborhood.voltaire_anchorage` `790d3363…`,
+   `region.ligeia_terminal` `73123abe…`, `neighborhood.ligeia_terminal` `11091438…`, pinned in full in
+   `tests/stations.rs`.
+6. **The registrations** (`definitions/content.rs`, `ic_return.rs`): the six pack ids and
+   `include_str!` constants; `STATION_SOURCES: [(&str, &str); 10]`, each region before its
+   neighborhood, appended after Stickney; `AITKEN_ROOMS` 12, `VOLTAIRE_ROOMS` 11, `LIGEIA_ROOMS` 12;
+   `LANE_VERSION` 8 and the doc comments; `ic_return::PORTS: [IcPort; 5]` — Aitken Highport arriving
+   at `room.l03_arrivals`, Voltaire Anchorage at `room.d01_berth_gallery`, Ligeia Terminal at
+   `room.t03_arrivals`, none with a Limbo door — and `IC_HELP` naming the five ports.
+7. **The pins moved** (each figure read from a run, none by hand): `tests/lane.rs` (the digest, version
+   8, thirty-six (id, kind) entries, six places, the six routes' legs, `lane_legs_derive_at_epoch` over
+   every route within 100 s, Titan's three included against their own propagated 2249 row — a
+   self-consistency check, not accuracy against Horizons, until an ephemeris past 2250 exists);
+   `tests/ports.rs` (the treasury at −14,500,000.00 cr, five port docs, a kept world's "0 create, 2
+   update, 0 retire, 34 unchanged", v1 → v8 "11 create, 2 update, 0 retire, 23 unchanged", the
+   five-port Absent loops, the shipped lane's 46 vendor, ask and bid readiness lines pinned and the
+   not-ready count derived from the list, `ic_return`'s "five and five"); `tests/commerce.rs` (the four
+   other clerks as a set; the v2 rebuild through `support::moon::strip_moon_trade` and
+   `strip_moon_places`, `LANE_V2_DIGEST` held byte for byte); `tests/price.rs` (`stickney_variant`
+   through `strip_moon_trade`, so Ceres is again Stickney's only supplier; the volatiles `None` pin
+   stands; `a8_the_old_ports_suppliers_move_as_designed` holds doc 19 §6's old-port rows, v8 against a
+   v7-shaped lane at rate 0 — Stickney's provisions and propellant reach 11,718 s on v8 against
+   1,250,608 s on v7, its volatiles, Ceres's readings and the four old bids unmoved); `tests/chart.rs`
+   (`CHART_NO_ROUTE` "Aitken Highport, Stickney Yards", two routes and two windows, Stickney found by
+   `to`) and `web/src/lib/fixtures/chart/sky_chart.json` re-blessed for Ceres's Luna route, its window
+   and Luna's demand lines; Stickney's emergency line keeps its text ("none due; reach is 1016 permille
+   of the median": the volatiles reading, supplied through Ceres alone, still sets the maximum, and
+   only the provisions and propellant readings flatten to the hop) and the Kasei bid lines are
+   unchanged; the voyage and orders lists (`VIA_UNKNOWN` six labels, `UNKNOWN_PORT` five names in
+   port-entry order, `NO_ROUTE` at Ceres "Aitken Highport, Stickney Yards"); `tests/capacity.rs` (the
+   catalog 8; `ic8_the_posted_prices_make_the_both_limits_load_optimal` builds its pairs from every
+   port's listed routes — eight, the five new ones among them — derives the seven that trade through
+   the LP, and asserts the Deimos → Stickney hop has no tradeable pair); `tests/stations.rs`
+   (`PINNED`/`FILES` ten, the boot list, the requires arms, the dock set {c01, p01, l01, d01, t01}, the
+   walls and seams, the cast and principals, the locked hatches); mush-server `boot_parity` (twenty
+   orgs, sixteen packs). `tests/support/moon.rs` holds the two strip helpers.
+8. **`tests/moon_ports.rs`** (new, pure: the shipped lane through `rules_pack_of`, the Dray from the
+   fielded catalog, no world): `a8_the_lane_carries_five_ports_and_six_direct_routes` (the three places
+   on their moons, the six routes one leg each, the graph exactly, the declared absences — Luna→Ceres,
+   Stickney→Deimos, Ceres↔Titan — by route and by listing, thirty-six entries, Titan's bunkers at 30
+   and 20); `a8_the_hop_plans_in_hours_on_the_real_route` (`voltaire_stickney` under the moving sky
+   every four IC days over forty: under six IC hours, at most 2 t, one crew-day);
+   `a8_titan_fits_the_tank_only_throttled` (at the epoch on a still sky, laden with the tank and locker
+   full and one soul, the three listed Titan legs only: each at full throttle burns past the tank; at
+   450 it fits the tank and the locker and its ceiling keeps the 15 ‰ margin — 530, 530 and 557 ‰
+   printed; two souls exceed the locker past sixty days); `a8_titan_throttle_fits_a_saturn_year`
+   (twenty-four departures across 11,000 IC days plus a ±14-day window at one-day steps around each
+   replica worst departure — day +7526 Luna→Titan, +7106 Titan→Luna, +7812 Titan→Deimos — 53 a leg,
+   every one fitting the tank and the locker at 450 and the tank at 465; each leg's ceiling bisected at
+   its departure with the largest burn at 465 and printed with its range of IC days at 450; empty at
+   that departure the leg is faster and the ceiling plus one fits; and **Ceres→Titan**, on a synthetic
+   `ceres_ligeia` route and in that direction only, fitting 465 at the epoch and failing it at one of
+   48 sampled departures, the first such printed with its ceiling);
+   `a8_the_ring_outranks_the_shuttle_by_ordering_at_the_epoch` (net per IC day at the epoch only:
+   ring > reference > an empty Luna-and-back on a synthetic route the lane does not list; every leg's load
+   solved from the authored prices by `support/vertex.rs` and asserted the both-limits vertex, none
+   typed; no multiplier asserted; printed reference 459, ring 493, Luna-and-back empty 94 and the Titan
+   shuttle 425 cr a day). The sibling-frame test is `tests/passage.rs`'s
+   `a8_sibling_moons_are_measured_in_the_parents_frame`, and
+   `plan_passage_reproduces_the_slice_figures` now checks every route's `base_s` exactly (eight routes,
+   the hop's 131 s); the bisection's unit test is `src/port/voyage.rs`'s
+   `a8_the_highest_fitting_throttle_is_found_by_bisection`, and `tests/voyage.rs`'s
+   `a8_the_plan_names_the_throttle_that_fits` runs the `Throttle:` line through a real `+ship/plan` (a
+   full-hold Ceres→Titan plan at the epoch on a seeded lane: one line after Stores, the same line at
+   N+1 and N+20, none at N with the plan's own Burn, Stores and Passage lines matching it, none on
+   Ceres→Stickney; printed "1000 permille burns 106 t (41 crew-days); throttle=539 fits: 80 t, 56
+   crew-days, 55.3 IC days"). Also new: `tests/commerce.rs`'s `a8_the_moon_ports_stock_list_and_bid`
+   (ten moon receipts minted once and read back, every moon pool at its authored quantity, the three
+   bid-only vendors Ready at 0 of 0) and `a8_a_world_on_lane_v7_takes_v8_by_the_shelf`;
+   `tests/sale.rs`'s `a8_the_programme_reference_names_the_moon_asks` and its control
+   `a8_without_the_boards_reference_row_the_sale_stamps_the_baseline_memo` (a boards sale into a
+   variant Kasei bid, basis 400,000 minor, the share 100,000, the memo only without the row);
+   `tests/stations.rs`'s `ic1_the_seams_are_walled_on_the_map` over all five stations (25 walls) and
+   `ic1_every_cross_deck_portal_stands_inside_both_rooms_and_clear_of_restricted_ones` (7 portals);
+   `ic_return`'s unit test `a8_two_markers_read_as_one_of_the_characters_own_stamps`.
+9. **Docs and help**: doc 19 §3.8 (D-19-19 … D-19-25) and §4.3, §4.4 (the 600 s exception), §4.6
+   (rewritten to the as built: A.8 ships the first direct routes; D-19-13's rationale narrowed), §5,
+   §6 (the supplier table), §9's A.8 row, §10; doc 18 §1, §4.3 (the eight-row table and the
+   integrality finding), §4.5 (five stations), §4.7 (the moon port entries as built), §5 (P7's row),
+   §9, and D-18-1, D-18-27 (the moon stock basis amended), D-18-35, D-18-36, D-18-39; doc 11 §2 (the
+   ark moorings 2150s–2200s, the blockade depot 2308, the Reserve in the 2312 Settlement row, the
+   Saturn Charter of 2291), §3 (the Needs list's light alloy; the as-built notes), §4.13–§4.23 (the
+   eleven houses), §5 (the three domains), §10 (the counts); doc 10 §11; doc 15 (Aitken under
+   Malapert, Voltaire in the Phobos half's coverage, no Titan half); 18a §5–§7 (the three stations on
+   the §0.2–§0.4 template); the README rows; the help — `trade.md`, `npc.md`, `ports.md`, `travel.md`,
+   `ships.md`, `orders.md`, `getting-started.md`.
+
+### Verified
+
+The runs on the tree as committed (2026-10-19, after the review-fix pass; one cargo at a time, `-j 8`):
+
+- `cargo fmt --all -- --check` clean; `cargo clippy -p tacsim -p mush-server -p mush-net-ssh
+  --all-targets -- -D warnings` clean.
+- The whole tacsim suite (`--no-fail-fast`): 2,705 passed, 0 failed, 13 ignored, among them
+  `tests/stations.rs` 21 (the ten packs validate clean with no warning, the digests pinned, the
+  adjacency and the walls on the map at all five stations, every cross-deck portal inside both rooms,
+  the dock set, the requires arms, the counts), `tests/lane.rs` 10, `tests/ports.rs` 21,
+  `tests/commerce.rs` 26, `tests/price.rs` 8, `tests/chart.rs` 7 (the fixture re-blessed),
+  `tests/capacity.rs` 17, `tests/voyage.rs` 25, `tests/orders.rs` 33, `tests/coop.rs` 23,
+  `tests/sky.rs` 8, `tests/hulls.rs` 15, `tests/ephemeris.rs` 8, `tests/passage.rs` 5,
+  `tests/content.rs` 29 (`GOODS_DIGEST`, the table's version 2, the eight rows), `tests/sale.rs` 18
+  (`plan_numbers` unmoved by the `Throttle:` line) and `tests/moon_ports.rs` 5 — the printed Titan
+  ceilings at the hardest sampled departure 491 ‰ Luna→Titan (day +7537), 491 ‰ Titan→Luna (+7096)
+  and 466 ‰ Titan→Deimos (+7816), the worst burns at 450 77, 77 and 79 t, a leg 54.4–63.5, 54.2–63.4
+  and 52.4–65.2 IC days at 450 (53–66 crew-days a soul over the three); the Ceres→Titan sweep's first
+  sampled departure past 465 ‰ day +1604 at a 461 ‰ ceiling, and an earlier run of the same sweep,
+  bisecting all 48 samples, read its minimum at 429 ‰ (day +7562).
+- mush-server `boot_parity` 20, the story `ic_slice_loop` 6 and `ic_buyout_dormancy` 13; mush-net-ssh
+  (all suites) green, `chart_screen` 2; mush-contract-tests (all) green, the exit-word gate over the
+  ten packs with `DECIDED` at its two rows; mush-config `shipped_configs` 12.
+- The web: `npm test` 621 passed in 54 files, the chart fixture decoded; `svelte-check` 0 errors,
+  0 warnings.
+
+### Recipes
+
+- The lane: `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim --test lane ic2_the_lane_pack_is_pinned`
+  re-signs `ceres_phobos.json`; the plain run prints `LANE_DIGEST` for `tests/lane.rs`.
+- The stations: `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim --test stations
+  ic1_the_station_packs_load_and_their_digests_are_pinned` re-signs the ten files; the plain run
+  prints the `(pack, digest)` lines for `PINNED`.
+- The goods: `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim --test content ic2_the_goods_table_is_pinned`
+  prints `GOODS_DIGEST` for `tests/content.rs`.
+- The chart fixture: `TACSIM_BLESS=1 cargo test -p tacsim --test chart` rewrites
+  `web/src/lib/fixtures/chart/sky_chart.json`.
+- The routes' `base_s`: `cargo test -p tacsim --test sky a1_lane -- --nocapture` prints every route's
+  legs at the epoch.
+
+### What the owner decides
+
+- **O1 Goods**: two new rows (default), or three with `composites` (1,900 L, reference 800) for a
+  richer Titan backhaul.
+- **O2 The Luna good's id**: `instrument_boards` (default), or `electronics`, when doc 17 §16's die
+  lots take another id.
+- **O3 Titan**: `throttle=450`, one soul, with the `+ship/plan` hint (default; 440 the fallback word
+  if the engine puts the Titan→Deimos ceiling under 465), or an authored per-route throttle.
+- **O4 The hop**: the sibling-moon frame (default), or the Sun-frame hop of about 1.7 IC days (40 hours) and 5 t.
+- **O5 The graph**: six routes (default), or eight — Luna→Ceres via Kirkwood as an empty way home and
+  Stickney→Deimos, re-deriving Ceres's premium pins and removing Deimos's alloy bid.
+- **O6 The programme's reference**: the two rows (default), or the `proceeds.rs` warn demotion.
+- **O7 Luna's bids**: 270 / 195, a shade under Kasei's (default), or 290 / 210, when Luna dominates
+  the shuttle until its 40-load intake fills; 260 / 185 is the ready lower alternative.
+- **O8 Titan's prices**: alloy 760 and boards 1,500, the shuttle about 1.5× the reference per IC day
+  over a Saturn year (default), or richer (850 / 1,700, about 3×).
+- **O9 Titan's polity**: the Concord's Saturn Charter of 2291 with faction words `company` and
+  `townships` (default), or a Registry grant with `concession`, or the Board under `concord`.
+- **O10 Deimos**: the Republic's bonded anchorage and Strategic Reserve with the new history rows
+  (default), or a Freeport-leaning anchorage.
+- **O11 Names** (Q-18-12's "names ok"): Aitken Highport, Voltaire Anchorage, Ligeia Terminal, the
+  *Long Mercy*, the eleven houses and the thirty new people (twenty-one cast, nine principals) — owed.
+- **O12 Ceres's stock**: not topped up (default; Occator's 9,600 t of ice faces 12,800–13,700 t of
+  intakes, the Exchange's 4,000 t of concentrate 4,800 t), or a fresh-store-only resize.
+- **O13 The shipped lane's tank-short seasons**: the hint only this cut (default), or an auto-throttle
+  on a queued depart as a follow-up.
+- **O14 Stickney's provisions and propellant emergency**: left inert by the depot next door
+  (default); live only if Deimos stops asking them.
+- **O15 Ceres→Luna**: direct (default), or via Kirkwood (77 t in the worst season, about 0.7 IC days
+  longer; Luna's reach, premium and the ring re-derive by about a percent).
+- **O16 The Reserve's ice bid**: 190 kept as an authored floor (default; Titan's Deimos-side ice sells
+  at Kasei by the hop), or the Reserve sized to its carbon bid alone, or the ice bid dropped and
+  Titan→Deimos re-paired.
+
+### Deferred
+
+- **The chart frame's and the hourly emergency reads' cost — owed a measurement** (doc 19 §6; not
+  measured in this cut): Ceres's frame with its second destination's window, Stickney's two
+  emergency readings scanning 2,000 days over the three-leg plan and the hop, Deimos's 778- and
+  734-day scans. **The supplier-set reach memo** (a pure-function cache, no pin moves) waits until
+  that measurement shows a frame over budget (Q15).
+- **An auto-throttle on a queued depart** — this cut ships the `Throttle:` line only.
+- **The moon zoom on the chart**: the three ports draw on their parents' cells and are named in the
+  legend and the table; zooming to a planet's system is a later cut, the owner's call.
+- **Stickney→Deimos and Luna→Ceres** as later cuts if wanted (O5); `tests/moon_ports.rs` holds both
+  absent until then.
+- **O12's fresh-store resize** of Occator's and the Exchange's recorded stock.
+- **The shipped loop's tank-short seasons** (Q13): laden at full throttle under the moving sky the
+  replica finds Ceres→Stickney TANK_SHORT on about 14 % of departures and Stickney→Ceres on about
+  33 % (worst-season fits about 960 and 870 ‰); the engine's figures are read when the auto-throttle cut
+  is taken. The hint names the throttle; the queue does not yet take it.
+- **Titan's table re-fit** when an ephemeris past 2250 exists: the 2249 row propagates 102 years, so
+  Titan's `base_s`, ceilings and crew-days move with a re-fit, and the lane's 100 s derive check on
+  Titan's legs then measures accuracy, not only the pack's consistency with its own propagated row.

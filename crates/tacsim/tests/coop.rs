@@ -569,7 +569,10 @@ fn commerce_ready(tw: &mut TestWorld) -> (bool, String) {
     let gated: Vec<&str> = out
         .lines()
         // Doc 18 cut IC12: the gate is every report line but the sky (D-18-50).
-        .filter(|line| line.ends_with(']') && !line.starts_with("sky: "))
+        // doc 20 SM.1: the geology line is reported and never gated
+        .filter(|line| {
+            line.ends_with(']') && !line.starts_with("sky: ") && !line.starts_with("geology: ")
+        })
         .collect();
     let ready = !gated.is_empty() && gated.iter().all(|line| line.ends_with("[ready]"));
     (ready, out)
@@ -1106,6 +1109,8 @@ fn ic6_the_desk_closes_at_a_play_world_rate_other_than_24() {
     let closed: Vec<&str> = report
         .lines()
         .filter(|line| line.ends_with(']') && !line.ends_with("[ready]"))
+        // doc 20 SM.1: the geology line is reported and never gated
+        .filter(|line| !line.starts_with("geology: "))
         .collect();
     assert!(
         !closed.is_empty() && closed.iter().all(|line| line.contains("world rate")),
@@ -1139,6 +1144,8 @@ fn ic8_the_desk_stays_closed_until_the_ports_are_stocked() {
     let closed: Vec<&str> = report
         .lines()
         .filter(|line| line.ends_with(']') && !line.ends_with("[ready]"))
+        // doc 20 SM.1: the geology line is reported and never gated
+        .filter(|line| !line.starts_with("geology: "))
         .collect();
     assert!(
         !closed.is_empty()

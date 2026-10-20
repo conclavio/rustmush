@@ -58,6 +58,11 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
+name = "+chart"
+category = "read-only"
+note = "doc 19 cut A.3 (section 5), A.3b: the sky read from where you stand -- every lane body's position, distance and light lag, each port's passage now and its window over the next IC year, +chart/body's element row and +chart/map's flat render. Registered in +credit's ReadOnly bracket: a pure read of the sky and the passage planner; no document, no post, no submission. (Stanza added by doc 20 cut SM.1: A.3 registered the verb without one, which left this tripwire red at f3df3205.)"
+
+[[handler]]
 name = "+chronicle"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
@@ -444,6 +449,11 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "@gen"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "@geology"
+category = "read-only"
+note = "doc 20 cut SM.1 (§3.2, D-20-4): staff-only truth of the keyed geology at one body-fixed lattice point -- a pure read of the RAM GeologyState (the key's live handle and the installed body table), recomputing one province, one field and its 64 pockets by HMAC; no document, no economy post, no authoritative submission, no state family. Refuses while the layer is disabled, naming the reason. The site-address form arrives with SM.2's sites."
 
 [[handler]]
 name = "@hold"

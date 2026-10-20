@@ -717,6 +717,9 @@ pub const fn gated(binding: Binding) -> bool {
         // reported and paged, never gated, in D-18-50's sky manner; an actually
         // incomplete mirror closes enrolment through the `InventoryFacts` line.
         Binding::Markers => false,
+        // Doc 20 Q-20-12 (cut SM.1): mining's key closes no trade-run desk; the
+        // geology line is reported, never gated, in D-18-50's sky manner.
+        Binding::Geology => false,
     }
 }
 
@@ -1972,7 +1975,7 @@ mod tests {
     /// this walk pins state by state.
     #[test]
     fn ic12_the_gate_refuses_on_every_gated_line_and_never_on_the_sky() {
-        const EVERY: [Binding; 16] = [
+        const EVERY: [Binding; 17] = [
             Binding::Lane,
             Binding::Sky,
             Binding::Rate,
@@ -1989,6 +1992,7 @@ mod tests {
             Binding::MarketFacts,
             Binding::InventoryFacts,
             Binding::Markers,
+            Binding::Geology,
         ];
         let port = CanonicalId::new("ceres_port").ok();
         let line = |binding, state| ReadinessLine {
@@ -2005,7 +2009,7 @@ mod tests {
         };
         assert!(enrol_gate(&open).is_ok());
         for binding in EVERY {
-            let ungated = matches!(binding, Binding::Sky | Binding::Markers);
+            let ungated = matches!(binding, Binding::Sky | Binding::Markers | Binding::Geology);
             assert_eq!(gated(binding), !ungated, "{binding:?}");
             for state in [LineState::Pending, LineState::Missing, LineState::Flagged] {
                 let mut report = open.clone();

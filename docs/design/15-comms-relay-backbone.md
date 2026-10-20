@@ -167,6 +167,16 @@ Consequences that fall out of the star:
 - **Future pairs may bypass Luna.** A Phobos–Ceres pair, whoever makes it, is the strategic
   transformation of §7.1. The Concord treats that prospect the way it treats Registry divergence.
 
+**As built ([doc 19](19-astronomy-engine.md) cut A.8, 2026-10-19; lore only — the backbone, R1–R10,
+is not started):** three trade-run ports stand on the moons, and the star covers two of them.
+**Aitken Highport**, the Concord's drum in low polar orbit over the South Pole–Aitken basin, lies
+under **Malapert's** coverage — instant to Phobos, Ceres and Kirkwood through the hub, 67–92
+light-minutes to Titan (§3.5). **Voltaire Anchorage** on Deimos lies inside the **Phobos half's**
+coverage: the Phobos compound's last mile reaches the Roads. **Ligeia Terminal** at Titan has **no
+half** (§10 q2, option A): its board posts Luna's prices an hour and more old, and the Exchange quotes
+the Titan Concession Company for a half every decade and the Company declines every decade (doc 11
+§4.21). No half, link or coverage set is added; the table above and the lag table's Titan row stand.
+
 ## 5. The Malapert Exchange (D-15-7)
 
 Doc 11 §4.11 holds the organization's seed entry (charter, principal, linkage). This section holds
@@ -337,6 +347,10 @@ only there.
 2. **Mercury at world start.** **A (recommended):** a half at the Mercury Solar Authority
    (Concord-chartered); none at Venus, Titan, Pallas or Vesta — the outer system stays months away
    by ship *and* an hour away by radio. **B:** Luna and the corridor only.
+   **As built ([doc 19](19-astronomy-engine.md) cut A.8, 2026-10-19):** the lore takes A — Ligeia
+   Terminal at Titan has no half and its prices reach Luna by light; Aitken Highport is under
+   Malapert's coverage and Voltaire Anchorage inside the Phobos half's (§4). Nothing is built; the
+   question's answer still waits on the owner.
 3. **The Concord's lever.** **A (recommended):** informal — Shackleton *requests*, the Exchange
    *decides*, both deny it; the neutrality theater is the point. **B:** a treaty right to order a
    suspension, on the record.

@@ -1,0 +1,82 @@
+{
+  "manifest": {
+    "id": "region.aitken_highport",
+    "version": 1,
+    "kind": "region",
+    "digest": "4dd766c3ee4a31b0558502b93e2999366e4df3151cf878068bf61767af47f9c7",
+    "requires": []
+  },
+  "brief": {
+    "prose": "Aitken Highport is the Concord's civil anchorage in low polar orbit over Luna, named for the South Pole-Aitken basin it crosses: Shackleton and Malapert swing under its hub ports once an orbit, and the lunar yards' restricted slips trail it on the same truss. A Dray at a twentieth of a gravity cannot lift from Luna's sixth, so nothing in this trade lands; ships berth at the drum's non-rotating hub, and the drum turns at the Moon's own sixth of a g. Concord Orbital Access is the port authority. The Belt's concentrate and ice come up no further than this and go down by the Lunar Habitat Board's landers; lunar alloy and the basin fabs' instrument boards leave by Dray for Mars and Saturn. The region is a surface region on the body luna, the tested path, though the station is orbital in the fiction."
+  },
+  "entries": {
+    "region.aitken_highport": {
+      "kind": "region",
+      "def": {
+        "name": "Luna",
+        "kind": "surface",
+        "body": "luna",
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            400
+          ]
+        ],
+        "datum_m": 0,
+        "background": {
+          "surface": "regolith",
+          "mix": [],
+          "relief_cm": 0,
+          "relief_period_cm": 1000,
+          "seed": 2350
+        },
+        "ground_resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350",
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "locality.aitken_highport": {
+      "kind": "locality",
+      "def": {
+        "region": "region.aitken_highport",
+        "name": "Aitken Highport",
+        "kind": "port",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            0
+          ],
+          [
+            400,
+            400
+          ],
+          [
+            0,
+            400
+          ]
+        ]
+      }
+    }
+  }
+}
