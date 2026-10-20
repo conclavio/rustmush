@@ -1,5 +1,39 @@
 # 17f — Mind commerce, Registry rights and IC hardware: implementation plan
 
+## Current status — integration first, 2026-10-19
+
+**M6 is complete and merged. M7 has not yet passed a clean integrated run.**
+The amount of code written is not a reliable completion percentage. New feature
+work is paused at the owner's request until the existing code passes together.
+
+The frozen baseline is N101, source tree
+`10faf28bcdd53ab5633934a85e4be910843da139`. It includes the fixes prepared after
+N97–N100. Its result, not the sum of older passing tests, will establish the
+integration baseline.
+
+| Check | Status on this baseline |
+| --- | --- |
+| Compile all selected production and test targets | Passed |
+| Conduct, hardware and industry runtime tests | Running; earlier failures are not yet cleared |
+| Remaining component and service integration tests | Pending this run |
+| Genuine purchase, server recovery, Conduct and named launch stories | Pending this run |
+| Full workspace, lint, documentation, web and cross-host final acceptance | Still required after the integration baseline |
+
+**What happens next:** finish this run, fix failures without adding features,
+and repeat until one candidate passes every required integration stage and
+story. Runner errors count as errors to fix; they do not justify ignoring tests.
+The final record will distinguish passing, failing and unexecuted checks.
+
+**What a green baseline will mean:** the code currently included works together
+under the integration suite. It will not mean M7 is finished. Paid Follow's
+Market/Roll/native consumers, the original-major producer and its genuine story,
+scoped House author updates/attestation/source access, and remaining House or
+dependent major variants are parked outside this baseline. Those features will
+resume only after the baseline is green, in smaller validated steps.
+
+<details>
+<summary>Historical checkpoints and evidence — not current completion status</summary>
+
 Implementation continuation, 2026-10-19, on `codex/unit-minds-through-m6`.
 M6 is accepted in `17097f5b` with the owner's explicit one-time parity
 exception; [17e](17e-field-pilot-acceptance.md) preserves the failed raw comparison
@@ -16,7 +50,7 @@ the five design/acceptance documents. No M7 implementation was in that merge.
 records the archive and exact provenance. Both implementation prerequisites are
 complete. The owner has authorized progress through M7 and progressive pushes.
 
-## Current status — N97 validation, 2026-10-19
+### N97 checkpoint (historical)
 
 M7 remains in progress. The latest fetched main is
 `6f79797409f6792447d0fb1ed2d15335d2214387`, already included by merge
@@ -61,7 +95,7 @@ Only the persistent-host IC journey may remain conditional when that host is
 absent; Conduct and coverage are mandatory. Timing and launch-scale misses remain
 report-only under the owner's waiver. No M7 acceptance or deployment is claimed.
 
-## Historical integration evidence
+### Earlier integration evidence
 
 This note promotes the reviewed isolated design into the programme's tracked
 implementation plan. The substantial prepared code remains under active
@@ -968,6 +1002,9 @@ components can land with focused evidence; public paid services require their
 own complete phase gates. Hardware, renewal/transfer, the house catalogue and
 full acceptance are still implementation work. No Windows Cargo build is needed
 for the current loop: Linux uses one exclusive build lane with two Cargo jobs.
+
+
+</details>
 
 ## 1. Result and boundaries
 
