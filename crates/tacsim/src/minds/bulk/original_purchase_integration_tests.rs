@@ -1177,9 +1177,11 @@ fn rows(disk: &Disk, owner: &str, family: &str) -> Vec<Value> {
         .filter_map(|(_, v)| v.get("value").cloned())
         .collect()
 }
+#[track_caller]
 fn one(values: Vec<Value>) -> TestResult<Value> {
+    let at = std::panic::Location::caller();
     let [value] = values.as_slice() else {
-        return Err(format!("expected one row, got {}", values.len()).into());
+        return Err(format!("expected one row, got {} (at {at})", values.len()).into());
     };
     Ok(value.clone())
 }
