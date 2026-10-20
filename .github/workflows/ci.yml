@@ -69,11 +69,42 @@ jobs:
     # 2026-10-20: the job had no timeout of its own, so GitHub's 360-minute
     # default was the only bound on a hung test binary, and a hang the runner
     # survives is six hours of metered minutes. The whole run took 81 min at
-    # e7f2da90 and 94 min at 96cc7303. A lost runner is declared about 44
-    # minutes after it goes silent (job 118758464237 went quiet at 17:02:57Z
-    # and was declared lost at 17:47:28Z), so the real budget for work under
-    # this bound is about 75 minutes.
+    # e7f2da90 and 94 min at 96cc7303, and the longest shard below is about
+    # an hour of it. A lost runner is declared about 44 minutes after it goes
+    # silent (job 118758464237 went quiet at 17:02:57Z and was declared lost
+    # at 17:47:28Z), so the real budget for work under this bound is about 75
+    # minutes.
     timeout-minutes: 120
+    # 2026-10-20: THREE SHARDS of one job definition, so that a runner death
+    # names the step and the binaries it was linking or running, and takes
+    # only its own shard's log with it: the other two shards' logs and
+    # monitor readings survive as the comparison, and `fail-fast: false`
+    # keeps a death in one from cancelling the others. With the one
+    # whole-workspace run, a single loss took every binary's evidence with
+    # it (the leading comment below has the eight losses). The check names
+    # become `test (tacsim-lib)`, `test (tacsim-integration)` and
+    # `test (rest)`; nothing requires a check called `test` (no branch
+    # protection and no rulesets on 2026-10-20). Measured at 96cc7303 (run
+    # 39413774313), the one test run was 20.5 min of mush-* binaries, 3.9 min
+    # of tacsim's lib, 27.4 min of tacsim's 53 integration binaries and
+    # 0.4 min of doc-tests, after a 12-minute cold compile; the price of the
+    # split is the ~3 min of setup per shard and whatever of the compile the
+    # cache does not cover.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          # (a) tacsim's lib unit tests (1,275 tests, ~4 min) on two test
+          # threads, where the default is four, then tacsim's doc-tests,
+          # which shard (c)'s `--exclude tacsim` drops with the lib.
+          - tacsim-lib
+          # (b) every integration test binary of tacsim (53 files under
+          # crates/tacsim/tests/ on 2026-10-20) and the three #[ignore]d
+          # mind-hash steps, which run tacsim targets by name.
+          - tacsim-integration
+          # (c) the rest of the workspace, the bot on its own feature set, the
+          # three small steps, and Format and Clippy once.
+          - rest
     steps:
       # 2026-10-18: the workspace builds 392 test binaries (157 MB each at
       # opt-level 0 with line-table debuginfo), more than the ~25 GB a hosted
@@ -105,8 +136,9 @@ jobs:
       # compiled cold). So the first step below frees the root disk itself --
       # 145 GB, ~86 GB free at job start, ~25 GB more once the preinstalled
       # toolchains this job never uses are removed, against ~61 GB of test
-      # binaries -- and the build runs on it directly: no LVM, no loop file,
-      # no swap.
+      # binaries for the whole workspace (shard (c), the biggest, builds about
+      # 53 GB of them) -- and the build runs on it directly: no LVM, no loop
+      # file, no swap.
       #
       # This job runs on Linux only (owner, 2026-10-18): development happens on
       # the owner's Windows box, so a Windows-only break is seen first-hand
@@ -157,9 +189,22 @@ jobs:
           rustup toolchain install
           rustc --version
       - uses: Swatinem/rust-cache@v2
+        with:
+          # 2026-10-20: the action's automatic key is the job id, not the
+          # matrix cell, so without this the three shards would share one key:
+          # the first to finish (tacsim-lib, the smallest dependency set) would
+          # save it and the other two would restore its subset every run and,
+          # finding the key present, never save their own.
+          key: ${{ matrix.shard }}
+      # 2026-10-20: Format and Clippy run in shard (c) only. Both are
+      # workspace-wide (12 s and 3 min 18 s at 96cc7303), so once is the whole
+      # answer, and (c) is the shard that compiles the workspace anyway. A
+      # format or clippy failure therefore fails `test (rest)`.
       - name: Format
+        if: matrix.shard == 'rest'
         run: cargo fmt --all --check
       - name: Clippy
+        if: matrix.shard == 'rest'
         run: cargo clippy --workspace --all-targets -- -D warnings
       # There is no separate `cargo build --workspace --all-targets` step: it
       # built every test binary a second time beside the Test step's own build
@@ -168,7 +213,11 @@ jobs:
       # 2026-10-20: `-j 2` on the three mind-hash steps below. Each links
       # tacsim test binaries, until now with no cap on parallel links (the Test
       # step's `-j 2` never applied to them), and the 55-minute loss fell
-      # inside them.
+      # inside them. They run in shard (b) only, where their targets are built
+      # anyway; their `name:` and `run:` lines are the same in every shard's
+      # reading of this file, because the gated-test inventory
+      # (crates/mush-contract-tests/tests/ci_gated_test_inventory.rs) covers
+      # each #[ignore]d test by finding its name here.
       # 17b cut M2.7 (doc 17 D-UM-28): the unit minds' cross-platform pin.
       # The stock corpus flown by the Rhai Standard Doctrine and a float-probe
       # mind, each match's end, final state hash, substep-hash digest and
@@ -178,6 +227,7 @@ jobs:
       # test is #[ignore]d so the workspace run below does not run it twice;
       # naming it here is what covers it in the gated-test inventory.
       - name: Cross-platform mind hashes (17b cut M2.7; D-UM-28)
+        if: matrix.shard == 'tacsim-integration'
         run: cargo test -p tacsim --test minds_rhai m2_the_twin_corpus_hashes_the_same_on_every_host -j 2 -- --ignored --exact --nocapture
       # 17b cut M2.7 (doc 17 §22's M2 gate, "Gate A on whole-match hashes"):
       # the pooled lane's matches flown by T1 and by the Rhai Standard
@@ -186,6 +236,7 @@ jobs:
       # match plays pass the thirty seconds a lane may spend in the workspace
       # run (17b §1 (iii)), so the test is #[ignore]d and run here by name.
       - name: Whole-match mind hashes (17b cut M2.7; Gate A)
+        if: matrix.shard == 'tacsim-integration'
         run: cargo test -p tacsim --test twin m2_whole_match_hashes_are_equal_between_the_runners_over_the_pool -j 2 -- --ignored --exact --nocapture
       # 17b cut M4.1 (doc 17 §6 "Execution policy", D-UM-22; the M4 row's
       # gate): the pooled lane's matches through the real arena task on a
@@ -196,6 +247,7 @@ jobs:
       # match-runs pass the thirty seconds a lane may spend in the workspace
       # run, so the test is #[ignore]d and run here, by name.
       - name: Pooled think seam over the twin's thirty (17b cut M4.1)
+        if: matrix.shard == 'tacsim-integration'
         run: cargo test -p tacsim --test minds_pool m4_real_tasks_over_the_twin_s_thirty_hash_as_the_library -j 2 -- --ignored --exact --nocapture
       # The bot crate is excluded from the workspace test run and tested on its own:
       # its serde_json `arbitrary_precision` feature would otherwise unify into every
@@ -240,8 +292,10 @@ jobs:
       # processes by RSS. The 30-second free/df loop this replaces showed
       # nothing but a quiet machine in its last sample before the loss
       # (1.2 GB of memory, 81 GB free), which is why the counts and the
-      # pressure gauges are here.
+      # pressure gauges are here. The shard's own cargo line follows.
       - name: Test
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
           ulimit_u=$(ulimit -u)
           ( while sleep 10; do
@@ -249,17 +303,41 @@ jobs:
               echo "[monitor $t] $(free -m | awk '/^Mem:/ {m="mem used " $3 "M avail " $7 "M"} /^Swap:/ {s="swap used " $3 "M"} END {print m " " s}') | thr $(ps -eo nlwp= | awk '{s+=$1} END {print s}') proc $(ps -e --no-headers | wc -l) | runner thr $(ps -eo nlwp=,user= | awk '$2 == "runner" {s+=$1} END {print s+0}')/$ulimit_u | cargo $(pgrep -c -x cargo) rustc $(pgrep -c -x rustc) target/debug $(pgrep -c -f '^[^ ]*/target/debug/') | load $(cut -d' ' -f1-3 /proc/loadavg) | psi io $(awk '/^some/ {print substr($2, 7)}' /proc/pressure/io 2>/dev/null) mem $(awk '/^some/ {print substr($2, 7)}' /proc/pressure/memory 2>/dev/null) | root $(df -m / | awk 'NR==2 {print $4}')M ws $(df -m "$GITHUB_WORKSPACE" | awk 'NR==2 {print $4}')M tmp $(du -sm /tmp 2>/dev/null | cut -f1)M"
               echo "[monitor $t] top rss: $(ps -eo rss=,comm= --sort=-rss | head -n 3 | awk '{printf "%s %dM; ", $2, $1/1024}')"
             done ) &
-          cargo test --workspace --exclude mush-bot --no-fail-fast -j 2
+          case "$SHARD" in
+            tacsim-lib)
+              # Two test threads, where the default is four.
+              RUST_TEST_THREADS=2 cargo test -p tacsim --lib -j 2
+              # tacsim's doc-tests, once: shard (c)'s `--exclude tacsim` drops
+              # them with the lib.
+              cargo test -p tacsim --doc -j 2
+              ;;
+            tacsim-integration)
+              # `--test '*'` (the glob, quoted so cargo and not the shell
+              # expands it) is every integration test target and nothing else.
+              # `--tests` is not that: cargo's own text is "the library and
+              # binaries built as unittests, and integration tests", which
+              # would run the 1,275 lib tests a second time here, four threads
+              # wide. The lib is built once, as these binaries' dependency.
+              cargo test -p tacsim --test '*' --no-fail-fast -j 2
+              ;;
+            rest)
+              cargo test --workspace --exclude mush-bot --exclude tacsim --no-fail-fast -j 2
+              ;;
+          esac
       - name: Test the bot on its own feature set
+        if: matrix.shard == 'rest'
         run: cargo test -p mush-bot -j 2
       # 16b cut R-b: the testkit's toy ruleset is a test-only feature the host crates'
       # dev-dependencies enable; naming it here is what lets the feature census (the
       # `feature_matrix_inventory` gate) see that a job compiles it.
       - name: The testkit toy ruleset
+        if: matrix.shard == 'rest'
         run: cargo test -p mush-testkit --features mush-testkit/toy-ruleset
       - name: Panic hook and per-half log files (WS01-S13; the child half is #[ignore]d and spawned by its sibling)
+        if: matrix.shard == 'rest'
         run: cargo test -p mushd --test world_panic_exit
       - name: TS bindings drift check
+        if: matrix.shard == 'rest'
         run: |
           cargo test -p mush-proto --features ts --test ts_export
           git diff --exit-code web/src/lib/proto
