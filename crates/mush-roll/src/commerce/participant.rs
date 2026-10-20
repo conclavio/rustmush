@@ -1177,6 +1177,15 @@ impl OwnerParticipant for RootParticipant {
                     ModuleWrite::StreamAppend { .. } => return Err(ParticipantError::WriteFamily),
                 };
                 if !self.accepts_write(&write) {
+                    if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+                        // TEMP M7 diag
+                        let key = match &write {
+                            ReplayWrite::ModuleJsonSet { namespace, key, .. } => format!("set {namespace}/{key}"),
+                            ReplayWrite::ModuleDelete { namespace, key } => format!("delete {namespace}/{key}"),
+                            _ => "other".to_string(),
+                        };
+                        eprintln!("M7_CONDUCT_DIAG roll_root_write_family {key}");
+                    }
                     return Err(ParticipantError::WriteFamily);
                 }
                 Ok(write)

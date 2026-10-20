@@ -255,6 +255,19 @@ fn exercise_new_holder_renewal(
 #[inline(never)]
 pub(in super::super) fn exercise(registry: &Fixture, saved: &Durable) -> TestResult {
     let (mut w, third, seller_account, buyer_account) = open_purchased_house(registry, saved)?;
+    if rows(&w.disk, "roll", BIRTH).len() != 1 {
+        // TEMP M7 diag
+        let mut families = std::collections::BTreeMap::<String, usize>::new();
+        for ((ns, _), v) in w.disk.iter() {
+            let family = v
+                .get("family")
+                .and_then(|f| f.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("-");
+            *families.entry(format!("{ns}/{family}")).or_default() += 1;
+        }
+        eprintln!("M7_HOUSE_DIAG disk families after two-seat purchase: {families:?}");
+    }
     let allocation: HouseAllocationV1 = serde_json::from_value(one(rows(&w.disk, "roll", BIRTH))?)?;
     assert_eq!(allocation.protocol(), HouseProtocol::HouseV2);
     let original = pointer(&w)?;

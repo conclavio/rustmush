@@ -665,7 +665,17 @@ fn replay_write(write: &mush_core::ModuleWrite) -> Result<ReplayWrite, Participa
             key: AuthoritativeKey::parse_canonical(key).map_err(refuse)?,
             value: value.clone(),
         }),
-        _ => Err(ParticipantError::WriteFamily),
+        other => {
+            if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+                // TEMP M7 diag
+                let key = match other {
+                    mush_core::ModuleWrite::Del { key } => format!("delete {key}"),
+                    _ => "stream append".to_string(),
+                };
+                eprintln!("M7_CONDUCT_DIAG tacsim_registry_write_family {key}");
+            }
+            Err(ParticipantError::WriteFamily)
+        }
     }
 }
 
