@@ -432,6 +432,11 @@ pub fn programme_port(w: &World) -> Option<ProgrammePort<'_>> {
 /// else the venue id.
 #[must_use]
 pub fn port_name(def: &PortDef) -> String {
+    // Doc 20 cut SM.2 (decision 14): a site's name is its location's label (a pack
+    // rule), so it is named with no pack in hand.
+    if let Some(site) = &def.site {
+        return site.name.clone();
+    }
     crate::ic_return::PORTS
         .iter()
         .find(|port| port.id == def.venue.as_str())
@@ -720,6 +725,10 @@ pub const fn gated(binding: Binding) -> bool {
         // Doc 20 Q-20-12 (cut SM.1): mining's key closes no trade-run desk; the
         // geology line is reported, never gated, in D-18-50's sky manner.
         Binding::Geology => false,
+        // Doc 20 cut SM.2: a site's block places and clerk are reported, never
+        // gated (the geology precedent); and every line of a site's port is
+        // ungated by `enrol_gate` (lead override 3).
+        Binding::Site => false,
     }
 }
 
@@ -763,11 +772,18 @@ pub fn shuts(line: &ReadinessLine) -> bool {
 /// A player never sees the failing line: `+coop/enrol` logs it and answers
 /// [`NOT_OPEN`].
 ///
+/// **Doc 20 cut SM.2 (lead override 3)**: no line of a mining site's port
+/// ([`Readiness::sites`]) shuts the desk — its Map, Rooms, Domain and Site lines are
+/// reported and never gated, so mining content cannot close the trade run's front
+/// door; a departure to a site that is not ready is refused at planning instead
+/// (`SITE_CLOSED`).
+///
 /// # Errors
 ///
 /// The first failing line.
 pub fn enrol_gate(r: &Readiness) -> Result<(), &ReadinessLine> {
-    match r.lines.iter().find(|line| shuts(line)) {
+    let site_line = |line: &ReadinessLine| line.port.as_ref().is_some_and(|p| r.sites.contains(p));
+    match r.lines.iter().find(|line| !site_line(line) && shuts(line)) {
         Some(line) => Err(line),
         None => Ok(()),
     }
@@ -1975,7 +1991,7 @@ mod tests {
     /// this walk pins state by state.
     #[test]
     fn ic12_the_gate_refuses_on_every_gated_line_and_never_on_the_sky() {
-        const EVERY: [Binding; 17] = [
+        const EVERY: [Binding; 18] = [
             Binding::Lane,
             Binding::Sky,
             Binding::Rate,
@@ -1993,6 +2009,7 @@ mod tests {
             Binding::InventoryFacts,
             Binding::Markers,
             Binding::Geology,
+            Binding::Site,
         ];
         let port = CanonicalId::new("ceres_port").ok();
         let line = |binding, state| ReadinessLine {
@@ -2006,10 +2023,14 @@ mod tests {
                 .iter()
                 .map(|binding| line(*binding, LineState::Ready))
                 .collect(),
+            ..Readiness::default()
         };
         assert!(enrol_gate(&open).is_ok());
         for binding in EVERY {
-            let ungated = matches!(binding, Binding::Sky | Binding::Markers | Binding::Geology);
+            let ungated = matches!(
+                binding,
+                Binding::Sky | Binding::Markers | Binding::Geology | Binding::Site
+            );
             assert_eq!(gated(binding), !ungated, "{binding:?}");
             for state in [LineState::Pending, LineState::Missing, LineState::Flagged] {
                 let mut report = open.clone();
@@ -2048,6 +2069,44 @@ mod tests {
                         "the summary still counts the sky and the markers"
                     );
                 }
+            }
+        }
+    }
+
+    /// **Doc 20 cut SM.2 (lead override 3)**: no line of a mining site's port shuts the
+    /// desk, in any state — its Map, Rooms, Domain and Site lines are reported only — while
+    /// the very same lines of a station still shut it.
+    #[test]
+    fn sm2_a_sites_lines_never_gate_enrolment() {
+        let site = CanonicalId::new("ahuna_port").ok();
+        let station = CanonicalId::new("ceres_port").ok();
+        let line = |port: &Option<CanonicalId>, binding, state| ReadinessLine {
+            port: port.clone(),
+            binding,
+            state,
+            text: format!("{binding:?} {state:?}"),
+        };
+        let mut sites = std::collections::BTreeSet::new();
+        if let Some(site) = &site {
+            sites.insert(site.clone());
+        }
+        for binding in [Binding::Map, Binding::Rooms, Binding::Domain, Binding::Site] {
+            for state in [LineState::Pending, LineState::Missing, LineState::Flagged] {
+                let report = Readiness {
+                    lines: vec![line(&site, binding, state)],
+                    sites: sites.clone(),
+                };
+                assert!(enrol_gate(&report).is_ok(), "{binding:?} {state:?}");
+                assert!(!report.is_ready(), "the summary still counts it");
+                let station_report = Readiness {
+                    lines: vec![line(&station, binding, state)],
+                    sites: sites.clone(),
+                };
+                assert_eq!(
+                    enrol_gate(&station_report).is_err(),
+                    gated(binding),
+                    "a station's {binding:?} line gates as before"
+                );
             }
         }
     }

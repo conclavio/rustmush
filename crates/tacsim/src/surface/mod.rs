@@ -16,9 +16,11 @@
 //!   sixteen, with a synchronous build door;
 //! - [`commands`](crate::surface::commands) — `@geology`, staff truth over the body-fixed lattice.
 //!
-//! What later cuts add: SM.2 the Ceres and Vesta tables as lane data (replacing
-//! [`install_body_geology`](crate::surface::install_body_geology)'s test-only caller), sites, their block shifts and `@geology <site>
-//! <addr>`; SM.4 the off-loop site driver, footing from composite cells and the instruments; SM.6
+//! **Doc 20 cut SM.2** installs the lane's Ceres and Vesta tables at boot and at apply
+//! ([`install_lane_geology`](crate::surface::install_lane_geology), over
+//! [`lane_geologies`](crate::surface::lane_geologies) of the lane's `BodyDef`s) and adds the
+//! sites and their block shifts (`crate::port::site`); `@geology <site> <addr>` moves to SM.4,
+//! with the off-loop site driver, footing from composite cells and the instruments; SM.6
 //! reserves from the geology table; SM.7 mining.
 //!
 //! The slot ([`GeologyState`](crate::surface::GeologyState)) is RAM only and never persisted: the key, its status, the bodies'
@@ -107,9 +109,9 @@ pub fn install_geology(w: &mut World, boot: GeologyBoot) -> bool {
     true
 }
 
-/// A body's ground for this world. SM.1's only source (tests); SM.2 replaces the caller with
-/// the lane's `BodyDef` tables. A body already installed is replaced, and **its cached sites
-/// are dropped**: the site cache's key (`ground::site_revision`) carries the captured input and
+/// A body's ground for this world. Called by [`install_lane_geology`] (doc 20 cut SM.2: the
+/// lane's `BodyDef` tables, at boot and at apply) and by tests. A body already installed is
+/// replaced, and **its cached sites are dropped**: the site cache's key (`ground::site_revision`) carries the captured input and
 /// the spec, not the body's table or radius, so this writer — the only one — keeps a replaced
 /// table from serving the old ground.
 ///
@@ -134,4 +136,63 @@ pub fn install_body_geology(w: &mut World, geology: BodyGeology) -> Result<(), S
 #[must_use]
 pub fn body_geology(w: &World, body: &CanonicalId) -> Option<Arc<BodyGeology>> {
     w.module_state::<GeologyState>()?.tables.get(body).cloned()
+}
+
+/// **The lane's body tables** (doc 20 cut SM.2; the SM.2 brief's lead ruling 6, step one):
+/// every body of `pack` that authors both `radius_km` and `geology`, built as a
+/// [`BodyGeology`], in id order. Pure, so it runs while the store that holds `pack` is
+/// borrowed; [`install_lane_geology`] installs the result after the borrow ends.
+#[must_use]
+pub fn lane_geologies(pack: &crate::pack::RulesPack) -> Vec<Result<BodyGeology, String>> {
+    pack.entries()
+        .iter()
+        .filter_map(|(id, entry)| match entry {
+            crate::pack::PackEntry::Body(def) => {
+                let (Some(radius), Some(table)) = (def.radius_km, def.geology.as_ref()) else {
+                    return None;
+                };
+                Some(
+                    BodyGeology::new(id.clone(), radius, table.clone())
+                        .map_err(|error| format!("{id}: {error}")),
+                )
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// **Install what [`lane_geologies`] built** (doc 20 cut SM.2, step two) through
+/// [`install_body_geology`]: an `Err` is warned and skipped, and **a body whose installed
+/// table is already equal is skipped**, so its site cache survives each of the six site
+/// applies and every boot. RAM only; nothing is written. Returns how many it installed.
+pub fn install_lane_geology(w: &mut World, bodies: Vec<Result<BodyGeology, String>>) -> usize {
+    let mut installed = 0_usize;
+    for body in bodies {
+        let body = match body {
+            Ok(body) => body,
+            Err(error) => {
+                tracing::warn!(%error, "tacsim: a lane body's geology table does not build; skipped");
+                continue;
+            }
+        };
+        if body_geology(w, &body.body).is_some_and(|standing| *standing == body) {
+            continue;
+        }
+        let id = body.body.clone();
+        match install_body_geology(w, body) {
+            Ok(()) => installed = installed.saturating_add(1),
+            Err(error) => {
+                tracing::warn!(body = %id, %error, "tacsim: a lane body's geology table was not installed");
+            }
+        }
+    }
+    installed
+}
+
+/// The bodies with a table installed, in id order (for readiness and tests).
+#[must_use]
+pub fn installed_bodies(w: &World) -> Vec<CanonicalId> {
+    w.module_state::<GeologyState>()
+        .map(|state| state.tables.keys().cloned().collect())
+        .unwrap_or_default()
 }

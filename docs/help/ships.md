@@ -50,6 +50,8 @@ before anything is charged.
                           writes nothing.
   +ship/undock <port>     from aboard, docked: file the passage and take her
                           out now
+  +ship/lift <port>       the same as +ship/undock: the word for lifting off a
+                          pad (or out of a berth)
 
 The burn is reaction mass. A Dray flips and burns: it accelerates to the
 midpoint, turns, and decelerates, so a leg takes twice the square root of its
@@ -104,5 +106,35 @@ later hour, or while you are off watch, file a sailing plan (`help orders`).
 Docking is automatic: the ship arrives at the far port's berth gallery when it
 is due, and every room aboard hears it. Under way, `+travel/status` aboard says
 where the ship has got to.
+
+## Settling at a site
+
+A mining site is a Registry pad on open ground: five a short hop from the
+Freeport on Ceres, and Rheasilvia Commons a passage away on Vesta (`help
+travel`). A ship bound for one does not dock; it settles onto the pad, and
+`+ship` and every room aboard read "settled on the pad". A hull that cannot lift
+1.2 times its weight on a body cannot land there, so no Dray lands on Luna, Mars
+or Titan, and a hop is never free: lifting off a pad burns at least a tonne.
+
+Nothing sells reaction mass or provisions on a pad, so a departure for a site
+holds back the leg home: `+ship/undock` (and a sailing plan's departure) refuses
+unless the tank and the locker cover the passage out and the worst passage home
+in the next thirty IC days, and `+ship/plan` prints that leg home with the
+throttle it is held at — the least that lifts her. For a site the Throttle: line
+counts that leg home too: it names the highest throttle from the site's landing
+floor at which the passage out and the leg home together fit the tank, or, when
+none does today, the first day in the next IC year (the 365 days `+chart
+<port>` scans) on which the floor does (Rheasilvia fits only throttled, and
+only in its season); a refused
+`+ship/undock` for a site ends with the same line, and the sailing plan
+`+ship/plan` reads from the queue names a closed or short site's refusal as the
+departure would. On a pad the Throttle: line
+reads the tank and the locker as they stand, since nothing can be bought there:
+when the leg home overruns the tank at the throttle you asked, it names the
+highest that fits. On the pad the stores line counts down: one
+crew-day a soul for each IC day, charged when she lifts, and never below the
+stores for the leg home; once it reaches them the crew are on short rations.
+Nobody steps out onto a pad: the lock stays sealed until she docks, and
+`+ship/lift <port>` takes her home.
 
 See also: `help orders`, `help ports`, `help trade`, `help coop`.

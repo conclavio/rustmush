@@ -48,9 +48,9 @@ use serde_json::Value;
 use tacsim::TacsimConfig;
 use tacsim::definitions::content::{
     AITKEN_PACK, AITKEN_REGION_PACK, AITKEN_ROOMS, CERES_PACK, CERES_REGION_PACK, CERES_ROOMS,
-    LANE_PACK, LANE_VERSION, LIGEIA_PACK, LIGEIA_REGION_PACK, LIGEIA_ROOMS, STATION_SOURCES,
-    STICKNEY_PACK, STICKNEY_REGION_PACK, STICKNEY_ROOMS, VOLTAIRE_PACK, VOLTAIRE_REGION_PACK,
-    VOLTAIRE_ROOMS, boot_packs, station_packs,
+    LANE_PACK, LANE_VERSION, LIGEIA_PACK, LIGEIA_REGION_PACK, LIGEIA_ROOMS, SITE_SOURCES,
+    STATION_SOURCES, STICKNEY_PACK, STICKNEY_REGION_PACK, STICKNEY_ROOMS, VOLTAIRE_PACK,
+    VOLTAIRE_REGION_PACK, VOLTAIRE_ROOMS, boot_packs, station_packs,
 };
 use tacsim::ic_return::{self, PORTS};
 
@@ -408,8 +408,8 @@ fn ic1_the_station_packs_load_and_their_digests_are_pinned() {
     );
     assert_eq!(
         station_packs().expect("the station packs verify").len(),
-        10,
-        "the corridor's four and doc 19 cut A.8's six"
+        22,
+        "the corridor's four, doc 19 cut A.8's six and doc 20 cut SM.2's twelve site packs"
     );
 }
 
@@ -452,15 +452,23 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
         .collect();
     want.extend(ids(&boot_packs().expect("the game packs")));
     want.extend(STATION_SOURCES.iter().map(|(name, _)| (*name).to_string()));
+    // Doc 20 cut SM.2: the twelve site packs ride `station_packs()` after the stations.
+    want.extend(SITE_SOURCES.iter().map(|(name, _)| (*name).to_string()));
     // Doc 18 cut IC2: the lane after the stations (the game's thirteen boot packs
-    // since doc 19 cut A.8).
+    // since doc 19 cut A.8, twenty-five since doc 20 cut SM.2).
     want.push(LANE_PACK.to_string());
     assert_eq!(ids(&full), want);
     assert_eq!(
         full.len(),
-        16,
-        "three starter, two proving ground, ten stations, the lane"
+        28,
+        "three starter, two proving ground, ten stations, the twelve site packs (doc 20 cut \
+         SM.2), the lane"
     );
+    let site_regions: Vec<&str> = SITE_SOURCES
+        .iter()
+        .step_by(2)
+        .map(|(name, _)| *name)
+        .collect();
     // Region packs require nothing; each neighborhood requires its region at 1.
     for pack in &full[5..] {
         let requires: Vec<(String, u32)> = pack
@@ -480,17 +488,26 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
             LIGEIA_PACK => assert_eq!(requires, vec![(LIGEIA_REGION_PACK.to_string(), 1)]),
             // Doc 18 cut IC2: the lane requires nothing.
             LANE_PACK => assert!(requires.is_empty()),
+            // Doc 20 cut SM.2: the site regions require nothing; each site
+            // neighborhood requires its region at 1.
+            site if site_regions.contains(&site) => assert!(requires.is_empty()),
+            site if site.starts_with("neighborhood.") => {
+                let region = site.replacen("neighborhood.", "region.", 1);
+                assert!(site_regions.contains(&region.as_str()), "{site}");
+                assert_eq!(requires, vec![(region, 1)], "{site}");
+            }
             other => panic!("unexpected {other}"),
         }
     }
     // The stations are game content: no game content, no stations.
     let starter_only = ids(&boot_pack_list(true, false).expect("the boot list loads"));
     assert_eq!(starter_only.len(), 3);
-    for (name, _) in STATION_SOURCES {
+    for (name, _) in STATION_SOURCES.iter().chain(SITE_SOURCES.iter()) {
         assert!(!starter_only.iter().any(|p| p == name));
     }
     assert!(!starter_only.iter().any(|p| p == LANE_PACK), "nor the lane");
-    // On the production roster the shelf lists all ten, latched.
+    // On the production roster the shelf lists all ten, latched, and (doc 20 cut SM.2)
+    // the twelve site packs at 1.
     let mut tw = booted();
     let events = tw.run(GOD, "@atlas/pack list");
     let out = said(&tw, &events, GOD);
@@ -499,6 +516,9 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
             out.contains(&format!(" {name}@{} (", station_version(name))),
             "{name}:\n{out}"
         );
+    }
+    for (name, _) in SITE_SOURCES {
+        assert!(out.contains(&format!(" {name}@1 (")), "{name}:\n{out}");
     }
     // Doc 18 cut IC2: and the lane after them (at version 3 since cut IC8).
     assert!(
@@ -1066,8 +1086,8 @@ fn ic1_a_fresh_world_boots_the_stations() {
         rooms.values().filter(|p| **p == LIGEIA_PACK).count(),
         LIGEIA_ROOMS
     );
-    // `port.dock` on the five galleries and no other room (doc 19 cut A.8: L01,
-    // D01 and T01 joined C01 and P01).
+    // `port.dock` on the five galleries and the six site pads (doc 20 cut SM.2), and no
+    // other room (doc 19 cut A.8: L01, D01 and T01 joined C01 and P01).
     let c01 = obj(&tw, CERES_PACK, "room.c01_berth_gallery");
     let p01 = obj(&tw, STICKNEY_PACK, "room.p01_berth_gallery");
     let l01 = obj(&tw, AITKEN_PACK, "room.l01_berth_gallery");
@@ -1079,7 +1099,11 @@ fn ic1_a_fresh_world_boots_the_stations() {
         .filter(|o| o.kind == ObjKind::Room && tw.world().has_marker(o.id, "port.dock"))
         .map(|o| o.id)
         .collect();
-    assert_eq!(docks, BTreeSet::from([c01, p01, l01, d01, t01]));
+    let mut want_docks = BTreeSet::from([c01, p01, l01, d01, t01]);
+    for (name, _) in SITE_SOURCES.iter().skip(1).step_by(2) {
+        want_docks.insert(obj(&tw, name, "room.pad"));
+    }
+    assert_eq!(docks, want_docks);
     // C01's one-line description is 18a's *Short.* line, on `short_desc`.
     assert_eq!(
         tw.world()
@@ -1200,7 +1224,14 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
         Some(LANE_VERSION),
         "{LANE_PACK}"
     );
-    assert_eq!(after.len(), 16, "five, ten stations and the lane");
+    for (name, _) in SITE_SOURCES {
+        assert_eq!(after.get(name).map(|l| l.0), Some(1), "{name}");
+    }
+    assert_eq!(
+        after.len(),
+        28,
+        "five, ten stations, the twelve site packs (doc 20 cut SM.2) and the lane"
+    );
     assert_eq!(
         location(&tw, walker),
         Some(ooc),

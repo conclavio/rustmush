@@ -218,14 +218,15 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // after. `+ship/plan` is a pure read; `+ship/undock` writes the hull's one
     // `tacsim:voyage:<hull>` document and submits the burn as the actor. Doc 18 cut
     // IC11: `/orders` is a read, `/order` writes the hull's one `tacsim:orders:<hull>`
-    // document (and submits nothing; the port tick's order arm executes it).
+    // document (and submits nothing; the port tick's order arm executes it). Doc 20
+    // cut SM.2: `/lift` is `/undock`, the word for a pad.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
             name: crate::port::ship::SHIP_VERB.into(),
             shape: ArgShape::Raw,
             switches: [
-                "board", "leave", "hold", "plan", "undock", "orders", "order",
+                "board", "leave", "hold", "plan", "undock", "lift", "orders", "order",
             ]
             .iter()
             .copied()

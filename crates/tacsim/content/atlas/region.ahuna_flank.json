@@ -1,0 +1,91 @@
+{
+  "manifest": {
+    "id": "region.ahuna_flank",
+    "version": 1,
+    "kind": "region",
+    "digest": "0669f6eba46df999d9e92c92f3b53120046a2fcaac251377b8ca32fa8d31b0f3",
+    "requires": []
+  },
+  "brief": {
+    "prose": "Ahuna Flank is open ground on the lower slope of Ahuna Mons, the lone mountain of Ceres, south of the equator: streaked bright slopes above, a broken apron of rock below, and a Registry pad cut into the gentlest part of it."
+  },
+  "entries": {
+    "region.ahuna_flank": {
+      "kind": "region",
+      "def": {
+        "name": "Ahuna Flank",
+        "kind": "surface",
+        "body": "ceres",
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            2560
+          ]
+        ],
+        "datum_m": 0,
+        "background": {
+          "surface": "regolith",
+          "mix": [
+            [
+              "ice",
+              12
+            ],
+            [
+              "rock",
+              35
+            ]
+          ],
+          "relief_cm": 140,
+          "relief_period_cm": 1000,
+          "seed": 2603
+        },
+        "ground_resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350",
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "locality.ahuna_flank": {
+      "kind": "locality",
+      "def": {
+        "region": "region.ahuna_flank",
+        "name": "Ahuna Flank",
+        "kind": "extraction",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            0
+          ],
+          [
+            2560,
+            2560
+          ],
+          [
+            0,
+            2560
+          ]
+        ]
+      }
+    }
+  }
+}

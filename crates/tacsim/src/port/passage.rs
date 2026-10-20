@@ -200,6 +200,21 @@ pub enum PlanError {
     /// The sky could not state its revision.
     #[error("the sky cannot state its revision")]
     SkyUnavailable,
+    /// **Doc 20 cut SM.2 (D-20-3)** — the hull cannot land at (or lift from) a
+    /// site at this load and throttle: its thrust-to-weight on the site's body is
+    /// under [`LANDING_TWR_PERMILLE`]. `body` is the body's id (for logs; a
+    /// player sentence prints its display name).
+    #[error(
+        "{place} is on {body}'s surface: thrust-to-weight there is {twr_permille} permille at this load and throttle, under the 1200 a landing needs"
+    )]
+    Landing {
+        /// The site place.
+        place: String,
+        /// The site's body, by id.
+        body: String,
+        /// The thrust-to-weight there, permille (0 for a drive with no thrust figure).
+        twr_permille: u64,
+    },
     /// A quantity the payload sums could not be read: a pool, or a good the
     /// goods table does not weigh.
     #[error("{what} could not be read")]
@@ -207,6 +222,262 @@ pub enum PlanError {
         /// What.
         what: String,
     },
+}
+
+/// **The least thrust-to-weight, permille, a leg to or from a site may fly**
+/// (doc 20 cut SM.2, D-20-3): a hull that cannot lift 1.2 times its weight on a
+/// body cannot land there, so no Dray lands on Luna, Mars or Titan.
+pub const LANDING_TWR_PERMILLE: u64 = 1_200;
+
+/// **The least a leg touching a site burns, tonnes** (doc 20 §3.3: a hop is
+/// never free; the ascent's few kilograms round up to a tonne).
+pub const SITE_MIN_BURN_T: u64 = 1;
+
+/// **The hull's thrust-to-weight on a body of `surface_mg`**, permille, at
+/// departure mass and the drive's throttle (doc 20 cut SM.2, D-20-3):
+/// `⌊accel_mg × (dry + ceiling) × throttle / ((dry + payload) × surface_mg)⌋`, in
+/// checked `u128` — the flip law's acceleration for the load ([`flip_accel_mps2`])
+/// over the body's gravity, both in milli-g. `None` for a coast drive (no thrust
+/// figure) or a zero divisor.
+#[must_use]
+pub fn landing_twr_permille(
+    drive: &HullDrive,
+    dry_kg: u64,
+    payload_kg: u64,
+    surface_mg: u32,
+) -> Option<u64> {
+    let DriveLaw::Flip { accel_mg, .. } = drive.law else {
+        return None;
+    };
+    let rated = u128::from(dry_kg).checked_add(u128::from(drive.payload_ceiling_kg))?;
+    let thrust = u128::from(accel_mg)
+        .checked_mul(rated)?
+        .checked_mul(u128::from(drive.throttle_permille))?;
+    let weight = u128::from(dry_kg)
+        .checked_add(u128::from(payload_kg))?
+        .checked_mul(u128::from(surface_mg))?;
+    if weight == 0 {
+        return None;
+    }
+    u64::try_from(thrust / weight).ok()
+}
+
+/// **The least throttle, permille, at which [`landing_twr_permille`] reaches
+/// [`LANDING_TWR_PERMILLE`]** (doc 20 cut SM.2): `max(MIN_THROTTLE_PERMILLE,
+/// ⌈1200 × (dry + payload) × surface_mg / (accel_mg × (dry + ceiling))⌉)` in
+/// checked `u128` — exact against the floored TWR (`⌊N·t/D⌋ ≥ 1200 ⇔ t ≥
+/// ⌈1200·D/N⌉`). `None` for a coast drive, a zero divisor, or a floor above
+/// [`MAX_THROTTLE_PERMILLE`] (the hull cannot land there at this load).
+#[must_use]
+pub fn least_landing_throttle(
+    drive: &HullDrive,
+    dry_kg: u64,
+    payload_kg: u64,
+    surface_mg: u32,
+) -> Option<u32> {
+    let DriveLaw::Flip { accel_mg, .. } = drive.law else {
+        return None;
+    };
+    let per_throttle = u128::from(accel_mg)
+        .checked_mul(u128::from(dry_kg).checked_add(u128::from(drive.payload_ceiling_kg))?)?;
+    if per_throttle == 0 {
+        return None;
+    }
+    let need = u128::from(LANDING_TWR_PERMILLE)
+        .checked_mul(u128::from(dry_kg).checked_add(u128::from(payload_kg))?)?
+        .checked_mul(u128::from(surface_mg))?;
+    if need == 0 {
+        return None;
+    }
+    let floor = u32::try_from(need.div_ceil(per_throttle)).ok()?;
+    let floor = floor.max(MIN_THROTTLE_PERMILLE);
+    (floor <= MAX_THROTTLE_PERMILLE).then_some(floor)
+}
+
+/// **The ascent Δv at one site end**, m/s (doc 20 cut SM.2, §3.3):
+/// `√(surface_mg / 1000 × G0_MPS2 × radius_km × 1000)`, the circular speed at the
+/// surface, ceiled to a whole m/s — the planner's one `f64` step here, frozen in
+/// [`LegPlan::ascent_mps`]. Ceres 360, Vesta 254. `None` when it leaves `u32`.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn ascent_mps(surface_mg: u32, radius_km: u32) -> Option<u32> {
+    let g = f64::from(surface_mg) / 1_000.0 * G0_MPS2;
+    let r = f64::from(radius_km) * 1_000.0;
+    let v = (g * r).sqrt().ceil();
+    if !v.is_finite() || v < 0.0 || v > f64::from(u32::MAX) {
+        return None;
+    }
+    Some(v as u32)
+}
+
+/// **A site end**: `Some((body, surface_mg, radius_km))` exactly when `place` is
+/// a location of role [`crate::pack::SITE_ROLE`] whose body's entry carries both
+/// surface figures (the validator guarantees it for a shipped site); a port end —
+/// Ceres Freeport, every station — is `None` and pays nothing (the SM.2 brief's
+/// decision 2).
+pub(crate) fn site_end(pack: &RulesPack, place: &CanonicalId) -> Option<(CanonicalId, u32, u32)> {
+    let Some(PackEntry::Location(location)) = pack.entry(place) else {
+        return None;
+    };
+    if location.role.as_str() != crate::pack::SITE_ROLE {
+        return None;
+    }
+    let body = location.body.clone()?;
+    let Some(PackEntry::Body(def)) = pack.entry(&body) else {
+        return None;
+    };
+    Some((body, def.surface_mg?, def.radius_km?))
+}
+
+/// The landing law at one site end: `Err(Landing)` under
+/// [`LANDING_TWR_PERMILLE`], else the end's ascent Δv.
+fn site_end_ascent(
+    drive: &HullDrive,
+    dry_kg: u64,
+    payload_kg: u64,
+    place: &CanonicalId,
+    (body, surface_mg, radius_km): (CanonicalId, u32, u32),
+) -> Result<u32, PlanError> {
+    let twr = landing_twr_permille(drive, dry_kg, payload_kg, surface_mg).unwrap_or(0);
+    if twr < LANDING_TWR_PERMILLE {
+        return Err(PlanError::Landing {
+            place: place.to_string(),
+            body: body.to_string(),
+            twr_permille: twr,
+        });
+    }
+    ascent_mps(surface_mg, radius_km).ok_or(PlanError::Overflow)
+}
+
+/// **The least throttle a listed route can fly under the landing law at this
+/// load** (doc 20 cut SM.2): the largest [`least_landing_throttle`] over the
+/// route's site ends (its `from` and every leg's `to` that is a site),
+/// [`MIN_THROTTLE_PERMILLE`] when it has none — so a non-site route's floor is the
+/// band's own.
+///
+/// # Errors
+///
+/// [`PlanError::Landing`] (with the TWR at full throttle) when some site end
+/// cannot be reached anywhere in the band; [`PlanError::UnknownRoute`] as
+/// [`plan_passage`].
+pub fn route_landing_floor(
+    pack: &RulesPack,
+    route: &CanonicalId,
+    drive: &HullDrive,
+    dry_kg: u64,
+    payload_kg: u64,
+) -> Result<u32, PlanError> {
+    let Some(PackEntry::Route(entry)) = pack.entry(route) else {
+        return Err(PlanError::UnknownRoute {
+            route: route.to_string(),
+        });
+    };
+    let mut floor = MIN_THROTTLE_PERMILLE;
+    let places = std::iter::once(&entry.from).chain(entry.legs.iter().map(|leg| &leg.to));
+    for place in places {
+        let Some((body, surface_mg, _)) = site_end(pack, place) else {
+            continue;
+        };
+        let Some(least) = least_landing_throttle(drive, dry_kg, payload_kg, surface_mg) else {
+            let full = drive.clone().at_throttle(MAX_THROTTLE_PERMILLE);
+            return Err(PlanError::Landing {
+                place: place.to_string(),
+                body: body.to_string(),
+                twr_permille: landing_twr_permille(&full, dry_kg, payload_kg, surface_mg)
+                    .unwrap_or(0),
+            });
+        };
+        floor = floor.max(least);
+    }
+    Ok(floor)
+}
+
+/// **The leg home a departure for a site holds back** (doc 20 cut SM.2, decision 7): the
+/// largest burn and crew-days of the passage home over the window, planned at the least
+/// throttle that lifts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HomeReserve {
+    /// The home burn, tonnes (the most over the window).
+    pub burn_t: u64,
+    /// The home crew-days (the most over the window).
+    pub crew_days: u32,
+    /// The throttle it is planned at: the home routes' least landing floor.
+    pub throttle: u32,
+}
+
+/// **The leg home over the window, pure** (doc 20 cut SM.2, decision 7; factored out of
+/// `voyage.rs`'s `site_reserve` by the SM.2 fixer so the landing suite's year sweep reads the
+/// production function): the throttle is the least [`route_landing_floor`] over the home
+/// `routes` that answer at `home_payload_kg` (the least throttle that lifts, so the least burn
+/// that can leave); the home routes are planned at `arrive_ic + k × DAY_SECS` for `k` in
+/// `0..=window_days` when the first plan crosses bodies (a same-body hop does not move with
+/// the sky, so `k = 0` alone), and the largest burn and crew-days are kept.
+///
+/// # Errors
+///
+/// [`PlanError::Landing`] when no home route lifts at `home_payload_kg` (the first route's
+/// refusal), [`PlanError::Overflow`] on an instant past `i64`, and any other planner
+/// refusal.
+#[allow(clippy::too_many_arguments)] // the planner's inputs, kept whole
+pub fn home_reserve(
+    sky: &Sky,
+    pack: &RulesPack,
+    routes: &[CanonicalId],
+    drive: &HullDrive,
+    dry_kg: u64,
+    home_payload_kg: u64,
+    occupants: u32,
+    arrive_ic: i64,
+    window_days: i64,
+) -> Result<HomeReserve, PlanError> {
+    let mut floor: Option<u32> = None;
+    let mut first_refusal: Option<PlanError> = None;
+    for route in routes {
+        match route_landing_floor(pack, route, drive, dry_kg, home_payload_kg) {
+            Ok(least) => floor = Some(floor.map_or(least, |f| f.min(least))),
+            Err(error) => {
+                first_refusal.get_or_insert(error);
+            }
+        }
+    }
+    let Some(throttle) = floor else {
+        return Err(first_refusal.unwrap_or(PlanError::UnknownRoute {
+            route: "(none listed)".to_owned(),
+        }));
+    };
+    let home_drive = drive.clone().at_throttle(throttle);
+    let plan_at = |k: i64| -> Result<PassagePlan, PlanError> {
+        let at = k
+            .checked_mul(i64::from(DAY_SECS))
+            .and_then(|offset| arrive_ic.checked_add(offset))
+            .ok_or(PlanError::Overflow)?;
+        choose_route(
+            sky,
+            pack,
+            routes,
+            &home_drive,
+            dry_kg,
+            home_payload_kg,
+            occupants,
+            at,
+            RoutePolicy::default(),
+            None,
+        )
+    };
+    let first = plan_at(0)?;
+    let mut reserve = HomeReserve {
+        burn_t: first.burn_t,
+        crew_days: first.crew_days,
+        throttle,
+    };
+    if first.legs.iter().any(|leg| leg.dist_km > 0) {
+        for k in 1..=window_days {
+            let plan = plan_at(k)?;
+            reserve.burn_t = reserve.burn_t.max(plan.burn_t);
+            reserve.crew_days = reserve.crew_days.max(plan.crew_days);
+        }
+    }
+    Ok(reserve)
 }
 
 /// mush-sim's laden-step refusals as the planner's.
@@ -511,9 +782,21 @@ pub fn plan_passage(
     }
     let mut legs: Vec<LegPlan> = Vec::with_capacity(entry.legs.len());
     let mut from = body_of(sky, pack, &entry.from)?;
+    let mut from_place = &entry.from;
     let mut t0 = depart_ic;
     for leg in &entry.legs {
         let to = body_of(sky, pack, &leg.to)?;
+        // Doc 20 cut SM.2 (D-20-3; the SM.2 brief's lead rulings 3 and 4): only a
+        // leg one of whose ends is a site meets the landing law, and only a site
+        // end pays the ascent — one statement, no other end pays. The seconds are
+        // unchanged: a same-body hop is its `base_s` through the laden step.
+        let mut ascent: u32 = 0;
+        for place in [from_place, &leg.to] {
+            if let Some(end) = site_end(pack, place) {
+                let paid = site_end_ascent(drive, dry_kg, payload_kg, place, end)?;
+                ascent = ascent.checked_add(paid).ok_or(PlanError::Overflow)?;
+            }
+        }
         let (dist_km, secs) = if to == from {
             (0, laden(leg.base_s, drive, payload_kg)?)
         } else {
@@ -539,8 +822,10 @@ pub fn plan_passage(
             secs,
             t0,
             t1,
+            ascent_mps: ascent,
         });
         from = to;
+        from_place = &leg.to;
         t0 = t1;
     }
     let total_s = legs
@@ -561,6 +846,7 @@ pub fn plan_passage(
         burn_t,
         crew_days: crew,
         throttle_permille: drive.throttle_permille,
+        landed_crew_days: 0,
     };
     plan.check().map_err(|_| PlanError::Overflow)?;
     Ok(plan)
@@ -662,6 +948,9 @@ pub fn flip_profile(
     let mut dv = 0.0_f64;
     let mut peak = 0.0_f64;
     for leg in legs {
+        // Doc 20 cut SM.2 (§3.3): a site end's ascent is Δv the leg pays whatever
+        // its distance (a same-body hop is `dist_km` 0 and pays only this).
+        dv += f64::from(leg.ascent_mps);
         if leg.dist_km == 0 {
             continue;
         }
@@ -720,7 +1009,13 @@ pub fn passage_burn(
             if !tonnes.is_finite() || tonnes < 0.0 || tonnes > u64::MAX as f64 {
                 return Err(PlanError::Overflow);
             }
-            Ok(tonnes as u64)
+            let tonnes = tonnes as u64;
+            // Doc 20 cut SM.2 (§3.3): a leg touching a site burns at least a
+            // tonne, after the ceil.
+            if legs.iter().any(|leg| leg.ascent_mps > 0) {
+                return Ok(tonnes.max(SITE_MIN_BURN_T));
+            }
+            Ok(tonnes)
         }
     }
 }
@@ -792,6 +1087,7 @@ mod tests {
             secs,
             t0: 0,
             t1: i64::from(secs),
+            ascent_mps: 0,
         }
     }
 
@@ -908,6 +1204,7 @@ mod tests {
                 secs,
                 t0: 0,
                 t1: i64::from(secs),
+                ascent_mps: 0,
             }];
             (
                 secs,
@@ -938,6 +1235,7 @@ mod tests {
             secs,
             t0: 0,
             t1: i64::from(secs),
+            ascent_mps: 0,
         }];
         let thrifty = passage_burn(&slow, 240_000, 142_188, &legs).expect("burns");
         assert!(thrifty < near_t && secs > near_s, "{thrifty} t in {secs} s");
@@ -987,5 +1285,106 @@ mod tests {
         assert_eq!(RoutePolicy::parse("thrifty"), Some(RoutePolicy::Cheapest));
         assert_eq!(RoutePolicy::parse("slow"), None);
         assert_eq!(RoutePolicy::default(), RoutePolicy::Fastest);
+    }
+
+    /// **Doc 20 cut SM.2 (D-20-3)**: the thrust-to-weight is an integer permille,
+    /// floored, exact either side of the line; the least landing throttle is the
+    /// exact ceiling against it; the ascent is the one `f64` step, ceiled; a coast
+    /// drive has no thrust figure; a site hop burns at least a tonne.
+    #[test]
+    fn sm2_landing_twr_and_ascent_are_integers_where_they_can_be() {
+        let drive = flip();
+        // Ceres laden (the rail): 50 / 28 of a g, 1,785 permille.
+        assert_eq!(
+            landing_twr_permille(&drive, 240_000, 181_000, 28),
+            Some(1_785)
+        );
+        assert_eq!(
+            landing_twr_permille(&drive.clone().at_throttle(672), 240_000, 181_000, 28),
+            Some(1_200)
+        );
+        assert_eq!(
+            landing_twr_permille(&drive.clone().at_throttle(671), 240_000, 181_000, 28),
+            Some(1_198)
+        );
+        assert_eq!(
+            least_landing_throttle(&drive, 240_000, 181_000, 28),
+            Some(672)
+        );
+        assert_eq!(
+            least_landing_throttle(&drive, 240_000, 181_000, 25),
+            Some(600)
+        );
+        // Luna at the rail: under the line at full thrust, so no throttle lands.
+        assert_eq!(
+            landing_twr_permille(&drive, 240_000, 181_000, 165),
+            Some(303)
+        );
+        assert_eq!(least_landing_throttle(&drive, 240_000, 181_000, 165), None);
+        // A tiny body is floored at the band's own least throttle.
+        assert_eq!(
+            least_landing_throttle(&drive, 240_000, 0, 1),
+            Some(MIN_THROTTLE_PERMILLE)
+        );
+        // A coast drive has no thrust figure; a zero gravity has no weight.
+        assert_eq!(landing_twr_permille(&coast(), 240_000, 0, 28), None);
+        assert_eq!(least_landing_throttle(&coast(), 240_000, 0, 28), None);
+        assert_eq!(landing_twr_permille(&drive, 240_000, 0, 0), None);
+        // The ascent: Ceres sqrt(129,055.5) = 359.24 → 360; Vesta 253.93 → 254.
+        assert_eq!(ascent_mps(28, 470), Some(360));
+        assert_eq!(ascent_mps(25, 263), Some(254));
+        assert_eq!(ascent_mps(0, 470), Some(0));
+        // A same-body hop with one site end: Δv is the ascent alone, a few
+        // kilograms, burned as a whole tonne; without the ascent it burns nothing.
+        let hop = |ascent: u32| LegPlan {
+            ascent_mps: ascent,
+            ..leg(5_322)
+        };
+        assert_eq!(passage_burn(&drive, 240_000, 86_580, &[hop(360)]), Ok(1));
+        assert_eq!(passage_burn(&drive, 240_000, 86_580, &[hop(0)]), Ok(0));
+        let profile = flip_profile(&drive, 240_000, 86_580, &[hop(360)]).expect("a profile");
+        assert!((profile.dv_mps - 360.0).abs() < 1e-9, "{}", profile.dv_mps);
+    }
+
+    /// **Doc 20 cut SM.2**: a route's landing floor is the largest least landing
+    /// throttle over its site ends, the band's floor with none, and a Landing
+    /// refusal at full thrust's TWR when a site end cannot be reached.
+    #[test]
+    fn sm2_route_landing_floor() {
+        let Ok(pack) = crate::pack::load_pack(crate::definitions::content::LANE_JSON) else {
+            panic!("the shipped lane loads");
+        };
+        let drive = flip();
+        let floor = |route: &str, payload: u64| {
+            route_landing_floor(&pack, &cid(route), &drive, 240_000, payload)
+        };
+        // Ceres's hops at the rail: 672; Rheasilvia (Vesta): 600; a port-only route
+        // and the inter-moon hop: the band's 250.
+        assert_eq!(floor("ceres_ahuna", 181_000), Ok(672));
+        assert_eq!(floor("ahuna_ceres", 181_000), Ok(672));
+        assert_eq!(floor("ceres_rheasilvia", 181_000), Ok(600));
+        assert_eq!(floor("ceres_stickney", 181_000), Ok(MIN_THROTTLE_PERMILLE));
+        assert_eq!(
+            floor("voltaire_stickney", 181_000),
+            Ok(MIN_THROTTLE_PERMILLE)
+        );
+        // Empty, an empty hull on Ceres still needs 384 permille
+        // (1200 x 240,000 x 28 / (50 x 421,000) = 383.09, ceiled).
+        assert_eq!(floor("ceres_ahuna", 0), Ok(384));
+        assert_eq!(
+            floor("nowhere", 0),
+            Err(PlanError::UnknownRoute {
+                route: "nowhere".to_owned()
+            })
+        );
+        // A coast drive cannot land anywhere: refused at TWR 0.
+        assert_eq!(
+            route_landing_floor(&pack, &cid("ceres_ahuna"), &coast(), 240_000, 0),
+            Err(PlanError::Landing {
+                place: "ahuna_flank".to_owned(),
+                body: "ceres".to_owned(),
+                twr_permille: 0,
+            })
+        );
     }
 }

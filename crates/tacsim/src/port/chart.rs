@@ -158,7 +158,7 @@ fn vantage<'w>(ctx: &'w Ctx<'_>) -> Result<Vantage<'w>, CmdError> {
 /// **The vantage without a helm** (doc 19 cut A.3b, for the `sky.chart` panel,
 /// which answers from a `World` and an actor): the port whose domain host or
 /// gallery the actor stands in (the port map's rooms), else the lane's first
-/// port, planned with the port's programme hull — else the game's Dray — empty.
+/// station (never a site, doc 20 cut SM.2), planned with the port's programme hull — else the game's Dray — empty.
 /// `+chart` from a docked charter's helm plans the charter's load instead
 /// ([`vantage`]); the panel never reads a hold.
 ///
@@ -182,10 +182,13 @@ pub(crate) fn vantage_for_world(w: &World, actor: mush_core::ObjId) -> Result<Va
             })
         })
         .map(|(def, _)| def);
+    // Doc 20 cut SM.2: the fallback is the lane's first **station** — the site ports'
+    // ids sort before `ceres_port`, and a walker nowhere reads the sky from a port.
     let def = match standing {
         Some(def) => def,
         None => ports
-            .first()
+            .iter()
+            .find(|(_, def)| def.site.is_none())
             .map(|(_, def)| *def)
             .ok_or_else(|| CHART_NOWHERE.to_owned())?,
     };
@@ -252,6 +255,7 @@ pub(crate) fn direct_at(
         secs,
         t0: depart_ic,
         t1: depart_ic.checked_add(i64::from(secs))?,
+        ascent_mps: 0,
     };
     let burn = passage_burn(&v.spec.drive, v.spec.dry_kg, payload_kg, &[leg]).ok()?;
     Some((dist, secs, burn))
@@ -319,16 +323,12 @@ pub(crate) fn sky_lines(w: &World, v: &Vantage<'_>, now: i64) -> Vec<String> {
     let dests = destinations(w, v.def);
     let empty = u64::from(v.spec.allowance_kg) * u64::from(v.occupants.max(1));
     for dest in &dests {
-        let Some(to) = v
-            .pack
-            .entries()
-            .iter()
-            .find_map(|(_, entry)| match entry {
-                PackEntry::Port(port) if port.venue == dest.venue => {
-                    body_of(v.pack, &port.location)
-                }
-                _ => None,
-            })
+        let port_def = v.pack.entries().iter().find_map(|(_, entry)| match entry {
+            PackEntry::Port(port) if port.venue == dest.venue => Some(port),
+            _ => None,
+        });
+        let Some(to) = port_def
+            .and_then(|port| body_of(v.pack, &port.location))
             .or_else(|| {
                 body_of(
                     v.pack,
@@ -340,7 +340,12 @@ pub(crate) fn sky_lines(w: &World, v: &Vantage<'_>, now: i64) -> Vec<String> {
         };
         let loaded = plan_at(v, dest, v.payload_kg, now);
         let bare = plan_at(v, dest, empty, now);
-        let direct = direct_at(v, &to, v.payload_kg, now);
+        // Doc 20 cut SM.2: no direct chord on the vantage's own body (a dist-0 chord
+        // would read "0.000 AU would be 0 h and 0 t"); every such destination — a site
+        // from a station, or the Freeport from a pad — leaves the clause out.
+        let direct = (to != v.body)
+            .then(|| direct_at(v, &to, v.payload_kg, now))
+            .flatten();
         let mut line = format!("  {}: ", dest.port);
         match loaded {
             Ok(plan) => line.push_str(&format!(
@@ -370,6 +375,21 @@ pub(crate) fn sky_lines(w: &World, v: &Vantage<'_>, now: i64) -> Vec<String> {
         }
         line.push('.');
         lines.push(line);
+        // Doc 20 cut SM.2 (§1 beat 2): a site's Registry survey (R0) and its tenure.
+        if let Some(port) = port_def
+            && let Some(site) = &port.site
+        {
+            lines.push(
+                crate::port::site::survey_words(w, v.pack, &port.location).map_or_else(
+                    || crate::port::site::SURVEY_UNAVAILABLE.to_owned(),
+                    |words| crate::port::site::SURVEY_LINE.replace("{words}", &words),
+                ),
+            );
+            lines.push(
+                crate::port::site::TENURE_LINE
+                    .replace("{parts}", &crate::port::site::tenure_parts(v.pack, site)),
+            );
+        }
     }
     lines
 }
@@ -491,6 +511,11 @@ fn demand_lines(w: &World, venue: &CanonicalId) -> Vec<String> {
     let Some((_, def)) = ports.iter().find(|(_, def)| &def.venue == venue) else {
         return Vec::new();
     };
+    // Doc 20 cut SM.2: a site's pad posts no prices at all — no vendor, no bid, no
+    // season — so its window carries no demand line.
+    if def.site.is_some() {
+        return Vec::new();
+    }
     let name = port_name(def);
     let mut lines = Vec::new();
     let Some(premium) = def.premium else {
@@ -691,10 +716,12 @@ pub(crate) fn plan_window_line(
     if store.config().time.ephemeris.rate == 0 {
         return None;
     }
+    // One sky for the window's thirty plans (SM2-FX-2), not one a day.
+    let (sky, pack) = crate::port::voyage::lane_sky_of(w, basis.version).ok()?;
     let (offset, plan) = best_day(PLAN_WINDOW_DAYS, |offset| {
         let mut later = basis.clone();
         later.depart_ic = basis.depart_ic.saturating_add(offset.saturating_mul(DAY));
-        crate::port::voyage::plan_on(w, &later, routes).ok()
+        crate::port::voyage::plan_on_sky((&sky, pack), &later, routes).ok()
     })?;
     let dh = today.total_s - plan.total_s;
     #[allow(clippy::cast_possible_wrap)]
@@ -733,6 +760,14 @@ pub(crate) fn best_day(
     best
 }
 
+/// **The first day of `1..=days` that `fits`** (the window's scan, doc 20 cut SM.2's
+/// reserve-aware `Throttle:` line, which walks [`WINDOW_DAYS`], the year `+chart <port>`
+/// plans): the same days [`best_day`] walks, stopping at the first that answers; `None`
+/// when none does. At most `days` evaluations.
+pub(crate) fn first_day(days: i64, mut fits: impl FnMut(i64) -> bool) -> Option<i64> {
+    (1..=days).find(|offset| fits(*offset))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -752,11 +787,13 @@ mod tests {
                 secs: u32::try_from(total_s).expect("fits"),
                 t0: 0,
                 t1: total_s,
+                ascent_mps: 0,
             }],
             total_s,
             burn_t,
             crew_days: 1,
             throttle_permille: 1_000,
+            landed_crew_days: 0,
         }
     }
 
@@ -774,6 +811,31 @@ mod tests {
         // A day that does not plan is skipped, not fatal.
         let (offset, _) = best_day(3, |k| (k == 2).then(|| plan(5, 1))).expect("one day plans");
         assert_eq!(offset, 2);
+    }
+
+    /// **The first fitting day** (the SM.2 fixer, the lead's item 2): days `1..=days`, the
+    /// first that answers; today (day 0) is never asked; bounded at `days` evaluations.
+    #[test]
+    fn sm2_the_first_day_is_the_earliest_that_fits_and_is_bounded() {
+        let mut asked = Vec::new();
+        assert_eq!(
+            first_day(30, |k| {
+                asked.push(k);
+                k >= 14
+            }),
+            Some(14)
+        );
+        assert_eq!(asked, (1..=14).collect::<Vec<i64>>());
+        let mut count = 0;
+        assert_eq!(
+            first_day(WINDOW_DAYS, |_| {
+                count += 1;
+                false
+            }),
+            None
+        );
+        assert_eq!(count, WINDOW_DAYS);
+        assert_eq!(first_day(0, |_| true), None);
     }
 
     #[test]

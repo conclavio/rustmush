@@ -1185,7 +1185,7 @@ fn ic11_the_verbs_edit_the_plan() {
             "depart stickney via=nowhere",
             VIA_UNKNOWN
                 .replace("{via}", "nowhere")
-                .replace("{list}", "Aitken Highport, Ceres Freeport, Kirkwood Depot, Ligeia Terminal, Stickney Yards, Voltaire Anchorage"),
+                .replace("{list}", "Ahuna Flank, Aitken Highport, Ceres Freeport, Freeport Commons, Juling Shadow, Kerwan Floor, Kirkwood Depot, Ligeia Terminal, Occator Rim, Rheasilvia Commons, Stickney Yards, Voltaire Anchorage"),
         ),
         (
             "depart stickney throttle=100",
@@ -1208,7 +1208,7 @@ fn ic11_the_verbs_edit_the_plan() {
             "depart mars",
             UNKNOWN_PORT.replace(
                 "{list}",
-                "Ceres Freeport, Voltaire Anchorage, Aitken Highport, Stickney Yards, Ligeia Terminal",
+                "Ahuna Flank, Ceres Freeport, Freeport Commons, Voltaire Anchorage, Juling Shadow, Kerwan Floor, Aitken Highport, Occator Rim, Rheasilvia Commons, Stickney Yards, Ligeia Terminal",
             ),
         ),
     ] {
@@ -2936,7 +2936,7 @@ fn ic11_a_depart_with_no_route_holds_until_edited() {
         "{reason}",
         &NO_ROUTE
             .replace("{here}", "Ceres Freeport")
-            .replace("{list}", "Aitken Highport, Stickney Yards"),
+            .replace("{list}", "Ahuna Flank, Freeport Commons, Juling Shadow, Kerwan Floor, Aitken Highport, Occator Rim, Rheasilvia Commons, Stickney Yards"),
     );
     let doc = orders(&rig.tw, hull);
     assert_eq!(doc.state, PlanState::Held);
@@ -4195,7 +4195,7 @@ fn ic14_a_queued_depart_never_resolves_by_prefix() {
         "{reason}",
         &NO_ROUTE
             .replace("{here}", "Ceres Freeport")
-            .replace("{list}", "Aitken Highport, Stickney Yards"),
+            .replace("{list}", "Ahuna Flank, Freeport Commons, Juling Shadow, Kerwan Floor, Aitken Highport, Occator Rim, Rheasilvia Commons, Stickney Yards"),
     );
     let doc = orders(&rig.tw, hull);
     assert_eq!(doc.state, PlanState::Held, "{:#?}", doc.log);

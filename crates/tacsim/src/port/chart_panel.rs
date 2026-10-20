@@ -450,7 +450,10 @@ pub fn chart_frame(w: &World, actor: ObjId) -> Result<Value, String> {
         };
         let loaded = plan_at(&v, dest, v.payload_kg, now).ok();
         let bare = plan_at(&v, dest, empty_kg, now).ok();
-        let direct = direct_at(&v, &to, v.payload_kg, now);
+        // Doc 20 cut SM.2: no direct chord on the vantage's own body (`sky_lines`' rule).
+        let direct = (to != v.body)
+            .then(|| direct_at(&v, &to, v.payload_kg, now))
+            .flatten();
         let mut route_legs: Vec<Value> = Vec::new();
         if let Some(plan) = loaded.as_ref().or(bare.as_ref()) {
             let mut from = v.body.clone();

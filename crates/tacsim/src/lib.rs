@@ -697,6 +697,17 @@ impl GameModule for TacsimRuleset {
         // first keyed boot (a module document, never a submission), compare it at every later
         // one, and leave the RAM-only status every consumer reads.
         surface::key::boot(ctx);
+        // Doc 20 cut SM.2 (lead ruling 6): the lane's body tables (Ceres's and Vesta's),
+        // built while the store is borrowed and installed after, from the report's lane
+        // pack (the latched version, else the shipped one). RAM only; an equal table is
+        // never reinstalled.
+        let bodies = ctx
+            .w
+            .module_state::<TacsimStore>()
+            .and_then(|store| port::readiness::report_ports(store, ctx.w).0)
+            .map(surface::lane_geologies)
+            .unwrap_or_default();
+        surface::install_lane_geology(ctx.w, bodies);
         // **17b cut M3.3** (doc 17 §13): the stock mind's source, stored
         // immutably under its digest (`tacsim:mindsrc:<sha256>`) — written by
         // the first boot that finds no document under that key and never

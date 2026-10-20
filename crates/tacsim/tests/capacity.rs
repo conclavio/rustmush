@@ -473,18 +473,31 @@ fn lane_ports() -> BTreeMap<String, tacsim::port::PortDef> {
 #[test]
 fn ic8_the_posted_prices_make_the_both_limits_load_optimal() {
     let (goods, cargo) = (table(), compartment("cargo"));
-    let ports = lane_ports();
+    let mut ports = lane_ports();
+    // Doc 20 cut SM.2: the subject is the trade graph; a mining site trades no hold good
+    // and is no trade port, so the six site ports (and Ceres's routes to them) are left out.
+    let site_venues: Vec<CanonicalId> = ports
+        .values()
+        .filter(|def| def.site.is_some())
+        .map(|def| def.venue.clone())
+        .collect();
+    assert_eq!(site_venues.len(), 6, "the six sites");
+    ports.retain(|_, def| def.site.is_none());
+    let site_venues = &site_venues;
     let pairs: Vec<(&str, &str)> = ports
         .iter()
         .flat_map(|(from, origin)| {
             let ports = &ports;
-            origin.routes.keys().map(move |venue| {
+            origin.routes.keys().filter_map(move |venue| {
+                if site_venues.contains(venue) {
+                    return None;
+                }
                 let to = ports
                     .iter()
                     .find(|(_, def)| &def.venue == venue)
                     .map(|(id, _)| id.as_str())
                     .unwrap_or_else(|| panic!("{from} lists {venue}, which no port is"));
-                (from.as_str(), to)
+                Some((from.as_str(), to))
             })
         })
         .collect();

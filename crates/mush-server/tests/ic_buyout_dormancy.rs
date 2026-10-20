@@ -2845,3 +2845,108 @@ async fn ic14_the_recalled_hulls_line_on_the_production_root() {
         "back in the pool"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Doc 20 cut SM.2: a hop is a departure
+// ---------------------------------------------------------------------------
+
+/// One hop flown end to end: `line` files, the burn lands, the launch is fired and the
+/// ticket flown to its arrival; the burn's real second.
+async fn sm2_hop(rig: &mut Rig, pilot: ObjId, hull: ObjId, line: &str) -> i64 {
+    let out = run(rig, pilot, line).await;
+    assert!(out.contains("Clearance filed for "), "{line}: {out}");
+    let seq = match rig
+        .tw
+        .world()
+        .module_state::<TacsimStore>()
+        .expect("tacsim state")
+        .voyage_state(hull)
+    {
+        tacsim::port::VoyageState::Present(voyage) => {
+            voyage.pending.as_ref().map(|pending| pending.seq)
+        }
+        tacsim::port::VoyageState::Absent | tacsim::port::VoyageState::Unreadable => None,
+    }
+    .expect("a filed passage");
+    let burn = drain(&mut rig.tw);
+    assert_eq!(burn.len(), 1, "the hop's burn");
+    land_all(rig, &burn).await;
+    let burned_at = rig.tw.world().now();
+    for _ in 0..4 {
+        let _ = fire_quietly(rig).await;
+        if under_way(&rig.tw, hull) {
+            break;
+        }
+    }
+    assert!(under_way(&rig.tw, hull), "she lifted for {line}");
+    let ticket = ticket(&mut rig.tw, hull, seq).expect("the hop's ticket");
+    let _ = to_ic(rig, ticket.plan.depart_ic + ticket.plan.total_s).await;
+    assert!(!under_way(&rig.tw, hull), "settled or docked after {line}");
+    burned_at
+}
+
+/// A pilot enrolled, bunkered at the chandlery for hops, and aboard at Ceres.
+async fn sm2_aboard_for_hops(rig: &mut Rig) -> (ObjId, ObjId, Enrolment) {
+    let _ = sweep(rig, 120).await;
+    stock(rig).await;
+    let vex = pilot(rig, "Vex", "vexacct").await;
+    let row = enrol(rig, vex, "Salt Moth").await;
+    chandlery_from_registry(rig, vex).await;
+    let fuel = listing_of(&rig.tw, "ceres_port", "occator", "propellant");
+    let food = listing_of(&rig.tw, "ceres_port", "coop", "provisions");
+    let _ = buy(rig, vex, fuel, 10).await;
+    let _ = buy(rig, vex, food, 12).await;
+    let _ = sweep(rig, 61).await;
+    let _ = sweep(rig, 61).await;
+    board_from_chandlery(rig, vex, "Salt Moth").await;
+    let e = enrolment(&rig.tw, vex);
+    (vex, ObjId(row.hull), e)
+}
+
+/// **A week of hops trips no recall** (doc 20 §13's SM.2 acceptance; §3.3: a hop burns a
+/// tonne and mints a ticket, so it is a departure for the dormancy rule, which reads real
+/// time): a hop to Ahuna and back on day 0 and again on day 6 keep the charter past a week
+/// from the first return; the control, with only the day-0 round trip, is recalled a week
+/// after its last burn — docked at Ceres, the hold empty, nothing in flight.
+#[tokio::test]
+async fn sm2_a_week_of_hops_trips_no_recall() {
+    const D: i64 = 7 * 86_400;
+    let mut rig = boot("sm2_hops").await;
+    let (vex, hull, e) = sm2_aboard_for_hops(&mut rig).await;
+    let _ = sm2_hop(&mut rig, vex, hull, "+ship/undock ahuna").await;
+    let b0 = sm2_hop(&mut rig, vex, hull, "+ship/lift ceres").await;
+    let now = rig.tw.world().now();
+    let _ = sweep(&mut rig, e.leased_at + 6 * 86_400 - now).await;
+    let _ = sm2_hop(&mut rig, vex, hull, "+ship/undock ahuna").await;
+    let _ = sm2_hop(&mut rig, vex, hull, "+ship/lift ceres").await;
+    let now = rig.tw.world().now();
+    let _ = sweep(&mut rig, b0 + D + 3_600 - now).await;
+    let _ = fire_quietly(&mut rig).await;
+    assert_eq!(contract_state(&rig.tw, e.lease), ContractState::Active);
+    assert_eq!(enrolment(&rig.tw, vex).status, EnrolmentStatus::Active);
+    assert!(tacsim::port_tick::recall_pages(rig.tw.world()).is_empty());
+
+    // The control: only the day-0 round trip.
+    let mut rig = boot("sm2_hops_control").await;
+    let (vex, hull, e) = sm2_aboard_for_hops(&mut rig).await;
+    let _ = sm2_hop(&mut rig, vex, hull, "+ship/undock ahuna").await;
+    let b0 = sm2_hop(&mut rig, vex, hull, "+ship/lift ceres").await;
+    let now = rig.tw.world().now();
+    let _ = sweep(&mut rig, b0 + D + 3_600 - now).await;
+    let _ = fire_quietly(&mut rig).await;
+    assert_eq!(contract_state(&rig.tw, e.lease), ContractState::Cancelled);
+    let revoked = enrolment(&rig.tw, vex);
+    assert_eq!(revoked.status, EnrolmentStatus::Revoked);
+    assert_eq!(revoked.ended, Some(EndCause::Dormant));
+    assert_eq!(title_owner(&rig.tw, hull), Some(trust(&rig.tw)));
+    {
+        let w = rig.tw.world();
+        let port = tacsim::port::programme_port(w).expect("the programme port");
+        assert!(
+            tacsim::port::coop::free_hulls(w, &port)
+                .iter()
+                .any(|r| r.hull == hull.0),
+            "the hull is back in the pool"
+        );
+    }
+}

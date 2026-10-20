@@ -52,7 +52,10 @@ use support::ground::{UNSIGNED, sign};
 /// the legs re-timed to the three-dimensional chords): a new version beside the
 /// v1, v2 and v3 ledger rows, never an earlier version re-signed in place (lead
 /// ruling L0b).
-const LANE_DIGEST: &str = "be733686a1630175e541346c693fcb2cce9f658db876121c73c4d476e04ca330";
+///
+/// Doc 20 cut SM.2: v9, the six mining sites (re-signed with
+/// `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim --test lane ic2_the_lane_pack_is_pinned`).
+const LANE_DIGEST: &str = "cce73a4c60ed6213caaeed321d61926be526cb36c6794ee09e2b60891531402c";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -71,7 +74,23 @@ const MOON_ROUTES: [(&str, &str, &str); 6] = [
     ("ligeia_voltaire", "ligeia_terminal", "voltaire_anchorage"),
     ("voltaire_stickney", "voltaire_anchorage", "stickney_yards"),
 ];
-/// Every route of the lane: the shipped pair and the six.
+/// Doc 20 cut SM.2: the twelve site routes — the five Ceres hops (authored `base_s`, a
+/// same-body leg the sky does not time, §3.3) and the Rheasilvia passage, each both ways.
+const SITE_ROUTES: [&str; 12] = [
+    "ceres_commons",
+    "commons_ceres",
+    "ceres_kerwan",
+    "kerwan_ceres",
+    "ceres_ahuna",
+    "ahuna_ceres",
+    "ceres_juling",
+    "juling_ceres",
+    "ceres_occator",
+    "occator_ceres",
+    "ceres_rheasilvia",
+    "rheasilvia_ceres",
+];
+/// Every route of lane v8: the shipped pair and the six.
 const ALL_ROUTES: [&str; 8] = [
     LANE_ROUTE_OUT,
     LANE_ROUTE_BACK,
@@ -209,8 +228,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        8,
-        "lane v8 since doc 19 cut A.8 (v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
+        9,
+        "lane v9 since doc 20 cut SM.2 (v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
     assert!(manifest.requires().is_empty(), "the lane requires nothing");
@@ -228,45 +247,72 @@ fn ic2_the_lane_pack_is_pinned() {
     kinds.sort();
     assert_eq!(
         kinds,
-        vec![
-            ("aitken_highport".to_owned(), "location".to_owned()),
-            ("aitken_ligeia".to_owned(), "route".to_owned()),
-            ("aitken_voltaire".to_owned(), "route".to_owned()),
-            ("ceres".to_owned(), "body".to_owned()),
-            ("ceres_aitken".to_owned(), "route".to_owned()),
-            ("ceres_freeport".to_owned(), "location".to_owned()),
-            ("ceres_port".to_owned(), "port".to_owned()),
-            ("ceres_stickney".to_owned(), "route".to_owned()),
-            ("deimos".to_owned(), "body".to_owned()),
-            ("deimos_port".to_owned(), "port".to_owned()),
-            ("earth".to_owned(), "body".to_owned()),
-            ("hygiea".to_owned(), "body".to_owned()),
-            ("juno".to_owned(), "body".to_owned()),
-            ("jupiter".to_owned(), "body".to_owned()),
-            ("kirkwood".to_owned(), "body".to_owned()),
-            ("kirkwood_depot".to_owned(), "location".to_owned()),
-            ("ligeia_aitken".to_owned(), "route".to_owned()),
-            ("ligeia_terminal".to_owned(), "location".to_owned()),
-            ("ligeia_voltaire".to_owned(), "route".to_owned()),
-            ("luna".to_owned(), "body".to_owned()),
-            ("luna_port".to_owned(), "port".to_owned()),
-            ("mars".to_owned(), "body".to_owned()),
-            ("mercury".to_owned(), "body".to_owned()),
-            ("pallas".to_owned(), "body".to_owned()),
-            ("phobos".to_owned(), "body".to_owned()),
-            ("saturn".to_owned(), "body".to_owned()),
-            ("sol".to_owned(), "region".to_owned()),
-            ("stickney_ceres".to_owned(), "route".to_owned()),
-            ("stickney_port".to_owned(), "port".to_owned()),
-            ("stickney_yards".to_owned(), "location".to_owned()),
-            ("titan".to_owned(), "body".to_owned()),
-            ("titan_port".to_owned(), "port".to_owned()),
-            ("venus".to_owned(), "body".to_owned()),
-            ("vesta".to_owned(), "body".to_owned()),
-            ("voltaire_anchorage".to_owned(), "location".to_owned()),
-            ("voltaire_stickney".to_owned(), "route".to_owned()),
-        ],
-        "the thirty-six entries: v3's twelve, doc 19 cut A.1's eight more bodies, cut A.7's four moons and cut A.8's three places, six routes and three ports"
+        [
+            ("ahuna_ceres", "route"),
+            ("ahuna_flank", "location"),
+            ("ahuna_port", "port"),
+            ("aitken_highport", "location"),
+            ("aitken_ligeia", "route"),
+            ("aitken_voltaire", "route"),
+            ("ceres", "body"),
+            ("ceres_ahuna", "route"),
+            ("ceres_aitken", "route"),
+            ("ceres_commons", "route"),
+            ("ceres_freeport", "location"),
+            ("ceres_juling", "route"),
+            ("ceres_kerwan", "route"),
+            ("ceres_occator", "route"),
+            ("ceres_port", "port"),
+            ("ceres_rheasilvia", "route"),
+            ("ceres_stickney", "route"),
+            ("commons_ceres", "route"),
+            ("commons_port", "port"),
+            ("deimos", "body"),
+            ("deimos_port", "port"),
+            ("earth", "body"),
+            ("freeport_commons", "location"),
+            ("hygiea", "body"),
+            ("juling_ceres", "route"),
+            ("juling_port", "port"),
+            ("juling_shadow", "location"),
+            ("juno", "body"),
+            ("jupiter", "body"),
+            ("kerwan_ceres", "route"),
+            ("kerwan_floor", "location"),
+            ("kerwan_port", "port"),
+            ("kirkwood", "body"),
+            ("kirkwood_depot", "location"),
+            ("ligeia_aitken", "route"),
+            ("ligeia_terminal", "location"),
+            ("ligeia_voltaire", "route"),
+            ("luna", "body"),
+            ("luna_port", "port"),
+            ("mars", "body"),
+            ("mercury", "body"),
+            ("occator_ceres", "route"),
+            ("occator_port", "port"),
+            ("occator_rim", "location"),
+            ("pallas", "body"),
+            ("phobos", "body"),
+            ("rheasilvia_ceres", "route"),
+            ("rheasilvia_commons", "location"),
+            ("rheasilvia_port", "port"),
+            ("saturn", "body"),
+            ("sol", "region"),
+            ("stickney_ceres", "route"),
+            ("stickney_port", "port"),
+            ("stickney_yards", "location"),
+            ("titan", "body"),
+            ("titan_port", "port"),
+            ("venus", "body"),
+            ("vesta", "body"),
+            ("voltaire_anchorage", "location"),
+            ("voltaire_stickney", "route"),
+        ]
+        .iter()
+        .map(|(id, kind)| ((*id).to_owned(), (*kind).to_owned()))
+        .collect::<Vec<_>>(),
+        "the sixty entries: v3's twelve, doc 19 cut A.1's eight more bodies, cut A.7's four moons, cut A.8's three places, six routes and three ports, and doc 20 cut SM.2's six sites, twelve routes and six site ports"
     );
     let epochs: Vec<Option<i64>> = bodies(&pack).iter().map(|(_, def)| def.epoch_ic).collect();
     assert_eq!(epochs.len(), 16);
@@ -290,9 +336,18 @@ fn ic2_the_lane_pack_is_pinned() {
             _ => None,
         })
         .collect();
+    let site = |id: &str, label: &str, body: &str| -> (String, String, String, Option<String>) {
+        (
+            id.into(),
+            label.into(),
+            "extraction".into(),
+            Some(body.into()),
+        )
+    };
     assert_eq!(
         places,
         vec![
+            site("ahuna_flank", "Ahuna Flank", "ceres"),
             (
                 "aitken_highport".into(),
                 "Aitken Highport".into(),
@@ -305,6 +360,9 @@ fn ic2_the_lane_pack_is_pinned() {
                 "port".into(),
                 Some("ceres".into())
             ),
+            site("freeport_commons", "Freeport Commons", "ceres"),
+            site("juling_shadow", "Juling Shadow", "ceres"),
+            site("kerwan_floor", "Kerwan Floor", "ceres"),
             (
                 "kirkwood_depot".into(),
                 "Kirkwood Depot".into(),
@@ -317,6 +375,8 @@ fn ic2_the_lane_pack_is_pinned() {
                 "port".into(),
                 Some("titan".into())
             ),
+            site("occator_rim", "Occator Rim", "ceres"),
+            site("rheasilvia_commons", "Rheasilvia Commons", "vesta"),
             (
                 "stickney_yards".into(),
                 "Stickney Yards".into(),
@@ -365,7 +425,7 @@ fn ic2_the_lane_pack_is_pinned() {
         assert_eq!(route.legs[0].to.as_str(), to, "{id}");
         assert!(route.legs[0].base_s > 0, "{id}");
     }
-    for id in ALL_ROUTES {
+    for id in ALL_ROUTES.iter().chain(SITE_ROUTES.iter()) {
         let route = route_of(&pack, id);
         assert_eq!(route.drive_class.as_str(), "coast_hauler", "{id}");
         assert_eq!(route.propellant, 0, "{id}");
@@ -454,7 +514,24 @@ fn a8_every_number_in_the_lane_is_spelled_as_serde_json_prints_it() {
 #[test]
 fn lane_legs_derive_at_epoch() {
     let pack = lane();
-    for id in ALL_ROUTES {
+    // Doc 20 cut SM.2: the Rheasilvia passage is timed from the chord; the five Ceres hops
+    // are same-body legs whose `base_s` is authored (§3.3: 3,600 s through the laden
+    // step), which the sky does not time — their chord is 0.
+    for id in SITE_ROUTES {
+        let route = route_of(&pack, id);
+        let derived = derived_legs(&pack, route, coast_kms(&route.drive_class))
+            .unwrap_or_else(|why| panic!("{id}: {why}"));
+        if id.contains("rheasilvia") {
+            continue;
+        }
+        assert_eq!(derived, vec![0], "{id}: a same-body leg");
+        assert_eq!(route.legs[0].base_s, 3_600, "{id}: authored");
+    }
+    for id in ALL_ROUTES
+        .iter()
+        .copied()
+        .chain(["ceres_rheasilvia", "rheasilvia_ceres"])
+    {
         let route = route_of(&pack, id);
         let kms = coast_kms(&route.drive_class);
         let derived = derived_legs(&pack, route, kms).unwrap_or_else(|why| panic!("{id}: {why}"));
@@ -928,7 +1005,8 @@ fn ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky() {
         .expect("the lane is latched");
     assert_eq!(applied.version(), LANE_VERSION);
     let placed = applied.placed();
-    assert_eq!(placed.len(), 6, "{placed:?}");
+    // Six ports and depots, and (doc 20 cut SM.2) the six sites.
+    assert_eq!(placed.len(), 12, "{placed:?}");
     for (symbol, room) in &placed {
         let kind = tw.world().get(*room).map(|o| o.kind);
         assert_eq!(kind, Some(ObjKind::Room), "{symbol}");

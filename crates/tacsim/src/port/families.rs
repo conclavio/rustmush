@@ -73,6 +73,18 @@ pub struct LegPlan {
     pub t0: i64,
     /// The IC second the leg ends: `t0 + secs`.
     pub t1: i64,
+    /// **Doc 20 cut SM.2 (§3.3, D-20-3)** — the ascent Δv this leg pays, m/s:
+    /// √(g·R) of the site's body at each end of the leg that is a site (a
+    /// [`crate::pack::SITE_ROLE`] location), summed; 0 for a leg with no site end.
+    /// A port end (Ceres Freeport, every station) pays none. Frozen with the plan
+    /// (T1), so the burn's prepare recomputes the same tonnes from the ticket.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub ascent_mps: u32,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 /// §4.8, D-18-44/46: what `plan_passage` (cut IC9, `port/passage.rs`) returns and what the
@@ -100,6 +112,11 @@ pub struct PassagePlan {
     /// of the hull's thrust; a plan from before the cut reads full thrust.
     #[serde(default = "full_throttle")]
     pub throttle_permille: u32,
+    /// **Doc 20 cut SM.2 (§3.3 as amended, Q-20-7; the SM.2 brief's lead ruling
+    /// 5)** — the crew-days of the stay on a site charged at this lift, included in
+    /// `crew_days`; 0 for every other passage, and then absent on the wire.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub landed_crew_days: u32,
 }
 
 /// The throttle a plan without one was flown at: full thrust.
@@ -145,6 +162,10 @@ impl PassagePlan {
             {
                 return Err("each leg of a passage plan begins where the last one ended".to_owned());
             }
+        }
+        // Doc 20 cut SM.2: the stay's charge is part of the crew-days, never more.
+        if self.landed_crew_days > self.crew_days {
+            return Err("a passage plan's landed crew-days are part of its crew-days".to_owned());
         }
         match last.t1.checked_sub(self.depart_ic) {
             Some(total) if total == self.total_s && total > 0 => Ok(()),
@@ -624,6 +645,7 @@ mod tests {
             secs,
             t0,
             t1: t0 + i64::from(secs),
+            ascent_mps: 0,
         }
     }
 
@@ -658,6 +680,7 @@ mod tests {
                 burn_t: 41,
                 crew_days: 21,
                 throttle_permille: 1_000,
+                landed_crew_days: 0,
             },
             order: Some(9),
             attempt: 1,

@@ -356,8 +356,9 @@ pub fn capture_site(w: &World, frame: &WindowFrame) -> Result<CompositeInput, St
 ///
 /// # Errors
 ///
-/// The atlas's refusal, "a site's ground is 256 by 256 cells of 10 m" for any other window, or
-/// the geology's refusal.
+/// The atlas's refusal, "a site's ground is 256 by 256 cells of 10 m" for any other window, a
+/// region that is not a surface of the spec's body (doc 20 cut SM.2, the brief's lead override
+/// 4: SM.1's residual SM1-A7), or the geology's refusal.
 pub fn build_site_ground(
     input: &CompositeInput,
     spec: &SiteGeologySpec,
@@ -366,6 +367,26 @@ pub fn build_site_ground(
     key_version: u32,
 ) -> Result<SiteGround, String> {
     const WRONG_SHAPE: &str = "a site's ground is 256 by 256 cells of 10 m";
+    // Doc 20 cut SM.2 (lead override 4): the captured region stands on the spec's body, or
+    // the site's ground would read one body's terrain over another's geology.
+    match &input.region.kind {
+        mush_atlas::record::RegionKind::Surface { body: on }
+            if on.as_str() == spec.body.as_str() => {}
+        mush_atlas::record::RegionKind::Surface { body: on } => {
+            return Err(format!(
+                "the site names {}, but region {} is on {on}",
+                spec.body, input.region.key
+            ));
+        }
+        mush_atlas::record::RegionKind::Orbital { .. }
+        | mush_atlas::record::RegionKind::System
+        | mush_atlas::record::RegionKind::Interstellar => {
+            return Err(format!(
+                "the site names {}, but region {} is not a surface",
+                spec.body, input.region.key
+            ));
+        }
+    }
     let built = composite(input)?;
     let ground = built
         .surface(&mush_atlas::SurfaceRef::Ground)

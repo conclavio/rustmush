@@ -139,9 +139,22 @@ fn plan_passage_reproduces_the_slice_figures() {
         .filter(|(_, entry)| matches!(entry, PackEntry::Route(_)))
         .map(|(id, _)| id.to_string())
         .collect();
-    assert_eq!(routes.len(), 8, "the lane's routes: {routes:?}");
+    // Doc 20 cut SM.2: twenty with the twelve site routes. A same-body hop's `base_s`
+    // is authored, not a chord (§3.3): its seconds are the laden step, which at an empty
+    // hold is `base_s` itself.
+    assert_eq!(routes.len(), 20, "the lane's routes: {routes:?}");
     for route in routes.iter().map(String::as_str) {
         for (a, b, base) in body_pairs(&pack, route) {
+            if a == b {
+                let hop = plan_passage(&sky, &pack, &cid(route), &drive, DRY_KG, 0, 1, depart)
+                    .expect("the hop plans");
+                assert_eq!(
+                    secs(&hop),
+                    vec![base],
+                    "{route}: the laden step at no payload"
+                );
+                continue;
+            }
             let passes =
                 intercept_passes(&sky, &a, &b, depart, &drive, DRY_KG, 0, 1).expect("plans");
             let chord = passes.first().map(|(km, _)| *km).expect("a pass");

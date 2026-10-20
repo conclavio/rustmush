@@ -692,7 +692,11 @@ fn a4b_the_clerk_posts_emergency_bids_at_the_cap_and_withdraws_them_when_reach_f
 fn a8_the_old_ports_suppliers_move_as_designed() {
     const HOP_CEILING_S: i64 = 5 * 3_600;
     let shipped = TestWorld::with_modules(production_roster(config(0)));
-    let stripped = lane_variant(LANE_VERSION, support::moon::strip_moon_trade);
+    let stripped = lane_variant(LANE_VERSION, |doc| {
+        // Doc 20 cut SM.2: the v7 shape has no sites either.
+        support::sites::strip_sites(doc);
+        support::moon::strip_moon_trade(doc);
+    });
     let lane = Lane::Seeded {
         json: &stripped,
         shelf: false,

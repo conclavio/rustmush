@@ -73,7 +73,8 @@ pub const SHIP_HELP: &str = "+ship  --  Your chartered Dray: where it is, what i
      the payload, the burn, the stores and the passage time. It writes nothing.\n+ship/undock \
      <port>  from aboard your Dray, docked, file the passage and take her out now; the burn is \
      committed when the clearance is granted; to leave at a later hour, queue +ship/order \
-     depart.\n+ship/orders  the sailing plan: each order, its state, the next one due (UTC, IC \
+     depart.\n+ship/lift <port>  the same as +ship/undock: the word for lifting off a pad (or \
+     out of a berth).\n+ship/orders  the sailing plan: each order, its state, the next one due (UTC, IC \
      and real time), any hold, and the last eight lines of its log. It reads anywhere.\n\
      +ship/order sell <good> <qty|all> [min=<cr>] [short=partial|skip|hold] | buy <good> \
      <qty|fill> [max=<cr>] [short=…] | depart <port> [at=now|HH:MM|daily HH:MM|+Nh|+Nm] \
@@ -143,6 +144,20 @@ pub const LEAVE_NOT_ABOARD: &str = "You are not aboard a Dray.";
 pub const LEAVE_WHERE: &str = "You can only leave by the {airlock}.";
 /// `+ship/leave` with the hull at no berth (`{name}` replaced).
 pub const LEAVE_SEALED: &str = "The {name} is not at a berth; the lock stays sealed.";
+/// **Doc 20 cut SM.2**: `+ship`'s first line on a site's pad: `{name}`, `{class}`, `{port}`.
+pub const SHIP_SETTLED: &str = "{name} ({class}): settled on the pad at {port}.";
+/// The same with a queued departure due: `{name}`, `{class}`, `{port}`, `{hhmm}`, `{span}`.
+pub const SHIP_SETTLED_DEPARTS: &str =
+    "{name} ({class}): settled on the pad at {port}; departs {hhmm} UTC (in {span}).";
+/// The hull room's status line on a pad: `{name}`, `{mark}`, `{port}`.
+pub const STATUS_SETTLED: &str = "Aboard the {name} ({mark}), settled on the pad at {port}.";
+/// The same with a queued departure due: `{name}`, `{mark}`, `{port}`, `{hhmm}`, `{span}`.
+pub const STATUS_SETTLED_DEPARTS: &str =
+    "Aboard the {name} ({mark}), settled on the pad at {port}; departs {hhmm} UTC (in {span}).";
+/// `+ship/leave` on a pad (decision 10: a soul left on a pad with no exits and no `+ic`
+/// route would be stranded when the pilot lifts): `{name}`, `{port}`.
+pub const LEAVE_PAD: &str =
+    "The {name} is settled on the pad at {port}; the lock stays sealed until she docks.";
 
 /// **One programme hull, resolved.**
 #[derive(Clone, Debug)]
@@ -326,16 +341,22 @@ pub fn status_line(w: &World, view: &HullView<'_>) -> String {
     ) {
         (Some(passage), _) => crate::port::voyage::status_passage_line(w, &passage),
         (None, Berth::Docked { def, .. }) => {
+            // Doc 20 cut SM.2: on a site's pad the hull is settled, not docked.
+            let (docked, departs) = if def.site.is_some() {
+                (STATUS_SETTLED, STATUS_SETTLED_DEPARTS)
+            } else {
+                (STATUS_DOCKED, STATUS_DOCKED_DEPARTS)
+            };
             // Doc 18 cut IC11: a queued departure due names its hour.
             match crate::port::orders::departs_at(w, view.hull()) {
-                Some(due) => STATUS_DOCKED_DEPARTS
+                Some(due) => departs
                     .replace("{port}", &port_name(def))
                     .replace("{hhmm}", &crate::port::voyage::utc_hhmm(due))
                     .replace(
                         "{span}",
                         &crate::port::voyage::real_span(due.saturating_sub(w.now())),
                     ),
-                None => STATUS_DOCKED.replace("{port}", &port_name(def)),
+                None => docked.replace("{port}", &port_name(def)),
             }
         }
         (None, Berth::UnderWay) => {
@@ -361,15 +382,21 @@ fn ship_line(w: &World, view: &HullView<'_>) -> String {
             let gallery = map
                 .presentation
                 .map_or_else(String::new, |g| name_of(w, ObjId(g)));
+            // Doc 20 cut SM.2: on a site's pad the hull is settled, not docked.
+            let (docked, departs) = if def.site.is_some() {
+                (SHIP_SETTLED, SHIP_SETTLED_DEPARTS)
+            } else {
+                (SHIP_DOCKED, SHIP_DOCKED_DEPARTS)
+            };
             // Doc 18 cut IC11: a queued departure due names its hour.
             let template = match crate::port::orders::departs_at(w, view.hull()) {
-                Some(due) => SHIP_DOCKED_DEPARTS
+                Some(due) => departs
                     .replace("{hhmm}", &crate::port::voyage::utc_hhmm(due))
                     .replace(
                         "{span}",
                         &crate::port::voyage::real_span(due.saturating_sub(w.now())),
                     ),
-                None => SHIP_DOCKED.to_owned(),
+                None => docked.to_owned(),
             };
             template
                 .replace("{port}", &port_name(def))
@@ -435,7 +462,8 @@ pub(crate) fn ship_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         board(ctx)
     } else if ctx.switches.has("plan") {
         crate::port::voyage::plan_cmd(ctx)
-    } else if ctx.switches.has("undock") {
+    } else if ctx.switches.has("undock") || ctx.switches.has("lift") {
+        // Doc 20 cut SM.2: `+ship/lift` is `+ship/undock`, the word for a pad.
         crate::port::voyage::undock_cmd(ctx)
     } else if ctx.switches.has("leave") {
         leave(ctx)
@@ -537,7 +565,12 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 }
             }
         };
-        [first, hold, programme]
+        // Doc 20 cut SM.2 (§1 beat 3): on a pad, the stores line after the hold line.
+        let stores = crate::port::voyage::settled_stores_line(ctx, &view);
+        let mut lines = vec![first, hold];
+        lines.extend(stores);
+        lines.push(programme);
+        lines
     };
     for line in lines {
         say(ctx, line);
@@ -714,6 +747,14 @@ fn leave(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let gallery = match berth_of(ctx.w, hull) {
         Berth::UnderWay => return Err(CmdError::msg(UNDER_WAY_LOCK.replace("{name}", &name))),
         Berth::Elsewhere => return Err(CmdError::msg(LEAVE_SEALED.replace("{name}", &name))),
+        // Doc 20 cut SM.2 (decision 10): nobody steps out onto a pad.
+        Berth::Docked { def, .. } if def.site.is_some() => {
+            return Err(CmdError::msg(
+                LEAVE_PAD
+                    .replace("{name}", &name)
+                    .replace("{port}", &port_name(def)),
+            ));
+        }
         Berth::Docked { map, .. } => map.presentation.map(ObjId),
     };
     let Some(gallery) = gallery else {

@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 8,
+    "version": 9,
     "kind": "campaign_seed",
-    "digest": "be733686a1630175e541346c693fcb2cce9f658db876121c73c4d476e04ca330",
+    "digest": "cce73a4c60ed6213caaeed321d61926be526cb36c6794ee09e2b60891531402c",
     "requires": []
   },
   "entries": {
@@ -439,6 +439,8 @@
         "period_days": 687.034,
         "phase_deg_at_epoch": 276.24,
         "epoch_ic": 74152540800,
+        "surface_mg": 379,
+        "radius_km": 3390,
         "elements": [
           [73794240000, 1.523723928, 0.093682793, 1.821678, 48.5501, 288.992289, 293.083427, 0.524016199],
           [73809878400, 1.523635282, 0.093595596, 1.821605, 48.545996, 289.002783, 28.449036, 0.524061931],
@@ -838,6 +840,27 @@
         "period_days": 1681.861,
         "phase_deg_at_epoch": 281.654,
         "epoch_ic": 74152540800,
+        "surface_mg": 28,
+        "radius_km": 470,
+        "geology": {
+          "province": {
+            "metals": { "lean": 600, "fair": 400 },
+            "volatiles": { "lean": 50, "fair": 500, "rich": 450 },
+            "carbon_feedstock": { "lean": 1000 },
+            "strategic_elements": { "barren": 950, "lean": 50 }
+          },
+          "field": {
+            "barren": { "barren": 1000 },
+            "lean": { "barren": 250, "lean": 550, "fair": 200 },
+            "fair": { "barren": 100, "lean": 300, "fair": 450, "rich": 150 },
+            "rich": { "lean": 150, "fair": 450, "rich": 400 }
+          },
+          "pocket": {
+            "lean": { "lean": 700, "fair": 250, "rich": 50 },
+            "fair": { "lean": 350, "fair": 500, "rich": 150 },
+            "rich": { "lean": 150, "fair": 450, "rich": 400 }
+          }
+        },
         "elements": [
           [73794240000, 2.767171314, 0.077508988, 10.532434, 75.530482, 82.026578, 308.827624, 0.214116435],
           [73809878400, 2.766699933, 0.077343524, 10.532253, 75.529181, 82.045939, 347.7756, 0.214171158],
@@ -971,6 +994,8 @@
         "period_days": 1686.144,
         "phase_deg_at_epoch": 190.512,
         "epoch_ic": 74152540800,
+        "surface_mg": 21,
+        "radius_km": 256,
         "elements": [
           [73794240000, 2.771934557, 0.213267413, 35.260534, 169.811939, 313.340403, 243.434085, 0.213564771],
           [73809878400, 2.772250351, 0.213290247, 35.258588, 169.810793, 313.309244, 282.339485, 0.213528281],
@@ -1237,6 +1262,27 @@
         "period_days": 1325.119,
         "phase_deg_at_epoch": 154.254,
         "epoch_ic": 74152540800,
+        "surface_mg": 25,
+        "radius_km": 263,
+        "geology": {
+          "province": {
+            "metals": { "fair": 550, "rich": 450 },
+            "strategic_elements": { "lean": 600, "fair": 400 },
+            "volatiles": { "lean": 1000 },
+            "carbon_feedstock": { "barren": 1000 }
+          },
+          "field": {
+            "barren": { "barren": 1000 },
+            "lean": { "barren": 250, "lean": 550, "fair": 200 },
+            "fair": { "barren": 100, "lean": 300, "fair": 450, "rich": 150 },
+            "rich": { "lean": 150, "fair": 450, "rich": 400 }
+          },
+          "pocket": {
+            "lean": { "lean": 700, "fair": 250, "rich": 50 },
+            "fair": { "lean": 350, "fair": 500, "rich": 150 },
+            "rich": { "lean": 150, "fair": 450, "rich": 400 }
+          }
+        },
         "elements": [
           [73794240000, 2.361694266, 0.090480629, 7.157769, 100.901405, 157.85688, 218.798404, 0.271561726],
           [73809878400, 2.361298286, 0.090533482, 7.157909, 100.902024, 157.958812, 268.121525, 0.271630039],
@@ -1637,6 +1683,8 @@
         "phase_deg_at_epoch": 234.933,
         "epoch_ic": 74152540800,
         "parent": "earth",
+        "surface_mg": 165,
+        "radius_km": 1737,
         "elements": [
           [73794240000, 0.00258311, 0.068154214, 4.999004, 25.802008, 221.620439, 30.49097, 13.090533461],
           [73809878400, 0.002555433, 0.054450883, 4.985525, 15.226818, 256.257109, 243.717978, 13.303776943],
@@ -1771,6 +1819,8 @@
         "phase_deg_at_epoch": 237.807,
         "epoch_ic": 74152540800,
         "parent": "mars",
+        "surface_mg": 1,
+        "radius_km": 11,
         "elements": [
           [73794240000, 0.000062695, 0.015157433, 27.780344, 82.706671, 28.039398, 87.193811, 1127.890499077],
           [73809878400, 0.000062688, 0.015117891, 27.153053, 80.039339, 107.264111, 260.509627, 1128.067629967],
@@ -1905,6 +1955,8 @@
         "phase_deg_at_epoch": 110.854,
         "epoch_ic": 74152540800,
         "parent": "mars",
+        "surface_mg": 1,
+        "radius_km": 6,
         "elements": [
           [73794240000, 0.000156807, 0.000338699, 26.480242, 78.347237, 280.621614, 12.408087, 285.145156803],
           [73809878400, 0.000156818, 0.000285256, 26.353718, 78.207972, 283.032564, 69.574578, 285.114631788],
@@ -2039,6 +2091,8 @@
         "phase_deg_at_epoch": 97.707,
         "epoch_ic": 74152540800,
         "parent": "saturn",
+        "surface_mg": 138,
+        "radius_km": 2575,
         "elements": [
           [70640640000, 0.008168274, 0.029037201, 27.178277, 168.868311, 287.48734, 161.945487, 22.573690187],
           [70656278400, 0.008168202, 0.029139112, 27.180206, 168.865639, 287.620944, 310.824676, 22.573987458],
@@ -2067,7 +2121,9 @@
       "def": {
         "label": "Ceres Freeport",
         "role": "port",
-        "body": "ceres"
+        "body": "ceres",
+        "lat_mdeg": 19700,
+        "lon_mdeg": 240400
       }
     },
     "kirkwood_depot": {
@@ -2108,6 +2164,66 @@
         "label": "Ligeia Terminal",
         "role": "port",
         "body": "titan"
+      }
+    },
+    "freeport_commons": {
+      "kind": "location",
+      "def": {
+        "label": "Freeport Commons",
+        "role": "extraction",
+        "body": "ceres",
+        "lat_mdeg": 20300,
+        "lon_mdeg": 240400
+      }
+    },
+    "kerwan_floor": {
+      "kind": "location",
+      "def": {
+        "label": "Kerwan Floor",
+        "role": "extraction",
+        "body": "ceres",
+        "lat_mdeg": -10800,
+        "lon_mdeg": 123900
+      }
+    },
+    "ahuna_flank": {
+      "kind": "location",
+      "def": {
+        "label": "Ahuna Flank",
+        "role": "extraction",
+        "body": "ceres",
+        "lat_mdeg": -10500,
+        "lon_mdeg": 316200
+      }
+    },
+    "juling_shadow": {
+      "kind": "location",
+      "def": {
+        "label": "Juling Shadow",
+        "role": "extraction",
+        "body": "ceres",
+        "lat_mdeg": -35900,
+        "lon_mdeg": 168600
+      }
+    },
+    "occator_rim": {
+      "kind": "location",
+      "def": {
+        "label": "Occator Rim",
+        "role": "extraction",
+        "body": "ceres",
+        "lat_mdeg": 25400,
+        "lon_mdeg": 239300
+      }
+    },
+    "rheasilvia_commons": {
+      "kind": "location",
+      "def": {
+        "label": "Rheasilvia Commons",
+        "role": "extraction",
+        "body": "vesta",
+        "lat_mdeg": -75000,
+        "lon_mdeg": 301000
       }
     },
     "ceres_stickney": {
@@ -2238,6 +2354,186 @@
         "propellant": 0
       }
     },
+    "ceres_commons": {
+      "kind": "route",
+      "def": {
+        "from": "ceres_freeport",
+        "to": "freeport_commons",
+        "legs": [
+          {
+            "to": "freeport_commons",
+            "base_s": 3600
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "commons_ceres": {
+      "kind": "route",
+      "def": {
+        "from": "freeport_commons",
+        "to": "ceres_freeport",
+        "legs": [
+          {
+            "to": "ceres_freeport",
+            "base_s": 3600
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "ceres_kerwan": {
+      "kind": "route",
+      "def": {
+        "from": "ceres_freeport",
+        "to": "kerwan_floor",
+        "legs": [
+          {
+            "to": "kerwan_floor",
+            "base_s": 3600
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "kerwan_ceres": {
+      "kind": "route",
+      "def": {
+        "from": "kerwan_floor",
+        "to": "ceres_freeport",
+        "legs": [
+          {
+            "to": "ceres_freeport",
+            "base_s": 3600
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "ceres_ahuna": {
+      "kind": "route",
+      "def": {
+        "from": "ceres_freeport",
+        "to": "ahuna_flank",
+        "legs": [
+          {
+            "to": "ahuna_flank",
+            "base_s": 3600
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "ahuna_ceres": {
+      "kind": "route",
+      "def": {
+        "from": "ahuna_flank",
+        "to": "ceres_freeport",
+        "legs": [
+          {
+            "to": "ceres_freeport",
+            "base_s": 3600
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "ceres_juling": {
+      "kind": "route",
+      "def": {
+        "from": "ceres_freeport",
+        "to": "juling_shadow",
+        "legs": [
+          {
+            "to": "juling_shadow",
+            "base_s": 3600
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "juling_ceres": {
+      "kind": "route",
+      "def": {
+        "from": "juling_shadow",
+        "to": "ceres_freeport",
+        "legs": [
+          {
+            "to": "ceres_freeport",
+            "base_s": 3600
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "ceres_occator": {
+      "kind": "route",
+      "def": {
+        "from": "ceres_freeport",
+        "to": "occator_rim",
+        "legs": [
+          {
+            "to": "occator_rim",
+            "base_s": 3600
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "occator_ceres": {
+      "kind": "route",
+      "def": {
+        "from": "occator_rim",
+        "to": "ceres_freeport",
+        "legs": [
+          {
+            "to": "ceres_freeport",
+            "base_s": 3600
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "ceres_rheasilvia": {
+      "kind": "route",
+      "def": {
+        "from": "ceres_freeport",
+        "to": "rheasilvia_commons",
+        "legs": [
+          {
+            "to": "rheasilvia_commons",
+            "base_s": 3127945
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "rheasilvia_ceres": {
+      "kind": "route",
+      "def": {
+        "from": "rheasilvia_commons",
+        "to": "ceres_freeport",
+        "legs": [
+          {
+            "to": "ceres_freeport",
+            "base_s": 3127945
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
     "ceres_port": {
       "kind": "port",
       "def": {
@@ -2261,7 +2557,8 @@
           { "id": "coop_trust", "name": "Co-op First Captain Trust", "capital_major": 250000, "faction": "freeport" },
           { "id": "freeport_exchange", "name": "Freeport Exchange", "capital_major": 4000000, "faction": "freeport" },
           { "id": "occator", "name": "Occator Water & Propellant", "capital_major": 50000, "faction": "freeport" },
-          { "id": "tycho_mutual", "name": "Tycho Mutual Assurance & Salvage", "capital_major": 50000, "faction": "concord" }
+          { "id": "tycho_mutual", "name": "Tycho Mutual Assurance & Salvage", "capital_major": 50000, "faction": "concord" },
+          { "id": "freeport_registry", "name": "Freeport Registry", "capital_major": 50000, "faction": "freeport" }
         ],
         "programme": {
           "id": "coop.first_captain",
@@ -2305,7 +2602,9 @@
             "asks":  [ { "good": "provisions", "price_major": 10 } ],
             "bids":  [ { "good": "industrial_parts", "price_major": 560, "intake": 5400, "boards": ["chandlery"] } ] }
         ],
-        "routes": { "luna": [ "ceres_aitken" ], "stickney": [ "ceres_stickney" ] },
+        "routes": { "ahuna": [ "ceres_ahuna" ], "commons": [ "ceres_commons" ], "juling": [ "ceres_juling" ],
+                    "kerwan": [ "ceres_kerwan" ], "luna": [ "ceres_aitken" ], "occator": [ "ceres_occator" ],
+                    "rheasilvia": [ "ceres_rheasilvia" ], "stickney": [ "ceres_stickney" ] },
         "premium": { "k_permille": 300, "cap_permille": 500 },
         "emergency": { "org": "freeport_exchange", "ratio_permille": 1500, "goods": ["provisions", "volatiles", "propellant"], "intake": 100 }
       }
@@ -2489,6 +2788,114 @@
         "routes": { "deimos": [ "ligeia_voltaire" ], "luna": [ "ligeia_aitken" ] },
         "premium": { "k_permille": 300, "cap_permille": 500 },
         "emergency": { "org": "selk_townships", "ratio_permille": 1500, "goods": ["provisions"], "intake": 100 }
+      }
+    },
+    "commons_port": {
+      "kind": "port",
+      "def": {
+        "location": "freeport_commons",
+        "venue": "commons",
+        "area": "neighborhood.freeport_commons",
+        "gallery": "neighborhood.freeport_commons.room.pad",
+        "routes": { "ceres": [ "commons_ceres" ] },
+        "site": { "name": "Freeport Commons", "issuer": "freeport_registry", "zone": "core",
+                  "tenure": { "default": "commons" },
+                  "blocks": {
+                        "A": { "worked_permille": 400 },
+                        "B": { "worked_permille": 400 },
+                        "C": { "worked_permille": 400 },
+                        "D": { "worked_permille": 400 },
+                        "E": { "worked_permille": 400 },
+                        "F": { "worked_permille": 400 },
+                        "G": { "worked_permille": 400 },
+                        "H": { "worked_permille": 400 },
+                        "I": { "worked_permille": 400 },
+                        "J": { "worked_permille": 400 },
+                        "K": { "worked_permille": 400 },
+                        "L": { "worked_permille": 400 },
+                        "M": { "worked_permille": 400 },
+                        "N": { "worked_permille": 400 },
+                        "O": { "worked_permille": 400 },
+                        "P": { "worked_permille": 400 }
+                      } }
+      }
+    },
+    "kerwan_port": {
+      "kind": "port",
+      "def": {
+        "location": "kerwan_floor",
+        "venue": "kerwan",
+        "area": "neighborhood.kerwan_floor",
+        "gallery": "neighborhood.kerwan_floor.room.pad",
+        "routes": { "ceres": [ "kerwan_ceres" ] },
+        "site": { "name": "Kerwan Floor", "issuer": "freeport_registry", "zone": "core",
+                  "tenure": { "default": "open" } }
+      }
+    },
+    "ahuna_port": {
+      "kind": "port",
+      "def": {
+        "location": "ahuna_flank",
+        "venue": "ahuna",
+        "area": "neighborhood.ahuna_flank",
+        "gallery": "neighborhood.ahuna_flank.room.pad",
+        "routes": { "ceres": [ "ahuna_ceres" ] },
+        "site": { "name": "Ahuna Flank", "issuer": "freeport_registry", "zone": "core",
+                  "tenure": { "default": "open" } }
+      }
+    },
+    "juling_port": {
+      "kind": "port",
+      "def": {
+        "location": "juling_shadow",
+        "venue": "juling",
+        "area": "neighborhood.juling_shadow",
+        "gallery": "neighborhood.juling_shadow.room.pad",
+        "routes": { "ceres": [ "juling_ceres" ] },
+        "site": { "name": "Juling Shadow", "issuer": "freeport_registry", "zone": "core",
+                  "tenure": { "default": "open" } }
+      }
+    },
+    "occator_port": {
+      "kind": "port",
+      "def": {
+        "location": "occator_rim",
+        "venue": "occator",
+        "area": "neighborhood.occator_rim",
+        "gallery": "neighborhood.occator_rim.room.pad",
+        "routes": { "ceres": [ "occator_ceres" ] },
+        "site": { "name": "Occator Rim", "issuer": "freeport_registry", "zone": "core",
+                  "tenure": { "default": "open" },
+                  "blocks": {
+                        "A": { "prospectivity": 1 },
+                        "B": { "prospectivity": 1 },
+                        "C": { "prospectivity": 1 },
+                        "D": { "prospectivity": 1 },
+                        "E": { "prospectivity": 1 },
+                        "F": { "tenure": "held", "holder": "occator" },
+                        "G": { "tenure": "held", "holder": "occator" },
+                        "H": { "prospectivity": 1 },
+                        "I": { "prospectivity": 1 },
+                        "J": { "tenure": "held", "holder": "occator" },
+                        "K": { "tenure": "held", "holder": "occator" },
+                        "L": { "prospectivity": 1 },
+                        "M": { "prospectivity": 1 },
+                        "N": { "prospectivity": 1 },
+                        "O": { "prospectivity": 1 },
+                        "P": { "prospectivity": 1 }
+                      } }
+      }
+    },
+    "rheasilvia_port": {
+      "kind": "port",
+      "def": {
+        "location": "rheasilvia_commons",
+        "venue": "rheasilvia",
+        "area": "neighborhood.rheasilvia_commons",
+        "gallery": "neighborhood.rheasilvia_commons.room.pad",
+        "routes": { "ceres": [ "rheasilvia_ceres" ] },
+        "site": { "name": "Rheasilvia Commons", "issuer": "freeport_registry", "zone": "core",
+                  "tenure": { "default": "commons" } }
       }
     }
   }

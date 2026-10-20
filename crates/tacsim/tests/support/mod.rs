@@ -55,6 +55,8 @@ pub mod holdings;
 pub mod moon;
 pub mod rig;
 pub mod scripted;
+/// **Doc 20 cut SM.2**: the mining sites stripped away for the v8-shaped lane variants.
+pub mod sites;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};

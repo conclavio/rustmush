@@ -313,6 +313,19 @@ account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
+path = "crates/tacsim/tests/sites.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.2, for the voyage.rs row's reason: the site tests charter their
+pilot through `+coop/enrol` and fly the hops to the pads, and the enrolment rule
+is per gateway account and fails closed on an unmapped character. The oracle is
+boot-hydrated by the host from the store, which a `TestWorld` has none of, so the
+rig installs the fixed account map — the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
 path = "crates/tacsim/tests/sale.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

@@ -97,6 +97,26 @@ pub struct PortMap {
     /// intake), kept while the listing stands or until the clerk re-posts it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub emergencies: BTreeMap<CanonicalId, BidRow>,
+    /// **Doc 20 cut SM.2 (§3.1, §3.4)**: a site's block place Things and its
+    /// site clerk, once laid up (`crate::port::site::lay_up`). Skipped when
+    /// absent, so a station's map encodes as before and [`PORT_MAP_SCHEMA`]
+    /// stays 1 (the IC4 L9 precedent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<SiteRow>,
+}
+
+/// **A site's row** (doc 20 cut SM.2; §3.1, §3.4): the sixteen block place
+/// Things and the site clerk the applier laid up in the site's host room. SM.6
+/// makes `tacsim.sites` their industry owner and grants the clerk; nothing is
+/// granted here.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SiteRow {
+    /// Block letter (`A`..=`P`) → the block's place Thing, `ObjId.0`; sixteen
+    /// once complete.
+    pub blocks: BTreeMap<String, u32>,
+    /// The site clerk Thing, `ObjId.0` (SM.6's opener grant names it).
+    pub clerk: Option<u32>,
 }
 
 /// **The port's stock clerk** (doc 18 cut IC8; D-18-26): the Thing the
@@ -190,6 +210,7 @@ impl PortMap {
             vendors: BTreeMap::new(),
             boards: BTreeMap::new(),
             emergencies: BTreeMap::new(),
+            site: None,
         }
     }
 

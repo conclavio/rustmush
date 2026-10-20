@@ -1,0 +1,292 @@
+{
+  "manifest": {
+    "id": "neighborhood.kerwan_floor",
+    "version": 1,
+    "kind": "neighborhood",
+    "digest": "3501aa8a84a862c4a4c3e06595e3d5f434b5fcd46b6b5e03ab02f00137129c6e",
+    "requires": [
+      {
+        "id": "region.kerwan_floor",
+        "version": 1
+      }
+    ]
+  },
+  "brief": {
+    "prose": "Kerwan Floor lies on the smoothed floor of Kerwan, Ceres's oldest great basin, south of the equator: open ground under the Registry, rockier and drier than the Occator workings, the regolith thin over a hard bed that rings under a drill."
+  },
+  "entries": {
+    "neighborhood": {
+      "kind": "neighborhood",
+      "def": {
+        "region": "region.kerwan_floor",
+        "locality": "locality.kerwan_floor",
+        "name": "Kerwan Floor",
+        "setting": "surface",
+        "representation": "authored",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            0
+          ],
+          [
+            2560,
+            2560
+          ],
+          [
+            0,
+            2560
+          ]
+        ],
+        "room_budget": {
+          "target": 1,
+          "maximum": 1
+        },
+        "hydration": {
+          "enabled": false,
+          "max_player_sites": 0
+        },
+        "resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350: the sites",
+          "style_guide": "Present tense, no second person, no named NPCs in a room desc. A site is a Registry pad on open ground: a cleared landing square, tie-down rings, a painted pad number, and the body's own ground around it. Nothing is built here but the pad; the horizon is close and the light is hard. Desc length medium (60-120 words); details are one or two sentences, dry, with a fact in them.",
+          "vocabulary": [
+            "pad",
+            "tie-down",
+            "regolith",
+            "ice",
+            "crater",
+            "rim",
+            "Registry",
+            "survey stake",
+            "block",
+            "commons",
+            "claim",
+            "Ceres",
+            "Vesta",
+            "Freeport",
+            "horizon"
+          ],
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "shields",
+            "stardate",
+            "hangar bay",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "room.pad": {
+      "kind": "room",
+      "def": {
+        "name": "Kerwan Floor Pad",
+        "short_desc": "A cleared landing square on the smooth floor of Kerwan basin, the ground dark and stony.",
+        "desc": "The pad is a cleared square of packed regolith with tie-down rings at its edges and the Registry number FR-14 stencilled in its centre. The ground around it is darker than the Freeport's, a thin grey dust over stony ground that crunches under a boot. Kerwan's floor runs flat to a horizon only a few kilometres off; its old rim is too far and too worn to stand above it. Small fresh craters pock the plain, each with a bright apron of thrown rock.",
+        "surface": "ground",
+        "footprint": {
+          "rect": [
+            [
+              1260,
+              1260
+            ],
+            [
+              1300,
+              1300
+            ]
+          ]
+        },
+        "kind": "outdoor",
+        "markers": [
+          "port.dock"
+        ],
+        "details": {
+          "registry stake": "A survey stake beside the pad marks the site's centre: a steel post with a brass cap, the site's name and its coordinates stamped in.",
+          "thrown rock": "Angular blocks sprayed out from the small craters, fist-sized to cart-sized. None of them has had time to soften."
+        }
+      }
+    },
+    "feature.crater_1": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            620,
+            600
+          ],
+          [
+            597,
+            671
+          ],
+          [
+            537,
+            714
+          ],
+          [
+            463,
+            714
+          ],
+          [
+            403,
+            671
+          ],
+          [
+            380,
+            600
+          ],
+          [
+            403,
+            529
+          ],
+          [
+            463,
+            486
+          ],
+          [
+            537,
+            486
+          ],
+          [
+            597,
+            529
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    },
+    "feature.crater_2": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            2180,
+            1950
+          ],
+          [
+            2165,
+            1997
+          ],
+          [
+            2125,
+            2026
+          ],
+          [
+            2075,
+            2026
+          ],
+          [
+            2035,
+            1997
+          ],
+          [
+            2020,
+            1950
+          ],
+          [
+            2035,
+            1903
+          ],
+          [
+            2075,
+            1874
+          ],
+          [
+            2125,
+            1874
+          ],
+          [
+            2165,
+            1903
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    },
+    "feature.crater_3": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            1960,
+            500
+          ],
+          [
+            1949,
+            535
+          ],
+          [
+            1919,
+            557
+          ],
+          [
+            1881,
+            557
+          ],
+          [
+            1851,
+            535
+          ],
+          [
+            1840,
+            500
+          ],
+          [
+            1851,
+            465
+          ],
+          [
+            1881,
+            443
+          ],
+          [
+            1919,
+            443
+          ],
+          [
+            1949,
+            465
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    }
+  }
+}

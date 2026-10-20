@@ -254,6 +254,80 @@ pub const STATION_SOURCES: [(&str, &str); 10] = [
     (LIGEIA_REGION_PACK, LIGEIA_REGION_JSON),
     (LIGEIA_PACK, LIGEIA_JSON),
 ];
+/// Freeport Commons's region pack (Ceres; doc 20 cut SM.2).
+pub const COMMONS_REGION_PACK: &str = "region.freeport_commons";
+/// Freeport Commons: a mining site's pad (doc 20 cut SM.2, §3.1).
+pub const COMMONS_PACK: &str = "neighborhood.freeport_commons";
+/// `crates/tacsim/content/atlas/region.freeport_commons.json`.
+pub const COMMONS_REGION_JSON: &str =
+    include_str!("../../content/atlas/region.freeport_commons.json");
+/// `crates/tacsim/content/atlas/neighborhood.freeport_commons.json`.
+pub const COMMONS_JSON: &str =
+    include_str!("../../content/atlas/neighborhood.freeport_commons.json");
+/// Kerwan Floor's region pack (Ceres; doc 20 cut SM.2).
+pub const KERWAN_REGION_PACK: &str = "region.kerwan_floor";
+/// Kerwan Floor: a mining site's pad (doc 20 cut SM.2, §3.1).
+pub const KERWAN_PACK: &str = "neighborhood.kerwan_floor";
+/// `crates/tacsim/content/atlas/region.kerwan_floor.json`.
+pub const KERWAN_REGION_JSON: &str = include_str!("../../content/atlas/region.kerwan_floor.json");
+/// `crates/tacsim/content/atlas/neighborhood.kerwan_floor.json`.
+pub const KERWAN_JSON: &str = include_str!("../../content/atlas/neighborhood.kerwan_floor.json");
+/// Ahuna Flank's region pack (Ceres; doc 20 cut SM.2).
+pub const AHUNA_REGION_PACK: &str = "region.ahuna_flank";
+/// Ahuna Flank: a mining site's pad (doc 20 cut SM.2, §3.1).
+pub const AHUNA_PACK: &str = "neighborhood.ahuna_flank";
+/// `crates/tacsim/content/atlas/region.ahuna_flank.json`.
+pub const AHUNA_REGION_JSON: &str = include_str!("../../content/atlas/region.ahuna_flank.json");
+/// `crates/tacsim/content/atlas/neighborhood.ahuna_flank.json`.
+pub const AHUNA_JSON: &str = include_str!("../../content/atlas/neighborhood.ahuna_flank.json");
+/// Juling Shadow's region pack (Ceres; doc 20 cut SM.2).
+pub const JULING_REGION_PACK: &str = "region.juling_shadow";
+/// Juling Shadow: a mining site's pad (doc 20 cut SM.2, §3.1).
+pub const JULING_PACK: &str = "neighborhood.juling_shadow";
+/// `crates/tacsim/content/atlas/region.juling_shadow.json`.
+pub const JULING_REGION_JSON: &str = include_str!("../../content/atlas/region.juling_shadow.json");
+/// `crates/tacsim/content/atlas/neighborhood.juling_shadow.json`.
+pub const JULING_JSON: &str = include_str!("../../content/atlas/neighborhood.juling_shadow.json");
+/// Occator Rim's region pack (Ceres; doc 20 cut SM.2).
+pub const OCCATOR_REGION_PACK: &str = "region.occator_rim";
+/// Occator Rim: a mining site's pad (doc 20 cut SM.2, §3.1).
+pub const OCCATOR_PACK: &str = "neighborhood.occator_rim";
+/// `crates/tacsim/content/atlas/region.occator_rim.json`.
+pub const OCCATOR_REGION_JSON: &str = include_str!("../../content/atlas/region.occator_rim.json");
+/// `crates/tacsim/content/atlas/neighborhood.occator_rim.json`.
+pub const OCCATOR_JSON: &str = include_str!("../../content/atlas/neighborhood.occator_rim.json");
+/// Rheasilvia Commons's region pack (Vesta; doc 20 cut SM.2).
+pub const RHEASILVIA_REGION_PACK: &str = "region.rheasilvia_commons";
+/// Rheasilvia Commons: a mining site's pad (doc 20 cut SM.2, §3.1).
+pub const RHEASILVIA_PACK: &str = "neighborhood.rheasilvia_commons";
+/// `crates/tacsim/content/atlas/region.rheasilvia_commons.json`.
+pub const RHEASILVIA_REGION_JSON: &str =
+    include_str!("../../content/atlas/region.rheasilvia_commons.json");
+/// `crates/tacsim/content/atlas/neighborhood.rheasilvia_commons.json`.
+pub const RHEASILVIA_JSON: &str =
+    include_str!("../../content/atlas/neighborhood.rheasilvia_commons.json");
+/// **The twelve site packs** in `requires` order (doc 20 cut SM.2, §3.1): each
+/// region before its neighborhood, in the lane's site order — Freeport Commons, Kerwan
+/// Floor, Ahuna Flank, Juling Shadow, Occator Rim (Ceres), Rheasilvia Commons (Vesta).
+/// Each is a 2,560 m surface region and one pad room carrying `port.dock`; they ride
+/// [`station_packs`] after [`STATION_SOURCES`], so every place that applies the lane
+/// has their pads first.
+pub const SITE_SOURCES: [(&str, &str); 12] = [
+    (COMMONS_REGION_PACK, COMMONS_REGION_JSON),
+    (COMMONS_PACK, COMMONS_JSON),
+    (KERWAN_REGION_PACK, KERWAN_REGION_JSON),
+    (KERWAN_PACK, KERWAN_JSON),
+    (AHUNA_REGION_PACK, AHUNA_REGION_JSON),
+    (AHUNA_PACK, AHUNA_JSON),
+    (JULING_REGION_PACK, JULING_REGION_JSON),
+    (JULING_PACK, JULING_JSON),
+    (OCCATOR_REGION_PACK, OCCATOR_REGION_JSON),
+    (OCCATOR_PACK, OCCATOR_JSON),
+    (RHEASILVIA_REGION_PACK, RHEASILVIA_REGION_JSON),
+    (RHEASILVIA_PACK, RHEASILVIA_JSON),
+];
+/// The rooms each site pack makes: the pad (doc 20 §3.1).
+pub const SITE_ROOMS: usize = 1;
 /// The rooms Ceres Freeport's pack makes (18a §1.3).
 pub const CERES_ROOMS: usize = 13;
 /// The rooms Stickney Yards' pack makes (18a §2.3).
@@ -624,10 +698,16 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// Deimos about Mars, Titan about Saturn — and Stickney Yards on Phobos; **v8 since
 /// doc 19 cut A.8**: the three moon ports — Aitken Highport on Luna, Voltaire
 /// Anchorage on Deimos, Ligeia Terminal on Titan — their six direct routes, Ceres's
-/// `luna` key and the programme's two reference rows for goods v2). The port
-/// readiness report (`crate::port::readiness`) reads the latched version against it,
-/// and every test that names the lane's version reads it here.
-pub const LANE_VERSION: u32 = 8;
+/// `luna` key and the programme's two reference rows for goods v2; **v9 since doc 20
+/// cut SM.2**: the six mining sites — Freeport Commons, Kerwan Floor, Ahuna Flank,
+/// Juling Shadow and Occator Rim on Ceres, Rheasilvia Commons on Vesta — as places of
+/// role `extraction` with their coordinates, six vendor-less site ports, twelve routes
+/// (five same-body hops and the Rheasilvia passage, each both ways), the eight bodies'
+/// surface figures, Ceres's and Vesta's geology tables, the Freeport's coordinates,
+/// the Freeport Registry org and Ceres's six site routes keys). The port readiness
+/// report (`crate::port::readiness`) reads the latched version against it, and every
+/// test that names the lane's version reads it here.
+pub const LANE_VERSION: u32 = 9;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.
@@ -802,18 +882,22 @@ pub fn boot_packs() -> Result<Vec<mush_content::Pack>, String> {
 }
 
 /// The station packs, loaded and digest-verified, in apply order
-/// ([`STATION_SOURCES`]). They are the 2350 game's content: the production boot
-/// list appends them after [`boot_packs`] when `[tacsim].enabled` (doc 18 §4.7),
-/// and the atlas shelves them always. [`boot_packs`] itself stays the proving
-/// ground's two, because the arena fixtures `pop()` the arena off its end.
+/// ([`STATION_SOURCES`], then since doc 20 cut SM.2 the twelve [`SITE_SOURCES`]: a
+/// site port's apply needs its pad room, so the site packs ride wherever the lane is
+/// applied). They are the 2350 game's content: the production boot list appends them
+/// after [`boot_packs`] when `[tacsim].enabled` (doc 18 §4.7), and the atlas shelves
+/// them always. [`boot_packs`] itself stays the proving ground's two, because the
+/// arena fixtures `pop()` the arena off its end.
 ///
 /// # Errors
 ///
 /// A message naming the pack when a shipped pack does not verify — a build error,
-/// since `crates/tacsim/tests/stations.rs` pins all ten digests.
+/// since `crates/tacsim/tests/stations.rs` pins the ten station digests and
+/// `crates/tacsim/tests/sites.rs` the twelve site digests.
 pub fn station_packs() -> Result<Vec<mush_content::Pack>, String> {
     STATION_SOURCES
         .iter()
+        .chain(SITE_SOURCES.iter())
         .map(|(name, json)| {
             mush_content::load_pack(json).map_err(|error| format!("{name}: {error}"))
         })

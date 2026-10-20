@@ -1105,7 +1105,7 @@ fn ic9_undock_refusals_move_nothing() {
         out.contains(
             &VIA_UNKNOWN
                 .replace("{via}", "nowhere")
-                .replace("{list}", "Aitken Highport, Ceres Freeport, Kirkwood Depot, Ligeia Terminal, Stickney Yards, Voltaire Anchorage")
+                .replace("{list}", "Ahuna Flank, Aitken Highport, Ceres Freeport, Freeport Commons, Juling Shadow, Kerwan Floor, Kirkwood Depot, Ligeia Terminal, Occator Rim, Rheasilvia Commons, Stickney Yards, Voltaire Anchorage")
         ),
         "{out}"
     );
@@ -1152,7 +1152,7 @@ fn ic9_undock_refusals_move_nothing() {
         out.contains(
             &NO_ROUTE
                 .replace("{here}", "Ceres Freeport")
-                .replace("{list}", "Aitken Highport, Stickney Yards")
+                .replace("{list}", "Ahuna Flank, Freeport Commons, Juling Shadow, Kerwan Floor, Aitken Highport, Occator Rim, Rheasilvia Commons, Stickney Yards")
         ),
         "{out}"
     );

@@ -53,6 +53,7 @@ use crate::definitions::goods::Consumable;
 use crate::definitions::logistics::{MASS_KG, VOLUME_L};
 use crate::port::burn::{BURN_KEY_PREFIX, HullSpec, consumable_good, hull_spec_of};
 use crate::port::capacity::{self, Compartment, format_m3, format_tonnes};
+use crate::port::chart::PLAN_WINDOW_DAYS;
 use crate::port::coop::{helm_of, name_of, port_name};
 use crate::port::def::PortDef;
 use crate::port::families::{MAX_TICKET_OCCUPANTS, PassagePlan, PortHandles, Ticket, TicketId};
@@ -60,7 +61,7 @@ use crate::port::gauges;
 use crate::port::map::PortMap;
 use crate::port::passage::{
     DEFAULT_THROTTLE_PERMILLE, MAX_THROTTLE_PERMILLE, MIN_THROTTLE_PERMILLE, PlanError,
-    RoutePolicy, choose_route, flip_profile, payload_kg,
+    RoutePolicy, choose_route, flip_profile, payload_kg, route_landing_floor,
 };
 use crate::port::readiness::report_ports;
 use crate::port::ship::{
@@ -119,6 +120,26 @@ pub struct Voyage {
     pub told: u32,
     /// The passage filed and not yet launched, lapsed or stood down.
     pub pending: Option<PendingVoyage>,
+    /// **Doc 20 cut SM.2 (Q-20-7)** — the launched passage's site arrival, carried from
+    /// the pending passage when the launch lands (`launch_step`) and read world-only by
+    /// the arrival lines (the carrier hook cannot read the pools); `None` for a passage
+    /// to a station, and cleared by the next filing. Skipped when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrival: Option<SiteArrival>,
+}
+
+/// **What a hull bound for a site will arrive with** (doc 20 cut SM.2; Q-20-7): the
+/// locker after the passage's own crew-days, the crew-days the filing held back for the
+/// leg home, and the souls aboard — what the arrival's stores line is computed from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SiteArrival {
+    /// The locker at arrival, crew-days.
+    pub locker: u64,
+    /// The leg home's reserve, crew-days.
+    pub home_crew_days: u32,
+    /// The souls aboard.
+    pub souls: u32,
 }
 
 /// **A filed passage** (doc 18 §4.4 "departing"): everything the burn's prepare
@@ -155,6 +176,10 @@ pub struct PendingVoyage {
     pub filed_ic: i64,
     /// The real second it was filed (`World::now`).
     pub filed_at: i64,
+    /// **Doc 20 cut SM.2 (Q-20-7)** — for a passage to a site, what the hull will arrive
+    /// with ([`SiteArrival`]); `None` otherwise. Skipped when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrival: Option<SiteArrival>,
 }
 
 impl Voyage {
@@ -306,6 +331,25 @@ pub const THROTTLE_FITS: &str = "Throttle: with the tank and locker full, thrott
 /// The same line when no throttle in the band fits.
 pub const THROTTLE_NONE: &str =
     "Throttle: no throttle from {min} permille fits this load even with the tank and locker full.";
+/// **The `Throttle:` line on a site's pad** (doc 20 cut SM.2, decision 7): nothing is
+/// sold on a pad, so the line reads the tank and the locker aboard, never filled — the
+/// throttle the filing held the leg home back at (`SITE_HOME`) is one that fits.
+pub const THROTTLE_FITS_PAD: &str = "Throttle: with the tank and locker as they stand, throttle={throttle} fits: burn {burn} t, {days} crew-days, {passage} IC days.";
+/// The same line on a pad when no throttle from the landing floor fits.
+pub const THROTTLE_NONE_PAD: &str = "Throttle: no throttle from {min} permille fits this load with the tank and locker as they stand.";
+/// **The `Throttle:` line for a site destination** (doc 20 cut SM.2, the lead's
+/// pre-commit item 2): the departure holds back the leg home (`SITE_HOME`), so the line
+/// names the highest throttle from the destination's landing floor at which the passage
+/// out and the leg home together fit: `{pools}` (`full`, or `as they stand` on a pad),
+/// `{throttle}`, `{burn}` and `{home}` (tonnes out and held back), `{days}` and
+/// `{home_days}` (crew-days out and held back), `{passage}` (IC days).
+pub const THROTTLE_FITS_SITE: &str = "Throttle: with the tank and locker {pools}, throttle={throttle} fits the passage and the leg home: burn {burn} t and {home} t held back, {days} and {home_days} crew-days, {passage} IC days.";
+/// The same when no throttle fits today but the landing floor does on a later day of
+/// `+chart`'s window (the IC year `+chart <port>` scans, `chart::WINDOW_DAYS`): `{min}`
+/// (the floor), `{pools}`, `{date}`, `{offset}` (IC days from now).
+pub const THROTTLE_LATER_SITE: &str = "Throttle: no throttle from {min} permille fits the passage and the leg home today with the tank and locker {pools}; throttle={min} does on {date} (in {offset} IC days).";
+/// The same when no day of that window fits: `{min}`, `{pools}`, `{window}` (365).
+pub const THROTTLE_NONE_SITE: &str = "Throttle: no throttle from {min} permille fits the passage and the leg home with the tank and locker {pools}, today or in the next {window} IC days.";
 /// The planner could not answer: `{name}` (`+ship/plan` without the last sentence).
 pub const PLAN_DARK: &str = "The {name}'s passage cannot be planned right now. Nothing was burned.";
 /// `+ship/plan` under way: `{name}`.
@@ -323,6 +367,30 @@ pub const UNDOCK_USAGE: &str = "Usage: +ship/undock <port>";
 pub const NOTHING_BURNED: &str = " Nothing was burned.";
 /// `+ship/plan`'s closing line.
 pub const NOTHING_WRITTEN: &str = "Nothing was written.";
+/// **Doc 20 cut SM.2**: the arrival at a site, aboard (§1 beat 3): `{name}`, `{port}`.
+pub const SETTLES: &str = "{name} settles onto the pad at {port}.";
+/// The arrival at a site for an absent tenant: `{hhmm}`, `{name}`, `{port}`. With the
+/// stores line it is the once-per-stay short-rations notice (decision 8).
+pub const SETTLED_NOTICE: &str = "{hhmm} UTC {name} settled on the pad at {port}.";
+/// **The landing law refused** (D-20-3): `{port}` the site, `{body}` its body's display
+/// name, `{name}` the hull, `{twr}` the thrust-to-weight in hundredths, floored.
+pub const LANDING_REFUSED: &str = "{port} is on {body}: at this load and throttle the {name} lifts {twr} times her weight there, under the 1.20 a landing needs. Nothing was burned.";
+/// A departure for a site whose tank cannot hold the leg home back too: `{port}`,
+/// `{burn}`, `{tank}`.
+pub const SITE_TANK_SHORT: &str = "The passage to {port} and the leg home burn {burn} t of reaction mass; the tank holds {tank} t. Nothing was burned.";
+/// A departure for a site whose locker cannot hold the leg home back too: `{port}`,
+/// `{days}`, `{have}`.
+pub const SITE_STORES_SHORT: &str = "The passage to {port} and the leg home need {days} crew-days of stores; the locker holds {have}. Nothing was burned.";
+/// `+ship/plan`'s leg-home line for a site destination: `{port}`, `{burn}`, `{days}`,
+/// `{throttle}`.
+pub const SITE_HOME: &str = "Leg home from {port}: burn {burn} t, {days} crew-days at throttle={throttle}, the most in the next 30 IC days; the filing holds both back.";
+/// The crew hear a lift from a pad: `{name}`.
+pub const LIFT_SEALS: &str = "The {name}'s lock seals. The pad drops away under the drive.";
+/// `+ship/lift` with no destination.
+pub const LIFT_USAGE: &str = "Usage: +ship/lift <port>";
+/// **Doc 20 cut SM.2 (lead override 3)**: a departure to a site whose readiness lines are
+/// not all ready: `{site}`.
+pub const SITE_CLOSED: &str = "{site} is closed: its pad is not ready.";
 
 /// **The waypoint details** (lead ruling L9: code data keyed by the lane place id,
 /// so no pack version moves): the clause [`BOUNDARY`]'s `{detail}` takes.
@@ -693,6 +761,47 @@ pub(crate) fn arrival_lines(w: &World, journey: &mush_sim::CarrierJourney) -> (S
     let hull = journey.root();
     let name = name_of(w, hull);
     let destination = journey.route().endpoints().1;
+    // Doc 20 cut SM.2 (§1 beat 3): a site's pad — the hull settles, and the stores line
+    // (computed world-only from the filing's arrival row; at arrival the effective
+    // stores equal the row's locker) follows. The notice is the once-per-stay
+    // short-rations notice (decision 8).
+    let site = lane_ports(w).into_iter().find_map(|(def, map)| {
+        let map = map?;
+        (def.site.is_some() && map.host == Some(destination.0)).then(|| port_name(def))
+    });
+    if let Some(port) = site {
+        let stores = match w
+            .module_state::<TacsimStore>()
+            .map_or(VoyageState::Absent, |store| store.voyage_state(hull))
+        {
+            // Read at the landing instant itself: the hook may run a tick past it, and
+            // nothing of the stay is owed yet (⌈0⌉ days), so the figure is the row's locker.
+            VoyageState::Present(voyage) => voyage.arrival.as_ref().and_then(|row| {
+                let since = journey.arrival_at()?;
+                crate::port::site::stores_line(
+                    w,
+                    row.locker,
+                    row.souls,
+                    row.home_crew_days,
+                    since,
+                    since,
+                )
+            }),
+            VoyageState::Absent | VoyageState::Unreadable => None,
+        };
+        let tail = stores.map_or_else(String::new, |line| format!(" {line}"));
+        let settles = format!(
+            "{}{tail}",
+            SETTLES.replace("{name}", &name).replace("{port}", &port)
+        );
+        let notice = format!(
+            "{}{tail}",
+            SETTLED_NOTICE
+                .replace("{name}", &name)
+                .replace("{port}", &port)
+        );
+        return (settles, notice);
+    }
     let (port, gallery) = match port_of_host(w, destination) {
         Some((port, map)) => (
             port,
@@ -1014,7 +1123,7 @@ fn options_of(w: &World, args: &PlanArgs) -> Result<PassageOptions, CmdError> {
 }
 
 /// The basis flown under `options`.
-fn apply_options(mut basis: Basis, options: &PassageOptions) -> Basis {
+pub(crate) fn apply_options(mut basis: Basis, options: &PassageOptions) -> Basis {
     basis.spec.drive.throttle_permille = options.throttle_permille;
     basis.policy = options.policy;
     basis.via = options.via.clone();
@@ -1195,21 +1304,29 @@ pub(crate) fn plan_on(
     basis: &Basis,
     routes: &[CanonicalId],
 ) -> Result<PassagePlan, PlanError> {
-    let store = w
-        .module_state::<TacsimStore>()
-        .ok_or_else(|| PlanError::Unreadable {
-            what: "the layer's state".to_owned(),
-        })?;
-    let lane = CanonicalId::new(LANE_PACK).map_err(|_| PlanError::Overflow)?;
-    let loaded = store
-        .pack(&lane, basis.version)
-        .ok_or_else(|| PlanError::Unreadable {
-            what: format!("the lane at version {}", basis.version),
-        })?;
-    let sky = Sky::from_pack(&loaded.pack, &store.config().time.ephemeris);
+    let pack = lane_pack(w, basis.version)?;
+    let sky = lane_sky(w, pack)?;
+    plan_on_sky((&sky, pack), basis, routes)
+}
+
+/// [`plan_on`] over a sky and lane the caller built once (doc 20 cut SM.2's fixer, the
+/// reviewer's SM2-FX-2): a caller that plans many readings — the throttle hint's bisection
+/// and its window scan, `+ship/plan`'s Window line — builds the lane's [`Sky`] once
+/// ([`lane_sky_of`]) instead of once a reading. `lane` is `(sky, pack)` for the basis's
+/// latched version; the answer is [`plan_on`]'s.
+///
+/// # Errors
+///
+/// Any planner refusal.
+pub(crate) fn plan_on_sky(
+    lane: (&Sky, &crate::pack::RulesPack),
+    basis: &Basis,
+    routes: &[CanonicalId],
+) -> Result<PassagePlan, PlanError> {
+    let (sky, pack) = lane;
     choose_route(
-        &sky,
-        &loaded.pack,
+        sky,
+        pack,
         routes,
         &basis.spec.drive,
         basis.spec.dry_kg,
@@ -1218,6 +1335,258 @@ pub(crate) fn plan_on(
         basis.depart_ic,
         basis.policy,
         basis.via.as_ref(),
+    )
+}
+
+/// **The lane pack at `version`** (factored out of [`plan_on`] by doc 20 cut SM.2, for the
+/// throttle hint's landing floor and the site reserve): the store's exact `(id, version)`.
+///
+/// # Errors
+///
+/// [`PlanError::Unreadable`] when the layer or that version is not loaded.
+pub(crate) fn lane_pack(w: &World, version: u32) -> Result<&crate::pack::RulesPack, PlanError> {
+    let store = w
+        .module_state::<TacsimStore>()
+        .ok_or_else(|| PlanError::Unreadable {
+            what: "the layer's state".to_owned(),
+        })?;
+    let lane = CanonicalId::new(LANE_PACK).map_err(|_| PlanError::Overflow)?;
+    store
+        .pack(&lane, version)
+        .map(|loaded| &loaded.pack)
+        .ok_or_else(|| PlanError::Unreadable {
+            what: format!("the lane at version {version}"),
+        })
+}
+
+/// **The latched lane at `version` and its sky** (the SM.2 fixer, SM2-FX-2): built once for
+/// a caller that plans many readings ([`plan_on_sky`], [`site_reserve_on`]).
+///
+/// # Errors
+///
+/// [`PlanError::Unreadable`] when the layer or that version is not loaded.
+pub(crate) fn lane_sky_of(
+    w: &World,
+    version: u32,
+) -> Result<(Sky, &crate::pack::RulesPack), PlanError> {
+    let pack = lane_pack(w, version)?;
+    Ok((lane_sky(w, pack)?, pack))
+}
+
+/// The sky over `pack` under this world's ephemeris.
+fn lane_sky(w: &World, pack: &crate::pack::RulesPack) -> Result<Sky, PlanError> {
+    let store = w
+        .module_state::<TacsimStore>()
+        .ok_or_else(|| PlanError::Unreadable {
+            what: "the layer's state".to_owned(),
+        })?;
+    Ok(Sky::from_pack(pack, &store.config().time.ephemeris))
+}
+
+// ---- doc 20 cut SM.2: sites --------------------------------------------------------
+
+/// The lane's port entry whose venue is `venue`, with its entry id, when it is a site.
+pub(crate) fn site_port<'a>(
+    w: &'a World,
+    venue: &CanonicalId,
+) -> Option<(CanonicalId, &'a PortDef)> {
+    let store = w.module_state::<TacsimStore>()?;
+    let (_, ports) = report_ports(store, w);
+    ports
+        .into_iter()
+        .find(|(_, def)| def.venue == *venue && def.site.is_some())
+}
+
+/// The kilograms one unit of a consumable weighs (the goods table's mass measure).
+fn consumable_kg(goods: &crate::definitions::GoodsTable, kind: Consumable) -> Option<u64> {
+    let mass = CanonicalId::new(MASS_KG).ok()?;
+    let row = goods.good(&consumable_good(goods, kind)?)?;
+    row.measures.get(&mass).copied()
+}
+
+/// **The leg home a departure for a site holds back** (doc 20 cut SM.2, decision 7): the
+/// pure [`HomeReserve`](crate::port::passage::HomeReserve), named for this module's readers.
+pub(crate) type Reserve = crate::port::passage::HomeReserve;
+
+/// **The site reserve** (decision 7; §3.3's "the hop home is always plannable"): the
+/// site's routes for the departure berth's venue (`from_venue`) if it lists it, else its
+/// first listed routes key; the home payload is the basis's with the tank and the locker
+/// at what the outbound burn and crew-days leave of them (none when short); the rest is
+/// [`home_reserve`](crate::port::passage::home_reserve) over the latched lane's sky from
+/// the passage's arrival, over `window_days` (every departure's is [`PLAN_WINDOW_DAYS`];
+/// the throttle hint's `0` reads the arrival day alone, a lower bound of the reserve that
+/// spares the window's plans for a throttle or a day that overruns on it already).
+///
+/// # Errors
+///
+/// [`PlanError::Landing`] when no home route lifts at the home payload, and any other
+/// planner refusal.
+pub(crate) fn site_reserve(
+    w: &World,
+    basis: &Basis,
+    out: &PassagePlan,
+    site: &PortDef,
+    from_venue: &CanonicalId,
+    window_days: i64,
+) -> Result<Reserve, PlanError> {
+    let (sky, pack) = lane_sky_of(w, basis.version)?;
+    site_reserve_on(w, (&sky, pack), basis, out, site, from_venue, window_days)
+}
+
+/// [`site_reserve`] over a sky and lane the caller built once ([`lane_sky_of`]; the SM.2
+/// fixer, SM2-FX-2): `lane` is `(sky, pack)` for the basis's latched version.
+///
+/// # Errors
+///
+/// [`site_reserve`]'s.
+pub(crate) fn site_reserve_on(
+    w: &World,
+    lane: (&Sky, &crate::pack::RulesPack),
+    basis: &Basis,
+    out: &PassagePlan,
+    site: &PortDef,
+    from_venue: &CanonicalId,
+    window_days: i64,
+) -> Result<Reserve, PlanError> {
+    let (sky, pack) = lane;
+    let routes = site
+        .routes
+        .get(from_venue)
+        .or_else(|| site.routes.values().next())
+        .ok_or_else(|| PlanError::UnknownRoute {
+            route: "(none listed)".to_owned(),
+        })?;
+    let goods = w
+        .module_state::<TacsimStore>()
+        .and_then(TacsimStore::goods)
+        .ok_or_else(|| PlanError::Unreadable {
+            what: "the goods table".to_owned(),
+        })?;
+    let unreadable = |what: &str| PlanError::Unreadable {
+        what: what.to_owned(),
+    };
+    let tank_kg =
+        consumable_kg(goods, Consumable::Propellant).ok_or_else(|| unreadable("propellant"))?;
+    let locker_kg =
+        consumable_kg(goods, Consumable::Provisions).ok_or_else(|| unreadable("provisions"))?;
+    // The home payload: the basis with the tank and the locker swapped for what is left of
+    // each after the passage out — none when the passage out is short of either, since
+    // the departure refuses then anyway (`SITE_TANK_SHORT`, `SITE_STORES_SHORT`) and the
+    // reserve is still read for its line. Never "out × mass" off the payload: the
+    // passage out can burn more than the tank aboard holds, and that subtraction would
+    // underflow into a dark plan.
+    let tank_left = basis.tank.saturating_sub(out.burn_t);
+    let locker_left = basis.locker.saturating_sub(u64::from(out.crew_days));
+    let home_payload = basis
+        .tank
+        .checked_mul(tank_kg)
+        .and_then(|tank| basis.payload.checked_sub(tank))
+        .and_then(|p| p.checked_sub(basis.locker.checked_mul(locker_kg)?))
+        .and_then(|p| p.checked_add(tank_left.checked_mul(tank_kg)?))
+        .and_then(|p| p.checked_add(locker_left.checked_mul(locker_kg)?))
+        .ok_or(PlanError::Overflow)?;
+    let arrive = basis
+        .depart_ic
+        .checked_add(out.total_s)
+        .ok_or(PlanError::Overflow)?;
+    crate::port::passage::home_reserve(
+        sky,
+        pack,
+        routes,
+        &basis.spec.drive,
+        basis.spec.dry_kg,
+        home_payload,
+        basis.occupants,
+        arrive,
+        window_days,
+    )
+}
+
+/// **The stay's charge on a plan from a site berth** (Q-20-7; lead ruling 5): at a site
+/// whose landing instant reads, `landed_charge(souls, since, depart, locker, the plan's
+/// own crew-days)` is added to the plan's crew-days and frozen as its
+/// `landed_crew_days`. The one helper `+ship/plan` and the filing share, so the plan
+/// read is the plan filed.
+///
+/// # Errors
+///
+/// [`PlanError::Overflow`] when the crew-days leave `u32`.
+pub(crate) fn charge_stay(
+    w: &World,
+    hull: ObjId,
+    berth: (&PortDef, &PortMap),
+    basis: &Basis,
+    plan: &mut PassagePlan,
+) -> Result<(), PlanError> {
+    let (def, map) = berth;
+    if def.site.is_none() {
+        return Ok(());
+    }
+    let Some(since) = crate::port::site::landed_since(w, hull, map) else {
+        return Ok(());
+    };
+    let landed = crate::port::site::landed_charge(
+        basis.occupants,
+        since,
+        basis.depart_ic,
+        basis.locker,
+        plan.crew_days,
+    );
+    plan.crew_days = plan
+        .crew_days
+        .checked_add(landed)
+        .ok_or(PlanError::Overflow)?;
+    plan.landed_crew_days = landed;
+    Ok(())
+}
+
+/// [`LANDING_REFUSED`] for a refused landing: the site's label, its body's display
+/// name, the hull and the TWR in hundredths, floored.
+fn landing_line(w: &World, name: &str, place: &str, body: &str, twr_permille: u64) -> String {
+    let port = CanonicalId::new(place)
+        .map_or_else(|_| place.to_owned(), |place| waypoint_label(w, &place));
+    let body = CanonicalId::new(body).map_or_else(
+        |_| body.to_owned(),
+        |body| crate::port::site::body_name(&body),
+    );
+    let hundredths = twr_permille / 10;
+    LANDING_REFUSED
+        .replace("{port}", &port)
+        .replace("{body}", &body)
+        .replace("{name}", name)
+        .replace(
+            "{twr}",
+            &format!("{}.{:02}", hundredths / 100, hundredths % 100),
+        )
+}
+
+/// **`+ship`'s stores line on a pad** (§1 beat 3; the SM.2 brief's item 11): the
+/// effective stores from the live pools, the leg home being the plan `+ship/plan <home>`
+/// would make now with no throttle word (the site's first listed routes key), the
+/// landing instant from the hull's durable journey. `None` off a pad or when any read
+/// fails.
+pub(crate) fn settled_stores_line(ctx: &Ctx<'_>, view: &HullView<'_>) -> Option<String> {
+    let w: &World = ctx.w;
+    let Berth::Docked { def, map } = berth_of(w, view.hull()) else {
+        return None;
+    };
+    // Only on a site's pad.
+    def.site.as_ref()?;
+    let since = crate::port::site::landed_since(w, view.hull(), map)?;
+    let souls = view
+        .airlock()
+        .map_or(0, |airlock| occupants(w, airlock))
+        .max(1);
+    let basis = basis(ctx, view, souls).ok()?;
+    let routes = def.routes.values().next()?;
+    let home = plan_on(w, &basis, routes).ok()?;
+    crate::port::site::stores_line(
+        w,
+        basis.locker,
+        basis.occupants,
+        home.crew_days,
+        since,
+        basis.depart_ic,
     )
 }
 
@@ -1441,7 +1810,17 @@ fn plan_block(
         .module_state::<TacsimStore>()
         .and_then(TacsimStore::goods)
         .ok_or_else(|| "the goods table is not loaded".to_owned())?;
-    let plan = plan_on(w, basis, &dest.routes);
+    // Doc 20 cut SM.2 (lead override 3): a site whose pad is not ready plans nothing.
+    let site_dest = match site_gate(w, dest) {
+        Ok(site_dest) => site_dest,
+        Err(closed) => return Ok(vec![format!("Plan for {}:", dest.port), closed.line]),
+    };
+    let mut plan = plan_on(w, basis, &dest.routes);
+    // Doc 20 cut SM.2 (Q-20-7): at a site berth the plan carries the stay's charge the
+    // filing would make.
+    if let (Ok(plan), Berth::Docked { def, map }) = (plan.as_mut(), berth_of(w, view.hull())) {
+        charge_stay(w, view.hull(), (def, map), basis, plan).map_err(|e| e.to_string())?;
+    }
     let mut lines: Vec<String> = Vec::new();
     let heading = match plan.as_ref().ok().and_then(|plan| waypoints(w, plan)) {
         Some(via) => format!("Plan for {}, by way of {via}:", dest.port),
@@ -1472,6 +1851,18 @@ fn plan_block(
                 tonnes_over(payload_kg, ceiling),
                 ceiling / 1_000
             ));
+            return Ok(lines);
+        }
+        // Doc 20 cut SM.2 (D-20-3): the landing law, without the last sentence.
+        Err(PlanError::Landing {
+            place,
+            body,
+            twr_permille,
+        }) => {
+            let name = name_of(w, view.hull());
+            lines.push(
+                landing_line(w, &name, &place, &body, twr_permille).replace(NOTHING_BURNED, ""),
+            );
             return Ok(lines);
         }
         Err(error) => return Err(error.to_string()),
@@ -1529,8 +1920,60 @@ fn plan_block(
     ));
     // Doc 19 cut A.8 (D-19-22): the throttle that would fit, when the asked one
     // does not even with the tank and the locker full.
-    if let Some(hint) = throttle_hint(w, goods, basis, &readings, &dest.routes) {
+    // Doc 20 cut SM.2 (decision 7): on a site's pad the hint reads the pools aboard.
+    let on_pad =
+        matches!(berth_of(w, view.hull()), Berth::Docked { def, .. } if def.site.is_some());
+    // The SM.2 fixer (the lead's item 2): for a site destination the hint counts the leg
+    // home the filing holds back.
+    let site_hint = site_dest.as_ref().map(|(_, site)| (*site, &def.venue));
+    if let Some(hint) = throttle_hint(w, goods, basis, &readings, &dest.routes, on_pad, site_hint) {
         lines.push(hint);
+    }
+    // Doc 20 cut SM.2 (§1 beat 3): on a pad, the effective stores — the leg's own
+    // crew-days kept back.
+    if let Berth::Docked { def, map } = berth_of(w, view.hull())
+        && def.site.is_some()
+        && let Some(since) = crate::port::site::landed_since(w, view.hull(), map)
+        && let Some(line) = crate::port::site::stores_line(
+            w,
+            basis.locker,
+            basis.occupants,
+            plan.crew_days.saturating_sub(plan.landed_crew_days),
+            since,
+            basis.depart_ic,
+        )
+    {
+        lines.push(line);
+    }
+    // Doc 20 cut SM.2 (decision 7): for a site destination, the leg home the filing
+    // holds back. A reserve that cannot be read costs this block its one line, never the
+    // block: the Burn and Stores lines above stand (a refused lift reads as the filing
+    // would refuse it).
+    if let Some((_, site)) = &site_dest
+        && let Berth::Docked { def: here, .. } = berth_of(w, view.hull())
+    {
+        match site_reserve(w, basis, &plan, site, &here.venue, PLAN_WINDOW_DAYS) {
+            Ok(reserve) => lines.push(
+                SITE_HOME
+                    .replace("{port}", &dest.port)
+                    .replace("{burn}", &reserve.burn_t.to_string())
+                    .replace("{days}", &reserve.crew_days.to_string())
+                    .replace("{throttle}", &reserve.throttle.to_string()),
+            ),
+            Err(PlanError::Landing {
+                place,
+                body,
+                twr_permille,
+            }) => {
+                let name = name_of(w, view.hull());
+                lines.push(
+                    landing_line(w, &name, &place, &body, twr_permille).replace(NOTHING_BURNED, ""),
+                );
+            }
+            Err(error) => {
+                tracing::warn!(hull = view.hull().0, %error, "tacsim: +ship/plan could not plan a site's leg home");
+            }
+        }
     }
     let icdays = ic_days(plan.total_s);
     let arrival = plan.depart_ic.saturating_add(plan.total_s);
@@ -1559,14 +2002,37 @@ fn plan_block(
 /// says no throttle fits (the band's floor burns over the tank, or the fitting
 /// throttle's passage outlasts the locker). `None` when the plan fits as asked,
 /// or when nothing can be read.
-fn throttle_hint(
+///
+/// **Doc 20 cut SM.2** (decision 7): `on_pad` — the berth is a site's pad, where
+/// nothing is sold — reads the tank and the locker aboard instead of their capacities
+/// ([`THROTTLE_FITS_PAD`], [`THROTTLE_NONE_PAD`]), so a lift whose leg home overruns
+/// the tank at the asked throttle names the one that fits what she carries (the
+/// filing held that leg home back at its landing floor).
+///
+/// **The SM.2 fixer (the lead's pre-commit item 2)**: `site` — the destination is a site,
+/// with the departure berth's venue — makes the hint reserve-aware, since the filing holds
+/// the leg home back ([`site_reserve`], [`SITE_TANK_SHORT`]): a throttle fits when the
+/// passage out and the leg home together fit the tank (and, at the throttle found, the
+/// locker), and the line is [`THROTTLE_FITS_SITE`]; when no throttle from the landing floor
+/// fits today, the floor is tried on each later IC day of `+chart`'s window
+/// (`chart::first_day` over [`WINDOW_DAYS`](crate::port::chart::WINDOW_DAYS), the IC year
+/// `+chart <port>` scans; skipped under a constant sky, where every day reads as today) and
+/// the first that fits is named ([`THROTTLE_LATER_SITE`]), else none is
+/// ([`THROTTLE_NONE_SITE`]). The scan is bounded: at most 365 days, each costing the
+/// passage out and the arrival day's leg home (two plans) unless both fit, when the
+/// reserve's 30-day window is read too; every reading shares one [`Sky`] (SM2-FX-2). A
+/// station destination reads exactly as A.8's did.
+pub(crate) fn throttle_hint(
     w: &World,
     goods: &crate::definitions::GoodsTable,
     basis: &Basis,
     readings: &[gauges::Reading],
     routes: &[CanonicalId],
+    on_pad: bool,
+    site: Option<(&PortDef, &CanonicalId)>,
 ) -> Option<String> {
-    use crate::port::passage::{MAX_THROTTLE_PERMILLE, MIN_THROTTLE_PERMILLE};
+    use crate::port::chart::{WINDOW_DAYS, first_day};
+    use crate::port::passage::{DAY_SECS, MAX_THROTTLE_PERMILLE};
     let mass = CanonicalId::new(MASS_KG).ok()?;
     let tank_row = goods.good(&consumable_good(goods, Consumable::Propellant)?)?;
     let locker_row = goods.good(&consumable_good(goods, Consumable::Provisions)?)?;
@@ -1586,44 +2052,173 @@ fn throttle_hint(
             })
             .min()
     };
-    let tank_cap = capacity(compartment(&tank_row.stowage)?, tank_row)?;
-    let locker_cap = capacity(compartment(&locker_row.stowage)?, locker_row)?;
-    let tank_kg = *tank_row.measures.get(&mass)?;
-    let locker_kg = *locker_row.measures.get(&mass)?;
-    // The payload with both full: today's pools swapped for the capacities.
-    let payload = basis
-        .payload
-        .checked_sub(basis.tank.checked_mul(tank_kg)?)?
-        .checked_sub(basis.locker.checked_mul(locker_kg)?)?
-        .checked_add(tank_cap.checked_mul(tank_kg)?)?
-        .checked_add(locker_cap.checked_mul(locker_kg)?)?;
-    let at = |throttle: u32| -> Option<PassagePlan> {
-        let mut full = basis.clone();
-        full.payload = payload;
-        full.spec.drive.throttle_permille = throttle;
-        plan_on(w, &full, routes).ok()
+    let (tank_cap, locker_cap, payload) = if on_pad {
+        // On a pad: the pools as they stand, the payload as it is.
+        (basis.tank, basis.locker, basis.payload)
+    } else {
+        let tank_cap = capacity(compartment(&tank_row.stowage)?, tank_row)?;
+        let locker_cap = capacity(compartment(&locker_row.stowage)?, locker_row)?;
+        let tank_kg = *tank_row.measures.get(&mass)?;
+        let locker_kg = *locker_row.measures.get(&mass)?;
+        // The payload with both full: today's pools swapped for the capacities.
+        let payload = basis
+            .payload
+            .checked_sub(basis.tank.checked_mul(tank_kg)?)?
+            .checked_sub(basis.locker.checked_mul(locker_kg)?)?
+            .checked_add(tank_cap.checked_mul(tank_kg)?)?
+            .checked_add(locker_cap.checked_mul(locker_kg)?)?;
+        (tank_cap, locker_cap, payload)
     };
-    let asked = at(basis.spec.drive.throttle_permille)?;
-    if asked.burn_t <= tank_cap && u64::from(asked.crew_days) <= locker_cap {
+    let pools = if on_pad { "as they stand" } else { "full" };
+    // The basis the hint plans on: the pools at what the line assumes (the site reserve
+    // reads them for the home payload).
+    let mut full = basis.clone();
+    full.payload = payload;
+    full.tank = tank_cap;
+    full.locker = locker_cap;
+    // The latched lane and its sky, built once for every reading below (SM2-FX-2: a
+    // reading used to rebuild the sky twice, once for the passage and once for the reserve).
+    let (sky, pack) = lane_sky_of(w, basis.version).ok()?;
+    let lane = (&sky, pack);
+    // One reading at `throttle`, `offset` IC days on: the passage out and, for a site, the
+    // leg home it holds back — none when the passage out alone overruns the tank (the sum
+    // does then too, and the reserve's plans are spared).
+    let at = |throttle: u32, offset: i64| -> Option<HintReading> {
+        let mut b = full.clone();
+        b.spec.drive.throttle_permille = throttle;
+        b.depart_ic = offset
+            .checked_mul(i64::from(DAY_SECS))
+            .and_then(|secs| basis.depart_ic.checked_add(secs))?;
+        let plan = plan_on_sky(lane, &b, routes).ok()?;
+        let reserve = match site {
+            Some((def, from)) if plan.burn_t <= tank_cap => {
+                // The arrival day's leg home first: the window's worst is at least it, so
+                // a reading that overruns on it is refused without the window's plans.
+                let first = site_reserve_on(w, lane, &b, &plan, def, from, 0).ok()?;
+                if plan.burn_t.saturating_add(first.burn_t) > tank_cap {
+                    Some(first)
+                } else {
+                    Some(site_reserve_on(w, lane, &b, &plan, def, from, PLAN_WINDOW_DAYS).ok()?)
+                }
+            }
+            Some(_) | None => None,
+        };
+        Some((plan, reserve))
+    };
+    let burn_fits = |reading: &HintReading| reading_needs(reading).0 <= tank_cap;
+    let fits = |reading: &HintReading| {
+        let (burn, days) = reading_needs(reading);
+        burn <= tank_cap && days <= locker_cap
+    };
+    let asked = at(basis.spec.drive.throttle_permille, 0)?;
+    if fits(&asked) {
         return None;
     }
-    let none = || THROTTLE_NONE.replace("{min}", &MIN_THROTTLE_PERMILLE.to_string());
-    let Some(throttle) = highest_fitting(MIN_THROTTLE_PERMILLE, MAX_THROTTLE_PERMILLE, |t| {
-        at(t).is_some_and(|plan| plan.burn_t <= tank_cap)
-    }) else {
-        return Some(none());
+    // Doc 20 cut SM.2 (decision 21): the bisection starts at the landing floor — the least
+    // throttle that lands at this payload over the listed routes that can land at all —
+    // since the landing law refuses below it (A.8's bound assumed every throttle from the
+    // band's floor plans). A non-site route's floor is the band's own, so A.8's figures
+    // stand; no listed route lands at all: no hint.
+    let lo = hint_floor(pack, routes, &basis.spec.drive, basis.spec.dry_kg, payload)?;
+    let found = highest_fitting(lo, MAX_THROTTLE_PERMILLE, |t| {
+        at(t, 0).is_some_and(|reading| burn_fits(&reading))
+    })
+    .and_then(|throttle| Some((throttle, at(throttle, 0)?)))
+    .filter(|(_, reading)| fits(reading));
+    let line = match (found, site) {
+        (Some((throttle, (plan, _))), None) => if on_pad {
+            THROTTLE_FITS_PAD
+        } else {
+            THROTTLE_FITS
+        }
+        .replace("{throttle}", &throttle.to_string())
+        .replace("{burn}", &plan.burn_t.to_string())
+        .replace("{days}", &plan.crew_days.to_string())
+        .replace("{passage}", &ic_days(plan.total_s)),
+        (None, None) => if on_pad {
+            THROTTLE_NONE_PAD
+        } else {
+            THROTTLE_NONE
+        }
+        .replace("{min}", &lo.to_string()),
+        (Some((throttle, (plan, reserve))), Some(_)) => {
+            let reserve = reserve?;
+            THROTTLE_FITS_SITE
+                .replace("{pools}", pools)
+                .replace("{throttle}", &throttle.to_string())
+                .replace("{burn}", &plan.burn_t.to_string())
+                .replace("{home}", &reserve.burn_t.to_string())
+                .replace("{days}", &plan.crew_days.to_string())
+                .replace("{home_days}", &reserve.crew_days.to_string())
+                .replace("{passage}", &ic_days(plan.total_s))
+        }
+        (None, Some(_)) => {
+            // Nothing fits today: the floor on each later day of `+chart`'s window (the IC
+            // year), when the sky moves (under a constant sky every day reads as today).
+            let moving = w
+                .module_state::<TacsimStore>()
+                .is_some_and(|store| store.config().time.ephemeris.rate != 0);
+            let later = if moving {
+                first_day(WINDOW_DAYS, |offset| {
+                    at(lo, offset).is_some_and(|reading| fits(&reading))
+                })
+            } else {
+                None
+            };
+            match later {
+                Some(offset) => {
+                    let day = offset
+                        .checked_mul(i64::from(DAY_SECS))
+                        .and_then(|secs| basis.depart_ic.checked_add(secs))?;
+                    THROTTLE_LATER_SITE
+                        .replace("{min}", &lo.to_string())
+                        .replace("{pools}", pools)
+                        .replace("{date}", &crate::sky::epoch_date(day))
+                        .replace("{offset}", &offset.to_string())
+                }
+                None => THROTTLE_NONE_SITE
+                    .replace("{min}", &lo.to_string())
+                    .replace("{pools}", pools)
+                    .replace("{window}", &WINDOW_DAYS.to_string()),
+            }
+        }
     };
-    let plan = at(throttle)?;
-    if u64::from(plan.crew_days) > locker_cap {
-        return Some(none());
-    }
-    Some(
-        THROTTLE_FITS
-            .replace("{throttle}", &throttle.to_string())
-            .replace("{burn}", &plan.burn_t.to_string())
-            .replace("{days}", &plan.crew_days.to_string())
-            .replace("{passage}", &ic_days(plan.total_s)),
+    Some(line)
+}
+
+/// One reading of [`throttle_hint`]: the passage out and, for a site destination, the leg
+/// home it holds back.
+type HintReading = (PassagePlan, Option<Reserve>);
+
+/// The tonnes and crew-days a [`HintReading`] needs: the passage's, plus the leg home's (a site
+/// reading with no reserve overran the tank on the passage out alone, so its sum overruns
+/// too).
+fn reading_needs((plan, reserve): &HintReading) -> (u64, u64) {
+    let (home_t, home_days) = reserve.map_or((0, 0), |r| (r.burn_t, r.crew_days));
+    (
+        plan.burn_t.saturating_add(home_t),
+        u64::from(plan.crew_days).saturating_add(u64::from(home_days)),
     )
+}
+
+/// **The throttle hint's lower bound** (doc 20 cut SM.2, decision 21): the least
+/// [`route_landing_floor`] over the listed `routes` that answer at all, floored at the
+/// band's [`MIN_THROTTLE_PERMILLE`] — the
+/// least throttle any of them lands at, at `payload_kg`. A route with no site end
+/// answers the band's floor, so a station's hint starts where A.8's did. `None` when no
+/// listed route lands at all (then no hint is given).
+pub(crate) fn hint_floor(
+    pack: &crate::pack::RulesPack,
+    routes: &[CanonicalId],
+    drive: &crate::port::passage::HullDrive,
+    dry_kg: u64,
+    payload_kg: u64,
+) -> Option<u32> {
+    routes
+        .iter()
+        .filter_map(|route| route_landing_floor(pack, route, drive, dry_kg, payload_kg).ok())
+        .min()
+        .map(|lo| lo.max(crate::port::passage::MIN_THROTTLE_PERMILLE))
 }
 
 /// The highest value in `lo..=hi` that `fits`, by bisection over a predicate
@@ -1717,6 +2312,10 @@ pub(crate) enum DepartRefusalKind {
     StoresShort,
     /// The launch dry run refused.
     PortClosed,
+    /// **Doc 20 cut SM.2 (D-20-3)**: the landing law refused the passage.
+    Landing,
+    /// **Doc 20 cut SM.2 (lead override 3)**: the destination site's pad is not ready.
+    SiteClosed,
 }
 
 /// A typed refusal: its kind and the line `+ship/undock` answers with.
@@ -1737,6 +2336,167 @@ impl From<DepartRefusal> for CmdError {
 /// A refusal of `kind` with `line`.
 fn refusal(kind: DepartRefusalKind, line: String) -> DepartRefusal {
     DepartRefusal { kind, line }
+}
+
+/// **The site gate** (doc 20 cut SM.2, lead override 3): the destination's site port, when
+/// it is one — refused with [`SITE_CLOSED`] when its readiness lines are not all ready.
+/// The one check `+ship/plan`, the filing and the queue's dry run (`executor::plan_queue`)
+/// share.
+///
+/// # Errors
+///
+/// [`DepartRefusalKind::SiteClosed`].
+pub(crate) fn site_gate<'w>(
+    w: &'w World,
+    dest: &Destination,
+) -> Result<Option<(CanonicalId, &'w PortDef)>, DepartRefusal> {
+    let site_dest = site_port(w, &dest.venue);
+    if let Some((entry, _)) = &site_dest
+        && !crate::port::readiness::port_ready(w, entry)
+    {
+        return Err(refusal(
+            DepartRefusalKind::SiteClosed,
+            SITE_CLOSED.replace("{site}", &dest.port),
+        ));
+    }
+    Ok(site_dest)
+}
+
+/// **A planner refusal the departure names** (doc 20 cut SM.2, D-20-3; doc 18 cut IC9):
+/// the landing law ([`LANDING_REFUSED`]) and the payload rail ([`OVERLOADED`]) for the hull
+/// `name`; any other refusal is handed back for the caller to log as a dark plan.
+///
+/// # Errors
+///
+/// The planner's own refusal when the departure has no sentence for it.
+pub(crate) fn plan_refusal(
+    w: &World,
+    name: &str,
+    error: PlanError,
+) -> Result<DepartRefusal, PlanError> {
+    use DepartRefusalKind as K;
+    match error {
+        PlanError::Landing {
+            place,
+            body,
+            twr_permille,
+        } => Ok(refusal(
+            K::Landing,
+            landing_line(w, name, &place, &body, twr_permille),
+        )),
+        PlanError::Overloaded {
+            payload_kg,
+            ceiling_kg,
+        } => Ok(refusal(
+            K::Overloaded,
+            OVERLOADED
+                .replace("{name}", name)
+                .replace("{payload}", &tonnes_over(payload_kg, ceiling_kg))
+                .replace("{ceiling}", &(ceiling_kg / 1_000).to_string()),
+        )),
+        other => Err(other),
+    }
+}
+
+/// **What a planned departure holds back, checked** (doc 20 cut SM.2, Q-20-7, decision 7;
+/// doc 18 cut IC9's tank and locker; factored by the SM.2 fixer so the queue's dry run
+/// reads the filing's own checks): at a site berth the stay's charge is added to `plan`
+/// ([`charge_stay`], so the crew-days printed are the ones filed); for a `site`
+/// destination the leg home ([`site_reserve`]) must fit beside the passage
+/// ([`SITE_TANK_SHORT`], [`SITE_STORES_SHORT`]); then the passage alone ([`TANK_SHORT`],
+/// [`STORES_SHORT`]). `here` is the departure berth, `port` the destination's name, `name`
+/// the hull's. Answers the arrival row a site destination files.
+///
+/// # Errors
+///
+/// [`DepartRefusal`], typed: `Landing` when the leg home cannot lift, `TankShort` /
+/// `StoresShort`, and `PlanDark` (logged) when the charge or the reserve cannot be read.
+#[allow(clippy::too_many_arguments)] // the filing's whole context
+pub(crate) fn hold_back(
+    w: &World,
+    hull: ObjId,
+    name: &str,
+    basis: &Basis,
+    port: &str,
+    here: &PortDef,
+    site: Option<&PortDef>,
+    plan: &mut PassagePlan,
+) -> Result<Option<SiteArrival>, DepartRefusal> {
+    use DepartRefusalKind as K;
+    let dark = || refusal(K::PlanDark, PLAN_DARK.replace("{name}", name));
+    // Doc 20 cut SM.2 (Q-20-7; lead ruling 5): lifting from a site charges the stay, inside
+    // this burn — capped so the locker still covers this leg.
+    if let Berth::Docked { def, map } = berth_of(w, hull) {
+        charge_stay(w, hull, (def, map), basis, plan).map_err(|error| {
+            tracing::warn!(hull = hull.0, %error, "tacsim: a departure could not charge the stay");
+            dark()
+        })?;
+    }
+    // Doc 20 cut SM.2 (decision 7): a departure for a site holds back the leg home.
+    let mut arrival: Option<SiteArrival> = None;
+    if let Some(site) = site {
+        let reserve = match site_reserve(w, basis, plan, site, &here.venue, PLAN_WINDOW_DAYS) {
+            Ok(reserve) => reserve,
+            Err(PlanError::Landing {
+                place,
+                body,
+                twr_permille,
+            }) => {
+                return Err(refusal(
+                    K::Landing,
+                    landing_line(w, name, &place, &body, twr_permille),
+                ));
+            }
+            Err(error) => {
+                tracing::warn!(hull = hull.0, %error, "tacsim: a departure could not plan the leg home");
+                return Err(dark());
+            }
+        };
+        let burn = plan.burn_t.saturating_add(reserve.burn_t);
+        if basis.tank < burn {
+            return Err(refusal(
+                K::TankShort,
+                SITE_TANK_SHORT
+                    .replace("{port}", port)
+                    .replace("{burn}", &burn.to_string())
+                    .replace("{tank}", &basis.tank.to_string()),
+            ));
+        }
+        let days = u64::from(plan.crew_days).saturating_add(u64::from(reserve.crew_days));
+        if basis.locker < days {
+            return Err(refusal(
+                K::StoresShort,
+                SITE_STORES_SHORT
+                    .replace("{port}", port)
+                    .replace("{days}", &days.to_string())
+                    .replace("{have}", &basis.locker.to_string()),
+            ));
+        }
+        arrival = Some(SiteArrival {
+            locker: basis.locker.saturating_sub(u64::from(plan.crew_days)),
+            home_crew_days: reserve.crew_days,
+            souls: basis.occupants,
+        });
+    }
+    if basis.tank < plan.burn_t {
+        return Err(refusal(
+            K::TankShort,
+            TANK_SHORT
+                .replace("{port}", port)
+                .replace("{burn}", &plan.burn_t.to_string())
+                .replace("{tank}", &basis.tank.to_string()),
+        ));
+    }
+    if basis.locker < u64::from(plan.crew_days) {
+        return Err(refusal(
+            K::StoresShort,
+            STORES_SHORT
+                .replace("{port}", port)
+                .replace("{days}", &plan.crew_days.to_string())
+                .replace("{have}", &basis.locker.to_string()),
+        ));
+    }
+    Ok(arrival)
 }
 
 /// **Every check before a departure is filed, then the filing** (doc 18 cut IC9's
@@ -1821,6 +2581,9 @@ pub(crate) fn prepare_departure(
         .cloned()
         .ok_or_else(|| refusal(K::NoRoute, no_route(&here, &dests)))?;
     let port = dest.port.clone();
+    // Doc 20 cut SM.2 (lead override 3): a site whose pad is not ready takes no
+    // departure (its lines never gate the desk, so they gate the passage here).
+    let site_dest = site_gate(w, &dest)?;
     // Lead ruling L13: promised goods hold the hull.
     if let Some(vault) = hold_vault(w, &view) {
         match goods_pending_aboard(w, EndpointRef(vault)) {
@@ -1857,43 +2620,42 @@ pub(crate) fn prepare_departure(
         dark()
     })?;
     let basis = apply_options(basis, options);
-    let plan = match plan_on(w, &basis, &dest.routes) {
-        Ok(plan) => plan,
-        Err(PlanError::Overloaded {
-            payload_kg,
-            ceiling_kg,
-        }) => {
-            return Err(refusal(
-                K::Overloaded,
-                OVERLOADED
-                    .replace("{name}", &name)
-                    .replace("{payload}", &tonnes_over(payload_kg, ceiling_kg))
-                    .replace("{ceiling}", &(ceiling_kg / 1_000).to_string()),
-            ));
-        }
-        Err(error) => {
+    let mut plan = plan_on(w, &basis, &dest.routes).map_err(|error| {
+        plan_refusal(w, &name, error).unwrap_or_else(|error| {
             tracing::warn!(hull = hull.0, %error, "tacsim: a departure could not plan the passage");
-            return Err(dark());
+            dark()
+        })
+    })?;
+    // Doc 20 cut SM.2: the stay's charge, the leg home a site holds back, the tank and the
+    // locker — the checks the queue's dry run reads through the same function.
+    let site = site_dest.as_ref().map(|(_, site)| *site);
+    let arrival = match hold_back(w, hull, &name, &basis, &port, def, site, &mut plan) {
+        Ok(arrival) => arrival,
+        Err(mut refused) => {
+            // The SM.2 fixer (the lead's item 2): a live departure for a site whose tank or
+            // locker cannot hold the leg home back names the throttle (or the day) that
+            // would. A queued depart's waiting note keeps the bare sentence: the hint moves
+            // with the sky, and a note is re-told whenever its text changes.
+            if queued == Queued::Live
+                && matches!(refused.kind, K::TankShort | K::StoresShort)
+                && let Some(site) = site
+                && let Some(goods) = w.module_state::<TacsimStore>().and_then(TacsimStore::goods)
+                && let Ok(readings) = ship::readings_of(ctx, &view)
+                && let Some(hint) = throttle_hint(
+                    w,
+                    goods,
+                    &basis,
+                    &readings,
+                    &dest.routes,
+                    def.site.is_some(),
+                    Some((site, &def.venue)),
+                )
+            {
+                refused.line = format!("{}\n{hint}", refused.line);
+            }
+            return Err(refused);
         }
     };
-    if basis.tank < plan.burn_t {
-        return Err(refusal(
-            K::TankShort,
-            TANK_SHORT
-                .replace("{port}", &port)
-                .replace("{burn}", &plan.burn_t.to_string())
-                .replace("{tank}", &basis.tank.to_string()),
-        ));
-    }
-    if basis.locker < u64::from(plan.crew_days) {
-        return Err(refusal(
-            K::StoresShort,
-            STORES_SHORT
-                .replace("{port}", &port)
-                .replace("{days}", &plan.crew_days.to_string())
-                .replace("{have}", &basis.locker.to_string()),
-        ));
-    }
     // Lead ruling L28 (reviewer F2): the launch, dry-run before anything is
     // burned — the route materializes at the version the plan was made at, and
     // mush-sim would depart it now.
@@ -1945,6 +2707,7 @@ pub(crate) fn prepare_departure(
         attempt,
         filed_ic: basis.depart_ic,
         filed_at: w.now(),
+        arrival,
     };
     let voyage = Voyage {
         schema: VOYAGE_SCHEMA,
@@ -1952,6 +2715,7 @@ pub(crate) fn prepare_departure(
         last_seq,
         told,
         pending: Some(pending),
+        arrival: None,
     };
     if voyage.check().is_err() {
         tracing::error!(
@@ -1993,12 +2757,18 @@ pub(crate) fn prepare_departure(
 pub(crate) fn undock_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
     let raw = ctx.args.raw().to_owned();
+    // Doc 20 cut SM.2: `+ship/lift` is this verb, worded for a pad.
+    let usage = if ctx.switches.has("lift") {
+        LIFT_USAGE
+    } else {
+        UNDOCK_USAGE
+    };
     if raw.split_whitespace().all(|token| token.contains('=')) {
-        return Err(CmdError::msg(UNDOCK_USAGE));
+        return Err(CmdError::msg(usage));
     }
     let args = parse_args(&raw)?;
     let Some(word) = args.word.clone() else {
-        return Err(CmdError::msg(UNDOCK_USAGE));
+        return Err(CmdError::msg(usage));
     };
     let options = options_of(ctx.w, &args)?;
     let Some(charter) = helm_of(ctx.w, actor) else {
@@ -2067,6 +2837,12 @@ pub(crate) fn launched(w: &World, hull: ObjId, route: &CanonicalId, depart_ic: i
 /// Clear a hull's pending passage, keeping its sequence (never reused) and what the
 /// pilot was told (doc 18 cut IC14 row 21).
 fn clear_pending(ctx: &mut Ctx<'_>, hull: ObjId, seq: u32) {
+    clear_pending_with(ctx, hull, seq, None);
+}
+
+/// [`clear_pending`] keeping a launched passage's site arrival (doc 20 cut SM.2): the
+/// launch writes the pending's `arrival` into the voyage it leaves, for the arrival lines.
+fn clear_pending_with(ctx: &mut Ctx<'_>, hull: ObjId, seq: u32, arrival: Option<SiteArrival>) {
     let told = told_of(ctx.w, hull).min(seq);
     put_voyage(
         ctx,
@@ -2076,6 +2852,7 @@ fn clear_pending(ctx: &mut Ctx<'_>, hull: ObjId, seq: u32) {
             last_seq: seq,
             told,
             pending: None,
+            arrival,
         },
     );
 }
@@ -2244,7 +3021,7 @@ pub(crate) fn launch_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: u3
     }
     let plan = &ticket.plan;
     if launched(ctx.w, hull, &ticket.route, plan.depart_ic) {
-        clear_pending(ctx, hull, pending.seq);
+        clear_pending_with(ctx, hull, pending.seq, pending.arrival.clone());
         return Step::Worked;
     }
     // D-18-23 "at every executed step" (L31): a lease ended since the burn holds
@@ -2282,6 +3059,8 @@ pub(crate) fn launch_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: u3
         );
     };
     let leg_s: Vec<u32> = plan.legs.iter().map(|leg| leg.secs).collect();
+    // Doc 20 cut SM.2: a hull lifting from a pad hears the pad drop away.
+    let from_pad = matches!(berth_of(ctx.w, hull), Berth::Docked { def, .. } if def.site.is_some());
     match mush_sim::depart(ctx, hull, route, Some(leg_s), plan.depart_ic) {
         Ok(_) => {}
         Err(error) => {
@@ -2290,10 +3069,11 @@ pub(crate) fn launch_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: u3
         }
     }
     // In the same outbox as the journey: a restart sees both or neither.
-    clear_pending(ctx, hull, pending.seq);
+    clear_pending_with(ctx, hull, pending.seq, pending.arrival.clone());
     state.filed_seen.remove(&hull.0);
     let name = name_of(ctx.w, hull);
-    narrate_hull(ctx, hull, &LOCK_SEALS.replace("{name}", &name));
+    let seals = if from_pad { LIFT_SEALS } else { LOCK_SEALS };
+    narrate_hull(ctx, hull, &seals.replace("{name}", &name));
     state.launching.insert(
         hull.0,
         Launching {
@@ -2536,6 +3316,7 @@ mod tests {
             last_seq: 3,
             told: 3,
             pending: None,
+            arrival: None,
         };
         assert!(empty.check().is_ok());
         assert!(
@@ -2570,6 +3351,7 @@ mod tests {
             secs: 110_305,
             t0: depart,
             t1: depart + 110_305,
+            ascent_mps: 0,
         };
         let b = crate::port::families::LegPlan {
             to: id("stickney_yards"),
@@ -2578,6 +3360,7 @@ mod tests {
             secs: 1_683_834,
             t0: a.t1,
             t1: a.t1 + 1_683_834,
+            ascent_mps: 0,
         };
         let total = b.t1 - depart;
         PendingVoyage {
@@ -2600,11 +3383,13 @@ mod tests {
                 burn_t: 41,
                 crew_days: 21,
                 throttle_permille: 1_000,
+                landed_crew_days: 0,
             },
             order: None,
             attempt: 1,
             filed_ic: depart,
             filed_at: 1_700_000_000,
+            arrival: None,
         }
     }
 
@@ -2618,6 +3403,7 @@ mod tests {
             last_seq: 3,
             told: 3,
             pending: Some(filed(4)),
+            arrival: None,
         };
         good.check().unwrap();
         let wire = serde_json::to_value(&good).unwrap();
@@ -2715,6 +3501,7 @@ mod tests {
             last_seq: 3,
             told: 2,
             pending: None,
+            arrival: None,
         };
         assert!(voyage.check().is_ok());
         assert!(
@@ -2764,5 +3551,74 @@ mod tests {
             Some(466)
         );
         assert!(calls <= 12, "{calls} plans");
+    }
+
+    /// **Doc 20 cut SM.2 (decision 21)**: A.8's bisection assumed every throttle from the
+    /// band's floor plans; the landing law refuses below a body's floor (Vesta at the rail
+    /// under 600), so with a predicate false under 600 (the landing floor) and over 800
+    /// (the tank) the band's floor finds nothing — the defect — and the landing floor
+    /// finds 800.
+    #[test]
+    fn sm2_the_hint_bisects_from_the_landing_floor() {
+        let fits = |t: u32| (600..=800).contains(&t);
+        assert_eq!(highest_fitting(250, 1_000, fits), None, "A.8's bound");
+        assert_eq!(highest_fitting(600, 1_000, fits), Some(800));
+    }
+
+    /// **The hint's lower bound is the landing floor** (decision 21; reviewer T3):
+    /// [`hint_floor`] over the shipped lane — a site route at the rail starts at its
+    /// landing floor (Ceres 672, Vesta 600), a station route at the band's 250, a listing
+    /// of both at the lesser, and a drive that lands nowhere gives no bound.
+    #[test]
+    fn sm2_the_hint_starts_at_the_least_landing_floor() {
+        use crate::definitions::logistics::DriveLaw;
+        let Ok(pack) = crate::pack::load_pack(crate::definitions::content::LANE_JSON) else {
+            panic!("the shipped lane loads");
+        };
+        let id = |s: &str| CanonicalId::new(s).expect("a canonical id");
+        let flip = crate::port::passage::HullDrive {
+            class: id("coast_hauler"),
+            law: DriveLaw::Flip {
+                accel_mg: 50,
+                exhaust_kms: 6_000,
+            },
+            payload_ceiling_kg: 181_000,
+            throttle_permille: DEFAULT_THROTTLE_PERMILLE,
+        };
+        let floor = |routes: &[&str]| {
+            hint_floor(
+                &pack,
+                &routes.iter().map(|r| id(r)).collect::<Vec<_>>(),
+                &flip,
+                240_000,
+                181_000,
+            )
+        };
+        assert_eq!(floor(&["ceres_ahuna"]), Some(672));
+        assert_eq!(floor(&["ceres_rheasilvia"]), Some(600));
+        assert_eq!(floor(&["ceres_stickney"]), Some(MIN_THROTTLE_PERMILLE));
+        assert_eq!(
+            floor(&["ceres_ahuna", "ceres_rheasilvia"]),
+            Some(600),
+            "the lesser"
+        );
+        assert_eq!(
+            floor(&["nowhere", "ceres_ahuna"]),
+            Some(672),
+            "a route that answers"
+        );
+        assert_eq!(floor(&["nowhere"]), None);
+        let coast = crate::port::passage::HullDrive {
+            law: DriveLaw::Coast {
+                kms: 226,
+                burn_permille: 105,
+            },
+            ..flip.clone()
+        };
+        assert_eq!(
+            hint_floor(&pack, &[id("ceres_ahuna")], &coast, 240_000, 181_000),
+            None,
+            "a coast drive lands nowhere: no hint"
+        );
     }
 }

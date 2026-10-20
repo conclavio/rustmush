@@ -3,7 +3,7 @@
 //!
 //! A `port` entry is applied once, under the content latch, by this applier —
 //! registered from `crate::content::register_appliers` at **phase 11**, after
-//! the places (5) and the routes (6) of its own pack. It does six things and
+//! the places (5) and the routes (6) of its own pack. It does seven things and
 //! nothing else:
 //!
 //! - **(a) the domain** — ONE passive domain per port, hosted on the lane's
@@ -25,7 +25,11 @@
 //!   lists, never the applier;
 //! - **(f) the hulls** (cut IC4) — for an entry whose `programme` names a pool,
 //!   each hull laid up from the programme unit's `interior` template in the
-//!   berth gallery and titled to the programme org ([`crate::port::hull`]).
+//!   berth gallery and titled to the programme org ([`crate::port::hull`]);
+//! - **(g) the site** (doc 20 cut SM.2) — for an entry with a `site` block, its
+//!   sixteen block place Things and its site clerk, `DARK`, in the host room
+//!   (`crate::port::site::lay_up`), and the lane's body geology tables installed
+//!   (RAM only; [`crate::surface::install_lane_geology`]).
 //!
 //! Every act is recorded in the port map ([`crate::port::PortMap`]) written
 //! **immediately after** it, in the apply's one batch — the sole dedup, since
@@ -330,6 +334,9 @@ impl PortApplier {
         // storefronts, signatories, clerk and board rooms, and every recorded
         // stock-row and bid drift.
         crate::port::vendor::preflight(w, id, def, map)?;
+        // Doc 20 cut SM.2 (part g): every recorded block place and the site clerk
+        // is live; a recorded Thing gone is never re-created.
+        crate::port::site::preflight(w, id, map)?;
         // The hulls (cut IC4, part f): the template, the issuer, the exit words
         // and every hull drift, and how many hulls this pass would title.
         let hulls_to_title = crate::port::hull::preflight(reg, w, pack, id, def, map)?;
@@ -608,6 +615,42 @@ impl PortApplier {
             map.host = Some(host.0);
             map.presentation = Some(gallery.0);
             put_port_map(ctx, &map);
+        }
+
+        // (g) Doc 20 cut SM.2 (§3.1, §3.4): a site's sixteen block place Things and its
+        // site clerk, in the host room, recorded; then the lane's body tables, built
+        // while the store is borrowed and installed after (lead ruling 6). Nothing is
+        // submitted. Parts (c)–(f) are no-ops for a site (no orgs, vendors or
+        // programme); (b) runs as for every port.
+        if let Some(site) = &def.site {
+            crate::port::site::lay_up(ctx, id, site, &mut map, host)?;
+            let version = pack.manifest().version();
+            let bodies = ctx.w.module_state::<TacsimStore>().and_then(|store| {
+                store
+                    .pack(&pack_id, version)
+                    .map(|loaded| crate::surface::lane_geologies(&loaded.pack))
+            });
+            let bodies = match bodies {
+                Some(bodies) => bodies,
+                // The store does not load the version being applied (an operator's
+                // pack): read the bodies from the applied pack itself (`rules_pack_of`, as
+                // the applier's route check does). A deviation from the SM.2 brief's
+                // item 7(b), which warned and left the tables to the next boot: this
+                // installs them now. Only this rare path decodes the pack.
+                None => match crate::pack::rules_pack_of(pack.clone()) {
+                    Ok(rules) => crate::surface::lane_geologies(&rules),
+                    Err(error) => {
+                        tracing::warn!(
+                            pack = %pack_id,
+                            version,
+                            %error,
+                            "tacsim: a site's lane pack does not decode; its body tables wait for the next boot"
+                        );
+                        Vec::new()
+                    }
+                },
+            };
+            crate::surface::install_lane_geology(ctx.w, bodies);
         }
 
         // (b) The treasury (L9: the credit first, create-only — a roster with no

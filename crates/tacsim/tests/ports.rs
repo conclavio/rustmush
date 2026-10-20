@@ -600,8 +600,9 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
         -(i64::try_from(total_capital()).expect("fits") * 100)
     );
     assert_eq!(
-        treasury_balance, -1_450_000_000,
-        "14,500,000.00cr: 8,200,000 at v2 and the moon ports' 6,300,000 (doc 19 cut A.8)"
+        treasury_balance, -1_455_000_000,
+        "14,550,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8) and the \
+         Freeport Registry's 50,000 (doc 20 cut SM.2)"
     );
     set_rate(&mut tw, 24);
     let after = report(&mut tw);
@@ -652,7 +653,8 @@ fn ic3_the_applier_ensures_the_credit_without_the_sheet() {
     assert!(economy(&tw).snapshot().instrument(&credit()).is_some());
     let ceres = port_map(&tw, "ceres_port");
     let stickney = port_map(&tw, "stickney_port");
-    assert_eq!(ceres.orgs.len() + stickney.orgs.len(), 9);
+    // Doc 20 cut SM.2: the Freeport Registry is Ceres's seventh.
+    assert_eq!(ceres.orgs.len() + stickney.orgs.len(), 10);
     sweep(&mut tw, 3_600);
     let snapshot = economy(&tw).snapshot();
     let treasury = snapshot
@@ -703,7 +705,8 @@ fn ic3_a_second_boot_posts_nothing() {
     assert_eq!(tw.world().iter().count(), objects, "no new object");
     // The documents a reboot reads back are the ones the first boot wrote, and
     // the second boot writes none.
-    assert_eq!(docs.len(), 5, "{:?}", docs.keys().collect::<Vec<_>>());
+    // Five ports and (doc 20 cut SM.2) six sites.
+    assert_eq!(docs.len(), 11, "{:?}", docs.keys().collect::<Vec<_>>());
     for map in maps(&tw) {
         let written = docs.get(map.key().as_str()).expect("a document");
         assert_eq!(&serde_json::to_value(&map).expect("encodes"), written);
@@ -733,7 +736,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{}: 0 create, 2 update, 0 retire, 34 unchanged",
+            "Plan for {LANE_PACK}@{}: 0 create, 2 update, 0 retire, 58 unchanged",
             LANE_VERSION + 1
         )),
         "{plan}"
@@ -747,7 +750,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     }
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 34 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 58 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -891,7 +894,7 @@ fn ic3_an_update_creates_a_new_org_and_keeps_every_recorded_row() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 34 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 58 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -1019,7 +1022,7 @@ fn ic3_a_map_that_stopped_part_way_is_completed() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 34 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 58 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -1446,7 +1449,9 @@ fn ic3_a_kept_world_with_eight_windows_open_still_applies_the_lane() {
 fn lane_v1_json() -> String {
     lane_variant(1, |doc| {
         // Doc 19 cut A.8: v1 had none of the moons' trade (its three places stay, so
-        // the placed rooms keep their ids across the upgrade).
+        // the placed rooms keep their ids across the upgrade); doc 20 cut SM.2: nor the
+        // sites.
+        support::sites::strip_sites(doc);
         support::moon::strip_moon_trade(doc);
         let entries = doc["entries"].as_object_mut().expect("entries");
         entries.remove("ceres_port");
@@ -1552,7 +1557,9 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let plan = run(&mut next, GOD, &format!("@atlas/pack plan {LANE_PACK}"));
         assert!(
             plan.contains(&format!(
-                "Plan for {LANE_PACK}@{LANE_VERSION}: 11 create, 2 update, 0 retire, 23 unchanged"
+                // Doc 20 cut SM.2 (lane v9): the six sites' twenty-four entries are created,
+                // and the eight bodies and the Freeport's place updated, beside v8's thirteen.
+                "Plan for {LANE_PACK}@{LANE_VERSION}: 35 create, 11 update, 0 retire, 14 unchanged"
             )),
             "{plan}"
         );
@@ -1580,7 +1587,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let (_, apply) = plan_and_apply(&mut next);
         assert!(
             apply.contains(&format!(
-                "Applied {LANE_PACK}@{LANE_VERSION}: 11 created, 2 updated, 0 retired, 23 unchanged."
+                "Applied {LANE_PACK}@{LANE_VERSION}: 35 created, 11 updated, 0 retired, 14 unchanged."
             )),
             "{apply}"
         );
@@ -1591,7 +1598,16 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
             .and_then(|c| c.latches.applied(&lane_id()))
             .map(mush_content::Applied::placed)
             .expect("v2 placed");
-        assert_eq!(placed_v2, placed_v1, "the six place rooms keep their ids");
+        // Doc 20 cut SM.2: the six site places are added; the six old place rooms keep
+        // their ids.
+        assert_eq!(placed_v2.len(), placed_v1.len() + 6);
+        for (place, room) in &placed_v1 {
+            assert_eq!(
+                placed_v2.get(place),
+                Some(room),
+                "the place rooms keep their ids"
+            );
+        }
         for entry in ["ceres_port", "stickney_port"] {
             let _ = port_map(&next, entry);
         }
@@ -1664,10 +1680,20 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
             n = refs.len()
         ));
         let place = location_label(&def.location);
+        // Doc 20 cut SM.2: a site presents on its pad, and its site line follows.
+        let gallery = def.site.as_ref().map_or_else(
+            || "Visiting Berth Gallery".to_owned(),
+            |site| format!("{} Pad", site.name),
+        );
         want.push(format!(
-            "  {entry} domain: #{} on {place}, presents in Visiting Berth Gallery. [ready]",
+            "  {entry} domain: #{} on {place}, presents in {gallery}. [ready]",
             map.domain.expect("a domain")
         ));
+        if def.site.is_some() {
+            want.push(format!(
+                "  {entry} site: 16 block places and the site clerk laid up. [ready]"
+            ));
+        }
         for org in &def.orgs {
             let row = map.orgs.get(&org.id).expect("a row");
             want.push(format!(
@@ -2317,7 +2343,9 @@ fn ic3_a_mint_cap_below_a_tranche_refuses_the_lane_before_anything_is_made() {
 #[test]
 fn ic3_the_ic_return_table_agrees_with_the_port_entries() {
     let pack = load_pack(LANE_JSON).expect("the lane verifies");
-    let ports = ports_of(LANE_JSON);
+    // Doc 20 cut SM.2: the IC door serves the five stations; a site is no IC port.
+    let mut ports = ports_of(LANE_JSON);
+    ports.retain(|(_, def)| def.site.is_none());
     assert_eq!(ports.len(), tacsim::ic_return::PORTS.len(), "five and five");
     for row in &tacsim::ic_return::PORTS {
         let matching: Vec<&(CanonicalId, PortDef)> = ports

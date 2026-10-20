@@ -1,0 +1,91 @@
+{
+  "manifest": {
+    "id": "region.occator_rim",
+    "version": 1,
+    "kind": "region",
+    "digest": "df4e7b42c6b4b3dd924c6e5fe21cc06be178a23aeb8e0e80c423a2f94d5b8a3d",
+    "requires": []
+  },
+  "brief": {
+    "prose": "Occator Rim stands on the northern rim of Occator crater, north of the Freeport at its centre. The Registry rules it; Occator Water & Propellant holds the four central blocks around the pad, and the outer ground is open to any licensed claimant. The rim ground is richer than the crater floor and has been surveyed as such since the Freeport's first decade."
+  },
+  "entries": {
+    "region.occator_rim": {
+      "kind": "region",
+      "def": {
+        "name": "Occator Rim",
+        "kind": "surface",
+        "body": "ceres",
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            2560
+          ]
+        ],
+        "datum_m": 0,
+        "background": {
+          "surface": "regolith",
+          "mix": [
+            [
+              "ice",
+              20
+            ],
+            [
+              "rock",
+              25
+            ]
+          ],
+          "relief_cm": 130,
+          "relief_period_cm": 1000,
+          "seed": 2605
+        },
+        "ground_resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350",
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "locality.occator_rim": {
+      "kind": "locality",
+      "def": {
+        "region": "region.occator_rim",
+        "name": "Occator Rim",
+        "kind": "extraction",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            0
+          ],
+          [
+            2560,
+            2560
+          ],
+          [
+            0,
+            2560
+          ]
+        ]
+      }
+    }
+  }
+}

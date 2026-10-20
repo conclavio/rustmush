@@ -2348,6 +2348,8 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
     let v2 = lane_variant(2, |doc| {
         // Doc 19 cut A.8 (lane v8): the three moon ports, their routes, Ceres's `luna`
         // key, the two reference rows and the three places.
+        // Doc 20 cut SM.2 (lane v9): the six sites, their ports and routes.
+        support::sites::strip_sites(doc);
         support::moon::strip_moon_trade(doc);
         support::moon::strip_moon_places(doc);
         for entry in ["ceres_port", "stickney_port"] {
@@ -2865,6 +2867,8 @@ const LANE_V7_DIGEST: &str = "11fb2c9228799918184cc872a01d683e85de91e830104f170b
 
 fn lane_v7_json() -> String {
     lane_variant(7, |doc| {
+        // Doc 20 cut SM.2 (lane v9): the six sites, their ports and routes.
+        support::sites::strip_sites(doc);
         support::moon::strip_moon_trade(doc);
         support::moon::strip_moon_places(doc);
     })
@@ -3056,7 +3060,9 @@ fn a8_a_world_on_lane_v7_takes_v8_by_the_shelf() {
     let (plan, apply) = plan_and_apply(&mut rig.tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 12 create, 1 update, 0 retire, 23 unchanged"
+            // Doc 20 cut SM.2: the shipped lane is v9, so the step also creates the six
+            // sites' places, ports and routes and updates the eight bodies and the Freeport.
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 36 create, 10 update, 0 retire, 14 unchanged"
         )),
         "{plan}"
     );
@@ -3067,7 +3073,7 @@ fn a8_a_world_on_lane_v7_takes_v8_by_the_shelf() {
     );
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 12 created, 1 updated, 0 retired, 23 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 36 created, 10 updated, 0 retired, 14 unchanged."
         )),
         "{plan}\n{apply}"
     );

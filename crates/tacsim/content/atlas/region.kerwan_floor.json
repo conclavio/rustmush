@@ -1,0 +1,91 @@
+{
+  "manifest": {
+    "id": "region.kerwan_floor",
+    "version": 1,
+    "kind": "region",
+    "digest": "0a0c58ab4fc1a35b805bcf7d5b6634c148662c306ce0adfaa7b5c3ae281ee015",
+    "requires": []
+  },
+  "brief": {
+    "prose": "Kerwan Floor lies on the smoothed floor of Kerwan, Ceres's oldest great basin, south of the equator: open ground under the Registry, rockier and drier than the Occator workings, the regolith thin over a hard bed that rings under a drill."
+  },
+  "entries": {
+    "region.kerwan_floor": {
+      "kind": "region",
+      "def": {
+        "name": "Kerwan Floor",
+        "kind": "surface",
+        "body": "ceres",
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            2560
+          ]
+        ],
+        "datum_m": 0,
+        "background": {
+          "surface": "regolith",
+          "mix": [
+            [
+              "ice",
+              10
+            ],
+            [
+              "rock",
+              35
+            ]
+          ],
+          "relief_cm": 150,
+          "relief_period_cm": 1000,
+          "seed": 2602
+        },
+        "ground_resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350",
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "locality.kerwan_floor": {
+      "kind": "locality",
+      "def": {
+        "region": "region.kerwan_floor",
+        "name": "Kerwan Floor",
+        "kind": "extraction",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            0
+          ],
+          [
+            2560,
+            2560
+          ],
+          [
+            0,
+            2560
+          ]
+        ]
+      }
+    }
+  }
+}

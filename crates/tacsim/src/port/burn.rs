@@ -436,7 +436,8 @@ impl ActionProvider for BurnProvider {
             ));
         }
         // 4. The burn and the crew-days, recomputed from the filed seconds and the
-        // drive table this provider holds (D-18-11).
+        // drive table this provider holds (D-18-11); since doc 20 cut SM.2 the burn
+        // includes each site end's frozen ascent (`LegPlan::ascent_mps`).
         let adds_up = plan.check().is_ok()
             && plan.law.as_str() == spec.drive.law.word()
             && passage_burn(
@@ -447,7 +448,12 @@ impl ActionProvider for BurnProvider {
             )
             .ok()
                 == Some(plan.burn_t)
-            && crew_days(pending.occupants, &plan.legs).ok() == Some(plan.crew_days);
+            // Doc 20 cut SM.2 (Q-20-7): the stay on a site, charged at this lift, is
+            // frozen in the plan and added to the legs' own crew-days.
+            && crew_days(pending.occupants, &plan.legs)
+                .ok()
+                .and_then(|legs| legs.checked_add(plan.landed_crew_days))
+                == Some(plan.crew_days);
         if !adds_up {
             return Err(port_error(
                 ActionErrorCode::Integrity,

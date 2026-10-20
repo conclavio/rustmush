@@ -327,8 +327,15 @@ fn a8_the_lane_carries_five_ports_and_six_direct_routes() {
         vec![
             (
                 v("ceres"),
+                // Doc 20 cut SM.2: Ceres's listing gains the six sites (venue order).
                 vec![
+                    (v("ahuna"), vec![v("ceres_ahuna")]),
+                    (v("commons"), vec![v("ceres_commons")]),
+                    (v("juling"), vec![v("ceres_juling")]),
+                    (v("kerwan"), vec![v("ceres_kerwan")]),
                     (v("luna"), vec![v("ceres_aitken")]),
+                    (v("occator"), vec![v("ceres_occator")]),
+                    (v("rheasilvia"), vec![v("ceres_rheasilvia")]),
                     (v("stickney"), vec![v(LANE_ROUTE_OUT)])
                 ]
             ),
@@ -379,8 +386,8 @@ fn a8_the_lane_carries_five_ports_and_six_direct_routes() {
             .expect("the lane parses")
             .entries()
             .len(),
-        36,
-        "the thirty-six entries"
+        60,
+        "the sixty entries (thirty-six at cut A.8; doc 20 cut SM.2's twenty-four)"
     );
     // The Titan bunkers (L8): reaction mass for sixty-odd fills, provisions at the
     // Company's price.
