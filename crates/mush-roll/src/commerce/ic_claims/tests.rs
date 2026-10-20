@@ -482,6 +482,7 @@ fn transferred_paid_open_format_three_preserves_old_claims_and_rejects_crossed_f
         digest: digest(8),
     });
     current.validate()?;
+    ClaimInventory::reconstruct(vec![current.clone()])?;
     let value = serde_json::to_value(&current)?;
     assert_eq!(
         serde_json::from_value::<ClaimRecord>(value.clone())?,
@@ -495,7 +496,10 @@ fn transferred_paid_open_format_three_preserves_old_claims_and_rejects_crossed_f
     for format in [1, 2] {
         let mut x = value.clone();
         x["format"] = json!(format);
-        assert!(serde_json::from_value::<ClaimRecord>(x).is_err());
+        // The registered family decoder validates after structural decoding.
+        let crossed: ClaimRecord = serde_json::from_value(x)?;
+        assert!(crossed.validate().is_err());
+        assert!(ClaimInventory::reconstruct(vec![crossed]).is_err());
     }
     for ownership in [
         serde_json::Value::Null,
@@ -511,7 +515,9 @@ fn transferred_paid_open_format_three_preserves_old_claims_and_rejects_crossed_f
         .as_object_mut()
         .ok_or("object")?
         .remove("paid_ownership");
-    assert!(serde_json::from_value::<ClaimRecord>(absent).is_err());
+    let absent: ClaimRecord = serde_json::from_value(absent)?;
+    assert!(absent.validate().is_err());
+    assert!(ClaimInventory::reconstruct(vec![absent]).is_err());
     current.open.capacity = Capacity::OwnedDispatch {};
     assert!(current.validate().is_err());
     Ok(())

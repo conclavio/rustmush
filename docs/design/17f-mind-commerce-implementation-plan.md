@@ -6,27 +6,27 @@
 The amount of code written is not a reliable completion percentage. New feature
 work is paused at the owner's request until the existing code passes together.
 
-The latest completed diagnostic run, N104, tested source tree
-`23e3bfd1b86400205d627e65f68ddfc9a37e0538`. It ran five focused stages:
-compilation and the complete Industry and Economy suites passed; two Conduct
-tests and one hardware story failed. No test process aborted. This is useful
-stabilization evidence, **not an integrated acceptance run**. The next candidate
-contains repairs for the remaining failures and must be tested again.
+The latest full integration attempt, N107, tested source tree
+`6b4ae66a7eabe07900697f417c90fabc52815464`. Of 76 planned stages, 58 passed,
+two completed with test failures, one aborted with a stack overflow, and 15 did
+not run. **This is a failed integration run, not acceptance.** It resolved the
+previous Conduct and hardware failures and exposed the next blockers.
 
 | Check | Latest result |
 | --- | --- |
-| Compile all selected production and test targets | Passed in N104 |
-| Full Industry and Economy suites | Passed in N104: 57 and 236 tests |
-| Conduct qualification | Failed in N104: two withdrawal tests; eight other tests passed |
-| Real hardware composition | Failed in N104: manufacture/refit setup; both launch tests and two refusal/recheck tests passed |
-| Complete integration roster, default workspace tests and separate bot pass | Not yet passed together on one candidate |
-| Genuine purchase, server recovery, Conduct and named launch stories | Still required on that same candidate |
-| Live Redis recovery on an isolated instance | Still required on that same candidate |
+| Compile all selected production and test targets | Passed in N107 |
+| Conduct, hardware, Industry and Economy | Passed in N107: 10, 5, 57 and 236 tests |
+| Roll | One claim-validation test failed; 281 passed |
+| Commerce composition | Two resale-registration tests failed; 31 passed |
+| Server submission disposition | Aborted with a test-fixture stack overflow |
+| Remaining selected checks, default workspace and separate bot suites | Not reached in N107 |
+| Genuine purchase, server recovery, Conduct and named launch stories | Not reached in N107 |
+| Live Redis recovery on an isolated instance | Still required on the same passing candidate |
 | Lint, frontend, remaining feature-specific and cross-host final acceptance | Still required before M7 closes |
 
-N104's source and all logs were independently verified unchanged. Its evidence
+N107's source and all logs were independently verified unchanged. Its evidence
 archive SHA-256 is
-`0801379c8c8c7c36c907788640e67efa46ab39d190ef3eaed53e40c8ac4143f8`.
+`d28c4ca9d249b1e8bfb210c6b5b9c383d828de7e50ba5a460d74b0d29cb96aa3`.
 Older passes cannot be combined with a newer candidate to claim acceptance.
 
 **What happens next:** verify the remaining repairs, then repeat the full run

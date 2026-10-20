@@ -176,7 +176,12 @@ impl Protocol {
                     return Err(refused("resale Registry exact reference"));
                 }
             }
-            for owner in self.participants.iter().skip(if i == 0 { 1 } else { 0 }) {
+            // Offer writes only its Market row and retains a Roll owner-read
+            // preimage. It prepares neither monetary nor retention owner images.
+            if i == 0 {
+                continue;
+            }
+            for owner in &self.participants {
                 definitions
                     .get_exact(owner)
                     .map_err(|_| refused("resale participant missing"))?;

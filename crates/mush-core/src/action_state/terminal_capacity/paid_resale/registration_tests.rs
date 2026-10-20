@@ -93,7 +93,7 @@ struct Config {
     purchase: [DefinitionRef; 3],
     resale: [DefinitionRef; 5],
     registry: DefinitionRef,
-    missing: Option<usize>,
+    missing: Option<(usize, usize)>,
     bad_family: bool,
 }
 struct Module<const N: usize>(Config);
@@ -137,7 +137,11 @@ impl<const N: usize> GameModule for Module<N> {
                 return Ok(());
             }
             reg.state(Cell::<1>);
-            reg.owner_participant(reference, all.into_iter().collect(), Adapter::<1>)?;
+            reg.owner_participant(
+                reference,
+                all.into_iter().filter(|a| a != &c.resale[0]).collect(),
+                Adapter::<1>,
+            )?;
         }
         let families = super::super::FAMILIES.into_iter().chain([
             ("market", super::super::QUOTE, 16384),
@@ -210,8 +214,10 @@ impl<const N: usize> GameModule for Module<N> {
             )?)?;
             checked(reg, "action", vec![c.registry.clone()])?;
             reg.definition(descriptor("action","registry_term_revocation",json!({"format":1,"protocol":"registry_exact_term_revocation_v1","reason":"registry_review","scope":"one_accepted_term_generation","duration":"original_grace_end","later_terms":"fresh_admission","shared_rating":"unchanged"}))?.with_references(vec![authority_ref,c.participants[1].clone()]))?;
-            reg.request_owner_participant::<Adapter<1>>(c.registry.clone())?;
-            if c.missing != Some(5) {
+            if c.missing != Some((5, 1)) {
+                reg.request_owner_participant::<Adapter<1>>(c.registry.clone())?;
+            }
+            if c.missing != Some((5, 0)) {
                 reg.request_owner_participant::<Adapter<0>>(c.registry.clone())?;
             }
             reg.action_provider(c.registry.clone(), Provider)?;
@@ -247,10 +253,11 @@ impl<const N: usize> GameModule for Module<N> {
                     descriptor("action", id, payload)?
                         .with_references(vec![c.participants[1].clone()]),
                 )?;
-                if i != 0 || c.missing != Some(0) {
+                // Match the real Market-only Offer: no owner grant or request.
+                if i > 0 && c.missing != Some((i, 1)) {
                     reg.request_owner_participant::<Adapter<1>>(c.resale[i].clone())?;
                 }
-                if i > 0 && c.missing != Some(i) {
+                if i > 0 && c.missing != Some((i, 0)) {
                     reg.request_owner_participant::<Adapter<0>>(c.resale[i].clone())?;
                 }
                 reg.action_provider(c.resale[i].clone(), Provider)?;
@@ -271,7 +278,7 @@ impl<const N: usize> GameModule for Module<N> {
 }
 fn engine(
     reverse: bool,
-    missing: Option<usize>,
+    missing: Option<(usize, usize)>,
     bad_family: bool,
 ) -> Result<Engine, Box<dyn std::error::Error>> {
     let f = fixture_product_resale_registry(0, 0, 1, "sealed", true, true)?;
@@ -308,12 +315,16 @@ fn engine(
 #[test]
 fn actual_composition_requires_every_owner_grant_and_exact_future_family_bound() -> TestResult {
     for reverse in [false, true] {
+        // Offer has no Economy or Roll participant grant; every action
+        // that writes those owner images still requires both exact requests.
         engine(reverse, None, false)?;
-        for missing in 0..6 {
-            assert!(
-                engine(reverse, Some(missing), false).is_err(),
-                "missing actual owner request accepted"
-            );
+        for action in 1..6 {
+            for owner in 0..2 {
+                assert!(
+                    engine(reverse, Some((action, owner)), false).is_err(),
+                    "missing actual owner request accepted"
+                );
+            }
         }
         assert!(
             engine(reverse, None, true).is_err(),

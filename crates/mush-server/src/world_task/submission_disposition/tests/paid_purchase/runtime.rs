@@ -95,7 +95,17 @@ impl Running {
     /// Mirrors the actual build_engine sequence, with only the explicit
     /// opt-in roster and fixed test key material substituted. No owner state
     /// or command output is installed here.
-    pub async fn boot(
+    pub fn boot<'a>(
+        config: &'a Config,
+        store: Arc<PurchaseFaultStore>,
+        commerce: Option<&'a MindCommerce>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = TestResult<Self>> + 'a>> {
+        // Keep the complete boot state out of the calling test/timeout futures.
+        // Like production build_engine, this remains lazy until first polled.
+        Box::pin(Self::boot_inner(config, store, commerce))
+    }
+
+    async fn boot_inner(
         config: &Config,
         store: Arc<PurchaseFaultStore>,
         commerce: Option<&MindCommerce>,
