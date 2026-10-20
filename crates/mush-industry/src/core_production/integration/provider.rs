@@ -490,12 +490,19 @@ impl Provider {
                     txn.replace(&r.families.orders, &selected_order, row.clone())
                         .map_err(bad)?;
                     stage = "provider-schedule-write";
-                    txn.replace(
-                        &r.families.schedules,
-                        &super::progress::schedule_id(selected_order)?,
-                        row.progress.cursor().clone(),
-                    )
-                    .map_err(bad)?;
+                    // Core already seeded the exact cursor in this transaction.
+                    // Require that postimage; writing it again is a duplicate
+                    // mutation, and accepting an unseeded invocation bypasses K.
+                    if txn
+                        .get(
+                            &r.families.schedules,
+                            &super::progress::schedule_id(selected_order)?,
+                        )
+                        .map_err(bad)?
+                        != Some(row.progress.cursor())
+                    {
+                        return Err(Error::Integrity);
+                    }
                     stage = "provider-core-capacity";
                     ctx.advance_core_integration_completion(txn, selected_order.0)
                         .map_err(bad)?;

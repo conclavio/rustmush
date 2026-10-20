@@ -500,11 +500,71 @@ impl FactoryRig {
     }
     fn prepare_inv(&mut self, phase: usize, inv: &ActionInvocation, n: u8) -> Result<Prepared> {
         let a = self.phase_action(phase)?;
+        if phase == 4 {
+            let order = serde_json::from_value(inv.parameters()["order"].clone())?;
+            return self.prepare_scheduled(&a, self.order(order)?.progress.cursor().id(), inv, n);
+        }
         Ok(self
             .r
             .w
             .engine_mut()
             .prepare_registered_composed_authoritative_action(&a, inv, token(n))?)
+    }
+    fn prepare_scheduled(
+        &mut self,
+        action: &DefinitionRef,
+        schedule: mush_core::ScheduleId,
+        inv: &ActionInvocation,
+        n: u8,
+    ) -> Result<Prepared> {
+        let cause = if inv.parameters()["restart"].as_bool() == Some(true) {
+            mush_core::ScheduleDriveCause::Restart
+        } else {
+            mush_core::ScheduleDriveCause::Live
+        };
+        let page = self
+            .r
+            .w
+            .engine()
+            .discover_scheduled_actions(cause, None, 256)?;
+        let candidate = page
+            .candidates()
+            .iter()
+            .find(|candidate| {
+                candidate.action() == action && candidate.advance().schedule() == schedule
+            })
+            .ok_or("actual due schedule candidate")?;
+        Ok(self
+            .r
+            .w
+            .engine_mut()
+            .prepare_registered_composed_scheduled_authoritative_action(candidate, inv, token(n))?)
+    }
+    fn scheduled_invocation(
+        &self,
+        action: &DefinitionRef,
+        schedule: mush_core::ScheduleId,
+    ) -> Result<ActionInvocation> {
+        let page = self.r.w.engine().discover_scheduled_actions(
+            mush_core::ScheduleDriveCause::Live,
+            None,
+            256,
+        )?;
+        let candidate = page
+            .candidates()
+            .iter()
+            .find(|candidate| {
+                candidate.action() == action && candidate.advance().schedule() == schedule
+            })
+            .ok_or("actual due schedule candidate")?;
+        let ingress = mush_core::scheduled_action_ingress(action, candidate.advance(), 1)?;
+        let (_, invocation, _) = self
+            .r
+            .w
+            .engine()
+            .plan_scheduled_action(candidate, &ingress)?
+            .into_parts();
+        Ok(invocation)
     }
     fn prepare(
         &mut self,
@@ -666,28 +726,7 @@ impl FactoryRig {
         let before = self.order(id)?;
         let due = before.progress.cursor().next_due().at;
         self.r.w.world_mut().set_now(due);
-        let at = self.r.w.world().world_ic_now();
-        let mush_core::ScheduleEvaluation::Advance(a) = before.progress.cursor().plan_due(
-            before.progress.cursor().revision(),
-            &at,
-            mush_core::ScheduleDriveCause::Live,
-        )?
-        else {
-            return Err("actual due occurrence".into());
-        };
-        let action = self.runtime()?.actions[4].clone();
-        let ingress = mush_core::scheduled_action_ingress(&action, &a, 1)?;
-        let inv = ActionInvocation::new(ActionInvocationDraft {
-            request: ingress.request(),
-            principal: ingress.principal().clone(),
-            actor: self.buyer,
-            offered_action: ActionOfferId(CanonicalHash::from_bytes([2; 32])),
-            subject: PerceivedRef::SelfActor,
-            targets: vec![],
-            parameters: json!({"order":id,"observed":at,"restart":false}),
-            idempotency: ingress.idempotency().clone(),
-        })?;
-        Ok(inv)
+        self.scheduled_invocation(&self.runtime()?.actions[4], before.progress.cursor().id())
     }
     fn advance(&mut self, id: crate::workorder::WorkOrderId, n: u8) -> Result {
         let inv = self.advance_invocation(id)?;
@@ -1244,6 +1283,17 @@ fn scheduled_progress_preserves_actual_ingress_and_all_dependency_custody_fences
         );
         assert_eq!(f.balance(f.payer)?, balance);
         assert_eq!(f.r.w.engine().action_state().revision(), revision);
+        // Exact K-shaped ingress alone is insufficient: only the scheduler
+        // entry point seeds the authoritative cursor into this transaction.
+        let action = f.phase_action(4)?;
+        assert!(
+            f.r.w
+                .engine_mut()
+                .prepare_registered_composed_authoritative_action(&action, &actual, token(24))
+                .is_err()
+        );
+        assert_eq!(f.r.w.engine().action_state().revision(), revision);
+        assert!(f.order(id)? == before);
         // The identical actual K ingress remains admissible after refusal.
         let p = f.prepare_inv(4, &actual, 24)?;
         f.stage_inv(4, &actual, 24, p)?;

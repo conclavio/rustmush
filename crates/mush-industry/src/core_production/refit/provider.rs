@@ -361,12 +361,18 @@ impl Provider {
                     },
                 )?;
                 let row = out.order.ok_or(Error::Integrity)?;
-                txn.replace(
-                    &r.families.schedules,
-                    &super::progress::schedule_id(s.order)?,
-                    row.progress.cursor().clone(),
-                )
-                .map_err(bad)?;
+                // Core owns the schedule advance; the owner's reproduced
+                // progress must equal its already seeded typed postimage.
+                if txn
+                    .get(
+                        &r.families.schedules,
+                        &super::progress::schedule_id(s.order)?,
+                    )
+                    .map_err(bad)?
+                    != Some(row.progress.cursor())
+                {
+                    return Err(Error::Integrity);
+                }
                 txn.replace(&r.families.orders, &s.order, row)
                     .map_err(bad)?;
                 ctx.advance_core_refit_completion(txn, s.order.0)

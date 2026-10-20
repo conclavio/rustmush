@@ -84,7 +84,7 @@ impl GameModule for Declarations {
         Ok(())
     }
 }
-fn world(purchases: bool) -> TestResult<TestWorld> {
+fn world(purchases: bool) -> TestResult<Box<TestWorld>> {
     let issuer = mush_org::SystemPrincipalId::new("roll.registry").ok_or("issuer")?;
     let policy = crate::registry_filing::InitialFilingPolicy::new(
         issuer.clone(),
@@ -106,7 +106,7 @@ fn world(purchases: bool) -> TestResult<TestWorld> {
     if purchases {
         economy = economy.with_original_mind_purchases(purchase_actions()?);
     }
-    Ok(TestWorld::with_modules(vec![
+    Ok(Box::new(TestWorld::with_modules(vec![
         Box::new(mush_org::OrgModule::new()),
         Box::new(Declarations("roll", &["initial_filing"])),
         Box::new(Declarations(
@@ -118,7 +118,7 @@ fn world(purchases: bool) -> TestResult<TestWorld> {
             ],
         )),
         Box::new(economy),
-    ]))
+    ])))
 }
 fn store(tw: &TestWorld) -> TestResult<&EconomyStore> {
     tw.world()
@@ -180,7 +180,7 @@ fn persist(disk: &mut BootMap, writes: Vec<ReplayWrite>) -> TestResult {
     Ok(())
 }
 struct Fixture {
-    tw: TestWorld,
+    tw: Box<TestWorld>,
     disk: BootMap,
     purchase: OriginalPurchase,
 }
@@ -360,7 +360,7 @@ impl Fixture {
         fold(&mut self.tw, &mut self.disk);
         Ok((covered, floor, head))
     }
-    fn restarted(&self, purchases: bool, disk: BootMap) -> TestResult<TestWorld> {
+    fn restarted(&self, purchases: bool, disk: BootMap) -> TestResult<Box<TestWorld>> {
         let mut tw = world(purchases)?;
         assert_eq!(
             objects(&mut tw)?,

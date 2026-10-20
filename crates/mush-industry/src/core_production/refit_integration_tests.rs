@@ -84,6 +84,12 @@ impl Fitting {
     }
     fn prepare_inv(&mut self, phase: usize, inv: &ActionInvocation, n: u8) -> Result<Prepared> {
         let a = self.action(phase)?;
+        if phase == 3 {
+            let order = serde_json::from_value(inv.parameters()["order"].clone())?;
+            return self
+                .f
+                .prepare_scheduled(&a, self.order(order)?.progress.cursor().id(), inv, n);
+        }
         Ok(self
             .f
             .r
@@ -186,26 +192,8 @@ impl Fitting {
             .w
             .world_mut()
             .set_now(before.progress.cursor().next_due().at);
-        let at = self.f.r.w.world().world_ic_now();
-        let mush_core::ScheduleEvaluation::Advance(a) = before.progress.cursor().plan_due(
-            before.progress.cursor().revision(),
-            &at,
-            mush_core::ScheduleDriveCause::Live,
-        )?
-        else {
-            return Err("actual refit due".into());
-        };
-        let ingress = mush_core::scheduled_action_ingress(&self.action(3)?, &a, 1)?;
-        Ok(ActionInvocation::new(ActionInvocationDraft {
-            request: ingress.request(),
-            principal: ingress.principal().clone(),
-            actor: self.f.buyer,
-            offered_action: ActionOfferId(CanonicalHash::from_bytes([2; 32])),
-            subject: PerceivedRef::SelfActor,
-            targets: vec![],
-            parameters: json!({"order":id,"observed":at,"restart":false}),
-            idempotency: ingress.idempotency().clone(),
-        })?)
+        self.f
+            .scheduled_invocation(&self.action(3)?, before.progress.cursor().id())
     }
     fn ready(&mut self, id: WorkOrderId, n: u8) -> Result {
         for c in [n, n + 1] {
@@ -792,6 +780,18 @@ fn actual_refit_scheduler_requires_real_ingress_and_current_dependency_readiness
     let real = s.advance_inv(id)?;
     let bad = invocation(s.f.buyer, 42, real.parameters().clone());
     assert!(s.prepare_inv(3, &bad, 42).is_err());
+    let before = s.order(id)?;
+    let revision = s.f.r.w.engine().action_state().revision();
+    let action = s.action(3)?;
+    assert!(
+        s.f.r
+            .w
+            .engine_mut()
+            .prepare_registered_composed_authoritative_action(&action, &real, token(42))
+            .is_err()
+    );
+    assert!(s.order(id)? == before);
+    assert_eq!(s.f.r.w.engine().action_state().revision(), revision);
     let p = s.prepare_inv(3, &real, 42)?;
     s.stage(3, &real, 42, p)?;
     s.f.take_install()?;
@@ -981,7 +981,7 @@ fn actual_class_three_refit_requires_current_personal_entitlement_at_each_instal
             1,
             operator,
             61,
-            json!({"requester":s.f.buyer,"class":"iii","supplier_lot":cert.lot.to_string()}),
+            json!({"requester":s.f.buyer,"class":DieClass::III,"supplier_lot":cert.lot.to_string()}),
         )?;
         s.f.commit(2, s.f.buyer, 62, s.f.accept_parameters(61))?;
         let order = crate::workorder::derive_work_order_id(RequestUid::from_bytes([62; 16]), 0)?;

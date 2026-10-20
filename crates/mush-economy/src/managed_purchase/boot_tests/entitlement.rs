@@ -200,7 +200,7 @@ impl ColdFixture {
         persist(&mut self.old.disk, writes)?;
         Ok(out)
     }
-    fn restart(&self, disk: BootMap) -> TestResult<TestWorld> {
+    fn restart(&self, disk: BootMap) -> TestResult<Box<TestWorld>> {
         let mut tw = world(true)?;
         assert_eq!(
             objects(&mut tw)?,

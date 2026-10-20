@@ -720,6 +720,19 @@ fn compose_server_modules(
         // none of it, so it sits anywhere before the rulesets; here, beside the other
         // player-facing subsystems and ahead of `mush-script`'s deliberate last place.
         Box::new(mush_party::PartyModule::new()),
+        // 17d M6.1: neutral authoring records load before the game audits their
+        // immutable source references in on_all_loaded. Cross-namespace writes
+        // are delegated only on rosters which also compose the TacSim owner.
+        // Roll must also precede Market: its final commercial audit opens the
+        // readiness gate required by Market's paired renewal recovery. All
+        // ordinary owner load hooks finish before either final audit runs.
+        Box::new({
+            let module = mush_roll::RollModule::with_writers(tacsim_delegate.then_some(crate::NS));
+            match commerce {
+                Some(commerce) => commerce.configure_roll(module),
+                None => module,
+            }
+        }),
         // E6c (08f §2, §5): the neutral market. It boots **after** `mush-economy` —
         // it validates listings against real accounts, assets and vaults, and reads
         // the economy's own contract state for the trade tape the safe projection
@@ -769,16 +782,6 @@ fn compose_server_modules(
             match launch {
                 Some(launch) => launch.configure_market(m),
                 None => m,
-            }
-        }),
-        // 17d M6.1: neutral authoring records load before the game audits their
-        // immutable source references in on_all_loaded. Cross-namespace writes
-        // are delegated only on rosters which also compose the TacSim owner.
-        Box::new({
-            let module = mush_roll::RollModule::with_writers(tacsim_delegate.then_some(crate::NS));
-            match commerce {
-                Some(commerce) => commerce.configure_roll(module),
-                None => module,
             }
         }),
         Box::new(mush_script::ScriptModule::new()),
