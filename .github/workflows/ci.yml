@@ -268,8 +268,13 @@ jobs:
       - name: Runner resources before the test run
         run: |
           nproc; free -m; df -h / /tmp "$GITHUB_WORKSPACE"
-          du -sm /tmp 2>/dev/null
-          cat /proc/pressure/io /proc/pressure/memory 2>/dev/null
+          # 2026-10-20: the first PR run (39487330415) died on this line in
+          # every shard: the step shell runs with -e, `du` exits 1 when it
+          # cannot read other users' directories under /tmp (the message
+          # went to /dev/null), and a missing PSI file would fail `cat` the
+          # same way. Both are readings, not gates.
+          du -sm /tmp 2>/dev/null || true
+          cat /proc/pressure/io /proc/pressure/memory 2>/dev/null || true
           ulimit -a
           echo "threads-max $(cat /proc/sys/kernel/threads-max) pid_max $(cat /proc/sys/kernel/pid_max)"
           echo "cgroup $(cat /proc/self/cgroup)"
