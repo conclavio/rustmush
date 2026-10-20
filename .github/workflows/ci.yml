@@ -19,7 +19,8 @@ on:
   # H3: the `scale` job below runs only on these two triggers.
   workflow_dispatch:
   schedule:
-    - cron: "17 4 * * 1"
+    # Daily (the repo is public, so hosted-runner minutes are free).
+    - cron: "17 4 * * *"
 
 env:
   CARGO_TERM_COLOR: always
@@ -30,7 +31,7 @@ env:
 jobs:
   mind-commerce-acceptance:
     name: M7 ${{ matrix.name }}
-    # Weekly with the scale job, or by hand: the server story alone paces about
+    # Daily with the scale job, or by hand: the server story alone paces about
     # 3 s a Registry lease through real maintenance ticks (roughly three hours).
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
@@ -507,7 +508,7 @@ jobs:
   # H3 (11-h §3.3): the scale harness — cold journal replay, world boot,
   # the authoritative write-through soak and the tick-shaped bundle. Every
   # test is `#[ignore]`; this job is the only thing that runs them, on demand
-  # or weekly, never on push. It is report-only by design (D-H-8): a shared
+  # or daily, never on push. It is report-only by design (D-H-8): a shared
   # runner's speed is not a threshold, so read the `scale_*:` lines in the log.
   # Run the harness locally with `SCALE_ASSERT=1` to assert the thresholds.
   # Redis twins use logical dbs 1 and 2.
@@ -537,7 +538,7 @@ jobs:
   # figure is the `WIN RATE:` line and one `match` line each in the log (the
   # owner's target is seven in ten; below it is input for a later machine cut,
   # 16c Q-AJ5, not a failure). About seventy-five minutes, so it runs on
-  # demand only, never on push or on the weekly schedule. It is the only job
+  # demand only, never on push or on the daily schedule. It is the only job
   # that runs `arena_win_rate`, which is `#[ignore]` for exactly that reason.
   # Its sibling bot-muster-rate (below) flies the same bot from the muster.
   bot-win-rate:
@@ -573,7 +574,7 @@ jobs:
   # above stays as the duel benchmark. REPORT-ONLY: it asserts only that ten
   # matches finished; the figure is the `WIN RATE FROM THE MUSTER:` line, one
   # `match` line each and the reading lines in the log. Up to about two hours,
-  # so it runs on demand only, never on push or on the weekly schedule. It is
+  # so it runs on demand only, never on push or on the daily schedule. It is
   # the only job that runs `arena_muster_rate`, which is `#[ignore]` for exactly
   # that reason.
   bot-muster-rate:
@@ -602,7 +603,7 @@ jobs:
   # unit minds in four variants, fill first, on a real think pool)
   # (`harness_*:` lines in the log, `harness*.json` uploaded). Every
   # test is `#[ignore]`; this job is the only CI job that runs them, on demand
-  # or weekly, never on push, and no Redis is involved. Since 17b cut M4.5
+  # or daily, never on push, and no Redis is involved. Since 17b cut M4.5
   # every lane fields unit minds at the ROM (Class 0, the native stock mind)
   # where it fielded the reflex controller — the report's `motor` and
   # `minds.states_at_end` objects where `reflex` was.
