@@ -54,6 +54,9 @@ impl ScheduledRegistry {
         // This existing fixture command calls production world::drain. Every
         // continuation still enters through the registered opaque scheduler.
         self.world.run(GOD, "@recovery-pulse");
+        // A player command (`@registry/cancel`) dirties world objects; the host's
+        // persistence pass drains them before the next staged action, as here.
+        let _ = self.world.world_mut().take_dirty();
         module_ops(&mut self.fixture.disk, &self.world.take_module_ops())
     }
     fn callbacks(&self) -> TestResult<Vec<i64>> {
