@@ -220,7 +220,7 @@ impl Observer {
         // cannot hide an earlier chase or a caller-selected shortcut.
         let expected_goal = if withdrawing {
             view.cell.and_then(|cell| {
-                crate::arena::motor::entry_cell(
+                crate::arena::motor::entry_interior_cell(
                     &think.map,
                     view.team,
                     crate::arena::state::CostRow::Tracked,

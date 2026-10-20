@@ -22,7 +22,26 @@ impl RevisionAdapter for RevisionRules {
     }
 
     fn validate(&self, source: &str, envelope: &Envelope) -> Result<(), RollError> {
-        validate_source(source, envelope, true)
+        validate_source(source, envelope, true, true)
+    }
+}
+
+/// Historical source audit only. This adapter is never the authoring save
+/// boundary and grants no certificate or execution authority. Known API4 rows
+/// retain their original parser/metadata validity; current rows still receive
+/// full current validation. Re-conformance separately compiles for current use.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RetainedRevisionRules;
+impl RevisionAdapter for RetainedRevisionRules {
+    fn normalize_source(&self, source: &str) -> Result<String, RollError> {
+        super::normalize::normalize_source(source)
+    }
+    fn validate(&self, source: &str, envelope: &Envelope) -> Result<(), RollError> {
+        if envelope.mind_abi == super::MIND_ABI {
+            RevisionRules.validate(source, envelope)
+        } else {
+            validate_source(source, envelope, false, false)
+        }
     }
 }
 
@@ -34,9 +53,14 @@ pub(crate) fn validate_retained_registry(
     source: &str,
     envelope: &Envelope,
 ) -> Result<(), RollError> {
-    validate_source(source, envelope, false)
+    validate_source(source, envelope, false, true)
 }
-fn validate_source(source: &str, envelope: &Envelope, current_save: bool) -> Result<(), RollError> {
+fn validate_source(
+    source: &str,
+    envelope: &Envelope,
+    current_save: bool,
+    executable: bool,
+) -> Result<(), RollError> {
     envelope.validate()?;
     if source.len() > mush_roll::MAX_SOURCE_BYTES {
         return Err(invalid("source", "maximum 32 KiB"));
@@ -60,7 +84,14 @@ fn validate_source(source: &str, envelope: &Envelope, current_save: bool) -> Res
         class,
     )
     .map_err(|error| invalid("envelope", error.to_string()))?;
-    super::metadata::validate(source, envelope)?;
+    if current_save {
+        super::metadata::validate(source, envelope)?;
+    } else {
+        super::metadata::validate_retained_registry(source, envelope)?;
+    }
+    if !executable {
+        return super::metadata::require_retained_think(source);
+    }
     let sandbox = Sandbox::new(&EngineLimits::default(), super::register_api);
     let digest = Digest(Sha256::digest(source.as_bytes()).into());
     sandbox
@@ -128,5 +159,35 @@ mod tests {
         metadata = envelope();
         metadata.profiles = json!({"Default": {"undeclared": 1}});
         assert!(RevisionRules.validate(source, &metadata).is_err());
+    }
+
+    #[test]
+    fn retained_audit_never_becomes_fresh_save_or_current_execution_authority() {
+        let source = "const MIND = #{name: \"Retained\", api: 4, class: \"discretion\", role: \"combat\", core: \"I\"}; fn think(v,c) {}";
+        let mut old = envelope();
+        old.mind_abi = "rhai=1.26.0;api=4;stock=2".into();
+        assert_ne!(old.mind_abi, super::super::MIND_ABI);
+        let before = serde_json::to_vec(&old).unwrap();
+        assert!(RetainedRevisionRules.validate(source, &old).is_ok());
+        assert!(RevisionRules.validate(source, &old).is_err());
+        assert_eq!(serde_json::to_vec(&old).unwrap(), before);
+        assert_eq!(
+            RetainedRevisionRules.normalize_source(source).unwrap(),
+            RevisionRules.normalize_source(source).unwrap()
+        );
+        assert!(
+            RetainedRevisionRules
+                .validate("fn think(v) {}", &old)
+                .is_err()
+        );
+        let wrong_api = source.replace("api: 4", "api: 3");
+        assert!(RetainedRevisionRules.validate(&wrong_api, &old).is_err());
+        old.mind_abi = "rhai=1.26.0;api=3;stock=2".into();
+        assert!(RetainedRevisionRules.validate(source, &old).is_err());
+        assert!(
+            RetainedRevisionRules
+                .validate("fn think(v,c) { missing_name; }", &envelope())
+                .is_err()
+        );
     }
 }

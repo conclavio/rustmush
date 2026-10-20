@@ -6,24 +6,31 @@
 The amount of code written is not a reliable completion percentage. New feature
 work is paused at the owner's request until the existing code passes together.
 
-The current diagnostic run is N101, source tree
-`10faf28bcdd53ab5633934a85e4be910843da139`. It compiled, but has runtime failures;
-it cannot establish a green baseline. Stabilization fixes are being prepared
-separately while its remaining checks finish. Older passes cannot be combined
-with a newer candidate to claim acceptance.
+The latest completed diagnostic run, N104, tested source tree
+`23e3bfd1b86400205d627e65f68ddfc9a37e0538`. It ran five focused stages:
+compilation and the complete Industry and Economy suites passed; two Conduct
+tests and one hardware story failed. No test process aborted. This is useful
+stabilization evidence, **not an integrated acceptance run**. The next candidate
+contains repairs for the remaining failures and must be tested again.
 
-| Check | Status on this baseline |
+| Check | Latest result |
 | --- | --- |
-| Compile all selected production and test targets | Passed |
-| Conduct, hardware and industry runtime tests | Failed; withdrawal qualification, launch/manufacture and shared refit setup are being repaired |
-| Remaining component and service integration tests | Pending this run |
-| Genuine purchase, server recovery, Conduct and named launch stories | Pending this run |
-| Default workspace tests and separate bot pass | Required for the baseline; not yet run on this candidate |
-| Live Redis recovery on an isolated instance | Required for the baseline; not yet run on this candidate |
+| Compile all selected production and test targets | Passed in N104 |
+| Full Industry and Economy suites | Passed in N104: 57 and 236 tests |
+| Conduct qualification | Failed in N104: two withdrawal tests; eight other tests passed |
+| Real hardware composition | Failed in N104: manufacture/refit setup; both launch tests and two refusal/recheck tests passed |
+| Complete integration roster, default workspace tests and separate bot pass | Not yet passed together on one candidate |
+| Genuine purchase, server recovery, Conduct and named launch stories | Still required on that same candidate |
+| Live Redis recovery on an isolated instance | Still required on that same candidate |
 | Lint, frontend, remaining feature-specific and cross-host final acceptance | Still required before M7 closes |
 
-**What happens next:** finish this run, fix failures without adding features,
-and repeat until one candidate passes every selected integration stage, the
+N104's source and all logs were independently verified unchanged. Its evidence
+archive SHA-256 is
+`0801379c8c8c7c36c907788640e67efa46ab39d190ef3eaed53e40c8ac4143f8`.
+Older passes cannot be combined with a newer candidate to claim acceptance.
+
+**What happens next:** verify the remaining repairs, then repeat the full run
+until one candidate passes every selected integration stage, the
 default workspace suite, the separate bot pass, live Redis recovery, and all four
 genuine stories. The workspace run alone does not prove Redis: its service-gated
 tests can skip when no Redis URL is present. Runner errors count as errors to fix;

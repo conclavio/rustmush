@@ -1959,7 +1959,7 @@ fn ae1_the_rebuilt_fixtures_are_version_one_of_the_ground_and_four_of_the_arena(
 /// `95ee741e70fa804e671e8b34f8fb62ea317b15f6a4bc2bdc5190971180802ecd` (17b
 /// cut M2.5, the helm half).
 const STANDARD_DOCTRINE_SHA256: &str =
-    "9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b";
+    "d318e09bd821a0d933e273309f32608fe422041c059e762377cae0551673b2af";
 
 /// **Standard Doctrine's source is pinned** (17b cut M2.5; doc 17 §11, §13,
 /// §22's italics; 17b §5's feas F9):
@@ -2015,7 +2015,7 @@ fn m2_the_standard_doctrine_source_is_pinned() {
         MindManifest {
             name: "Standard Doctrine".to_owned(),
             role: "combat".to_owned(),
-            api: 4,
+            api: 5,
             stock: 2,
             rated_class: "I".to_owned(),
             ops_ceiling: 1_500,
@@ -2029,7 +2029,7 @@ fn m2_the_standard_doctrine_source_is_pinned() {
     assert!(
         header.starts_with("// Standard Doctrine \u{2014} the combat role's stock mind")
             && header.contains(
-                "name: Standard Doctrine; role: combat; api: 4; stock: 2; rated: class I \
+                "name: Standard Doctrine; role: combat; api: 5; stock: 2; rated: class I \
                  (1,500 ops a think)"
             )
             && header.contains("T1 is the oracle (Gate A)"),

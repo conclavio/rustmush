@@ -1,16 +1,16 @@
 {
   "name": "Meridiani Field Series",
   "content_id": "meridiani.field_series",
-  "content_version": 1,
+  "content_version": 2,
   "status": "unfiled_combat_content",
   "intended_legal_class": "discretion",
   "intended_form": "sealed",
   "declared_class": "II",
   "ops_ceiling": 3000,
-  "mind_abi": "rhai=1.26.0;api=4;stock=2",
+  "mind_abi": "rhai=1.26.0;api=5;stock=2",
   "source_sha256": "6c906d59c182632a4227d589fe9d60887c04af97975ebead865316c4270505d5",
   "source_bytes": 4678,
-  "envelope_sha256": "135217ab30344eab8215d79bfdcc3da79f9a30ee621158c624ac4f224010a9ba",
+  "envelope_sha256": "5f468eaefad01c60b7b2ee197fb162bd7767f733f4327935a4d725bf8d15d6e3",
   "profiles": [
     {
       "name": "Field",

@@ -530,25 +530,45 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
         GOD,
         &format!("@asset/title #{}=#{}", hull.0, buyer.0),
     )?;
-    let heat = mush_tactics::UnitMutationPlan::new(
+    // Shipped unit definitions have section cells, not a unit-level heat pool.
+    // Damage an actual non-core cell and prove that refitting preserves it.
+    let hull_internals = mush_tactics::CellAddr::Section {
+        section: mush_tactics::SectionId::new("hull")?,
+        cell: mush_tactics::CellId::new(crate::definitions::unit::INTERNALS_CELL)?,
+    };
+    let pristine = mush_tactics::module::unit_of(r.world().world(), hull)
+        .ok_or("native line unit before damage")?;
+    let intact = pristine
+        .cell(&hull_internals)
+        .ok_or("actual hull internals")?;
+    assert_eq!(intact.current, intact.max);
+    let damaged_internals = intact.current.checked_sub(1).ok_or("bounded hull damage")?;
+    assert!(damaged_internals > 0 && damaged_internals >= intact.min);
+    let damage = mush_tactics::UnitMutationPlan::new(
         vec![mush_tactics::UnitMutationOp::SetCell {
-            addr: mush_tactics::CellAddr::Unit {
-                cell: mush_tactics::CellId::new("heat")?,
-            },
-            value: 7,
+            addr: hull_internals.clone(),
+            value: damaged_internals,
         }],
-        None,
-        Some("retained actual hull heat".into()),
+        Some(pristine.revision()),
+        Some("retained actual hull internals damage".into()),
     )?;
     command(
         r.world_mut(),
         GOD,
-        &format!("@unit/damage #{}={}", hull.0, serde_json::to_string(&heat)?),
+        &format!(
+            "@unit/damage #{}={}",
+            hull.0,
+            serde_json::to_string(&damage)?
+        ),
     )?;
     r.flush();
     let before = mush_tactics::module::unit_of(r.world().world(), hull)
         .ok_or("native line unit")?
         .clone();
+    assert_eq!(
+        before.cell(&hull_internals).map(|cell| cell.current),
+        Some(damaged_internals)
+    );
     let (offer,_)=r.perform("industry","offer_core_refit",agent,json!({"requester":buyer.0,"hull":hull.0,"incoming":output.0,"manufacture":accept.to_hex(),"class":"i"}))?;
     let (_, order) = r.perform(
         "industry",
@@ -578,6 +598,10 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
     let after = mush_tactics::module::unit_of(r.world().world(), hull)
         .ok_or("native fitted unit")?
         .clone();
+    assert_eq!(
+        after.cell(&hull_internals).map(|cell| cell.current),
+        Some(damaged_internals)
+    );
     assert_eq!(
         after.schema().key().id.as_str(),
         crate::definitions::core_replacement::LINE_I

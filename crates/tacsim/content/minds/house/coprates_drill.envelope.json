@@ -193,5 +193,5 @@
   },
   "rules": {},
   "declared_class": "II",
-  "mind_abi": "rhai=1.26.0;api=4;stock=2"
+  "mind_abi": "rhai=1.26.0;api=5;stock=2"
 }

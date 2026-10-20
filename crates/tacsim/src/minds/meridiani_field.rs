@@ -223,7 +223,7 @@ fn meridiani_source_and_profiles_have_exact_unfiled_content_identity() -> TestRe
     }
     assert_eq!(
         manifest.get("content_version").and_then(|v| v.as_u64()),
-        Some(1)
+        Some(2)
     );
     assert_eq!(
         manifest.get("status").and_then(|v| v.as_str()),

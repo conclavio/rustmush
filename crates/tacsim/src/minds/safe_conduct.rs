@@ -212,7 +212,7 @@ fn exact_safe_conduct_content_is_distinct_and_validated_without_certification() 
     );
     assert_eq!(
         manifest.get("content_version").and_then(|v| v.as_u64()),
-        Some(1)
+        Some(2)
     );
     assert_eq!(
         manifest.get("envelope_sha256").and_then(|v| v.as_str()),
@@ -620,6 +620,21 @@ fn actual_native_arrival_and_own_hurt_have_explicit_role_responses() -> TestResu
                 facet.armor = 0;
             }
         }
+        // The original two-cell fixture zone cannot contain the motor's
+        // complete arrival square. No boundary goal or firing is permitted.
+        let narrow = harness.think(hurt.clone(), &[], 0)?;
+        assert!(has_goal(&narrow, MotorGoal::Hold));
+        assert!(!arms(&narrow));
+        // Keep the positive own-hurt response on the minimum three-cell zone.
+        // Actual Conduct scenario terrain and physical-entry acceptance stay
+        // unchanged; this is only the small source unit probe's own map.
+        let mut harness = harness;
+        Arc::make_mut(&mut harness.map)
+            .entry_zones
+            .iter_mut()
+            .find(|zone| zone.team == Team::Red)
+            .ok_or("own zone")?
+            .x1 = 2;
         let result = harness.think(hurt, &[], 0)?;
         assert!(has_goal(&result, MotorGoal::Cell { x: 1, y: 4 }));
         assert!(!arms(&result));

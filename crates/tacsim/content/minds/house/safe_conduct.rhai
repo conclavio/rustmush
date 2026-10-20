@@ -70,7 +70,7 @@ fn think(view, card) {
     let retry = card.get("retry_ms");
     if order.objective == "withdraw" || health_permille(view) < card.get("withdraw_permille") {
         cease(view);
-        this.route(view, entry_cell(view), retry);
+        this.route(view, entry_interior_cell(view), retry);
         return;
     }
     let age = card.get("fresh_ms");

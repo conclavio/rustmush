@@ -1,14 +1,14 @@
 {
   "name": "Safe Conduct",
   "content_id": "tycho.safe_conduct",
-  "content_version": 1,
+  "content_version": 2,
   "status": "unfiled_role_content",
   "declared_class": "II",
   "ops_ceiling": 3000,
-  "mind_abi": "rhai=1.26.0;api=4;stock=2",
-  "source_sha256": "018907192f6ee66154ea9611653d0646946fd14a96ba2b3af802ec2d43dec0b7",
-  "source_bytes": 3964,
-  "envelope_sha256": "4b6ec4501480a364ee4975b46841ce178ff8971e733afeb80331922c7815a2a1",
+  "mind_abi": "rhai=1.26.0;api=5;stock=2",
+  "source_sha256": "4509596d123fb0e89ad61d5fc30e9172f5ba94c46b5cf41084d3de2d66847ce0",
+  "source_bytes": 3973,
+  "envelope_sha256": "c8d370d74ff6eed7ac3227ec9f6e0985c66689bb1234edf8071853461f611700",
   "roles": [
     {
       "profile": "Escort",

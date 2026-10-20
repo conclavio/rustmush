@@ -64,8 +64,10 @@ pub const STANDARD_MANIFEST_JSON: &str = include_str!("../../content/minds/stand
 /// reads it, so a released seat's seeded Withdraw drives home and rallies on
 /// Q.7's clock instead of going Patrol on its first think), mirrored in
 /// `NativeStockMind::decide` and pinned by Gate A; M2.6's was `8b3ec78c…d74996`.
+/// API 5 changes only this source's API header; its stock behavior and
+/// [`super::STOCK_VERSION`] remain unchanged.
 pub const STANDARD_SHA256: &str =
-    "9b330c0f5ccd861078d4928fbc30dda7a132df6c8f1b027d4a5a00ca452cf69b";
+    "d318e09bd821a0d933e273309f32608fe422041c059e762377cae0551673b2af";
 
 /// **The script's digest** — the SHA-256 of [`STANDARD_RHAI`], the key the
 /// sandbox caches its compilation under (with `MIND_ABI`). Computed from the

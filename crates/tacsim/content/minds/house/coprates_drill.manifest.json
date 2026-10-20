@@ -1,14 +1,14 @@
 {
   "name": "Coprates Drill",
   "content_id": "territorial_force.coprates_drill",
-  "content_version": 1,
+  "content_version": 2,
   "status": "unfiled_combat_content",
   "declared_class": "II",
   "ops_ceiling": 3000,
-  "mind_abi": "rhai=1.26.0;api=4;stock=2",
+  "mind_abi": "rhai=1.26.0;api=5;stock=2",
   "source_sha256": "36fd55d2c6494a56be77d483f70239f5926346f1b7e4723e67fd753ca86c9320",
   "source_bytes": 4262,
-  "envelope_sha256": "7aefc2f52913524af4d6b2a8beebe7a3e1728b0035bc09130a79c4b7c7798623",
+  "envelope_sha256": "dcf15fe788553aa32fcd85f6518163baab7dadad84abf42b007feac1f4d83e84",
   "profiles": [
     {
       "name": "Drill",

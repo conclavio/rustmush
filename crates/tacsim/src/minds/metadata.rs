@@ -21,6 +21,41 @@ const MAX_METADATA_NODES: usize = 4_096;
 /// # Errors
 /// Malformed, oversized, executable or conflicting metadata.
 pub(crate) fn validate(source: &str, envelope: &Envelope) -> Result<(), RollError> {
+    validate_for_api(source, envelope, super::API_VERSION)
+}
+
+/// Only the closed retained-subject path may validate an earlier declaration.
+/// The literal API still belongs to its exact immutable envelope. This does not
+/// grant source authority or run an old engine: authoring compiles the source in
+/// the current sandbox after this bounded metadata check.
+pub(crate) fn validate_retained_registry(
+    source: &str,
+    envelope: &Envelope,
+) -> Result<(), RollError> {
+    let api = match envelope.mind_abi.as_str() {
+        abi if abi == super::MIND_ABI => super::API_VERSION,
+        "rhai=1.26.0;api=4;stock=2" => 4,
+        _ => return Err(invalid("mind_abi", "unsupported retained Registry ABI")),
+    };
+    validate_for_api(source, envelope, api)
+}
+
+/// Retained archival validity keeps the original two-argument entry point,
+/// without installing the current station API or granting executability.
+pub(super) fn require_retained_think(source: &str) -> Result<(), RollError> {
+    let ast = metadata_engine()
+        .compile(source)
+        .map_err(|error| invalid("source", error.to_string()))?;
+    if !ast
+        .iter_functions()
+        .any(|function| function.name == "think" && function.params.len() == 2)
+    {
+        return Err(invalid("source", "expected fn think(view, card)"));
+    }
+    Ok(())
+}
+
+fn validate_for_api(source: &str, envelope: &Envelope, api: u32) -> Result<(), RollError> {
     if source.len() > mush_roll::MAX_SOURCE_BYTES || source.contains('\0') {
         return Err(invalid("source", "maximum 32 KiB; NUL is forbidden"));
     }
@@ -51,7 +86,7 @@ pub(crate) fn validate(source: &str, envelope: &Envelope) -> Result<(), RollErro
         if declarations.next().is_some() {
             return Err(invalid("MIND", "declare the header exactly once"));
         }
-        check_manifest(&bounded_json(value)?, envelope)?;
+        check_manifest(&bounded_json(value)?, envelope, api)?;
     }
 
     let card_functions = ast
@@ -118,7 +153,7 @@ fn metadata_engine() -> Engine {
     engine
 }
 
-fn check_manifest(value: &Value, envelope: &Envelope) -> Result<(), RollError> {
+fn check_manifest(value: &Value, envelope: &Envelope, api: u32) -> Result<(), RollError> {
     let map = value
         .as_object()
         .ok_or_else(|| invalid("MIND", "expected a literal map"))?;
@@ -133,8 +168,8 @@ fn check_manifest(value: &Value, envelope: &Envelope) -> Result<(), RollError> {
     if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
         return Err(invalid("MIND.name", "expected 1..128 printable bytes"));
     }
-    if map.get("api").and_then(Value::as_u64) != Some(u64::from(super::API_VERSION)) {
-        return Err(invalid("MIND.api", "not the current mind API"));
+    if map.get("api").and_then(Value::as_u64) != Some(u64::from(api)) {
+        return Err(invalid("MIND.api", "differs from the envelope mind API"));
     }
     if map.get("class").and_then(Value::as_str) != Some("discretion") {
         return Err(invalid(

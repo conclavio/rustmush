@@ -174,7 +174,7 @@ pub use sealed::{InstallError, install_sealed_runners};
 
 /// **The API's version** (doc 17 Â§13): the `api=` part of [`MIND_ABI`]. A
 /// change to any registered name, signature, getter, fee or refusal is a bump.
-pub const API_VERSION: u32 = 4;
+pub const API_VERSION: u32 = 5;
 
 /// **The stock content's version** (doc 17 Â§13): the `stock=` part of
 /// [`MIND_ABI`]; M5r's restored Hold/motor/origin behavior is version 2.
@@ -184,7 +184,7 @@ pub const STOCK_VERSION: u32 = 2;
 /// D-UM-27): `mush_mind::RHAI_ABI`, then [`API_VERSION`] and
 /// [`STOCK_VERSION`] â€” `mind_abi_is_composed_and_the_sandbox_is_one` composes
 /// it and asserts the literal.
-pub const MIND_ABI: &str = "rhai=1.26.0;api=4;stock=2";
+pub const MIND_ABI: &str = "rhai=1.26.0;api=5;stock=2";
 
 /// **The stock class's op ceiling per think** (doc 17 Â§9, D-UM-35's class I
 /// `ops` column): operations plus fees a think may spend. **The Class I row of
@@ -881,7 +881,7 @@ mod tests {
             format!("{RHAI_ABI};api={API_VERSION};stock={STOCK_VERSION}"),
             MIND_ABI
         );
-        assert_eq!(MIND_ABI, "rhai=1.26.0;api=4;stock=2");
+        assert_eq!(MIND_ABI, "rhai=1.26.0;api=5;stock=2");
         assert_eq!(STOCK_OPS_PER_THINK, 1_500);
         assert_eq!(STOCK_LINE_TO_PER_THINK, 2);
         assert_eq!(RAND_MAX_K, 1_000);
@@ -995,7 +995,7 @@ mod tests {
     }
 
     /// The pinned list (see [`the_registered_names_are_pinned`]).
-    const PINNED: [&str; 279] = [
+    const PINNED: [&str; 280] = [
         "type View",
         "type Objective",
         "type Motor",
@@ -1208,6 +1208,7 @@ mod tests {
         "terrain_at",
         "spot_cell",
         "entry_cell",
+        "entry_interior_cell",
         "far_entry_cell",
         "stand_off_cell",
         "patrol_step",
@@ -1278,7 +1279,7 @@ mod tests {
     ];
 
     /// One call of every API name on the full view (`v`, `c` in scope).
-    const CALLS: [(&str, &str); 243] = [
+    const CALLS: [(&str, &str); 244] = [
         ("View.unit", "v.unit"),
         ("View.callsign", "v.callsign"),
         ("View.team", "v.team"),
@@ -1488,6 +1489,7 @@ mod tests {
         ("terrain_at", "terrain_at(v.cell)"),
         ("spot_cell", "spot_cell(\"A\")"),
         ("entry_cell", "entry_cell(v)"),
+        ("entry_interior_cell", "entry_interior_cell(v)"),
         ("far_entry_cell", "far_entry_cell(v)"),
         ("stand_off_cell", "stand_off_cell(v, v.lock, 500)"),
         ("patrol_step", "patrol_step(v, false, (), (), ())"),

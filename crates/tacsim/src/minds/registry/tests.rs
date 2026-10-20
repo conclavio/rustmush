@@ -333,3 +333,76 @@ pub(super) fn frozen_policy_with_config(
         catalog, records, cfg,
     )?)
 }
+
+#[test]
+fn retained_api4_reconformance_checks_immutable_metadata_under_current_sandbox() -> TestResult {
+    const OLD_ABI: &str = "rhai=1.26.0;api=4;stock=2";
+    assert_ne!(
+        crate::minds::MIND_ABI,
+        OLD_ABI,
+        "paired API5 stabilization prerequisite"
+    );
+    let source = "const MIND = #{name: \"Retained\", api: 4, class: \"discretion\", role: \"combat\", core: \"I\"}; fn think(v,c) { this.marker = 73; }";
+    let build = |source: &str, abi: &str| -> Result<Revision, Box<dyn std::error::Error>> {
+        let current = revision(source)?;
+        let mut value = serde_json::to_value(&current)?;
+        value["envelope"]["mind_abi"] = json!(abi);
+        let envelope: Envelope = serde_json::from_value(value["envelope"].clone())?;
+        value["reference"]["digest"] = serde_json::to_value(envelope.digest(source)?)?;
+        Ok(serde_json::from_value(value)?)
+    };
+    let retained = build(source, OLD_ABI)?;
+    let bytes = serde_json::to_vec(&retained)?;
+    let cfg = ArenaConfig::default();
+    assert!(PreparedSubject::prepare(&retained, source, &cfg).is_err());
+    let measured = PreparedSubject::prepare_reconformance(&retained, source, &cfg)?;
+    assert_eq!(
+        measured.subject().revision(),
+        mush_roll::commerce::RevisionIdentity::capture(&retained)?
+    );
+    assert_eq!(serde_json::to_vec(&retained)?, bytes);
+    // The unchanged historical source actually executes through the newly
+    // compiled current runner; no old engine or metadata-generated authority.
+    use crate::arena::{
+        Controller, Team,
+        motor::MotorCounters,
+        state::Power,
+        test_support::{arena_of, line_tank, pose},
+    };
+    let own = ObjId(4);
+    let mut hull = line_tank(own, Team::Red, pose(1500, 4500));
+    hull.controller = Controller::Mind;
+    hull.reseal(&crate::match_::SealTerms::fixture())?;
+    let mut arena = arena_of(vec![
+        hull,
+        line_tank(ObjId(9), Team::Blue, pose(6500, 4500)),
+    ]);
+    arena.unit_mut(own).ok_or("own")?.power = Power::Online;
+    arena.now_ms = 1250;
+    arena.collect_think(own, 0, 1001, &mut MotorCounters::default());
+    let think = arena.collected.pop().ok_or("current runner think")?;
+    let answer = measured.runner().think(&think.job());
+    assert!(answer.fault.is_none());
+    assert_eq!(
+        crate::arena::mind::decode_memory(&answer.memory).get("marker"),
+        Some(&crate::arena::mind::MemValue::Int(73))
+    );
+    // Fresh source and metadata must move together to the current API.
+    let new_source = source.replace("api: 4", &format!("api: {}", crate::minds::API_VERSION));
+    let current = build(&new_source, crate::minds::MIND_ABI)?;
+    assert!(PreparedSubject::prepare(&current, &new_source, &cfg).is_ok());
+    assert!(PreparedSubject::prepare_reconformance(&retained, &new_source, &cfg).is_err());
+    for (source, abi) in [
+        (new_source.as_str(), OLD_ABI),
+        (source, crate::minds::MIND_ABI),
+        (source, "rhai=1.26.0;api=3;stock=2"),
+        (source, "rhai=1.26.0;api=4;stock=9"),
+        (source, "rhai=1.25.0;api=4;stock=2"),
+        ("fn think(v,c) { missing_name; }", OLD_ABI),
+        ("fn think(v,c) { eval(\"42\"); }", OLD_ABI),
+    ] {
+        let wrong = build(source, abi)?;
+        assert!(PreparedSubject::prepare_reconformance(&wrong, source, &cfg).is_err());
+    }
+    Ok(())
+}

@@ -8,7 +8,7 @@
 use mush_core::DefinitionDigest;
 use mush_roll::commerce::personal_filed_reader::PersonalFiledHolding;
 use mush_roll::commerce::rating::RatingClass;
-use mush_roll::{Revision, SourceAdapter};
+use mush_roll::{Revision, RevisionAdapter as _, SourceAdapter};
 use smol_str::SmolStr;
 use std::sync::Arc;
 
@@ -55,13 +55,7 @@ impl FiledExecutable {
                 "paid licence is below the certified minimum",
             ));
         }
-        let (definition, source) = decode_exact(
-            holding.revision(),
-            holding.definition(),
-            declared,
-            minimum,
-            sources,
-        )?;
+        let (definition, source) = decode_holding(&holding, sources)?;
         Ok(Self {
             holding,
             definition: Arc::new(definition),
@@ -202,31 +196,106 @@ pub(crate) fn decode_source_access<S: SourceAdapter>(
     access: &mush_roll::commerce::paid_source_reader::PaidSourceAccess,
     sources: &S,
 ) -> Result<Arc<str>, SchemaError> {
-    let (_, source) = decode_exact(
+    decode_archival_source(
         access.revision(),
         access.definition(),
         class(access.declared()),
         class(access.minimum()),
         sources,
-    )?;
-    Ok(source)
+    )
 }
 
 pub(crate) fn decode_dependent_source_access<S: SourceAdapter>(
     access: &mush_roll::commerce::dependent_source::DependentSourceAccess,
     sources: &S,
 ) -> Result<Arc<str>, SchemaError> {
-    let (_, source) = decode_exact(
+    decode_archival_source(
         access.revision(),
         access.definition(),
         class(access.declared()),
         class(access.minimum()),
         sources,
-    )?;
+    )
+}
+
+/// Source display has its own opaque access proofs above. Archival validity
+/// does not require that an old program compile against today's game API, and
+/// returning text does not produce an executable holding, claim or seal.
+fn decode_archival_source<S: SourceAdapter>(
+    revision: &Revision,
+    expected_definition: DefinitionDigest,
+    declared: CoreClass,
+    minimum: CoreClass,
+    sources: &S,
+) -> Result<Arc<str>, SchemaError> {
+    if revision.envelope().mind_abi == crate::minds::MIND_ABI {
+        return decode_exact(revision, expected_definition, declared, minimum, sources)
+            .map(|(_, source)| source);
+    }
+    let (_, source) = decode_material(revision, expected_definition, declared, minimum, sources)?;
+    crate::minds::authoring::RetainedRevisionRules
+        .validate(&source, revision.envelope())
+        .map_err(|_| invalid("mind_abi", "retained source archive is not valid"))?;
     Ok(source)
 }
 
+/// A retained ABI is executable only behind the opaque owner observation.
+/// Both owner and paid projections resolve the complete current certification
+/// and its permanent roots before constructing this non-Deserialize value.
+/// Checkout re-resolves it, and IC Open rechecks it in its actual owner union.
+fn decode_holding<S: SourceAdapter>(
+    holding: &PersonalFiledHolding,
+    sources: &S,
+) -> Result<(CardDefinition, Arc<str>), SchemaError> {
+    let revision = holding.revision();
+    if !holding
+        .identity()
+        .matches(revision)
+        .map_err(|_| invalid("rating", "holding revision identity is invalid"))?
+    {
+        return Err(invalid(
+            "rating",
+            "holding names another immutable revision",
+        ));
+    }
+    let (definition, source) = decode_material(
+        revision,
+        holding.definition(),
+        class(holding.declared()),
+        class(holding.minimum()),
+        sources,
+    )?;
+    if revision.envelope().mind_abi != crate::minds::MIND_ABI {
+        // A current certificate does not authorize an arbitrary historical ABI.
+        // The known retained API4 metadata must match its immutable envelope and
+        // the unchanged source must compile in the current bounded sandbox.
+        crate::minds::authoring::validate_retained_registry(&source, revision.envelope())
+            .map_err(|_| invalid("mind_abi", "retained executable is not compatible"))?;
+    }
+    Ok((definition, source))
+}
+
+/// Raw decoder callers receive no retained execution authority merely by
+/// supplying a revision and digest. This current-only decoder grants no rights.
 fn decode_exact<S: SourceAdapter>(
+    revision: &Revision,
+    expected_definition: DefinitionDigest,
+    declared: CoreClass,
+    minimum: CoreClass,
+    sources: &S,
+) -> Result<(CardDefinition, Arc<str>), SchemaError> {
+    if revision.envelope().mind_abi != crate::minds::MIND_ABI {
+        return Err(invalid(
+            "mind_abi",
+            "filed revision has another executable ABI",
+        ));
+    }
+    decode_material(revision, expected_definition, declared, minimum, sources)
+}
+
+/// Pure byte/definition reconstruction; callers above retain their distinct
+/// authority boundaries. Never returns a holding, claim or seal.
+fn decode_material<S: SourceAdapter>(
     revision: &Revision,
     expected_definition: DefinitionDigest,
     declared: CoreClass,
@@ -237,12 +306,6 @@ fn decode_exact<S: SourceAdapter>(
         .verify_source(sources)
         .map_err(|_| invalid("source", "immutable source is unavailable"))?;
     let envelope = revision.envelope();
-    if envelope.mind_abi != crate::minds::MIND_ABI {
-        return Err(invalid(
-            "mind_abi",
-            "filed revision has another executable ABI",
-        ));
-    }
     if declared == CoreClass::Zero
         || minimum < declared
         || CoreClass::parse(&envelope.declared_class) != Some(declared)
@@ -293,7 +356,7 @@ fn invalid(field: &str, message: &str) -> SchemaError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mush_roll::{Envelope, RollError, source_digest};
+    use mush_roll::{Envelope, RevisionAdapter as _, RollError, source_digest};
     use serde_json::json;
 
     struct Source {
@@ -409,5 +472,113 @@ mod tests {
         );
         source.text.push(' ');
         assert!(decode_exact(&revision, digest, CoreClass::I, CoreClass::I, &source).is_err());
+    }
+
+    #[test]
+    fn raw_retained_revision_is_not_current_execution_authority() {
+        let (revision, mut source, definition) = fixture();
+        let mut value = serde_json::to_value(&revision).unwrap();
+        value["envelope"]["mind_abi"] = json!("rhai=1.26.0;api=4;stock=2");
+        let envelope: Envelope = serde_json::from_value(value["envelope"].clone()).unwrap();
+        value["reference"]["digest"] =
+            serde_json::to_value(envelope.digest(&source.text).unwrap()).unwrap();
+        let retained: Revision = serde_json::from_value(value).unwrap();
+        assert_ne!(retained.envelope().mind_abi, crate::minds::MIND_ABI);
+        let digest = definition.validate().unwrap();
+        assert!(decode_exact(&retained, digest, CoreClass::I, CoreClass::I, &source).is_err());
+        // Reconstruction alone grants no rights. It preserves every immutable
+        // byte; only decode_holding has the real current owner observation.
+        let before = serde_json::to_vec(&retained).unwrap();
+        let (actual, text) =
+            decode_material(&retained, digest, CoreClass::I, CoreClass::II, &source).unwrap();
+        assert_eq!(actual, definition);
+        assert_eq!(text.as_ref(), source.text);
+        assert_eq!(serde_json::to_vec(&retained).unwrap(), before);
+        assert!(
+            decode_material(
+                &retained,
+                DefinitionDigest::from_bytes([9; 32]),
+                CoreClass::I,
+                CoreClass::II,
+                &source
+            )
+            .is_err()
+        );
+        assert!(decode_material(&retained, digest, CoreClass::II, CoreClass::II, &source).is_err());
+        source.text.push(' ');
+        assert!(decode_material(&retained, digest, CoreClass::I, CoreClass::II, &source).is_err());
+    }
+
+    #[test]
+    fn retained_source_display_preserves_archive_without_execution_authority() {
+        const OLD_ABI: &str = "rhai=1.26.0;api=4;stock=2";
+        const SOURCE: &str = "const MIND = #{name: \"Retained\", api: 4, class: \"discretion\", role: \"combat\", core: \"I\"}; fn think(v,c) { this.marker = 73; }";
+        let (base, _, definition) = fixture();
+        let digest = definition.validate().unwrap();
+        let retained = |text: &str, abi: &str| {
+            let source = Source {
+                digest: source_digest(text),
+                text: text.into(),
+            };
+            let mut value = serde_json::to_value(&base).unwrap();
+            value["envelope"]["mind_abi"] = json!(abi);
+            let envelope: Envelope = serde_json::from_value(value["envelope"].clone()).unwrap();
+            value["source"] = serde_json::to_value(source.digest).unwrap();
+            value["reference"]["digest"] =
+                serde_json::to_value(envelope.digest(text).unwrap()).unwrap();
+            let revision: Revision = serde_json::from_value(value).unwrap();
+            (revision, source)
+        };
+        let (revision, mut source) = retained(SOURCE, OLD_ABI);
+        let before = serde_json::to_vec(&revision).unwrap();
+        // This tests the private reconstruction boundary, not an access grant.
+        // The public-to-crate wrappers require owner-created opaque ACL results.
+        let text = decode_archival_source(&revision, digest, CoreClass::I, CoreClass::II, &source)
+            .unwrap();
+        assert_eq!(text.as_ref(), SOURCE);
+        assert_eq!(serde_json::to_vec(&revision).unwrap(), before);
+        assert!(decode_exact(&revision, digest, CoreClass::I, CoreClass::II, &source).is_err());
+        assert!(
+            crate::minds::authoring::RevisionRules
+                .validate(SOURCE, revision.envelope())
+                .is_err()
+        );
+        for (text, abi) in [
+            (SOURCE.to_owned(), "rhai=1.26.0;api=3;stock=2"),
+            (SOURCE.replace("api: 4", "api: 3"), OLD_ABI),
+            (SOURCE.replace("fn think(v,c)", "fn think(v)"), OLD_ABI),
+        ] {
+            let (invalid, source) = retained(&text, abi);
+            assert!(
+                decode_archival_source(&invalid, digest, CoreClass::I, CoreClass::II, &source)
+                    .is_err()
+            );
+        }
+        assert!(
+            decode_archival_source(
+                &revision,
+                DefinitionDigest::from_bytes([9; 32]),
+                CoreClass::I,
+                CoreClass::II,
+                &source,
+            )
+            .is_err()
+        );
+        assert!(
+            decode_archival_source(&revision, digest, CoreClass::II, CoreClass::II, &source)
+                .is_err()
+        );
+        source.text.push(' ');
+        assert!(
+            decode_archival_source(&revision, digest, CoreClass::I, CoreClass::II, &source)
+                .is_err()
+        );
+        let (current, source, _) = fixture();
+        assert_eq!(
+            decode_archival_source(&current, digest, CoreClass::I, CoreClass::II, &source)
+                .unwrap()
+                .as_ref(),
+            source.text,
+        );
     }
 }

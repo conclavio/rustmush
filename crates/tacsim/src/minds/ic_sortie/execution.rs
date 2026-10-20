@@ -159,7 +159,7 @@ impl Execution {
         &self,
     ) -> Result<std::sync::Arc<dyn crate::arena::mind::MindRunner>, ParticipantError> {
         self.validate()?;
-        if self.seal.engine == SealEngine::Scripted {
+        if self.seal.abi == crate::minds::MIND_ABI && self.seal.engine == SealEngine::Scripted {
             Ok(std::sync::Arc::new(
                 crate::minds::RhaiRunner::new(
                     &self.arena,
@@ -181,9 +181,80 @@ impl Execution {
         {
             return Err(bad("runtime seal or captured configuration"));
         }
-        // Compile before touching the runtime. This neither changes the full
+        // Prepare the current runner before touching runtime. This never changes the full
         // seal nor grants authority to mutate any physical owner or world row.
         let runner = self.runner()?;
+        if self.seal.abi != crate::minds::MIND_ABI {
+            let unit = self.seal.unit;
+            let mind = arena
+                .minds
+                .get(&unit)
+                .ok_or_else(|| bad("retained mind row"))?;
+            if mind.seal_digest != self.seal.digest() {
+                return Err(bad("retained mind seal"));
+            }
+            let first_drop = mind.dropped.is_none();
+            let runtime = arena
+                .profiles
+                .get(&unit)
+                .ok_or_else(|| bad("runtime profile"))?;
+            if !first_drop && (!runtime.dropped || runtime.card.key() != runtime.rom.key()) {
+                return Err(bad("retained ROM drop"));
+            }
+            if first_drop {
+                // The full seal and captured ROM card stay immutable. The
+                // native doctrine implementation is the current server's; no
+                // old Rhai program is compiled or resumed (doc17 D-UM-23).
+                let weapons = self
+                    .seal
+                    .weapons
+                    .iter()
+                    .map(|w| w.id.clone())
+                    .collect::<Vec<_>>();
+                let prepared = runtime
+                    .prepare_rom(
+                        unit,
+                        &arena.classes.row(crate::arena::core::CoreClass::Zero),
+                        &weapons,
+                        &self.seal.channels,
+                        arena.odds_floor_permille,
+                    )
+                    .map_err(bad)?;
+                let hash = crate::arena::hash::state_hash(arena);
+                let runtime = arena
+                    .profiles
+                    .get_mut(&unit)
+                    .ok_or_else(|| bad("runtime profile"))?;
+                // Journal capacity refuses before any runtime or memory change.
+                // No intervening callback/mutation can change this exact token,
+                // so commit's owner/generation check has the prepared preimage.
+                arena
+                    .ledger
+                    .append(
+                        arena.now_ms,
+                        crate::arena::EventKind::MindDropped {
+                            unit,
+                            cause: "abi".into(),
+                            fault: None,
+                            ops: None,
+                        },
+                        Vec::new(),
+                        hash,
+                    )
+                    .map_err(bad)?;
+                runtime
+                    .commit(&mut arena.conditions, prepared)
+                    .map_err(bad)?;
+                arena
+                    .minds
+                    .get_mut(&unit)
+                    .ok_or_else(|| bad("retained mind row"))?
+                    .dropped = Some(crate::arena::mind::DropCause::Abi);
+            }
+            // Neither an outstanding old-engine answer nor its sampled rules
+            // may land after the upgrade. Landed memory bytes are untouched.
+            arena.cancel_profile_think(unit);
+        }
         arena.runners.insert(self.seal.unit, runner);
         Ok(())
     }
@@ -191,3 +262,6 @@ impl Execution {
         DefinitionDigest::from_bytes(self.seal.digest())
     }
 }
+
+#[cfg(test)]
+mod tests;

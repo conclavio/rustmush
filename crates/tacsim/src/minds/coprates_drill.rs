@@ -230,7 +230,7 @@ fn coprates_has_exact_independent_source_and_provisional_profiles() -> TestResul
     }
     assert_eq!(
         manifest.get("content_version").and_then(|v| v.as_u64()),
-        Some(1)
+        Some(2)
     );
     assert_eq!(
         manifest.get("status").and_then(|v| v.as_str()),
