@@ -2,6 +2,8 @@
 //! money / retention. Only the missing region transitions and submission-runtime
 //! disposition are explicit private fixture boundaries, never owner receipts.
 use super::*;
+#[path = "underwriting_integration_tests/qualified.rs"]
+pub(super) mod qualified;
 use crate::underwriting::{
     CoverageCompletion, CoverageError, CoverageHost, CoverageProductV1, CoverageTermsV1,
 };
@@ -185,7 +187,7 @@ fn prepare_key(
             idempotency: ScopedIdempotencyKey::new(
                 IdempotencyScope {
                     principal,
-                    owner: OwnerId::new("tacsim")?,
+                    owner: action.key().owner.clone(),
                     namespace: CanonicalId::new("coverage_fixture")?,
                 },
                 1,
@@ -333,17 +335,21 @@ fn boot(
     saved: &Durable,
     products: Vec<CoverageProductV1>,
 ) -> TestResult<IcWorld> {
-    IcWorld::boot_all_coverage(
-        f,
+    IcWorld::boot_source_qualified(
+        f.into(),
         saved,
         base.base,
         base.field,
         base.hulls,
         true,
-        false,
+        base.pending_charters,
         base.paid_resales,
-        None,
+        base.registry_revocation.clone(),
         Some(products),
+        false,
+        base.transfer_facts.clone(),
+        base.conduct,
+        base.qualified_coverage.clone(),
     )
 }
 fn setup(

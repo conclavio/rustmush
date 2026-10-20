@@ -54,6 +54,7 @@ impl CoverageWriter {
             ));
         }
         reg.delegate_state_family(&families.coverages, "tacsim")?;
+        reg.delegate_state_family(&families.coverage_publications, "tacsim")?;
         self.0
             .set(Registration { families, protocol })
             .map_err(|_| error("coverage writer already installed"))
@@ -94,6 +95,68 @@ impl CoverageWriter {
         }
         Ok(writer)
     }
+    /// This separate handle is confined to the exact publication action. It
+    /// accepts only opaque Conduct proofs from the registered read service.
+    pub fn for_publication(
+        &self,
+        reg: &mut Registrar<'_>,
+        protocol: &CoverageProtocol,
+        action: &DefinitionRef,
+    ) -> Result<RegisteredCoveragePublicationWriter, ModError> {
+        protocol.validate().map_err(error)?;
+        if reg.module() != "tacsim" || &protocol.action(0).map_err(error)? != action {
+            return Err(error("coverage publication requires fixed action"));
+        }
+        Ok(RegisteredCoveragePublicationWriter {
+            registration: self.clone(),
+            protocol: protocol.clone(),
+            action: action.clone(),
+            roots: reg.request_owner_participant::<RootParticipant>(action.clone())?,
+        })
+    }
+    pub fn publications_for_boot(
+        &self,
+        ctx: &mush_core::ModuleCtx<'_>,
+    ) -> Result<Vec<super::CoveragePublicationRetention>, PublicationError> {
+        if ctx.module.as_deref() != Some("tacsim") {
+            return Err(PublicationError::Unavailable);
+        }
+        let r = self.0.get().ok_or(PublicationError::Unavailable)?;
+        let roll = ctx
+            .state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?;
+        if ctx
+            .w
+            .module_state_owner(std::any::TypeId::of::<crate::RollStore>())
+            .is_none_or(|o| o.as_str() != crate::NS)
+        {
+            return Err(PublicationError::Unavailable);
+        }
+        roll.coverage_audit_ready().map_err(bad)?;
+        super::publication::all(ctx, roll, &r.families, true)
+    }
+    pub fn verify_qualified_quote_for_boot(
+        &self,
+        ctx: &mush_core::ModuleCtx<'_>,
+        open: CommitToken,
+        selected: &super::CoverageConductRef,
+    ) -> Result<(), PublicationError> {
+        if ctx.module.as_deref() != Some("tacsim") {
+            return Err(PublicationError::Unavailable);
+        }
+        let r = self.0.get().ok_or(PublicationError::Unavailable)?;
+        let claim = crate::commerce::audit::read(ctx, &r.families.ic_claims, open.to_hex())?;
+        claim.validate()?;
+        if claim.open.charter != selected.charter()
+            || claim.open.line != selected.line()
+            || claim.open.filed != selected.filed()
+            || claim.open.revision != selected.revision()
+            || claim.open.rating != selected.rating()
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        Ok(())
+    }
     pub fn require_audited(&self, world: &mush_core::World) -> Result<(), PublicationError> {
         self.0.get().ok_or(PublicationError::Unavailable)?;
         if world
@@ -131,6 +194,68 @@ impl CoverageWriter {
         }
         roll.coverage_audit_ready().map_err(bad)?;
         super::audit::all(ctx, roll, &r.families, true)
+    }
+}
+
+pub struct RegisteredCoveragePublicationWriter {
+    registration: CoverageWriter,
+    protocol: CoverageProtocol,
+    action: DefinitionRef,
+    roots: ParticipantHandle<RootParticipant>,
+}
+impl RegisteredCoveragePublicationWriter {
+    pub fn publish(
+        &self,
+        ctx: &mut PrepareCtx<'_>,
+        txn: &mut ActionTxn<'_>,
+        actor: mush_core::ObjId,
+        publication: mush_core::DefinitionDigest,
+        product: mush_core::DefinitionDigest,
+        proofs: Vec<crate::commerce::conduct::ConductTrialProof>,
+    ) -> Result<(), PublicationError> {
+        let r = self
+            .registration
+            .0
+            .get()
+            .ok_or(PublicationError::Unavailable)?;
+        if r.protocol != self.protocol || self.action != r.protocol.action(0)? {
+            return Err(PublicationError::Mismatch);
+        }
+        let row = super::CoveragePublicationRetention::new(
+            ctx.commit_token(),
+            self.action.clone(),
+            self.protocol.clone(),
+            publication,
+            product,
+            &proofs,
+        )?;
+        if txn
+            .get(&r.families.coverage_publications, &row.key())
+            .map_err(bad)?
+            .is_some()
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        let fence = super::publication::PublicationFence::new(
+            self.action.clone(),
+            ctx.commit_token(),
+            actor,
+            ctx.world().map_err(bad)?.now(),
+            proofs.clone(),
+        );
+        let request = CoverageRoots::publication(&row, fence, &proofs)?;
+        txn.insert(&r.families.coverage_publications, &row.key(), row.clone())
+            .map_err(bad)?;
+        ctx.prepare_owner(&self.roots, RootRequest::Coverage(request))
+            .map_err(bad)?;
+        if txn
+            .get(&r.families.coverage_publications, &row.key())
+            .map_err(bad)?
+            != Some(&row)
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        Ok(())
     }
 }
 

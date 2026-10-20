@@ -11,9 +11,10 @@ use crate::arena::{
 };
 use mush_core::{DefinitionDigest, ObjId};
 use mush_roll::commerce::rating::RatingError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Observations {
     pub(super) thinks: u64,
     pub(super) advance: u64,

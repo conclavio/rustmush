@@ -24,6 +24,8 @@ pub struct PersonalPaidHolding {
     charter: CharterId,
     operation: mush_core::CommitToken,
     terminal: mush_core::CommitToken,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    holder_basis: Option<mush_economy::managed_paid_resale::RenewalHolderBasisV1>,
     terms: super::paid::PaidTerms,
     line: LineId,
     filed: FiledRevisionId,
@@ -52,6 +54,11 @@ impl PersonalPaidHolding {
     }
     pub const fn terminal(&self) -> mush_core::CommitToken {
         self.terminal
+    }
+    pub(crate) fn holder_basis(
+        &self,
+    ) -> Option<&mush_economy::managed_paid_resale::RenewalHolderBasisV1> {
+        self.holder_basis.as_ref()
     }
     pub const fn terms(&self) -> super::paid::PaidTerms {
         self.terms
@@ -345,11 +352,50 @@ fn project_paid_for(
     {
         return Err(OwnerProjectionError::Integrity);
     }
+    // `current` above already proved the complete native/typed/root ownership
+    // history. Capture that same immutable holder row without repeating the
+    // certificate/page history inside this bounded owner-read observation.
+    let holder_basis = match licence.ownership() {
+        None => None,
+        Some(ownership) => {
+            let row = read(
+                ctx,
+                &families.paid_holders,
+                super::paid_resale::PaidHolderRecord::key_for(licence.id(), ownership.generation),
+            )?;
+            if row
+                .ownership()
+                .map_err(|_| OwnerProjectionError::Integrity)?
+                != *ownership
+                || row.licence() != licence.id()
+                || row.holder() != holder
+            {
+                return Err(OwnerProjectionError::Integrity);
+            }
+            let transfer = read(ctx, &families.paid_resales, row.acceptance().to_hex())?;
+            row.matches_record(transfer)
+                .map_err(|_| OwnerProjectionError::Integrity)?;
+            let settled = transfer
+                .economic()
+                .terminal()
+                .map(|t| &t.decision().at_ic)
+                .unwrap_or(&transfer.economic().consent().accepted_at_ic);
+            let observed = ctx.world().world_ic_now();
+            if settled.clock == observed.clock && settled.at > observed.at {
+                return Err(OwnerProjectionError::NotHeld);
+            }
+            Some(mush_economy::managed_paid_resale::RenewalHolderBasisV1 {
+                acceptance: row.acceptance(),
+                ownership: *ownership,
+            })
+        }
+    };
     Ok(PersonalPaidHolding {
         actor: holder,
         charter: charter.id,
         operation: allocation.operation(),
         terminal,
+        holder_basis,
         terms: term.terms(),
         line: line.id,
         filed: filed_id,

@@ -2,7 +2,9 @@
 //! commits each Receipt before releasing the next prepaid lease. A round-robin
 //! ready queue prevents a bench RUN from monopolizing a worker.
 use super::{
-    BulkError, invalid,
+    BulkError,
+    conduct_budget::{ConductCase, ConductEnding, ConductProgress},
+    invalid,
     model::{ArtifactBytes, BulkConfig, RunId, Status, WorkKind},
     owner::{Lease, Receipt},
     registry_budget::{RegistryCase, RegistryEnding, RegistryProgress},
@@ -21,6 +23,17 @@ use std::thread::JoinHandle;
 /// in this module tree. No command can substitute an arbitrary source adapter,
 /// World callback, shared MindPool or live Arena.
 pub(in crate::minds) trait Machine: Send {
+    fn conduct_measurement(
+        &self,
+    ) -> Option<mush_roll::commerce::conduct::records::ConductMeasurement> {
+        None
+    }
+    fn conduct_case(&self) -> Option<ConductCase> {
+        None
+    }
+    fn conduct_progress(&self) -> Option<ConductProgress> {
+        None
+    }
     fn registry_case(&self) -> Option<RegistryCase> {
         None
     }
@@ -90,6 +103,9 @@ fn run_quantum(machine: &mut dyn Machine, maximum: u64) -> Result<Turn, BulkErro
         if machine
             .registry_progress()
             .is_some_and(|p| p.ending != RegistryEnding::Continue)
+            || machine
+                .conduct_progress()
+                .is_some_and(|p| p.ending != ConductEnding::Continue)
             || native_steps == super::model::LEASE_STEPS
         {
             break;
@@ -107,6 +123,7 @@ pub(crate) struct Ready {
     start: [u8; 32],
     machine: Box<dyn Machine>,
     registry_binding: Option<super::registry_tickets::Binding>,
+    conduct_binding: Option<super::conduct_tickets::Binding>,
 }
 impl Ready {
     pub(super) fn new(
@@ -121,6 +138,7 @@ impl Ready {
             start,
             machine,
             registry_binding: None,
+            conduct_binding: None,
         }
     }
     pub(super) fn registry(
@@ -134,6 +152,21 @@ impl Ready {
             start,
             machine,
             registry_binding: Some(binding),
+            conduct_binding: None,
+        }
+    }
+    pub(super) fn conduct(
+        binding: super::conduct_tickets::Binding,
+        start: [u8; 32],
+        machine: Box<dyn Machine>,
+    ) -> Self {
+        Self {
+            account: binding.account,
+            run: binding.run,
+            start,
+            machine,
+            registry_binding: None,
+            conduct_binding: Some(binding),
         }
     }
     /// Grant one millisecond for non-time phases, then refund their known zero.
@@ -178,6 +211,8 @@ struct Task {
     ready: Ready,
 }
 pub(crate) struct Completion {
+    pub(super) conduct_settlement:
+        Option<Result<super::conduct_tickets::PreparedSettlement, BulkError>>,
     pub(super) registry_settlement:
         Option<Result<super::registry_tickets::PreparedSettlement, BulkError>>,
     pub artifact: Option<ArtifactBytes>,
@@ -292,11 +327,19 @@ impl Executor {
                                 true,
                             ),
                         };
-                        let keep = task.lease.kind() == WorkKind::Registry
-                            || outcome.terminal.is_none()
-                            || (outcome.terminal == Some(Status::Complete)
-                                && task.lease.kind() == WorkKind::Bench);
+                        let keep =
+                            matches!(task.lease.kind(), WorkKind::Registry | WorkKind::Conduct)
+                                || outcome.terminal.is_none()
+                                || (outcome.terminal == Some(Status::Complete)
+                                    && task.lease.kind() == WorkKind::Bench);
                         let receipt = Receipt {
+                            conduct: if unknown_work {
+                                None
+                            } else if worker_day != Some(task.lease.utc_day()) {
+                                task.lease.unchanged_conduct()
+                            } else {
+                                task.ready.machine.conduct_progress()
+                            },
                             registry: if unknown_work {
                                 None
                             } else if worker_day != Some(task.lease.utc_day()) {
@@ -325,7 +368,22 @@ impl Executor {
                             } else {
                                 (None, outcome.result)
                             };
+                        let (conduct_settlement, artifact) =
+                            if let Some(binding) = task.ready.conduct_binding {
+                                match super::conduct_tickets::PreparedSettlement::from_worker(
+                                    binding,
+                                    receipt.clone(),
+                                    artifact,
+                                    task.ready.machine.conduct_measurement(),
+                                ) {
+                                    Ok(prepared) => (Some(Ok(prepared)), None),
+                                    Err((error, artifact)) => (Some(Err(error)), artifact),
+                                }
+                            } else {
+                                (None, artifact)
+                            };
                         let completion = Completion {
+                            conduct_settlement,
                             registry_settlement,
                             artifact,
                             receipt,
@@ -368,6 +426,17 @@ impl Executor {
         if lease.account() != ready.account
             || lease.run() != ready.run
             || lease.start() != ready.start
+            || match (
+                lease.conduct(),
+                ready.machine.conduct_case(),
+                ready.machine.conduct_progress(),
+            ) {
+                (None, None, None) => false,
+                (Some((cursor, case)), Some(actual), Some(progress)) => {
+                    *case != actual || *cursor != progress.cursor
+                }
+                _ => true,
+            }
             || match (
                 lease.registry(),
                 ready.machine.registry_case(),

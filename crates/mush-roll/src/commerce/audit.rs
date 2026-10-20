@@ -462,7 +462,9 @@ pub(crate) fn audit_and_open_coverage_configured(
             None if stopped.is_empty() => {}
             None => return Err(PublicationError::Unavailable),
         }
+        super::conduct::history::audit(ctx, roll, families, roll.conduct.configuration().is_ok())?;
         super::coverage::audit::all(ctx, roll, families, coverage)?;
+        super::coverage::publication::all(ctx, roll, families, coverage)?;
         let ic_inventory = match ic {
             Some(owner) => Some(owner.audit(ctx, roll, families, ratings)?),
             None => {
@@ -815,6 +817,13 @@ fn audit(
     for entry in roll.commercial_roots() {
         let (anchor, target) = entry.map_err(|_| PublicationError::Mismatch)?;
         let identity = match &anchor {
+            RootAnchor::ConductJob(job, digest) => {
+                let row = read(ctx, &f.conduct_jobs, job.to_hex())?;
+                if row.digest()? != *digest {
+                    return Err(PublicationError::Mismatch);
+                }
+                row.subject().revision()
+            }
             RootAnchor::TermLapse(licence, generation, operation, digest) => {
                 super::facts::audit::root_subject(
                     ctx,
@@ -832,6 +841,9 @@ fn audit(
             }
             RootAnchor::Coverage(commit, digest) => {
                 super::coverage::audit::root(ctx, f, *commit, *digest)?
+            }
+            RootAnchor::CoveragePublication(commit, trial, digest) => {
+                super::coverage::publication::root(ctx, f, *commit, *trial, *digest)?
             }
             RootAnchor::IcClaim(commit, digest) => {
                 let claim = read(ctx, &f.ic_claims, commit.to_hex())?;

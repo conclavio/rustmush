@@ -51,8 +51,17 @@ pub(crate) fn verify(
         format!("{}/{}", selected.licence.key(), selected.term.key()),
     )?;
     let proof = paid_history::granted(ctx, f, ratings, licence, paid_term)?;
-    if proof.holder() != op.owner
-        || proof.operation() != selected.operation
+    require_selected_holder(
+        ctx,
+        f,
+        ratings,
+        licence,
+        selected.holder_basis.as_ref(),
+        proof.holder(),
+        op.owner,
+        &op.observed_ic,
+    )?;
+    if proof.operation() != selected.operation
         || proof.terminal() != selected.terminal
         || proof.licence() != selected.licence
         || proof.term() != selected.term
@@ -76,6 +85,86 @@ pub(crate) fn verify(
     }
     roll.check_required_root(&op.root()?)
         .map_err(|_| PublicationError::Mismatch)
+}
+
+/// Immutable selected-holder attribution, separate from the accepted term's
+/// holder and today's licence pointer. Old omitted evidence keeps the exact
+/// original term-holder rule; a new capture must resolve the actual settlement.
+pub(crate) fn require_selected_holder(
+    ctx: &impl CommerceRead,
+    f: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    licence: &super::super::paid::PersonalPaidLicence,
+    basis: Option<&super::records::ParentHolderBasis>,
+    accepted_holder: mush_core::ObjId,
+    owner: mush_core::ObjId,
+    observed: &mush_core::ClockStamp,
+) -> Result<(), PublicationError> {
+    let Some(basis) = basis else {
+        return if accepted_holder == owner {
+            Ok(())
+        } else {
+            Err(PublicationError::Mismatch)
+        };
+    };
+    basis.validate()?;
+    if super::super::paid_resale::history::historical(ctx, f, ratings, licence, &basis.ownership)?
+        != owner
+    {
+        return Err(PublicationError::Mismatch);
+    }
+    let holder = paid_history::read(
+        ctx,
+        &f.paid_holders,
+        super::super::paid_resale::PaidHolderRecord::key_for(
+            licence.id(),
+            basis.ownership.generation,
+        ),
+    )?;
+    if holder.acceptance() != basis.acceptance || holder.ownership()? != basis.ownership {
+        return Err(PublicationError::Mismatch);
+    }
+    let row = paid_history::read(ctx, &f.paid_resales, basis.acceptance.to_hex())?;
+    holder.matches_record(row)?;
+    let settled = row
+        .economic()
+        .terminal()
+        .map(|t| &t.decision().at_ic)
+        .unwrap_or(&row.economic().consent().accepted_at_ic);
+    if settled.clock == observed.clock && settled.at > observed.at {
+        return Err(PublicationError::Mismatch);
+    }
+    Ok(())
+}
+
+/// Source acquisition uses its own retained observation; omission keeps the
+/// unchanged legacy accepted-term-holder rule without inventing a timestamp.
+pub(crate) fn require_captured_holder(
+    ctx: &impl CommerceRead,
+    f: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    licence: &super::super::paid::PersonalPaidLicence,
+    capture: Option<&super::records::ParentHolderCapture>,
+    accepted_holder: mush_core::ObjId,
+    owner: mush_core::ObjId,
+) -> Result<(), PublicationError> {
+    match capture {
+        Some(capture) => {
+            capture.validate()?;
+            require_selected_holder(
+                ctx,
+                f,
+                ratings,
+                licence,
+                Some(&capture.basis),
+                accepted_holder,
+                owner,
+                &capture.observed_ic,
+            )
+        }
+        None if accepted_holder == owner => Ok(()),
+        None => Err(PublicationError::Mismatch),
+    }
 }
 
 /// Complete bounded chain inventory. Ordering uses acknowledged ordinal and

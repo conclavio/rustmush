@@ -138,6 +138,27 @@ fn real_carrier_pack_is_unarmed_fieldable_and_keeps_dray_out_of_the_trial() -> T
         binding.spec.rules.data().get("ground_stowage"),
         Some(&serde_json::json!(spec.ground_stowage))
     );
+    // This authored pack must obey the ordinary strict section rule. Cargo
+    // destruction wrecks its carrier; an empty consequence list is not valid
+    // content, even when its recomputed pack digest is otherwise correct.
+    assert_eq!(
+        spec.section(&p.cargo().compartment)
+            .ok_or("actual cargo section")?
+            .consequences,
+        vec![crate::definitions::unit::Consequence::DestroyUnit]
+    );
+    assert!(
+        changed_carrier(|unit| {
+            let cargo = unit["sections"]
+                .as_array_mut()
+                .expect("authored sections")
+                .iter_mut()
+                .find(|section| section["id"] == "cargo")
+                .expect("authored cargo section");
+            cargo["consequences"] = serde_json::json!([]);
+        })
+        .is_err()
+    );
     Ok(())
 }
 

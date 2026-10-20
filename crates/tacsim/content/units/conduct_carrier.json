@@ -13,7 +13,7 @@
         "version": 1
       }
     ],
-    "digest": "5ff2e2679e01053b150e3d0a48139a1b1724bbb20a29bc1966b6077fab338085"
+    "digest": "355a9688f6afb856e6e4167e6975992cf0bdfccf60841631318a19ee58bc1a7a"
   },
   "entries": {
     "tacsim.unit.conduct_carrier": {
@@ -164,7 +164,11 @@
               }
             ],
             "internals": 250,
-            "consequences": []
+            "consequences": [
+              {
+                "kind": "destroy_unit"
+              }
+            ]
           }
         ],
         "components": [

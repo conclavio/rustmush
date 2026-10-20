@@ -782,6 +782,48 @@ actual owner/service and qualified discount, explicit major/paid-Follow producer
 dependent/scoped House lifecycle, named production publication and final exact-tree
 M7/L acceptance remain outstanding.
 
+N95 completed on unchanged tree `3bc28ace943395806c733da54ec5480fb8400967`
+(413 packages, before the later Conduct owner). Compilation and 17 runtime
+stages passed; recorded stage summaries contain 1,379 passes and 11 failures.
+Counts may overlap between stages and do not establish final-tree acceptance.
+Verified evidence archive is
+`3cebd8a701aa019f9cda60a0da53661f22714dd969bba3f47c66d24bd62b9e73`
+(82,968 bytes, 22 files), with status digest
+`047ca6d9a5c16076f1cf8b091a2948aaec7e0b74ff2c2e116692c319bd51d815`.
+All 723 Core tests, 16 native coverage tests, five Follow tests, and the selected
+geology/moon-port and trade-content checks passed. The native coverage test that
+previously overflowed now passes; exact binary prologue inspection measures the
+Economy participant dispatcher at 27,224 bytes, down from the earlier 1,279,296.
+The other previously aborted Economy/Industry cases remain unexecuted in N95.
+
+Three hardware composition cases refused the new refit definitions because the
+actual Industry validator omitted their six action shapes and outcome. Eight
+Conduct worker cases refused the carrier's empty cargo-section consequence
+list under the existing strict unit loader. Reviewed repairs add the exact
+registered refit shapes and an actual cargo `DestroyUnit` consequence with its
+recomputed content digest; neither repair loosens validation. The measured
+maximum-class rejection test then aborted during Registry fixture boot. GDB on
+the exact failed binary, without frame arguments, showed approximately 2.09 MB
+of cumulative stack, including repeated by-value Engine/Fixture returns. Later
+stages and expensive genuine stories stayed unstarted. The fixture-frame repair
+and a new exact-tree run are required; no increased test stack is an acceptance.
+
+The subsequent reviewed source now includes the actual prepaid Conduct owner,
+five signed service transitions, complete typed/native/artifact/root recovery,
+and opaque historical/current proof reader. Qualified coverage consumes that
+actual proof, retains its publication roots, and rechecks the exact selected
+profile and certificate at quote and Bind. The prepared combined genuine story
+uses one shipped-source certificate and real Transit trial for ordinary/qualified
+pricing, stale Recall at all custody boundaries, cold recovery and retained-premium
+cancellation. These later source packages have not executed in N95.
+
+Acquired parent rights now retain the exact settled resale holder independently
+of immutable paid-term history, both for owner qualification/attestation and for
+draft/initial source provenance. Legacy omitted bytes retain their old meaning;
+later ownership loss blocks fresh authority without invalidating accepted
+history. Explicit dependent updates, major versions, paid Follow, scoped House
+lifecycle, actual named launch publication and final M7/L acceptance remain due.
+
 Subsequent reviewed source packages, not included in N82, add:
 
 - The actual House renewal E4/Roll/Market providers, native contract/hold inverse

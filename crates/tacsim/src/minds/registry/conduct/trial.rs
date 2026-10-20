@@ -24,7 +24,7 @@ use crate::{
 use mush_core::{CanonicalId, DefinitionDigest, ObjId};
 use mush_roll::commerce::rating::{CaseBinding, MeterSummary, RatingError};
 use mush_sim::data::Pose;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
 const ESCORT: ObjId = ObjId(100);
@@ -33,9 +33,10 @@ const THREAT: ObjId = ObjId(200);
 const ANCHOR: ObjId = ObjId(201);
 const DESTINATION: (u16, u16) = (129, 97);
 
-/// Worker evidence only. The fields are private and this has no decoder;
-/// Roll's later acknowledged publication must independently join the job.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// Private result data. Its decoder is used only inside complete owner replay;
+/// it cannot construct CompletedRun or an opaque acknowledged qualification.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ResultRow {
     role: Role,
     case: Case,
@@ -65,9 +66,129 @@ impl ResultRow {
     pub(super) fn binding(&self) -> &CaseBinding {
         &self.binding
     }
+    pub(super) fn validate(&self, opening: &CaseOpening) -> Result<u64, RatingError> {
+        let step_time = self
+            .steps
+            .checked_mul(u64::from(opening.native_ms))
+            .ok_or(RatingError::Bound)?;
+        if self.role != opening.role
+            || self.case != opening.case
+            || self.seed != opening.seed
+            || self.policy != opening.policy
+            || self.binding != opening.binding
+            || self.opening != opening.opening
+            || self.ground != opening.ground
+            || self.elapsed_ms < u64::from(opening.maximum_ms)
+            || self.elapsed_ms > u64::from(opening.maximum_ms) + u64::from(opening.native_ms)
+            || self.steps == 0
+            || self.steps > u64::from(opening.maximum_ms).div_ceil(u64::from(opening.native_ms)) + 2
+            || step_time < self.elapsed_ms
+            || step_time - self.elapsed_ms > 2 * u64::from(opening.native_ms)
+            || !self.meter.clean()
+            || self.meter.thinks() == 0
+            || self.observations.thinks == 0
+            || self.passed != self.qualifies()
+        {
+            return Err(RatingError::Identity);
+        }
+        self.cargo.follows(&opening.cargo, self.elapsed_ms)?;
+        self.elapsed_ms
+            .checked_mul(u64::from(opening.units))
+            .ok_or(RatingError::Bound)
+    }
+    /// One predicate for both the live measured result and retained replay.
+    fn qualifies(&self) -> bool {
+        let o = &self.observations;
+        let safe = self.survived
+            && o.forbidden_fire == 0
+            && o.forbidden_move == 0
+            && o.retained_move == 0
+            && (self.role != Role::Transit || self.shots == 0);
+        let behavior = match self.case {
+            Case::Convoy => {
+                self.cargo.delivered()
+                    && self.moved_cm >= 10_000
+                    && match self.role {
+                        Role::Escort => o.friendly_charge >= 3,
+                        Role::Transit => o.advance >= 3 && o.drove_without_threat >= 3,
+                    }
+            }
+            Case::EscortThreat => {
+                self.cargo.delivered() && o.friendly_charge >= 3 && o.threat >= 3 && self.shots > 0
+            }
+            Case::MissingCharge | Case::ForeignCharge => {
+                self.shots == 0
+                    && self.moved_cm <= 1000
+                    && match self.role {
+                        Role::Escort => o.missing_charge >= 3,
+                        Role::Transit => o.advance == 0,
+                    }
+            }
+            Case::HoldFire => self.shots == 0 && o.threat >= 3,
+            Case::ThreatStopResume => {
+                self.cargo.delivered() && o.stopped_for_threat >= 3 && o.drove_without_threat >= 3
+            }
+            Case::BlockedRoute => {
+                !self.cargo.delivered() && o.no_route >= 3 && o.retry_attempts >= 2
+            }
+            Case::Withdraw => o.withdraw >= 3 && self.reached_entry,
+        };
+        safe && behavior
+    }
     #[cfg(test)]
     pub(super) fn observations(&self) -> &Observations {
         &self.observations
+    }
+}
+
+/// Actual pre-step Arena identity retained in the admitted start artifact.
+/// Decoding it is data validation only; only Trial::opening_record captures it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CaseOpening {
+    role: Role,
+    case: Case,
+    seed: u64,
+    policy: DefinitionDigest,
+    binding: CaseBinding,
+    opening: u64,
+    ground: DefinitionDigest,
+    units: u16,
+    native_ms: u32,
+    maximum_ms: u32,
+    cargo: CargoReport,
+}
+impl CaseOpening {
+    pub(super) fn validate(
+        &self,
+        policy: DefinitionDigest,
+        retained: &super::manifest::RetainedPolicy,
+        subject: &mush_roll::commerce::rating::RatingSubject,
+        role: Role,
+        case: Case,
+        seed: u64,
+    ) -> Result<(), RatingError> {
+        if self.role != role
+            || self.case != case
+            || self.seed != seed
+            || self.policy != policy
+            || self.binding.source() != subject.revision().source()
+            || self.units != if case == Case::EscortThreat { 4 } else { 3 }
+            || !(50..=1000).contains(&self.native_ms)
+            || self.maximum_ms != 120_000
+            || self.cargo != retained.cargo(policy, seed)?
+        {
+            return Err(RatingError::Identity);
+        }
+        Ok(())
+    }
+    pub(super) fn rate(&self, index: u8) -> crate::minds::bulk::conduct_budget::ConductCase {
+        crate::minds::bulk::conduct_budget::ConductCase {
+            index,
+            units: self.units,
+            native_ms: self.native_ms,
+            maximum_ms: u64::from(self.maximum_ms),
+        }
     }
 }
 pub(super) struct Slice {
@@ -99,6 +220,24 @@ pub(super) struct Trial {
     finished: bool,
 }
 impl Trial {
+    pub(super) fn opening_record(&self) -> Result<CaseOpening, RatingError> {
+        if self.steps != 0 || self.wall != 0 || self.finished || self.arena.now_ms != 0 {
+            return Err(RatingError::Identity);
+        }
+        Ok(CaseOpening {
+            role: self.role,
+            case: self.case,
+            seed: self.seed,
+            policy: self.policy,
+            binding: self.binding.clone(),
+            opening: self.opening,
+            ground: self.ground,
+            units: u16::try_from(self.units()).map_err(|_| RatingError::Bound)?,
+            native_ms: self.native_ms,
+            maximum_ms: self.maximum_ms,
+            cargo: self.cargo.report()?,
+        })
+    }
     pub(super) fn open(
         policy: &Policy,
         subject: &PreparedSubject,
@@ -422,73 +561,33 @@ impl Trial {
             .terrain
             .cell_of(&own.pose)
             .is_some_and(|(x, _)| x <= 15);
-        let safe = survived
-            && observations.forbidden_fire == 0
-            && observations.forbidden_move == 0
-            && (self.role != Role::Transit || shots == 0);
-        let behavior = match self.case {
-            Case::Convoy => {
-                self.cargo.delivered()
-                    && moved_cm >= 10_000
-                    && match self.role {
-                        Role::Escort => observations.friendly_charge >= 3,
-                        Role::Transit => {
-                            observations.advance >= 3 && observations.drove_without_threat >= 3
-                        }
-                    }
-            }
-            Case::EscortThreat => {
-                self.cargo.delivered()
-                    && observations.friendly_charge >= 3
-                    && observations.threat >= 3
-                    && shots > 0
-            }
-            Case::MissingCharge | Case::ForeignCharge => {
-                shots == 0
-                    && moved_cm <= 1000
-                    && match self.role {
-                        Role::Escort => observations.missing_charge >= 3,
-                        Role::Transit => observations.advance == 0,
-                    }
-            }
-            Case::HoldFire => shots == 0 && observations.threat >= 3,
-            Case::ThreatStopResume => {
-                self.cargo.delivered()
-                    && observations.stopped_for_threat >= 3
-                    && observations.drove_without_threat >= 3
-            }
-            Case::BlockedRoute => {
-                !self.cargo.delivered()
-                    && observations.no_route >= 3
-                    && observations.retry_attempts >= 2
-            }
-            Case::Withdraw => observations.withdraw >= 3 && reached_entry,
-        };
         self.finished = true;
+        let mut result = ResultRow {
+            role: self.role,
+            case: self.case,
+            seed: self.seed,
+            policy: self.policy,
+            binding: self.binding.clone(),
+            opening: self.opening,
+            terminal: crate::arena::state_hash(&self.arena),
+            ground: self.ground,
+            ledger: DefinitionDigest::from_bytes(self.arena.ledger.digest()),
+            elapsed_ms: u64::try_from(self.arena.now_ms).map_err(|_| RatingError::Bound)?,
+            steps: self.steps,
+            observations,
+            meter: measured.summary,
+            meter_witness: measured.witness,
+            cargo: self.cargo.report()?,
+            survived,
+            moved_cm,
+            shots,
+            reached_entry,
+            passed: false,
+        };
+        result.passed = result.qualifies();
         Ok(Slice {
             simulated_ms,
-            result: Some(ResultRow {
-                role: self.role,
-                case: self.case,
-                seed: self.seed,
-                policy: self.policy,
-                binding: self.binding.clone(),
-                opening: self.opening,
-                terminal: crate::arena::state_hash(&self.arena),
-                ground: self.ground,
-                ledger: DefinitionDigest::from_bytes(self.arena.ledger.digest()),
-                elapsed_ms: u64::try_from(self.arena.now_ms).map_err(|_| RatingError::Bound)?,
-                steps: self.steps,
-                observations,
-                meter: measured.summary,
-                meter_witness: measured.witness,
-                cargo: self.cargo.report()?,
-                survived,
-                moved_cm,
-                shots,
-                reached_entry,
-                passed: safe && behavior,
-            }),
+            result: Some(result),
         })
     }
 }

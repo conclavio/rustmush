@@ -1,12 +1,16 @@
 //! Private deterministic role work. None of these values is an acknowledged
 //! qualification: the owner publication and replay join mint that separately.
 mod cargo;
+pub(crate) mod composition;
+pub(crate) mod factory;
+pub(crate) mod history;
 mod manifest;
 mod observation;
 mod run;
 #[cfg(test)]
 mod tests;
 mod trial;
+mod worker;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]

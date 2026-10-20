@@ -168,6 +168,7 @@ mod tests {
             .collect::<TestResult<Vec<_>>>()?;
         Ok(Plan {
             registry: Some(RegistryBudget::prepare(hash, hash, hash, cases)?),
+            conduct: None,
             kind: WorkKind::Registry,
             scenario: Scenario::Duel,
             opponent: Opponent::Doctrine,
@@ -233,6 +234,7 @@ mod tests {
         let lease = apply(&mut store, change)?.ok_or("lease")?;
         let change = store.prepare_finish(
             Receipt {
+                conduct: None,
                 registry: Some(RegistryProgress {
                     cursor: RegistryCursor {
                         index: 1,
@@ -278,6 +280,7 @@ mod tests {
         let before = observation(store.run(account, actor, run)?)?;
         let mut failed = Receipt {
             registry: None,
+            conduct: None,
             lease,
             actual_unit_ms: 0,
             result: None,

@@ -358,6 +358,7 @@ pub struct TacsimRuleset {
     coverage: Option<underwriting::registration::Registration>,
     coverage_families: Option<underwriting::families::Families>,
     registry_commerce: Option<minds::registry::composition::Registration>,
+    conduct_trials: Option<minds::registry::conduct::composition::Registration>,
     fork_material: Option<mush_core::DefinitionRef>,
     marked_registry: Option<mush_core::DefinitionRef>,
     original_holdings: Option<mush_core::DefinitionRef>,
@@ -394,6 +395,30 @@ pub use minds::ic_sortie::{
     IcSubmissionState, IcUnadmittedOpen, StartPermit as IcStartPermit,
 };
 impl TacsimRuleset {
+    /// Add the real unarmed proving carrier before capturing Registry or
+    /// hardware catalogue references. This loads content, not qualification.
+    pub fn with_conduct_carrier(mut self) -> Result<Self, ModError> {
+        if self.governed_hardware.is_some()
+            || self.registry_commerce.is_some()
+            || self.conduct_trials.is_some()
+        {
+            return Err(ModError::msg(
+                "Conduct carrier must precede catalogue capture",
+            ));
+        }
+        let carrier = minds::registry::conduct::composition::carrier_pack()?;
+        let packs = self.loaded.as_mut().map_err(|e| ModError::msg(e.clone()))?;
+        if packs
+            .iter()
+            .any(|p| p.pack.manifest().id() == carrier.pack.manifest().id())
+        {
+            return Err(ModError::msg("Conduct carrier already configured"));
+        }
+        packs.push(carrier);
+        self.definition_catalog()?;
+        Ok(self)
+    }
+
     /// Explicit actual owner composition; an absent region transition producer
     /// still cannot mint a withheld departure or charge any premium.
     pub fn with_hull_coverage(
@@ -462,6 +487,7 @@ impl TacsimRuleset {
             coverage: None,
             coverage_families: None,
             registry_commerce: None,
+            conduct_trials: None,
             fork_material: None,
             marked_registry: None,
             original_holdings: None,
@@ -821,13 +847,17 @@ impl GameModule for TacsimRuleset {
         // the boards. Registered unconditionally; silent while the layer is off.
         port::board::register_hooks(reg)?;
         if let Some(registry) = &self.registry_commerce {
-            registry.register(
+            registry.register_with_conduct(
                 reg,
                 &self.cfg,
                 &catalog,
                 self.ic_minds.is_some(),
                 self.coverage.is_some(),
+                self.conduct_trials.is_some(),
             )?;
+            if let Some(conduct) = &self.conduct_trials {
+                conduct.register(reg, &self.cfg, &catalog)?;
+            }
             if let Some(ic) = &self.ic_minds {
                 ic.register(reg, &self.cfg, registry.reference())?;
                 if let Some(coverage) = &self.coverage {
@@ -859,6 +889,7 @@ impl GameModule for TacsimRuleset {
             || self.marked_registry.is_some()
             || self.ic_minds.is_some()
             || self.coverage.is_some()
+            || self.conduct_trials.is_some()
         {
             return Err(ModError::msg(
                 "fork material requires actual Registry registration",
@@ -994,6 +1025,7 @@ impl GameModule for TacsimRuleset {
         Ok(())
     }
     fn finalize_owner_composition(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        minds::bulk::conduct_service::finalize(ctx, self.conduct_trials.is_some())?;
         underwriting::boot::finalize(
             ctx,
             self.coverage_families

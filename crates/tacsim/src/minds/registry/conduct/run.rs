@@ -8,16 +8,25 @@ use super::{
 };
 use mush_core::DefinitionDigest;
 use mush_roll::commerce::rating::{RatingError, RatingSubject};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 const MAX_CASES: usize = 30;
 const RESULT_BYTES: usize = 256 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct Key {
-    case: Case,
-    seed: u64,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Key {
+    pub(super) case: Case,
+    pub(super) seed: u64,
+}
+impl Key {
+    pub(super) fn schedule(role: Role) -> Vec<Self> {
+        Case::for_role(role)
+            .iter()
+            .flat_map(|case| [2350, 2351, 2352, 2353, 2354].map(|seed| Self { case: *case, seed }))
+            .collect()
+    }
 }
 
 /// No decoder or public raw-result constructor. A worker may produce a failed
@@ -37,6 +46,22 @@ pub(super) struct CompletedRun {
     digest: DefinitionDigest,
 }
 impl CompletedRun {
+    pub(super) fn measurement(
+        &self,
+    ) -> Result<mush_roll::commerce::conduct::records::ConductMeasurement, RatingError> {
+        mush_roll::commerce::conduct::records::ConductMeasurement::observed(
+            self.digest,
+            self.policy,
+            identity(
+                "tacsim.conduct.subject.v1",
+                &(&self.subject, &self.profile, self.role),
+                4096,
+            )?,
+            self.charged_unit_ms,
+            self.passed,
+        )
+        .map_err(|_| RatingError::Identity)
+    }
     pub(super) fn passed(&self) -> bool {
         self.passed
     }
@@ -66,6 +91,106 @@ pub(super) struct Run {
     finished: bool,
 }
 impl Run {
+    pub(super) fn start(
+        &self,
+        subject: &mush_roll::commerce::conduct::ConductSubject,
+    ) -> Result<super::history::Start, RatingError> {
+        if self.index != 0
+            || self.first.is_some()
+            || self.charged != 0
+            || self.finished
+            || subject.worker() != self.subject.subject()
+            || subject.profile() != self.profile
+            || serde_json::to_value(subject.role()).map_err(|_| RatingError::Invalid)?
+                != serde_json::to_value(self.role).map_err(|_| RatingError::Invalid)?
+            || self.keys != Key::schedule(self.role)
+        {
+            return Err(RatingError::Identity);
+        }
+        let openings = self
+            .keys
+            .iter()
+            .map(|key| {
+                Trial::open(
+                    &self.policy,
+                    &self.subject,
+                    &self.profile,
+                    self.role,
+                    key.case,
+                    key.seed,
+                )?
+                .opening_record()
+            })
+            .collect::<Result<Vec<_>, RatingError>>()?;
+        super::history::Start::captured(
+            self.policy.retained(),
+            subject.clone(),
+            self.billing_budget()?,
+            openings,
+        )
+    }
+    pub(super) fn billing_case(
+        &self,
+    ) -> Result<crate::minds::bulk::conduct_budget::ConductCase, RatingError> {
+        let trial = self.trial.as_ref().ok_or(RatingError::Incomplete)?;
+        let index = self
+            .index
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(usize::from(self.first.is_some())))
+            .ok_or(RatingError::Bound)?;
+        Ok(crate::minds::bulk::conduct_budget::ConductCase {
+            index: u8::try_from(index).map_err(|_| RatingError::Bound)?,
+            units: u16::try_from(trial.units()).map_err(|_| RatingError::Bound)?,
+            native_ms: trial.native_ms(),
+            maximum_ms: u64::from(self.policy.maximum_ms()),
+        })
+    }
+    /// Construct the admitted rates from each actual opening Arena. No time is
+    /// advanced here, and a scenario label never substitutes for its roster.
+    pub(super) fn billing_budget(
+        &self,
+    ) -> Result<crate::minds::bulk::conduct_budget::ConductBudget, RatingError> {
+        use crate::minds::bulk::conduct_budget::{ConductBudget, ConductCase};
+        if self.index != 0 || self.first.is_some() || self.charged != 0 || self.finished {
+            return Err(RatingError::Identity);
+        }
+        let mut cases = Vec::new();
+        for (index, key) in self.keys.iter().enumerate() {
+            let trial = Trial::open(
+                &self.policy,
+                &self.subject,
+                &self.profile,
+                self.role,
+                key.case,
+                key.seed,
+            )?;
+            for repetition in 0..2usize {
+                cases.push(ConductCase {
+                    index: u8::try_from(
+                        index
+                            .checked_mul(2)
+                            .and_then(|i| i.checked_add(repetition))
+                            .ok_or(RatingError::Bound)?,
+                    )
+                    .map_err(|_| RatingError::Bound)?,
+                    units: u16::try_from(trial.units()).map_err(|_| RatingError::Bound)?,
+                    native_ms: trial.native_ms(),
+                    maximum_ms: u64::from(self.policy.maximum_ms()),
+                });
+            }
+        }
+        ConductBudget::prepare(
+            identity(
+                "tacsim.conduct.subject.v1",
+                &(self.subject.subject(), &self.profile, self.role),
+                32 * 1024,
+            )?,
+            self.policy.digest(),
+            identity("tacsim.conduct.schedule.v1", &(&self.keys, 2u8), 16 * 1024)?,
+            cases,
+        )
+        .map_err(|_| RatingError::Bound)
+    }
     pub(super) fn new(
         policy: Arc<Policy>,
         subject: Arc<PreparedSubject>,

@@ -24,6 +24,7 @@ pub(crate) struct RootParticipant;
 /// The Registry variant is not registered for an action until its actual quota
 /// and artifact participants are available in the same composed invocation.
 pub(crate) enum RootRequest {
+    Conduct(Box<super::conduct::publication::Roots>),
     TermLapse(super::facts::publication::Lapse),
     Ic(super::ic_claims::roots::IcRoots),
     Coverage(super::coverage::roots::CoverageRoots),
@@ -52,6 +53,7 @@ pub(crate) enum RootRequest {
 impl RootRequest {
     fn commit(&self) -> CommitToken {
         match self {
+            Self::Conduct(request) => request.commit(),
             Self::TermLapse(request) => request.commit(),
             Self::Ic(request) => request.commit(),
             Self::Coverage(request) => request.commit(),
@@ -105,6 +107,7 @@ impl RootOutput {
 }
 
 pub(crate) struct RootPatch {
+    conduct: Option<super::conduct::publication::Fence>,
     term_lapse: Option<super::facts::publication::LapseFence>,
     commit: CommitToken,
     ic: Option<super::ic_claims::roots::IcFence>,
@@ -151,6 +154,16 @@ impl OwnerParticipant for RootParticipant {
         if request.commit() != context.commit_token() {
             return Err(ParticipantError::Authority);
         }
+        let conduct = match &request {
+            RootRequest::Conduct(request) => {
+                request
+                    .fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Some(request.fence().clone())
+            }
+            _ => None,
+        };
         let term_lapse = match &request {
             RootRequest::TermLapse(request) => {
                 request
@@ -428,6 +441,9 @@ impl OwnerParticipant for RootParticipant {
                     .map_err(refusal)?,
                 None,
             ),
+            RootRequest::Conduct(request) => {
+                (state.prepare_conduct_root(request).map_err(refusal)?, None)
+            }
             RootRequest::Rating(request) => {
                 (state.prepare_rating_roots(request).map_err(refusal)?, None)
             }
@@ -591,6 +607,7 @@ impl OwnerParticipant for RootParticipant {
         Ok(OwnerPreparation::new(
             output,
             RootPatch {
+                conduct,
                 term_lapse,
                 commit: request.commit(),
                 ic,
@@ -629,6 +646,11 @@ impl OwnerParticipant for RootParticipant {
     ) -> Result<(), ParticipantError> {
         if patch.commit != context.commit_token() {
             return Err(ParticipantError::Authority);
+        }
+        if let Some(fence) = &patch.conduct {
+            fence
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
         }
         if let Some(fence) = &patch.term_lapse {
             fence
@@ -852,6 +874,7 @@ impl OwnerParticipant for RootParticipant {
                     | RootAnchor::RenewalOperation(_)
                     | RootAnchor::HouseRenewalOperation(_)
                     | RootAnchor::Coverage(_, _)
+                    | RootAnchor::CoveragePublication(_, _, _)
                     | RootAnchor::DraftRetirement(_, _)
                     | RootAnchor::CharterPendingOffer(_, _)
                     | RootAnchor::CharterPendingFunding(_, _)

@@ -302,6 +302,7 @@ fn admitted_transition_no_intent_preserves_exact_machine_ticket_and_paid_receipt
                     lease,
                     result: None,
                     terminal: None,
+                    conduct: None,
                     registry: Some(RegistryProgress {
                         cursor: RegistryCursor {
                             index: 0,
@@ -432,6 +433,7 @@ fn plan() -> TestResult<Plan> {
     let hash = DefinitionDigest::from_bytes([1; 32]);
     Ok(Plan {
         kind: WorkKind::Registry,
+        conduct: None,
         registry: Some(RegistryBudget::prepare(
             hash,
             hash,
@@ -640,6 +642,7 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
         );
     }
     let receipt = Receipt {
+        conduct: None,
         registry: Some(RegistryProgress {
             cursor: RegistryCursor {
                 index: 0,
@@ -785,6 +788,7 @@ fn worker_evidence_and_receipt_survive_codec_and_ticket_capacity_refusals() -> T
     let bytes = ArtifactBytes::new(br#"{"not":"a measured result"}"#.to_vec())?;
     let bad = Receipt {
         registry: None,
+        conduct: None,
         actual_unit_ms: lease.maximum_sim_ms() * lease.units(),
         lease: lease.clone(),
         result: Some(bytes.descriptor().clone()),
@@ -796,6 +800,7 @@ fn worker_evidence_and_receipt_survive_codec_and_ticket_capacity_refusals() -> T
     assert_eq!(retained.ok_or("retained raw bytes")?.bytes(), bytes.bytes());
     let receipt = Receipt {
         registry: None,
+        conduct: None,
         actual_unit_ms: lease.maximum_sim_ms() * lease.units(),
         lease,
         result: None,

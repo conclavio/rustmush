@@ -697,6 +697,7 @@ pub(super) fn open_reference(
     )?;
     let plan = super::model::Plan {
         registry: None,
+        conduct: None,
         kind: super::model::WorkKind::Bench,
         scenario: super::model::Scenario::Muster,
         opponent: super::model::Opponent::Mirror,

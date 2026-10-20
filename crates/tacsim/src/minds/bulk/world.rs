@@ -36,6 +36,7 @@ pub(super) struct PendingCompletion {
 pub(super) struct Runtime {
     pub(super) recovery: super::registry_recovery::Recovery,
     pub(super) registry: super::registry_service::Lane,
+    pub(super) conduct: super::conduct_service::Lane,
     pub(super) cfg: BulkConfig,
     factory: Option<Arc<ScenarioFactory>>,
     pub(super) preparer: Preparer,
@@ -59,7 +60,7 @@ impl Runtime {
         owner: &BulkStore,
         account: AccountId,
     ) -> Result<(), BulkError> {
-        if self.recovery.pending() {
+        if self.recovery.pending() || self.conduct.recovering() {
             return Err(BulkError::Busy);
         }
         let retained: BTreeSet<_> = self
@@ -68,6 +69,7 @@ impl Runtime {
             .map(|p| p.account)
             .chain(self.external_preparing.iter().copied())
             .chain(self.registry.accounts())
+            .chain(self.conduct.accounts())
             .collect();
         if owner.active(account).is_some() || retained.contains(&account) {
             return Err(BulkError::Busy);
@@ -99,6 +101,7 @@ impl BulkService {
             executor: Executor::with_wake(&cfg, Some(wake))?,
             queue: FairQueue::new(&cfg)?,
             registry: super::registry_service::Lane::default(),
+            conduct: super::conduct_service::Lane::default(),
             cfg,
             factory: None,
             next: 1,
@@ -129,6 +132,7 @@ pub(super) fn begin_hydration(
             || !runtime.completed_benches.is_empty()
             || !runtime.external_preparing.is_empty()
             || runtime.registry.accounts().next().is_some()
+            || !runtime.conduct.pristine()
             || !ctx
                 .w
                 .module_state::<BulkStore>()
@@ -499,6 +503,7 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
     };
     let now = now_ms();
     super::registry_service::acknowledged(ctx, &mut runtime);
+    super::conduct_service::acknowledged(ctx, &mut runtime);
     for _ in 0..2 {
         let Some(done) = runtime.preparer.poll() else {
             break;
@@ -507,6 +512,10 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
             continue;
         };
         let (recipe, result) = match done {
+            preparation::Completion::Conduct { result, .. } => {
+                super::conduct_service::prepared(ctx, &mut runtime, p, result);
+                continue;
+            }
             preparation::Completion::Proving { recipe, result, .. } => (recipe, result),
             preparation::Completion::Registry { result, .. } => {
                 super::registry_service::prepared(ctx, &mut runtime, p, result);
@@ -569,6 +578,10 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
         }) else {
             break;
         };
+        if pending.done.receipt.lease.kind() == super::model::WorkKind::Conduct {
+            super::conduct_service::completed(ctx, &mut runtime, pending.done);
+            continue;
+        }
         if pending.done.receipt.lease.kind() == super::model::WorkKind::Registry {
             super::registry_service::completed(ctx, &mut runtime, pending.done);
             continue;
@@ -655,8 +668,10 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
                 done: Completion {
                     artifact: None,
                     registry_settlement: None,
+                    conduct_settlement: None,
                     receipt: Receipt {
                         registry: waiting.lease.unchanged_registry(),
+                        conduct: waiting.lease.unchanged_conduct(),
                         actual_unit_ms: 0,
                         result: None,
                         terminal: Some(Status::Cancelled),
@@ -677,7 +692,7 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
     }
     runtime.waiting = retained;
     for _ in 0..runtime.cfg.queued + runtime.cfg.proving_workers {
-        if runtime.registry.has_pending_turn() {
+        if runtime.registry.has_pending_turn() || runtime.conduct.has_pending_turn() {
             break;
         }
         let Some(ready) = runtime.queue.pop() else {
@@ -685,6 +700,10 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
         };
         let account = ready.account();
         let run = ready.run();
+        if store_kind(ctx.w, account, run) == Some(super::model::WorkKind::Conduct) {
+            super::conduct_service::grant(ctx, &mut runtime, ready);
+            break;
+        }
         if store_kind(ctx.w, account, run) == Some(super::model::WorkKind::Registry) {
             super::registry_service::grant(ctx, &mut runtime, ready);
             // The signed grant has borrowed this exact fair turn. Its pending
@@ -747,6 +766,7 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
         }
     }
     super::registry_service::dispatch(ctx, &mut runtime);
+    super::conduct_service::dispatch(ctx, &mut runtime);
     drop(runtime);
     super::bench_service::drain(ctx);
 }

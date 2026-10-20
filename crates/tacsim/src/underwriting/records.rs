@@ -89,6 +89,12 @@ pub(super) struct Publication {
     pub(super) publisher: ObjId,
     pub(super) authorization: PublicationAuthority,
     pub(super) product: CoverageProductV1,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "bounded_rows::<_, ConductSelection, 16>"
+    )]
+    pub(super) conduct: Vec<ConductSelection>,
     pub(super) posted_at_utc: i64,
 }
 impl Publication {
@@ -98,6 +104,22 @@ impl Publication {
             .validate()
             .map_err(|_| CoverageError::Authority)?;
         self.product.digest()?;
+        if self.conduct.len() != self.product.approvals().len()
+            || self
+                .conduct
+                .iter()
+                .zip(self.product.approvals())
+                .any(|(s, a)| &s.approval != a || s.validate().is_err())
+            || self
+                .conduct
+                .iter()
+                .map(|s| s.trial)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.conduct.len()
+        {
+            return Err(CoverageError::Product);
+        }
         if self.format != 1
             || self.publisher.0 == 0
             || self.action != self.protocol.action(0)?
@@ -233,7 +255,8 @@ impl Quote {
         let product = &p.product;
         let illustration = product.illustrate(self.terms.insured_value)?;
         let amounts = if let Some(qualified) = &self.risk.qualified {
-            if !product.approvals().contains(&qualified.approval) {
+            if !product.approvals().contains(&qualified.approval) || !p.conduct.contains(qualified)
+            {
                 return Err(CoverageError::Product);
             }
             illustration.with_qualified_safe_conduct()

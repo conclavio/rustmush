@@ -187,8 +187,16 @@ fn prepare_depth(
         ),
     )?;
     let birth = history::granted(ctx, f, ratings, licence, term)?;
-    if birth.holder() != selector.actor
-        || birth.licence() != selector.licence
+    super::super::owner_qualification::history::require_captured_holder(
+        ctx,
+        f,
+        ratings,
+        licence,
+        selector.holder_capture.as_ref(),
+        birth.holder(),
+        selector.actor,
+    )?;
+    if birth.licence() != selector.licence
         || birth.term() != selector.created_parent_term
         || birth.charter() != selector.charter
         || birth.line() != selector.line

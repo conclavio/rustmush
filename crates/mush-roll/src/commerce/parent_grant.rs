@@ -43,6 +43,9 @@ impl CurrentParentGrant {
     pub(crate) fn holding(&self) -> &PersonalPaidHolding {
         &self.holding
     }
+    pub(crate) fn observed_ic(&self) -> &ClockStamp {
+        &self.observed_ic
+    }
     pub(crate) fn provenance(&self) -> DerivativeProvenance {
         DerivativeProvenance {
             parent: ParentContent {

@@ -40,6 +40,9 @@ pub(super) struct Provider {
     pub(super) writer: RegisteredCoverageWriter,
     pub(super) economy: Option<ParticipantHandle<InitialFilingParticipant>>,
     pub(super) refusal: ActionError,
+    pub(super) conduct_reader: Option<
+        mush_core::read_service::OwnerReadHandle<mush_roll::commerce::conduct::ConductReader>,
+    >,
 }
 impl Provider {
     fn intent(&self, inv: &ActionInvocation) -> Result<(DefinitionDigest, Intent), CoverageError> {
@@ -93,7 +96,6 @@ impl Provider {
             .and_then(|s| s.rows.get(&id))
             .is_none_or(|actual| actual.as_ref() != &p)
             || p.protocol != self.protocol
-            || !p.product.approvals().is_empty()
         {
             return Err(CoverageError::Authority);
         }
@@ -127,7 +129,20 @@ impl Provider {
                 let observed = self.open(ctx, txn, &departure)?;
                 let p = self.product(ctx, txn, publication)?;
                 let product = &p.product;
-                let amounts = product.illustrate(value)?.ordinary();
+                let qualified = super::qualification::current(
+                    ctx,
+                    txn,
+                    self.conduct_reader.as_ref(),
+                    &p,
+                    &departure,
+                    observed.facts(),
+                )?;
+                let illustration = product.illustrate(value)?;
+                let amounts = if qualified.is_some() {
+                    illustration.with_qualified_safe_conduct()
+                } else {
+                    illustration.ordinary()
+                };
                 let w = ctx.world().map_err(bad)?;
                 let now = w.now();
                 if now < p.posted_at_utc
@@ -156,7 +171,7 @@ impl Provider {
                         hull_revision: departure.unit_revision(),
                         hull_schema: departure.unit_schema().clone(),
                         zone: departure.zone().clone(),
-                        qualified: None,
+                        qualified: qualified.as_ref().map(|(selection, _)| selection.clone()),
                     },
                     terms: mush_economy::managed_coverage::CoverageQuoteTermsV1 {
                         format: 1,
@@ -192,6 +207,7 @@ impl Provider {
                     request,
                     retained_intent,
                     Some((product.clone(), payer)),
+                    qualified.map(|(_, proof)| proof),
                 );
                 self.writer.quote(ctx, observed, check).map_err(bad)?;
                 "quoted"
@@ -201,14 +217,30 @@ impl Provider {
                 let q = families::read(txn, &self.families.quotes, quote.to_hex())?;
                 let p = self.product(ctx, txn, q.publication)?;
                 q.matches_publication(&p)?;
-                if q.risk.qualified.is_some()
-                    || q.risk.ic_open != departure.open()
+                if q.risk.ic_open != departure.open()
                     || q.risk.departure_digest != departure.digest()
                     || q.terms.buyer != inv.actor()
                     || q.risk.hull_title_revision != observed.facts().hull_title_revision()
                 {
                     return Err(CoverageError::Authority);
                 }
+                let conduct = if let Some(expected) = &q.risk.qualified {
+                    let (selection, proof) = super::qualification::current(
+                        ctx,
+                        txn,
+                        self.conduct_reader.as_ref(),
+                        &p,
+                        &departure,
+                        observed.facts(),
+                    )?
+                    .ok_or(CoverageError::Authority)?;
+                    if &selection != expected {
+                        return Err(CoverageError::Authority);
+                    }
+                    Some(proof)
+                } else {
+                    None
+                };
                 let hull_key = format!("{:08x}", q.risk.hull.0);
                 let head = txn
                     .get(&self.families.hulls, &hull_key)
@@ -261,6 +293,7 @@ impl Provider {
                     request,
                     retained_intent,
                     Some((p.product.clone(), q.terms.payer)),
+                    conduct,
                 );
                 let actual = self
                     .writer
@@ -391,6 +424,7 @@ impl Provider {
                     self.index,
                     request,
                     retained_intent,
+                    None,
                     None,
                 );
                 let actual = self.writer.finish(ctx, txn, output, check).map_err(bad)?;

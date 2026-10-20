@@ -35,8 +35,26 @@ struct Recipe {
     transit_cases: Vec<Case>,
     note: String,
 }
+impl Recipe {
+    fn validate(&self) -> Result<(), RatingError> {
+        if self.format != 1
+            || self.name != "safe_conduct.ground.v1"
+            || self.maximum_ms != 120_000
+            || self.seeds != [2350, 2351, 2352, 2353, 2354]
+            || self.roles != ["Escort", "Transit"]
+            || self.cases.as_slice() != Case::ALL
+            || self.escort_cases.as_slice() != Case::for_role(super::Role::Escort)
+            || self.transit_cases.as_slice() != Case::for_role(super::Role::Transit)
+            || self.note.len() > 512
+        {
+            return Err(RatingError::Identity);
+        }
+        self.cargo.validate()
+    }
+}
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Manifest {
     format: u16,
     recipe: Recipe,
@@ -49,6 +67,80 @@ struct Manifest {
     definitions: Vec<DefinitionRef>,
 }
 
+/// Retained data, not executable policy or a permission to create a worker.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RetainedPolicy {
+    manifest: Manifest,
+    goods: GoodsTable,
+}
+impl RetainedPolicy {
+    pub(super) fn validate(&self, expected: DefinitionDigest) -> Result<(), RatingError> {
+        let m = &self.manifest;
+        m.recipe.validate()?;
+        // Validate the retained table through its ordinary checked loader. Do
+        // not replace an old table with today's content or mechanics registry.
+        let goods = GoodsTable::load(
+            "retained Conduct goods",
+            &serde_json::to_string(&self.goods).map_err(|_| RatingError::Invalid)?,
+        )
+        .map_err(|_| RatingError::Invalid)?;
+        if m.format != 1
+            || m.implementation.len() != 15
+            || m.definitions.len() != 6
+            || m.definitions
+                .windows(2)
+                .any(|p| !matches!(p, [a,b] if a < b))
+            || !m.definitions.contains(&m.combat_policy)
+            || identity("tacsim.conduct.goods.v1", &goods, 1024 * 1024)? != m.goods
+            || identity("tacsim.conduct.manifest.v1", m, 32 * 1024)? != expected
+        {
+            return Err(RatingError::Identity);
+        }
+        Ok(())
+    }
+    pub(super) fn cargo(
+        &self,
+        policy: DefinitionDigest,
+        seed: u64,
+    ) -> Result<super::cargo::CargoReport, RatingError> {
+        let spec = &self.manifest.recipe.cargo;
+        let compartment = Compartment {
+            id: spec.compartment.clone(),
+            accepts: spec.accepts.clone(),
+            limits: spec.limits.clone(),
+        };
+        super::cargo::Cargo::load(
+            spec,
+            &compartment,
+            &self.goods,
+            mush_core::ObjId(101),
+            (129, 97),
+            policy,
+            seed,
+        )?
+        .report()
+    }
+    pub(super) fn descriptor(&self) -> Result<mush_core::DefinitionDescriptor, RatingError> {
+        mush_core::DefinitionDescriptor::new(
+            mush_core::DefinitionKind::new("conduct_manifest").map_err(|_| RatingError::Invalid)?,
+            mush_core::DefinitionId::new("safe_conduct").map_err(|_| RatingError::Invalid)?,
+            1,
+            serde_json::to_value(&self.manifest).map_err(|_| RatingError::Invalid)?,
+        )
+        .map(|d| d.with_references(self.manifest.definitions.clone()))
+        .map_err(|_| RatingError::Invalid)
+    }
+    pub(super) fn definition_ref(&self) -> Result<DefinitionRef, RatingError> {
+        mush_core::DefinitionRegistryBuilder::new()
+            .register(
+                mush_core::OwnerId::new("tacsim").map_err(|_| RatingError::Invalid)?,
+                self.descriptor()?,
+            )
+            .map_err(|_| RatingError::Invalid)
+    }
+}
+
 pub(super) struct Policy {
     pub(super) physics: FrozenPolicy,
     pub(super) goods: GoodsTable,
@@ -58,6 +150,18 @@ pub(super) struct Policy {
     digest: DefinitionDigest,
 }
 impl Policy {
+    pub(super) fn retained(&self) -> RetainedPolicy {
+        RetainedPolicy {
+            manifest: self.manifest.clone(),
+            goods: self.goods.clone(),
+        }
+    }
+    pub(super) fn descriptor(&self) -> Result<mush_core::DefinitionDescriptor, RatingError> {
+        self.retained().descriptor()
+    }
+    pub(super) fn definition_ref(&self) -> Result<DefinitionRef, RatingError> {
+        self.retained().definition_ref()
+    }
     /// The role content enters the same strict pack loader as ordinary units.
     /// This is opt-in; it changes neither the default catalogue nor Dray.
     pub(super) fn carrier_pack() -> Result<LoadedPack, RatingError> {
@@ -75,19 +179,7 @@ impl Policy {
             return Err(RatingError::Bound);
         }
         let recipe: Recipe = serde_json::from_str(SOURCE).map_err(|_| RatingError::Invalid)?;
-        if recipe.format != 1
-            || recipe.name != "safe_conduct.ground.v1"
-            || recipe.maximum_ms != 120_000
-            || recipe.seeds != [2350, 2351, 2352, 2353, 2354]
-            || recipe.roles != ["Escort", "Transit"]
-            || recipe.cases.as_slice() != Case::ALL
-            || recipe.escort_cases.as_slice() != Case::for_role(super::Role::Escort)
-            || recipe.transit_cases.as_slice() != Case::for_role(super::Role::Transit)
-            || recipe.note.len() > 512
-        {
-            return Err(RatingError::Identity);
-        }
-        recipe.cargo.validate()?;
+        recipe.validate()?;
         let physics = FrozenPolicy::capture(catalog, records, cfg)?;
         if physics.ground.id != recipe.ground.as_str() {
             return Err(RatingError::Identity);
@@ -161,6 +253,9 @@ impl Policy {
                 include_str!("../../../arena/stock_mind.rs"),
                 include_str!("../../../arena/intents.rs"),
                 include_str!("../../../arena/motor.rs"),
+                include_str!("worker.rs"),
+                include_str!("history.rs"),
+                include_str!("../../bulk/conduct_budget.rs"),
             ]
             .into_iter()
             .map(|source| identity("tacsim.conduct.implementation.v1", &source, 1024 * 1024))

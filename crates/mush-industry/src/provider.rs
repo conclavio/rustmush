@@ -3353,6 +3353,9 @@ pub(crate) fn register_with_core_origins(
     if factory.is_some() {
         outcomes.push(crate::core_production::integration::runtime::outcome_descriptor()?);
     }
+    if factory.and_then(|c| c.refit.as_ref()).is_some() {
+        outcomes.push(crate::core_production::refit::runtime::outcome_descriptor()?);
+    }
     reg.definition_validator(
         DefinitionKind::new("outcome").map_err(|error| ModError::msg(error.to_string()))?,
         exact_validator(&outcomes),
@@ -3383,6 +3386,15 @@ pub(crate) fn register_with_core_origins(
                     .action_descriptor(crate::core_production::integration::delivery::ACTION)
                     .map_err(|e| ModError::msg(e.to_string()))?,
             );
+        }
+        if let Some(refit) = &config.refit {
+            for name in crate::core_production::refit::ACTIONS {
+                action_shapes.push(
+                    refit
+                        .action_descriptor(name)
+                        .map_err(|e| ModError::msg(e.to_string()))?,
+                );
+            }
         }
         for name in crate::core_production::integration::ACTIONS {
             action_shapes.push(

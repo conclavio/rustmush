@@ -10,6 +10,9 @@ use mush_roll::commerce::LicenceId;
 use mush_sim::{DomainId, InteriorSpaceRecord, SpaceAnchor, ic_exclusion::ConfiguredIcBase};
 use std::collections::BTreeSet;
 
+#[path = "conduct_integration_tests.rs"]
+mod conduct;
+
 const CONN: u64 = 931;
 const BUYER_CONN: u64 = 932;
 type SelectedTicket = Arc<Mutex<Option<Arc<IcHostTicket>>>>;
@@ -81,6 +84,8 @@ struct IcWorld {
     coverage_host: Option<crate::underwriting::CoverageHost>,
     coverage_calls: coverage::Calls,
     transfer_facts: Option<resale::transfer_facts::Calls>,
+    conduct: bool,
+    qualified_coverage: Option<coverage::qualified::Configuration>,
 }
 impl Drop for IcWorld {
     fn drop(&mut self) {
@@ -316,9 +321,84 @@ impl IcWorld {
         two_seat_house: bool,
         transfer_facts: Option<resale::transfer_facts::Calls>,
     ) -> TestResult<Self> {
+        Self::boot_source_conduct(
+            f,
+            saved,
+            base,
+            field,
+            hulls,
+            enabled,
+            pending_charters,
+            paid_resales,
+            registry_revocation,
+            coverage_products,
+            two_seat_house,
+            transfer_facts,
+            false,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn boot_source_conduct(
+        f: IcFixture<'_>,
+        saved: &Durable,
+        base: ObjId,
+        field: ObjId,
+        hulls: [ObjId; 2],
+        enabled: bool,
+        pending_charters: bool,
+        paid_resales: bool,
+        registry_revocation: Option<
+            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
+        >,
+        coverage_products: Option<Vec<crate::underwriting::CoverageProductV1>>,
+        two_seat_house: bool,
+        transfer_facts: Option<resale::transfer_facts::Calls>,
+        conduct: bool,
+    ) -> TestResult<Self> {
+        Self::boot_source_qualified(
+            f,
+            saved,
+            base,
+            field,
+            hulls,
+            enabled,
+            pending_charters,
+            paid_resales,
+            registry_revocation,
+            coverage_products,
+            two_seat_house,
+            transfer_facts,
+            conduct,
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn boot_source_qualified(
+        f: IcFixture<'_>,
+        saved: &Durable,
+        base: ObjId,
+        field: ObjId,
+        hulls: [ObjId; 2],
+        enabled: bool,
+        pending_charters: bool,
+        paid_resales: bool,
+        registry_revocation: Option<
+            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
+        >,
+        coverage_products: Option<Vec<crate::underwriting::CoverageProductV1>>,
+        two_seat_house: bool,
+        transfer_facts: Option<resale::transfer_facts::Calls>,
+        conduct: bool,
+        qualified_coverage: Option<coverage::qualified::Configuration>,
+    ) -> TestResult<Self> {
         let mut cfg = f.resources.config();
         cfg.enabled = true;
         let layer = crate::TacsimRuleset::with_config(cfg);
+        let layer = if conduct {
+            layer.with_conduct_carrier()?
+        } else {
+            layer
+        };
         let composition = crate::composition::mind_commerce::MindCommerce::prepare(
             &layer,
             CommerceMode::Active,
@@ -364,6 +444,11 @@ impl IcWorld {
         } else {
             composition
         };
+        let composition = if conduct {
+            composition.with_conduct_trials(&layer)?
+        } else {
+            composition
+        };
         // This is the production preparation path, never cfg(test) Resources::register.
         let old_manifest = f
             .engine
@@ -382,20 +467,32 @@ impl IcWorld {
         } else {
             composition
         };
-        let composition = if let Some(products) = &coverage_products {
+        let composition = if let Some(qualified) = &qualified_coverage {
+            if !conduct {
+                return Err("qualified fixture requires actual Conduct".into());
+            }
+            composition
+                .with_registry_recall(qualified.recall.clone())?
+                .with_qualified_hull_coverage(
+                    GOD,
+                    coverage_products.clone().ok_or("qualified products")?,
+                    qualified.manifest.clone(),
+                    qualified.selections.clone(),
+                )?
+        } else if let Some(products) = &coverage_products {
             composition.with_hull_coverage(GOD, products.clone())?
         } else {
             composition
         };
         let (tactics, sim) = composition.configure_ic_physical(
-            mush_tactics::TacticsModule::with_catalog(crate::builtin_definitions()?.units),
+            mush_tactics::TacticsModule::with_catalog(layer.definition_catalog()?.units),
             mush_sim::SimulationModule::new().with_accounts(f.accounts.clone()),
         );
         let layer = composition.configure_tacsim(layer)?;
         let host = layer.ic_host();
         let coverage_host = layer.coverage_host();
         let coverage_calls = coverage::calls();
-        let layer: Box<dyn GameModule> = if coverage_products.is_some() {
+        let layer: Box<dyn GameModule> = if coverage_products.is_some() || conduct {
             Box::new(coverage::Ingress {
                 inner: layer,
                 calls: coverage_calls.clone(),
@@ -468,6 +565,8 @@ impl IcWorld {
             coverage_host,
             coverage_calls,
             transfer_facts,
+            conduct,
+            qualified_coverage,
         };
         result.persist_setup()?;
         result.engine.step(
@@ -607,7 +706,7 @@ impl IcWorld {
         Durable::capture(&self.engine, &self.disk)
     }
     fn reboot(&self, f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
-        Self::boot_source_facts(
+        Self::boot_source_qualified(
             f.into(),
             saved,
             self.base,
@@ -620,6 +719,8 @@ impl IcWorld {
             self.coverage_products.clone(),
             false,
             self.transfer_facts.clone(),
+            self.conduct,
+            self.qualified_coverage.clone(),
         )
     }
     fn reboot_house(&self, f: &Fixture, saved: &Durable) -> TestResult<Self> {

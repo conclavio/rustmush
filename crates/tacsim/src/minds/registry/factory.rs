@@ -137,6 +137,7 @@ impl Factory {
         let plan = Plan {
             kind: WorkKind::Registry,
             registry: Some(budget),
+            conduct: None,
             scenario: Scenario::Duel,
             opponent: Opponent::Doctrine,
             per_side: 0,

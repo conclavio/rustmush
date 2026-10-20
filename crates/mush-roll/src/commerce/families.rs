@@ -12,6 +12,12 @@ use super::records::*;
 /// No public constructor, family-name lookup or blanket delegation is added.
 #[derive(Clone)]
 pub struct CommerceFamilies {
+    pub(crate) conduct_jobs: StateFamilyHandle<String, super::conduct::records::ConductJob>,
+    pub(crate) conduct_executions:
+        StateFamilyHandle<String, super::conduct::records::ConductExecution>,
+    pub(crate) conduct_results: StateFamilyHandle<String, super::conduct::records::ConductResult>,
+    pub(crate) coverage_publications:
+        StateFamilyHandle<String, super::coverage::CoveragePublicationRetention>,
     pub(crate) coverages: StateFamilyHandle<String, super::coverage::CoverageRetention>,
     pub(crate) paid_resales: StateFamilyHandle<String, super::paid_resale::PaidResaleRecord>,
     pub(crate) paid_resale_heads: StateFamilyHandle<String, super::paid_resale::PaidResaleHead>,
@@ -90,6 +96,10 @@ pub struct CommerceFamilies {
 impl CommerceFamilies {
     pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<Self, ModError> {
         Ok(Self {
+            conduct_jobs: super::conduct::families::register(reg)?,
+            conduct_executions: super::conduct::families::register(reg)?,
+            conduct_results: super::conduct::families::register(reg)?,
+            coverage_publications: register(reg)?,
             coverages: register(reg)?,
             paid_resales: register(reg)?,
             paid_resale_heads: register(reg)?,
@@ -212,6 +222,7 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
         | "roll_mind_charter_transfer_offers"
         | "roll_mind_ic_claim"
         | "roll_mind_coverage"
+        | "roll_coverage_publication"
         | "roll_mind_line_update"
         | "roll_mind_initial_filing"
         | "roll_mind_paid_purchase"

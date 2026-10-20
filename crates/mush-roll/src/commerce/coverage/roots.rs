@@ -23,6 +23,34 @@ pub trait CoveragePrecommitCheck: Send + Sync {
 
 #[derive(Clone)]
 pub(crate) struct CoverageFence {
+    inner: FenceKind,
+}
+#[derive(Clone)]
+enum FenceKind {
+    Open(OpenFence),
+    Publication(super::publication::PublicationFence),
+}
+impl CoverageFence {
+    pub(crate) fn check(&self, ctx: &OwnerPrepareContext<'_>) -> Result<(), PublicationError> {
+        match &self.inner {
+            FenceKind::Open(f) => f.check(ctx),
+            FenceKind::Publication(f) => f.check(ctx),
+        }
+    }
+    fn commit(&self) -> CommitToken {
+        match &self.inner {
+            FenceKind::Open(f) => f.commit,
+            FenceKind::Publication(f) => f.operation(),
+        }
+    }
+    fn open(fence: OpenFence) -> Self {
+        Self {
+            inner: FenceKind::Open(fence),
+        }
+    }
+}
+#[derive(Clone)]
+struct OpenFence {
     action: DefinitionRef,
     commit: CommitToken,
     actor: ObjId,
@@ -32,7 +60,7 @@ pub(crate) struct CoverageFence {
     claim: ClaimRecord,
     extra: std::sync::Arc<dyn CoveragePrecommitCheck>,
 }
-impl CoverageFence {
+impl OpenFence {
     pub(crate) fn check(&self, ctx: &OwnerPrepareContext<'_>) -> Result<(), PublicationError> {
         self.extra.check(ctx)?;
         let world = ctx.world();
@@ -85,7 +113,7 @@ impl CoverageRoots {
         extra: std::sync::Arc<dyn CoveragePrecommitCheck>,
     ) -> Result<Self, PublicationError> {
         let root = facts.root()?;
-        let fence = CoverageFence {
+        let fence = CoverageFence::open(OpenFence {
             action,
             commit,
             actor: facts.actor(),
@@ -94,7 +122,7 @@ impl CoverageRoots {
             claim: facts.claim().clone(),
             fresh: Some(facts),
             extra,
-        };
+        });
         Ok(Self {
             fence,
             before: vec![root.clone()],
@@ -115,7 +143,7 @@ impl CoverageRoots {
         Ok(Self {
             before: vec![facts.root()?],
             after: vec![row.root()?],
-            fence: CoverageFence {
+            fence: CoverageFence::open(OpenFence {
                 action: c.effect.clone(),
                 commit: c.operation,
                 actor: c.terms.buyer,
@@ -124,7 +152,7 @@ impl CoverageRoots {
                 claim: facts.claim().clone(),
                 fresh: Some(facts),
                 extra,
-            },
+            }),
         })
     }
     pub(super) fn terminal(
@@ -146,7 +174,7 @@ impl CoverageRoots {
         Ok(Self {
             before: vec![before.root()?],
             after: vec![after.root()?],
-            fence: CoverageFence {
+            fence: CoverageFence::open(OpenFence {
                 action: terminal.action.clone(),
                 commit: terminal.operation,
                 actor: terminal.actor,
@@ -155,11 +183,24 @@ impl CoverageRoots {
                 claim,
                 fresh: None,
                 extra,
-            },
+            }),
         })
     }
     pub(crate) fn commit(&self) -> CommitToken {
-        self.fence.commit
+        self.fence.commit()
+    }
+    pub(super) fn publication(
+        row: &super::publication::CoveragePublicationRetention,
+        fence: super::publication::PublicationFence,
+        proofs: &[crate::commerce::conduct::ConductTrialProof],
+    ) -> Result<Self, PublicationError> {
+        Ok(Self {
+            fence: CoverageFence {
+                inner: FenceKind::Publication(fence),
+            },
+            before: proofs.iter().map(|p| p.root()).collect::<Result<_, _>>()?,
+            after: row.roots(),
+        })
     }
     pub(crate) fn fence(&self) -> &CoverageFence {
         &self.fence

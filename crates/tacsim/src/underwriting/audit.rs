@@ -107,13 +107,41 @@ pub(super) fn all(
     {
         return Err(CoverageError::Authority);
     }
+    let retained = writer
+        .map(|w| w.publications_for_boot(ctx).map_err(bad))
+        .transpose()?
+        .unwrap_or_default();
+    let qualified_products: BTreeMap<_, _> = retained.iter().map(|p| (p.operation(), p)).collect();
+    if qualified_products.len() != retained.len()
+        || qualified_products.len() != products.values().filter(|p| !p.conduct.is_empty()).count()
+    {
+        return Err(CoverageError::Product);
+    }
     for p in products.values() {
         let native = native_products
             .rows
             .get(&p.operation)
             .ok_or(CoverageError::Product)?;
-        if native.as_ref() != *p || !p.product.approvals().is_empty() {
+        if native.as_ref() != *p {
             return Err(CoverageError::Product);
+        }
+        if !p.conduct.is_empty() {
+            let retained = qualified_products
+                .get(&p.operation)
+                .ok_or(CoverageError::Product)?;
+            if retained.publication_digest() != p.digest()?
+                || retained.product_digest() != p.product.digest()?
+                || retained.trials().len() != p.conduct.len()
+                || retained
+                    .trials()
+                    .iter()
+                    .zip(&p.conduct)
+                    .any(|(proof, selection)| {
+                        !super::qualification::matches_retained(selection, proof)
+                    })
+            {
+                return Err(CoverageError::Product);
+            }
         }
     }
     for q in quotes.values() {
@@ -121,10 +149,31 @@ pub(super) fn all(
             .get(&q.publication.to_hex())
             .ok_or(CoverageError::Product)?;
         q.matches_publication(p)?;
-        if q.risk.qualified.is_some() {
-            return Err(CoverageError::Authority);
-        }
         raw_open(ctx, q)?;
+        if let Some(selected) = &q.risk.qualified {
+            let retention = qualified_products
+                .get(&q.publication)
+                .ok_or(CoverageError::Product)?;
+            let proof = retention
+                .trials()
+                .iter()
+                .find(|r| r.trial() == selected.trial)
+                .ok_or(CoverageError::Product)?;
+            if !super::qualification::matches_retained(selected, proof) {
+                return Err(CoverageError::Product);
+            }
+            writer
+                .ok_or(CoverageError::Authority)?
+                .verify_qualified_quote_for_boot(ctx, q.risk.ic_open, proof)
+                .map_err(bad)?;
+            crate::minds::ic_sortie::audit_qualified_coverage_history(
+                ctx.w,
+                &q.native_basis()?,
+                q.terms.buyer,
+                proof,
+            )
+            .map_err(bad)?;
+        }
     }
     let economy = ctx.state::<EconomyStore>();
     if economy.is_none() && !enabled && policies.is_empty() {

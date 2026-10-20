@@ -30,6 +30,12 @@ pub(crate) struct DependentParent {
     pub(crate) window: TermWindow,
     pub(crate) term_seconds: i64,
     pub(crate) grace_seconds: i64,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::owner_qualification::records::present_holder_capture"
+    )]
+    pub(crate) holder_capture: Option<super::owner_qualification::records::ParentHolderCapture>,
 }
 
 impl DependentParent {
@@ -49,12 +55,18 @@ impl DependentParent {
             window: holding.window(),
             term_seconds,
             grace_seconds,
+            holder_capture: super::owner_qualification::records::ParentHolderCapture::capture(
+                actual,
+            ),
         };
         value.validate()?;
         Ok(value)
     }
 
     pub(crate) fn validate(&self) -> Result<(), PublicationError> {
+        if let Some(capture) = &self.holder_capture {
+            capture.validate()?;
+        }
         if self.owner.0 == 0
             || !(1..=MAX_TERM_SECONDS).contains(&self.term_seconds)
             || !(0..=MAX_GRACE_SECONDS).contains(&self.grace_seconds)
@@ -110,6 +122,11 @@ impl OwnerParentBinding {
         filed.validate()?;
         term.validate()?;
         operation.validate()?;
+        if self.parent.holder_capture.as_ref().is_some_and(|capture| {
+            WorldIcSeconds::from_stamp(&capture.observed_ic).ok() != Some(filed.content.filed_at())
+        }) {
+            return Err(PublicationError::Mismatch);
+        }
         if operation.format != 3
             || filed.format != 2
             || term.format != 2
@@ -260,6 +277,15 @@ pub(crate) fn verify_history(
     )?;
     let allocation =
         super::entitlement::history::granted(ctx, families, ratings, licence, paid_term)?;
+    super::owner_qualification::history::require_captured_holder(
+        ctx,
+        families,
+        ratings,
+        licence,
+        p.holder_capture.as_ref(),
+        allocation.holder(),
+        p.owner,
+    )?;
     let revision = roll
         .revision(
             operation.revision.revision().key.character,
@@ -275,7 +301,6 @@ pub(crate) fn verify_history(
         || parent.content.position().charter != p.charter
         || parent.content.position().line != p.line
         || revision.provenance.as_ref() != Some(&provenance)
-        || allocation.holder() != p.owner
         || allocation.licence() != p.licence
         || allocation.term() != p.term
         || licence.charter() != p.charter

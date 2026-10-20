@@ -26,6 +26,7 @@ fn dependent() -> TestResult<(
         window: TermWindow::new(now(10), now(10), now(180), now(195))?,
         term_seconds: 100,
         grace_seconds: 20,
+        holder_capture: None,
     };
     let mut revision = parent_revision;
     revision.format = 2;
@@ -293,5 +294,134 @@ fn captured_parent_window_caps_child_and_never_restarts_parent_grace() -> TestRe
     assert_ne!(current.child_window(now(201))?, grace);
     assert_eq!(serde_json::to_vec(&parent)?, old);
     assert_eq!(grace.phase_at(now(201)), super::super::TermPhase::Lapsed);
+    Ok(())
+}
+
+fn source_holder_capture(at: i64) -> Value {
+    json!({"format":1,"basis":{"format":1,"acceptance":token(249),
+        "ownership":{"generation":65537,"operation":token(248),"digest":digest(255)}},
+        "observed_ic":{"clock":{"kind":"world_ic","generation":u64::MAX},"at":at}})
+}
+
+#[test]
+fn accepted_source_holder_is_versioned_and_old_draft_and_parent_bytes_stay_exact() -> TestResult {
+    use crate::commerce::parent_selector::DraftParentSelection;
+    let (_, _, _, binding) = dependent()?;
+    let old_parent = serde_json::to_vec(&binding.parent)?;
+    assert_eq!(
+        serde_json::to_vec(&serde_json::from_slice::<DependentParent>(&old_parent)?)?,
+        old_parent
+    );
+    assert!(
+        serde_json::to_value(&binding.parent)?
+            .get("holder_capture")
+            .is_none()
+    );
+    let old = json!({"format":1,"actor":ACTOR,"mind":u64::MAX,"parent":binding.parent.parent,
+        "charter":binding.parent.charter,"line":binding.parent.line,"licence":binding.parent.licence,
+        "created_parent_term":binding.parent.term,"generation":1,"created":token(250),"operation":token(250)});
+    let legacy: DraftParentSelection = serde_json::from_value(old.clone())?;
+    legacy.validate()?;
+    assert_eq!(serde_json::to_value(&legacy)?, old);
+    let mut current = old.clone();
+    current["format"] = json!(2);
+    current["holder_capture"] = source_holder_capture(i64::MAX);
+    let captured: DraftParentSelection = serde_json::from_value(current.clone())?;
+    captured.validate()?;
+    assert_eq!(serde_json::to_value(&captured)?, current);
+    let (mut engine, f) = engine();
+    let document = json!({"family":{"owner":f.draft_parents.owner(),"id":f.draft_parents.descriptor().id()},
+        "key":captured.key(),"schema":{"id":f.draft_parents.descriptor().value_schema(),"version":1},"value":captured});
+    mush_core::canonical_json_bytes_with_limit(&document, DraftParentSelection::MAX_BYTES)?;
+    let mut txn = engine.action_transaction(&f.draft_parents)?;
+    txn.insert(&f.draft_parents, &captured.key(), captured)?;
+    let (_, install) = txn.prepare()?.into_parts();
+    engine.install_prepared_action(install)?;
+    for (format, present) in [(1, true), (2, false), (3, true)] {
+        let mut bad = current.clone();
+        bad["format"] = json!(format);
+        if !present {
+            bad.as_object_mut()
+                .ok_or("selector")?
+                .remove("holder_capture");
+        }
+        let bad: DraftParentSelection = serde_json::from_value(bad)?;
+        assert!(bad.validate().is_err());
+    }
+    for (path, value) in [
+        ("/holder_capture", Value::Null),
+        ("/holder_capture/format", json!(2)),
+        ("/holder_capture/basis/ownership/generation", json!(1)),
+        ("/holder_capture/observed_ic/clock/kind", json!("world_utc")),
+    ] {
+        let mut bad = current.clone();
+        *bad.pointer_mut(path).ok_or("capture field")? = value;
+        assert!(serde_json::from_value::<DraftParentSelection>(bad).is_err());
+    }
+    let mut extra = current;
+    extra
+        .pointer_mut("/holder_capture")
+        .and_then(Value::as_object_mut)
+        .ok_or("capture")?
+        .insert("authority".into(), json!(true));
+    assert!(serde_json::from_value::<DraftParentSelection>(extra).is_err());
+    Ok(())
+}
+
+#[test]
+fn accepted_initial_parent_capture_is_paired_with_actual_issue_boundary_and_envelopes() -> TestResult
+{
+    let (filed, mut term, mut operation, mut binding) = dependent()?;
+    let mut wire = serde_json::to_value(&binding.parent)?;
+    wire["holder_capture"] = source_holder_capture(filed.content.filed_at().get());
+    binding.parent = serde_json::from_value(wire.clone())?;
+    term.parent = Some(binding.parent.clone());
+    operation.parent = Some(binding.parent.clone());
+    binding.check_rows(&filed, &term, &operation)?;
+    let (mut engine, f) = engine();
+    for (family, key, schema, limit, value) in [
+        (
+            f.owner_parents.descriptor().id(),
+            binding.key(),
+            f.owner_parents.descriptor().value_schema(),
+            OwnerParentBinding::MAX_BYTES,
+            serde_json::to_value(&binding)?,
+        ),
+        (
+            f.terms.descriptor().id(),
+            term.key(),
+            f.terms.descriptor().value_schema(),
+            OwnerTerm::MAX_BYTES,
+            serde_json::to_value(&term)?,
+        ),
+        (
+            f.operations.descriptor().id(),
+            operation.key(),
+            f.operations.descriptor().value_schema(),
+            InitialFilingOperation::MAX_BYTES,
+            serde_json::to_value(&operation)?,
+        ),
+    ] {
+        mush_core::canonical_json_bytes_with_limit(
+            &json!({"family":{"owner":"roll","id":family},"key":key,"schema":{"id":schema,"version":1},"value":value}),
+            limit,
+        )?;
+    }
+    let mut txn = engine.action_transaction(&f.owner_parents)?;
+    txn.insert(&f.owner_parents, &binding.key(), binding.clone())?;
+    txn.insert(&f.terms, &term.key(), term.clone())?;
+    txn.insert(&f.operations, &operation.key(), operation.clone())?;
+    let (_, install) = txn.prepare()?.into_parts();
+    engine.install_prepared_action(install)?;
+    binding
+        .parent
+        .holder_capture
+        .as_mut()
+        .ok_or("capture")?
+        .observed_ic
+        .at += 1;
+    assert!(binding.check_rows(&filed, &term, &operation).is_err());
+    wire["holder_capture"] = Value::Null;
+    assert!(serde_json::from_value::<DependentParent>(wire).is_err());
     Ok(())
 }

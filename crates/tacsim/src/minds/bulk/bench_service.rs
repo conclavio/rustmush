@@ -1293,8 +1293,10 @@ mod tests {
         record.runs.insert(
             RunId(1),
             Run {
+                conduct_job: None,
                 registry_job: None,
                 registry: None,
+                conduct: None,
                 id: RunId(1),
                 character: GOD,
                 nonce: 1,
@@ -1302,6 +1304,7 @@ mod tests {
                 finished_ms: Some(1),
                 plan: Plan {
                     registry: None,
+                    conduct: None,
                     kind: WorkKind::Proving,
                     scenario: Scenario::Duel,
                     opponent: Opponent::Mirror,
@@ -1642,8 +1645,10 @@ mod tests {
                 record.runs.insert(
                     id,
                     Run {
+                        conduct_job: None,
                         registry_job: None,
                         registry: None,
+                        conduct: None,
                         id,
                         character: actor,
                         nonce: 1,
@@ -1651,6 +1656,7 @@ mod tests {
                         finished_ms: status.terminal().then_some(1),
                         plan: Plan {
                             registry: None,
+                            conduct: None,
                             kind,
                             scenario: Scenario::Duel,
                             opponent: Opponent::Mirror,

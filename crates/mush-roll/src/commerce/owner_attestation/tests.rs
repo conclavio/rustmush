@@ -368,3 +368,60 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
     assert!(serde_json::from_value::<AttestationOperation>(extra).is_err());
     Ok(())
 }
+
+#[test]
+fn attested_parent_holder_capture_is_in_the_term_and_complete_envelope() -> TestResult {
+    let old = operation()?;
+    let bytes = serde_json::to_vec(&old)?;
+    let restored: AttestationOperation = serde_json::from_slice(&bytes)?;
+    assert_eq!(serde_json::to_vec(&restored)?, bytes);
+    let mut wire = serde_json::to_value(&old)?;
+    let selected = "/next/attestation/parent/selected";
+    assert!(wire.pointer(&format!("{selected}/holder_basis")).is_none());
+    wire.pointer_mut(selected).and_then(Value::as_object_mut).ok_or("selected")?.insert(
+        "holder_basis".into(), json!({"format":1,"acceptance":CommitToken::from_bytes([249;16]),
+        "ownership":{"generation":65537,"operation":CommitToken::from_bytes([248;16]),"digest":DefinitionDigest::from_bytes([255;32])}}));
+    let captured: AttestationOperation = serde_json::from_value(wire.clone())?;
+    assert_ne!(term_digest(&old.next)?, term_digest(&captured.next)?);
+    assert_eq!(serde_json::to_value(&captured)?, wire);
+    let shared = Arc::new(Mutex::new(None));
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(Rows(shared.clone()))],
+    )?;
+    let (operations, terms) = shared
+        .lock()
+        .map_err(|_| "handles")?
+        .clone()
+        .ok_or("handles")?;
+    for (family, schema, key, value, max) in [
+        (
+            operations.descriptor().id(),
+            operations.descriptor().value_schema(),
+            captured.key(),
+            serde_json::to_value(&captured)?,
+            AttestationOperation::MAX_BYTES,
+        ),
+        (
+            terms.descriptor().id(),
+            terms.descriptor().value_schema(),
+            captured.next.key(),
+            serde_json::to_value(&captured.next)?,
+            OwnerTerm::MAX_BYTES,
+        ),
+    ] {
+        let document = json!({"family":{"owner":operations.owner(),"id":family},"key":key,"schema":{"id":schema,"version":1},"value":value});
+        mush_core::canonical_json_bytes_with_limit(&document, max)?;
+    }
+    let mut txn = engine.action_transaction(&operations)?;
+    txn.insert(&operations, &captured.key(), captured.clone())?;
+    txn.insert(&terms, &captured.next.key(), captured.next)?;
+    let (_, install) = txn.prepare()?.into_parts();
+    engine.install_prepared_action(install)?;
+    *wire
+        .pointer_mut(&format!("{selected}/holder_basis"))
+        .ok_or("basis")? = Value::Null;
+    assert!(serde_json::from_value::<AttestationOperation>(wire).is_err());
+    Ok(())
+}

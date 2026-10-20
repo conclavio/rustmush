@@ -68,7 +68,7 @@ fn publish_releasing(
     {
         return Err(invalid("bulk publication lacks owner authority"));
     }
-    if change.changes_registry() {
+    if change.changes_registry() || change.changes_conduct() {
         return Err(invalid(
             "Registry publication requires its registered owners",
         ));
@@ -91,6 +91,9 @@ fn publish_releasing(
         let expected = match blob.manifest.key.part {
             Part::Start => Some(&run.plan.start),
             Part::Result => run.result.as_ref(),
+            Part::ConductStart | Part::ConductResult => {
+                return Err(invalid("Conduct artifact requires registered owner"));
+            }
         };
         if blob.manifest.key.account != account
             || run.plan.kind != WorkKind::Proving
@@ -236,15 +239,23 @@ pub(crate) fn hydrate(
         }
     }
     artifacts.load(docs);
+    artifacts.hydrate_conduct(store, docs);
     let ids = store.account_ids();
+    let conduct_present = store.conduct_runs()?.next().is_some();
     {
         let mut runtime = service.0.lock().map_err(|_| BulkError::Busy)?;
+        runtime.conduct.capture(&cold, store, artifacts)?;
         runtime.recovery.capture(cold, store)?;
         if runtime.recovery.pending() && !super::registry_service::configured(ctx.w) {
             return Err(invalid(
                 "retained Registry jobs require registered recovery composition",
             ));
         }
+    }
+    if conduct_present && !super::conduct_service::configured(ctx.w) {
+        return Err(invalid(
+            "retained Conduct history requires registered owner composition",
+        ));
     }
     for account in ids {
         let prepared = ctx

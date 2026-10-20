@@ -27,11 +27,16 @@ use mush_roll::{
 
 use crate::{TacsimRuleset, minds::registry::composition::Registration};
 
+#[cfg(test)]
+#[path = "mind_commerce/conduct_tests.rs"]
+mod conduct_tests;
+
 /// Prepared composition data, not an authority or runtime resource handle.
 /// Its private worker policy comes only from the actual configured Tacsim
 /// catalog and genuine application of the fixed shipped Registry ground.
 pub struct MindCommerce {
     registry: Registration,
+    conduct: Option<crate::minds::registry::conduct::composition::Registration>,
     coverage: Option<crate::underwriting::CoverageConfiguration>,
     minds_facts: Option<mush_roll::commerce::facts::MindsFactProvider>,
     ic: Option<crate::minds::ic_sortie::registration::Composition>,
@@ -68,6 +73,27 @@ fn error(error: impl std::fmt::Display) -> ModError {
 }
 
 impl MindCommerce {
+    /// Opt in the actual five-action metered Conduct service on a catalogue
+    /// that already contains its bound carrier. No trial or result is minted.
+    pub fn with_conduct_trials(mut self, layer: &TacsimRuleset) -> Result<Self, ModError> {
+        if self.conduct.is_some() {
+            return Err(ModError::msg("Conduct already configured"));
+        }
+        self.registry
+            .check(layer.config(), &layer.definition_catalog()?)?;
+        let conduct = crate::minds::registry::conduct::composition::Registration::prepare(
+            layer,
+            self.mode,
+            self.manifest(),
+        )?;
+        self.roll = self.roll.with_conduct_trials(conduct.roll_config()?)?;
+        self.conduct = Some(conduct);
+        Ok(self)
+    }
+    pub fn conduct_manifest(&self) -> Option<&DefinitionRef> {
+        self.conduct.as_ref().map(|c| c.reference())
+    }
+
     /// Freeze a fixed shipped certification ground with this layer's exact
     /// validated definitions and configuration. No live Atlas data is read.
     /// Filing accounts, issuer consent and all commercial readiness remain
@@ -88,6 +114,7 @@ impl MindCommerce {
         let filing_action = roll.initial_filing_action()?;
         Ok(Self {
             registry,
+            conduct: None,
             coverage: None,
             minds_facts: None,
             ic: None,
@@ -246,6 +273,53 @@ impl MindCommerce {
             PurchaseParticipants::new(economy, retention).map_err(error)?,
             service,
             products,
+        )?;
+        self.roll = coverage.configure_roll(self.roll)?;
+        self.coverage = Some(coverage);
+        Ok(self)
+    }
+    /// Qualified cover requires the actual registered Conduct owner; selectors
+    /// alone grant no publication, discount or departure authority.
+    pub fn with_qualified_hull_coverage(
+        mut self,
+        service: mush_core::ObjId,
+        products: Vec<crate::underwriting::CoverageProductV1>,
+        conduct_manifest: mush_core::DefinitionRef,
+        selections: std::collections::BTreeMap<
+            mush_core::DefinitionDigest,
+            Vec<mush_core::CommitToken>,
+        >,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.ic.is_none() || self.coverage.is_some() {
+            return Err(ModError::msg(
+                "coverage requires one actual Active IC composition",
+            ));
+        }
+        let economy = DefinitionRegistryBuilder::new()
+            .register(
+                OwnerId::new("economy").map_err(error)?,
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("owner_participant").map_err(error)?,
+                    DefinitionId::new("initial_filing").map_err(error)?,
+                    1,
+                    self.filing.definition_payload(),
+                )
+                .map_err(error)?,
+            )
+            .map_err(error)?;
+        let retention = DefinitionRegistryBuilder::new()
+            .register(
+                OwnerId::new("roll").map_err(error)?,
+                commercial_roots_descriptor()?,
+            )
+            .map_err(error)?;
+        let coverage = crate::underwriting::CoverageConfiguration::with_conduct(
+            self.manifest().clone(),
+            PurchaseParticipants::new(economy, retention).map_err(error)?,
+            service,
+            products,
+            conduct_manifest,
+            selections,
         )?;
         self.roll = coverage.configure_roll(self.roll)?;
         self.coverage = Some(coverage);
@@ -667,6 +741,10 @@ impl MindCommerce {
             .map(|ic| ic.layer(&layer.cfg))
             .transpose()?;
         layer.registry_commerce = Some(self.registry.clone());
+        if let Some(conduct) = &self.conduct {
+            conduct.check(layer.config(), &layer.definition_catalog()?)?;
+            layer.conduct_trials = Some(conduct.clone());
+        }
         if let Some(coverage) = &self.coverage {
             layer = layer.with_hull_coverage(coverage.clone())?;
         }

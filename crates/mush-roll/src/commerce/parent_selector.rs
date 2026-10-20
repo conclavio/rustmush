@@ -23,6 +23,12 @@ pub(crate) struct DraftParentSelection {
     pub(crate) generation: u64,
     pub(crate) created: CommitToken,
     pub(crate) operation: CommitToken,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::owner_qualification::records::present_holder_capture"
+    )]
+    pub(crate) holder_capture: Option<super::owner_qualification::records::ParentHolderCapture>,
 }
 impl DraftParentSelection {
     pub(crate) fn key_for(actor: ObjId, mind: u64) -> String {
@@ -55,8 +61,13 @@ impl Record for DraftParentSelection {
     fn validate(&self) -> Result<(), PublicationError> {
         // This first producer creates selectors only. A later reselect/lifecycle
         // protocol must deliberately define and audit generation>1 or retirement.
-        if self.format != 1
-            || self.mind == 0
+        if let Some(capture) = &self.holder_capture {
+            capture.validate()?;
+        }
+        if !matches!(
+            (self.format, self.holder_capture.is_some()),
+            (1, false) | (2, true)
+        ) || self.mind == 0
             || self.generation != 1
             || self.created != self.operation
         {
@@ -116,8 +127,16 @@ pub(crate) fn audit(
             super::entitlement::history::granted(ctx, families, ratings, licence, term)?;
         // These historical rows have already passed the full paid/E4 audit.
         // Do not consult the parent's seller or today's eligibility here.
-        if allocation.holder() != selector.actor
-            || allocation.licence() != selector.licence
+        super::owner_qualification::history::require_captured_holder(
+            ctx,
+            families,
+            ratings,
+            licence,
+            selector.holder_capture.as_ref(),
+            allocation.holder(),
+            selector.actor,
+        )?;
+        if allocation.licence() != selector.licence
             || allocation.term() != selector.created_parent_term
             || licence.charter() != selector.charter
             || licence.line() != selector.line

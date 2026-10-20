@@ -23,6 +23,7 @@ pub(crate) enum CommerceReadiness {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum RootAnchor {
+    ConductJob(CommitToken, mush_core::DefinitionDigest),
     Filed(FiledRevisionId),
     TermLapse(
         LicenceId,
@@ -56,6 +57,7 @@ pub(crate) enum RootAnchor {
     OwnerQualification(CommitToken, mush_core::DefinitionDigest),
     IcClaim(CommitToken, mush_core::DefinitionDigest),
     Coverage(CommitToken, mush_core::DefinitionDigest),
+    CoveragePublication(CommitToken, CommitToken, mush_core::DefinitionDigest),
     OwnerAttestation(CommitToken, mush_core::DefinitionDigest),
     OwnerAttestationParent(CommitToken, mush_core::DefinitionDigest),
     Rating {
@@ -70,6 +72,7 @@ pub(crate) enum RootAnchor {
 impl RootAnchor {
     pub(crate) fn record(&self) -> String {
         match self {
+            Self::ConductJob(job, digest) => format!("v1/conduct_job/{job}/{digest}"),
             Self::TermLapse(licence, term, operation, digest) => format!(
                 "v1/term_lapse/{:016x}/{:016x}/{operation}/{digest}",
                 licence.get(),
@@ -93,6 +96,9 @@ impl RootAnchor {
             Self::RenewalOperation(token) => format!("v1/renewal_operation/{token}"),
             Self::IcClaim(token, digest) => format!("v1/ic_claim/{token}/{digest}"),
             Self::Coverage(token, digest) => format!("v1/coverage/{token}/{digest}"),
+            Self::CoveragePublication(operation, trial, digest) => {
+                format!("v1/coverage_publication/{operation}/{trial}/{digest}")
+            }
             Self::DraftRetirement(token, digest) => format!("v1/draft_retirement/{token}/{digest}"),
             Self::OwnerAttestation(token, digest) => {
                 format!("v1/owner_attestation/{token}/{digest}")
@@ -148,6 +154,14 @@ impl RootAnchor {
         let kind = parts.next().ok_or(PublicationError::Invalid)?;
         let id = parts.next().ok_or(PublicationError::Invalid)?;
         let anchor = match kind {
+            "conduct_job" => {
+                let job = CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?;
+                let digest = mush_core::DefinitionDigest::from_hex(
+                    parts.next().ok_or(PublicationError::Invalid)?,
+                )
+                .map_err(|_| PublicationError::Invalid)?;
+                Self::ConductJob(job, digest)
+            }
             "term_lapse" => Self::TermLapse(
                 LicenceId::new(number(id)?).map_err(|_| PublicationError::Invalid)?,
                 TermGeneration::new(number(parts.next().ok_or(PublicationError::Invalid)?)?)
@@ -206,6 +220,15 @@ impl RootAnchor {
             ),
             "ic_claim" => Self::IcClaim(
                 CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
+                mush_core::DefinitionDigest::from_hex(
+                    parts.next().ok_or(PublicationError::Invalid)?,
+                )
+                .map_err(|_| PublicationError::Invalid)?,
+            ),
+            "coverage_publication" => Self::CoveragePublication(
+                CommitToken::from_hex(id).map_err(|_| PublicationError::Invalid)?,
+                CommitToken::from_hex(parts.next().ok_or(PublicationError::Invalid)?)
+                    .map_err(|_| PublicationError::Invalid)?,
                 mush_core::DefinitionDigest::from_hex(
                     parts.next().ok_or(PublicationError::Invalid)?,
                 )

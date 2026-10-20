@@ -14,12 +14,16 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) enum Part {
     Start,
     Result,
+    ConductStart,
+    ConductResult,
 }
 impl Part {
     fn word(self) -> &'static str {
         match self {
             Self::Start => "start",
             Self::Result => "result",
+            Self::ConductStart => "conduct_start",
+            Self::ConductResult => "conduct_result",
         }
     }
 }
@@ -89,6 +93,8 @@ pub(super) fn accepts_registry_write(write: &mush_core::authoritative::ReplayWri
     let part = match part {
         "start" => Part::Start,
         "result" => Part::Result,
+        "conduct_start" => Part::ConductStart,
+        "conduct_result" => Part::ConductResult,
         _ => return false,
     };
     let exact = Key {
@@ -184,9 +190,13 @@ pub(crate) struct Artifacts {
     manifests: BTreeMap<Key, Manifest>,
     quarantine: BTreeSet<SmolStr>,
     pub(super) registry: super::registry_tickets::Tickets,
+    pub(super) conduct: super::conduct_tickets::Tickets,
+    pub(super) conduct_index: super::conduct_index::Index,
+    pub(super) conduct_history: super::conduct_history::History,
 }
 impl Artifacts {
     pub fn load(&mut self, docs: &[(SmolStr, serde_json::Value)]) {
+        self.conduct_index.load(docs);
         for (key, value) in docs
             .iter()
             .filter(|(k, _)| k.starts_with("tacsim:mindbulk:blob:") && !k.contains(":chunk:"))
@@ -203,6 +213,15 @@ impl Artifacts {
                 }
             }
         }
+    }
+    pub(super) fn hydrate_conduct(
+        &mut self,
+        store: &super::owner::BulkStore,
+        docs: &[(SmolStr, serde_json::Value)],
+    ) {
+        let mut history = std::mem::take(&mut self.conduct_history);
+        history.hydrate(store, &self.conduct_index, self, docs);
+        self.conduct_history = history;
     }
     pub fn get(&self, key: Key) -> Result<&Manifest, BulkError> {
         if self.quarantine.contains(&key.document()) {

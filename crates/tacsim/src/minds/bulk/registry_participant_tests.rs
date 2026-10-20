@@ -19,6 +19,7 @@ fn prepared() -> TestResult<AdmissionData> {
     let start = ArtifactBytes::new(br#"{"fixture":"owner-image"}"#.to_vec())?;
     let plan = Plan {
         kind: WorkKind::Registry,
+        conduct: None,
         registry: Some(RegistryBudget::prepare(
             subject.digest()?,
             hash,

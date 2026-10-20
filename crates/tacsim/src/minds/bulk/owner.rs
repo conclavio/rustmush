@@ -1,11 +1,15 @@
 //! Per-account durable journal. Every mutation is fully serialized before
 //! publication. A worker lease is released only by apply_checked, after the
 //! world publisher has checked/committed this change and its artifact/ref ops.
+use super::conduct_budget::{ConductCase, ConductCursor, ConductEnding, ConductProgress};
 use super::registry_budget::{RegistryCase, RegistryCursor, RegistryEnding, RegistryProgress};
 use super::{BulkError, invalid, model::*};
 use mush_core::{AccountId, CommitToken, ObjId};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
+#[path = "conduct_quota_tests.rs"]
+mod conduct_quota_tests;
 #[cfg(test)]
 #[path = "registry_quota_tests.rs"]
 mod registry_quota_tests;
@@ -21,8 +25,18 @@ pub(crate) struct Lease {
     start: [u8; 32],
     kind: WorkKind,
     registry: Option<(RegistryCursor, RegistryCase)>,
+    conduct: Option<(ConductCursor, ConductCase)>,
 }
 impl Lease {
+    pub(super) fn conduct(&self) -> Option<&(ConductCursor, ConductCase)> {
+        self.conduct.as_ref()
+    }
+    pub(super) fn unchanged_conduct(&self) -> Option<ConductProgress> {
+        self.conduct.as_ref().map(|(cursor, _)| ConductProgress {
+            cursor: *cursor,
+            ending: ConductEnding::Continue,
+        })
+    }
     pub(super) fn registry(&self) -> Option<&(RegistryCursor, RegistryCase)> {
         self.registry.as_ref()
     }
@@ -60,6 +74,7 @@ impl Lease {
 #[derive(Clone)]
 pub(crate) struct Receipt {
     pub(super) registry: Option<RegistryProgress>,
+    pub(super) conduct: Option<ConductProgress>,
     pub(super) lease: Lease,
     pub(super) actual_unit_ms: u64,
     pub(super) result: Option<Artifact>,
@@ -80,8 +95,19 @@ pub(crate) struct Prepared {
     evicted: Vec<Run>,
     lease: Option<Lease>,
     registry_changed: bool,
+    conduct_changed: bool,
 }
 impl Prepared {
+    pub(super) fn changes_conduct(&self) -> bool {
+        self.conduct_changed
+    }
+    pub(super) fn conduct_run(&self, job: CommitToken) -> Option<RunId> {
+        self.account
+            .runs
+            .values()
+            .find(|row| row.conduct_job == Some(job))
+            .map(|row| row.id)
+    }
     pub(super) fn changes_registry(&self) -> bool {
         self.registry_changed
     }
@@ -121,6 +147,7 @@ pub(crate) struct BulkStore {
     // Volatile post-ack handoff only. The durable flight remains authoritative;
     // boot discards this queue and interrupts/reconciles that exact paid flight.
     registry_handoffs: BTreeMap<CommitToken, Lease>,
+    conduct_handoffs: BTreeMap<CommitToken, Lease>,
 }
 impl BulkStore {
     pub fn new(cfg: BulkConfig) -> Result<Self, BulkError> {
@@ -132,6 +159,7 @@ impl BulkStore {
             quarantined: BTreeSet::new(),
             unreadable_quota_key: false,
             registry_handoffs: BTreeMap::new(),
+            conduct_handoffs: BTreeMap::new(),
         })
     }
     pub fn account_ids(&self) -> Vec<AccountId> {
@@ -143,6 +171,7 @@ impl BulkStore {
             && self.quarantined.is_empty()
             && !self.unreadable_quota_key
             && self.registry_handoffs.is_empty()
+            && self.conduct_handoffs.is_empty()
     }
     /// At most one active row per validated account. These are exact persisted
     /// bindings, not worker receipts or a reconstruction from a public job id.
@@ -204,6 +233,30 @@ impl BulkStore {
             return Err(invalid("Registry boot unmatched private work"));
         }
         Ok(())
+    }
+
+    /// Refusal-only detection among successfully decoded accounts. This does
+    /// not certify completeness when an unrelated account is quarantined.
+    pub(super) fn has_known_conduct(&self) -> bool {
+        self.accounts
+            .values()
+            .any(|a| a.runs.values().any(|r| r.plan.kind == WorkKind::Conduct))
+    }
+    /// Complete permanent Conduct inventory, including terminal rows. A missing
+    /// account cannot be treated as an empty inventory after quarantine.
+    pub(super) fn conduct_runs(
+        &self,
+    ) -> Result<impl Iterator<Item = (AccountId, &Run)>, BulkError> {
+        if self.unreadable_quota_key || !self.quarantined.is_empty() {
+            return Err(BulkError::Quarantined);
+        }
+        Ok(self.accounts.values().flat_map(|account| {
+            account
+                .runs
+                .values()
+                .filter(|run| run.plan.kind == WorkKind::Conduct)
+                .map(move |run| (account.id, run))
+        }))
     }
 
     pub(super) fn active_count(&self) -> usize {
@@ -335,7 +388,22 @@ impl BulkStore {
             .map(registry_rows)
             .unwrap_or_default();
         let registry_changed = before != registry_rows(&account);
+        let conduct_rows = |account: &Account| {
+            account
+                .runs
+                .iter()
+                .filter(|(_, run)| run.plan.kind == WorkKind::Conduct)
+                .map(|(id, run)| (*id, run.clone()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let conduct_changed = self
+            .accounts
+            .get(&account.id)
+            .map(conduct_rows)
+            .unwrap_or_default()
+            != conduct_rows(&account);
         Ok(Prepared {
+            conduct_changed,
             registry_changed,
             account,
             expected: self.generation,
@@ -359,7 +427,7 @@ impl BulkStore {
         operation: CommitToken,
     ) -> Result<(), BulkError> {
         self.check(change)?;
-        if !change.changes_registry() || !change.evicted.is_empty() {
+        if !change.changes_registry() || change.changes_conduct() || !change.evicted.is_empty() {
             // Permanent Registry roots and old M6 retention have separate
             // explicit purge protocols; admission cannot silently evict either.
             return Err(invalid("Registry change requires exact retained rows"));
@@ -376,6 +444,31 @@ impl BulkStore {
         if let Some(lease) = self.apply_checked(change) {
             self.registry_handoffs.insert(operation, lease);
         }
+    }
+    pub(super) fn check_conduct(
+        &self,
+        change: &Prepared,
+        operation: CommitToken,
+    ) -> Result<(), BulkError> {
+        self.check(change)?;
+        if !change.changes_conduct() || change.changes_registry() || !change.evicted.is_empty() {
+            return Err(invalid("Conduct change requires exact retained rows"));
+        }
+        if change.lease.is_some()
+            && (self.conduct_handoffs.contains_key(&operation)
+                || self.conduct_handoffs.len() >= self.cfg.proving_workers)
+        {
+            return Err(BulkError::Busy);
+        }
+        Ok(())
+    }
+    pub(super) fn apply_conduct_checked(&mut self, change: Prepared, operation: CommitToken) {
+        if let Some(lease) = self.apply_checked(change) {
+            self.conduct_handoffs.insert(operation, lease);
+        }
+    }
+    pub(super) fn take_conduct_lease(&mut self, operation: CommitToken) -> Option<Lease> {
+        self.conduct_handoffs.remove(&operation)
     }
     pub(super) fn take_registry_lease(&mut self, operation: CommitToken) -> Option<Lease> {
         self.registry_handoffs.remove(&operation)
@@ -425,7 +518,7 @@ impl BulkStore {
             }
             let oldest = rows
                 .iter()
-                .filter(|r| r.status.terminal() && r.pins == 0)
+                .filter(|r| r.status.terminal() && r.pins == 0 && r.plan.kind != WorkKind::Conduct)
                 .min_by_key(|r| (r.finished_ms, r.id))
                 .map(|r| r.id)
                 .ok_or(BulkError::Retention)?;
@@ -442,12 +535,12 @@ impl BulkStore {
         plan: Plan,
         now: i64,
     ) -> Result<(RunId, Prepared), BulkError> {
-        if plan.kind == WorkKind::Registry {
+        if matches!(plan.kind, WorkKind::Registry | WorkKind::Conduct) {
             return Err(invalid(
                 "Registry admission requires the registered producer",
             ));
         }
-        self.prepare_admit_inner(id, character, nonce, plan, None, now)
+        self.prepare_admit_inner(id, character, nonce, plan, None, None, now)
     }
     pub(super) fn prepare_registry_admit(
         &self,
@@ -461,7 +554,21 @@ impl BulkStore {
         if plan.kind != WorkKind::Registry {
             return Err(invalid("Registry admission kind"));
         }
-        self.prepare_admit_inner(id, character, nonce, plan, Some(job), now)
+        self.prepare_admit_inner(id, character, nonce, plan, Some(job), None, now)
+    }
+    pub(super) fn prepare_conduct_admit(
+        &self,
+        id: AccountId,
+        character: ObjId,
+        nonce: u64,
+        plan: Plan,
+        job: CommitToken,
+        now: i64,
+    ) -> Result<(RunId, Prepared), BulkError> {
+        if plan.kind != WorkKind::Conduct {
+            return Err(invalid("Conduct admission kind"));
+        }
+        self.prepare_admit_inner(id, character, nonce, plan, None, Some(job), now)
     }
     #[allow(clippy::too_many_arguments)] // exact immutable admission plus actual job identity
     fn prepare_admit_inner(
@@ -471,6 +578,7 @@ impl BulkStore {
         nonce: u64,
         plan: Plan,
         registry_job: Option<CommitToken>,
+        conduct_job: Option<CommitToken>,
         now: i64,
     ) -> Result<(RunId, Prepared), BulkError> {
         plan.validate()?;
@@ -551,6 +659,8 @@ impl BulkStore {
             run,
             Run {
                 registry_job,
+                conduct_job,
+                conduct: plan.conduct.as_ref().map(|_| ConductCursor::default()),
                 registry: plan.registry.as_ref().map(|_| RegistryCursor::default()),
                 id: run,
                 character,
@@ -634,6 +744,7 @@ impl BulkStore {
         row.charged_unit_ms += cost;
         row.flight = Some(Flight {
             registry: row.registry,
+            conduct: row.conduct,
             sequence,
             utc_day: account.utc_day,
             allowance_unit_ms: cost,
@@ -648,6 +759,11 @@ impl BulkStore {
             units,
             start: row.plan.start.sha256,
             kind: row.plan.kind,
+            conduct: match (&row.plan.conduct, row.conduct) {
+                (Some(budget), Some(cursor)) => Some((cursor, budget.case(cursor)?.clone())),
+                (None, None) => None,
+                _ => return Err(invalid("Conduct lease/cursor mismatch")),
+            },
             registry: match (&row.plan.registry, row.registry) {
                 (Some(budget), Some(cursor)) => Some((cursor, budget.case(cursor)?.clone())),
                 (None, None) => None,
@@ -665,6 +781,7 @@ impl BulkStore {
         let row = account.runs.get_mut(&lease.run).ok_or(BulkError::Missing)?;
         let expected = Flight {
             registry: lease.registry.as_ref().map(|(cursor, _)| *cursor),
+            conduct: lease.conduct.as_ref().map(|(cursor, _)| *cursor),
             sequence: lease.sequence,
             utc_day: lease.utc_day,
             allowance_unit_ms: lease.allowance,
@@ -679,7 +796,7 @@ impl BulkStore {
         {
             return Err(BulkError::Stale);
         }
-        if row.plan.kind == WorkKind::Registry
+        if matches!(row.plan.kind, WorkKind::Registry | WorkKind::Conduct)
             && receipt.result.is_some()
             && receipt.terminal != Some(Status::Complete)
         {
@@ -729,12 +846,49 @@ impl BulkStore {
             (None, None, None, None) => None,
             _ => return Err(invalid("Registry receipt/cursor mismatch")),
         };
+        let conduct_cursor = match (
+            &row.plan.conduct,
+            row.conduct,
+            &lease.conduct,
+            receipt.conduct,
+        ) {
+            (Some(budget), Some(cursor), Some((captured, case)), Some(progress)) => {
+                if cursor != *captured
+                    || budget.case(cursor)? != case
+                    || !receipt.actual_unit_ms.is_multiple_of(units)
+                {
+                    return Err(BulkError::Stale);
+                }
+                if (progress.ending == ConductEnding::Complete)
+                    != (receipt.terminal == Some(Status::Complete))
+                {
+                    return Err(invalid("Conduct completion/terminal mismatch"));
+                }
+                let actual =
+                    budget.advance(cursor, receipt.actual_unit_ms / units, progress.ending)?;
+                if actual != progress.cursor {
+                    return Err(invalid("Conduct post-cursor mismatch"));
+                }
+                Some(actual)
+            }
+            (Some(_), Some(cursor), Some(_), None)
+                if matches!(
+                    receipt.terminal,
+                    Some(Status::Failed | Status::Cancelled | Status::Interrupted)
+                ) && receipt.actual_unit_ms == lease.allowance =>
+            {
+                Some(cursor)
+            }
+            (None, None, None, None) => None,
+            _ => return Err(invalid("Conduct receipt/cursor mismatch")),
+        };
         let refund = lease.allowance - receipt.actual_unit_ms;
         account.spent_unit_ms -= refund;
         account.reserved_unit_ms += refund;
         row.charged_unit_ms -= refund;
         row.flight = None;
         row.registry = next_cursor;
+        row.conduct = conduct_cursor;
         if let Some(result) = receipt.result {
             result.validate()?;
             if result.bytes > row.plan.result_reservation_bytes {
@@ -743,7 +897,9 @@ impl BulkStore {
             // A Registry cancellation wins over a returned certificate. Keep
             // the exact measured charge/cursor, but no successful artifact may
             // survive under a Cancelled execution or reach typed publication.
-            if row.plan.kind != WorkKind::Registry || row.status != Status::CancelRequested {
+            if !matches!(row.plan.kind, WorkKind::Registry | WorkKind::Conduct)
+                || row.status != Status::CancelRequested
+            {
                 row.result = Some(result);
             }
         }
@@ -808,6 +964,35 @@ impl BulkStore {
         account.reserved_unit_ms = 0;
         self.prepared(account, Vec::new(), None)
     }
+    /// Conduct recovery changes only its actual active row. Historical Registry
+    /// or unrelated pinned rows in the shared account remain byte-identical.
+    pub(super) fn prepare_conduct_recover(
+        &self,
+        binding: super::conduct_tickets::Binding,
+        now: i64,
+    ) -> Result<Prepared, BulkError> {
+        let before = self.run(binding.account, binding.character, binding.run)?;
+        if before.plan.kind != WorkKind::Conduct
+            || before.conduct_job != Some(binding.job)
+            || before.status.terminal()
+        {
+            return Err(BulkError::Stale);
+        }
+        let mut account = self.account(binding.account)?.clone();
+        if account.active != Some(binding.run) {
+            return Err(BulkError::Stale);
+        }
+        let row = account
+            .runs
+            .get_mut(&binding.run)
+            .ok_or(BulkError::Missing)?;
+        row.flight = None;
+        row.status = Status::Interrupted;
+        row.finished_ms = Some(now);
+        account.active = None;
+        account.reserved_unit_ms = 0;
+        self.prepared(account, Vec::new(), None)
+    }
     /// Legacy proving/bench recovery may share an account with Registry history,
     /// but never changes a Registry row or its active reservation. Those owners
     /// recover together only through the registered typed Recover transaction.
@@ -820,7 +1005,7 @@ impl BulkStore {
         for row in account
             .runs
             .values_mut()
-            .filter(|row| row.plan.kind != WorkKind::Registry)
+            .filter(|row| !matches!(row.plan.kind, WorkKind::Registry | WorkKind::Conduct))
         {
             row.pins = 0;
             if !row.status.terminal() {
@@ -856,7 +1041,7 @@ impl BulkStore {
         run: RunId,
     ) -> Result<Prepared, BulkError> {
         let row = self.run(id, character, run)?;
-        if !row.status.terminal() || row.pins != 0 {
+        if !row.status.terminal() || row.pins != 0 || row.plan.kind == WorkKind::Conduct {
             return Err(BulkError::Retention);
         }
         let mut account = self.account(id)?.clone();
@@ -874,6 +1059,7 @@ mod tests {
     fn plan() -> Plan {
         Plan {
             registry: None,
+            conduct: None,
             kind: WorkKind::Proving,
             scenario: Scenario::Duel,
             opponent: Opponent::Mirror,
@@ -917,6 +1103,7 @@ mod tests {
             .prepare_finish(
                 Receipt {
                     registry: None,
+                    conduct: None,
                     lease,
                     actual_unit_ms: 200,
                     result: Some(Artifact {
@@ -944,6 +1131,7 @@ mod tests {
             .prepare_finish(
                 Receipt {
                     registry: None,
+                    conduct: None,
                     lease,
                     actual_unit_ms: 400,
                     result: None,
@@ -1061,6 +1249,7 @@ mod tests {
             .prepare_finish(
                 Receipt {
                     registry: None,
+                    conduct: None,
                     lease,
                     actual_unit_ms: 300,
                     result: None,
@@ -1089,6 +1278,7 @@ mod tests {
             .prepare_finish(
                 Receipt {
                     registry: None,
+                    conduct: None,
                     lease,
                     actual_unit_ms: 400,
                     result: None,
@@ -1102,6 +1292,7 @@ mod tests {
             s.prepare_finish(
                 Receipt {
                     registry: None,
+                    conduct: None,
                     lease: duplicate,
                     actual_unit_ms: 0,
                     result: None,
@@ -1128,6 +1319,7 @@ mod tests {
             .prepare_finish(
                 Receipt {
                     registry: None,
+                    conduct: None,
                     lease,
                     actual_unit_ms: 500,
                     result: None,
@@ -1160,6 +1352,7 @@ mod tests {
                 .prepare_finish(
                     Receipt {
                         registry: None,
+                        conduct: None,
                         lease,
                         actual_unit_ms: 500,
                         result: None,
@@ -1262,6 +1455,7 @@ mod tests {
                 .prepare_finish(
                     Receipt {
                         registry: None,
+                        conduct: None,
                         lease,
                         actual_unit_ms: 200,
                         result: None,

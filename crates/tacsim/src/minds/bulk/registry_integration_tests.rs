@@ -293,17 +293,19 @@ fn engine(
     resources: &Resources,
     accounts: Arc<Accounts>,
     mode: CommerceMode,
-) -> TestResult<(Engine, Shared)> {
+) -> TestResult<(Box<Engine>, Shared)> {
     composed_engine(resources, accounts, mode, false)
 }
+// Keep Engine construction in this frame; callers retain only its heap owner.
+#[inline(never)]
 fn composed_engine(
     resources: &Resources,
     accounts: Arc<Accounts>,
     mode: CommerceMode,
     real: bool,
-) -> TestResult<(Engine, Shared)> {
+) -> TestResult<(Box<Engine>, Shared)> {
     let shared = Arc::new(Mutex::new(Registered::default()));
-    let mut engine = Engine::with_modules(
+    let mut engine = Box::new(Engine::with_modules(
         World::new_minimal(),
         Registry::new(),
         vec![
@@ -324,7 +326,7 @@ fn composed_engine(
                 inner: None,
             }),
         ],
-    )?;
+    )?);
     engine.set_account_identity(accounts);
     Ok((engine, shared))
 }
@@ -368,19 +370,18 @@ fn module_ops(disk: &mut Disk, operations: &[ModuleOp]) -> TestResult {
     }
     Ok(())
 }
-fn save_source(disk: &mut Disk) -> TestResult<Revision> {
-    save_source_as(disk, SOURCE, "I")
-}
-fn save_source_as(disk: &mut Disk, source: &str, class: &str) -> TestResult<Revision> {
-    let mut roll = RollStore::default();
-    let envelope = Envelope {
+fn fixture_envelope(class: &str) -> Envelope {
+    Envelope {
         schema: json!({"sections":[]}),
         presets: json!({}),
         profiles: json!({"Default":{}}),
         rules: json!({}),
         declared_class: class.into(),
         mind_abi: crate::minds::MIND_ABI.into(),
-    };
+    }
+}
+fn save_program(disk: &mut Disk, source: &str, envelope: Envelope) -> TestResult<Revision> {
+    let mut roll = RollStore::default();
     let create = roll.prepare_create(
         GOD,
         "Candidate",
@@ -466,7 +467,9 @@ struct Fixture {
     resources: Resources,
     accounts: Arc<Accounts>,
     account: AccountId,
-    engine: Engine,
+    // This fixture and its Result move through several real boot helpers. Keep
+    // the large Engine on the heap instead of nesting its by-value debug frames.
+    engine: Box<Engine>,
     disk: Disk,
     definitions: RegistryDefinitions,
     factory: Arc<Factory>,
@@ -478,6 +481,11 @@ impl Fixture {
         Self::with_source(SOURCE, "I")
     }
     fn with_source(source: &str, class: &str) -> TestResult<Self> {
+        Self::with_program(source, fixture_envelope(class))
+    }
+    // This accepts source/envelope input only. The ordinary registered Save,
+    // Registry worker and complete certificate publication remain mandatory.
+    fn with_program(source: &str, envelope: Envelope) -> TestResult<Self> {
         let resources = Resources::capture()?;
         let account = AccountId::mint("registry-engine-fixture", 1)?;
         let accounts = Arc::new(Accounts::default());
@@ -520,11 +528,7 @@ impl Fixture {
             ),
             Err(mush_core::action::ActionProviderPrepareError::Lookup(_))
         ));
-        let revision = if source == SOURCE && class == "I" {
-            save_source(&mut disk)?
-        } else {
-            save_source_as(&mut disk, source, class)?
-        };
+        let revision = save_program(&mut disk, source, envelope)?;
         let (mut engine, shared) = engine(&resources, accounts.clone(), CommerceMode::Active)?;
         load(&mut engine, &disk)?;
         // Readiness is exercised by actual admission below, after the real
@@ -1029,6 +1033,10 @@ fn real_measured_maximum_class_rejection_publishes_and_survives_private_history_
     use mush_roll::commerce::rating::nonconformance::{
         MeasuredNonconformance, RatingNonconformance,
     };
+    // Bound the inline fixture/result carried through this default-stack test.
+    // The original real boot and worker assertions below remain unchanged.
+    assert!(std::mem::size_of::<Fixture>() <= 16 * 1024);
+    assert!(std::mem::size_of::<TestResult<Fixture>>() <= 16 * 1024);
     let diagnostic = rejection_diagnostic::Phases::default();
     let _tracing = tracing::subscriber::set_default(diagnostic.clone());
     for declared in ["I", "III"] {

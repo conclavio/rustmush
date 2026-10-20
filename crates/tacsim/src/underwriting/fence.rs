@@ -19,6 +19,7 @@ pub(super) struct HostCheck {
     request: DefinitionDigest,
     intent: Intent,
     fresh: Option<(CoverageProductV1, mush_economy::AccountId)>,
+    conduct: Option<mush_roll::commerce::conduct::ConductTrialProof>,
 }
 impl HostCheck {
     #[allow(clippy::too_many_arguments)]
@@ -31,6 +32,7 @@ impl HostCheck {
         request: DefinitionDigest,
         intent: Intent,
         fresh: Option<(CoverageProductV1, mush_economy::AccountId)>,
+        conduct: Option<mush_roll::commerce::conduct::ConductTrialProof>,
     ) -> Arc<dyn CoveragePrecommitCheck> {
         Arc::new(Self {
             host,
@@ -41,6 +43,7 @@ impl HostCheck {
             request,
             intent,
             fresh,
+            conduct,
         })
     }
 }
@@ -116,6 +119,9 @@ impl CoveragePrecommitCheck for HostCheck {
                 .references(product.hulls().iter().chain(product.zones()))
                 .map_err(fail)?;
             super::provider::accounts(ctx.world(), self.actor, *payer, product).map_err(fail)?;
+        }
+        if let Some(proof) = &self.conduct {
+            proof.check_current(ctx)?;
         }
         Ok(())
     }

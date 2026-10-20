@@ -28,6 +28,11 @@ pub(super) struct Provider {
     pub(super) owner: ParticipantHandle<metadata::Participant>,
     pub(super) readiness: authority::Readiness,
     pub(super) refusal: ActionError,
+    pub(super) conduct: Option<super::qualification::Configuration>,
+    pub(super) conduct_reader: Option<
+        mush_core::read_service::OwnerReadHandle<mush_roll::commerce::conduct::ConductReader>,
+    >,
+    pub(super) writer: mush_roll::commerce::coverage::RegisteredCoveragePublicationWriter,
 }
 impl Provider {
     fn product(&self, inv: &ActionInvocation) -> Result<&CoverageProductV1, CoverageError> {
@@ -58,8 +63,21 @@ impl Provider {
     ) -> Result<AuthoritativeActionOutput, CoverageError> {
         let product = self.product(inv)?.clone();
         self.readiness.check(&self.action)?;
+        let proofs = super::qualification::publication_proofs(
+            ctx,
+            txn,
+            &product,
+            self.conduct.as_ref(),
+            self.conduct_reader.as_ref(),
+        )?;
         let output = ctx
-            .prepare_owner(&self.owner, metadata::Request { product })
+            .prepare_owner(
+                &self.owner,
+                metadata::Request {
+                    product,
+                    proofs: proofs.clone(),
+                },
+            )
             .map_err(|_| CoverageError::Authority)?;
         let row = output.into_row();
         if row.operation != ctx.commit_token()
@@ -71,6 +89,18 @@ impl Provider {
         }
         self.families.admit(txn, 0)?;
         families::insert(txn, &self.families.products, &row)?;
+        if !proofs.is_empty() {
+            self.writer
+                .publish(
+                    ctx,
+                    txn,
+                    inv.actor(),
+                    row.digest()?,
+                    row.product.digest()?,
+                    proofs,
+                )
+                .map_err(|_| CoverageError::Authority)?;
+        }
         let outcome=RulesValue::new(self.outcome.clone(),serde_json::json!({"operation":row.operation,"kind":"published","digest":row.digest()?})).map_err(|_|CoverageError::Product)?;
         Ok(AuthoritativeActionOutput::new(outcome)
             .with_definitions(vec![
@@ -111,14 +141,13 @@ impl ActionProvider for Provider {
         }
         let mut choices = Vec::new();
         for product in &self.products {
-            if product.approvals().is_empty()
-                && authority::capture(
-                    &engine.world,
-                    query.actor(),
-                    product.insurer(),
-                    product.scope(),
-                )
-                .is_ok()
+            if authority::capture(
+                &engine.world,
+                query.actor(),
+                product.insurer(),
+                product.scope(),
+            )
+            .is_ok()
             {
                 choices.push(product.digest().map_err(|_| self.refusal.clone())?.to_hex());
             }

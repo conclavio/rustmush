@@ -3,7 +3,7 @@
 //! registered producer can create an effective certificate.
 
 pub(crate) mod composition;
-mod conduct;
+pub(crate) mod conduct;
 mod evidence;
 pub(crate) mod factory;
 mod ford;

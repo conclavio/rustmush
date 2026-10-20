@@ -43,7 +43,8 @@ impl CargoSpec {
 
 /// Immutable evidence of the real private lot before/after checked custody.
 /// This is result data, never an Inventory authority or qualification token.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct CargoReport {
     initial: Lot,
     loaded: Lot,
@@ -53,6 +54,45 @@ pub(super) struct CargoReport {
     destination: (u16, u16),
     loaded_at_ms: i64,
     delivered_at_ms: Option<i64>,
+}
+
+impl CargoReport {
+    pub(super) fn delivered(&self) -> bool {
+        self.delivered_at_ms.is_some()
+    }
+    /// Structural replay check only. The immutable admitted opening and actual
+    /// owner publication establish provenance; these data never authorize a lot.
+    pub(super) fn follows(&self, opening: &Self, elapsed_ms: u64) -> Result<(), RatingError> {
+        let loaded = opening
+            .initial
+            .checked_relocate(opening.initial.revision(), EndpointRef(VaultId(1)))
+            .map_err(|_| RatingError::Identity)?;
+        let terminal = if self.delivered_at_ms.is_some() {
+            loaded
+                .checked_relocate(loaded.revision(), EndpointRef(VaultId(2)))
+                .map_err(|_| RatingError::Identity)?
+        } else {
+            loaded.clone()
+        };
+        if opening.delivered_at_ms.is_some()
+            || opening.loaded_at_ms != 0
+            || opening.loaded != loaded
+            || opening.terminal != loaded
+            || self.initial != opening.initial
+            || self.loaded != loaded
+            || self.terminal != terminal
+            || self.measures != opening.measures
+            || self.carrier != opening.carrier
+            || self.destination != opening.destination
+            || self.loaded_at_ms != 0
+            || self
+                .delivered_at_ms
+                .is_some_and(|at| at <= 0 || u64::try_from(at).map_or(true, |at| at > elapsed_ms))
+        {
+            return Err(RatingError::Identity);
+        }
+        Ok(())
+    }
 }
 
 pub(super) struct Cargo {

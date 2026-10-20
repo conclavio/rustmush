@@ -80,16 +80,28 @@ impl Registration {
         ic: bool,
         coverage: bool,
     ) -> Result<(), ModError> {
+        self.register_with_conduct(reg, cfg, catalog, ic, coverage, false)
+    }
+    pub(crate) fn register_with_conduct(
+        &self,
+        reg: &mut Registrar<'_>,
+        cfg: &TacsimConfig,
+        catalog: &Catalog,
+        ic: bool,
+        coverage: bool,
+        conduct: bool,
+    ) -> Result<(), ModError> {
         self.check(cfg, catalog)?;
         // Every content descriptor has already entered this actual Tacsim
         // registrar. Its manifest validator resolves their exact references.
         let registered = if self.mode == CommerceMode::Active {
-            super::registration::register_profiles_with_coverage(
+            super::registration::register_profiles_with_conduct(
                 reg,
                 Arc::clone(&self.policy),
                 ic,
                 self.reconformance,
                 coverage,
+                conduct,
             )?
             .0
         } else {
@@ -111,7 +123,7 @@ impl Registration {
 /// boot path; the resulting temporary world and its writes are discarded.
 /// These records define certification policy, independently of mutable live
 /// Atlas records and content latches in the server being composed.
-fn shipped_ground_records() -> Result<mush_atlas::record::Records, ModError> {
+pub(crate) fn shipped_ground_records() -> Result<mush_atlas::record::Records, ModError> {
     let mut appliers = mush_content::Appliers::new();
     mush_atlas::register_appliers(&mut appliers).map_err(error)?;
     let pack = mush_content::parse_pack(crate::definitions::content::PROVING_GROUND_ATLAS_JSON)

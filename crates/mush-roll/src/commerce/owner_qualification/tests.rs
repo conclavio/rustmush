@@ -362,3 +362,71 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
     assert!(serde_json::from_value::<QualificationOperation>(extra).is_err());
     Ok(())
 }
+
+#[test]
+fn parent_holder_capture_is_closed_and_legacy_qualification_bytes_stay_exact() -> TestResult {
+    let old = row()?;
+    let bytes = serde_json::to_vec(&old)?;
+    let restored: QualificationOperation = serde_json::from_slice(&bytes)?;
+    assert_eq!(serde_json::to_vec(&restored)?, bytes);
+    let mut wire = serde_json::to_value(&old)?;
+    assert!(wire.pointer("/selected_parent/holder_basis").is_none());
+    let proof = json!({"format":1,"acceptance":CommitToken::from_bytes([249;16]),
+        "ownership":{"generation":65537,"operation":CommitToken::from_bytes([248;16]),"digest":DefinitionDigest::from_bytes([255;32])}});
+    wire.get_mut("selected_parent")
+        .and_then(Value::as_object_mut)
+        .ok_or("parent")?
+        .insert("holder_basis".into(), proof.clone());
+    let captured: QualificationOperation = serde_json::from_value(wire.clone())?;
+    assert_eq!(serde_json::to_value(&captured)?, wire);
+    assert_ne!(
+        old.digest()?,
+        captured.digest()?,
+        "the actual cause covers ownership attribution"
+    );
+    let shared = Arc::new(Mutex::new(None));
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(Rows(shared.clone()))],
+    )?;
+    let (operations, _) = shared
+        .lock()
+        .map_err(|_| "handles")?
+        .clone()
+        .ok_or("handles")?;
+    let document = json!({"family":{"owner":operations.owner(),"id":operations.descriptor().id()},"key":captured.key(),"schema":{"id":operations.descriptor().value_schema(),"version":1},"value":captured});
+    mush_core::canonical_json_bytes_with_limit(&document, QualificationOperation::MAX_BYTES)?;
+    let mut txn = engine.action_transaction(&operations)?;
+    txn.insert(&operations, &captured.key(), captured)?;
+    let (_, install) = txn.prepare()?.into_parts();
+    engine.install_prepared_action(install)?;
+    let mut corruptions = vec![Value::Null];
+    for (path, value) in [
+        ("/format", json!(2)),
+        ("/ownership/generation", json!(1)),
+        ("/ownership/generation", json!(65538)),
+    ] {
+        let mut bad = proof.clone();
+        *bad.pointer_mut(path).ok_or("proof field")? = value;
+        corruptions.push(bad);
+    }
+    for key in ["format", "acceptance", "ownership"] {
+        let mut bad = proof.clone();
+        bad.as_object_mut().ok_or("proof")?.remove(key);
+        corruptions.push(bad);
+    }
+    let mut extra = proof;
+    extra
+        .as_object_mut()
+        .ok_or("proof")?
+        .insert("validated".into(), json!(true));
+    corruptions.push(extra);
+    for proof in corruptions {
+        let mut bad = wire.clone();
+        *bad.pointer_mut("/selected_parent/holder_basis")
+            .ok_or("basis")? = proof;
+        assert!(serde_json::from_value::<QualificationOperation>(bad).is_err());
+    }
+    Ok(())
+}

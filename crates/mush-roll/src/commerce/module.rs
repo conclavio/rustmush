@@ -30,6 +30,7 @@ pub enum CommerceMode {
 
 #[derive(Clone, Debug)]
 pub struct CommerceConfig {
+    conduct: Option<super::conduct::ConductConfig>,
     pub(crate) mode: CommerceMode,
     terms: InitialFilingTerms,
     manifest: DefinitionRef,
@@ -155,7 +156,21 @@ impl CommerceConfig {
             house_renewals: None,
             coverage: None,
             ic: None,
+            conduct: None,
         })
+    }
+
+    /// The actual native quota/artifact types are selected by trusted host
+    /// composition. This enables no command that can supply measured results.
+    pub fn with_conduct_trials(
+        mut self,
+        config: super::conduct::ConductConfig,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || self.conduct.is_some() {
+            return Err(error("Conduct requires one Active composition"));
+        }
+        self.conduct = Some(config);
+        Ok(self)
     }
 
     /// Retain source for the fixed, actually paired hull coverage protocol.
@@ -731,6 +746,9 @@ impl CommerceConfig {
             descriptor("outcome", "initial_filing_committed", json!({"format":1}))?,
             commercial_roots_descriptor()?,
         ];
+        if let Some(conduct) = &self.conduct {
+            definitions.extend(conduct.definitions()?);
+        }
         if self.house_filings {
             definitions.push(self.house_action_descriptor()?);
             definitions.push(descriptor(
@@ -862,6 +880,7 @@ impl CommerceConfig {
 }
 
 pub(crate) struct CommerceRegistration {
+    conduct: Option<super::conduct::state::Configuration>,
     reconformance: bool,
     measured_recall: Option<super::rating::reconformance::recall::Readiness>,
     ic: Option<std::sync::Arc<dyn super::ic_claims::registration::Installer>>,
@@ -972,6 +991,9 @@ pub(crate) fn register(
             "coverage requires actual IC and Registry owners in Active mode",
         ));
     }
+    if config.conduct.is_some() && installer.is_none() {
+        return Err(error("Conduct requires actual Registry owners"));
+    }
     let reconformance = config
         .reconformance
         .then(|| {
@@ -986,6 +1008,10 @@ pub(crate) fn register(
     let ratings = RatingFamilies::register(reg)?;
     if config.mode == CommerceMode::Active {
         let mut declarations = vec![super::holding_reader::descriptor(&config.manifest)?];
+        if let Some(conduct) = &config.conduct {
+            declarations.push(super::conduct::reader::descriptor(conduct.manifest())?);
+            declarations.push(super::conduct::work_read::descriptor(conduct.manifest())?);
+        }
         if config.house_filings {
             declarations.push(super::house_catalogue::descriptor(&config.manifest)?);
         }
@@ -1381,7 +1407,7 @@ pub(crate) fn register(
             return Err(error("coverage retention definition differs"));
         }
         root_actions.extend(
-            coverage.protocol.actions().map_err(error)?[1..]
+            coverage.protocol.actions().map_err(error)?[..]
                 .iter()
                 .cloned(),
         );
@@ -1541,6 +1567,9 @@ pub(crate) fn register(
     } else {
         None
     };
+    if let Some(conduct) = &config.conduct {
+        root_actions.extend(conduct.actions()?);
+    }
     reg.owner_participant(root_definition, root_actions, RootParticipant)?;
     if let Some(definitions) = update_registration {
         super::line_update::registration::register(
@@ -1787,7 +1816,20 @@ pub(crate) fn register(
             super::registry_revocation::notice::register(reg, families.clone(), ratings.clone())
         })
         .transpose()?;
+    let conduct = config
+        .conduct
+        .as_ref()
+        .map(|conduct| {
+            conduct.register(
+                reg,
+                families.clone(),
+                ratings.clone(),
+                config.compatibility.clone(),
+            )
+        })
+        .transpose()?;
     Ok(CommerceRegistration {
+        conduct,
         reconformance: config.reconformance,
         measured_recall,
         ic: config.ic.clone(),
@@ -1823,6 +1865,13 @@ pub(crate) fn register(
 mod definition_tests;
 
 impl CommerceRegistration {
+    pub(crate) fn configure_conduct(&self, store: &mut crate::RollStore) -> Result<(), ModError> {
+        if let Some(config) = &self.conduct {
+            store.conduct.configure(config.clone()).map_err(error)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn finalize(
         &self,
         ctx: &mut ModuleCtx<'_>,

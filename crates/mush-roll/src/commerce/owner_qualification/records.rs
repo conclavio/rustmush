@@ -29,6 +29,113 @@ pub(crate) struct SelectedParent {
     pub(crate) form: PaidForm,
     pub(crate) operation: CommitToken,
     pub(crate) terminal: CommitToken,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_holder_basis"
+    )]
+    pub(crate) holder_basis: Option<ParentHolderBasis>,
+}
+
+/// Versioned immutable attribution. Only an actual paid holding can capture it;
+/// decoding is data validation and never grants current parent authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ParentHolderWire")]
+pub(crate) struct ParentHolderBasis {
+    format: u16,
+    pub(crate) acceptance: CommitToken,
+    pub(crate) ownership: mush_economy::managed_paid_resale::PaidHolderRefV1,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ParentHolderWire {
+    format: u16,
+    acceptance: CommitToken,
+    ownership: mush_economy::managed_paid_resale::PaidHolderRefV1,
+}
+impl TryFrom<ParentHolderWire> for ParentHolderBasis {
+    type Error = PublicationError;
+    fn try_from(w: ParentHolderWire) -> Result<Self, Self::Error> {
+        let value = Self {
+            format: w.format,
+            acceptance: w.acceptance,
+            ownership: w.ownership,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+}
+impl ParentHolderBasis {
+    fn capture(value: &mush_economy::managed_paid_resale::RenewalHolderBasisV1) -> Self {
+        Self {
+            format: 1,
+            acceptance: value.acceptance,
+            ownership: value.ownership,
+        }
+    }
+    pub(crate) fn validate(&self) -> Result<(), PublicationError> {
+        self.ownership.validate().map_err(invalid)?;
+        if self.format != 1 || self.ownership.generation < 2 {
+            return Err(PublicationError::Invalid);
+        }
+        Ok(())
+    }
+}
+/// Accepted source ownership at an actual parent-reader observation. This is
+/// immutable attribution, not a current grant or a caller-supplied clock.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ParentHolderCaptureWire")]
+pub(crate) struct ParentHolderCapture {
+    format: u16,
+    pub(crate) basis: ParentHolderBasis,
+    pub(crate) observed_ic: ClockStamp,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ParentHolderCaptureWire {
+    format: u16,
+    basis: ParentHolderBasis,
+    observed_ic: ClockStamp,
+}
+impl TryFrom<ParentHolderCaptureWire> for ParentHolderCapture {
+    type Error = PublicationError;
+    fn try_from(w: ParentHolderCaptureWire) -> Result<Self, Self::Error> {
+        let value = Self {
+            format: w.format,
+            basis: w.basis,
+            observed_ic: w.observed_ic,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+}
+impl ParentHolderCapture {
+    pub(crate) fn capture(actual: &super::super::parent_grant::CurrentParentGrant) -> Option<Self> {
+        actual.holding().holder_basis().map(|basis| Self {
+            format: 1,
+            basis: ParentHolderBasis::capture(basis),
+            observed_ic: actual.observed_ic().clone(),
+        })
+    }
+    pub(crate) fn validate(&self) -> Result<(), PublicationError> {
+        self.basis.validate()?;
+        WorldIcSeconds::from_stamp(&self.observed_ic).map_err(invalid)?;
+        if self.format != 1 {
+            return Err(PublicationError::Invalid);
+        }
+        Ok(())
+    }
+}
+pub(crate) fn present_holder_capture<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<ParentHolderCapture>, D::Error> {
+    ParentHolderCapture::deserialize(d).map(Some)
+}
+
+fn present_holder_basis<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<ParentHolderBasis>, D::Error> {
+    ParentHolderBasis::deserialize(d).map(Some)
 }
 impl SelectedParent {
     pub(crate) fn capture(holding: &PersonalPaidHolding) -> Self {
@@ -41,9 +148,13 @@ impl SelectedParent {
             form: holding.terms().form(),
             operation: holding.operation(),
             terminal: holding.terminal(),
+            holder_basis: holding.holder_basis().map(ParentHolderBasis::capture),
         }
     }
     pub(crate) fn validate(&self) -> Result<(), PublicationError> {
+        if let Some(basis) = &self.holder_basis {
+            basis.validate()?;
+        }
         if self.operation == self.terminal
             || !matches!(self.form, PaidForm::Open {} | PaidForm::OpenResale {})
         {

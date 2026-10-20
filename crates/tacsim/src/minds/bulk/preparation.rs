@@ -24,6 +24,14 @@ pub(super) enum Request {
         source: Arc<str>,
         factory: Arc<crate::minds::registry::factory::Factory>,
     },
+    Conduct {
+        ticket: u64,
+        account: mush_core::AccountId,
+        nonce: u64,
+        candidate: mush_roll::commerce::conduct::ConductCandidate,
+        source: Arc<str>,
+        factory: Arc<crate::minds::registry::conduct::factory::Factory>,
+    },
     Registry {
         ticket: u64,
         account: mush_core::AccountId,
@@ -35,6 +43,10 @@ pub(super) enum Request {
     },
 }
 pub(super) enum Completion {
+    Conduct {
+        ticket: u64,
+        result: Result<crate::minds::registry::conduct::factory::PreparedConduct, BulkError>,
+    },
     Proving {
         ticket: u64,
         recipe: Recipe,
@@ -48,7 +60,9 @@ pub(super) enum Completion {
 impl Completion {
     pub fn ticket(&self) -> u64 {
         match self {
-            Self::Proving { ticket, .. } | Self::Registry { ticket, .. } => *ticket,
+            Self::Conduct { ticket, .. }
+            | Self::Proving { ticket, .. }
+            | Self::Registry { ticket, .. } => *ticket,
         }
     }
 }
@@ -76,6 +90,24 @@ impl Preparer {
                         return;
                     }
                     let done = match request {
+                        Request::Conduct {
+                            ticket,
+                            account,
+                            nonce,
+                            candidate,
+                            source,
+                            factory,
+                        } => {
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    factory.prepare(account, nonce, candidate, source)
+                                }))
+                                .map_err(|_| invalid("Conduct preparation failed"))
+                                .and_then(|r| {
+                                    r.map_err(|_| invalid("Conduct preparation refused"))
+                                });
+                            Completion::Conduct { ticket, result }
+                        }
                         Request::Proving {
                             ticket,
                             recipe,

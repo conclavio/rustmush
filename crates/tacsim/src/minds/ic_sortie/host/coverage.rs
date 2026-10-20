@@ -714,3 +714,47 @@ pub(crate) fn audit_history(
     }
     Ok(())
 }
+
+/// Historical comparison only, after the actual native opening inventory has
+/// loaded. No decoded selection can mint a permit or establish current rights.
+pub(crate) fn audit_qualified_history(
+    world: &World,
+    basis: &mush_economy::managed_coverage::CoverageBasisV1,
+    buyer: ObjId,
+    selected: &mush_roll::commerce::coverage::CoverageConductRef,
+) -> Result<(), ParticipantError> {
+    audit_history(world, basis, buyer, None)?;
+    let state = world
+        .module_state::<IcSorties>()
+        .ok_or_else(|| bad("IC inventory"))?;
+    let row = state
+        .rows
+        .get(&basis.ic_open)
+        .ok_or_else(|| bad("IC opening"))?;
+    let seal = &row.open.execution.seal;
+    let certificate = seal
+        .origin
+        .certificate()
+        .ok_or_else(|| bad("qualified certificate"))?;
+    let identity = selected.revision();
+    let revision = identity.revision();
+    let rating = selected.rating();
+    if !seal.governed
+        || seal.engine != crate::arena::mind::SealEngine::Scripted
+        || seal.identity() != seal.requested
+        || seal.cards.selected.len() != 1
+        || seal.cards.selected.name(0) != Some(selected.profile())
+        || certificate.revision_character != revision.key.character
+        || certificate.revision_mind != revision.key.mind
+        || certificate.revision_number != revision.key.number
+        || certificate.revision_digest != revision.digest
+        || certificate.source_digest != identity.source()
+        || certificate.rating_job != rating.job()
+        || certificate.rating_id != rating.id().digest()
+        || certificate.rating_schema != rating.schema()
+        || certificate.rating_digest != rating.receipt_digest()
+    {
+        return Err(bad("qualified captured executable"));
+    }
+    Ok(())
+}

@@ -3,6 +3,8 @@
 use super::*;
 #[path = "owner_attestation_integration_tests.rs"]
 mod attestation;
+#[path = "owner_qualification_integration_tests/transferred_parent.rs"]
+mod transferred_parent;
 use mush_core::{OfferExecutionContext, OfferSubmission};
 use mush_roll::commerce::records::OwnerTerm;
 const START: u128 = 21_000_000;
@@ -448,6 +450,10 @@ pub(super) async fn exercise(
     owner: LicenceId,
     customer: &EntitlementAllocationV1,
 ) -> TestResult {
+    super::story_phase("qualification.transferred_parent", || {
+        transferred_parent::exercise(f, saved, owner, customer)
+    })?
+    .await?;
     super::story_phase("qualification.chartered", || {
         chartered(f, saved, owner, customer)
     })?

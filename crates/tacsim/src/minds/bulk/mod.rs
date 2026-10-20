@@ -3,6 +3,13 @@
 pub(crate) mod artifacts;
 pub(crate) mod bench;
 pub(crate) mod commit;
+pub(crate) mod conduct_budget;
+mod conduct_history;
+mod conduct_index;
+pub(crate) mod conduct_participant;
+mod conduct_projection;
+pub(crate) mod conduct_service;
+pub(crate) mod conduct_tickets;
 mod encoding;
 pub(crate) mod eval;
 pub(crate) mod executor;

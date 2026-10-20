@@ -14,7 +14,10 @@ mod state;
 pub use host::coverage::{
     AcknowledgedDeparture, CoveredDeparture, WithheldDeparture, WithheldOpen, WithheldUnadmitted,
 };
-pub(crate) use host::coverage::{CommittedCoverageClose, audit_history as audit_coverage_history};
+pub(crate) use host::coverage::{
+    CommittedCoverageClose, audit_history as audit_coverage_history,
+    audit_qualified_history as audit_qualified_coverage_history,
+};
 pub use host::{
     HostClose, HostStart, IcHost, IcHostCompletion, IcHostTicket, IcRetainedExecution,
     IcSubmissionState, IcUnadmittedOpen,

@@ -22,6 +22,7 @@ mod product;
 mod protocol;
 mod provider;
 mod publication;
+mod qualification;
 mod records;
 pub(crate) mod registration;
 mod terms;

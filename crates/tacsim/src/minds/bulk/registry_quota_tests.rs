@@ -139,6 +139,7 @@ fn registry_job_binding_and_terminal_growth_are_owned_by_the_actual_quota_store(
     let finished = store.prepare_finish(
         Receipt {
             registry: None,
+            conduct: None,
             actual_unit_ms: lease.allowance,
             lease,
             result: None,
@@ -244,6 +245,7 @@ fn plan() -> Result<Plan, Box<dyn std::error::Error>> {
     ];
     Ok(Plan {
         registry: Some(RegistryBudget::prepare(hash, hash, hash, cases)?),
+        conduct: None,
         kind: WorkKind::Registry,
         scenario: Scenario::Duel,
         opponent: Opponent::Doctrine,
@@ -278,6 +280,7 @@ fn registry_leases_charge_the_current_roster_and_refund_only_exact_known_work() 
     assert_eq!(lease.units(), 2);
     assert_eq!(lease.allowance, 4000);
     let receipt = Receipt {
+        conduct: None,
         registry: Some(RegistryProgress {
             cursor: RegistryCursor {
                 index: 1,
@@ -299,6 +302,7 @@ fn registry_leases_charge_the_current_roster_and_refund_only_exact_known_work() 
     assert_eq!(lease.allowance, 66_000);
     let before = store.account(id)?.clone();
     let wrong = Receipt {
+        conduct: None,
         registry: Some(RegistryProgress {
             cursor: RegistryCursor {
                 index: 1,
@@ -318,6 +322,7 @@ fn registry_leases_charge_the_current_roster_and_refund_only_exact_known_work() 
         "refusal changes no quota or cursor"
     );
     let receipt = Receipt {
+        conduct: None,
         registry: Some(RegistryProgress {
             cursor: RegistryCursor {
                 index: 1,
@@ -357,6 +362,7 @@ fn registry_cancellation_keeps_dispatched_charge_until_worker_exit_and_restart_i
     assert_eq!(store.account(id)?.spent_unit_ms, 4000);
     let receipt = Receipt {
         registry: None,
+        conduct: None,
         actual_unit_ms: lease.allowance,
         lease,
         result: None,
@@ -426,6 +432,7 @@ fn unknown_registry_failure_cannot_refund_and_known_failure_keeps_exact_progress
     for actual_unit_ms in [0, 500, lease.allowance - 1] {
         let unknown = Receipt {
             registry: None,
+            conduct: None,
             lease: lease.clone(),
             actual_unit_ms,
             result: None,
@@ -439,6 +446,7 @@ fn unknown_registry_failure_cannot_refund_and_known_failure_keeps_exact_progress
         );
     }
     let known = Receipt {
+        conduct: None,
         registry: Some(RegistryProgress {
             cursor: RegistryCursor {
                 index: 0,
@@ -501,6 +509,7 @@ fn registry_cancel_wins_over_a_measured_completion_without_losing_its_charge() -
     let receipt = Receipt {
         lease,
         registry: Some(observed),
+        conduct: None,
         actual_unit_ms: 500,
         result: Some(Artifact {
             sha256: [32; 32],
@@ -633,6 +642,7 @@ fn partial_maximum_class_rejection_finishes_and_recovers_actual_quota_without_ce
     let before = store.account_run(id, run)?.clone();
     let finished = store.prepare_finish(
         Receipt {
+            conduct: None,
             registry: Some(RegistryProgress {
                 cursor,
                 ending: RegistryEnding::Rejected,

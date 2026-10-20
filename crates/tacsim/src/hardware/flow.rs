@@ -180,7 +180,7 @@ impl Rig {
             "@org/create Basin",
             "@org/scope create Basin=die-stock",
             "@org/scope create Basin=factory",
-            "@instrument/register cr=2",
+            "@instrument/register tacsim.credit=2",
         ] {
             command(&mut w, GOD, line)?;
         }
@@ -216,11 +216,19 @@ impl Rig {
             command(
                 &mut w,
                 GOD,
-                &format!("@account/open org:Basin/{}=cr", scope.0),
+                &format!("@account/open org:Basin/{}=tacsim.credit", scope.0),
             )?;
         }
-        command(&mut w, GOD, &format!("@account/open #{}=cr", buyer.0))?;
-        command(&mut w, GOD, "@account/system hardware.fixture=cr")?;
+        command(
+            &mut w,
+            GOD,
+            &format!("@account/open #{}=tacsim.credit", buyer.0),
+        )?;
+        command(
+            &mut w,
+            GOD,
+            "@account/system hardware.fixture=tacsim.credit",
+        )?;
         let e = w
             .world()
             .module_state::<EconomyStore>()
@@ -245,6 +253,22 @@ impl Rig {
         };
         let supplier = account(stock_scope)?;
         let integrator = account(factory_scope)?;
+        assert_eq!(
+            snapshot
+                .account(supplier)
+                .ok_or("supplier")?
+                .instrument
+                .as_str(),
+            crate::economy::CREDIT
+        );
+        assert_eq!(
+            snapshot
+                .account(integrator)
+                .ok_or("integrator")?
+                .instrument
+                .as_str(),
+            crate::economy::CREDIT
+        );
         let payer = snapshot
             .accounts()
             .find(|a| a.owner == PrincipalId::Object(buyer))

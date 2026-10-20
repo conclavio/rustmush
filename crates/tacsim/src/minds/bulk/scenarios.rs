@@ -497,6 +497,7 @@ impl ScenarioFactory {
         FrozenProving::prepare(
             Plan {
                 registry: None,
+                conduct: None,
                 kind: WorkKind::Proving,
                 scenario: recipe.scenario,
                 opponent: recipe.opponent_kind,

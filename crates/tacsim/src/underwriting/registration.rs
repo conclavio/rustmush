@@ -27,6 +27,7 @@ pub struct CoverageConfiguration {
     writer: CoverageWriter,
     service: ObjId,
     products: Vec<CoverageProductV1>,
+    conduct: Option<super::qualification::Configuration>,
 }
 impl CoverageConfiguration {
     pub fn new(
@@ -34,6 +35,35 @@ impl CoverageConfiguration {
         participants: PurchaseParticipants,
         service: ObjId,
         products: Vec<CoverageProductV1>,
+    ) -> Result<Self, ModError> {
+        Self::build(manifest, participants, service, products, None)
+    }
+    /// Qualified entries explicitly select real Conduct operations in approval
+    /// order. Construction grants nothing; Publish reads and retains each proof.
+    pub fn with_conduct(
+        manifest: DefinitionRef,
+        participants: PurchaseParticipants,
+        service: ObjId,
+        products: Vec<CoverageProductV1>,
+        conduct_manifest: DefinitionRef,
+        selections: std::collections::BTreeMap<
+            mush_core::DefinitionDigest,
+            Vec<mush_core::CommitToken>,
+        >,
+    ) -> Result<Self, ModError> {
+        let conduct = super::qualification::Configuration {
+            manifest: conduct_manifest,
+            selections,
+        };
+        conduct.validate(&products).map_err(bad)?;
+        Self::build(manifest, participants, service, products, Some(conduct))
+    }
+    fn build(
+        manifest: DefinitionRef,
+        participants: PurchaseParticipants,
+        service: ObjId,
+        products: Vec<CoverageProductV1>,
+        conduct: Option<super::qualification::Configuration>,
     ) -> Result<Self, ModError> {
         let protocol = Protocol {
             format: 1,
@@ -47,7 +77,7 @@ impl CoverageConfiguration {
         let mut ids = BTreeSet::new();
         for p in &products {
             if p.adjudicator() != service
-                || !p.approvals().is_empty()
+                || (!p.approvals().is_empty() && conduct.is_none())
                 || !ids.insert(p.digest().map_err(bad)?)
             {
                 return Err(bad("coverage exact ordinary product configuration"));
@@ -58,6 +88,7 @@ impl CoverageConfiguration {
             writer: CoverageWriter::new(),
             service,
             products,
+            conduct,
         })
     }
     pub fn configure_roll(&self, config: CommerceConfig) -> Result<CommerceConfig, ModError> {
@@ -127,6 +158,12 @@ impl Registration {
         }
         let protocol = &self.config.protocol;
         let actions = protocol.actions().map_err(bad)?;
+        let conduct_reader = self
+            .config
+            .conduct
+            .as_ref()
+            .map(|c| mush_roll::commerce::conduct::ConductReader::request(reg, &c.manifest))
+            .transpose()?;
         let participant = reg.definition(metadata::descriptor()?)?;
         reg.owner_participant(
             participant,
@@ -134,9 +171,14 @@ impl Registration {
             metadata::Participant {
                 protocol: protocol.clone(),
                 readiness: self.readiness.clone(),
+                conduct_manifest: self.config.conduct.as_ref().map(|c| c.manifest.clone()),
             },
         )?;
         let owner = reg.request_owner_participant::<metadata::Participant>(actions[0].clone())?;
+        let publication_writer =
+            self.config
+                .writer
+                .for_publication(reg, &protocol.roll(), &actions[0])?;
         let outcome = DefinitionRegistryBuilder::new()
             .register(OwnerId::new(crate::NS).map_err(bad)?, self.outcome()?)
             .map_err(bad)?;
@@ -151,6 +193,9 @@ impl Registration {
                 owner,
                 readiness: self.readiness.clone(),
                 refusal: super::publication::refusal()?,
+                conduct: self.config.conduct.clone(),
+                conduct_reader: conduct_reader.clone(),
+                writer: publication_writer,
             },
         )?;
         let reader = CoverageOpenReader::request(reg, &protocol.manifest)?;
@@ -178,6 +223,7 @@ impl Registration {
                     writer,
                     economy,
                     refusal: super::publication::refusal()?,
+                    conduct_reader: conduct_reader.clone(),
                 },
             )?;
         }
@@ -189,8 +235,29 @@ impl Registration {
         let mut refs = vec![protocol.manifest.clone()];
         refs.extend(protocol.participants.clone());
         refs.extend(actions);
+        if let Some(c) = &self.config.conduct {
+            refs.push(c.manifest.clone());
+        }
         refs.sort();
-        let descriptor=DefinitionDescriptor::new(DefinitionKind::new("coverage_composition").map_err(bad)?,DefinitionId::new("hull_coverage").map_err(bad)?,1,serde_json::json!({"format":1,"protocol":"hull_coverage_owner_union_v1","ordinary_only":true})).map_err(bad)?.with_references(refs);
+        let (version, payload) = if self.config.conduct.is_some() {
+            (
+                2,
+                serde_json::json!({"format":2,"protocol":"hull_coverage_owner_union_v2","qualification":"actual_conduct_publication_and_current_read"}),
+            )
+        } else {
+            (
+                1,
+                serde_json::json!({"format":1,"protocol":"hull_coverage_owner_union_v1","ordinary_only":true}),
+            )
+        };
+        let descriptor = DefinitionDescriptor::new(
+            DefinitionKind::new("coverage_composition").map_err(bad)?,
+            DefinitionId::new("hull_coverage").map_err(bad)?,
+            version,
+            payload,
+        )
+        .map_err(bad)?
+        .with_references(refs);
         let shape = descriptor.clone();
         let writer = self.config.writer.clone();
         let expected = protocol.roll();

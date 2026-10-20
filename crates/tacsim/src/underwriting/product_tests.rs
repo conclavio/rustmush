@@ -22,7 +22,7 @@ fn reference(id: &str, byte: u8) -> Result<DefinitionRef, Box<dyn std::error::Er
         digest(byte),
     )?)
 }
-fn product() -> Result<CoverageProductV1, Box<dyn std::error::Error>> {
+pub(super) fn product() -> Result<CoverageProductV1, Box<dyn std::error::Error>> {
     // Structural fixtures only: these values cannot issue a quote, establish
     // certification, debit a premium, reserve exposure or activate a policy.
     let revision: RevisionIdentity = serde_json::from_value(json!({

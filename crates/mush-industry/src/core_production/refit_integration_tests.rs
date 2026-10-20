@@ -1061,3 +1061,42 @@ fn actual_accepted_refit_finishes_after_operator_departure_without_new_consent()
     s.f.restart(CoreOriginMode::Active)?;
     Ok(())
 }
+
+#[test]
+fn real_refit_roster_validates_all_six_exact_actions_and_outcome() -> Result {
+    for reverse in [false, true] {
+        let f = FactoryRig::new_options(reverse, true, true)?;
+        let runtime = f.r.runtime.refit.as_ref().ok_or("actual refit runtime")?;
+        let definitions = f.r.w.engine().registry.definitions().ok_or("definitions")?;
+        for (name, reference) in refit::ACTIONS.iter().zip(&runtime.actions) {
+            let expected = runtime.config.action_descriptor(name)?;
+            let actual = definitions.get_exact(reference)?;
+            assert_eq!(reference, &runtime.config.action(name)?);
+            assert_eq!(actual.payload(), expected.payload());
+            let mut references = expected.references().to_vec();
+            references.sort();
+            assert_eq!(actual.references(), references.as_slice());
+            assert_eq!(actual.is_current(), expected.is_current());
+        }
+        let expected = refit::runtime::outcome_descriptor()?;
+        let actual = definitions.get_exact(&runtime.outcome)?;
+        assert_eq!(actual.payload(), expected.payload());
+        assert_eq!(actual.references(), expected.references());
+    }
+    let absent = FactoryRig::new_options(false, true, false)?;
+    let definitions = absent
+        .r
+        .w
+        .engine()
+        .registry
+        .definitions()
+        .ok_or("definitions")?;
+    assert!(
+        !definitions
+            .iter()
+            .any(|d| d.reference().key().owner.as_str() == "industry"
+                && (refit::ACTIONS.contains(&d.reference().key().id.as_str())
+                    || d.reference().key().id.as_str() == "core_refit_changed"))
+    );
+    Ok(())
+}

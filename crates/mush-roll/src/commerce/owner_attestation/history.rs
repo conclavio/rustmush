@@ -322,8 +322,17 @@ pub(crate) fn verify(
             format!("{}/{}", selected.licence.key(), selected.term.key()),
         )?;
         let actual = granted(ctx, f, ratings, licence, term)?;
-        if actual.holder() != op.owner
-            || actual.licence() != selected.licence
+        super::super::owner_qualification::history::require_selected_holder(
+            ctx,
+            f,
+            ratings,
+            licence,
+            selected.holder_basis.as_ref(),
+            actual.holder(),
+            op.owner,
+            &op.observed_ic,
+        )?;
+        if actual.licence() != selected.licence
             || actual.term() != selected.term
             || actual.charter() != parent.charter
             || actual.line() != parent.line

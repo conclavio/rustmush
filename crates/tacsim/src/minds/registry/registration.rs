@@ -44,6 +44,16 @@ pub(super) fn register_profiles_with_coverage(
     reconformance: bool,
     coverage: bool,
 ) -> Result<(RegisteredManifest, Arc<Factory>), ModError> {
+    register_profiles_with_conduct(reg, policy, ic, reconformance, coverage, false)
+}
+pub(super) fn register_profiles_with_conduct(
+    reg: &mut Registrar<'_>,
+    policy: Arc<FrozenPolicy>,
+    ic: bool,
+    reconformance: bool,
+    coverage: bool,
+    conduct: bool,
+) -> Result<(RegisteredManifest, Arc<Factory>), ModError> {
     if coverage && !ic {
         return Err(error("coverage requires real IC owners"));
     }
@@ -61,6 +71,10 @@ pub(super) fn register_profiles_with_coverage(
             mush_roll::commerce::coverage::CoverageProtocol::publication_participant_descriptor()
                 .map_err(error)?,
         );
+    }
+    if conduct {
+        expected.push(mush_roll::commerce::conduct::registration::quota_descriptor()?);
+        expected.push(mush_roll::commerce::conduct::registration::artifacts_descriptor()?);
     }
     reg.definition_validator(
         DefinitionKind::new("owner_participant").map_err(error)?,

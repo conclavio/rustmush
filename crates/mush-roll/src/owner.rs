@@ -187,6 +187,7 @@ pub struct PreparedPrune {
 
 #[derive(Clone, Debug, Default)]
 pub struct RollStore {
+    pub(crate) conduct: crate::commerce::conduct::state::State,
     generation: u64,
     source_audit_epoch: u64,
     commerce: CommerceReadiness,
@@ -474,8 +475,10 @@ impl RollStore {
                 _ => None,
             })
             .ok_or(RollError::Missing)?;
+        let holder_capture =
+            crate::commerce::owner_qualification::records::ParentHolderCapture::capture(grant);
         let selection = crate::commerce::parent_selector::DraftParentSelection {
-            format: 1,
+            format: if holder_capture.is_some() { 2 } else { 1 },
             actor: grant.actor(),
             mind: mind.id,
             parent: grant.provenance().parent,
@@ -486,6 +489,7 @@ impl RollStore {
             generation: 1,
             created: request.commit(),
             operation: request.commit(),
+            holder_capture,
         };
         selection.check_mind(mind).map_err(|_| RollError::Missing)?;
         Ok((change, selection))
@@ -1158,6 +1162,11 @@ impl RollStore {
         self.generation += 1;
     }
 
+    pub(crate) fn conduct_stamp(&self) -> Result<(u64, u64), RollError> {
+        self.commerce_ready()?;
+        Ok((self.generation, self.source_audit_epoch))
+    }
+
     pub(crate) fn commerce_ready(&self) -> Result<(), RollError> {
         self.check_collection()?;
         match self.commerce {
@@ -1492,6 +1501,28 @@ impl RollStore {
     /// Only the closed registered Registry builder can construct this request.
     /// All old roots are checked first, including the permanent job root which
     /// is unchanged. Ordinary prepare enforces the same global record ceiling.
+    pub(crate) fn prepare_conduct_root(
+        &self,
+        request: &crate::commerce::conduct::publication::Roots,
+    ) -> Result<PreparedChange, RollError> {
+        self.commerce_ready()?;
+        let required = request.root();
+        self.check_root_subject(required)?;
+        let record = ReferenceRecord {
+            format: FORMAT,
+            key: required.anchor.key(),
+            revisions: vec![required.target()],
+        };
+        if request.admission() {
+            if self.occupied.contains(&record.key.key()) {
+                return Err(invalid("Conduct trial", "obligation already retained"));
+            }
+        } else {
+            self.check_required_root(required)?;
+        }
+        self.prepare(vec![Change::Reference(record)])
+    }
+
     pub(crate) fn prepare_rating_roots(
         &self,
         request: &RatingRoots,
@@ -2830,6 +2861,9 @@ impl GameModule for RollModule {
             .state_mut::<RollStore>()
             .ok_or_else(|| ModError::msg("roll: state slot absent"))?;
         *target = store;
+        if let Some(registration) = &self.registration {
+            registration.configure_conduct(target)?;
+        }
         Ok(())
     }
 

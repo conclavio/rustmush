@@ -99,6 +99,7 @@ impl Publications {
 }
 pub(super) struct Request {
     pub(super) product: CoverageProductV1,
+    pub(super) proofs: Vec<mush_roll::commerce::conduct::ConductTrialProof>,
 }
 pub(super) struct Output {
     row: Publication,
@@ -111,11 +112,13 @@ impl Output {
 pub(super) struct Participant {
     pub(super) protocol: Protocol,
     pub(super) readiness: Readiness,
+    pub(super) conduct_manifest: Option<mush_core::DefinitionRef>,
 }
 pub(super) struct Patch {
     generation: u64,
     fence: PublicationFence,
     post: Publications,
+    proofs: Vec<mush_roll::commerce::conduct::ConductTrialProof>,
 }
 pub(super) struct Bound<'a> {
     state: &'a mut Publications,
@@ -132,11 +135,6 @@ impl Participant {
         world: &mush_core::World,
         product: &CoverageProductV1,
     ) -> Result<(), ParticipantError> {
-        // Ordinary launch has no role-qualified claim. An arbitrary exact digest
-        // is still not an acknowledged ConductTrialProof.
-        if !product.approvals().is_empty() {
-            return Err(bad("role qualification unavailable"));
-        }
         self.readiness
             .references(product.hulls().iter().chain(product.zones()))
             .map_err(bad)?;
@@ -193,6 +191,15 @@ impl OwnerParticipant for Participant {
         .map_err(bad)?;
         fence.check(ctx).map_err(bad)?;
         self.references(ctx.world(), &request.product)?;
+        let conduct = super::qualification::selections(
+            &request.product,
+            self.conduct_manifest.as_ref(),
+            &request.proofs,
+        )
+        .map_err(bad)?;
+        for proof in &request.proofs {
+            proof.check_history(ctx).map_err(bad)?;
+        }
         let row = Publication {
             format: 1,
             operation: ctx.commit_token(),
@@ -201,6 +208,7 @@ impl OwnerParticipant for Participant {
             publisher: ctx.invocation().actor(),
             authorization: fence.authority().clone(),
             product: request.product,
+            conduct,
             posted_at_utc: ctx.world().now(),
         };
         let post = state.append(row.clone())?;
@@ -218,6 +226,7 @@ impl OwnerParticipant for Participant {
                 generation: state.generation,
                 fence,
                 post,
+                proofs: request.proofs,
             },
             vec![write],
         ))
@@ -232,6 +241,9 @@ impl OwnerParticipant for Participant {
             return Err(bad("stale publication owner"));
         }
         patch.fence.check(ctx).map_err(bad)?;
+        for proof in &patch.proofs {
+            proof.check_history(ctx).map_err(bad)?;
+        }
         let row = patch
             .post
             .rows
@@ -271,8 +283,6 @@ impl OwnerParticipant for Participant {
         let Ok(row) = Publication::decode(&bytes) else {
             return false;
         };
-        k.as_str() == key(row.operation)
-            && row.protocol == self.protocol
-            && row.product.approvals().is_empty()
+        k.as_str() == key(row.operation) && row.protocol == self.protocol
     }
 }
