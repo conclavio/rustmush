@@ -1092,6 +1092,16 @@ impl GameModule for SimulationModule {
         }
         Ok(())
     }
+
+    fn on_all_loaded(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        // The coordinator hydrated typed leases before the load callbacks.
+        // Read them through Sim's real owner lens before the first command:
+        // a restarted pilot may reclaim before any periodic tick has fired.
+        // The existing bounded scan keeps an unavailable or partial view
+        // incomplete, so the seat gate still refuses unknown occupancy.
+        seat::refresh_control_lease_view(ctx);
+        Ok(())
+    }
 }
 
 pub use data::ArcFn;

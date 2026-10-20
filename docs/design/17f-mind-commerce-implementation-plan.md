@@ -1,6 +1,126 @@
 # 17f — Mind commerce, Registry rights and IC hardware: implementation plan
 
-## Current status — integration first, 2026-10-20
+## Current status — what works and what remains unproved, 2026-10-20
+
+**M6 is merged. M7 still has no clean integrated baseline. New feature work is
+paused while the included code is stabilized.**
+
+**What has passed:** N110 compiled and passed all 29 commerce-roster and boot-parity
+tests. Subsequent focused checks used the ordinary stack size:
+
+| Focused check | Result |
+| --- | --- |
+| Whole Tacsim library | 1,510 passed; 4 ignored; no failures or stack abort |
+| Whole cockpit binary | 182 passed; 1 failed |
+| Whole match-lifecycle binary | 142 passed; 1 failed |
+| Whole Sim library after the boot repair | 42 passed; no failures or ignored tests |
+
+The cockpit restart and lifecycle retention cases both passed later exact checks
+after their repairs. All known failures from these focused checks are addressed.
+These are results from separate diagnostic candidates, however; they do not
+establish that the assembled N111 product works together. The four ignored
+genuine M7 stories were not run by these checks.
+
+**What blocks integrated proof:** the last full run, N110, failed with five
+assertions and a Tacsim library stack abort. It stopped before the four genuine
+M7 stories and left 73 stages plus all eight isolated Redis scopes unrun. The
+repairs now have focused passing evidence, but the assembled candidate has not
+completed a full run.
+
+The next full run will put the real purchase, server recovery, Conduct and named
+launch stories earlier, then complete the same 76 stages and eight Redis scopes
+on one candidate. Passes from separate checks cannot replace that result. A green
+baseline will still not mean M7 acceptance: lint, frontend and cross-host checks
+remain separate. The ignored M6 scale-replay check is also outside the
+76-stage/Redis roster and has not been rerun here.
+
+**What is parked:** paid Follow's Market/Roll/native consumers, the original-major
+producer and its genuine story, scoped House author updates/attestation/source
+access, and the remaining House or dependent major variants. They will resume
+only after the baseline is green, in smaller validated steps.
+
+<details>
+<summary>Historical checkpoints and evidence — not current completion status</summary>
+
+### N110 focused ordinary-stack diagnostic
+
+The full three-binary diagnostic used original N110 tree
+`06fc2ee58498ec506cc8ac86dd44a45a02cfd5a2` with only the reviewed
+authored-forks fixture stack repair and lifecycle Roll-delegation fixture repair.
+The original source census was restored after the run. All logs and source
+hashes were verified; its archive SHA-256 is
+`2a2896377c862cde81a75844e417fec136ed40cf1393ac5da53021c6261dccba`.
+The Tacsim library passed 1,510 tests with four ignored, cockpit passed 182 and
+failed one, and match lifecycle passed 142 and failed one. All three completed
+without a stack abort. This was a failed diagnostic, explicitly ineligible for
+acceptance, not the full integration or ignored-story run.
+
+### N110 subsequent boot-refresh diagnostic
+
+The later boot-refresh check added the reviewed Sim lease-view boot repair to
+the same two fixture repairs. Its archive SHA-256 is
+`4d887f330aa867aeb09685929e1508616058a4e0bce600e825331acd1c571daf`.
+All 42 Sim library tests passed with none ignored, including
+`handoff::tests::boot_reads_hydrated_control_leases_before_any_tick`.
+The unchanged exact cockpit restart story
+`af3_the_pilots_board_the_resumed_match_through_the_reclaim` passed with the other
+182 cockpit tests filtered. Both suites used the ordinary stack size; source and
+log hashes were verified and the original N110 source census was restored.
+This focused pass resolves that observed cockpit failure but is explicitly
+ineligible for acceptance. It does not turn the earlier full cockpit run or the
+full N110 run into a pass.
+
+### N110 subsequent lifecycle retention diagnostic
+
+The exact lifecycle case `m5_the_sim_seal_takes_no_seat_and_posts_nothing` passed
+after the reviewed roster and two-root retention-census corrections. Its archive
+SHA-256 is `2cdfc60a462220a09643c17d7df377d486b1e4f7d3c4241c7a92a8a82d47c142`.
+Compilation passed; the selected test passed with 142 tests filtered, none
+ignored and no stack abort. Source and log hashes were verified and the original
+N110 source census was restored. This is a separate focused diagnostic, explicitly
+ineligible for acceptance. It resolves the remaining observed focused failure,
+without relabeling the earlier whole-binary or full-run failures as passes.
+
+Neither these diagnostics nor the 76-stage/Redis roster invokes the
+ignored `m6_real_24_class_iii_900s_complete_tape_replays_every_think_and_substep`
+scale-replay test; it requires its own explicit invocation.
+
+### N110 full-run checkpoint (historical)
+
+**M6 is complete and merged. M7 has never passed a clean full integration
+run.** New feature work remains paused while the included code is stabilized.
+
+The latest sealed run, N110, tested tree
+`06fc2ee58498ec506cc8ac86dd44a45a02cfd5a2`. Compilation and all 29
+commerce-roster/boot-parity tests passed. The workspace suite failed with five
+assertions and one Tacsim library stack abort. The remaining 73 stages and all
+eight isolated Redis scopes did not run. Exact source and evidence hashes were
+verified unchanged; the evidence archive SHA-256 is
+`862093a6328bf2e3d1829c92421330b89e971cbb11f7940bb5ff4c6cf8e3b691`.
+**This is failed integration evidence, not acceptance.**
+
+Of N109's 54 failed-test or stack-abort observations, N110 explicitly passed
+50, repeated one failure, and did not reach three. All three old stack cases
+passed. The new Tacsim library abort occurred after 700 named passes and hides
+813 later outcomes, including four tests intended to be ignored. Those missing
+results cannot be counted as passes. Completed-suite summaries omit the 700
+passes emitted before that abort.
+
+**Next:** repair the observed failures, then run the three whole affected
+binaries first: the Tacsim library, `cockpit`, and `match_lifecycle`. If those
+pass, run the unchanged 76-stage integration roster and all eight live Redis
+scopes on one candidate. Earlier or focused passes cannot be combined into a
+clean result. Workspace tests can skip service-gated Redis checks, so the owned
+Redis run remains separate and required.
+
+A green baseline will establish that the included code works together, not
+that M7 is complete. Paid Follow's Market/Roll/native consumers, the original-major
+producer and its genuine story, scoped House author updates/attestation/source
+access, and remaining House or dependent major variants stay parked. Feature
+work resumes only after the baseline is green, in smaller validated steps.
+Lint, frontend and cross-host acceptance requirements also remain.
+
+### N109 integration and identity diagnostics (historical)
 
 **M6 is complete and merged. M7 has not yet passed a clean integrated run.**
 New feature work is paused at the owner's request. Code volume is not a useful
@@ -60,9 +180,6 @@ Market/Roll/native consumers, the original-major producer and its genuine story,
 scoped House author updates/attestation/source access, and remaining House or
 dependent major variants are parked outside this baseline. Those features will
 resume only after the baseline is green, in smaller validated steps.
-
-<details>
-<summary>Historical checkpoints and evidence — not current completion status</summary>
 
 Implementation continuation, 2026-10-19, on `codex/unit-minds-through-m6`.
 M6 is accepted in `17097f5b` with the owner's explicit one-time parity

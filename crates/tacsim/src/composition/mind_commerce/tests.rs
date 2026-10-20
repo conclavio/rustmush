@@ -316,8 +316,10 @@ fn source_forms_are_an_explicit_host_protocol_with_a_distinct_paid_reader() -> T
     Ok(())
 }
 
-#[test]
-fn authored_forks_require_explicit_source_forms_and_register_exact_real_services() -> TestResult {
+// Keep independent composition scenarios in separate stack frames. The
+// real Engine still performs registration and final validation in each case.
+#[inline(never)]
+fn authored_fork_prerequisites_refuse() -> TestResult {
     assert!(
         prepare(CommerceMode::Initialize)?
             .with_authored_forks()
@@ -334,104 +336,114 @@ fn authored_forks_require_explicit_source_forms_and_register_exact_real_services
             .with_authored_forks()
             .is_err()
     );
-    for forks in [false, true] {
-        let prepared = prepare(CommerceMode::Active)?.with_original_source_purchases(quotes()?)?;
-        let prepared = if forks {
-            prepared.with_authored_forks()?
-        } else {
-            prepared
-        };
-        let configured = prepared.configure_tacsim(layer())?;
+    Ok(())
+}
+
+// Configuration errors still propagate separately from the registration
+// result that the missing-reader case deliberately expects to refuse.
+#[inline(never)]
+fn authored_fork_engine(
+    prepared: &MindCommerce,
+    configured: TacsimRuleset,
+) -> Result<Result<Box<Engine>, ModError>, ModError> {
+    Ok(Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![
+            Box::new(
+                prepared
+                    .configure_economy(EconomyModule::new().with_title_issuers(vec![issuer()?]))?,
+            ),
+            Box::new(
+                prepared.configure_market(
+                    MarketModule::new()
+                        .with_venue_gate(std::sync::Arc::new(crate::port::market::PortVenueGate)),
+                ),
+            ),
+            Box::new(prepared.configure_roll(RollModule::with_writers([crate::NS]))),
+            Box::new(configured),
+        ],
+    )
+    .map(Box::new))
+}
+
+#[inline(never)]
+fn authored_fork_registration_matches_opt_in(forks: bool) -> TestResult {
+    let prepared = prepare(CommerceMode::Active)?.with_original_source_purchases(quotes()?)?;
+    let prepared = if forks {
+        prepared.with_authored_forks()?
+    } else {
+        prepared
+    };
+    let configured = prepared.configure_tacsim(layer())?;
+    assert_eq!(
+        configured.fork_material.as_ref(),
+        forks.then(|| prepared.manifest())
+    );
+    let actual = authored_fork_engine(&prepared, configured)??;
+    assert_eq!(has(&actual, "roll", "action", "fork_paid_mind"), forks);
+    assert_eq!(
+        has(&actual, "roll", "owner_read", "authored_draft_access"),
+        forks
+    );
+    assert_eq!(has(&actual, "roll", "outcome", "paid_mind_forked"), forks);
+    // Real Engine freeze rejects duplicate declarations. The exact action
+    // and outcome each enter once, then provider/grants reuse their refs.
+    for (kind, id) in [
+        ("action", "fork_paid_mind"),
+        ("outcome", "paid_mind_forked"),
+    ] {
         assert_eq!(
-            configured.fork_material.as_ref(),
-            forks.then(|| prepared.manifest())
+            actual
+                .registry
+                .definitions()
+                .ok_or("definitions")?
+                .iter()
+                .filter(|entry| {
+                    let r = entry.reference();
+                    r.key().owner.as_str() == "roll"
+                        && r.key().kind.as_str() == kind
+                        && r.key().id.as_str() == id
+                })
+                .count(),
+            usize::from(forks)
         );
-        let actual =
-            Engine::with_modules(
-                World::new_minimal(),
-                Registry::new(),
-                vec![
-                    Box::new(prepared.configure_economy(
-                        EconomyModule::new().with_title_issuers(vec![issuer()?]),
-                    )?),
-                    Box::new(prepared.configure_market(
-                        MarketModule::new().with_venue_gate(std::sync::Arc::new(
-                            crate::port::market::PortVenueGate,
-                        )),
-                    )),
-                    Box::new(prepared.configure_roll(RollModule::with_writers([crate::NS]))),
-                    Box::new(configured),
-                ],
-            )?;
-        assert_eq!(has(&actual, "roll", "action", "fork_paid_mind"), forks);
-        assert_eq!(
-            has(&actual, "roll", "owner_read", "authored_draft_access"),
-            forks
-        );
-        assert_eq!(has(&actual, "roll", "outcome", "paid_mind_forked"), forks);
-        // Real Engine freeze rejects duplicate declarations. The exact action
-        // and outcome each enter once, then provider/grants reuse their refs.
-        for (kind, id) in [
-            ("action", "fork_paid_mind"),
-            ("outcome", "paid_mind_forked"),
-        ] {
-            assert_eq!(
-                actual
-                    .registry
-                    .definitions()
-                    .ok_or("definitions")?
-                    .iter()
-                    .filter(|entry| {
-                        let r = entry.reference();
-                        r.key().owner.as_str() == "roll"
-                            && r.key().kind.as_str() == kind
-                            && r.key().id.as_str() == id
-                    })
-                    .count(),
-                usize::from(forks)
-            );
-        }
-        assert_eq!(
-            has(&actual, "roll", "owner_read", "authored_fork_parent"),
-            forks
-        );
-        assert_eq!(
-            has(&actual, "tacsim", "owner_read", "authored_fork_material"),
-            forks
-        );
-        if forks {
-            assert!(prepared.with_authored_forks().is_err());
-        }
     }
+    assert_eq!(
+        has(&actual, "roll", "owner_read", "authored_fork_parent"),
+        forks
+    );
+    assert_eq!(
+        has(&actual, "tacsim", "owner_read", "authored_fork_material"),
+        forks
+    );
+    if forks {
+        assert!(prepared.with_authored_forks().is_err());
+    }
+    Ok(())
+}
+
+#[inline(never)]
+fn authored_fork_missing_source_reader_refuses() -> TestResult {
     let prepared = prepare(CommerceMode::Active)?
         .with_original_source_purchases(quotes()?)?
         .with_authored_forks()?;
     let mut detached = prepared.configure_tacsim(layer())?;
     detached.fork_material = None;
     assert!(
-        Engine::with_modules(
-            World::new_minimal(),
-            Registry::new(),
-            vec![
-                Box::new(
-                    prepared.configure_economy(
-                        EconomyModule::new().with_title_issuers(vec![issuer()?])
-                    )?
-                ),
-                Box::new(
-                    prepared.configure_market(
-                        MarketModule::new().with_venue_gate(std::sync::Arc::new(
-                            crate::port::market::PortVenueGate
-                        ))
-                    )
-                ),
-                Box::new(prepared.configure_roll(RollModule::with_writers([crate::NS]))),
-                Box::new(detached),
-            ]
-        )
-        .is_err(),
+        authored_fork_engine(&prepared, detached)?.is_err(),
         "a missing actual source service cannot be replaced by a structural descriptor"
     );
+    Ok(())
+}
+
+#[test]
+fn authored_forks_require_explicit_source_forms_and_register_exact_real_services() -> TestResult {
+    authored_fork_prerequisites_refuse()?;
+    for forks in [false, true] {
+        authored_fork_registration_matches_opt_in(forks)?;
+    }
+    authored_fork_missing_source_reader_refuses()?;
     Ok(())
 }
 

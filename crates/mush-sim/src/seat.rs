@@ -23,9 +23,10 @@
 //! is **whole-owner** and would hand `mush-campaign` WRITE authority over K's
 //! lease family — which §4.1 and this cut's rules forbid outright. So the seam
 //! answers from a bounded world-owned mirror ([`ControlLeaseView`]) that
-//! `mush-sim` refreshes from its OWN owner-scoped contexts (its `sim.journey`
-//! Coarse tick and the `Disconnected` hook). The mirror is the message; the
-//! **authoritative** leg-2 refusal is `HandoffProvider::project_station_offer`'s
+//! `mush-sim` refreshes from its OWN owner-scoped contexts (the final load
+//! hook, its `sim.journey` Coarse tick and the `Disconnected` hook). The mirror
+//! is the message; the **authoritative** leg-2 refusal is
+//! `HandoffProvider::project_station_offer`'s
 //! own holder branch, which reads live state at resolution — so a race can only
 //! ever make the command's refusal *late*, never make an eviction *succeed*.
 //!

@@ -84,7 +84,7 @@ fn roster_with(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
     );
     let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let mut mods = comp::server_modules_with(
+    let (mut mods, inventory) = comp::server_modules_with_tacsim(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
@@ -100,7 +100,7 @@ fn roster_with(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
         comp::npc_agent_adapter(),
         &mush_config::config::NpcCfg::default(),
     ));
-    mods.push(comp::tacsim_module(cfg));
+    mods.push(comp::tacsim_module_wired(cfg, false, inventory));
     mods.push(comp::content_module_with(true, true).expect("the content module composes"));
     mods
 }
@@ -11755,14 +11755,16 @@ async fn m5_the_check_out_installs_a_chosen_minds_source() {
 /// note's gate evidence): Ada and Bo on red with the fill on; the
 /// check-out's `(op, key)` write list when Bo's slot chose `Fixture I` — a
 /// chosen mind actually sealed (humans hold one side) — equals the list when
-/// nobody chose anything, key for key; tacsim's own family in it is the live
-/// record alone: the seal is the match record's (`MatchRecord::minds`, in
-/// the live record), no document of its own and no `tacsim:mindsrc:` (a
+/// nobody chose anything, key for key, apart from M6's two exact Roll
+/// revision-retention roots, whose full values are checked below. Tacsim's own
+/// family is still the live record alone: the seal is `MatchRecord::minds`, in
+/// the live record, no document of its own and no `tacsim:mindsrc:` (a
 /// holding's source goes to the store's RAM map); and no seat is taken (the
 /// record's pilots are the same).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn m5_the_sim_seal_takes_no_seat_and_posts_nothing() {
-    /// The check-out's `(op, key)` list, sorted, and the record's pilots.
+    /// The sorted write list after checking and removing only the two
+    /// required revision roots, plus the record's pilots.
     fn checkout(chose: bool) -> (Vec<(&'static str, String)>, usize) {
         let mut rig = fill_rig(2);
         rig.tick_to(1);
@@ -11784,19 +11786,85 @@ async fn m5_the_sim_seal_takes_no_seat_and_posts_nothing() {
         let match_id = rig.centre().match_id.expect("a match id");
         let record = rig.book().get(match_id).cloned().expect("the record");
         let pilots = record.teams.iter().map(|side| side.pilots.len()).sum();
+        let mut retention_keys = Vec::new();
         if chose {
             let tank = match_::tank_of(rig.tw.world(), rig.pod(1).expect("a pod")).expect("a tank");
             assert_eq!(sealed_of(&rig, tank).mind.as_str(), "Fixture I");
+            let origin = sealed_of(&rig, tank).origin;
+            assert_eq!(origin, support::holdings::fixture_i().identity.origin);
+            let tacsim::arena::profile_seal::MindOrigin::Draft {
+                character,
+                mind,
+                revision,
+                digest,
+            } = origin
+            else {
+                panic!("the actual fixture seal retains its immutable draft revision");
+            };
+            let revision = mush_roll::RevisionRef {
+                key: mush_roll::RevisionKey {
+                    character,
+                    mind,
+                    number: revision,
+                },
+                digest,
+            };
+            for kind in [
+                mush_roll::ReferenceKind::OpenSeal,
+                mush_roll::ReferenceKind::MatchRecord,
+            ] {
+                let key = mush_roll::ReferenceKey {
+                    owner: tacsim::NS.into(),
+                    kind,
+                    record: format!("match/{}", match_id.0),
+                };
+                let stored_key =
+                    format!("reference:{}:{}:{}", key.owner, kind.as_str(), key.record);
+                assert_eq!(
+                    writes.iter().filter(|(_, at, _)| at == &stored_key).count(),
+                    1,
+                    "each required root is written exactly once"
+                );
+                assert_eq!(
+                    set_of(&writes, &stored_key),
+                    Some(serde_json::json!({
+                        "format": mush_roll::FORMAT,
+                        "key": key,
+                        "revisions": [revision],
+                    })),
+                    "the root retains only the actual sealed revision"
+                );
+                assert_eq!(
+                    rig.tw
+                        .world()
+                        .module_state::<mush_roll::RollStore>()
+                        .expect("the actual Roll owner")
+                        .reference_keys(tacsim::NS, kind),
+                    vec![key],
+                    "the same root is published in the owner"
+                );
+                retention_keys.push(stored_key);
+            }
         }
         let mut keys: Vec<(&'static str, String)> =
             writes.into_iter().map(|(op, key, _)| (op, key)).collect();
+        for key in retention_keys {
+            let index = keys
+                .iter()
+                .position(|(op, at)| *op == "set" && at == &key)
+                .expect("the exact validated retention write");
+            keys.remove(index);
+        }
         keys.sort();
         (keys, pilots)
     }
     let (chosen, seated) = checkout(true);
     let (unchosen, plain) = checkout(false);
     assert!(!chosen.is_empty());
-    assert_eq!(chosen, unchosen, "a sealed choice adds no write");
+    assert_eq!(
+        chosen, unchosen,
+        "apart from exact revision retention, a sealed choice adds no write"
+    );
     assert_eq!((seated, plain), (2, 2), "no seat taken");
     // tacsim's own family: the live record alone, which carries the seals
     // (`MatchRecord::minds`) — no seal document, and no `tacsim:mindsrc:`
