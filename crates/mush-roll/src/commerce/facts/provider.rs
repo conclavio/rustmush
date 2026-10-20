@@ -70,7 +70,7 @@ impl Provider {
             self.runtime.clone(),
             self.ready.clone(),
         )?;
-        ctx.prepare_owner(&self.roots, RootRequest::TermLapse(roots))
+        ctx.prepare_owner(&self.roots, RootRequest::TermLapse(Box::new(roots)))
             .map_err(invalid)?;
         txn.insert(
             &self.f.lapse_occurrences,

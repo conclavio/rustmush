@@ -123,7 +123,7 @@ pub(super) fn prepare(
     context: &OwnerPrepareContext<'_>,
     request: RenewalMoneyRequest,
     transition: Transition,
-) -> Result<MoneyPreparation, ParticipantError> {
+) -> Result<Box<MoneyPreparation>, ParticipantError> {
     prepare_in(state, &OfferContext::from(context), request, transition)
 }
 pub(super) fn prepare_in(
@@ -131,7 +131,7 @@ pub(super) fn prepare_in(
     context: &OfferContext<'_>,
     request: RenewalMoneyRequest,
     transition: Transition,
-) -> Result<MoneyPreparation, ParticipantError> {
+) -> Result<Box<MoneyPreparation>, ParticipantError> {
     let origin = state
         .house_renewal_offers
         .get(request.operation)
@@ -179,169 +179,195 @@ pub(super) fn prepare_in(
         }
     }
     if transition == Transition::Fund {
-        origin.verify_documents(&state.snapshot)?;
-        if state
-            .fold
-            .house_renewal_receipts
-            .receipts()
-            .map_err(|_| refused())?
-            .any(|h| h.operation() == request.operation)
-        {
-            return Err(refused());
-        }
-        let plan = receipt::funding_plan(origin, context.commit, context.action, &now)?;
-        let proof = ClosedHouseRenewalPlan {
-            plan: plan.clone(),
-            before: before.clone(),
-        };
-        let auth = WorldAuth { w: context.world };
-        let keys = state.key_gate();
-        let env = ValidateEnv {
-            auth: &auth,
-            custody: &NoCustody,
-            facts: &NoFacts,
-            now: context.world.now(),
-            ic_now: context.world.game_now_unix(),
-            next_hold_id: state.next_hold,
-            spent: BTreeMap::new(),
-            keys: &keys,
-        };
-        let validated = posted(crate::engine::validate_house_renewal(
-            &proof,
-            &state.snapshot,
-            &env,
-        ))?;
-        let (delta, transaction) = apply(state, context, &validated)?;
-        let [effect] = transaction.hold_effects.as_slice() else {
-            return Err(refused());
-        };
-        if effect.kind != HoldEffectKind::Placed || effect.hold.id.0 != state.next_hold {
-            return Err(refused());
-        }
-        let next_hold = state.next_hold.checked_add(1).ok_or_else(refused)?;
-        let prepared_history = state.fold.house_renewal_receipts.prepare(&transaction)?;
-        let history = prepared_history.row();
-        if history.origin() != origin {
-            return Err(refused());
-        }
-        let after = history.contract().map_err(|_| refused())?;
-        // Every accepted fund must leave complete terminal evidence room.
-        history.require_terminal_room().map_err(|_| refused())?;
-        let output = MoneyOutput::Funded(RenewalFundingOutput {
-            operation: origin.operation,
-            receipt: history.funding().clone(),
-        });
-        Ok(MoneyPreparation {
-            output,
-            request,
-            transition,
-            origin: origin.clone(),
-            plan,
-            validated,
-            before_contract: before,
-            contract: after,
-            delta,
-            transaction,
-            next_hold,
-        })
+        prepare_funding(state, context, request, transition, origin, before, now)
     } else {
-        let history = state
-            .fold
-            .house_renewal_receipts
-            .get(request.operation)
-            .map_err(|_| refused())?;
-        if history.origin() != origin
-            || history.terminal().is_some()
-            || context.commit == history.funding().commit()
-            || context.world.now() < history.funding().posted_at_utc()
-        {
-            return Err(refused());
-        }
-        let hold = state
-            .snapshot
-            .hold(history.funding().hold())
-            .ok_or_else(refused)?;
-        history
-            .verify_documents(&before, hold)
-            .map_err(|_| refused())?;
-        let outcome = if transition == Transition::Grant {
-            RenewalOutcome::Granted
-        } else {
-            RenewalOutcome::Refunded
-        };
-        if transition == Transition::Grant
-            && (now.clock != history.funding().at_ic().clock
-                || now.at < history.funding().at_ic().at)
-        {
-            return Err(refused());
-        }
-        let auth = TerminalAuth {
-            buyer: PrincipalId::Object(terms.buyer),
-            hold: hold.clone(),
-            payouts: if transition.sale() {
-                terms.payouts()?
-            } else {
-                Vec::new()
-            },
-            outcome,
-        };
-        let keys = state.key_gate();
-        let env = ValidateEnv {
-            auth: &auth,
-            custody: &NoCustody,
-            facts: &NoFacts,
-            now: context.world.now(),
-            ic_now: context.world.game_now_unix(),
-            next_hold_id: state.next_hold,
-            spent: BTreeMap::new(),
-            keys: &keys,
-        };
-        let plan = receipt::terminal_plan(history, context.commit, context.action, &now, outcome)?;
-        let mut native = if transition == Transition::Grant {
-            crate::contract::settlement_plan(&before, &state.snapshot, &env)
-        } else {
-            let mut c = before.clone();
-            c.state = ContractState::Cancelled;
-            crate::contract::refund_plan(&c, &state.snapshot)
-        }
-        .map_err(|_| refused())?;
-        native.idempotency = plan.idempotency.clone();
-        native.cause = plan.cause.clone();
-        if native != plan {
-            return Err(refused());
-        }
-        let proof = ClosedHouseRenewalPlan {
-            plan: plan.clone(),
-            before: before.clone(),
-        };
-        let validated = posted(crate::engine::validate_house_renewal(
-            &proof,
-            &state.snapshot,
-            &env,
-        ))?;
-        let (delta, transaction) = apply(state, context, &validated)?;
-        let prepared_history = state.fold.house_renewal_receipts.prepare(&transaction)?;
-        let history = prepared_history.row();
-        let after = history.contract().map_err(|_| refused())?;
-        let receipt = history.terminal().ok_or_else(refused)?.clone();
-        let output = MoneyOutput::Terminal(RenewalTerminalOutput {
-            operation: origin.operation,
-            receipt,
-        });
-        Ok(MoneyPreparation {
-            output,
-            request,
-            transition,
-            origin: origin.clone(),
-            plan,
-            validated,
-            before_contract: before,
-            contract: after,
-            delta,
-            transaction,
-            next_hold: state.next_hold,
-        })
+        prepare_terminal(state, context, request, transition, origin, before, now)
     }
+}
+
+#[inline(never)]
+fn prepare_funding(
+    state: &EconomyStore,
+    context: &OfferContext<'_>,
+    request: RenewalMoneyRequest,
+    transition: Transition,
+    origin: &OfferRecord,
+    before: EconomicContract,
+    now: mush_core::ClockStamp,
+) -> Result<Box<MoneyPreparation>, ParticipantError> {
+    origin.verify_documents(&state.snapshot)?;
+    if state
+        .fold
+        .house_renewal_receipts
+        .receipts()
+        .map_err(|_| refused())?
+        .any(|h| h.operation() == request.operation)
+    {
+        return Err(refused());
+    }
+    let plan = receipt::funding_plan(origin, context.commit, context.action, &now)?;
+    let proof = ClosedHouseRenewalPlan {
+        plan: plan.clone(),
+        before: before.clone(),
+    };
+    let auth = WorldAuth { w: context.world };
+    let keys = state.key_gate();
+    let env = ValidateEnv {
+        auth: &auth,
+        custody: &NoCustody,
+        facts: &NoFacts,
+        now: context.world.now(),
+        ic_now: context.world.game_now_unix(),
+        next_hold_id: state.next_hold,
+        spent: BTreeMap::new(),
+        keys: &keys,
+    };
+    let validated = posted(crate::engine::validate_house_renewal(
+        &proof,
+        &state.snapshot,
+        &env,
+    ))?;
+    let (delta, transaction) = apply(state, context, &validated)?;
+    let [effect] = transaction.hold_effects.as_slice() else {
+        return Err(refused());
+    };
+    if effect.kind != HoldEffectKind::Placed || effect.hold.id.0 != state.next_hold {
+        return Err(refused());
+    }
+    let next_hold = state.next_hold.checked_add(1).ok_or_else(refused)?;
+    let prepared_history = state.fold.house_renewal_receipts.prepare(&transaction)?;
+    let history = prepared_history.row();
+    if history.origin() != origin {
+        return Err(refused());
+    }
+    let after = history.contract().map_err(|_| refused())?;
+    // Every accepted fund must leave complete terminal evidence room.
+    history.require_terminal_room().map_err(|_| refused())?;
+    let output = MoneyOutput::Funded(RenewalFundingOutput {
+        operation: origin.operation,
+        receipt: history.funding().clone(),
+    });
+    Ok(Box::new(MoneyPreparation {
+        output,
+        request,
+        transition,
+        origin: origin.clone(),
+        plan,
+        validated,
+        before_contract: before,
+        contract: after,
+        delta,
+        transaction,
+        next_hold,
+    }))
+}
+
+#[inline(never)]
+fn prepare_terminal(
+    state: &EconomyStore,
+    context: &OfferContext<'_>,
+    request: RenewalMoneyRequest,
+    transition: Transition,
+    origin: &OfferRecord,
+    before: EconomicContract,
+    now: mush_core::ClockStamp,
+) -> Result<Box<MoneyPreparation>, ParticipantError> {
+    let terms = &origin.offer.terms;
+    let history = state
+        .fold
+        .house_renewal_receipts
+        .get(request.operation)
+        .map_err(|_| refused())?;
+    if history.origin() != origin
+        || history.terminal().is_some()
+        || context.commit == history.funding().commit()
+        || context.world.now() < history.funding().posted_at_utc()
+    {
+        return Err(refused());
+    }
+    let hold = state
+        .snapshot
+        .hold(history.funding().hold())
+        .ok_or_else(refused)?;
+    history
+        .verify_documents(&before, hold)
+        .map_err(|_| refused())?;
+    let outcome = if transition == Transition::Grant {
+        RenewalOutcome::Granted
+    } else {
+        RenewalOutcome::Refunded
+    };
+    if transition == Transition::Grant
+        && (now.clock != history.funding().at_ic().clock || now.at < history.funding().at_ic().at)
+    {
+        return Err(refused());
+    }
+    let auth = TerminalAuth {
+        buyer: PrincipalId::Object(terms.buyer),
+        hold: hold.clone(),
+        payouts: if transition.sale() {
+            terms.payouts()?
+        } else {
+            Vec::new()
+        },
+        outcome,
+    };
+    let keys = state.key_gate();
+    let env = ValidateEnv {
+        auth: &auth,
+        custody: &NoCustody,
+        facts: &NoFacts,
+        now: context.world.now(),
+        ic_now: context.world.game_now_unix(),
+        next_hold_id: state.next_hold,
+        spent: BTreeMap::new(),
+        keys: &keys,
+    };
+    let plan = receipt::terminal_plan(history, context.commit, context.action, &now, outcome)?;
+    let mut native = if transition == Transition::Grant {
+        crate::contract::settlement_plan(&before, &state.snapshot, &env)
+    } else {
+        let mut c = before.clone();
+        c.state = ContractState::Cancelled;
+        crate::contract::refund_plan(&c, &state.snapshot)
+    }
+    .map_err(|_| refused())?;
+    native.idempotency = plan.idempotency.clone();
+    native.cause = plan.cause.clone();
+    if native != plan {
+        return Err(refused());
+    }
+    let proof = ClosedHouseRenewalPlan {
+        plan: plan.clone(),
+        before: before.clone(),
+    };
+    let validated = posted(crate::engine::validate_house_renewal(
+        &proof,
+        &state.snapshot,
+        &env,
+    ))?;
+    let (delta, transaction) = apply(state, context, &validated)?;
+    let prepared_history = state.fold.house_renewal_receipts.prepare(&transaction)?;
+    let history = prepared_history.row();
+    let after = history.contract().map_err(|_| refused())?;
+    let receipt = history.terminal().ok_or_else(refused)?.clone();
+    let output = MoneyOutput::Terminal(RenewalTerminalOutput {
+        operation: origin.operation,
+        receipt,
+    });
+    Ok(Box::new(MoneyPreparation {
+        output,
+        request,
+        transition,
+        origin: origin.clone(),
+        plan,
+        validated,
+        before_contract: before,
+        contract: after,
+        delta,
+        transaction,
+        next_hold: state.next_hold,
+    }))
 }
 fn posted(result: PlanResult) -> Result<Prepared, ParticipantError> {
     match result {

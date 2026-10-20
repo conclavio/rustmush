@@ -188,7 +188,7 @@ pub(crate) fn audit(
                         ),
                     )?
                     .matches(op)?;
-                    if !matches!(&op.term, AcceptedTerm::Paid { term } if term == row.binding().term())
+                    if !matches!(&op.term, AcceptedTerm::Paid { term } if term.as_ref() == row.binding().term())
                         || op.charter != row.binding().charter()
                         || *licence != row.binding().licence().get()
                         || *generation != row.binding().term().generation().get()

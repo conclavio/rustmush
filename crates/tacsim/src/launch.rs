@@ -148,7 +148,7 @@ impl LaunchComposition {
         let mut layer = self
             .commerce
             .configure_tacsim(self.hardware.configure_tacsim(layer)?)?;
-        layer.launch = Some(self.registration.clone());
+        layer.launch = Some(Box::new(self.registration.clone()));
         Ok(layer)
     }
 }

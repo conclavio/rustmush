@@ -174,6 +174,10 @@ pub struct ReplayProgress {
 }
 
 pub struct ReplaySession {
+    state: Box<ReplayState>,
+}
+
+struct ReplayState {
     tape: Arc<VerifiedTape>,
     arena: Option<Arena>,
     pulse: Option<crate::arena::step::OwnedPulse>,
@@ -188,42 +192,47 @@ impl ReplaySession {
         let at_ms = arena.now_ms;
         let native_substep_ms = arena.arena_cfg.tempo.substep_max_ms;
         Ok(Self {
-            tape,
-            arena: Some(arena),
-            pulse: None,
-            event: 0,
-            at_ms,
-            native_substep_ms,
-            last_thinks: Vec::new(),
+            state: Box::new(ReplayState {
+                tape,
+                arena: Some(arena),
+                pulse: None,
+                event: 0,
+                at_ms,
+                native_substep_ms,
+                last_thinks: Vec::new(),
+            }),
         })
     }
     /// No arena can escape while its pulse is partially applied. Public own-hull
     /// views and branch edits are available only at complete application barriers.
     pub fn arena(&self) -> Option<&Arena> {
-        self.arena.as_ref()
+        self.state.arena.as_ref()
     }
     pub(crate) fn arena_mut(&mut self) -> Option<&mut Arena> {
-        self.arena.as_mut()
+        self.state.arena.as_mut()
     }
     pub fn next_simulation_ms(&self) -> u64 {
-        self.pulse
+        self.state
+            .pulse
             .as_ref()
             .map_or(0, |pulse| u64::from(pulse.next_simulation_ms()))
     }
     pub fn unit_count(&self) -> usize {
-        self.tape.unit_count()
+        self.state.tape.unit_count()
     }
     pub fn native_substep_ms(&self) -> u32 {
-        self.native_substep_ms
+        self.state.native_substep_ms
     }
     /// A settled-barrier fork copies frozen state; it never runs unpaid catchup.
     pub fn fork_settled(&self) -> Result<Self, TapeError> {
         let source = self
+            .state
             .arena
             .as_ref()
             .ok_or_else(|| incomplete("pulse is still active"))?;
         let snapshot = Snapshot::encode(source).map_err(|e| incomplete(e.to_string()))?;
         let definition = self
+            .state
             .tape
             .header
             .ground
@@ -232,42 +241,87 @@ impl ReplaySession {
             .map_err(incomplete)?;
         let mut arena = Snapshot::decode(&snapshot.document, definition)
             .map_err(|e| incomplete(e.to_string()))?;
-        install_header_sources(&self.tape.header, &mut arena)?;
+        install_header_sources(&self.state.tape.header, &mut arena)?;
         arena.clock = crate::arena::clock::Clock::from_replay(source.clock.replay_state());
         arena.tape_witnesses.enable();
         Ok(Self {
-            tape: Arc::clone(&self.tape),
-            arena: Some(arena),
-            pulse: None,
-            event: self.event,
-            at_ms: self.at_ms,
-            native_substep_ms: self.native_substep_ms,
-            last_thinks: self.last_thinks.clone(),
+            state: Box::new(ReplayState {
+                tape: Arc::clone(&self.state.tape),
+                arena: Some(arena),
+                pulse: None,
+                event: self.state.event,
+                at_ms: self.state.at_ms,
+                native_substep_ms: self.state.native_substep_ms,
+                last_thinks: self.state.last_thinks.clone(),
+            }),
         })
     }
     /// Consume a settled private clone for a counterfactual timeline. A
     /// delivered answer may await its future landing; unanswered collected
     /// thinks and an active pulse may not cross this ownership boundary.
     pub(crate) fn into_settled_arena(self) -> Result<Arena, TapeError> {
-        if self.pulse.is_some() || self.arena.as_ref().is_none_or(|a| !a.awaiting.is_empty()) {
+        if self.state.pulse.is_some()
+            || self
+                .state
+                .arena
+                .as_ref()
+                .is_none_or(|a| !a.awaiting.is_empty())
+        {
             return Err(incomplete("fork is not at a settled barrier"));
         }
-        self.arena
+        self.state
+            .arena
             .ok_or_else(|| incomplete("fork arena unavailable"))
     }
     pub fn event(&self) -> usize {
-        self.event
+        self.state.event
     }
     pub fn last_thinks(&self) -> &[ThinkWitness] {
-        &self.last_thinks
+        &self.state.last_thinks
     }
     pub fn rewind(&mut self) -> Result<(), TapeError> {
-        let arena = self.tape.open_arena()?;
-        self.at_ms = arena.now_ms;
-        self.arena = Some(arena);
-        self.pulse = None;
-        self.event = 0;
-        self.last_thinks.clear();
+        let arena = self.state.tape.open_arena()?;
+        self.state.at_ms = arena.now_ms;
+        self.state.arena = Some(arena);
+        self.state.pulse = None;
+        self.state.event = 0;
+        self.state.last_thinks.clear();
+        Ok(())
+    }
+    #[inline(never)]
+    fn restart_from_tape(&mut self, event: &TapeEvent) -> Result<(), TapeError> {
+        let TapeEvent::Restart {
+            hash,
+            clock,
+            ledger_flushed,
+        } = event
+        else {
+            return Err(incomplete("restart checkpoint unavailable"));
+        };
+        let current = self
+            .state
+            .arena
+            .as_ref()
+            .ok_or_else(|| incomplete("ready replay arena unavailable"))?;
+        if state_hash(current) != *hash {
+            return Err(self.different("restart checkpoint"));
+        }
+        let snapshot = Snapshot::encode(current).map_err(|e| incomplete(e.to_string()))?;
+        let ground = self
+            .state
+            .tape
+            .header
+            .ground
+            .clone()
+            .restore()
+            .map_err(incomplete)?;
+        let mut arena =
+            Snapshot::decode(&snapshot.document, ground).map_err(|e| incomplete(e.to_string()))?;
+        install_header_sources(&self.state.tape.header, &mut arena)?;
+        arena.ledger.mark_flushed(*ledger_flushed);
+        arena.clock = crate::arena::clock::Clock::from_replay(*clock);
+        arena.tape_witnesses.enable();
+        self.state.arena = Some(arena);
         Ok(())
     }
     pub fn advance_substep(&mut self) -> Result<ReplayProgress, TapeError> {
@@ -277,36 +331,37 @@ impl ReplaySession {
     /// one captured native substep or one non-time phase. A custom larger native
     /// substep delays fairness by its own validated bound; it is never split.
     pub fn advance(&mut self, max_slices: usize) -> Result<ReplayProgress, TapeError> {
-        let start = self.at_ms;
+        let start = self.state.at_ms;
         let mut thinks = 0;
         for _ in 0..max_slices.clamp(1, 64) {
-            if self.event == self.tape.events.len() {
+            if self.state.event == self.state.tape.events.len() {
                 break;
             }
             let (recorded, cursor) = self
+                .state
                 .tape
                 .events
-                .get(self.event)
+                .get(self.state.event)
                 .cloned()
                 .ok_or_else(|| incomplete("replay event cursor is outside the tape"))?;
-            if let Some(mut pulse) = self.pulse.take() {
+            if let Some(mut pulse) = self.state.pulse.take() {
                 let slice = pulse.advance();
-                self.at_ms = slice.at_ms;
+                self.state.at_ms = slice.at_ms;
                 if !slice.done {
-                    self.pulse = Some(pulse);
+                    self.state.pulse = Some(pulse);
                     continue;
                 }
                 let (arena, output) = match pulse.finish() {
                     Ok(done) => done,
                     Err(pulse) => {
-                        self.pulse = Some(pulse);
+                        self.state.pulse = Some(pulse);
                         return Err(incomplete("pulse completion unavailable"));
                     }
                 };
-                self.arena = Some(arena);
+                self.state.arena = Some(arena);
                 self.compare_pulse(&recorded, &output)?;
             } else {
-                self.last_thinks.clear();
+                self.state.last_thinks.clear();
                 if let TapeEvent::Pulse {
                     wall,
                     controls,
@@ -316,13 +371,14 @@ impl ReplaySession {
                 } = &recorded
                 {
                     let mut arena = self
+                        .state
                         .arena
                         .take()
                         .ok_or_else(|| incomplete("ready replay arena unavailable"))?;
                     for card in cards {
                         arena.stage_card(card.unit, card.change.clone());
                     }
-                    self.pulse = Some(crate::arena::step::OwnedPulse::new(
+                    self.state.pulse = Some(crate::arena::step::OwnedPulse::new(
                         arena, *wall, controls, intents,
                     ));
                     continue;
@@ -333,7 +389,8 @@ impl ReplaySession {
                         at,
                         hash,
                     } => {
-                        self.arena
+                        self.state
+                            .arena
                             .as_mut()
                             .ok_or_else(|| incomplete("ready replay arena unavailable"))?
                             .settle_inline();
@@ -341,17 +398,20 @@ impl ReplaySession {
                         self.compare_state(*at, *hash)?;
                     }
                     TapeEvent::Stop { reason } => self
+                        .state
                         .arena
                         .as_mut()
                         .ok_or_else(|| incomplete("ready replay arena unavailable"))?
                         .stop(*reason),
                     TapeEvent::LedgerAck { through } => self
+                        .state
                         .arena
                         .as_mut()
                         .ok_or_else(|| incomplete("ready replay arena unavailable"))?
                         .ledger
                         .mark_flushed(*through),
                     TapeEvent::TempoFloor { period } => self
+                        .state
                         .arena
                         .as_mut()
                         .ok_or_else(|| incomplete("ready replay arena unavailable"))?
@@ -359,6 +419,7 @@ impl ReplaySession {
                         .set_floor(*period),
                     TapeEvent::Watch { on } => {
                         let arena = self
+                            .state
                             .arena
                             .as_mut()
                             .ok_or_else(|| incomplete("ready replay arena unavailable"))?;
@@ -367,53 +428,27 @@ impl ReplaySession {
                             arena.last_observer_s = None;
                         }
                     }
-                    TapeEvent::Restart {
-                        hash,
-                        clock,
-                        ledger_flushed,
-                    } => {
-                        let current = self
-                            .arena
-                            .as_ref()
-                            .ok_or_else(|| incomplete("ready replay arena unavailable"))?;
-                        if state_hash(current) != *hash {
-                            return Err(self.different("restart checkpoint"));
-                        }
-                        let snapshot =
-                            Snapshot::encode(current).map_err(|e| incomplete(e.to_string()))?;
-                        let ground = self
-                            .tape
-                            .header
-                            .ground
-                            .clone()
-                            .restore()
-                            .map_err(incomplete)?;
-                        let mut arena = Snapshot::decode(&snapshot.document, ground)
-                            .map_err(|e| incomplete(e.to_string()))?;
-                        install_header_sources(&self.tape.header, &mut arena)?;
-                        arena.ledger.mark_flushed(*ledger_flushed);
-                        arena.clock = crate::arena::clock::Clock::from_replay(*clock);
-                        arena.tape_witnesses.enable();
-                        self.arena = Some(arena);
-                    }
+                    TapeEvent::Restart { .. } => self.restart_from_tape(&recorded)?,
                     TapeEvent::Pulse { .. } => return Err(incomplete("unexpected nested pulse")),
                 }
             }
-            thinks += self.last_thinks.len();
+            thinks += self.state.last_thinks.len();
             let arena = self
+                .state
                 .arena
                 .as_mut()
                 .ok_or_else(|| incomplete("completed replay barrier unavailable"))?;
-            self.at_ms = arena.now_ms;
+            self.state.at_ms = arena.now_ms;
             if let Some(cursor) = cursor {
                 arena.tape_cursor = Some(cursor);
             }
-            self.event += 1;
+            self.state.event += 1;
         }
-        let complete = self.event == self.tape.events.len();
-        if complete && let TapeStatus::Complete { at, hash, end } = &self.tape.mark.status {
+        let complete = self.state.event == self.state.tape.events.len();
+        if complete && let TapeStatus::Complete { at, hash, end } = &self.state.tape.mark.status {
             self.compare_state(*at, *hash)?;
             if self
+                .state
                 .arena
                 .as_ref()
                 .ok_or_else(|| incomplete("complete replay unavailable"))?
@@ -425,10 +460,10 @@ impl ReplaySession {
             }
         }
         Ok(ReplayProgress {
-            event: self.event,
-            at_ms: self.at_ms,
+            event: self.state.event,
+            at_ms: self.state.at_ms,
             complete,
-            simulated_ms: self.at_ms.saturating_sub(start).max(0) as u64,
+            simulated_ms: self.state.at_ms.saturating_sub(start).max(0) as u64,
             thinks,
         })
     }
@@ -450,6 +485,7 @@ impl ReplaySession {
             return Err(incomplete("active pulse has no recorded pulse"));
         };
         let arena = self
+            .state
             .arena
             .as_ref()
             .ok_or_else(|| incomplete("completed replay pulse unavailable"))?;
@@ -471,19 +507,21 @@ impl ReplaySession {
         self.compare_state(*at, *hash)
     }
     fn compare_thinks(&mut self, expected: &[ThinkWitness]) -> Result<(), TapeError> {
-        self.last_thinks = self
+        self.state.last_thinks = self
+            .state
             .arena
             .as_mut()
             .ok_or_else(|| incomplete("completed replay barrier unavailable"))?
             .tape_witnesses
             .take()?;
-        if self.last_thinks != expected {
+        if self.state.last_thinks != expected {
             return Err(self.different("think intents, memory, fault, sample or frozen identity"));
         }
         Ok(())
     }
     fn compare_state(&self, at: i64, hash: u64) -> Result<(), TapeError> {
         let arena = self
+            .state
             .arena
             .as_ref()
             .ok_or_else(|| incomplete("pulse is still active"))?;
@@ -493,7 +531,10 @@ impl ReplaySession {
         Ok(())
     }
     fn different(&self, what: &str) -> TapeError {
-        TapeError::Mismatch(format!("event {} at {} ms: {what}", self.event, self.at_ms))
+        TapeError::Mismatch(format!(
+            "event {} at {} ms: {what}",
+            self.state.event, self.state.at_ms
+        ))
     }
 }
 

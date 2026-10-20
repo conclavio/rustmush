@@ -54,11 +54,11 @@ impl Provider {
         let output = ctx
             .prepare_owner(
                 &self.roots,
-                RootRequest::Retirement(Retirement {
+                RootRequest::Retirement(Box::new(Retirement {
                     action: self.action.clone(),
                     commit,
                     subject,
-                }),
+                })),
             )
             .map_err(bad)?
             .retirement()?;

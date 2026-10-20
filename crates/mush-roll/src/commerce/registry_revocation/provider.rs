@@ -155,12 +155,12 @@ impl Provider {
         }
         ctx.prepare_owner(
             &self.roots,
-            RootRequest::RegistryRevocation(Revocation {
+            RootRequest::RegistryRevocation(Box::new(Revocation {
                 operation: operation.clone(),
                 fence,
                 pending: pending.map(|(_, roots)| roots),
                 resale: resale.map(|(_, roots)| roots),
-            }),
+            })),
         )
         .map_err(bad)?;
         txn.insert(

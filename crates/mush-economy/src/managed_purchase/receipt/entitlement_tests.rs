@@ -193,7 +193,7 @@ fn maximum_width_real_encodings_charge_correlation_and_terminal_history_headroom
             format: 1,
             operation: row.operation,
             effect: row.effect.clone(),
-            purchase: row.purchase.clone(),
+            purchase: Box::new(row.purchase.clone()),
             at_ic: row.funding.at_ic.clone(),
         };
         let correlation_len = serde_json::to_vec(&proof)?.len();

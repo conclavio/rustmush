@@ -34,19 +34,17 @@ pub(super) struct Binding {
     pub(super) run: RunId,
 }
 pub(super) enum TicketKind {
-    Admit(AdmissionData),
-    Grant {
-        binding: Binding,
-        maximum_ms: u64,
-    },
-    Settle {
-        binding: Binding,
-        receipt: Receipt,
-        artifact: Option<ArtifactBytes>,
-        measurement: Option<ConductMeasurement>,
-    },
+    Admit(Box<AdmissionData>),
+    Grant { binding: Binding, maximum_ms: u64 },
+    Settle(Box<SettlementData>),
     Cancel(Binding),
     Recover(Binding),
+}
+pub(super) struct SettlementData {
+    pub(super) binding: Binding,
+    pub(super) receipt: Receipt,
+    pub(super) artifact: Option<ArtifactBytes>,
+    pub(super) measurement: Option<ConductMeasurement>,
 }
 pub(super) struct Ticket {
     pub(super) kind: TicketKind,
@@ -73,7 +71,7 @@ impl Ticket {
         match &self.kind {
             TicketKind::Admit(_) => Transition::Admit,
             TicketKind::Grant { .. } => Transition::Grant,
-            TicketKind::Settle { .. } => Transition::Settle,
+            TicketKind::Settle(_) => Transition::Settle,
             TicketKind::Cancel(_) => Transition::Cancel,
             TicketKind::Recover(_) => Transition::Recover,
         }
@@ -81,17 +79,16 @@ impl Ticket {
     pub(super) fn binding(&self) -> Option<Binding> {
         match &self.kind {
             TicketKind::Admit(_) => None,
-            TicketKind::Grant { binding, .. } | TicketKind::Settle { binding, .. } => {
-                Some(*binding)
-            }
+            TicketKind::Grant { binding, .. } => Some(*binding),
+            TicketKind::Settle(data) => Some(data.binding),
             TicketKind::Cancel(b) | TicketKind::Recover(b) => Some(*b),
         }
     }
     pub(super) fn account(&self) -> AccountId {
         match &self.kind {
             TicketKind::Admit(a) => a.account,
+            TicketKind::Settle(data) => data.binding.account,
             TicketKind::Grant { binding, .. }
-            | TicketKind::Settle { binding, .. }
             | TicketKind::Cancel(binding)
             | TicketKind::Recover(binding) => binding.account,
         }
@@ -99,8 +96,8 @@ impl Ticket {
     pub(super) fn character(&self) -> ObjId {
         match &self.kind {
             TicketKind::Admit(a) => a.character,
+            TicketKind::Settle(data) => data.binding.character,
             TicketKind::Grant { binding, .. }
-            | TicketKind::Settle { binding, .. }
             | TicketKind::Cancel(binding)
             | TicketKind::Recover(binding) => binding.character,
         }
@@ -195,7 +192,7 @@ impl Tickets {
             .checked_mul(2)
             .and_then(|n| n.checked_add(32 * 1024))
             .ok_or_else(|| invalid("Conduct ticket bytes"))?;
-        self.insert(TicketKind::Admit(data), size)
+        self.insert(TicketKind::Admit(Box::new(data)), size)
     }
     pub(super) fn grant(
         &mut self,
@@ -316,12 +313,12 @@ impl PreparedSettlement {
             Err(e) => return Err((e, artifact)),
         };
         Ok(Self {
-            kind: TicketKind::Settle {
+            kind: TicketKind::Settle(Box::new(SettlementData {
                 binding,
                 receipt,
                 artifact,
                 measurement,
-            },
+            })),
             bytes,
         })
     }

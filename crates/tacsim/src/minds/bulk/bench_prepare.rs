@@ -48,7 +48,7 @@ pub(super) enum Work {
 pub(super) enum ResultValue {
     Edited(super::executor::Ready, Option<BulkError>),
     Selected(super::executor::Ready, Option<BulkError>),
-    Open(Opened),
+    Open(Box<Opened>),
     Eval(Vec<Result<EvalAnswer, BulkError>>),
 }
 pub(super) struct Request {
@@ -111,7 +111,7 @@ impl Worker {
                                     ReferenceId::Match(id),
                                     Some(&callsign),
                                 )
-                                .map(ResultValue::Open)
+                                .map(|opened| ResultValue::Open(Box::new(opened)))
                             }
                             Work::Proving {
                                 start,
@@ -127,7 +127,7 @@ impl Worker {
                                     ReferenceId::Proving(run),
                                     None,
                                 )
-                                .map(ResultValue::Open)
+                                .map(|opened| ResultValue::Open(Box::new(opened)))
                             }
                             Work::Eval {
                                 picture,

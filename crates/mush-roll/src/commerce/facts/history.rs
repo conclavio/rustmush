@@ -31,15 +31,15 @@ pub(super) struct TermProof {
 #[derive(Debug, Serialize)]
 enum Rows {
     Owner {
-        licence: OwnerLicence,
-        term: OwnerTerm,
-        birth: InitialFilingOperation,
-        successor: Option<OwnerTerm>,
+        licence: Box<OwnerLicence>,
+        term: Box<OwnerTerm>,
+        birth: Box<InitialFilingOperation>,
+        successor: Option<Box<OwnerTerm>>,
     },
     Paid {
-        licence: PersonalPaidLicence,
-        term: PaidTermRecord,
-        successor: Option<PaidTermRecord>,
+        licence: Box<PersonalPaidLicence>,
+        term: Box<PaidTermRecord>,
+        successor: Option<Box<PaidTermRecord>>,
     },
 }
 impl TermProof {
@@ -94,15 +94,15 @@ impl TermProof {
                 birth,
                 successor,
             } => {
-                before(txn, &f.licences, licence)?;
-                before(txn, &f.terms, term)?;
-                before(txn, &f.operations, birth)?;
+                before(txn, &f.licences, licence.as_ref())?;
+                before(txn, &f.terms, term.as_ref())?;
+                before(txn, &f.operations, birth.as_ref())?;
                 successor_before(
                     txn,
                     &f.terms,
                     licence.id,
                     term.generation,
-                    successor.as_ref(),
+                    successor.as_deref(),
                 )?;
                 absent(txn, &f.paid_licences, &licence.id.key())?;
             }
@@ -111,14 +111,14 @@ impl TermProof {
                 term,
                 successor,
             } => {
-                before(txn, &f.paid_licences, licence)?;
-                before(txn, &f.paid_terms, term)?;
+                before(txn, &f.paid_licences, licence.as_ref())?;
+                before(txn, &f.paid_terms, term.as_ref())?;
                 successor_before(
                     txn,
                     &f.paid_terms,
                     licence.id(),
                     term.generation(),
-                    successor.as_ref(),
+                    successor.as_deref(),
                 )?;
                 absent(txn, &f.licences, &licence.id().key())?;
             }
@@ -289,10 +289,10 @@ fn owner_term(
     Ok(TermProof {
         accepted,
         rows: Rows::Owner {
-            licence: licence.clone(),
-            term,
-            birth: birth.clone(),
-            successor,
+            licence: Box::new(licence.clone()),
+            term: Box::new(term),
+            birth: Box::new(birth.clone()),
+            successor: successor.map(Box::new),
         },
     })
 }
@@ -359,9 +359,9 @@ fn paid_term(
     Ok(TermProof {
         accepted,
         rows: Rows::Paid {
-            licence: licence.clone(),
-            term: term.clone(),
-            successor,
+            licence: Box::new(licence.clone()),
+            term: Box::new(term.clone()),
+            successor: successor.map(Box::new),
         },
     })
 }

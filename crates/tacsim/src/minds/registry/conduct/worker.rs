@@ -20,13 +20,13 @@ fn invalid(_: impl std::fmt::Display) -> BulkError {
     BulkError::Invalid("Conduct worker evidence is incomplete or differs".into())
 }
 impl Worker {
-    pub(super) fn new(run: Run) -> Result<Self, BulkError> {
+    pub(super) fn new(run: Run) -> Result<Box<Self>, BulkError> {
         let budget = run.billing_budget().map_err(invalid)?;
         let case = run.billing_case().map_err(invalid)?;
         if budget.case(ConductCursor::default())? != &case {
             return Err(invalid("opening rate"));
         }
-        Ok(Self {
+        Ok(Box::new(Self {
             run,
             budget,
             case,
@@ -36,7 +36,7 @@ impl Worker {
             },
             finished: false,
             measurement: None,
-        })
+        }))
     }
     pub(super) fn budget(&self) -> &ConductBudget {
         &self.budget

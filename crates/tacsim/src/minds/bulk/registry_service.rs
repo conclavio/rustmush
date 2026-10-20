@@ -153,7 +153,7 @@ enum Phase {
         lease: Option<Lease>,
     },
     Working,
-    Returned(Option<Completion>),
+    Returned(Option<Box<Completion>>),
     Settle(Option<Ready>),
     Cancel(Option<Ready>),
     Recover(Option<super::registry_recovery::StoppedBinding>),
@@ -210,21 +210,30 @@ impl Lane {
         }
         self.pending_turn = Some(entry.actor);
         entry.phase = Phase::Grant(Some(ready));
+        entry.schedule_after = 0;
         Ok(())
     }
     fn accept_ack(&mut self, ack: Acknowledged) -> bool {
-        let Some(pending) = self.entries.values_mut().find_map(|entry| {
-            entry.pending.as_mut().filter(|p| {
-                p.ticket == ack.ticket && p.transition == ack.transition && p.ack.is_none()
-            })
+        let Some((pending, schedule_after)) = self.entries.values_mut().find_map(|entry| {
+            entry
+                .pending
+                .as_mut()
+                .filter(|p| {
+                    p.ticket == ack.ticket && p.transition == ack.transition && p.ack.is_none()
+                })
+                .map(|pending| (pending, &mut entry.schedule_after))
         }) else {
             return false;
         };
         pending.ack = Some(ack);
+        *schedule_after = 0;
         true
     }
 }
 impl Entry {
+    // A newly lent fair turn, first matching ACK or retained worker completion
+    // makes progress eligible immediately. Polling the same unresolved state
+    // still uses this bounded retry deadline and never replaces its observation.
     fn continuation(&mut self, now: i64, authoritative_pending: bool) -> Option<(ObjId, String)> {
         let needs_actor = self.pending.is_some()
             || matches!(
@@ -399,7 +408,7 @@ fn start(ctx: &mut Ctx<'_>) -> Result<(), BulkError> {
             account,
             actor: ctx.actor,
             nonce,
-            revision,
+            revision: Box::new(revision),
             source: Arc::from(source),
             factory: config.factory,
         })
@@ -657,6 +666,8 @@ fn advance(
             }
             _ => return Err(BulkError::Stale),
         }
+        #[cfg(test)]
+        super::registry_timing::acknowledged(ack.job, ack.transition, execution.observation());
         entry.binding = Some(binding);
         entry.pending = None;
     }
@@ -816,6 +827,8 @@ fn advance(
         .map_err(|_| BulkError::Missing)?;
         // No measurements, identities, actor override, or writes are submitted.
         // The exact ticket's self-only offer supplies all fixed parameters.
+        #[cfg(test)]
+        super::registry_timing::submit(ctx.w, entry.binding, pending.transition);
         let observation = ctx
             .submit_authoritative_observed(
                 action,
@@ -842,7 +855,8 @@ pub(super) fn completed(_ctx: &mut Ctx<'_>, runtime: &mut Runtime, done: Complet
         .find(|e| e.account == account && e.binding.is_some_and(|b| b.run == run))
     {
         if matches!(entry.phase, Phase::Working) {
-            entry.phase = Phase::Returned(Some(done));
+            entry.phase = Phase::Returned(Some(Box::new(done)));
+            entry.schedule_after = 0;
             return;
         }
     }

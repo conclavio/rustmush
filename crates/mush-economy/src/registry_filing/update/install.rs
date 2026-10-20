@@ -90,7 +90,7 @@ pub struct CompatibleUpdatePatch {
     next_transaction: u64,
     next_posts: u64,
     chunk: u64,
-    fold: UpdateFold,
+    fold: Box<UpdateFold>,
 }
 
 pub(crate) fn prepare(
@@ -201,7 +201,7 @@ fn prepare_inner(
     {
         return Err(refused());
     }
-    let fold = UpdateFold::prepare(&state.fold, &transaction)?;
+    let fold = Box::new(UpdateFold::prepare(&state.fold, &transaction)?);
     let journal = state
         .journal
         .prepare_append(
@@ -425,7 +425,7 @@ pub struct BoundCompatibleUpdate<'a> {
     after_next: u64,
     next_posts: u64,
     chunk: u64,
-    fold_patch: UpdateFold,
+    fold_patch: Box<UpdateFold>,
     next_window: Option<WindowTail>,
     payer: AccountId,
 }
@@ -469,7 +469,7 @@ impl BoundParticipant for BoundCompatibleUpdate<'_> {
         );
         cold_keys.remove(&transaction.idempotency);
         bloom.apply();
-        fold_patch.apply(fold);
+        (*fold_patch).apply(fold);
         match next_window {
             Some(window) => {
                 debit_window.insert(payer, window);

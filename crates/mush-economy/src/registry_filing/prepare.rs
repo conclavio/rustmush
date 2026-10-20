@@ -54,7 +54,7 @@ impl InitialFilingParticipant {
         &self,
         state: &EconomyStore,
         context: &OwnerPrepareContext<'_>,
-        request: crate::managed_paid_resale::PaidResaleAcceptanceRequest,
+        request: Box<crate::managed_paid_resale::PaidResaleAcceptanceRequest>,
     ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
         self.prepare_resale(
             state,
@@ -72,7 +72,7 @@ impl InitialFilingParticipant {
         self.prepare_resale(
             state,
             context,
-            crate::managed_paid_resale::native::Request::Terminal(request),
+            crate::managed_paid_resale::native::Request::Terminal(Box::new(request)),
         )
     }
     #[inline(never)]
@@ -111,7 +111,7 @@ impl InitialFilingParticipant {
         self.prepare_core(
             state,
             context,
-            crate::core_integration::money::Request::Fund(request),
+            crate::core_integration::money::Request::Fund(Box::new(request)),
         )
     }
     #[inline(never)]
@@ -124,7 +124,7 @@ impl InitialFilingParticipant {
         self.prepare_core(
             state,
             context,
-            crate::core_integration::money::Request::Complete(request),
+            crate::core_integration::money::Request::Complete(Box::new(request)),
         )
     }
     #[inline(never)]
@@ -159,7 +159,7 @@ impl InitialFilingParticipant {
                 crate::managed_renewal::prepare_holder_offer(state, context, offer, basis, None)?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::RenewalOffer(output),
-                EconomyPatch::RenewalOffer(Box::new(patch)),
+                EconomyPatch::RenewalOffer(patch),
                 writes,
             ))
         }
@@ -189,7 +189,7 @@ impl InitialFilingParticipant {
             )?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::RenewalOffer(output),
-                EconomyPatch::RenewalOffer(Box::new(patch)),
+                EconomyPatch::RenewalOffer(patch),
                 writes,
             ))
         }
@@ -204,7 +204,7 @@ impl InitialFilingParticipant {
         self.prepare_refit(
             state,
             context,
-            crate::core_refit::money::Request::Fund(request),
+            crate::core_refit::money::Request::Fund(Box::new(request)),
         )
     }
     #[inline(never)]
@@ -246,7 +246,7 @@ impl InitialFilingParticipant {
                 crate::managed_renewal::prepare_offer(state, context, request)?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::RenewalOffer(output),
-                EconomyPatch::RenewalOffer(Box::new(patch)),
+                EconomyPatch::RenewalOffer(patch),
                 writes,
             ))
         }
@@ -265,7 +265,7 @@ impl InitialFilingParticipant {
                 crate::managed_renewal::prepare_retry(state, context, offer, previous_operation)?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::RenewalOffer(output),
-                EconomyPatch::RenewalOffer(Box::new(patch)),
+                EconomyPatch::RenewalOffer(patch),
                 writes,
             ))
         }
@@ -284,7 +284,7 @@ impl InitialFilingParticipant {
                 crate::managed_renewal::prepare_service_close(state, context, operation, reason)?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::RenewalOffer(output),
-                EconomyPatch::RenewalOffer(Box::new(patch)),
+                EconomyPatch::RenewalOffer(patch),
                 writes,
             ))
         }
@@ -303,7 +303,7 @@ impl InitialFilingParticipant {
                 crate::managed_renewal::prepare_close(state, context, operation, reason)?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::RenewalOffer(output),
-                EconomyPatch::RenewalOffer(Box::new(patch)),
+                EconomyPatch::RenewalOffer(patch),
                 writes,
             ))
         }
@@ -321,7 +321,7 @@ impl InitialFilingParticipant {
                 crate::managed_renewal::prepare_funding(state, context, request)?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::RenewalFunding(output),
-                EconomyPatch::RenewalMoney(Box::new(patch)),
+                EconomyPatch::RenewalMoney(patch),
                 writes,
             ))
         }
@@ -343,7 +343,7 @@ impl InitialFilingParticipant {
             )?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::RenewalTerminal(output),
-                EconomyPatch::RenewalMoney(Box::new(patch)),
+                EconomyPatch::RenewalMoney(patch),
                 writes,
             ))
         }
@@ -365,7 +365,7 @@ impl InitialFilingParticipant {
             )?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::RenewalTerminal(output),
-                EconomyPatch::RenewalMoney(Box::new(patch)),
+                EconomyPatch::RenewalMoney(patch),
                 writes,
             ))
         }
@@ -390,7 +390,7 @@ impl InitialFilingParticipant {
             )?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::HouseRenewalOffer(output),
-                EconomyPatch::HouseRenewalOffer(Box::new(patch)),
+                EconomyPatch::HouseRenewalOffer(patch),
                 writes,
             ))
         }
@@ -420,7 +420,7 @@ impl InitialFilingParticipant {
             )?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::HouseRenewalOffer(output),
-                EconomyPatch::HouseRenewalOffer(Box::new(patch)),
+                EconomyPatch::HouseRenewalOffer(patch),
                 writes,
             ))
         }
@@ -438,7 +438,7 @@ impl InitialFilingParticipant {
                 crate::managed_house_renewal::prepare_offer(state, context, request)?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::HouseRenewalOffer(output),
-                EconomyPatch::HouseRenewalOffer(Box::new(patch)),
+                EconomyPatch::HouseRenewalOffer(patch),
                 writes,
             ))
         }
@@ -461,7 +461,7 @@ impl InitialFilingParticipant {
             )?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::HouseRenewalOffer(output),
-                EconomyPatch::HouseRenewalOffer(Box::new(patch)),
+                EconomyPatch::HouseRenewalOffer(patch),
                 writes,
             ))
         }
@@ -484,7 +484,7 @@ impl InitialFilingParticipant {
             )?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::HouseRenewalOffer(output),
-                EconomyPatch::HouseRenewalOffer(Box::new(patch)),
+                EconomyPatch::HouseRenewalOffer(patch),
                 writes,
             ))
         }
@@ -503,7 +503,7 @@ impl InitialFilingParticipant {
                 crate::managed_house_renewal::prepare_close(state, context, operation, reason)?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::HouseRenewalOffer(output),
-                EconomyPatch::HouseRenewalOffer(Box::new(patch)),
+                EconomyPatch::HouseRenewalOffer(patch),
                 writes,
             ))
         }
@@ -521,7 +521,7 @@ impl InitialFilingParticipant {
                 crate::managed_house_renewal::prepare_funding(state, context, request)?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::HouseRenewalFunding(output),
-                EconomyPatch::HouseRenewalMoney(Box::new(patch)),
+                EconomyPatch::HouseRenewalMoney(patch),
                 writes,
             ))
         }
@@ -543,7 +543,7 @@ impl InitialFilingParticipant {
             )?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::HouseRenewalTerminal(output),
-                EconomyPatch::HouseRenewalMoney(Box::new(patch)),
+                EconomyPatch::HouseRenewalMoney(patch),
                 writes,
             ))
         }
@@ -565,7 +565,7 @@ impl InitialFilingParticipant {
             )?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::HouseRenewalTerminal(output),
-                EconomyPatch::HouseRenewalMoney(Box::new(patch)),
+                EconomyPatch::HouseRenewalMoney(patch),
                 writes,
             ))
         }
@@ -742,7 +742,7 @@ impl InitialFilingParticipant {
                 crate::managed_house_purchase::prepare_funding(state, context, request)?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::HouseFunding(output),
-                EconomyPatch::Purchase(Box::new(patch)),
+                EconomyPatch::Purchase(patch),
                 writes,
             ))
         }
@@ -763,7 +763,7 @@ impl InitialFilingParticipant {
             )?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::HouseTerminal(output),
-                EconomyPatch::Purchase(Box::new(patch)),
+                EconomyPatch::Purchase(patch),
                 writes,
             ))
         }
@@ -784,7 +784,7 @@ impl InitialFilingParticipant {
             )?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::HouseTerminal(output),
-                EconomyPatch::Purchase(Box::new(patch)),
+                EconomyPatch::Purchase(patch),
                 writes,
             ))
         }
@@ -801,7 +801,7 @@ impl InitialFilingParticipant {
                 crate::managed_entitlement::prepare_funding(state, context, request)?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::EntitlementFunding(output),
-                EconomyPatch::Purchase(Box::new(patch)),
+                EconomyPatch::Purchase(patch),
                 writes,
             ))
         }
@@ -822,7 +822,7 @@ impl InitialFilingParticipant {
             )?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::EntitlementTerminal(output),
-                EconomyPatch::Purchase(Box::new(patch)),
+                EconomyPatch::Purchase(patch),
                 writes,
             ))
         }
@@ -843,7 +843,7 @@ impl InitialFilingParticipant {
             )?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::EntitlementTerminal(output),
-                EconomyPatch::Purchase(Box::new(patch)),
+                EconomyPatch::Purchase(patch),
                 writes,
             ))
         }
@@ -859,7 +859,7 @@ impl InitialFilingParticipant {
             let (output, patch, writes) = install::prepare_images(state, context, request)?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::PurchaseFunding(output),
-                EconomyPatch::Purchase(Box::new(patch)),
+                EconomyPatch::Purchase(patch),
                 writes,
             ))
         }
@@ -880,7 +880,7 @@ impl InitialFilingParticipant {
             )?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::PurchaseTerminal(output),
-                EconomyPatch::Purchase(Box::new(patch)),
+                EconomyPatch::Purchase(patch),
                 writes,
             ))
         }
@@ -901,7 +901,7 @@ impl InitialFilingParticipant {
             )?;
             Ok(OwnerPreparation::new(
                 EconomyOutput::PurchaseTerminal(output),
-                EconomyPatch::Purchase(Box::new(patch)),
+                EconomyPatch::Purchase(patch),
                 writes,
             ))
         }

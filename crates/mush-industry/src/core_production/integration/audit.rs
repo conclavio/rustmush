@@ -67,7 +67,7 @@ pub(crate) fn audit(ctx: &ModuleCtx<'_>, runtime: &Runtime) -> Result<Projection
                 if ctx
                     .action_state(&runtime.origins.certificates, &certificate.key())
                     .map_err(bad)?
-                    != Some(certificate)
+                    != Some(certificate.as_ref())
                 {
                     return Err(Error::Integrity);
                 }

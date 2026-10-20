@@ -171,7 +171,7 @@ impl<'a> HoldingAccess<'a> {
                 None => HouseHoldingRequest::own(licence),
             };
             match self.context.read_owner(&house.reader, request)? {
-                HouseHoldingResult::Holding(holding) => return Ok(holding),
+                HouseHoldingResult::Holding(holding) => return Ok(*holding),
                 HouseHoldingResult::Other => {}
             }
         }

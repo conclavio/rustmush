@@ -110,7 +110,7 @@ pub(super) fn prepare(
     context: &OwnerPrepareContext<'_>,
     request: impl Into<SubjectTerminal>,
     outcome: PurchaseOutcome,
-) -> Result<TerminalPreparation, ParticipantError> {
+) -> Result<Box<TerminalPreparation>, ParticipantError> {
     prepare_in(
         state,
         &FundingContext {
@@ -130,7 +130,7 @@ pub(super) fn prepare_in(
     context: &FundingContext<'_>,
     request: impl Into<SubjectTerminal>,
     outcome: PurchaseOutcome,
-) -> Result<TerminalPreparation, ParticipantError> {
+) -> Result<Box<TerminalPreparation>, ParticipantError> {
     let request = request.into();
     let subject = &request.purchase;
     subject.validate_shape()?;
@@ -327,7 +327,7 @@ pub(super) fn prepare_in(
         journal_seq,
         issued_at_ic: (outcome == PurchaseOutcome::Granted).then(|| context.world.world_ic_now()),
     };
-    Ok(TerminalPreparation {
+    Ok(Box::new(TerminalPreparation {
         output,
         request,
         outcome,
@@ -337,5 +337,5 @@ pub(super) fn prepare_in(
         contract,
         delta,
         transaction,
-    })
+    }))
 }

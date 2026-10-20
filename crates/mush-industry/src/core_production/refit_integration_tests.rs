@@ -12,7 +12,7 @@ use crate::core_production::refit::{
 use crate::workorder::WorkOrderId;
 use mush_tactics::{CellAddr, CellId, ComponentId, UnitMutationOp, UnitMutationPlan};
 struct Fitting {
-    f: FactoryRig,
+    f: Box<FactoryRig>,
     hull: ObjId,
     incoming: ObjId,
     manufacture: CommitToken,

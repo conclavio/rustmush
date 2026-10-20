@@ -249,7 +249,7 @@ enum Proof {
         operation: CommitToken,
         commit: CommitToken,
         action: DefinitionRef,
-        origin: OfferRecord,
+        origin: Box<OfferRecord>,
         at_ic: ClockStamp,
     },
     Grant {
@@ -287,7 +287,7 @@ pub(super) fn funding_plan(
         operation: origin.operation,
         commit,
         action: action.clone(),
-        origin: origin.clone(),
+        origin: Box::new(origin.clone()),
         at_ic: at_ic.clone(),
     })?;
     let mut plan = EconomyPlan::new(
@@ -844,7 +844,7 @@ impl RenewalReceiptAudit {
                         at_ic,
                         posted_at_utc: tx.posted_at,
                     },
-                    origin,
+                    origin: *origin,
                     hold: effect.hold.clone(),
                     plan_hash: tx.plan_hash,
                     terminal: None,

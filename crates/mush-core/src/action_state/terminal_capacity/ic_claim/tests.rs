@@ -395,12 +395,13 @@ impl ActionProvider for Provider {
     }
 }
 struct Fixture {
-    engine: Engine,
+    engine: Box<Engine>,
     defs: Arc<Defs>,
     handle: Handle,
     trace: Trace,
     disk: Disk,
 }
+#[inline(never)]
 fn fixture(generation: u64, config: Config) -> TestResult<Fixture> {
     let defs = defs(generation)?;
     let handle = Arc::new(OnceLock::new());
@@ -421,7 +422,7 @@ fn fixture(generation: u64, config: Config) -> TestResult<Fixture> {
     }
     let engine = Engine::with_modules(World::new_minimal(), Registry::new(), modules)?;
     Ok(Fixture {
-        engine,
+        engine: Box::new(engine),
         defs,
         handle: handle.get().ok_or("handle")?.clone(),
         trace,

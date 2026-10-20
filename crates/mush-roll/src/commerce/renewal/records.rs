@@ -455,7 +455,7 @@ impl RenewalStateV1 {
 
 checked!(RenewalOperationV1,OperationWire,{
     format:u16,operation:CommitToken,action:DefinitionRef,attempt:RenewalAttemptV1,
-    binding:RenewalBindingV1,offer_digest:DefinitionDigest,contract:ContractId,consent_hash:[u8;32],
+    binding:Box<RenewalBindingV1>,offer_digest:DefinitionDigest,contract:ContractId,consent_hash:[u8;32],
     created_at_ic:ClockStamp,created_at_utc:i64,state:RenewalStateV1,
 });
 impl RenewalOperationV1 {

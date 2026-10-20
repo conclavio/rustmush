@@ -24,7 +24,7 @@ fn house_two_seat_registration_is_explicit_and_keeps_both_full_protocols() -> Te
     let old = prepare(CommerceMode::Active)?
         .with_house_filings()?
         .with_house_minds(house_policy()?)?;
-    let old_config = old.house_purchases.as_ref().ok_or("House config")?;
+    let old_config = old.state.house_purchases.as_ref().ok_or("House config")?;
     let old_refs = old_config.owner_actions(HouseProtocol::HouseV1)?;
     let old_quote = old_config.quote_action(HouseProtocol::HouseV1)?;
     let old_engine = house_engine(&old, true)?;
@@ -37,7 +37,7 @@ fn house_two_seat_registration_is_explicit_and_keeps_both_full_protocols() -> Te
                 && d.reference().version() == 2)
     );
     let both = selected()?;
-    let house = both.house_purchases.as_ref().ok_or("House config")?;
+    let house = both.state.house_purchases.as_ref().ok_or("House config")?;
     assert_eq!(house.owner_actions(HouseProtocol::HouseV1)?, old_refs);
     assert_eq!(house.quote_action(HouseProtocol::HouseV1)?, old_quote);
     let v2 = house.owner_actions(HouseProtocol::HouseV2)?;
@@ -79,7 +79,11 @@ fn house_two_seat_renewals_capture_both_policies_before_registration() -> TestRe
         .with_house_mind_renewal_service()?;
     let actual = house_engine(&configured, true)?;
     let definitions = actual.registry.definitions().ok_or("definitions")?;
-    let house = configured.house_purchases.as_ref().ok_or("House config")?;
+    let house = configured
+        .state
+        .house_purchases
+        .as_ref()
+        .ok_or("House config")?;
     for protocol in [HouseProtocol::HouseV1, HouseProtocol::HouseV2] {
         assert!(
             definitions
@@ -91,6 +95,7 @@ fn house_two_seat_renewals_capture_both_policies_before_registration() -> TestRe
         }
     }
     for reference in configured
+        .state
         .house_renewals
         .as_ref()
         .ok_or("renewals")?

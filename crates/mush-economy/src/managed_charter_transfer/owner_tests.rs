@@ -102,7 +102,7 @@ enum Input {
         payer: AccountId,
     },
     Fund {
-        terms: CharterPendingTermsV1,
+        terms: Box<CharterPendingTermsV1>,
         payer: AccountId,
     },
     Terminal {
@@ -121,8 +121,8 @@ const RECEIPT_FAMILY: &str = "charter_pending_fixture_receipt";
     deny_unknown_fields
 )]
 enum FixtureEffect {
-    Initial(InitialFilingAuditSubject),
-    Pending(CharterPendingHistory),
+    Initial(Box<InitialFilingAuditSubject>),
+    Pending(Box<CharterPendingHistory>),
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -171,7 +171,7 @@ impl FixtureReceipt {
         match &self.effect {
             FixtureEffect::Initial(subject) => state.filing_receipt_audit().verify(subject)?,
             FixtureEffect::Pending(h) => {
-                if state.pending_charter_history(h.consent().operation)? != h {
+                if state.pending_charter_history(h.consent().operation)? != h.as_ref() {
                     return Err("actual native history differs from prepared output".into());
                 }
             }
@@ -289,7 +289,10 @@ impl ActionProvider for Provider {
                 })
             }
             Input::Fund { terms, payer } => {
-                EconomyRequest::CharterPendingFunding(CharterPendingFundingRequest { terms, payer })
+                EconomyRequest::CharterPendingFunding(CharterPendingFundingRequest {
+                    terms: *terms,
+                    payer,
+                })
             }
             Input::Terminal { funding, reason } => {
                 let world = ctx.world().map_err(|_| error())?;
@@ -313,7 +316,7 @@ impl ActionProvider for Provider {
         let effect = if is_initial {
             let output = output.initial_filing().map_err(|_| error())?;
             let title = output.title();
-            FixtureEffect::Initial(
+            FixtureEffect::Initial(Box::new(
                 InitialFilingAuditSubject::new(
                     output.commit_token(),
                     output.transaction(),
@@ -328,15 +331,15 @@ impl ActionProvider for Provider {
                     title.catalog.clone().ok_or_else(error)?,
                 )
                 .map_err(|_| error())?,
-            )
+            ))
         } else {
-            FixtureEffect::Pending(
+            FixtureEffect::Pending(Box::new(
                 output
                     .charter_pending()
                     .map_err(|_| error())?
                     .history()
                     .clone(),
-            )
+            ))
         };
         let value = serde_json::to_value(&effect).map_err(|_| error())?;
         txn.insert(
@@ -483,7 +486,8 @@ struct Fixture {
     staged: Option<FixtureReceipt>,
 }
 impl Fixture {
-    fn empty() -> Result<Self> {
+    #[inline(never)]
+    fn empty() -> Result<Box<Self>> {
         let rules = rules()?;
         let mut world = TestWorld::with_modules(modules(&rules, 100));
         world.world_mut().set_now(100);
@@ -496,7 +500,7 @@ impl Fixture {
             world
                 .world_mut()
                 .create(ObjKind::Thing, "Reserved native charter", GOD, None)?;
-        Ok(Self {
+        Ok(Box::new(Self {
             world,
             rules,
             actor,
@@ -504,9 +508,9 @@ impl Fixture {
             shell,
             boot: Boot::new(),
             staged: None,
-        })
+        }))
     }
-    fn new() -> Result<Self> {
+    fn new() -> Result<Box<Self>> {
         let mut f = Self::empty()?;
         for command in [
             "@instrument/register cr=0".to_owned(),
@@ -628,7 +632,7 @@ impl Fixture {
             self.buyer,
             n,
             Input::Fund {
-                terms: self.terms()?,
+                terms: Box::new(self.terms()?),
                 payer: AccountId(3),
             },
         )
@@ -649,7 +653,7 @@ impl Fixture {
             },
         )
     }
-    fn cold(&self, mut boot: Boot) -> Result<Self> {
+    fn cold(&self, mut boot: Boot) -> Result<Box<Self>> {
         let mut f = Self::empty()?;
         assert_eq!(
             (f.shell, f.actor, f.buyer),
@@ -786,7 +790,7 @@ fn token(n: u8) -> CommitToken {
     CommitToken::from_bytes([n; 16])
 }
 
-fn funded() -> Result<Fixture> {
+fn funded() -> Result<Box<Fixture>> {
     let mut f = Fixture::new()?;
     let p = f.fund(2)?;
     f.publish(f.rules.fund.clone(), 2, p)?;
@@ -957,7 +961,7 @@ fn pending_last_claim_close_and_already_due_term_cap_settle_without_waiting_more
         f.buyer,
         2,
         Input::Fund {
-            terms,
+            terms: Box::new(terms),
             payer: AccountId(3),
         },
     )?;
@@ -1271,7 +1275,7 @@ fn pending_funding_requires_the_actual_charter_birth_and_exact_configured_action
                 actor,
                 20 + change,
                 Input::Fund {
-                    terms,
+                    terms: Box::new(terms),
                     payer: AccountId(3),
                 }
             )
@@ -1341,6 +1345,6 @@ fn pending_namespace_refuses_legacy_replay_and_terminal_hold_survives_real_sweep
             .contains_key(&actual.funding().hold())
     );
     assert!(history(&f)? == actual);
-    assert!(history(&f.cold(f.boot.clone())?)? == actual);
+    assert!(history(f.cold(f.boot.clone())?.as_ref())? == actual);
     Ok(())
 }

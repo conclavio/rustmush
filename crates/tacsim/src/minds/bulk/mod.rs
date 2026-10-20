@@ -27,6 +27,8 @@ mod registry_projection;
 mod registry_recovery;
 pub(crate) mod registry_service;
 pub(crate) mod registry_tickets;
+#[cfg(test)]
+pub(crate) mod registry_timing;
 pub(crate) mod replay;
 pub(crate) mod report;
 pub(crate) mod scenarios;

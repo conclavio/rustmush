@@ -138,8 +138,8 @@ pub(super) fn current_job(
         .map_err(|_| RollError::Missing)
 }
 
-/// Own data plus an optional current marked observation, held only on this
-/// synchronous stack. No executor, paste context, World slot or response keeps it.
+/// Own data plus an optional current marked observation, owned only by this
+/// synchronous command. No executor, paste context, World slot or response keeps it.
 pub(super) struct View {
     mind: Mind,
     copy: WorkingCopy,
@@ -153,7 +153,7 @@ impl View {
         reference: &MindRef,
         conn: Option<u64>,
         use_: Use,
-    ) -> Result<Self, RollError> {
+    ) -> Result<Box<Self>, RollError> {
         let mind = roll(ctx)?.mind(ctx.actor, &reference.name)?;
         if use_ == Use::Edit && reference.revision.is_some() {
             return Err(RollError::Missing);
@@ -169,13 +169,13 @@ impl View {
                     reference,
                 )?
             };
-            return Ok(Self {
+            return Ok(Box::new(Self {
                 mind: mind.clone(),
                 copy,
                 marked: None,
                 use_,
                 actor: ctx.actor,
-            });
+            }));
         }
         // A marked refusal never falls back to original-only source access.
         let binding = Binding::capture(ctx, conn)?;
@@ -206,26 +206,26 @@ impl View {
             let copy = access.mind().draft().clone();
             (MarkedAccess::Draft(access), copy)
         };
-        Ok(Self {
+        Ok(Box::new(Self {
             mind: mind.clone(),
             copy,
             marked: Some((access, binding)),
             use_,
             actor: ctx.actor,
-        })
+        }))
     }
     pub(super) fn source(
         ctx: &Ctx<'_>,
         reference: &MindRef,
         conn: Option<u64>,
-    ) -> Result<Self, RollError> {
+    ) -> Result<Box<Self>, RollError> {
         Self::capture(ctx, reference, conn, Use::Source)
     }
     pub(super) fn current_source(
         ctx: &Ctx<'_>,
         name: &str,
         conn: Option<u64>,
-    ) -> Result<Self, RollError> {
+    ) -> Result<Box<Self>, RollError> {
         let reference = MindRef {
             name: mush_roll::canonical_name(name)?,
             revision: None,
@@ -294,7 +294,7 @@ impl View {
         }
     }
     fn publish(
-        self,
+        self: Box<Self>,
         ctx: &mut Ctx<'_>,
         base: EditBase,
         draft: WorkingCopy,
@@ -332,7 +332,7 @@ impl PasteSession {
             observed: ctx.w.world_ic_now(),
         })
     }
-    fn current(&self, ctx: &Ctx<'_>, name: &str) -> Result<View, RollError> {
+    fn current(&self, ctx: &Ctx<'_>, name: &str) -> Result<Box<View>, RollError> {
         self.binding.check(ctx)?;
         if ctx.w.dispatching_conn() != Some(self.binding.conn) {
             return Err(RollError::Missing);

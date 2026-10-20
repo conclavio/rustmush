@@ -42,7 +42,7 @@ impl GameModule for Registered {
 }
 
 struct Attempt {
-    result: Result<Engine, ModError>,
+    result: Result<Box<Engine>, ModError>,
     purchase: OriginalPurchaseConfig,
     calls: Arc<Mutex<Vec<&'static str>>>,
 }
@@ -75,6 +75,7 @@ fn participants(fee: i64) -> TestResult<PurchaseParticipants> {
     Ok(PurchaseParticipants::new(economy, retention)?)
 }
 
+#[inline(never)]
 fn attempt(market_first: bool, wiring: Wiring) -> TestResult<Attempt> {
     let writer = OriginalPurchaseWriter::new();
     let expected_participants = participants(100)?;
@@ -133,7 +134,7 @@ fn attempt(market_first: bool, wiring: Wiring) -> TestResult<Attempt> {
         })
         .collect();
     Ok(Attempt {
-        result: Engine::with_modules(World::new_minimal(), Registry::new(), modules),
+        result: Engine::with_modules(World::new_minimal(), Registry::new(), modules).map(Box::new),
         purchase,
         calls,
     })

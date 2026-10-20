@@ -599,7 +599,7 @@ impl RegisteredEntitlementWriter {
             return Err(PublicationError::Mismatch);
         }
         let roots = EntitlementRoots::listing(&self.action, ctx.commit_token(), facts)?;
-        ctx.prepare_owner(&self.roots, RootRequest::Entitlement(roots))
+        ctx.prepare_owner(&self.roots, RootRequest::Entitlement(Box::new(roots)))
             .map_err(invalid)?;
         Ok(())
     }
@@ -734,12 +734,12 @@ impl RegisteredEntitlementWriter {
         }
         ctx.prepare_owner(
             &self.roots,
-            RootRequest::Entitlement(EntitlementRoots::funding(
+            RootRequest::Entitlement(Box::new(EntitlementRoots::funding(
                 &self.action,
                 &row,
                 commit,
                 facts,
-            )?),
+            )?)),
         )
         .map_err(invalid)?;
         Ok(row)
@@ -860,7 +860,7 @@ impl RegisteredEntitlementWriter {
         {
             return Err(PublicationError::Mismatch);
         }
-        ctx.prepare_owner(&self.roots, RootRequest::Entitlement(roots))
+        ctx.prepare_owner(&self.roots, RootRequest::Entitlement(Box::new(roots)))
             .map_err(invalid)?;
         Ok(after)
     }

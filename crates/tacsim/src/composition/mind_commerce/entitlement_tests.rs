@@ -50,15 +50,17 @@ fn entitlement_opt_in_preserves_old_actions_and_freezes_actual_two_owner_protoco
     assert!(!base.configure_tacsim(layer())?.entitlement_holdings);
     let prepared = base.with_mind_entitlements(policy()?)?;
     let config = prepared
+        .state
         .entitlements
         .as_ref()
         .ok_or("actual new configuration")?;
     let old = prepared
+        .state
         .purchases
         .as_ref()
         .ok_or("actual old configuration")?
         .actions()?;
-    let mut registered = Engine::with_modules(
+    let mut registered = compose_boxed(
         World::new_minimal(),
         Registry::new(),
         vec![
@@ -113,7 +115,7 @@ fn entitlement_opt_in_preserves_old_actions_and_freezes_actual_two_owner_protoco
 fn entitlement_configuration_requires_the_exact_installed_roll_writer() -> TestResult {
     let prepared = prepared()?.with_mind_entitlements(policy()?)?;
     assert!(
-        Engine::with_modules(
+        compose_boxed(
             World::new_minimal(),
             Registry::new(),
             vec![

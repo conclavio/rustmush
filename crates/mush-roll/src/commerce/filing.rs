@@ -503,12 +503,12 @@ impl InitialFilingBuilder {
             .consume_initial_filing_shell(&self.shells, txn, shell)
             .map_err(invalid)?;
         let root_request = match parent_access {
-            Some(access) => RootRequest::DependentFiling(access.into_roots(
+            Some(access) => RootRequest::DependentFiling(Box::new(access.into_roots(
                 self.action.clone(),
                 roots,
                 expected_window,
-            )),
-            None => RootRequest::InitialFiling(roots),
+            ))),
+            None => RootRequest::InitialFiling(Box::new(roots)),
         };
         let _usage = context
             .prepare_owner(&self.roots, root_request)

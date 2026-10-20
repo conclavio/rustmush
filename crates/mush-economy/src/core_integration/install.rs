@@ -22,7 +22,7 @@ use mush_core::{OwnerId, PreparedLedgerAppend};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub struct CoreMoneyPatch {
-    prepared: MoneyPreparation,
+    prepared: Box<MoneyPreparation>,
     before_meta: MetaFence,
     before_posts: u64,
     before_accounts: Vec<Account>,
@@ -36,18 +36,18 @@ pub struct CoreMoneyPatch {
     journal: PreparedLedgerAppend,
     bloom: PreparedBloomInsert,
     chunk: u64,
-    fold: CoreMoneyFold,
+    fold: Box<CoreMoneyFold>,
 }
 pub(crate) fn prepare(
     config: &CoreIntegrationConfig,
     state: &EconomyStore,
     ctx: &OwnerPrepareContext<'_>,
     request: Request,
-) -> Result<(Output, CoreMoneyPatch, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<(Output, Box<CoreMoneyPatch>, Vec<ReplayWrite>), ParticipantError> {
     let mut prepared = money::prepare(config, state, ctx, request)?;
     let next_transaction = state.next_transaction.checked_add(1).ok_or_else(refused)?;
     let next_posts = state.posts_since_boot.checked_add(1).ok_or_else(refused)?;
-    let fold = CoreMoneyFold::prepare(&state.fold, &prepared.transaction)?;
+    let fold = Box::new(CoreMoneyFold::prepare(&state.fold, &prepared.transaction)?);
     let journal = state
         .journal
         .prepare_append(
@@ -123,7 +123,7 @@ pub(crate) fn prepare(
     let output = prepared.output.take().ok_or_else(refused)?;
     Ok((
         output,
-        CoreMoneyPatch {
+        Box::new(CoreMoneyPatch {
             prepared,
             before_meta: MetaFence::capture(state),
             before_posts: state.posts_since_boot,
@@ -139,7 +139,7 @@ pub(crate) fn prepare(
             bloom,
             chunk: state.journal.open_chunk(JOURNAL_LOG),
             fold,
-        },
+        }),
         writes,
     ))
 }
@@ -189,7 +189,7 @@ impl CoreMoneyPatch {
         Ok(())
     }
     pub(crate) fn bind(
-        self,
+        self: Box<Self>,
         state: &mut EconomyStore,
     ) -> Result<BoundCoreMoney<'_>, ParticipantError> {
         self.check_local(state)?;
@@ -221,7 +221,7 @@ impl CoreMoneyPatch {
             next_posts,
             chunk,
             ..
-        } = self;
+        } = *self;
         let journal = journal
             .bind_prepared(prepared_journal)
             .map_err(|_| refused())?;
@@ -275,7 +275,7 @@ pub struct BoundCoreMoney<'a> {
     after_hold: u64,
     next_posts: u64,
     chunk: u64,
-    fold_patch: CoreMoneyFold,
+    fold_patch: Box<CoreMoneyFold>,
     title_birth: Option<(mush_core::ObjId, crate::managed_title::TitleBirth)>,
 }
 impl BoundParticipant for BoundCoreMoney<'_> {
@@ -304,7 +304,7 @@ impl BoundParticipant for BoundCoreMoney<'_> {
         );
         self.cold_keys.remove(&self.transaction.idempotency);
         self.bloom.apply();
-        self.fold_patch.apply(self.fold);
+        (*self.fold_patch).apply(self.fold);
         match self.next_window {
             Some(w) => {
                 self.debit_window.insert(self.payer, w);

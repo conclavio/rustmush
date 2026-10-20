@@ -385,7 +385,7 @@ impl RegisteredPurchaseWriter {
         {
             return Err(PublicationError::Mismatch);
         }
-        ctx.prepare_owner(&self.roots, RootRequest::Paid(root))
+        ctx.prepare_owner(&self.roots, RootRequest::Paid(Box::new(root)))
             .map_err(invalid)?;
         Ok(row)
     }
@@ -505,7 +505,7 @@ impl RegisteredPurchaseWriter {
         {
             return Err(PublicationError::Mismatch);
         }
-        ctx.prepare_owner(&self.roots, RootRequest::Paid(roots))
+        ctx.prepare_owner(&self.roots, RootRequest::Paid(Box::new(roots)))
             .map_err(invalid)?;
         Ok(after)
     }

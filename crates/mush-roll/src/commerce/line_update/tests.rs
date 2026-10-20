@@ -147,7 +147,7 @@ impl GameModule for Rows {
 #[test]
 fn registered_update_family_bounds_complete_numeric_row_and_refuses_oversize() -> TestResult {
     let shared = Arc::new(Mutex::new(None));
-    let mut engine = Engine::with_modules(
+    let mut engine = boxed_test_engine(
         World::new_minimal(),
         Registry::new(),
         vec![Box::new(Rows(shared.clone()))],
@@ -229,7 +229,7 @@ fn update_registration_requires_explicit_active_configuration_and_actual_fee_own
         } else {
             economy
         };
-        let result = Engine::with_modules(
+        let result = boxed_test_engine(
             World::new_minimal(),
             Registry::new(),
             vec![
@@ -383,7 +383,7 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
     new.validate()?;
     assert_eq!(serde_json::to_value(&new)?, value);
     let shared = Arc::new(Mutex::new(None));
-    let mut engine = Engine::with_modules(
+    let mut engine = boxed_test_engine(
         World::new_minimal(),
         Registry::new(),
         vec![Box::new(Rows(shared.clone()))],
@@ -428,3 +428,12 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
 
 #[path = "tests/derived.rs"]
 mod derived;
+
+#[inline(never)]
+fn boxed_test_engine(
+    world: mush_core::World,
+    registry: mush_core::Registry,
+    modules: Vec<Box<dyn mush_core::GameModule>>,
+) -> std::result::Result<Box<mush_core::Engine>, mush_core::ModError> {
+    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
+}

@@ -207,12 +207,12 @@ fn fold_writes(boot: &mut Boot, writes: Vec<ReplayWrite>) {
 struct Rig {
     // Keep the composed engine out of each nested factory/refit fixture frame.
     w: Box<TestWorld>,
-    runtime: Runtime,
+    runtime: Box<Runtime>,
     policy: OriginPolicy,
     boot: Boot,
 }
 impl Rig {
-    fn new(grant: bool) -> Result<Self> {
+    fn new(grant: bool) -> Result<Box<Self>> {
         let mut r = Self::initialized(grant)?;
         r.activate()?;
         Ok(r)
@@ -231,7 +231,8 @@ impl Rig {
             .clone();
         Ok(())
     }
-    fn initialized(grant: bool) -> Result<Self> {
+    #[inline(never)]
+    fn initialized(grant: bool) -> Result<Box<Self>> {
         let mut w = TestWorld::with_modules(modules(None));
         w.world_mut().set_now(1000);
         w.world_mut().set_game_clock(mush_core::clock::GameClock {
@@ -323,12 +324,12 @@ impl Rig {
             .ok_or("Origin handles")?
             .0
             .clone();
-        let mut r = Self {
+        let mut r = Box::new(Self {
             w: Box::new(w),
             runtime,
             policy,
             boot,
-        };
+        });
         let p = r.prepare(0, GOD, 1, json!({}))?;
         r.ack(0, GOD, 1, json!({}), p)?;
         Ok(r)

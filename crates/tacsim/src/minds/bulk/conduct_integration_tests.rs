@@ -15,7 +15,7 @@ const FIRST: u128 = 150_000_000;
 const PROGRAM: &str = include_str!("../../../content/minds/house/safe_conduct.rhai");
 const ENVELOPE: &str = include_str!("../../../content/minds/house/safe_conduct.envelope.json");
 
-pub(super) fn certified_safe_conduct() -> TestResult<(Fixture, RatingRef)> {
+pub(super) fn certified_safe_conduct() -> TestResult<(Box<Fixture>, RatingRef)> {
     let mut fixture = Fixture::with_program(PROGRAM, serde_json::from_str(ENVELOPE)?)?;
     let rating = complete_registry(&mut fixture)?;
     assert_eq!(fixture.revision.envelope().declared_class, "II");
@@ -24,7 +24,7 @@ pub(super) fn certified_safe_conduct() -> TestResult<(Fixture, RatingRef)> {
 
 /// One genuine parent reused by qualified coverage; no replacement certificate,
 /// fake grant, source setter, or prepared-result constructor is involved.
-pub(super) fn filed_parent() -> TestResult<(Fixture, PurchaseFixture, RatingRef)> {
+pub(super) fn filed_parent() -> TestResult<(Box<Fixture>, PurchaseFixture, RatingRef)> {
     let (mut registry, rating) = certified_safe_conduct()?;
     let mut world = World::new_minimal();
     assert_eq!(

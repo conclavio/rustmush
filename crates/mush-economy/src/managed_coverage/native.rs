@@ -56,7 +56,7 @@ pub(crate) enum Request {
 }
 /// Deliberately no Deserialize, Clone or public constructor.
 pub struct CoverageOutput {
-    pub(super) history: CoverageHistory,
+    pub(super) history: Box<CoverageHistory>,
 }
 impl CoverageOutput {
     pub fn history(&self) -> &CoverageHistory {
@@ -271,12 +271,25 @@ pub(super) fn current(
     Ok(())
 }
 
-pub(super) fn prepare(
+struct Selected {
+    request: Request,
+    intent: BindingIntent,
+    before_history: Option<CoverageHistory>,
+    before_contract: Option<EconomicContract>,
+    before_hold: Option<Hold>,
+    before_title: EconomicAsset,
+    decision: Option<CoverageDecisionV1>,
+    next_hold: u64,
+    next_contract: u64,
+}
+
+#[inline(never)]
+fn select(
     config: &CoverageConfig,
     state: &EconomyStore,
     ctx: &OwnerPrepareContext<'_>,
     request: Request,
-) -> Result<Preparation, ParticipantError> {
+) -> Result<Box<Selected>, ParticipantError> {
     let (
         intent,
         before_history,
@@ -362,6 +375,36 @@ pub(super) fn prepare(
             )
         }
     };
+    Ok(Box::new(Selected {
+        request,
+        intent,
+        before_history,
+        before_contract,
+        before_hold,
+        before_title,
+        decision,
+        next_hold,
+        next_contract,
+    }))
+}
+
+pub(super) fn prepare(
+    config: &CoverageConfig,
+    state: &EconomyStore,
+    ctx: &OwnerPrepareContext<'_>,
+    request: Request,
+) -> Result<Box<Preparation>, ParticipantError> {
+    let Selected {
+        request,
+        intent,
+        before_history,
+        before_contract,
+        before_hold,
+        before_title,
+        decision,
+        next_hold,
+        next_contract,
+    } = *select(config, state, ctx, request)?;
     let plan = match &decision {
         Some(d) => plans::terminal(&intent, d, &before_title)?,
         None => plans::bind(&intent)?,
@@ -401,8 +444,10 @@ pub(super) fn prepare(
     if decision.is_none() {
         check_offerable(&contract, &state.snapshot).map_err(|_| refused())?;
     }
-    Ok(Preparation {
-        output: CoverageOutput { history },
+    Ok(Box::new(Preparation {
+        output: CoverageOutput {
+            history: Box::new(history),
+        },
         binding: ctx.preparation_binding(),
         request,
         before_history,
@@ -416,7 +461,7 @@ pub(super) fn prepare(
         transaction,
         next_hold,
         next_contract,
-    })
+    }))
 }
 
 pub(super) fn validate(

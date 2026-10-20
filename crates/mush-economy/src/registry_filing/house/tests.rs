@@ -129,7 +129,8 @@ fn command(world: &mut TestWorld, line: &str) -> TestResult {
     Ok(())
 }
 impl Fixture {
-    fn new() -> TestResult<Self> {
+    #[inline(never)]
+    fn new() -> TestResult<Box<Self>> {
         let issuer = SystemPrincipalId::new("roll.registry").ok_or("issuer")?;
         let mut world = TestWorld::with_modules(vec![
             Box::new(PolicyOrg(OrgModule::new())),
@@ -203,7 +204,7 @@ impl Fixture {
                 code: "mind_charter".into(),
             },
         )?);
-        Ok(Self {
+        Ok(Box::new(Self {
             world,
             actor,
             shell,
@@ -213,7 +214,7 @@ impl Fixture {
             payer,
             sink,
             adapter,
-        })
+        }))
     }
     fn state(&self) -> TestResult<EconomyStore> {
         let mut state = self

@@ -28,6 +28,10 @@ pub(crate) struct Lease {
     conduct: Option<(ConductCursor, ConductCase)>,
 }
 impl Lease {
+    #[cfg(test)]
+    pub(super) fn diagnostic_sequence(&self) -> u64 {
+        self.sequence
+    }
     pub(super) fn conduct(&self) -> Option<&(ConductCursor, ConductCase)> {
         self.conduct.as_ref()
     }

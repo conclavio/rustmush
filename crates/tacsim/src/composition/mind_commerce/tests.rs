@@ -54,7 +54,17 @@ fn quotes() -> Result<OriginalQuotePolicy, ModError> {
         OriginalDuration::new(true, 90 * 86_400, 3 * 86_400, 600)?,
     )
 }
-fn engine(config: &MindCommerce) -> Result<Engine, ModError> {
+// Keep the real constructor's owned result out of the calling test frame.
+#[inline(never)]
+fn compose_boxed(
+    world: World,
+    registry: Registry,
+    modules: Vec<Box<dyn GameModule>>,
+) -> Result<Box<Engine>, ModError> {
+    Engine::with_modules(world, registry, modules).map(Box::new)
+}
+
+fn engine(config: &MindCommerce) -> Result<Box<Engine>, ModError> {
     // The real E4 owner remains earlier than Roll and Tacsim. Their exact
     // references are validated by the final registry, not constructor order.
     let modules: Vec<Box<dyn GameModule>> = vec![
@@ -64,7 +74,7 @@ fn engine(config: &MindCommerce) -> Result<Engine, ModError> {
         Box::new(config.configure_roll(RollModule::with_writers([crate::NS]))),
         Box::new(config.configure_tacsim(layer())?),
     ];
-    Engine::with_modules(World::new_minimal(), Registry::new(), modules)
+    compose_boxed(World::new_minimal(), Registry::new(), modules)
 }
 fn has(engine: &Engine, owner: &str, kind: &str, id: &str) -> bool {
     engine.registry.definitions().is_some_and(|definitions| {
@@ -79,7 +89,7 @@ fn has(engine: &Engine, owner: &str, kind: &str, id: &str) -> bool {
 
 #[test]
 fn actual_registration_is_opt_in_and_initialize_has_no_rating_actions() -> TestResult {
-    let ordinary = Engine::with_modules(
+    let ordinary = compose_boxed(
         World::new_minimal(),
         Registry::new(),
         vec![
@@ -168,7 +178,7 @@ fn different_configuration_missing_owner_and_double_attachment_refuse() -> TestR
     let mut changed_after_attachment = prepared.configure_tacsim(layer())?;
     changed_after_attachment.cfg.match_.ai_fill = !changed_after_attachment.cfg.match_.ai_fill;
     assert!(
-        Engine::with_modules(
+        compose_boxed(
             World::new_minimal(),
             Registry::new(),
             vec![
@@ -185,7 +195,7 @@ fn different_configuration_missing_owner_and_double_attachment_refuse() -> TestR
         "actual Tacsim registration repeats the full configuration fence"
     );
     assert!(
-        Engine::with_modules(
+        compose_boxed(
             World::new_minimal(),
             Registry::new(),
             vec![
@@ -213,11 +223,12 @@ fn purchase_configuration_is_active_only_and_keeps_exact_shared_actions() -> Tes
     );
     let prepared = prepare(CommerceMode::Active)?.with_original_purchases(quotes()?)?;
     let actual = prepared
+        .state
         .purchases
         .as_ref()
         .ok_or("prepared purchases")?
         .actions()?;
-    assert_eq!(prepared.purchase_actions.as_ref(), Some(&actual));
+    assert_eq!(prepared.state.purchase_actions.as_ref(), Some(&actual));
     let configured = prepared.configure_tacsim(layer())?;
     assert!(configured.personal_filed_holdings);
     assert_eq!(
@@ -226,7 +237,7 @@ fn purchase_configuration_is_active_only_and_keeps_exact_shared_actions() -> Tes
     );
     // Real owner registrations and the real port presence gate; no venue,
     // account, licence or certificate is invented to prove composition.
-    let actual_engine = Engine::with_modules(
+    let actual_engine = compose_boxed(
         World::new_minimal(),
         Registry::new(),
         vec![
@@ -277,7 +288,7 @@ fn source_forms_are_an_explicit_host_protocol_with_a_distinct_paid_reader() -> T
         let configured = prepared.configure_tacsim(layer())?;
         assert_eq!(configured.personal_source_forms, source_forms);
         let actual =
-            Engine::with_modules(
+            compose_boxed(
                 World::new_minimal(),
                 Registry::new(),
                 vec![
@@ -346,7 +357,7 @@ fn authored_fork_engine(
     prepared: &MindCommerce,
     configured: TacsimRuleset,
 ) -> Result<Result<Box<Engine>, ModError>, ModError> {
-    Ok(Engine::with_modules(
+    Ok(compose_boxed(
         World::new_minimal(),
         Registry::new(),
         vec![
@@ -363,8 +374,7 @@ fn authored_fork_engine(
             Box::new(prepared.configure_roll(RollModule::with_writers([crate::NS]))),
             Box::new(configured),
         ],
-    )
-    .map(Box::new))
+    ))
 }
 
 #[inline(never)]
@@ -481,7 +491,7 @@ fn marked_registry_is_explicit_saved_admission_with_unchanged_rating_protocol() 
             marked.then(|| prepared.manifest())
         );
         let actual =
-            Engine::with_modules(
+            compose_boxed(
                 World::new_minimal(),
                 Registry::new(),
                 vec![
@@ -724,7 +734,7 @@ fn house_policy() -> Result<mush_market::mind_house::HousePolicy, ModError> {
         renewal_grace_seconds: 86400,
     })
 }
-fn house_engine(c: &MindCommerce, market: bool) -> Result<Engine, ModError> {
+fn house_engine(c: &MindCommerce, market: bool) -> Result<Box<Engine>, ModError> {
     let mut modules: Vec<Box<dyn GameModule>> = vec![
         Box::new(mush_org::OrgModule::new()),
         Box::new(c.configure_economy(EconomyModule::new().with_title_issuers(vec![issuer()?]))?),
@@ -742,7 +752,7 @@ fn house_engine(c: &MindCommerce, market: bool) -> Result<Engine, ModError> {
             ),
         );
     }
-    Engine::with_modules(World::new_minimal(), Registry::new(), modules)
+    compose_boxed(World::new_minimal(), Registry::new(), modules)
 }
 #[test]
 fn house_purchase_requires_explicit_active_house_and_all_actual_owners() -> TestResult {
@@ -758,7 +768,7 @@ fn house_purchase_requires_explicit_active_house_and_all_actual_owners() -> Test
     );
     let ordinary = prepare(CommerceMode::Active)?.with_house_filings()?;
     assert!(!has(
-        &house_engine(&ordinary, true)?,
+        house_engine(&ordinary, true)?.as_ref(),
         "market",
         "action",
         "purchase_house_mind"
@@ -803,8 +813,16 @@ fn house_and_historical_personal_purchases_register_without_replacing_protocols(
     assert!(has(&actual, "market", "action", "purchase_original_mind"));
     assert!(has(&actual, "market", "action", "purchase_house_mind"));
     let definitions = actual.registry.definitions().ok_or("definitions")?;
-    let old = configured.purchases.as_ref().ok_or("original config")?;
-    let house = configured.house_purchases.as_ref().ok_or("house config")?;
+    let old = configured
+        .state
+        .purchases
+        .as_ref()
+        .ok_or("original config")?;
+    let house = configured
+        .state
+        .house_purchases
+        .as_ref()
+        .ok_or("house config")?;
     assert_eq!(old.participants(), house.participants());
     for reference in old
         .actions()?
@@ -850,7 +868,7 @@ fn house_renewal_requires_explicit_active_purchase_and_all_three_owners() -> Tes
         .with_house_filings()?
         .with_house_minds(house_policy()?)?;
     assert!(!has(
-        &house_engine(&ordinary, true)?,
+        house_engine(&ordinary, true)?.as_ref(),
         "market",
         "action",
         "draft_house_mind_renewal"
@@ -903,8 +921,8 @@ fn house_renewal_service_is_optional_and_retains_exact_purchase_refs() -> TestRe
         .with_house_mind_renewal_service()?;
     let actual = house_engine(&selected, true)?;
     let definitions = actual.registry.definitions().ok_or("definitions")?;
-    let house = selected.house_purchases.as_ref().ok_or("house")?;
-    let renewal = selected.house_renewals.as_ref().ok_or("renewal")?;
+    let house = selected.state.house_purchases.as_ref().ok_or("house")?;
+    let renewal = selected.state.house_renewals.as_ref().ok_or("renewal")?;
     assert_eq!(house.participants(), renewal.participants());
     for reference in renewal
         .actions()?
@@ -923,7 +941,7 @@ fn house_renewal_service_is_optional_and_retains_exact_purchase_refs() -> TestRe
     // A missing paired native configuration must return its original error,
     // including at host composition, rather than panic on a private invariant.
     let mut missing = prepare(CommerceMode::Active)?;
-    missing.house_renewal_service = selected.house_renewal_service.clone();
+    missing.state.house_renewal_service = selected.state.house_renewal_service.clone();
     assert!(missing.configure_economy(EconomyModule::new()).is_err());
     assert!(selected.with_house_mind_renewal_service().is_err());
     Ok(())
@@ -958,7 +976,7 @@ fn derived_updates_require_real_dependent_services_and_the_distinct_fee_action()
     assert!(configured()?.with_derived_updates().is_err());
     for fee_owner in [false, true] {
         let prepared = configured()?;
-        let action = prepared.roll.derived_update_action()?;
+        let action = prepared.state.roll.derived_update_action()?;
         let mut modules: Vec<Box<dyn GameModule>> = vec![
             Box::new(prepared.configure_roll(RollModule::with_writers([crate::NS]))),
             Box::new(
@@ -974,7 +992,7 @@ fn derived_updates_require_real_dependent_services_and_the_distinct_fee_action()
                 EconomyModule::new().with_title_issuers(vec![issuer()?]),
             )?));
         }
-        let result = Engine::with_modules(World::new_minimal(), Registry::new(), modules);
+        let result = compose_boxed(World::new_minimal(), Registry::new(), modules);
         if !fee_owner {
             assert!(result.is_err());
             continue;

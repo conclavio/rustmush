@@ -12,11 +12,11 @@ fn major_rules() -> Result<Rules> {
 // Keep repeated actual Engine boot results out of the caller's default stack.
 #[inline(never)]
 fn major_fixture() -> Result<Box<Fixture>> {
-    Fixture::initialize(Fixture::empty_rules(major_rules()?)?).map(Box::new)
+    Fixture::initialize(Fixture::empty_rules(major_rules()?)?)
 }
 #[inline(never)]
 fn empty_fixture(rules: Rules) -> Result<Box<Fixture>> {
-    Fixture::empty_rules(rules).map(Box::new)
+    Fixture::empty_rules(rules)
 }
 #[inline(never)]
 fn registered(

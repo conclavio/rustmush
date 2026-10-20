@@ -74,7 +74,7 @@ fn checked(
     )
 }
 struct Module<const N: usize> {
-    protocol: Protocol,
+    protocol: Box<Protocol>,
     missing: Option<usize>,
     bad_family: bool,
 }

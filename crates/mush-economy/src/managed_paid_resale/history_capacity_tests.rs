@@ -88,12 +88,12 @@ fn before(i: Intent) -> Result<PaidResaleHistoryV1> {
         revision: 1,
     };
     let row = PaidResaleHistoryV1 {
-        acceptance: PaidResaleAcceptanceReceiptV1 {
+        acceptance: Box::new(PaidResaleAcceptanceReceiptV1 {
             transaction: TransactionId(u64::MAX - 1),
             journal_seq: u64::MAX - 1,
             plan_hash: crate::hash::plan_hash(&plans::acceptance(&i)?),
             hold: Some(hold),
-        },
+        }),
         intent: i,
         terminal: None,
     };

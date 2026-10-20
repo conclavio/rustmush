@@ -64,7 +64,7 @@ pub struct IcSortieRequest {
 enum Operation {
     Open {
         start: super::host::HostStart,
-        facts: IcAdmissionFacts,
+        facts: Box<IcAdmissionFacts>,
         profiles: Vec<SmolStr>,
     },
     Close(super::host::HostClose),
@@ -183,7 +183,7 @@ impl IcSealParticipant for IcSortieParticipant {
         IcSortieRequest {
             operation: Operation::Open {
                 start,
-                facts,
+                facts: Box::new(facts),
                 profiles,
             },
         }
@@ -233,20 +233,15 @@ fn current_unit(world: &World, expected: &TacticalUnit) -> Result<(), Participan
     }
     Ok(())
 }
-impl OwnerParticipant for IcSortieParticipant {
-    type State = IcSorties;
-    type Request = IcSortieRequest;
-    type Output = IcSortieOutput;
-    type Patch = IcSortiePatch;
-    type Bound<'a> = BoundIcSortie<'a>;
-    fn prepare(
+impl IcSortieParticipant {
+    #[inline(never)]
+    fn prepare_record(
         &self,
         state: &IcSorties,
         ctx: &OwnerPrepareContext<'_>,
-        request: IcSortieRequest,
-    ) -> Result<OwnerPreparation<IcSortieOutput, IcSortiePatch>, ParticipantError> {
-        state.ready()?;
-        let (row, conditions, unit) = match request.operation {
+        operation: Operation,
+    ) -> Result<Box<(Record, Option<UnitMutationPlan>, TacticalUnit)>, ParticipantError> {
+        let (row, conditions, unit) = match operation {
             Operation::Open {
                 start,
                 facts,
@@ -356,6 +351,24 @@ impl OwnerParticipant for IcSortieParticipant {
                 (row, Some(event.conditions.clone()), event.unit.clone())
             }
         };
+        Ok(Box::new((row, conditions, unit)))
+    }
+}
+
+impl OwnerParticipant for IcSortieParticipant {
+    type State = IcSorties;
+    type Request = IcSortieRequest;
+    type Output = IcSortieOutput;
+    type Patch = IcSortiePatch;
+    type Bound<'a> = BoundIcSortie<'a>;
+    fn prepare(
+        &self,
+        state: &IcSorties,
+        ctx: &OwnerPrepareContext<'_>,
+        request: IcSortieRequest,
+    ) -> Result<OwnerPreparation<IcSortieOutput, IcSortiePatch>, ParticipantError> {
+        state.ready()?;
+        let (row, conditions, unit) = *self.prepare_record(state, ctx, request.operation)?;
         row.validate()?;
         let close = row.closed.is_some();
         let post = if close {

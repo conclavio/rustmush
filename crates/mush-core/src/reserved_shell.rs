@@ -679,7 +679,7 @@ fn resolve_record(
 pub(crate) struct ShellObjects {
     requester: ObjId,
     before_next: u32,
-    object: Obj,
+    object: Box<Obj>,
     create: bool,
     writes: Vec<ReplayWrite>,
 }
@@ -696,7 +696,7 @@ impl ShellObjects {
         Ok(Self {
             requester,
             before_next: next,
-            object: object.clone(),
+            object: Box::new(object.clone()),
             create: true,
             writes: vec![
                 ReplayWrite::ObjectSet { object },
@@ -712,7 +712,7 @@ impl ShellObjects {
         Ok(Self {
             requester,
             before_next: world.next_id(),
-            object,
+            object: Box::new(object),
             create: false,
             writes: Vec::new(),
         })
@@ -729,7 +729,7 @@ impl ShellObjects {
             || if self.create {
                 world.get(self.object.id).is_some()
             } else {
-                world.get(self.object.id) != Some(&self.object)
+                world.get(self.object.id) != Some(self.object.as_ref())
             }
         {
             return Err(ParticipantError::Authority);
@@ -766,7 +766,7 @@ impl ShellObjects {
             if objects
                 .get(self.object.id.0 as usize)
                 .and_then(Option::as_ref)
-                != Some(&self.object)
+                != Some(self.object.as_ref())
             {
                 return Err(ParticipantError::Authority);
             }
@@ -789,13 +789,13 @@ pub(crate) struct ShellObjectStorage<'a> {
 pub(crate) struct BoundShellObjects<'a> {
     objects: &'a mut Vec<Option<Obj>>,
     next_id: &'a mut u32,
-    object: Option<Obj>,
+    object: Option<Box<Obj>>,
     after: u32,
 }
 impl BoundShellObjects<'_> {
     pub(crate) fn apply(self) {
         if let Some(object) = self.object {
-            self.objects.push(Some(object));
+            self.objects.push(Some(*object));
             *self.next_id = self.after;
         }
         // No indexes change for this unlocated, unzoned Thing. It is already

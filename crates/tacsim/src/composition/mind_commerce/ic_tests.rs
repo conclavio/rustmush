@@ -21,7 +21,7 @@ fn base() -> Result<ConfiguredIcBase, Box<dyn std::error::Error>> {
         DefinitionRegistryBuilder::new().register(OwnerId::new(crate::NS)?, descriptor)?;
     Ok(ConfiguredIcBase::new(reference, space)?)
 }
-fn composed(config: &MindCommerce, omit: Option<&str>) -> Result<Engine, ModError> {
+fn composed(config: &MindCommerce, omit: Option<&str>) -> Result<Box<Engine>, ModError> {
     let (tactics, sim) = config.configure_ic_physical(
         mush_tactics::TacticsModule::new(),
         mush_sim::SimulationModule::new(),
@@ -46,7 +46,7 @@ fn composed(config: &MindCommerce, omit: Option<&str>) -> Result<Engine, ModErro
             config.configure_roll(RollModule::with_writers([crate::NS])),
         ));
     }
-    Engine::with_modules(World::new_minimal(), Registry::new(), modules)
+    compose_boxed(World::new_minimal(), Registry::new(), modules)
 }
 #[test]
 fn ic_is_explicit_active_only_and_registers_exact_actual_four_owners() -> TestResult {

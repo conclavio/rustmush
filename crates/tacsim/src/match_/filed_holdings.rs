@@ -106,7 +106,7 @@ impl FiledExecutable {
                     line: self.holding.line().get().to_string().into(),
                     revision: self.holding.sequence(),
                     licence: self.holding.licence().get().to_string().into(),
-                    certificate,
+                    certificate: Box::new(certificate),
                 },
                 source_sha256: *self.holding.identity().source().as_bytes(),
             },

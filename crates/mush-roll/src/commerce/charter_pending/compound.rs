@@ -129,7 +129,7 @@ pub(crate) fn prepare(
         at_ic: decision.at_ic.clone(),
         at_utc: decision.posted_at_utc,
         ready: ready.clone(),
-        mode: Mode::RegistryRefund(authorization),
+        mode: Mode::RegistryRefund(Box::new(authorization)),
     };
     fence.check_world(world)?;
     let output = ctx

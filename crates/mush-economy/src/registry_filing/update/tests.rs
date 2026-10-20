@@ -512,32 +512,33 @@ struct Fixture {
     staged: Option<FixtureReceipt>,
 }
 impl Fixture {
-    fn empty() -> Result<Self> {
+    fn empty() -> Result<Box<Self>> {
         Self::empty_rules(rules()?)
     }
-    fn empty_rules(rules: Rules) -> Result<Self> {
+    #[inline(never)]
+    fn empty_rules(rules: Rules) -> Result<Box<Self>> {
         let mut world = TestWorld::with_modules(modules(&rules, 100));
         let actor = world.spawn_player("Updater");
         let shell =
             world
                 .world_mut()
                 .create(ObjKind::Thing, "Reserved update charter", GOD, None)?;
-        Ok(Self {
+        Ok(Box::new(Self {
             world,
             rules,
             actor,
             shell,
             boot: Boot::new(),
             staged: None,
-        })
+        }))
     }
-    fn new() -> Result<Self> {
+    fn new() -> Result<Box<Self>> {
         Self::initialize(Self::empty()?)
     }
-    fn new_derived() -> Result<Self> {
+    fn new_derived() -> Result<Box<Self>> {
         Self::initialize(Self::empty_rules(derived_rules()?)?)
     }
-    fn initialize(mut f: Self) -> Result<Self> {
+    fn initialize(mut f: Box<Self>) -> Result<Box<Self>> {
         for command in [
             "@instrument/register cr=0".to_owned(),
             "@account/system faucet=cr".to_owned(),

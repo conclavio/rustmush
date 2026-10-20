@@ -84,10 +84,10 @@ impl Provider {
         };
         ctx.prepare_owner(
             &self.roots,
-            RootRequest::RegistryRecall(Recall {
+            RootRequest::RegistryRecall(Box::new(Recall {
                 operation: operation.clone(),
                 fence,
-            }),
+            })),
         )
         .map_err(bad)?;
         txn.insert(

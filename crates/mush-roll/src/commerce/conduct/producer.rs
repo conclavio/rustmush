@@ -58,6 +58,12 @@ pub(crate) struct Builder<
     pub(crate) roots: ParticipantHandle<RootParticipant>,
     pub(crate) refusal: ActionError,
 }
+struct Selected {
+    request: QuotaRequest,
+    before: Option<(ConductJob, ConductExecution)>,
+    subject: Option<ConductSubject>,
+}
+
 impl<
     Q: ConductQuotaParticipant,
     A: OwnerParticipant<Request = ArtifactRequest, Output = ArtifactOutput>,
@@ -82,13 +88,13 @@ impl<
                 .map_err(invalid)
         }
     }
-    fn prepare(
+    #[inline(never)]
+    fn select(
         &self,
-        inv: &ActionInvocation,
+        request: Request,
         txn: &mut ActionTxn<'_>,
         ctx: &mut PrepareCtx<'_>,
-    ) -> Result<AuthoritativeActionOutput, PublicationError> {
-        let request = self.request(inv)?;
+    ) -> Result<Box<Selected>, PublicationError> {
         let world = ctx.world().map_err(invalid)?;
         if world
             .get(GOD)
@@ -224,6 +230,25 @@ impl<
                 (request, Some((job, execution)), None)
             }
         };
+        Ok(Box::new(Selected {
+            request,
+            before,
+            subject,
+        }))
+    }
+
+    fn prepare(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+    ) -> Result<AuthoritativeActionOutput, PublicationError> {
+        let request = self.request(inv)?;
+        let Selected {
+            request,
+            before,
+            subject,
+        } = *self.select(request, txn, ctx)?;
         let quota = ctx.prepare_owner(&self.quota, request).map_err(invalid)?;
         let commit = ctx.commit_token();
         if quota.operation() != commit

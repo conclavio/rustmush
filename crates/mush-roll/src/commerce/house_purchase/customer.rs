@@ -58,7 +58,7 @@ pub struct HouseHoldingReader(Facts);
 #[derive(Serialize)]
 pub enum HouseHoldingResult {
     Other,
-    Holding(PersonalFiledHolding),
+    Holding(Box<PersonalFiledHolding>),
 }
 
 fn error(e: impl std::fmt::Display) -> ModError {
@@ -171,7 +171,7 @@ impl OwnerReadService for HouseHoldingReader {
             return Ok(HouseHoldingResult::Other);
         }
         project_house_paid_for(ctx, holder, &f.families, &f.ratings, licence, &f.expected)
-            .map(|p| HouseHoldingResult::Holding(PersonalFiledHolding::paid(p)))
+            .map(|p| HouseHoldingResult::Holding(Box::new(PersonalFiledHolding::paid(p))))
             .map_err(refused)
     }
 }

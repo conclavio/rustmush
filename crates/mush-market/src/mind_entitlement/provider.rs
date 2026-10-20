@@ -110,6 +110,152 @@ impl Provider {
         }
         Ok(observation)
     }
+    #[inline(never)]
+    fn prepare_funding(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+        quote: CommitToken,
+        commit: CommitToken,
+    ) -> Result<(CommitToken, &'static str), String> {
+        if quote == commit {
+            return Err("quote is not acknowledged".into());
+        }
+        let q = txn
+            .get(&self.families.quotes, &quote)
+            .map_err(|e| e.to_string())?
+            .cloned()
+            .ok_or("quote unavailable")?;
+        if q.publication != quote {
+            return Err("quote key differs".into());
+        }
+        let observed = self.current(inv, txn, ctx, &q)?;
+        let economics = q.economic_subject()?;
+        self.writer
+            .preflight_funding(ctx, txn, &economics, &publication::terms(&q), &observed)
+            .map_err(|e| e.to_string())?;
+        let output = ctx
+            .prepare_owner(
+                &self.economy,
+                EconomyRequest::EntitlementFunding(economics.clone()),
+            )
+            .and_then(|o| o.entitlement_funding())
+            .map_err(|e| e.to_string())?;
+        let allocation = self
+            .writer
+            .fund(
+                ctx,
+                txn,
+                &economics,
+                &publication::terms(&q),
+                &observed,
+                &output,
+            )
+            .map_err(|e| e.to_string())?;
+        let row = EntitlementPurchaseV1::funded(
+            q,
+            self.action.clone(),
+            self.config.participants.clone(),
+            &output,
+            &allocation,
+        )?;
+        txn.insert(&self.families.operations, &commit, row.clone())
+            .map_err(|e| e.to_string())?;
+        self.families.consume_quote(txn, quote)?;
+        if txn
+            .get(&self.families.operations, &commit)
+            .map_err(|e| e.to_string())?
+            != Some(&row)
+        {
+            return Err("funded entitlement post-image differs".into());
+        }
+        ctx.reserve_mind_entitlement_purchase_completion(txn)
+            .map_err(|e| e.to_string())?;
+        Ok((commit, "funded"))
+    }
+    #[inline(never)]
+    fn prepare_terminal(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+        operation: CommitToken,
+        grant: bool,
+    ) -> Result<(CommitToken, &'static str), String> {
+        let before = txn
+            .get(&self.families.operations, &operation)
+            .map_err(|e| e.to_string())?
+            .cloned()
+            .ok_or("funded entitlement unavailable")?;
+        before.validate()?;
+        if before.operation != operation
+            || before.phase != (PurchasePhase::Funded {})
+            || before.quote.product.protocol != self.protocol
+            || (inv.actor() != before.quote.buyer && (grant || inv.actor() != mush_core::GOD))
+        {
+            return Err("entitlement terminal authority differs".into());
+        }
+        let allocation = self
+            .writer
+            .allocation(txn, operation)
+            .map_err(|e| e.to_string())?;
+        before.matches_allocation(&allocation)?;
+        let observed = if grant {
+            if before.participants != self.config.participants {
+                return Err("entitlement participants are historical".into());
+            }
+            Some(self.current(inv, txn, ctx, &before.quote)?)
+        } else {
+            None
+        };
+        let terminal = EntitlementTerminal {
+            operation,
+            purchase: before.quote.economic_subject()?,
+            funding: before.funding.clone(),
+        };
+        let request = if grant {
+            EconomyRequest::EntitlementGrant(terminal)
+        } else {
+            EconomyRequest::EntitlementRefund(terminal)
+        };
+        let output = ctx
+            .prepare_owner(&self.economy, request)
+            .and_then(|o| o.entitlement_terminal())
+            .map_err(|e| e.to_string())?;
+        let after_allocation = self
+            .writer
+            .terminal(
+                ctx,
+                txn,
+                inv.actor(),
+                &allocation,
+                &publication::terms(&before.quote),
+                observed.as_ref(),
+                &output,
+            )
+            .map_err(|e| e.to_string())?;
+        let (after, receipt) = before.terminal(&output)?;
+        after.matches_allocation(&after_allocation)?;
+        txn.replace(&self.families.operations, &operation, after.clone())
+            .map_err(|e| e.to_string())?;
+        txn.insert(&self.families.receipts, &operation, receipt.clone())
+            .map_err(|e| e.to_string())?;
+        if txn
+            .get(&self.families.operations, &operation)
+            .map_err(|e| e.to_string())?
+            != Some(&after)
+            || txn
+                .get(&self.families.receipts, &operation)
+                .map_err(|e| e.to_string())?
+                != Some(&receipt)
+        {
+            return Err("terminal entitlement post-image differs".into());
+        }
+        ctx.finish_mind_entitlement_purchase_completion(txn, operation)
+            .map_err(|e| e.to_string())?;
+        Ok((operation, if grant { "granted" } else { "refunded" }))
+    }
     fn prepare(
         &self,
         inv: &ActionInvocation,
@@ -118,136 +264,9 @@ impl Provider {
     ) -> Result<AuthoritativeActionOutput, String> {
         let commit = ctx.commit_token();
         let (operation, kind) = match self.request(inv)? {
-            Request::Fund(quote) => {
-                if quote == commit {
-                    return Err("quote is not acknowledged".into());
-                }
-                let q = txn
-                    .get(&self.families.quotes, &quote)
-                    .map_err(|e| e.to_string())?
-                    .cloned()
-                    .ok_or("quote unavailable")?;
-                if q.publication != quote {
-                    return Err("quote key differs".into());
-                }
-                let observed = self.current(inv, txn, ctx, &q)?;
-                let economics = q.economic_subject()?;
-                self.writer
-                    .preflight_funding(ctx, txn, &economics, &publication::terms(&q), &observed)
-                    .map_err(|e| e.to_string())?;
-                let output = ctx
-                    .prepare_owner(
-                        &self.economy,
-                        EconomyRequest::EntitlementFunding(economics.clone()),
-                    )
-                    .and_then(|o| o.entitlement_funding())
-                    .map_err(|e| e.to_string())?;
-                let allocation = self
-                    .writer
-                    .fund(
-                        ctx,
-                        txn,
-                        &economics,
-                        &publication::terms(&q),
-                        &observed,
-                        &output,
-                    )
-                    .map_err(|e| e.to_string())?;
-                let row = EntitlementPurchaseV1::funded(
-                    q,
-                    self.action.clone(),
-                    self.config.participants.clone(),
-                    &output,
-                    &allocation,
-                )?;
-                txn.insert(&self.families.operations, &commit, row.clone())
-                    .map_err(|e| e.to_string())?;
-                self.families.consume_quote(txn, quote)?;
-                if txn
-                    .get(&self.families.operations, &commit)
-                    .map_err(|e| e.to_string())?
-                    != Some(&row)
-                {
-                    return Err("funded entitlement post-image differs".into());
-                }
-                ctx.reserve_mind_entitlement_purchase_completion(txn)
-                    .map_err(|e| e.to_string())?;
-                (commit, "funded")
-            }
+            Request::Fund(quote) => self.prepare_funding(inv, txn, ctx, quote, commit)?,
             Request::Terminal(operation, grant) => {
-                let before = txn
-                    .get(&self.families.operations, &operation)
-                    .map_err(|e| e.to_string())?
-                    .cloned()
-                    .ok_or("funded entitlement unavailable")?;
-                before.validate()?;
-                if before.operation != operation
-                    || before.phase != (PurchasePhase::Funded {})
-                    || before.quote.product.protocol != self.protocol
-                    || (inv.actor() != before.quote.buyer
-                        && (grant || inv.actor() != mush_core::GOD))
-                {
-                    return Err("entitlement terminal authority differs".into());
-                }
-                let allocation = self
-                    .writer
-                    .allocation(txn, operation)
-                    .map_err(|e| e.to_string())?;
-                before.matches_allocation(&allocation)?;
-                let observed = if grant {
-                    if before.participants != self.config.participants {
-                        return Err("entitlement participants are historical".into());
-                    }
-                    Some(self.current(inv, txn, ctx, &before.quote)?)
-                } else {
-                    None
-                };
-                let terminal = EntitlementTerminal {
-                    operation,
-                    purchase: before.quote.economic_subject()?,
-                    funding: before.funding.clone(),
-                };
-                let request = if grant {
-                    EconomyRequest::EntitlementGrant(terminal)
-                } else {
-                    EconomyRequest::EntitlementRefund(terminal)
-                };
-                let output = ctx
-                    .prepare_owner(&self.economy, request)
-                    .and_then(|o| o.entitlement_terminal())
-                    .map_err(|e| e.to_string())?;
-                let after_allocation = self
-                    .writer
-                    .terminal(
-                        ctx,
-                        txn,
-                        inv.actor(),
-                        &allocation,
-                        &publication::terms(&before.quote),
-                        observed.as_ref(),
-                        &output,
-                    )
-                    .map_err(|e| e.to_string())?;
-                let (after, receipt) = before.terminal(&output)?;
-                after.matches_allocation(&after_allocation)?;
-                txn.replace(&self.families.operations, &operation, after.clone())
-                    .map_err(|e| e.to_string())?;
-                txn.insert(&self.families.receipts, &operation, receipt.clone())
-                    .map_err(|e| e.to_string())?;
-                if txn
-                    .get(&self.families.operations, &operation)
-                    .map_err(|e| e.to_string())?
-                    != Some(&after)
-                    || txn
-                        .get(&self.families.receipts, &operation)
-                        .map_err(|e| e.to_string())?
-                        != Some(&receipt)
-                {
-                    return Err("terminal entitlement post-image differs".into());
-                }
-                ctx.finish_mind_entitlement_purchase_completion(txn, operation)
-                    .map_err(|e| e.to_string())?;
-                (operation, if grant { "granted" } else { "refunded" })
+                self.prepare_terminal(inv, txn, ctx, operation, grant)?
             }
         };
         let outcome = RulesValue::new(

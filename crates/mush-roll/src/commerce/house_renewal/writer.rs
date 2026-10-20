@@ -483,7 +483,7 @@ impl RegisteredRenewalWriter {
                 .map_err(invalid)?;
         }
         self.readback(txn, &row, &next)?;
-        ctx.prepare_owner(&self.roots, RootRequest::HouseRenewal(roots))
+        ctx.prepare_owner(&self.roots, RootRequest::HouseRenewal(Box::new(roots)))
             .map_err(invalid)?;
         Ok(row)
     }
@@ -704,7 +704,7 @@ impl RegisteredRenewalWriter {
             return Err(PublicationError::Mismatch);
         }
         self.readback(txn, &after, &next)?;
-        ctx.prepare_owner(&self.roots, RootRequest::HouseRenewal(roots))
+        ctx.prepare_owner(&self.roots, RootRequest::HouseRenewal(Box::new(roots)))
             .map_err(invalid)?;
         Ok(after)
     }

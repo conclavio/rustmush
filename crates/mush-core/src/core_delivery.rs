@@ -99,7 +99,7 @@ pub(crate) trait DeliveryFence: Send {
 
 pub(crate) struct DeliveryObjects {
     before: [Obj; 3],
-    after: [Obj; 3],
+    after: Box<[Obj; 3]>,
     ancestors: Vec<Obj>,
     carry: CarryCheck,
     fence: Box<dyn DeliveryFence>,
@@ -186,7 +186,7 @@ impl DeliveryObjects {
             at = world.get(id).ok_or(ParticipantError::Authority)?.location;
         }
         let before = [item, source, destination];
-        let mut after = before.clone();
+        let mut after = Box::new(before.clone());
         after[0].location = Some(requester);
         after[0].modified = world.now();
         after[1].contents.retain(|id| *id != object);
@@ -258,12 +258,12 @@ impl DeliveryObjects {
 }
 pub(crate) struct BoundDeliveryObjects<'a> {
     objects: &'a mut Vec<Option<Obj>>,
-    after: [Obj; 3],
+    after: Box<[Obj; 3]>,
 }
 impl BoundDeliveryObjects<'_> {
     pub(crate) fn apply(self) {
         // All exact occupied indices are bound under the same exclusive borrow.
-        for object in self.after {
+        for object in *self.after {
             let index = object.id.0 as usize;
             self.objects[index] = Some(object);
         }

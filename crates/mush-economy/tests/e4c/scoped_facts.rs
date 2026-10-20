@@ -228,7 +228,7 @@ enum ProbeRequest {
         spoof: ObjId,
     },
     Offer {
-        spec: mush_economy::ContractSpec,
+        spec: Box<mush_economy::ContractSpec>,
         spoof: Option<ObjId>,
     },
     Amend {
@@ -271,7 +271,7 @@ impl GameModule for Probe {
                             ctx.actor = spoof;
                         }
                         assert_eq!(ctx.dispatch_actor(), actual);
-                        mush_economy::offer_contract(ctx, spec)
+                        mush_economy::offer_contract(ctx, *spec)
                             .map(Some)
                             .map_err(|_| ())
                     }
@@ -398,7 +398,7 @@ fn scoped_facts_immutable_dispatch_refuses_spoofed_read_and_programmatic_offer()
             &probe,
             r.watcher,
             ProbeRequest::Offer {
-                spec: spec(&r),
+                spec: Box::new(spec(&r)),
                 spoof: Some(r.johnson)
             }
         )
@@ -423,7 +423,7 @@ fn scoped_facts_programmatic_offer_binds_actual_id_and_survives_real_cold_boot()
             &probe,
             r.johnson,
             ProbeRequest::Offer {
-                spec: spec(&r),
+                spec: Box::new(spec(&r)),
                 spoof: None
             },
         )
@@ -441,7 +441,7 @@ fn scoped_facts_programmatic_offer_binds_actual_id_and_survives_real_cold_boot()
         &probe,
         r.johnson,
         ProbeRequest::Offer {
-            spec: spec(&r),
+            spec: Box::new(spec(&r)),
             spoof: None,
         },
     )
@@ -522,7 +522,7 @@ fn scoped_facts_copied_marker_does_not_authorize_other_contract_or_changed_surfa
             &probe,
             r.johnson,
             ProbeRequest::Offer {
-                spec: spec(&r),
+                spec: Box::new(spec(&r)),
                 spoof: None,
             },
         )
@@ -539,7 +539,7 @@ fn scoped_facts_copied_marker_does_not_authorize_other_contract_or_changed_surfa
             &probe,
             r.johnson,
             ProbeRequest::Offer {
-                spec: spec(&r),
+                spec: Box::new(spec(&r)),
                 spoof: None,
             },
         )
@@ -614,7 +614,7 @@ fn scoped_facts_programmatic_amend_authorizes_before_any_refund() {
         &probe,
         GOD,
         ProbeRequest::Offer {
-            spec: terms,
+            spec: Box::new(terms),
             spoof: None,
         },
     )

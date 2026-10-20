@@ -11,10 +11,19 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 #[path = "tests/managed_title.rs"]
 mod managed_title;
 
+#[inline(never)]
 fn fixture(
     fee: Amount,
-) -> Result<(World, EconomyStore, InitialFilingParticipant, ObjId, ObjId), Box<dyn std::error::Error>>
-{
+) -> Result<
+    (
+        Box<World>,
+        Box<EconomyStore>,
+        Box<InitialFilingParticipant>,
+        ObjId,
+        ObjId,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let mut world = World::new_minimal();
     let actor = world.create(ObjKind::Player, "Filer", GOD, None)?;
     let shell = world.create(ObjKind::Thing, "Reserved mind charter", GOD, None)?;
@@ -68,9 +77,9 @@ fn fixture(
         },
     )?;
     Ok((
-        world,
-        state,
-        InitialFilingParticipant::new(policy),
+        Box::new(world),
+        Box::new(state),
+        Box::new(InitialFilingParticipant::new(policy)),
         actor,
         shell,
     ))
@@ -87,14 +96,19 @@ fn commit() -> CommitToken {
     CommitToken::from_bytes([7; 16])
 }
 
-#[test]
-fn exact_images_are_inert_until_bound_apply_and_match_actual_state() -> TestResult {
-    let (world, mut state, adapter, actor, shell) = fixture(Amount::from_minor(100))?;
+#[inline(never)]
+fn assert_inert_filing_images(
+    world: &World,
+    state: &mut EconomyStore,
+    adapter: &InitialFilingParticipant,
+    actor: ObjId,
+    shell: ObjId,
+) -> Result<Box<InitialFilingOutput>, Box<dyn std::error::Error>> {
     let before = state.snapshot.clone();
     let before_fold = state.fold.clone();
     let before_filter = state.key_filter.clone();
     let (output, patch, writes) =
-        adapter.prepare_images(&state, &world, actor, commit(), request(actor, shell))?;
+        adapter.prepare_images(state, world, actor, commit(), request(actor, shell))?;
     assert_eq!(state.snapshot, before);
     assert_eq!(state.journal.next_seq(JOURNAL_LOG), 0);
     assert_eq!(
@@ -103,13 +117,20 @@ fn exact_images_are_inert_until_bound_apply_and_match_actual_state() -> TestResu
         "journal, two accounts, title, key and allocator travel together"
     );
     assert!(writes.iter().all(|write| adapter.accepts_write(write)));
-    drop(Arc::new(adapter.clone()).bind(&mut state, patch.into())?);
+    drop(Arc::new(adapter.clone()).bind(state, patch.into())?);
     assert_eq!(state.snapshot, before);
     assert_eq!(state.fold, before_fold);
     assert_eq!(state.key_filter, before_filter);
+    Ok(Box::new(output))
+}
+
+#[test]
+fn exact_images_are_inert_until_bound_apply_and_match_actual_state() -> TestResult {
+    let (world, mut state, adapter, actor, shell) = fixture(Amount::from_minor(100))?;
+    let output = assert_inert_filing_images(&world, &mut state, &adapter, actor, shell)?;
     let (_, patch, writes) =
         adapter.prepare_images(&state, &world, actor, commit(), request(actor, shell))?;
-    Arc::new(adapter.clone())
+    Arc::new(adapter.as_ref().clone())
         .bind(&mut state, patch.into())?
         .apply();
     assert_eq!(
@@ -162,7 +183,7 @@ fn account_doc_authority_change_without_journal_movement_refuses_before_any_appl
     let payer = state.snapshot.account_mut(AccountId(0)).ok_or("payer")?;
     payer.status = AccountStatus::Frozen; // Deliberately preserve its economic revision.
     let before = state.snapshot.clone();
-    assert!(Arc::new(adapter).bind(&mut state, patch.into()).is_err());
+    assert!(Arc::new(*adapter).bind(&mut state, patch.into()).is_err());
     assert_eq!(state.snapshot, before);
     assert!(state.snapshot.asset(shell).is_none());
     assert_eq!(state.journal.next_seq(JOURNAL_LOG), 0);
@@ -216,7 +237,7 @@ fn a_lawful_zero_fee_still_commits_title_and_auditable_payer_product_identity() 
         4,
         "zero omits account writes, never the journal/title/key/meta"
     );
-    Arc::new(adapter).bind(&mut state, patch.into())?.apply();
+    Arc::new(*adapter).bind(&mut state, patch.into())?.apply();
     let tx = state
         .transaction(output.transaction())
         .ok_or("actual transaction")?;
@@ -239,7 +260,7 @@ fn deserialized_receipt_state_is_not_verified_until_actual_replay_completion() -
     let (world, mut state, adapter, actor, shell) = fixture(Amount::from_minor(100))?;
     let (output, patch, _) =
         adapter.prepare_images(&state, &world, actor, commit(), request(actor, shell))?;
-    Arc::new(adapter).bind(&mut state, patch.into())?.apply();
+    Arc::new(*adapter).bind(&mut state, patch.into())?.apply();
     let tx = state
         .transaction(output.transaction())
         .ok_or("actual transaction")?;

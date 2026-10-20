@@ -167,7 +167,7 @@ fn parameters(f: &Fixture, org: OrgId, scope: OrgScopeId) -> Value {
 }
 #[inline(never)]
 fn house_fixture() -> Result<(Box<Fixture>, ObjId, OrgId, OrgScopeId)> {
-    let mut f = Fixture::empty_rules(house_rules()?).map(Box::new)?;
+    let mut f = Fixture::empty_rules(house_rules()?)?;
     f.world.set_now(100);
     for line in [
         "@org/create House",
@@ -488,7 +488,7 @@ fn house_update_cold_inverse_and_closed_discriminator_preserve_old_omission() ->
         let parsed = serde_json::from_value::<UpdateAuditSubject>(value);
         assert!(parsed.is_err() || parsed.is_ok_and(|r| r.validate().is_err()));
     }
-    let mut personal = Box::new(Fixture::new_derived()?);
+    let mut personal = Fixture::new_derived()?;
     for (a, n) in [
         (personal.rules.update.clone(), 2),
         (personal.rules.derived.clone().ok_or("derived")?, 3),

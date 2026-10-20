@@ -294,7 +294,10 @@ fn resale_configuration(
         None,
     )
 }
-fn configuration(manifest: DefinitionRef, source_forms: bool) -> TestResult<PurchaseConfiguration> {
+fn configuration(
+    manifest: DefinitionRef,
+    source_forms: bool,
+) -> TestResult<Box<PurchaseConfiguration>> {
     let quotes = OriginalQuoteConfig::new(
         OriginalQuotePolicy::new(
             OriginalPrice::new(
@@ -335,7 +338,7 @@ fn configuration(manifest: DefinitionRef, source_forms: bool) -> TestResult<Purc
     let writer = OriginalPurchaseWriter::new();
     let purchases =
         OriginalPurchaseConfig::new(quotes.clone(), participants.clone(), writer.clone())?;
-    Ok(PurchaseConfiguration {
+    Ok(Box::new(PurchaseConfiguration {
         paid_resales: None,
         quotes,
         purchases,
@@ -348,7 +351,7 @@ fn configuration(manifest: DefinitionRef, source_forms: bool) -> TestResult<Purc
         entitlements: None,
         renewals: None,
         minds_facts: None,
-    })
+    }))
 }
 fn entitlement_configuration(
     base: &PurchaseConfiguration,
@@ -416,7 +419,7 @@ fn renewal_configuration(
         },
     )?)
 }
-type PurchaseShared = Arc<Mutex<Option<PurchaseConfiguration>>>;
+type PurchaseShared = Arc<Mutex<Option<Box<PurchaseConfiguration>>>>;
 
 struct PurchaseRoll {
     paid_resales: bool,
@@ -440,6 +443,41 @@ struct PurchaseRoll {
     purchase: PurchaseShared,
     inner: Option<RollModule>,
 }
+impl PurchaseRoll {
+    #[inline(never)]
+    fn configure_renewals(
+        &self,
+        config: CommerceConfig,
+        purchase: &mut PurchaseConfiguration,
+        manifest: &DefinitionRef,
+    ) -> Result<CommerceConfig, ModError> {
+        let config = if self.renewals {
+            let renewal =
+                renewal_configuration(&purchase, manifest.clone()).map_err(module_error)?;
+            let renewal = if self.renewal_service {
+                renewal.with_service()?
+            } else {
+                renewal
+            };
+            let config = config.with_mind_renewals(
+                renewal.writer(),
+                purchase.participants.clone(),
+                renewal.actions()?,
+            )?;
+            let config = if let Some(service) = renewal.service_action()? {
+                config.with_mind_renewal_service(service)?
+            } else {
+                config
+            };
+            purchase.renewals = Some(renewal);
+            config
+        } else {
+            config
+        };
+        Ok(config)
+    }
+}
+
 impl GameModule for PurchaseRoll {
     fn name(&self) -> &'static str {
         "roll"
@@ -512,29 +550,7 @@ impl GameModule for PurchaseRoll {
         } else {
             config
         };
-        let config = if self.renewals {
-            let renewal =
-                renewal_configuration(&purchase, manifest.clone()).map_err(module_error)?;
-            let renewal = if self.renewal_service {
-                renewal.with_service()?
-            } else {
-                renewal
-            };
-            let config = config.with_mind_renewals(
-                renewal.writer(),
-                purchase.participants.clone(),
-                renewal.actions()?,
-            )?;
-            let config = if let Some(service) = renewal.service_action()? {
-                config.with_mind_renewal_service(service)?
-            } else {
-                config
-            };
-            purchase.renewals = Some(renewal);
-            config
-        } else {
-            config
-        };
+        let config = self.configure_renewals(config, &mut purchase, &manifest)?;
         let config = if self.author_withdrawal {
             config.with_author_withdrawal()?
         } else {
@@ -878,9 +894,10 @@ struct PurchaseFixture {
     source_forms: bool,
     resources: Resources,
     accounts: Arc<Accounts>,
-    engine: Engine,
+    // Reboot branches retain the owner on the heap, not repeated Engine stack images.
+    engine: Box<Engine>,
     disk: Disk,
-    config: PurchaseConfiguration,
+    config: Box<PurchaseConfiguration>,
     filing: DefinitionRef,
     factory: Arc<Factory>,
 }
@@ -896,6 +913,8 @@ impl PurchaseFixture {
     ) -> TestResult<Self> {
         Self::boot_options(resources, accounts, saved, source_forms, false)
     }
+    // Keep actual Engine construction out of every caller's retained fixture frame.
+    #[inline(never)]
     fn boot_options(
         resources: Resources,
         accounts: Arc<Accounts>,
@@ -905,7 +924,7 @@ impl PurchaseFixture {
     ) -> TestResult<Self> {
         let shared: Shared = Arc::new(Mutex::new(Registered::default()));
         let purchase: PurchaseShared = Arc::new(Mutex::new(None));
-        let mut engine = Engine::with_modules(
+        let mut engine = Box::new(Engine::with_modules(
             saved.world()?,
             Registry::new(),
             vec![
@@ -951,7 +970,7 @@ impl PurchaseFixture {
                     inner: None,
                 }),
             ],
-        )?;
+        )?);
         engine.set_account_identity(accounts.clone());
         let mut disk = saved.disk.clone();
         load(&mut engine, &disk)?;

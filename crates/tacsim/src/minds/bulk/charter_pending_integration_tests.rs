@@ -49,7 +49,7 @@ fn prepare(
     serial: u128,
     parameters: Value,
     key: Option<mush_core::IdempotencyKeyText>,
-) -> TestResult<Prepared> {
+) -> TestResult<Box<Prepared>> {
     let action = exact(w, id, version)?;
     let principal = PrincipalId::Object { id: actor };
     let query = w
@@ -100,22 +100,22 @@ fn prepare(
             &resolved,
             token(serial),
         )?;
-    Ok(Prepared {
+    Ok(Box::new(Prepared {
         p,
         output,
         invocation,
         action,
         serial,
-    })
+    }))
 }
-fn stage(w: &mut IcWorld, prepared: Prepared) -> TestResult {
+fn stage(w: &mut IcWorld, prepared: Box<Prepared>) -> TestResult {
     let Prepared {
         p,
         output,
         invocation: inv,
         action,
         serial,
-    } = prepared;
+    } = *prepared;
     let (outcome, resolution, mut definitions, mut witnesses, mut durable_outbox, semantic_events) =
         output.into_parts();
     definitions.extend([action.clone(), outcome.schema().clone()]);
@@ -163,7 +163,7 @@ fn take_install(w: &mut IcWorld) -> TestResult {
     w.engine.install_composed_action(install)?;
     Ok(())
 }
-fn land(w: &mut IcWorld, p: Prepared) -> TestResult {
+fn land(w: &mut IcWorld, p: Box<Prepared>) -> TestResult {
     stage(w, p)?;
     take_install(w)
 }
@@ -331,7 +331,11 @@ fn next(w: &mut IcWorld, id: &str) -> TestResult<(Box<AuthoritativeSubmit>, Arc<
         .map_err(|_| "observation type")?;
     Ok((request, proof))
 }
-fn terminal(w: &mut IcWorld, request: &AuthoritativeSubmit, serial: u128) -> TestResult<Prepared> {
+fn terminal(
+    w: &mut IcWorld,
+    request: &AuthoritativeSubmit,
+    serial: u128,
+) -> TestResult<Box<Prepared>> {
     prepare(
         w,
         request.action.key().id.as_str(),

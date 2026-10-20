@@ -86,7 +86,7 @@ pub enum MindOrigin {
         line: SmolStr,
         revision: u64,
         licence: SmolStr,
-        certificate: FiledCertificate,
+        certificate: Box<FiledCertificate>,
     },
 }
 impl MindOrigin {

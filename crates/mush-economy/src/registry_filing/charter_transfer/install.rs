@@ -120,7 +120,7 @@ pub struct CharterTransferPatch {
     next_transaction: u64,
     next_posts: u64,
     chunk: u64,
-    fold: TransferFold,
+    fold: Box<TransferFold>,
 }
 
 pub(crate) fn prepare(
@@ -168,7 +168,7 @@ pub(crate) fn prepare(
     {
         return Err(refused());
     }
-    let fold = TransferFold::prepare(&state.fold, &transaction)?;
+    let fold = Box::new(TransferFold::prepare(&state.fold, &transaction)?);
     if delta.assets.first() != Some(&fold.receipt.title)
         || fold.receipt.buyer != filer
         || fold.receipt.offer != request.offer
@@ -405,7 +405,7 @@ pub struct BoundCharterTransfer<'a> {
     after_next: u64,
     next_posts: u64,
     chunk: u64,
-    fold_patch: TransferFold,
+    fold_patch: Box<TransferFold>,
     next_window: Option<WindowTail>,
     payer: AccountId,
 }
@@ -449,7 +449,7 @@ impl BoundParticipant for BoundCharterTransfer<'_> {
         );
         cold_keys.remove(&transaction.idempotency);
         bloom.apply();
-        fold_patch.apply(fold);
+        (*fold_patch).apply(fold);
         match next_window {
             Some(window) => {
                 debit_window.insert(payer, window);

@@ -63,6 +63,125 @@ struct Provider {
     refusal: ActionError,
 }
 impl Provider {
+    #[inline(never)]
+    fn current_parent(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+        selected: (LicenceId, mush_core::ObjId),
+        basis: (
+            &super::super::records::InitialFilingOperation,
+            &super::super::records::FiledRecord,
+            &super::super::charter_transfer::records::CharterOwnershipRef,
+        ),
+    ) -> Result<Option<super::super::parent_grant::CurrentParentGrant>, PublicationError> {
+        let (id, actor) = selected;
+        let (birth, filed, ownership) = basis;
+        let parent = if let Some(initial) = &birth.parent {
+            let handle = self.parent.as_ref().ok_or(PublicationError::Unavailable)?;
+            let binding = txn
+                .get(
+                    &self.families.owner_parents,
+                    &OwnerParentBinding::key_for(id, birth.requester),
+                )
+                .map_err(invalid)?
+                .cloned()
+                .ok_or(PublicationError::Missing)?;
+            let birth_term = txn
+                .get(
+                    &self.families.terms,
+                    &OwnerTerm::encoded_key(id, birth.term),
+                )
+                .map_err(invalid)?
+                .cloned()
+                .ok_or(PublicationError::Missing)?;
+            let birth_filed = txn
+                .get(&self.families.filed, &binding.filed.key())
+                .map_err(invalid)?
+                .cloned()
+                .ok_or(PublicationError::Missing)?;
+            binding.check_rows(&birth_filed, &birth_term, birth)?;
+            if filed.content.parent() != Some(binding.parent.parent) {
+                return Err(PublicationError::Mismatch);
+            }
+            let source = txn
+                .get(&self.families.filed, &initial.parent.filed.key())
+                .map_err(invalid)?
+                .cloned()
+                .ok_or(PublicationError::Missing)?;
+            let status = txn
+                .get(&self.families.status, &initial.parent.filed.key())
+                .map_err(invalid)?
+                .cloned()
+                .ok_or(PublicationError::Missing)?;
+            source.validate()?;
+            status.validate()?;
+            if source.content.revision() != initial.parent.revision
+                || source.content.position().charter != initial.charter
+                || source.content.position().line != initial.line
+                || status.filed != initial.parent.filed
+                || status.recalled_by.is_some()
+            {
+                return Err(PublicationError::Unavailable);
+            }
+            let head = txn
+                .get(
+                    &self.families.owner_qualification_heads,
+                    &QualificationHead::key_for(id, actor),
+                )
+                .map_err(invalid)?
+                .cloned();
+            let selected = match head {
+                None if ownership.generation == 1 => initial.licence,
+                None => return Err(PublicationError::Unavailable),
+                Some(head) => {
+                    let op = txn
+                        .get(
+                            &self.families.owner_qualification_operations,
+                            &head.operation.to_hex(),
+                        )
+                        .map_err(invalid)?
+                        .cloned()
+                        .ok_or(PublicationError::Missing)?;
+                    head.matches(&op)?;
+                    op.matches_birth(&binding, &birth_filed, &birth_term, birth)?;
+                    super::super::charter_transfer::history::require_captured_in_txn(
+                        txn,
+                        ctx.world().map_err(invalid)?,
+                        &self.families,
+                        birth,
+                        op.charter_ownership.as_ref(),
+                        actor,
+                    )?;
+                    if op.charter_ownership.as_ref()
+                        != (ownership.generation > 1).then_some(ownership)
+                    {
+                        return Err(PublicationError::Unavailable);
+                    }
+                    ctx.world()
+                        .map_err(invalid)?
+                        .module_state::<crate::RollStore>()
+                        .ok_or(PublicationError::Unavailable)?
+                        .check_required_root(&op.root()?)
+                        .map_err(invalid)?;
+                    op.selected_parent.licence
+                }
+            };
+            let actual = ctx
+                .read_owner_preimage(txn, handle, ParentGrantRequest { licence: selected })
+                .map_err(invalid)?;
+            actual.check_fresh(actor, ctx.world().map_err(invalid)?)?;
+            if actual.holding().charter() != initial.charter
+                || actual.holding().line() != initial.line
+            {
+                return Err(PublicationError::Mismatch);
+            }
+            Some(actual)
+        } else {
+            None
+        };
+        Ok(parent)
+    }
     fn prepare(
         &self,
         inv: &ActionInvocation,
@@ -160,109 +279,7 @@ impl Provider {
         if current_birth.commit != birth.commit {
             return Err(PublicationError::Mismatch);
         }
-        let parent = if let Some(initial) = &birth.parent {
-            let handle = self.parent.as_ref().ok_or(PublicationError::Unavailable)?;
-            let binding = txn
-                .get(
-                    &self.families.owner_parents,
-                    &OwnerParentBinding::key_for(id, birth.requester),
-                )
-                .map_err(invalid)?
-                .cloned()
-                .ok_or(PublicationError::Missing)?;
-            let birth_term = txn
-                .get(
-                    &self.families.terms,
-                    &OwnerTerm::encoded_key(id, birth.term),
-                )
-                .map_err(invalid)?
-                .cloned()
-                .ok_or(PublicationError::Missing)?;
-            let birth_filed = txn
-                .get(&self.families.filed, &binding.filed.key())
-                .map_err(invalid)?
-                .cloned()
-                .ok_or(PublicationError::Missing)?;
-            binding.check_rows(&birth_filed, &birth_term, &birth)?;
-            if filed.content.parent() != Some(binding.parent.parent) {
-                return Err(PublicationError::Mismatch);
-            }
-            let source = txn
-                .get(&self.families.filed, &initial.parent.filed.key())
-                .map_err(invalid)?
-                .cloned()
-                .ok_or(PublicationError::Missing)?;
-            let status = txn
-                .get(&self.families.status, &initial.parent.filed.key())
-                .map_err(invalid)?
-                .cloned()
-                .ok_or(PublicationError::Missing)?;
-            source.validate()?;
-            status.validate()?;
-            if source.content.revision() != initial.parent.revision
-                || source.content.position().charter != initial.charter
-                || source.content.position().line != initial.line
-                || status.filed != initial.parent.filed
-                || status.recalled_by.is_some()
-            {
-                return Err(PublicationError::Unavailable);
-            }
-            let head = txn
-                .get(
-                    &self.families.owner_qualification_heads,
-                    &QualificationHead::key_for(id, actor),
-                )
-                .map_err(invalid)?
-                .cloned();
-            let selected = match head {
-                None if ownership.generation == 1 => initial.licence,
-                None => return Err(PublicationError::Unavailable),
-                Some(head) => {
-                    let op = txn
-                        .get(
-                            &self.families.owner_qualification_operations,
-                            &head.operation.to_hex(),
-                        )
-                        .map_err(invalid)?
-                        .cloned()
-                        .ok_or(PublicationError::Missing)?;
-                    head.matches(&op)?;
-                    op.matches_birth(&binding, &birth_filed, &birth_term, &birth)?;
-                    super::super::charter_transfer::history::require_captured_in_txn(
-                        txn,
-                        ctx.world().map_err(invalid)?,
-                        &self.families,
-                        &birth,
-                        op.charter_ownership.as_ref(),
-                        actor,
-                    )?;
-                    if op.charter_ownership.as_ref()
-                        != (ownership.generation > 1).then_some(&ownership)
-                    {
-                        return Err(PublicationError::Unavailable);
-                    }
-                    ctx.world()
-                        .map_err(invalid)?
-                        .module_state::<crate::RollStore>()
-                        .ok_or(PublicationError::Unavailable)?
-                        .check_required_root(&op.root()?)
-                        .map_err(invalid)?;
-                    op.selected_parent.licence
-                }
-            };
-            let actual = ctx
-                .read_owner_preimage(txn, handle, ParentGrantRequest { licence: selected })
-                .map_err(invalid)?;
-            actual.check_fresh(actor, ctx.world().map_err(invalid)?)?;
-            if actual.holding().charter() != initial.charter
-                || actual.holding().line() != initial.line
-            {
-                return Err(PublicationError::Mismatch);
-            }
-            Some(actual)
-        } else {
-            None
-        };
+        let parent = self.current_parent(txn, ctx, (id, actor), (&birth, &filed, &ownership))?;
         let rating = super::super::rating::reconformance::current::receipt_in_txn(
             txn,
             &self.families,
@@ -377,8 +394,11 @@ impl Provider {
                 readiness: self.readiness.clone(),
             },
         };
-        ctx.prepare_owner(&self.roots, RootRequest::OwnerAttestation(request))
-            .map_err(invalid)?;
+        ctx.prepare_owner(
+            &self.roots,
+            RootRequest::OwnerAttestation(Box::new(request)),
+        )
+        .map_err(invalid)?;
         let mut current = licence;
         current.format = 2;
         current.term = next.generation;

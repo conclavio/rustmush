@@ -19,7 +19,7 @@ use mush_core::{OwnerId, PreparedLedgerAppend};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub struct RefitMoneyPatch {
-    prepared: MoneyPreparation,
+    prepared: Box<MoneyPreparation>,
     before_meta: MetaFence,
     before_posts: u64,
     before_accounts: Vec<Account>,
@@ -33,18 +33,18 @@ pub struct RefitMoneyPatch {
     journal: PreparedLedgerAppend,
     bloom: PreparedBloomInsert,
     chunk: u64,
-    fold: RefitMoneyFold,
+    fold: Box<RefitMoneyFold>,
 }
 pub(crate) fn prepare(
     config: &CoreRefitConfig,
     state: &EconomyStore,
     ctx: &OwnerPrepareContext<'_>,
     request: Request,
-) -> Result<(Output, RefitMoneyPatch, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<(Output, Box<RefitMoneyPatch>, Vec<ReplayWrite>), ParticipantError> {
     let mut prepared = money::prepare(config, state, ctx, request)?;
     let next_transaction = state.next_transaction.checked_add(1).ok_or_else(refused)?;
     let next_posts = state.posts_since_boot.checked_add(1).ok_or_else(refused)?;
-    let fold = RefitMoneyFold::prepare(&state.fold, &prepared.transaction)?;
+    let fold = Box::new(RefitMoneyFold::prepare(&state.fold, &prepared.transaction)?);
     let journal = state
         .journal
         .prepare_append(
@@ -115,7 +115,7 @@ pub(crate) fn prepare(
     let output = prepared.output.take().ok_or_else(refused)?;
     Ok((
         output,
-        RefitMoneyPatch {
+        Box::new(RefitMoneyPatch {
             prepared,
             before_meta: MetaFence::capture(state),
             before_posts: state.posts_since_boot,
@@ -131,7 +131,7 @@ pub(crate) fn prepare(
             bloom,
             chunk: state.journal.open_chunk(JOURNAL_LOG),
             fold,
-        },
+        }),
         writes,
     ))
 }
@@ -181,7 +181,7 @@ impl RefitMoneyPatch {
         Ok(())
     }
     pub(crate) fn bind(
-        self,
+        self: Box<Self>,
         state: &mut EconomyStore,
     ) -> Result<BoundRefitMoney<'_>, ParticipantError> {
         self.check_local(state)?;
@@ -212,7 +212,7 @@ impl RefitMoneyPatch {
             next_posts,
             chunk,
             ..
-        } = self;
+        } = *self;
         let journal = journal
             .bind_prepared(prepared_journal)
             .map_err(|_| refused())?;
@@ -265,7 +265,7 @@ pub struct BoundRefitMoney<'a> {
     after_hold: u64,
     next_posts: u64,
     chunk: u64,
-    fold_patch: RefitMoneyFold,
+    fold_patch: Box<RefitMoneyFold>,
 }
 impl BoundParticipant for BoundRefitMoney<'_> {
     fn apply(self) {
@@ -290,7 +290,7 @@ impl BoundParticipant for BoundRefitMoney<'_> {
         );
         self.cold_keys.remove(&self.transaction.idempotency);
         self.bloom.apply();
-        self.fold_patch.apply(self.fold);
+        (*self.fold_patch).apply(self.fold);
         match self.next_window {
             Some(w) => {
                 self.debit_window.insert(self.payer, w);

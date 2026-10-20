@@ -1,6 +1,6 @@
 //! Actual closed registration; no certificate or trial result is constructed.
 use super::*;
-use mush_core::{Engine, GameModule, Registry, World};
+use mush_core::{GameModule, Registry, World};
 use mush_economy::{AccountId, Amount, CatalogRef};
 use mush_org::SystemPrincipalId;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -78,7 +78,7 @@ fn actual_conduct_three_owners_register_in_both_orders_without_opening_commerce(
         if reverse {
             modules.reverse();
         }
-        let mut engine = Engine::with_modules(World::new_minimal(), Registry::new(), modules)?;
+        let mut engine = compose_boxed(World::new_minimal(), Registry::new(), modules)?;
         let definitions = engine.registry.definitions().ok_or("definitions")?;
         for id in [
             "conduct_trial_admit",
@@ -121,7 +121,7 @@ fn optional_carrier_preserves_actual_registry_ref_and_default_composition() -> T
     let new = config(&carrier, CommerceMode::Active)?;
     assert_eq!(old.manifest(), new.manifest());
     assert!(old.conduct_manifest().is_none());
-    let engine = Engine::with_modules(
+    let engine = compose_boxed(
         World::new_minimal(),
         Registry::new(),
         modules(&old, ordinary)?,
@@ -135,4 +135,13 @@ fn optional_carrier_preserves_actual_registry_ref_and_default_composition() -> T
             .all(|d| d.reference().key().kind.as_str() != "conduct_manifest")
     );
     Ok(())
+}
+
+#[inline(never)]
+fn compose_boxed(
+    world: World,
+    registry: Registry,
+    modules: Vec<Box<dyn GameModule>>,
+) -> Result<Box<mush_core::Engine>, ModError> {
+    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
 }

@@ -610,7 +610,9 @@ impl<'a> ParticipantPreparation<'a> {
             txn,
             facts,
         )?;
-        *self.shell = Some(crate::core_output::image::BuiltinObjects::CoreOutput(image));
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::CoreOutput(
+            Box::new(image),
+        ));
         Ok(())
     }
     pub(crate) fn reserve_core_output<P: crate::core_output::CoreOutputPolicy>(
@@ -633,7 +635,9 @@ impl<'a> ParticipantPreparation<'a> {
             order,
             facts,
         )?;
-        *self.shell = Some(crate::core_output::image::BuiltinObjects::CoreOutput(image));
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::CoreOutput(
+            Box::new(image),
+        ));
         Ok(output)
     }
     pub(crate) fn consume_core_output<P: crate::core_output::CoreOutputPolicy>(
@@ -656,7 +660,9 @@ impl<'a> ParticipantPreparation<'a> {
             order,
             facts,
         )?;
-        *self.shell = Some(crate::core_output::image::BuiltinObjects::CoreOutput(image));
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::CoreOutput(
+            Box::new(image),
+        ));
         Ok(output)
     }
 
@@ -690,7 +696,9 @@ impl<'a> ParticipantPreparation<'a> {
             base,
             provider,
         )?;
-        *self.shell = Some(crate::core_output::image::BuiltinObjects::Delivery(image));
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::Delivery(
+            Box::new(image),
+        ));
         Ok(output)
     }
 
@@ -733,7 +741,9 @@ impl<'a> ParticipantPreparation<'a> {
             base,
             provider,
         )?;
-        *self.shell = Some(crate::core_output::image::BuiltinObjects::Exchange(image));
+        *self.shell = Some(crate::core_output::image::BuiltinObjects::Exchange(
+            Box::new(image),
+        ));
         Ok(output)
     }
 

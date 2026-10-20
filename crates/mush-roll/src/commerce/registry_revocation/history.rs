@@ -46,7 +46,7 @@ pub(crate) fn verify(
                     f,
                     initial,
                     term.generation,
-                )? != term
+                )? != term.as_ref()
             {
                 return Err(PublicationError::Mismatch);
             }
@@ -60,7 +60,7 @@ pub(crate) fn verify(
                 || licence.operation() != op.birth_operation
                 || licence.charter() != op.charter
                 || licence.line() != op.line
-                || read(ctx, &f.paid_terms, term.key())? != term
+                || read(ctx, &f.paid_terms, term.key())? != term.as_ref()
             {
                 return Err(PublicationError::Mismatch);
             }
@@ -101,7 +101,9 @@ pub(crate) fn capture(
             let term =
                 super::super::owner_attestation::history::current_in_txn(txn, world, f, &owner)?;
             Ok((
-                AcceptedTerm::Owner { term },
+                AcceptedTerm::Owner {
+                    term: Box::new(term),
+                },
                 owner.charter,
                 owner.line,
                 owner.operation,
@@ -119,7 +121,9 @@ pub(crate) fn capture(
             term.matches_current(&paid)?;
             paid_current(txn, world, f, ratings, &paid, &term)?;
             Ok((
-                AcceptedTerm::Paid { term },
+                AcceptedTerm::Paid {
+                    term: Box::new(term),
+                },
                 paid.charter(),
                 paid.line(),
                 paid.operation(),
@@ -239,9 +243,49 @@ fn paid_current(
         )?,
         _ => return Err(PublicationError::Mismatch),
     }
+    let proof = CurrentTerm {
+        txn,
+        f,
+        economy,
+        licence,
+        term,
+        birth_generation,
+        birth_term: &birth_term,
+    };
     if house.is_some() {
+        proof.house(&house)?;
+    } else {
+        proof.personal(&new)?;
+    }
+    Ok(())
+}
+
+struct CurrentTerm<'a, 'w> {
+    txn: &'a mut mush_core::ActionTxn<'w>,
+    f: &'a CommerceFamilies,
+    economy: &'a mush_economy::EconomyStore,
+    licence: &'a super::super::paid::PersonalPaidLicence,
+    term: &'a super::super::paid::PaidTermRecord,
+    birth_generation: super::super::TermGeneration,
+    birth_term: &'a super::super::paid::PaidTermRecord,
+}
+impl CurrentTerm<'_, '_> {
+    #[inline(never)]
+    fn house(
+        self,
+        house: &Option<super::super::house_purchase::HouseAllocationV1>,
+    ) -> Result<(), PublicationError> {
+        let Self {
+            txn,
+            f,
+            economy,
+            licence,
+            term,
+            birth_generation,
+            birth_term,
+        } = self;
         if term.generation() == birth_generation {
-            if term != &birth_term {
+            if term != birth_term {
                 return Err(PublicationError::Mismatch);
             }
         } else {
@@ -323,9 +367,24 @@ fn paid_current(
             }
             _ => return Err(PublicationError::Mismatch),
         }
-    } else {
+        Ok(())
+    }
+    #[inline(never)]
+    fn personal(
+        self,
+        new: &Option<super::super::entitlement::EntitlementAllocationV1>,
+    ) -> Result<(), PublicationError> {
+        let Self {
+            txn,
+            f,
+            economy,
+            licence,
+            term,
+            birth_generation,
+            birth_term,
+        } = self;
         if term.generation() == birth_generation {
-            if term != &birth_term {
+            if term != birth_term {
                 return Err(PublicationError::Mismatch);
             }
         } else {
@@ -406,6 +465,6 @@ fn paid_current(
             }
             _ => return Err(PublicationError::Mismatch),
         }
+        Ok(())
     }
-    Ok(())
 }

@@ -243,7 +243,7 @@ impl ActionProvider for Provider {
     }
 }
 struct Rig {
-    engine: Engine,
+    engine: Box<Engine>,
     buyer: ObjId,
     hidden: ObjId,
     handles: Captured,
@@ -260,7 +260,7 @@ impl Rig {
         let mut registry = Registry::new();
         mush_core::register_core_commands(&mut registry)?;
         mush_core::register_engine_commands(&mut registry)?;
-        let mut engine = Engine::with_modules(
+        let mut engine = boxed_fixture_engine(
             world,
             registry,
             vec![
@@ -631,7 +631,7 @@ fn actual_membership_copied_into_a_foreign_owner_slot_conveys_no_eligibility() -
     let mut world = World::new_minimal();
     let buyer = world.create(ObjKind::Player, "CopratesBuyer", GOD, Some(LIMBO))?;
     assert_eq!(buyer, r.buyer);
-    let engine = Engine::with_modules(world, Registry::new(), vec![Box::new(ForeignState(state))])?;
+    let engine = boxed_fixture_engine(world, Registry::new(), vec![Box::new(ForeignState(state))])?;
     assert_eq!(
         FactionStandingProvider.eval(&engine.world, "member", &json!({"faction":0}), buyer),
         Some(true)
@@ -710,7 +710,7 @@ fn registration_refuses_foreign_owner_and_duplicate_policy() -> TestResult {
     }
     for (foreign, duplicate) in [(true, false), (false, true)] {
         assert!(
-            Engine::with_modules(
+            boxed_fixture_engine(
                 World::new_minimal(),
                 Registry::new(),
                 vec![Box::new(Register { foreign, duplicate })]
@@ -719,4 +719,13 @@ fn registration_refuses_foreign_owner_and_duplicate_policy() -> TestResult {
         );
     }
     Ok(())
+}
+
+#[inline(never)]
+fn boxed_fixture_engine(
+    world: mush_core::World,
+    registry: mush_core::Registry,
+    modules: Vec<Box<dyn mush_core::GameModule>>,
+) -> Result<Box<mush_core::Engine>, mush_core::ModError> {
+    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
 }

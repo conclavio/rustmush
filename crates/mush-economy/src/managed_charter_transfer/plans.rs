@@ -24,7 +24,7 @@ impl FundingIntent {
         super::contract::funded(&self.consent, self.contract, self.hold)?;
         encode(&Proof::Fund {
             format: 1,
-            intent: self.clone(),
+            intent: Box::new(self.clone()),
         })?;
         Ok(())
     }
@@ -34,12 +34,12 @@ impl FundingIntent {
 pub(super) enum Proof {
     Fund {
         format: u16,
-        intent: FundingIntent,
+        intent: Box<FundingIntent>,
     },
     Terminal {
         format: u16,
         funding: CommitToken,
-        decision: CharterPendingDecisionV1,
+        decision: Box<CharterPendingDecisionV1>,
     },
 }
 pub(super) fn encode(proof: &Proof) -> Result<String, ParticipantError> {
@@ -84,7 +84,7 @@ pub(super) fn funding(intent: &FundingIntent) -> Result<EconomyPlan, Participant
             namespace: NAMESPACE.into(),
             correlation: encode(&Proof::Fund {
                 format: 1,
-                intent: intent.clone(),
+                intent: Box::new(intent.clone()),
             })?
             .into(),
         },
@@ -136,7 +136,7 @@ pub(super) fn terminal(
             correlation: encode(&Proof::Terminal {
                 format: 1,
                 funding: c.operation,
-                decision: decision.clone(),
+                decision: Box::new(decision.clone()),
             })?
             .into(),
         },

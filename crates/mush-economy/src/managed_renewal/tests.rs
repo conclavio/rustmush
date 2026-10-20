@@ -20,7 +20,7 @@ use mush_core::{GOD, ObjId, ObjKind, World};
 use serde_json::json;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-type Prepared = (RenewalOfferOutput, OfferPatch, Vec<ReplayWrite>);
+type Prepared = (RenewalOfferOutput, Box<OfferPatch>, Vec<ReplayWrite>);
 fn token(n: u64) -> CommitToken {
     let mut bytes = [0; 16];
     bytes[..8].copy_from_slice(&n.to_be_bytes());
@@ -46,7 +46,8 @@ struct Rig {
     close: DefinitionRef,
 }
 impl Rig {
-    fn new() -> TestResult<Self> {
+    #[inline(never)]
+    fn new() -> TestResult<Box<Self>> {
         let mut world = World::new_minimal();
         world.set_now(1000);
         let buyer = world.create(ObjKind::Player, "Renewal buyer", GOD, None)?;
@@ -153,14 +154,14 @@ impl Rig {
                 },
             },
         };
-        Ok(Self {
+        Ok(Box::new(Self {
             world,
             state,
             principal: mush_core::PrincipalId::Object { id: buyer },
             offer,
             draft: action(DRAFT_ACTION, 1)?,
             close: action(CLOSE_ACTION, 1)?,
-        })
+        }))
     }
     fn context(&self, closing: bool, commit: CommitToken) -> OfferContext<'_> {
         OfferContext {

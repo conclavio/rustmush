@@ -146,6 +146,14 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # Keep memory-size enforcement scoped to the M7 owners, including
+      # standalone integration-test targets as well as library fixtures.
+      - name: M7 memory-size limits
+        run: >-
+          cargo clippy -p mush-roll -p mush-economy -p mush-market
+          -p mush-industry -p mush-core -p tacsim --all-targets --no-deps --
+          -D clippy::large_futures -D clippy::large_stack_frames
+          -D clippy::large_enum_variant -D clippy::large_types_passed_by_value
       # There is no separate `cargo build --workspace --all-targets` step: it
       # built every test binary a second time beside the Test step's own build
       # (the only example target in the workspace, mush-bot's, is built by its

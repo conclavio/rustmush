@@ -96,10 +96,10 @@ impl RefitTerminalReceipt {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RefitPaymentHistory {
-    pub(super) intent: FundingIntent,
-    pub(crate) funding: RefitFundingReceipt,
+    pub(super) intent: Box<FundingIntent>,
+    pub(crate) funding: Box<RefitFundingReceipt>,
     #[serde(deserialize_with = "required_option")]
-    pub(crate) terminal: Option<RefitTerminalReceipt>,
+    pub(crate) terminal: Option<Box<RefitTerminalReceipt>>,
 }
 fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
@@ -117,7 +117,7 @@ impl RefitPaymentHistory {
         &self.funding
     }
     pub fn terminal(&self) -> Option<&RefitTerminalReceipt> {
-        self.terminal.as_ref()
+        self.terminal.as_deref()
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() > HISTORY_BYTES {
@@ -234,7 +234,7 @@ impl RefitPaymentHistory {
             } else {
                 RefitTerminalResult::Cancelled {}
             };
-            row.terminal = Some(RefitTerminalReceipt {
+            row.terminal = Some(Box::new(RefitTerminalReceipt {
                 commit: CommitToken::from_bytes([255; 16]),
                 action: p.action_ref(if complete {
                     super::INSTALL_ACTION
@@ -253,7 +253,7 @@ impl RefitPaymentHistory {
                 plan_hash: [255; 32],
                 hold: hold.clone(),
                 result,
-            });
+            }));
             bounded(&row, HISTORY_BYTES)?;
         }
         Ok(())
@@ -516,7 +516,7 @@ impl RefitReceiptAudit {
                 require_transaction(tx, &plan, &intent.policy.instrument)?;
                 let row = RefitPaymentHistory {
                     intent,
-                    funding: RefitFundingReceipt {
+                    funding: Box::new(RefitFundingReceipt {
                         commit,
                         action,
                         transaction: tx.id,
@@ -524,7 +524,7 @@ impl RefitReceiptAudit {
                         posted_at: tx.posted_at,
                         plan_hash: tx.plan_hash,
                         hold: effect.hold.clone(),
-                    },
+                    }),
                     terminal: None,
                 };
                 row.require_terminal_room()?;
@@ -594,7 +594,7 @@ impl RefitReceiptAudit {
             }
             RefitTerminalResult::Cancelled {}
         };
-        row.terminal = Some(RefitTerminalReceipt {
+        row.terminal = Some(Box::new(RefitTerminalReceipt {
             commit,
             action,
             transaction: tx.id,
@@ -604,7 +604,7 @@ impl RefitReceiptAudit {
             plan_hash: tx.plan_hash,
             hold: effect.hold.clone(),
             result,
-        });
+        }));
         Ok(row)
     }
 }

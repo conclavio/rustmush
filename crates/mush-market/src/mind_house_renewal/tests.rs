@@ -159,9 +159,9 @@ pub(super) fn fixture() -> TestResult<MindRenewalOperationV1> {
         attempt: RenewalAttemptV1::Automatic {},
         manifest,
         participants,
-        binding,
+        binding: Box::new(binding),
         offer_digest: offer.digest()?,
-        offer,
+        offer: Box::new(offer),
         contract: ContractId(20),
         consent_hash: [4; 32],
         created_at_ic: stamp(100),
@@ -246,15 +246,19 @@ fn parsed(value: Value) -> Result<MindRenewalOperationV1, serde_json::Error> {
 fn five_states_and_explicit_retry_roundtrip_exact_shared_data() -> TestResult {
     let draft = fixture()?;
     let fund = funded(&draft)?;
-    let rows = [
-        draft.clone(),
-        fund.clone(),
-        terminal(&fund, true)?,
-        terminal(&fund, false)?,
-        closed(&draft, false)?,
-        closed(&draft, true)?,
+    let rows: [fn(
+        &MindRenewalOperationV1,
+        &MindRenewalOperationV1,
+    ) -> TestResult<MindRenewalOperationV1>; 6] = [
+        |draft, _| Ok(draft.clone()),
+        |_, fund| Ok(fund.clone()),
+        |_, fund| terminal(fund, true),
+        |_, fund| terminal(fund, false),
+        |draft, _| closed(draft, false),
+        |draft, _| closed(draft, true),
     ];
-    for row in rows {
+    for make in rows {
+        let row = make(&draft, &fund)?;
         let bytes = serde_json::to_vec(&row)?;
         assert_eq!(MindRenewalOperationV1::decode(&bytes)?, row);
         row.matches_roll(&row.roll_projection()?)?;

@@ -106,7 +106,7 @@ impl MindsFactProvider {
         ctx.read_owner(
             self.0.economy_reader.get()?,
             reader::Query::Scoped {
-                scope: ctx.scope().clone(),
+                scope: Box::new(ctx.scope().clone()),
                 fact: fact.clone(),
             },
         )

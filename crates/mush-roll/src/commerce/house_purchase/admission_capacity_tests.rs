@@ -29,6 +29,14 @@ impl GameModule for Owner {
         Ok(())
     }
 }
+#[inline(never)]
+fn registered(shared: &Arc<Mutex<Option<Handle>>>) -> Result<Box<Engine>, ModError> {
+    Ok(Box::new(Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(Owner(shared.clone()))],
+    )?))
+}
 fn row(
     length: usize,
     generation: u64,
@@ -88,11 +96,7 @@ fn house_v2_complete_envelope_reserves_future_generation_digits_before_money() -
 }
 fn boundary(protocol: HouseProtocol) -> TestResult {
     let shared = Arc::new(Mutex::new(None));
-    let mut engine = Engine::with_modules(
-        World::new_minimal(),
-        Registry::new(),
-        vec![Box::new(Owner(shared.clone()))],
-    )?;
+    let mut engine = registered(&shared)?;
     let handle = shared
         .lock()
         .map_err(|_| "handle lock")?
@@ -137,11 +141,7 @@ fn boundary(protocol: HouseProtocol) -> TestResult {
     for generation in [1, 9, 10, u64::MAX] {
         let future = row(safe_width, generation, protocol)?;
         assert!(canonical_json_bytes_with_limit(&document(&handle, &future), 8192)?.len() <= 8192);
-        let mut independent = Engine::with_modules(
-            World::new_minimal(),
-            Registry::new(),
-            vec![Box::new(Owner(shared.clone()))],
-        )?;
+        let mut independent = registered(&shared)?;
         let independent_handle = shared
             .lock()
             .map_err(|_| "handle lock")?

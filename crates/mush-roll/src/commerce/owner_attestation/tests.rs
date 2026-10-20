@@ -167,7 +167,7 @@ impl GameModule for Rows {
 #[test]
 fn maximum_complete_operation_and_term_fit_actual_registered_family_envelopes() -> TestResult {
     let shared = Arc::new(Mutex::new(None));
-    let mut engine = Engine::with_modules(
+    let mut engine = boxed_test_engine(
         World::new_minimal(),
         Registry::new(),
         vec![Box::new(Rows(shared.clone()))],
@@ -328,7 +328,7 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
     new.validate()?;
     assert_eq!(serde_json::to_value(&new)?, value);
     let shared = Arc::new(Mutex::new(None));
-    let mut engine = Engine::with_modules(
+    let mut engine = boxed_test_engine(
         World::new_minimal(),
         Registry::new(),
         vec![Box::new(Rows(shared.clone()))],
@@ -387,7 +387,7 @@ fn attested_parent_holder_capture_is_in_the_term_and_complete_envelope() -> Test
     assert_ne!(term_digest(&old.next)?, term_digest(&captured.next)?);
     assert_eq!(serde_json::to_value(&captured)?, wire);
     let shared = Arc::new(Mutex::new(None));
-    let mut engine = Engine::with_modules(
+    let mut engine = boxed_test_engine(
         World::new_minimal(),
         Registry::new(),
         vec![Box::new(Rows(shared.clone()))],
@@ -426,4 +426,13 @@ fn attested_parent_holder_capture_is_in_the_term_and_complete_envelope() -> Test
         .ok_or("basis")? = Value::Null;
     assert!(serde_json::from_value::<AttestationOperation>(wire).is_err());
     Ok(())
+}
+
+#[inline(never)]
+fn boxed_test_engine(
+    world: mush_core::World,
+    registry: mush_core::Registry,
+    modules: Vec<Box<dyn mush_core::GameModule>>,
+) -> std::result::Result<Box<mush_core::Engine>, mush_core::ModError> {
+    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
 }

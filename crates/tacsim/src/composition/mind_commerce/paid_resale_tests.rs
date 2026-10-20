@@ -42,7 +42,7 @@ fn paid_resale_is_explicit_active_and_registers_the_exact_five_actions_in_both_o
         if reverse {
             selected.reverse();
         }
-        let actual = Engine::with_modules(World::new_minimal(), Registry::new(), selected)?;
+        let actual = compose_boxed(World::new_minimal(), Registry::new(), selected)?;
         for action in mush_roll::commerce::paid_resale::protocol::actions()? {
             actual
                 .registry
@@ -52,7 +52,7 @@ fn paid_resale_is_explicit_active_and_registers_the_exact_five_actions_in_both_o
         }
     }
     let plain = prepare(CommerceMode::Active)?.with_original_purchases(quotes()?)?;
-    let actual = Engine::with_modules(World::new_minimal(), Registry::new(), modules(&plain)?)?;
+    let actual = compose_boxed(World::new_minimal(), Registry::new(), modules(&plain)?)?;
     for action in mush_roll::commerce::paid_resale::protocol::actions()? {
         assert!(
             actual
@@ -82,7 +82,7 @@ fn paid_resale_requires_all_real_owner_providers_and_the_same_service_binding() 
             &selected
         };
         let actual =
-            Engine::with_modules(
+            compose_boxed(
                 World::new_minimal(),
                 Registry::new(),
                 vec![
@@ -101,7 +101,7 @@ fn paid_resale_requires_all_real_owner_providers_and_the_same_service_binding() 
         assert!(actual.is_err(), "missing paid resale owner was accepted");
     }
     let c = configured()?;
-    let original = c.paid_resales.as_ref().ok_or("optional resale")?;
+    let original = c.state.paid_resales.as_ref().ok_or("optional resale")?;
     let wrong = mush_market::mind_paid_resale::PaidResaleConfig::new(
         issuer()?,
         mush_core::ObjId(20),
@@ -110,7 +110,7 @@ fn paid_resale_requires_all_real_owner_providers_and_the_same_service_binding() 
         original.writer(),
         None,
     )?;
-    let actual = Engine::with_modules(
+    let actual = compose_boxed(
         World::new_minimal(),
         Registry::new(),
         vec![
@@ -148,7 +148,7 @@ fn paid_resale_compound_revocation_keeps_both_explicit_configuration_orders() ->
             c.with_registry_revocation(policy.clone())?
                 .with_paid_mind_resales(mush_core::GOD, 60)?
         };
-        let actual = Engine::with_modules(World::new_minimal(), Registry::new(), modules(&c)?)?;
+        let actual = compose_boxed(World::new_minimal(), Registry::new(), modules(&c)?)?;
         actual
             .registry
             .definitions()

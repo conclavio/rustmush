@@ -63,8 +63,8 @@ macro_rules! data {
 }
 data!(MindRenewalOperationV1,OperationWire,{
     format:u16,operation:CommitToken,action:DefinitionRef,attempt:RenewalAttemptV1,
-    manifest:DefinitionRef,participants:[DefinitionRef;2],binding:RenewalBindingV1,
-    offer:RenewalOffer,offer_digest:DefinitionDigest,contract:ContractId,consent_hash:[u8;32],
+    manifest:DefinitionRef,participants:[DefinitionRef;2],binding:Box<RenewalBindingV1>,
+    offer:Box<RenewalOffer>,offer_digest:DefinitionDigest,contract:ContractId,consent_hash:[u8;32],
     created_at_ic:ClockStamp,created_at_utc:i64,state:RenewalStateV1,
 });
 

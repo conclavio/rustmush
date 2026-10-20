@@ -422,14 +422,17 @@ fn setup(
     Ok((configured, product, payer, treasury, org, scope))
 }
 
-pub(super) fn exercise(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> TestResult {
-    eprintln!("M7_STORY phase=coverage_composed event=begin");
-    let (mut w, product, payer, treasury, _, scope) = setup(f, base, saved)?;
-    publication_fences(f, &w, &w.snapshot(), &product)?;
-    let publication = reference(&w, "publish_hull_coverage")?;
+#[inline(never)]
+fn publish_ordinary_product(
+    f: &PurchaseFixture,
+    w: &mut IcWorld,
+    product: &CoverageProductV1,
+) -> TestResult<Durable> {
+    publication_fences(f, w, &w.snapshot(), product)?;
+    let publication = reference(w, "publish_hull_coverage")?;
     assert!(
         prepare(
-            &mut w,
+            w,
             BUYER,
             &publication,
             FIRST,
@@ -439,16 +442,23 @@ pub(super) fn exercise(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> 
         "customer is not publisher"
     );
     let p = prepare(
-        &mut w,
+        w,
         GOD,
         &publication,
         FIRST,
         json!({"product":product.digest()?.to_hex()}),
     )?;
-    install(&mut w, &publication, FIRST, p)?;
+    install(w, &publication, FIRST, p)?;
     let published = w.snapshot();
     assert_eq!(rows(&w.disk, "tacsim", "tacsim_coverage_products").len(), 1);
     assert!(rows(&w.disk, "tacsim", "tacsim_coverage_policies").is_empty());
+    Ok(published)
+}
+
+pub(super) fn exercise(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> TestResult {
+    eprintln!("M7_STORY phase=coverage_composed event=begin");
+    let (mut w, product, payer, treasury, _, scope) = setup(f, base, saved)?;
+    let published = publish_ordinary_product(f, &mut w, &product)?;
     let original_money = (money(&w, payer)?, money(&w, treasury)?);
     let h = host(&w)?;
     // A published product without a genuine acknowledged withheld departure

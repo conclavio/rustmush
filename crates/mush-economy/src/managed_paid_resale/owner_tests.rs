@@ -92,7 +92,7 @@ fn rules() -> Result<Rules> {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Input {
     Accept {
-        terms: PaidResaleTermsV1,
+        terms: Box<PaidResaleTermsV1>,
         payer: AccountId,
         claims: PaidResaleClaimsV1,
         mode: PaidResaleModeV1,
@@ -246,13 +246,13 @@ impl ActionProvider for Provider {
                 payer,
                 claims,
                 mode,
-            } => EconomyRequest::PaidResaleAcceptance(PaidResaleAcceptanceRequest {
-                terms,
+            } => EconomyRequest::PaidResaleAcceptance(Box::new(PaidResaleAcceptanceRequest {
+                terms: *terms,
                 payer,
                 claims,
                 mode,
                 offer_digest: DefinitionDigest::from_bytes([44; 32]),
-            }),
+            })),
             Input::Terminal { acceptance, reason } => {
                 let w = ctx.world().map_err(|_| error())?;
                 EconomyRequest::PaidResaleTerminal(PaidResaleTerminalRequest {
@@ -428,7 +428,8 @@ struct Fixture {
     staged: Option<FixtureReceipt>,
 }
 impl Fixture {
-    fn empty_enabled(enabled: bool) -> Result<Self> {
+    #[inline(never)]
+    fn empty_enabled(enabled: bool) -> Result<Box<Self>> {
         let rules = rules()?;
         let mut world = TestWorld::with_modules(modules(&rules, enabled));
         world.world_mut().set_now(100);
@@ -440,7 +441,7 @@ impl Fixture {
         let shell = world
             .world_mut()
             .create(ObjKind::Thing, "Inert paid basis", GOD, None)?;
-        Ok(Self {
+        Ok(Box::new(Self {
             world,
             rules,
             actor,
@@ -448,12 +449,12 @@ impl Fixture {
             shell,
             boot: Boot::new(),
             staged: None,
-        })
+        }))
     }
-    fn empty() -> Result<Self> {
+    fn empty() -> Result<Box<Self>> {
         Self::empty_enabled(true)
     }
-    fn new() -> Result<Self> {
+    fn new() -> Result<Box<Self>> {
         let mut f = Self::empty()?;
         for command in [
             "@instrument/register cr=0".to_owned(),
@@ -597,7 +598,7 @@ impl Fixture {
             self.buyer,
             n,
             Input::Accept {
-                terms,
+                terms: Box::new(terms),
                 payer: AccountId(3),
                 claims: PaidResaleClaimsV1 {
                     next_transition: 4,
@@ -623,10 +624,10 @@ impl Fixture {
             },
         )
     }
-    fn cold(&self, boot: Boot) -> Result<Self> {
+    fn cold(&self, boot: Boot) -> Result<Box<Self>> {
         self.cold_enabled(boot, true)
     }
-    fn cold_enabled(&self, mut boot: Boot, enabled: bool) -> Result<Self> {
+    fn cold_enabled(&self, mut boot: Boot, enabled: bool) -> Result<Box<Self>> {
         let mut f = Self::empty_enabled(enabled)?;
         assert_eq!(
             (f.shell, f.actor, f.buyer),
@@ -763,7 +764,7 @@ fn token(n: u8) -> CommitToken {
     CommitToken::from_bytes([n; 16])
 }
 
-fn funded() -> Result<Fixture> {
+fn funded() -> Result<Box<Fixture>> {
     let mut f = Fixture::new()?;
     let p = f.accept(2, PaidResaleModeV1::Pending)?;
     f.publish(f.rules.actions[2].clone(), 2, p)?;
@@ -811,7 +812,7 @@ fn resale_immediate_debits_gross_and_credits_exact_split_without_title_or_hold()
     assert!(
         tx.asset_effects.is_empty() && tx.hold_effects.is_empty() && tx.custody_effects.is_empty()
     );
-    assert!(history(&f.cold(f.boot.clone())?)? == h);
+    assert!(history(f.cold(f.boot.clone())?.as_ref())? == h);
     Ok(())
 }
 
@@ -843,7 +844,7 @@ fn resale_pending_holds_gross_then_native_last_close_pays_and_replays() -> Resul
         f.state().snapshot.hold(hold).ok_or("terminal hold")?.status,
         HoldStatus::Consumed { .. }
     ));
-    assert!(history(&f.cold(f.boot.clone())?)? == after);
+    assert!(history(f.cold(f.boot.clone())?.as_ref())? == after);
     assert!(
         f.terminal(
             4,
@@ -896,7 +897,7 @@ fn resale_refund_uses_retained_money_when_buyer_unavailable_or_clock_changed() -
                 .status,
             HoldStatus::Released
         );
-        assert!(history(&f.cold(f.boot.clone())?)? == h);
+        assert!(history(f.cold(f.boot.clone())?.as_ref())? == h);
     }
     Ok(())
 }
@@ -923,7 +924,7 @@ fn resale_deadline_is_actual_and_lapsed_property_keeps_immutable_dates() -> Resu
         f.buyer,
         2,
         Input::Accept {
-            terms,
+            terms: Box::new(terms),
             payer: AccountId(3),
             claims: PaidResaleClaimsV1 {
                 next_transition: 4,
@@ -936,7 +937,7 @@ fn resale_deadline_is_actual_and_lapsed_property_keeps_immutable_dates() -> Resu
     let h = history(&f)?;
     assert_eq!(h.consent().terms.basis.term, original);
     assert!(h.consent().accepted_at_ic.at >= original.window.grace_end);
-    assert!(history(&f.cold(f.boot.clone())?)? == h);
+    assert!(history(f.cold(f.boot.clone())?.as_ref())? == h);
     Ok(())
 }
 
@@ -944,7 +945,7 @@ fn resale_deadline_is_actual_and_lapsed_property_keeps_immutable_dates() -> Resu
 fn resale_actor_action_offer_reuse_and_false_refund_reasons_refuse() -> Result {
     let mut f = Fixture::new()?;
     let input = || Input::Accept {
-        terms: f.terms().expect("terms"),
+        terms: Box::new(f.terms().expect("terms")),
         payer: AccountId(3),
         claims: PaidResaleClaimsV1 {
             next_transition: 4,
@@ -1105,7 +1106,7 @@ fn resale_cold_inventory_refuses_missing_or_crossed_native_documents() -> Result
             "native inverse audit must refuse corrupted document"
         );
     }
-    assert!(history(&f.cold(f.boot.clone())?)? == h);
+    assert!(history(f.cold(f.boot.clone())?.as_ref())? == h);
     Ok(())
 }
 
@@ -1213,7 +1214,7 @@ fn resale_namespace_blocks_legacy_posts_and_real_sweep_retains_terminal_hold() -
     fold_module_ops_into(&mut f.boot, f.world.take_module_ops());
     assert!(f.state().snapshot.hold(hold).is_some());
     assert!(f.state().fold.journal_holds.contains_key(&hold));
-    assert!(history(&f.cold(f.boot.clone())?)? == actual);
+    assert!(history(f.cold(f.boot.clone())?.as_ref())? == actual);
     Ok(())
 }
 
@@ -1290,7 +1291,7 @@ fn resale_six_real_payees_include_separate_gross_buyer_royalty_and_parent_title_
             f.buyer,
             2,
             Input::Accept {
-                terms,
+                terms: Box::new(terms),
                 payer: AccountId(3),
                 claims: PaidResaleClaimsV1 {
                     next_transition: 4,

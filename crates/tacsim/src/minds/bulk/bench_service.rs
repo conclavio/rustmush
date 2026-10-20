@@ -940,6 +940,7 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
                 }
                 match done.result? {
                     ResultValue::Open(opened) => {
+                        let opened = *opened;
                         let prepared = runtime.benches.prepare_open(
                             row.connection,
                             opened.reference,

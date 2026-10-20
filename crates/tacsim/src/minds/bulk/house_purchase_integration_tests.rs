@@ -425,7 +425,7 @@ fn boot_resale_options(
         .ok_or("Registry factory")?;
     let mut w = PlayerWorld {
         minds_facts: None,
-        engine,
+        engine: Box::new(engine),
         tasks,
         egress,
         image,

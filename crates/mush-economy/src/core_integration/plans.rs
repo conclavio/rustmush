@@ -95,7 +95,7 @@ pub(super) enum Proof {
         format: u16,
         commit: CommitToken,
         action: DefinitionRef,
-        intent: FundingIntent,
+        intent: Box<FundingIntent>,
     },
     Complete {
         format: u16,
@@ -103,7 +103,7 @@ pub(super) enum Proof {
         commit: CommitToken,
         action: DefinitionRef,
         at: ClockStamp,
-        output: CoreOutputBirth,
+        output: Box<CoreOutputBirth>,
     },
     Cancel {
         format: u16,
@@ -162,7 +162,7 @@ pub(super) fn funding(
         format: 1,
         commit,
         action: action.clone(),
-        intent: intent.clone(),
+        intent: Box::new(intent.clone()),
     };
     let mut plan = base(intent, commit, "accept", &proof, Vec::new())?;
     // Expiry is enforced against the retained versioned clock by this closed
@@ -238,7 +238,7 @@ pub(super) fn terminal(
             commit,
             action: action.clone(),
             at: at.clone(),
-            output: output.clone(),
+            output: Box::new(output.clone()),
         }
     } else {
         Proof::Cancel {

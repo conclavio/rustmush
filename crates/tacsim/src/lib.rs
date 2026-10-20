@@ -354,13 +354,13 @@ fn requires_cycle(
 
 /// The TacSim layer (`"tacsim"`).
 pub struct TacsimRuleset {
-    governed_hardware: Option<hardware::Registration>,
-    launch: Option<launch::Registration>,
-    ic_minds: Option<minds::ic_sortie::registration::Registration>,
-    coverage: Option<underwriting::registration::Registration>,
+    governed_hardware: Option<Box<hardware::Registration>>,
+    launch: Option<Box<launch::Registration>>,
+    ic_minds: Option<Box<minds::ic_sortie::registration::Registration>>,
+    coverage: Option<Box<underwriting::registration::Registration>>,
     coverage_families: Option<underwriting::families::Families>,
-    registry_commerce: Option<minds::registry::composition::Registration>,
-    conduct_trials: Option<minds::registry::conduct::composition::Registration>,
+    registry_commerce: Option<Box<minds::registry::composition::Registration>>,
+    conduct_trials: Option<Box<minds::registry::conduct::composition::Registration>>,
     fork_material: Option<mush_core::DefinitionRef>,
     marked_registry: Option<mush_core::DefinitionRef>,
     original_holdings: Option<mush_core::DefinitionRef>,
@@ -430,17 +430,17 @@ impl TacsimRuleset {
         if self.coverage.is_some() {
             return Err(ModError::msg("coverage already configured"));
         }
-        self.coverage = Some(config.layer(&self)?);
+        self.coverage = Some(Box::new(config.layer(&self)?));
         Ok(self)
     }
     pub fn coverage_host(&self) -> Option<underwriting::CoverageHost> {
-        self.coverage.as_ref().map(|r| r.host.clone())
+        self.coverage.as_deref().map(|r| r.host.clone())
     }
 
     /// The actual host retains opaque transition capabilities. This handle
     /// creates no start/event and ordinary compositions return None.
     pub fn ic_host(&self) -> Option<IcHost> {
-        self.ic_minds.as_ref().map(|r| r.host.clone())
+        self.ic_minds.as_deref().map(|r| r.host.clone())
     }
 
     /// The layer with an explicit configuration.
@@ -842,8 +842,8 @@ impl GameModule for TacsimRuleset {
             self.test_world,
             self.inventory.as_ref(),
             port::burn::burn_table(&catalog, self.goods.clone()),
-            self.ic_minds.as_ref(),
-            self.coverage.as_ref(),
+            self.ic_minds.as_deref(),
+            self.coverage.as_deref(),
         )?;
         // Doc 18 cut IC6 (§4.2, 18a §3): the hull rooms' status line and
         // gauges. Registered unconditionally like its neighbours; the hook
@@ -913,8 +913,8 @@ impl GameModule for TacsimRuleset {
             Ok(packs) => packs.clone(),
             Err(detail) => return Err(ModError::msg(detail.clone())),
         };
-        minds::ic_sortie::boot::load(ctx, &data, self.ic_minds.as_ref())?;
-        underwriting::boot::load(ctx, &data, self.coverage.as_ref())?;
+        minds::ic_sortie::boot::load(ctx, &data, self.ic_minds.as_deref())?;
+        underwriting::boot::load(ctx, &data, self.coverage.as_deref())?;
         let kv: Vec<(smol_str::SmolStr, serde_json::Value)> = data
             .kv
             .iter()
@@ -1040,7 +1040,7 @@ impl GameModule for TacsimRuleset {
             self.coverage_families
                 .as_ref()
                 .ok_or_else(|| ModError::msg("coverage families unavailable"))?,
-            self.coverage.as_ref(),
+            self.coverage.as_deref(),
         )
     }
 }

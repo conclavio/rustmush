@@ -206,7 +206,7 @@ fn prepare(
     actor: ObjId,
     number: u128,
     parameters: Value,
-) -> TestResult<Prepared> {
+) -> TestResult<Box<Prepared>> {
     w.engine.set_offer_keys(mush_core::OfferKeyRing::new(
         mush_core::OfferSecret::new(1, [0x67; 32])?,
         [],
@@ -262,22 +262,22 @@ fn prepare(
             &resolved,
             token(number),
         )?;
-    Ok(Prepared {
+    Ok(Box::new(Prepared {
         prepared,
         output,
         invocation,
         action,
         number,
-    })
+    }))
 }
-fn land(w: &mut PlayerWorld, value: Prepared) -> TestResult {
+fn land(w: &mut PlayerWorld, value: Box<Prepared>) -> TestResult {
     let Prepared {
         prepared,
         output,
         invocation,
         action,
         number,
-    } = value;
+    } = *value;
     let (outcome, resolution, mut definitions, mut witnesses, mut outbox, semantic_events) =
         output.into_parts();
     definitions.extend([action.clone(), outcome.schema().clone()]);

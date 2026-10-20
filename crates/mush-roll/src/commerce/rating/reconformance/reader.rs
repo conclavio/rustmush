@@ -56,14 +56,14 @@ pub enum ReconformanceReadResult {
         next: Option<String>,
     },
     Candidate {
-        candidate: ReconformanceCandidate,
+        candidate: Box<ReconformanceCandidate>,
     },
     Rejection {
-        proof: RejectionProof,
+        proof: Box<RejectionProof>,
     },
     Job {
-        job: RatingJob,
-        execution: RatingExecution,
+        job: Box<RatingJob>,
+        execution: Box<RatingExecution>,
     },
 }
 pub struct ReconformanceReader {
@@ -256,10 +256,10 @@ impl OwnerReadService for ReconformanceReader {
                 let binding = ReconformanceAdmission::new(filed, row.rating, previous)
                     .map_err(|_| OwnerReadError::Integrity)?;
                 Ok(ReconformanceReadResult::Candidate {
-                    candidate: ReconformanceCandidate {
+                    candidate: Box::new(ReconformanceCandidate {
                         revision: revision.clone(),
                         binding,
-                    },
+                    }),
                 })
             }
             ReconformanceReadRequest::Rejection { filed } => {
@@ -274,13 +274,15 @@ impl OwnerReadService for ReconformanceReader {
                 if proof.status.recalled_by.is_some() {
                     return Err(OwnerReadError::Refused);
                 }
-                Ok(ReconformanceReadResult::Rejection { proof })
+                Ok(ReconformanceReadResult::Rejection {
+                    proof: Box::new(proof),
+                })
             }
             ReconformanceReadRequest::Job { job } => {
                 let (job, execution) = self.job(ctx, job)?;
                 Ok(ReconformanceReadResult::Job {
-                    job: job.clone(),
-                    execution: execution.clone(),
+                    job: Box::new(job.clone()),
+                    execution: Box::new(execution.clone()),
                 })
             }
         }

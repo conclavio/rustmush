@@ -1685,8 +1685,13 @@ pub(crate) fn note_window_debits(
 
 /// The economy [`GameModule`]. Hand one to `Engine::with_modules` (after the org
 /// module — economy authorizes through it).
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct EconomyModule {
+    state: Box<EconomyModuleState>,
+}
+
+#[derive(Default)]
+struct EconomyModuleState {
     charter_pending: Option<crate::managed_charter_transfer::CharterPendingConfig>,
     paid_resale: Option<crate::managed_paid_resale::PaidResaleConfig>,
     coverage: Option<crate::managed_coverage::CoverageConfig>,
@@ -1728,12 +1733,54 @@ pub struct EconomyModule {
     dispute_guard: Option<Arc<dyn crate::contract::DisputeGuard>>,
 }
 
+impl std::fmt::Debug for EconomyModule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EconomyModule")
+            .field("charter_pending", &self.state.charter_pending)
+            .field("paid_resale", &self.state.paid_resale)
+            .field("coverage", &self.state.coverage)
+            .field("core_integration", &self.state.core_integration)
+            .field("core_refit", &self.state.core_refit)
+            .field("initial_filing", &self.state.initial_filing)
+            .field("original_purchases", &self.state.original_purchases)
+            .field("house_purchases", &self.state.house_purchases)
+            .field(
+                "two_seat_house_purchases",
+                &self.state.two_seat_house_purchases,
+            )
+            .field("entitlement_purchases", &self.state.entitlement_purchases)
+            .field("mind_renewals", &self.state.mind_renewals)
+            .field("house_mind_renewals", &self.state.house_mind_renewals)
+            .field("house_initial_filing", &self.state.house_initial_filing)
+            .field(
+                "dependent_initial_filing",
+                &self.state.dependent_initial_filing,
+            )
+            .field("compatible_update", &self.state.compatible_update)
+            .field("derived_update", &self.state.derived_update)
+            .field("original_major", &self.state.original_major)
+            .field("house_update", &self.state.house_update)
+            .field("charter_transfer", &self.state.charter_transfer)
+            .field("providers", &self.state.providers)
+            .field("config", &self.state.config)
+            .field("facts", &self.state.facts)
+            .field("observers", &self.state.observers)
+            .field("title_issuers", &self.state.title_issuers)
+            .field("canon_outcome_kinds", &self.state.canon_outcome_kinds)
+            .field("canon_evidence", &self.state.canon_evidence)
+            .field("party_caps", &self.state.party_caps)
+            .field("party_cap_source", &self.state.party_cap_source)
+            .field("dispute_guard", &self.state.dispute_guard)
+            .finish()
+    }
+}
+
 impl EconomyModule {
     /// Enable the exact three native hull-coverage actions on the existing owner
     /// slot. The actual Tacsim producer and Roll retention owner must accompany it.
     #[must_use]
     pub fn with_hull_coverage(mut self, config: crate::managed_coverage::CoverageConfig) -> Self {
-        self.coverage = Some(config);
+        self.state.coverage = Some(config);
         self
     }
 
@@ -1742,7 +1789,7 @@ impl EconomyModule {
         mut self,
         config: crate::managed_paid_resale::PaidResaleConfig,
     ) -> Self {
-        self.paid_resale = Some(config);
+        self.state.paid_resale = Some(config);
         self
     }
     /// Explicit native escrow half only. Roll's exact pending/ownership/claim
@@ -1751,7 +1798,7 @@ impl EconomyModule {
         mut self,
         config: crate::managed_charter_transfer::CharterPendingConfig,
     ) -> Self {
-        self.charter_pending = Some(config);
+        self.state.charter_pending = Some(config);
         self
     }
     /// Configure the closed Industry payment/title leg on the existing owner slot.
@@ -1760,14 +1807,14 @@ impl EconomyModule {
         mut self,
         config: crate::core_integration::CoreIntegrationConfig,
     ) -> Self {
-        self.core_integration = Some(config);
+        self.state.core_integration = Some(config);
         self
     }
 
     /// Optional native fee leg; Industry's complete accepted-order, Tactics and
     /// Core exchange audits must be present before any business activation.
     pub fn with_core_refit(mut self, config: crate::core_refit::CoreRefitConfig) -> Self {
-        self.core_refit = Some(config);
+        self.state.core_refit = Some(config);
         self
     }
 
@@ -1779,7 +1826,7 @@ impl EconomyModule {
         policy: crate::registry_filing::InitialFilingPolicy,
         action: mush_core::mechanics::DefinitionRef,
     ) -> Self {
-        self.initial_filing = Some((policy, action));
+        self.state.initial_filing = Some((policy, action));
         self
     }
     /// Add one exact scoped-house filing action to the existing participant.
@@ -1789,7 +1836,7 @@ impl EconomyModule {
         mut self,
         action: mush_core::mechanics::DefinitionRef,
     ) -> Self {
-        self.house_initial_filing = Some(action);
+        self.state.house_initial_filing = Some(action);
         self
     }
     /// Grant only the exact opt-in personal dependent-filing action access to
@@ -1799,7 +1846,7 @@ impl EconomyModule {
         mut self,
         action: mush_core::mechanics::DefinitionRef,
     ) -> Self {
-        self.dependent_initial_filing = Some(action);
+        self.state.dependent_initial_filing = Some(action);
         self
     }
     /// Enable the fee-only compatible-update action on the existing Economy
@@ -1809,20 +1856,20 @@ impl EconomyModule {
         mut self,
         action: mush_core::mechanics::DefinitionRef,
     ) -> Self {
-        self.compatible_update = Some(action);
+        self.state.compatible_update = Some(action);
         self
     }
     /// Enable the distinct dependent fee protocol; parent authority remains
     /// with the actual paired Roll producer and its complete historical audit.
     #[must_use]
     pub fn with_derived_mind_updates(mut self, action: mush_core::DefinitionRef) -> Self {
-        self.derived_update = Some(action);
+        self.state.derived_update = Some(action);
         self
     }
     /// Enables only the exact scoped House-compatible fee action.
     #[must_use]
     pub fn with_house_mind_updates(mut self, action: mush_core::DefinitionRef) -> Self {
-        self.house_update =
+        self.state.house_update =
             Some(crate::registry_filing::update::house::HouseUpdateConfig::new(action));
         self
     }
@@ -1830,14 +1877,14 @@ impl EconomyModule {
     /// producer owns the new line, certification and independent owner term.
     #[must_use]
     pub fn with_original_mind_majors(mut self, action: mush_core::DefinitionRef) -> Self {
-        self.original_major = Some(action);
+        self.state.original_major = Some(action);
         self
     }
     /// Enable one exact native charter transfer action. Roll must provide the
     /// immutable seller offer, buyer consent, claim fence and paired boot audit.
     #[must_use]
     pub fn with_mind_charter_transfers(mut self, action: mush_core::DefinitionRef) -> Self {
-        self.charter_transfer = Some(action);
+        self.state.charter_transfer = Some(action);
         self
     }
     /// Add the three exact closed Market purchase actions to the existing
@@ -1848,20 +1895,20 @@ impl EconomyModule {
         mut self,
         actions: [mush_core::mechanics::DefinitionRef; 3],
     ) -> Self {
-        self.original_purchases = Some(actions);
+        self.state.original_purchases = Some(actions);
         self
     }
     /// Grant only the closed House purchase actions access to this owner slot.
     #[must_use]
     pub fn with_house_mind_purchases(mut self, actions: [mush_core::DefinitionRef; 3]) -> Self {
-        self.house_purchases = Some(actions);
+        self.state.house_purchases = Some(actions);
         self
     }
 
     /// Add only the separately versioned HouseV2 actions; the one-seat route remains.
     #[must_use]
     pub fn with_two_seat_house_pins(mut self, actions: [mush_core::DefinitionRef; 3]) -> Self {
-        self.two_seat_house_purchases = Some(actions);
+        self.state.two_seat_house_purchases = Some(actions);
         self
     }
 
@@ -1873,7 +1920,7 @@ impl EconomyModule {
         original: [mush_core::mechanics::DefinitionRef; 3],
         derived: [mush_core::mechanics::DefinitionRef; 3],
     ) -> Self {
-        self.entitlement_purchases = Some([original, derived]);
+        self.state.entitlement_purchases = Some([original, derived]);
         self
     }
 
@@ -1884,6 +1931,7 @@ impl EconomyModule {
         action: mush_core::DefinitionRef,
     ) -> Result<Self, ModError> {
         let config = self
+            .state
             .mind_renewals
             .as_mut()
             .ok_or_else(|| ModError::msg("renewal service requires renewal configuration"))?;
@@ -1898,6 +1946,7 @@ impl EconomyModule {
         action: mush_core::DefinitionRef,
     ) -> Result<Self, ModError> {
         let config = self
+            .state
             .house_mind_renewals
             .as_mut()
             .ok_or_else(|| ModError::msg("renewal service requires renewal configuration"))?;
@@ -1917,7 +1966,7 @@ impl EconomyModule {
         participants: [mush_core::DefinitionRef; 2],
         actions: [mush_core::DefinitionRef; 5],
     ) -> Self {
-        self.mind_renewals = Some(crate::managed_renewal::bridge::Configuration {
+        self.state.mind_renewals = Some(crate::managed_renewal::bridge::Configuration {
             manifest,
             participants,
             actions,
@@ -1931,12 +1980,13 @@ impl EconomyModule {
         participants: [mush_core::DefinitionRef; 2],
         actions: [mush_core::DefinitionRef; 5],
     ) -> Self {
-        self.house_mind_renewals = Some(crate::managed_house_renewal::bridge::Configuration {
-            manifest,
-            participants,
-            actions,
-            service_close: None,
-        });
+        self.state.house_mind_renewals =
+            Some(crate::managed_house_renewal::bridge::Configuration {
+                manifest,
+                participants,
+                actions,
+                service_close: None,
+            });
         self
     }
 
@@ -1954,8 +2004,10 @@ impl EconomyModule {
     pub fn with_custody(mut providers: Vec<Arc<dyn CustodyProvider>>) -> EconomyModule {
         providers.push(Arc::new(ContainerProvider));
         EconomyModule {
-            providers: Arc::new(providers),
-            ..EconomyModule::default()
+            state: Box::new(EconomyModuleState {
+                providers: Arc::new(providers),
+                ..EconomyModuleState::default()
+            }),
         }
     }
 
@@ -1963,7 +2015,7 @@ impl EconomyModule {
     /// [`EconomyConfig::default`] — the pre-M1 behaviour, with the default mint cap.
     #[must_use]
     pub fn with_config(mut self, config: EconomyConfig) -> EconomyModule {
-        self.config = config;
+        self.state.config = config;
         self
     }
 
@@ -1996,7 +2048,7 @@ impl EconomyModule {
                 );
             }
         }
-        self.facts = Arc::new(providers);
+        self.state.facts = Arc::new(providers);
         self
     }
 
@@ -2004,7 +2056,7 @@ impl EconomyModule {
     /// existing table. The same startup duplicate-namespace check applies.
     #[must_use]
     pub fn with_fact_provider(self, provider: Arc<dyn crate::facts::FactProvider>) -> Self {
-        let mut providers = self.facts.as_ref().clone();
+        let mut providers = self.state.facts.as_ref().clone();
         providers.push(provider);
         self.with_facts(providers)
     }
@@ -2016,7 +2068,7 @@ impl EconomyModule {
     /// sealer** — never a self-granted facilitator (M14, D-E6-7).
     #[must_use]
     pub fn with_canon_outcome_kinds(mut self, kinds: Vec<SmolStr>) -> EconomyModule {
-        self.canon_outcome_kinds = Arc::new(kinds.into_iter().collect());
+        self.state.canon_outcome_kinds = Arc::new(kinds.into_iter().collect());
         self
     }
 
@@ -2027,7 +2079,7 @@ impl EconomyModule {
         mut self,
         observers: Vec<Arc<dyn crate::observer::EconomyObserver>>,
     ) -> EconomyModule {
-        self.observers = Arc::new(observers);
+        self.state.observers = Arc::new(observers);
         self
     }
 
@@ -2039,7 +2091,7 @@ impl EconomyModule {
         mut self,
         issuers: Vec<mush_org::SystemPrincipalId>,
     ) -> EconomyModule {
-        self.title_issuers = Arc::new(issuers.into_iter().collect());
+        self.state.title_issuers = Arc::new(issuers.into_iter().collect());
         self
     }
 
@@ -2051,7 +2103,7 @@ impl EconomyModule {
         mut self,
         evidence: Arc<dyn crate::attest::CanonEvidence>,
     ) -> EconomyModule {
-        self.canon_evidence = Some(evidence);
+        self.state.canon_evidence = Some(evidence);
         self
     }
 
@@ -2091,7 +2143,7 @@ impl EconomyModule {
                 .or_default()
                 .insert(cap);
         }
-        self.party_caps = Arc::new(table);
+        self.state.party_caps = Arc::new(table);
         self
     }
 
@@ -2120,7 +2172,7 @@ impl EconomyModule {
         mut self,
         source: Arc<dyn crate::contract::PartyCapSource>,
     ) -> EconomyModule {
-        self.party_cap_source = Some(source);
+        self.state.party_cap_source = Some(source);
         self
     }
 
@@ -2137,7 +2189,7 @@ impl EconomyModule {
         mut self,
         guard: Arc<dyn crate::contract::DisputeGuard>,
     ) -> EconomyModule {
-        self.dispute_guard = Some(guard);
+        self.state.dispute_guard = Some(guard);
         self
     }
 }
@@ -2185,11 +2237,11 @@ impl GameModule for EconomyModule {
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::EconomyCarveOut);
         reg.state(EconomyStore::default());
-        for provider in self.facts.iter() {
+        for provider in self.state.facts.iter() {
             provider.register_scoped(reg)?;
         }
-        if let Some((policy, action)) = &self.initial_filing {
-            if !self.title_issuers.contains(policy.issuer()) {
+        if let Some((policy, action)) = &self.state.initial_filing {
+            if !self.state.title_issuers.contains(policy.issuer()) {
                 return Err(ModError::msg(
                     "initial filing issuer is not in the composition title-issuer table",
                 ));
@@ -2198,81 +2250,82 @@ impl GameModule for EconomyModule {
                 reg,
                 policy.clone(),
                 action.clone(),
-                self.original_purchases.as_ref(),
-                self.entitlement_purchases.as_ref(),
-                self.house_initial_filing.as_ref(),
-                self.dependent_initial_filing.as_ref(),
-                self.mind_renewals.as_ref(),
-                self.compatible_update.as_ref(),
-                self.charter_transfer.as_ref(),
-                self.core_integration.as_ref(),
-                self.charter_pending.as_ref(),
-                self.house_purchases.as_ref(),
-                self.house_mind_renewals.as_ref(),
-                self.paid_resale.as_ref(),
-                self.core_refit.as_ref(),
-                self.coverage.as_ref(),
-                self.two_seat_house_purchases.as_ref(),
-                self.derived_update.as_ref(),
-                self.original_major.as_ref(),
-                self.house_update.as_ref(),
+                self.state.original_purchases.as_ref(),
+                self.state.entitlement_purchases.as_ref(),
+                self.state.house_initial_filing.as_ref(),
+                self.state.dependent_initial_filing.as_ref(),
+                self.state.mind_renewals.as_ref(),
+                self.state.compatible_update.as_ref(),
+                self.state.charter_transfer.as_ref(),
+                self.state.core_integration.as_ref(),
+                self.state.charter_pending.as_ref(),
+                self.state.house_purchases.as_ref(),
+                self.state.house_mind_renewals.as_ref(),
+                self.state.paid_resale.as_ref(),
+                self.state.core_refit.as_ref(),
+                self.state.coverage.as_ref(),
+                self.state.two_seat_house_purchases.as_ref(),
+                self.state.derived_update.as_ref(),
+                self.state.original_major.as_ref(),
+                self.state.house_update.as_ref(),
             )?;
         }
-        if (self.house_purchases.is_some()
-            || self.two_seat_house_purchases.is_some()
-            || self.original_purchases.is_some()
-            || self.entitlement_purchases.is_some()
-            || self.house_initial_filing.is_some()
-            || self.dependent_initial_filing.is_some()
-            || self.compatible_update.is_some()
-            || self.derived_update.is_some()
-            || self.original_major.is_some()
-            || self.house_update.is_some()
-            || self.charter_transfer.is_some()
-            || self.core_integration.is_some()
-            || self.core_refit.is_some()
-            || self.charter_pending.is_some()
-            || self.paid_resale.is_some()
-            || self.coverage.is_some())
-            && self.initial_filing.is_none()
+        if (self.state.house_purchases.is_some()
+            || self.state.two_seat_house_purchases.is_some()
+            || self.state.original_purchases.is_some()
+            || self.state.entitlement_purchases.is_some()
+            || self.state.house_initial_filing.is_some()
+            || self.state.dependent_initial_filing.is_some()
+            || self.state.compatible_update.is_some()
+            || self.state.derived_update.is_some()
+            || self.state.original_major.is_some()
+            || self.state.house_update.is_some()
+            || self.state.charter_transfer.is_some()
+            || self.state.core_integration.is_some()
+            || self.state.core_refit.is_some()
+            || self.state.charter_pending.is_some()
+            || self.state.paid_resale.is_some()
+            || self.state.coverage.is_some())
+            && self.state.initial_filing.is_none()
         {
             return Err(ModError::msg(
                 "original purchases require the existing filing EconomyStore participant",
             ));
         }
-        if self.core_refit.is_some() && self.core_integration.is_none() {
+        if self.state.core_refit.is_some() && self.state.core_integration.is_none() {
             return Err(ModError::msg(
                 "Core refit requires native manufacture recovery",
             ));
         }
-        if self.two_seat_house_purchases.is_some() && self.house_purchases.is_none() {
+        if self.state.two_seat_house_purchases.is_some() && self.state.house_purchases.is_none() {
             return Err(ModError::msg(
                 "two-seat House purchases require the one-seat prerequisite",
             ));
         }
-        if self.house_purchases.is_some() && self.house_initial_filing.is_none() {
+        if self.state.house_purchases.is_some() && self.state.house_initial_filing.is_none() {
             return Err(ModError::msg(
                 "house purchases require actual house filing composition",
             ));
         }
-        if self.mind_renewals.is_some()
-            && (self.initial_filing.is_none() || self.entitlement_purchases.is_none())
+        if self.state.mind_renewals.is_some()
+            && (self.state.initial_filing.is_none() || self.state.entitlement_purchases.is_none())
         {
             return Err(ModError::msg(
                 "mind renewals require the existing filing and entitlement participants",
             ));
         }
-        if self.house_mind_renewals.is_some()
-            && (self.initial_filing.is_none() || self.house_purchases.is_none())
+        if self.state.house_mind_renewals.is_some()
+            && (self.state.initial_filing.is_none() || self.state.house_purchases.is_none())
         {
             return Err(ModError::msg(
                 "mind renewals require the existing filing and House purchase participants",
             ));
         }
         if self
+            .state
             .core_integration
             .as_ref()
-            .is_some_and(|c| !self.title_issuers.contains(&c.policy.issuer))
+            .is_some_and(|c| !self.state.title_issuers.contains(&c.policy.issuer))
         {
             return Err(ModError::msg(
                 "Core integration issuer is absent from configured title issuers",
@@ -2312,7 +2365,7 @@ impl GameModule for EconomyModule {
         // SP1 (D-LBK-7 as decided): one composition-frozen `ClockRef::Registered`
         // provider per `[economy.cadences]` stanza, under `cadence.<name>`. The list is
         // validated whole first; a runtime cadence registers nothing.
-        crate::declared::register(reg, &self.config)?;
+        crate::declared::register(reg, &self.state.config)?;
         // The ONE economy tick (D-E4-3): holds, obligations and GC on a single
         // bounded `Coarse` sweep. The core scheduler is in-RAM and re-armed from
         // scratch at boot, so there are deliberately no per-record timers — every
@@ -2333,7 +2386,7 @@ impl GameModule for EconomyModule {
         ctx: &mut ModuleCtx<'_>,
         data: ModuleBootData,
     ) -> Result<(), ModError> {
-        if let Some(config) = &self.house_update {
+        if let Some(config) = &self.state.house_update {
             let defs = ctx
                 .reg
                 .definitions()
@@ -2344,7 +2397,7 @@ impl GameModule for EconomyModule {
                 .set(defs)
                 .map_err(|_| ModError::msg("House update definitions already captured"))?;
         }
-        if let Some(config) = &self.core_integration {
+        if let Some(config) = &self.state.core_integration {
             let defs = ctx
                 .reg
                 .definitions()
@@ -2355,7 +2408,7 @@ impl GameModule for EconomyModule {
                 .set(defs)
                 .map_err(|_| ModError::msg("Core payment definitions already captured"))?;
         }
-        if let Some(config) = &self.core_refit {
+        if let Some(config) = &self.state.core_refit {
             let defs = ctx
                 .reg
                 .definitions()
@@ -2368,43 +2421,43 @@ impl GameModule for EconomyModule {
         }
         let fetch_ms = data.fetch_ms;
         let started = std::time::Instant::now();
-        let tail_max = if self.config.tx_tail_max == 0 {
+        let tail_max = if self.state.config.tx_tail_max == 0 {
             DEFAULT_TX_TAIL_MAX
         } else {
-            self.config.tx_tail_max
+            self.state.config.tx_tail_max
         };
         let mut store = boot::load_boot_with_coverage(
             ctx,
             data,
-            &self.providers,
-            &self.canon_outcome_kinds,
+            &self.state.providers,
+            &self.state.canon_outcome_kinds,
             tail_max,
-            self.config.idempotency_window_secs,
-            self.initial_filing.is_some(),
-            self.original_purchases.is_some()
-                || self.entitlement_purchases.is_some()
-                || self.house_purchases.is_some(),
-            self.mind_renewals.is_some(),
-            self.compatible_update.is_some()
-                || self.derived_update.is_some()
-                || self.original_major.is_some()
-                || self.house_update.is_some(),
-            self.charter_transfer.is_some(),
-            self.core_integration.is_some(),
-            self.charter_pending.is_some(),
-            self.house_mind_renewals.is_some(),
-            self.paid_resale.is_some(),
-            self.core_refit.is_some(),
-            self.coverage.is_some(),
+            self.state.config.idempotency_window_secs,
+            self.state.initial_filing.is_some(),
+            self.state.original_purchases.is_some()
+                || self.state.entitlement_purchases.is_some()
+                || self.state.house_purchases.is_some(),
+            self.state.mind_renewals.is_some(),
+            self.state.compatible_update.is_some()
+                || self.state.derived_update.is_some()
+                || self.state.original_major.is_some()
+                || self.state.house_update.is_some(),
+            self.state.charter_transfer.is_some(),
+            self.state.core_integration.is_some(),
+            self.state.charter_pending.is_some(),
+            self.state.house_mind_renewals.is_some(),
+            self.state.paid_resale.is_some(),
+            self.state.core_refit.is_some(),
+            self.state.coverage.is_some(),
         )?;
         store
             .fold
             .update_receipts
             .require_all_protocols(
-                self.compatible_update.is_some(),
-                self.derived_update.is_some(),
-                self.original_major.is_some(),
-                self.house_update.is_some(),
+                self.state.compatible_update.is_some(),
+                self.state.derived_update.is_some(),
+                self.state.original_major.is_some(),
+                self.state.house_update.is_some(),
             )
             .map_err(|_| {
                 ModError::msg("compatible-update protocol requires exact paired composition")
@@ -2449,16 +2502,16 @@ impl GameModule for EconomyModule {
             );
         }
         // Inject the wiring-frozen tables and config into the freshly booted slot.
-        store.providers = self.providers.clone();
-        store.config = self.config.clone();
-        store.facts = self.facts.clone();
-        store.observers = self.observers.clone();
-        store.title_issuers = self.title_issuers.clone();
-        store.canon_outcome_kinds = self.canon_outcome_kinds.clone();
-        store.party_caps = self.party_caps.clone();
-        store.party_cap_source = self.party_cap_source.clone();
-        store.dispute_guard = self.dispute_guard.clone();
-        store.canon_evidence = self.canon_evidence.clone();
+        store.providers = self.state.providers.clone();
+        store.config = self.state.config.clone();
+        store.facts = self.state.facts.clone();
+        store.observers = self.state.observers.clone();
+        store.title_issuers = self.state.title_issuers.clone();
+        store.canon_outcome_kinds = self.state.canon_outcome_kinds.clone();
+        store.party_caps = self.state.party_caps.clone();
+        store.party_cap_source = self.state.party_cap_source.clone();
+        store.dispute_guard = self.state.dispute_guard.clone();
+        store.canon_evidence = self.state.canon_evidence.clone();
         // Doc 13 W2: the window's count bound, now that the config is in.
         let evicted = store.evict_window(ctx.w.now());
         if evicted > 0 {
@@ -2474,7 +2527,7 @@ impl GameModule for EconomyModule {
         // SP1 (D-LBK-7): adopt or create every declared cadence, now that the store is
         // live and before any layered module (housing, the WoD layer) looks its
         // campaign clock up by name.
-        crate::declared::reconcile(ctx, &self.config);
+        crate::declared::reconcile(ctx, &self.state.config);
         // E6a step 1 verify fold (R5): boot opens its own level-2 records — a
         // quarantined contract, an obligation whose account went away — and announced
         // none of them, because only the ladder's `page` announces and boot does not

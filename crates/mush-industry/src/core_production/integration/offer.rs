@@ -16,8 +16,8 @@ pub(crate) const OFFER_BYTES: usize = 16_384;
 pub(crate) enum OfferedInput {
     /// The operator has actual current withdrawal authority for this exact lot.
     SupplierStock {
-        certificate: DieCertificate,
-        lot: Lot,
+        certificate: Box<DieCertificate>,
+        lot: Box<Lot>,
     },
     /// The operator consents to service for the named recipient/class only.
     /// Buyer's acceptance later supplies its own exact certified input; this

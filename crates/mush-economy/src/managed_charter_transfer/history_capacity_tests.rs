@@ -38,7 +38,7 @@ fn sized_intent() -> Result<FundingIntent> {
     i.validate()?;
     let proof = Proof::Fund {
         format: 1,
-        intent: i.clone(),
+        intent: Box::new(i.clone()),
     };
     assert_eq!(
         plans::encode(&proof)?.len(),
@@ -67,12 +67,12 @@ fn funded(i: FundingIntent) -> Result<CharterPendingHistory> {
         revision: 1,
     };
     let row = CharterPendingHistory {
-        funding: CharterPendingFundingReceiptV1 {
+        funding: Box::new(CharterPendingFundingReceiptV1 {
             transaction: TransactionId(u64::MAX - 1),
             journal_seq: u64::MAX - 1,
             plan_hash: crate::hash::plan_hash(&plans::funding(&i)?),
             hold,
-        },
+        }),
         intent: i,
         terminal: None,
     };
@@ -170,14 +170,14 @@ fn exact_correlation_boundary_preserves_complete_terminal_history_contract_and_r
         } else {
             None
         };
-        row.terminal = Some(CharterPendingTerminalReceiptV1 {
+        row.terminal = Some(Box::new(CharterPendingTerminalReceiptV1 {
             plan_hash: crate::hash::plan_hash(&plans::terminal(&before.intent, &d)?),
             decision: d.clone(),
             transaction: TransactionId(u64::MAX),
             journal_seq: u64::MAX,
             hold,
             title,
-        });
+        }));
         row.validate()?;
         let raw = bounded(&row, super::super::MAX_PENDING_HISTORY_BYTES)?;
         assert!(CharterPendingHistory::decode(&raw)? == row);
@@ -192,7 +192,7 @@ fn exact_correlation_boundary_preserves_complete_terminal_history_contract_and_r
             plans::encode(&Proof::Terminal {
                 format: 1,
                 funding: consent.operation,
-                decision: d
+                decision: Box::new(d)
             })?
             .len()
                 <= super::super::MAX_PENDING_CORRELATION_BYTES

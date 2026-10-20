@@ -80,7 +80,7 @@ pub(crate) fn prepare_funding(
 ) -> Result<
     (
         EntitlementFundingOutput,
-        crate::managed_purchase::PurchasePatch,
+        Box<crate::managed_purchase::PurchasePatch>,
         Vec<mush_core::authoritative::ReplayWrite>,
     ),
     ParticipantError,
@@ -98,7 +98,7 @@ pub(crate) fn prepare_terminal(
 ) -> Result<
     (
         EntitlementTerminalOutput,
-        crate::managed_purchase::PurchasePatch,
+        Box<crate::managed_purchase::PurchasePatch>,
         Vec<mush_core::authoritative::ReplayWrite>,
     ),
     ParticipantError,

@@ -71,7 +71,7 @@ impl mush_core::submission_observation::SubmissionRuntime for Runtime {
     }
 }
 struct IcWorld {
-    engine: Engine,
+    engine: Box<Engine>,
     disk: Disk,
     host: IcHost,
     selected: SelectedTicket,
@@ -374,7 +374,73 @@ impl IcWorld {
             None,
         )
     }
+    #[inline(never)]
+    fn prepare_commerce(
+        layer: &crate::TacsimRuleset,
+        two_seat_house: bool,
+        registry_revocation: &Option<
+            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
+        >,
+        pending_charters: bool,
+        paid_resales: bool,
+        transfer_facts: bool,
+        conduct: bool,
+    ) -> TestResult<crate::composition::mind_commerce::MindCommerce> {
+        let composition = crate::composition::mind_commerce::MindCommerce::prepare(
+            layer,
+            CommerceMode::Active,
+            InitialFilingTerms::new(TERM_SECONDS, GRACE_SECONDS)?,
+            filing_policy()?,
+        )?
+        .with_original_purchases(policy()?)?
+        .with_charter_transfers()?;
+        let composition = if two_seat_house {
+            let policy = house_pin_policy()?;
+            let renewal = mush_market::mind_house_renewal::RenewalPolicy {
+                registry: policy.registry.clone(),
+                venue: Some(policy.venue.clone()),
+                offer_ic_seconds: QUOTE_SECONDS,
+            };
+            composition
+                .with_house_filings()?
+                .with_house_minds(policy.clone())?
+                .with_two_seat_house_pins(policy)?
+                .with_house_mind_renewals(renewal)?
+        } else {
+            composition
+        };
+        let composition = if let Some(policy) = registry_revocation {
+            composition.with_registry_revocation(policy.clone())?
+        } else {
+            composition
+        };
+        let composition = if pending_charters {
+            composition.with_pending_charter_transfers(
+                mush_roll::commerce::PendingCharterTransferConfig::new(GOD, 60)?,
+            )?
+        } else {
+            composition
+        };
+        let composition = if paid_resales {
+            composition.with_paid_mind_resales(GOD, 60)?
+        } else {
+            composition
+        };
+        let composition = if transfer_facts {
+            composition.with_minds_facts()?
+        } else {
+            composition
+        };
+        let composition = if conduct {
+            composition.with_conduct_trials(layer)?
+        } else {
+            composition
+        };
+        Ok(composition)
+    }
+
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     fn boot_source_qualified(
         f: IcFixture<'_>,
         saved: &Durable,
@@ -401,56 +467,15 @@ impl IcWorld {
         } else {
             layer
         };
-        let composition = crate::composition::mind_commerce::MindCommerce::prepare(
+        let composition = Self::prepare_commerce(
             &layer,
-            CommerceMode::Active,
-            InitialFilingTerms::new(TERM_SECONDS, GRACE_SECONDS)?,
-            filing_policy()?,
-        )?
-        .with_original_purchases(policy()?)?
-        .with_charter_transfers()?;
-        let composition = if two_seat_house {
-            let policy = house_pin_policy()?;
-            let renewal = mush_market::mind_house_renewal::RenewalPolicy {
-                registry: policy.registry.clone(),
-                venue: Some(policy.venue.clone()),
-                offer_ic_seconds: QUOTE_SECONDS,
-            };
-            composition
-                .with_house_filings()?
-                .with_house_minds(policy.clone())?
-                .with_two_seat_house_pins(policy)?
-                .with_house_mind_renewals(renewal)?
-        } else {
-            composition
-        };
-        let composition = if let Some(policy) = &registry_revocation {
-            composition.with_registry_revocation(policy.clone())?
-        } else {
-            composition
-        };
-        let composition = if pending_charters {
-            composition.with_pending_charter_transfers(
-                mush_roll::commerce::PendingCharterTransferConfig::new(GOD, 60)?,
-            )?
-        } else {
-            composition
-        };
-        let composition = if paid_resales {
-            composition.with_paid_mind_resales(GOD, 60)?
-        } else {
-            composition
-        };
-        let composition = if transfer_facts.is_some() {
-            composition.with_minds_facts()?
-        } else {
-            composition
-        };
-        let composition = if conduct {
-            composition.with_conduct_trials(&layer)?
-        } else {
-            composition
-        };
+            two_seat_house,
+            &registry_revocation,
+            pending_charters,
+            paid_resales,
+            transfer_facts.is_some(),
+            conduct,
+        )?;
         // This is the production preparation path, never cfg(test) Resources::register.
         let old_manifest = f
             .engine
@@ -511,10 +536,8 @@ impl IcWorld {
             Box::new(tactics),
             Box::new(mush_npc::NpcModule::new()),
             layer,
-            Box::new(composition.configure_market(
-                MarketModule::new().with_venue_gate(Arc::new(crate::port::market::PortVenueGate)),
-            )),
-            Box::new(composition.configure_roll(RollModule::with_writers(["tacsim"]))),
+            // Match production owner order: Roll's complete final audit opens
+            // the readiness gate needed by Market's paired recovery audits.
             resale::transfer_facts::economy(
                 composition.configure_economy(
                     EconomyModule::with_custody(vec![Arc::new(mush_sim::InteriorCustodyProvider)])
@@ -522,6 +545,10 @@ impl IcWorld {
                 )?,
                 transfer_facts.clone(),
             ),
+            Box::new(composition.configure_roll(RollModule::with_writers(["tacsim"]))),
+            Box::new(composition.configure_market(
+                MarketModule::new().with_venue_gate(Arc::new(crate::port::market::PortVenueGate)),
+            )),
             paid_checkout::content()?,
         ];
         if let Some(host) = &host {
@@ -530,7 +557,7 @@ impl IcWorld {
                 selected: selected.clone(),
             }));
         }
-        let mut engine = Engine::with_modules(saved.world()?, Registry::new(), modules)?;
+        let mut engine = boxed_fixture_engine(saved.world()?, Registry::new(), modules)?;
         engine.set_account_identity(f.accounts.clone());
         engine.set_offer_keys(mush_core::OfferKeyRing::new(
             mush_core::OfferSecret::new(1, [0x49; 32])?,
@@ -1053,7 +1080,7 @@ pub(super) fn exercise(f: &PurchaseFixture, granted: &Durable) -> TestResult {
     let closing = cold.host.enqueue_close(&event)?;
     cold.land(&closing, 12_000_004, first, true)?;
     assert!(
-        full.install(&cold.engine.world, &mut arena_for(&cold, &seal)?)
+        full.install(&cold.engine.world, arena_for(&cold, &seal)?.as_mut())
             .is_err()
     );
     let closed = cold.snapshot();
@@ -1188,7 +1215,10 @@ fn chartered_owner(f: &PurchaseFixture, owned: &mut IcWorld, hull: ObjId) -> Tes
     Ok(())
 }
 
-fn arena_for(actual: &IcWorld, seal: &crate::arena::MindSeal) -> TestResult<crate::arena::Arena> {
+fn arena_for(
+    actual: &IcWorld,
+    seal: &crate::arena::MindSeal,
+) -> TestResult<Box<crate::arena::Arena>> {
     use crate::arena::{Arena, Controller, CustodyOut, CustodyUnit, MatchMode, Team, test_support};
     let unit = mush_tactics::module::unit_of(&actual.engine.world, seal.unit)
         .ok_or("physical unit")?
@@ -1214,7 +1244,7 @@ fn arena_for(actual: &IcWorld, seal: &crate::arena::MindSeal) -> TestResult<crat
         seal: seal.clone(),
         unit,
     };
-    Ok(Arena::new(
+    Ok(Box::new(Arena::new(
         CustodyOut {
             definition: test_support::definition(),
             units: vec![
@@ -1233,7 +1263,7 @@ fn arena_for(actual: &IcWorld, seal: &crate::arena::MindSeal) -> TestResult<crat
         &crate::config::ArenaConfig::default(),
         &crate::config::MatchConfig::default(),
         &crate::config::SensorsConfig::default(),
-    )?)
+    )?))
 }
 fn cold_corruption(
     f: &PurchaseFixture,
@@ -1539,4 +1569,13 @@ mod resale;
 
 pub(super) fn exercise_house_two_seats(f: &Fixture, saved: &Durable) -> TestResult {
     resale::two_seat::exercise(f, saved)
+}
+
+#[inline(never)]
+fn boxed_fixture_engine(
+    world: mush_core::World,
+    registry: mush_core::Registry,
+    modules: Vec<Box<dyn mush_core::GameModule>>,
+) -> Result<Box<mush_core::Engine>, mush_core::ModError> {
+    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
 }

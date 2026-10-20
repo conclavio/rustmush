@@ -366,12 +366,12 @@ impl Provider {
         };
         ctx.prepare_owner(
             &self.roots,
-            RootRequest::CharterTransfer(TransferRoots {
+            RootRequest::CharterTransfer(Box::new(TransferRoots {
                 commit,
                 old,
                 added,
                 fence,
-            }),
+            })),
         )
         .map_err(bad)?;
         if let Some(row) = transfer {

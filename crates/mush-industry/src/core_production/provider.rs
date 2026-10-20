@@ -34,7 +34,7 @@ pub(crate) struct Runtime {
 }
 #[cfg(test)]
 #[derive(Clone)]
-pub(super) struct TestHandles(pub Runtime);
+pub(super) struct TestHandles(pub Box<Runtime>);
 impl CoreOriginConfig {
     pub(crate) fn outcome_descriptor(
         &self,
@@ -91,13 +91,223 @@ pub(crate) fn exact(
         },
     )
 }
+#[inline(never)]
+fn register_origin_owner(
+    reg: &mut Registrar<'_>,
+    config: &CoreOriginConfig,
+    definitions: &Definitions,
+    actions: &[DefinitionRef; 2],
+    integration: &Option<super::integration::runtime::Runtime>,
+    refit: &Option<super::refit::runtime::Runtime>,
+) -> Result<DefinitionRef, ModError> {
+    let mut refs = actions.to_vec();
+    refs.push(config.policy.content.clone());
+    refs.sort();
+    refs.dedup();
+    let pd=config::descriptor("owner_participant","core_production",json!({"format":1,"protocol":"certified_origin_stock_v1","index":INDEX_KEY,"actions":actions,"content":config.policy.content,"max_certificates":MAX_CERTIFICATES}))?.with_references(refs.clone());
+    let pd = match integration {
+        Some(r) => r
+            .config
+            .participant_descriptor(&config.policy)
+            .map_err(mod_error)?,
+        None => pd,
+    };
+    exact(reg, "owner_participant", std::slice::from_ref(&pd))?;
+    let participant = reg.definition(pd)?;
+    let mut allowed: BTreeSet<_> = actions.iter().cloned().collect();
+    if let Some(r) = integration {
+        allowed.extend(
+            r.actions
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != 3)
+                .map(|(_, a)| a.clone()),
+        );
+    }
+    if let Some(d) = integration.as_ref().and_then(|r| r.delivery.as_ref()) {
+        allowed.insert(d.action.clone());
+    }
+    if let Some(r) = refit {
+        allowed.extend(
+            r.actions
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != 4)
+                .map(|(_, a)| a.clone()),
+        );
+    }
+    reg.owner_participant(
+        participant.clone(),
+        allowed,
+        OriginParticipant {
+            config: config.clone(),
+            definitions: definitions.clone(),
+            actions: actions.clone(),
+            integration: integration
+                .as_ref()
+                .map(|r| (r.config.clone(), r.inputs.clone())),
+        },
+    )?;
+    Ok(participant)
+}
+
+#[inline(never)]
+fn register_origin_readiness(
+    reg: &mut Registrar<'_>,
+    config: &CoreOriginConfig,
+    integration: &Option<super::integration::runtime::Runtime>,
+    refit: &Option<super::refit::runtime::Runtime>,
+) -> Result<OwnerReadHandle<Readiness>, ModError> {
+    let rd=config::descriptor("owner_read","core_production_readiness",json!({"format":1,"protocol":"certified_origin_dependencies_v1","content":config.policy.content}))?.with_references(vec![config.policy.content.clone()]);
+    let mut reads = vec![rd.clone()];
+    if let Some(r) = integration {
+        reads.push(super::integration::runtime::output_binding(&r.config)?.policy_descriptor()?);
+    }
+    if let Some(d) = integration.as_ref().and_then(|r| r.delivery.as_ref()) {
+        reads.push(mush_core::core_delivery::CoreOutputDeliveries::<
+            super::integration::output_policy::Policy,
+            super::integration::delivery::Policy,
+        >::policy_descriptor(&d.action)?);
+    }
+    if let Some(r) = refit {
+        reads.push(mush_core::core_exchange::CoreComponentExchanges::<
+            super::refit::policies::ExchangePolicy,
+        >::policy_descriptor(&r.actions[4], &r.participants)?);
+    }
+    exact(reg, "owner_read", &reads)?;
+    let rd = reg.definition(rd)?;
+    let industry = OwnerId::new(crate::NS).map_err(mod_error)?;
+    let mut dependencies = BTreeSet::from([
+        industry.clone(),
+        OwnerId::new("org").map_err(mod_error)?,
+        OwnerId::new("economy").map_err(mod_error)?,
+        OwnerId::new("inventory").map_err(mod_error)?,
+    ]);
+    dependencies.insert(config.policy.content.key().owner.clone());
+    reg.owner_read_service(
+        rd.clone(),
+        BTreeSet::from([industry]),
+        dependencies,
+        Readiness,
+    )?;
+    let readiness = reg.request_owner_read::<Readiness>(rd)?;
+    Ok(readiness)
+}
+
+#[inline(never)]
+fn register_origin_paths(
+    reg: &mut Registrar<'_>,
+    runtime: &Runtime,
+    outcome: DefinitionRef,
+    participant: DefinitionRef,
+    readiness: OwnerReadHandle<Readiness>,
+) -> Result<(), ModError> {
+    for initialize in [true, false] {
+        let action = runtime.actions[if initialize { 0 } else { 1 }].clone();
+        let owner = reg.request_owner_participant::<OriginParticipant>(action.clone())?;
+        reg.action_provider(
+            action,
+            Provider {
+                runtime: Box::new(runtime.clone()),
+                initialize,
+                outcome: outcome.clone(),
+                owner,
+                readiness: readiness.clone(),
+                refusal: refusal()?,
+            },
+        )?;
+    }
+    if let Some(r) = &runtime.integration {
+        if let Some(delivery) = &r.delivery {
+            reg.core_integration_delivery_capacity(
+                [participant.clone(), r.config.economy_owner.clone()],
+                [
+                    r.actions[2].clone(),
+                    r.actions[3].clone(),
+                    r.actions[4].clone(),
+                    r.actions[5].clone(),
+                    r.actions[6].clone(),
+                    delivery.action.clone(),
+                ],
+            )?;
+        } else {
+            reg.core_integration_capacity(
+                [participant.clone(), r.config.economy_owner.clone()],
+                [
+                    r.actions[2].clone(),
+                    r.actions[3].clone(),
+                    r.actions[4].clone(),
+                    r.actions[5].clone(),
+                    r.actions[6].clone(),
+                ],
+            )?;
+        }
+        super::integration::provider::register(reg, r.clone(), readiness.clone())?;
+        super::integration::schedule::register(reg, r.clone())?;
+    }
+    if let Some(r) = &runtime.refit {
+        reg.core_refit_capacity(
+            [
+                participant,
+                r.participants[0].clone(),
+                r.participants[1].clone(),
+            ],
+            [
+                r.actions[2].clone(),
+                r.actions[3].clone(),
+                r.actions[4].clone(),
+                r.actions[5].clone(),
+            ],
+        )?;
+        super::refit::provider::register(reg, r.clone(), readiness)?;
+        super::refit::schedule::register(reg, r.clone())?;
+        let hook = std::sync::Arc::new(super::refit::policies::CustodyHook {
+            config: r.config.clone(),
+            families: r.families.clone(),
+            participants: r.participants.clone(),
+        });
+        reg.hook(mush_core::HookPoint::CarryAttempt, hook.clone());
+        reg.hook(mush_core::HookPoint::MoveAttempt, hook);
+    }
+    Ok(())
+}
+
+#[inline(never)]
+fn finish_origin_registration(
+    reg: &mut Registrar<'_>,
+    config: CoreOriginConfig,
+    families: Families,
+    definitions: Definitions,
+    actions: [DefinitionRef; 2],
+    integration: Option<super::integration::runtime::Runtime>,
+    refit: Option<super::refit::runtime::Runtime>,
+    outcome: DefinitionRef,
+) -> Result<Box<Runtime>, ModError> {
+    let participant =
+        register_origin_owner(reg, &config, &definitions, &actions, &integration, &refit)?;
+    let readiness = register_origin_readiness(reg, &config, &integration, &refit)?;
+    reg.state(CoreProductionState::default());
+    let runtime = Box::new(Runtime {
+        config,
+        families,
+        integration,
+        refit,
+        definitions,
+        actions,
+    });
+    #[cfg(test)]
+    reg.state(TestHandles(runtime.clone()));
+    register_origin_paths(reg, &runtime, outcome, participant, readiness)?;
+    Ok(runtime)
+}
+
 impl Runtime {
     pub(crate) fn register(
         reg: &mut Registrar<'_>,
         config: CoreOriginConfig,
         industry_families: crate::IndustryFamilies,
         factory: Option<super::integration::CoreFactoryConfig>,
-    ) -> Result<Self, ModError> {
+    ) -> Result<Box<Self>, ModError> {
         if reg.module() != crate::NS {
             return Err(mod_error(Error::Invalid));
         }
@@ -162,169 +372,16 @@ impl Runtime {
                 )
             })
             .transpose()?;
-        let mut refs = actions.to_vec();
-        refs.push(config.policy.content.clone());
-        refs.sort();
-        refs.dedup();
-        let pd=config::descriptor("owner_participant","core_production",json!({"format":1,"protocol":"certified_origin_stock_v1","index":INDEX_KEY,"actions":actions,"content":config.policy.content,"max_certificates":MAX_CERTIFICATES}))?.with_references(refs.clone());
-        let pd = match &integration {
-            Some(r) => r
-                .config
-                .participant_descriptor(&config.policy)
-                .map_err(mod_error)?,
-            None => pd,
-        };
-        exact(reg, "owner_participant", std::slice::from_ref(&pd))?;
-        let participant = reg.definition(pd)?;
-        let mut allowed: BTreeSet<_> = actions.iter().cloned().collect();
-        if let Some(r) = &integration {
-            allowed.extend(
-                r.actions
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| *i != 3)
-                    .map(|(_, a)| a.clone()),
-            );
-        }
-        if let Some(d) = integration.as_ref().and_then(|r| r.delivery.as_ref()) {
-            allowed.insert(d.action.clone());
-        }
-        if let Some(r) = &refit {
-            allowed.extend(
-                r.actions
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| *i != 4)
-                    .map(|(_, a)| a.clone()),
-            );
-        }
-        reg.owner_participant(
-            participant.clone(),
-            allowed,
-            OriginParticipant {
-                config: config.clone(),
-                definitions: definitions.clone(),
-                actions: actions.clone(),
-                integration: integration
-                    .as_ref()
-                    .map(|r| (r.config.clone(), r.inputs.clone())),
-            },
-        )?;
-        let rd=config::descriptor("owner_read","core_production_readiness",json!({"format":1,"protocol":"certified_origin_dependencies_v1","content":config.policy.content}))?.with_references(vec![config.policy.content.clone()]);
-        let mut reads = vec![rd.clone()];
-        if let Some(r) = &integration {
-            reads
-                .push(super::integration::runtime::output_binding(&r.config)?.policy_descriptor()?);
-        }
-        if let Some(d) = integration.as_ref().and_then(|r| r.delivery.as_ref()) {
-            reads.push(mush_core::core_delivery::CoreOutputDeliveries::<
-                super::integration::output_policy::Policy,
-                super::integration::delivery::Policy,
-            >::policy_descriptor(&d.action)?);
-        }
-        if let Some(r) = &refit {
-            reads.push(mush_core::core_exchange::CoreComponentExchanges::<
-                super::refit::policies::ExchangePolicy,
-            >::policy_descriptor(
-                &r.actions[4], &r.participants
-            )?);
-        }
-        exact(reg, "owner_read", &reads)?;
-        let rd = reg.definition(rd)?;
-        let industry = OwnerId::new(crate::NS).map_err(mod_error)?;
-        let mut dependencies = BTreeSet::from([
-            industry.clone(),
-            OwnerId::new("org").map_err(mod_error)?,
-            OwnerId::new("economy").map_err(mod_error)?,
-            OwnerId::new("inventory").map_err(mod_error)?,
-        ]);
-        dependencies.insert(config.policy.content.key().owner.clone());
-        reg.owner_read_service(
-            rd.clone(),
-            BTreeSet::from([industry]),
-            dependencies,
-            Readiness,
-        )?;
-        let readiness = reg.request_owner_read::<Readiness>(rd)?;
-        reg.state(CoreProductionState::default());
-        let runtime = Self {
+        finish_origin_registration(
+            reg,
             config,
             families,
-            integration,
-            refit,
             definitions,
             actions,
-        };
-        #[cfg(test)]
-        reg.state(TestHandles(runtime.clone()));
-        for initialize in [true, false] {
-            let action = runtime.actions[if initialize { 0 } else { 1 }].clone();
-            let owner = reg.request_owner_participant::<OriginParticipant>(action.clone())?;
-            reg.action_provider(
-                action,
-                Provider {
-                    runtime: runtime.clone(),
-                    initialize,
-                    outcome: outcome.clone(),
-                    owner,
-                    readiness: readiness.clone(),
-                    refusal: refusal()?,
-                },
-            )?;
-        }
-        if let Some(r) = &runtime.integration {
-            if let Some(delivery) = &r.delivery {
-                reg.core_integration_delivery_capacity(
-                    [participant.clone(), r.config.economy_owner.clone()],
-                    [
-                        r.actions[2].clone(),
-                        r.actions[3].clone(),
-                        r.actions[4].clone(),
-                        r.actions[5].clone(),
-                        r.actions[6].clone(),
-                        delivery.action.clone(),
-                    ],
-                )?;
-            } else {
-                reg.core_integration_capacity(
-                    [participant.clone(), r.config.economy_owner.clone()],
-                    [
-                        r.actions[2].clone(),
-                        r.actions[3].clone(),
-                        r.actions[4].clone(),
-                        r.actions[5].clone(),
-                        r.actions[6].clone(),
-                    ],
-                )?;
-            }
-            super::integration::provider::register(reg, r.clone(), readiness.clone())?;
-            super::integration::schedule::register(reg, r.clone())?;
-        }
-        if let Some(r) = &runtime.refit {
-            reg.core_refit_capacity(
-                [
-                    participant,
-                    r.participants[0].clone(),
-                    r.participants[1].clone(),
-                ],
-                [
-                    r.actions[2].clone(),
-                    r.actions[3].clone(),
-                    r.actions[4].clone(),
-                    r.actions[5].clone(),
-                ],
-            )?;
-            super::refit::provider::register(reg, r.clone(), readiness)?;
-            super::refit::schedule::register(reg, r.clone())?;
-            let hook = std::sync::Arc::new(super::refit::policies::CustodyHook {
-                config: r.config.clone(),
-                families: r.families.clone(),
-                participants: r.participants.clone(),
-            });
-            reg.hook(mush_core::HookPoint::CarryAttempt, hook.clone());
-            reg.hook(mush_core::HookPoint::MoveAttempt, hook);
-        }
-        Ok(runtime)
+            integration,
+            refit,
+            outcome,
+        )
     }
     pub(crate) fn load(
         &self,
@@ -478,7 +535,7 @@ fn parse(inv: &ActionInvocation, initialize: bool) -> Result<Option<DieClass>, E
     }
 }
 struct Provider {
-    runtime: Runtime,
+    runtime: Box<Runtime>,
     initialize: bool,
     outcome: DefinitionRef,
     owner: ParticipantHandle<OriginParticipant>,
@@ -551,7 +608,7 @@ impl Provider {
             };
             certificate.validate()?;
             (
-                Request::Issue(certificate.clone()),
+                Request::Issue(Box::new(certificate.clone())),
                 Some(certificate),
                 Some((quota, old.is_some())),
             )

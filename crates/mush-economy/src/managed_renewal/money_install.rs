@@ -212,7 +212,7 @@ pub struct RenewalMoneyPatch {
     next_hold: u64,
     next_contract: u64,
     chunk: u64,
-    fold: RenewalFold,
+    fold: Box<RenewalFold>,
 }
 
 pub(super) fn prepare_images(
@@ -220,7 +220,7 @@ pub(super) fn prepare_images(
     context: &OwnerPrepareContext<'_>,
     request: RenewalMoneyRequest,
     transition: Transition,
-) -> Result<(MoneyOutput, RenewalMoneyPatch, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<(MoneyOutput, Box<RenewalMoneyPatch>, Vec<ReplayWrite>), ParticipantError> {
     finish_images(
         state,
         context.world().world_ic_now().clock,
@@ -230,8 +230,8 @@ pub(super) fn prepare_images(
 pub(super) fn finish_images(
     state: &EconomyStore,
     clock: ClockRef,
-    prepared: MoneyPreparation,
-) -> Result<(MoneyOutput, RenewalMoneyPatch, Vec<ReplayWrite>), ParticipantError> {
+    prepared: Box<MoneyPreparation>,
+) -> Result<(MoneyOutput, Box<RenewalMoneyPatch>, Vec<ReplayWrite>), ParticipantError> {
     let MoneyPreparation {
         output,
         request,
@@ -244,15 +244,15 @@ pub(super) fn finish_images(
         delta,
         transaction,
         next_hold,
-    } = prepared;
+    } = *prepared;
     let next_contract = state.next_contract;
     let next_transaction = state.next_transaction.checked_add(1).ok_or_else(refused)?;
     let next_posts = state.posts_since_boot.checked_add(1).ok_or_else(refused)?;
-    let fold = RenewalFold::prepare(
+    let fold = Box::new(RenewalFold::prepare(
         &state.fold,
         &transaction,
         crate::managed_entitlement::MAX_PAYOUTS,
-    )?;
+    )?);
     let journal = state
         .journal
         .prepare_append(
@@ -330,7 +330,7 @@ pub(super) fn finish_images(
     } else {
         None
     };
-    let patch = RenewalMoneyPatch {
+    let patch = Box::new(RenewalMoneyPatch {
         clock,
         request,
         transition,
@@ -361,7 +361,7 @@ pub(super) fn finish_images(
         next_contract,
         chunk: state.journal.open_chunk(JOURNAL_LOG),
         fold,
-    };
+    });
     Ok((output, patch, writes))
 }
 
@@ -417,7 +417,7 @@ impl RenewalMoneyPatch {
         Ok(())
     }
     pub(crate) fn bind(
-        self,
+        self: Box<Self>,
         state: &mut EconomyStore,
     ) -> Result<BoundRenewalMoney<'_>, ParticipantError> {
         self.check_local(state)?;
@@ -453,7 +453,7 @@ impl RenewalMoneyPatch {
             fold: fold_patch,
             next_window,
             ..
-        } = self;
+        } = *self;
         let journal = journal
             .bind_prepared(prepared_journal)
             .map_err(|_| refused())?;
@@ -513,7 +513,7 @@ pub struct BoundRenewalMoney<'a> {
     after_contract: u64,
     next_posts: u64,
     chunk: u64,
-    fold_patch: RenewalFold,
+    fold_patch: Box<RenewalFold>,
 }
 impl BoundParticipant for BoundRenewalMoney<'_> {
     fn apply(self) {
@@ -540,7 +540,7 @@ impl BoundParticipant for BoundRenewalMoney<'_> {
         );
         self.cold_keys.remove(&self.transaction.idempotency);
         self.bloom.apply();
-        self.fold_patch.apply(self.fold);
+        (*self.fold_patch).apply(self.fold);
         match self.next_window {
             Some(window) => {
                 self.debit_window.insert(self.payer, window);

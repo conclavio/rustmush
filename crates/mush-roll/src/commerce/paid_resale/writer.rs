@@ -225,6 +225,9 @@ impl PaidResaleWriter {
 /// No Deserialize, Clone or public constructor: actual observation is tied to
 /// preparation; serialized output is disclosure data, not a publication token.
 pub struct PreparedPaidResale {
+    state: Box<PreparedPaidResaleState>,
+}
+struct PreparedPaidResaleState {
     action: DefinitionRef,
     commit: CommitToken,
     at_ic: ClockStamp,
@@ -233,7 +236,7 @@ pub struct PreparedPaidResale {
 }
 impl PreparedPaidResale {
     pub fn facts(&self) -> &PaidResaleFacts {
-        &self.facts
+        &self.state.facts
     }
 }
 pub struct RegisteredPaidResaleWriter {
@@ -246,6 +249,9 @@ pub struct RegisteredPaidResaleWriter {
 /// registered intent. Neither an action selector nor decoded native history
 /// can construct this value.
 pub struct PreparedPaidResaleTerminal {
+    state: Box<PreparedPaidResaleTerminalState>,
+}
+struct PreparedPaidResaleTerminalState {
     before: PaidResaleRecord,
     pointer: crate::commerce::paid::PersonalPaidLicence,
     intent: super::service::Intent,
@@ -253,12 +259,12 @@ pub struct PreparedPaidResaleTerminal {
 }
 impl PreparedPaidResaleTerminal {
     pub fn before(&self) -> &PaidResaleRecord {
-        &self.before
+        &self.state.before
     }
     pub fn request(&self) -> mush_economy::managed_paid_resale::PaidResaleTerminalRequest {
         mush_economy::managed_paid_resale::PaidResaleTerminalRequest {
-            acceptance: self.before.operation(),
-            decision: self.decision.clone(),
+            acceptance: self.state.before.operation(),
+            decision: self.state.decision.clone(),
         }
     }
 }
@@ -312,11 +318,13 @@ impl RegisteredPaidResaleWriter {
         }
         let world = ctx.world().map_err(bad)?;
         Ok(PreparedPaidResale {
-            action: self.action.clone(),
-            commit: ctx.commit_token(),
-            at_ic: world.world_ic_now(),
-            at_utc: world.now(),
-            facts,
+            state: Box::new(PreparedPaidResaleState {
+                action: self.action.clone(),
+                commit: ctx.commit_token(),
+                at_ic: world.world_ic_now(),
+                at_utc: world.now(),
+                facts,
+            }),
         })
     }
     fn observed<'a>(
@@ -325,11 +333,11 @@ impl RegisteredPaidResaleWriter {
         v: &'a PreparedPaidResale,
     ) -> Result<&'a PaidResaleFacts, PublicationError> {
         self.registration()?;
-        if v.action != self.action || v.commit != ctx.commit_token() {
+        if v.state.action != self.action || v.state.commit != ctx.commit_token() {
             return Err(PublicationError::Mismatch);
         }
-        v.facts.check_world(ctx.world().map_err(bad)?)?;
-        Ok(&v.facts)
+        v.state.facts.check_world(ctx.world().map_err(bad)?)?;
+        Ok(&v.state.facts)
     }
     fn before(
         &self,
@@ -419,8 +427,8 @@ impl RegisteredPaidResaleWriter {
             || consent.terms.seller != facts.seller()
             || consent.terms.buyer != facts.buyer()
             || facts.requester() != facts.buyer()
-            || consent.accepted_at_ic != observation.at_ic
-            || consent.accepted_at_utc != observation.at_utc
+            || consent.accepted_at_ic != observation.state.at_ic
+            || consent.accepted_at_utc != observation.state.at_utc
             || consent.claims.next_transition != facts.claims().next_transition()
             || consent.claims.open_paid != facts.claims().open_paid()
             || immediate != (consent.mode == PaidResaleModeV1::Immediate)
@@ -487,9 +495,9 @@ impl RegisteredPaidResaleWriter {
             fence: ResaleFence {
                 action: self.action.clone(),
                 commit: ctx.commit_token(),
-                at_ic: observation.at_ic.clone(),
-                at_utc: observation.at_utc,
-                mode: Mode::Admission(facts.clone()),
+                at_ic: observation.state.at_ic.clone(),
+                at_utc: observation.state.at_utc,
+                mode: Mode::Admission(Box::new(facts.clone())),
             },
         };
         txn.insert(&f.paid_resales, &row.key(), row.clone())
@@ -532,7 +540,7 @@ impl RegisteredPaidResaleWriter {
         }
         ctx.prepare_owner(
             self.roots.as_ref().ok_or(PublicationError::Unavailable)?,
-            RootRequest::PaidResale(roots),
+            RootRequest::PaidResale(Box::new(roots)),
         )
         .map_err(bad)?;
         Ok(row)
@@ -657,7 +665,7 @@ impl RegisteredPaidResaleWriter {
                     .map_err(bad)?
                     .ok_or(PublicationError::Missing)?;
                 status.matches(op)?;
-                if !matches!(&op.term, AcceptedTerm::Paid { term } if term == b.term())
+                if !matches!(&op.term, AcceptedTerm::Paid { term } if term.as_ref() == b.term())
                     || op.operation != *sanction
                     || *licence != b.licence().get()
                     || *generation != b.term().generation().get()
@@ -691,10 +699,12 @@ impl RegisteredPaidResaleWriter {
             .matches_consent(before.economic().consent())
             .map_err(bad)?;
         Ok(PreparedPaidResaleTerminal {
-            before,
-            pointer,
-            intent,
-            decision,
+            state: Box::new(PreparedPaidResaleTerminalState {
+                before,
+                pointer,
+                intent,
+                decision,
+            }),
         })
     }
     pub fn terminal(
@@ -706,14 +716,14 @@ impl RegisteredPaidResaleWriter {
     ) -> Result<PaidResaleRecord, PublicationError> {
         let r = self.registration()?;
         r.ready.check()?;
-        r.runtime.require(&observed.intent)?;
-        observed.intent.fresh(ctx.world().map_err(bad)?)?;
-        let before = &observed.before;
+        r.runtime.require(&observed.state.intent)?;
+        observed.state.intent.fresh(ctx.world().map_err(bad)?)?;
+        let before = &observed.state.before;
         let actual = output.history();
         let terminal = actual.terminal().ok_or(PublicationError::Missing)?;
-        if observed.decision.operation != ctx.commit_token()
-            || observed.decision.action != self.action
-            || terminal.decision() != &observed.decision
+        if observed.state.decision.operation != ctx.commit_token()
+            || observed.state.decision.action != self.action
+            || terminal.decision() != &observed.state.decision
             || actual.consent() != before.economic().consent()
             || actual.acceptance() != before.economic().acceptance()
             || actual.outcome() == PaidResaleOutcome::Funded
@@ -723,9 +733,9 @@ impl RegisteredPaidResaleWriter {
         let f = &r.families;
         if txn.get(&f.paid_resales, &before.key()).map_err(bad)? != Some(before)
             || txn
-                .get(&f.paid_licences, &observed.pointer.key())
+                .get(&f.paid_licences, &observed.state.pointer.key())
                 .map_err(bad)?
-                != Some(&observed.pointer)
+                != Some(&observed.state.pointer)
         {
             return Err(PublicationError::Mismatch);
         }
@@ -748,24 +758,30 @@ impl RegisteredPaidResaleWriter {
         } else {
             PaidResaleState::Refunded {
                 terminal: ctx.commit_token(),
-                reason: observed.decision.reason.clone(),
+                reason: observed.state.decision.reason.clone(),
             }
         };
         row.validate()?;
         let head = PaidResaleHead::from_record(&row)?;
         let roots = ResaleRoots {
             commit: ctx.commit_token(),
-            old: vec![history::acceptance_root(before, observed.intent.revision)?],
-            added: vec![history::terminal_root(&row, observed.intent.revision)?],
+            old: vec![history::acceptance_root(
+                before,
+                observed.state.intent.revision,
+            )?],
+            added: vec![history::terminal_root(
+                &row,
+                observed.state.intent.revision,
+            )?],
             fence: ResaleFence {
                 action: self.action.clone(),
                 commit: ctx.commit_token(),
-                at_ic: observed.decision.at_ic.clone(),
-                at_utc: observed.decision.posted_at_utc,
+                at_ic: observed.state.decision.at_ic.clone(),
+                at_utc: observed.state.decision.posted_at_utc,
                 mode: Mode::Service {
-                    runtime: r.runtime.clone(),
+                    runtime: Box::new(r.runtime.clone()),
                     ready: r.ready.clone(),
-                    intent: observed.intent.clone(),
+                    intent: Box::new(observed.state.intent.clone()),
                 },
             },
         };
@@ -780,6 +796,7 @@ impl RegisteredPaidResaleWriter {
             .map_err(bad)?;
         if let Some(holder) = holder {
             let pointer = observed
+                .state
                 .pointer
                 .transferred(row.binding().birth(), &holder)?;
             envelope(
@@ -804,7 +821,7 @@ impl RegisteredPaidResaleWriter {
         }
         ctx.prepare_owner(
             self.roots.as_ref().ok_or(PublicationError::Unavailable)?,
-            RootRequest::PaidResale(roots),
+            RootRequest::PaidResale(Box::new(roots)),
         )
         .map_err(bad)?;
         Ok(row)

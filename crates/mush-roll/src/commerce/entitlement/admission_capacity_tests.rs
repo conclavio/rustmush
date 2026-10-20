@@ -30,6 +30,14 @@ impl GameModule for Owner {
         Ok(())
     }
 }
+#[inline(never)]
+fn registered(shared: &Arc<Mutex<Option<Handle>>>) -> Result<Box<Engine>, ModError> {
+    Ok(Box::new(Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(Owner(shared.clone()))],
+    )?))
+}
 fn row(length: usize, generation: u64) -> TestResult<PaidTermEconomicsV1> {
     let digest = DefinitionDigest::from_bytes([255; 32]);
     let revision: RevisionIdentity = serde_json::from_value(serde_json::json!({"format":1,
@@ -84,11 +92,7 @@ fn document(family: &Handle, row: &PaidTermEconomicsV1) -> serde_json::Value {
 #[test]
 fn real_complete_envelope_reserves_all_future_generation_digits_before_admission() -> TestResult {
     let shared = Arc::new(Mutex::new(None));
-    let mut engine = Engine::with_modules(
-        World::new_minimal(),
-        Registry::new(),
-        vec![Box::new(Owner(shared.clone()))],
-    )?;
+    let mut engine = registered(&shared)?;
     let handle = shared
         .lock()
         .map_err(|_| "handle lock")?
@@ -128,11 +132,7 @@ fn real_complete_envelope_reserves_all_future_generation_digits_before_admission
     for generation in [1, 9, 10, u64::MAX] {
         let future = row(safe_width, generation)?;
         assert!(canonical_json_bytes_with_limit(&document(&handle, &future), 8192)?.len() <= 8192);
-        let mut independent = Engine::with_modules(
-            World::new_minimal(),
-            Registry::new(),
-            vec![Box::new(Owner(shared.clone()))],
-        )?;
+        let mut independent = registered(&shared)?;
         let independent_handle = shared
             .lock()
             .map_err(|_| "handle lock")?

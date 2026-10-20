@@ -164,12 +164,12 @@ impl Provider {
     ) -> Result<(), PublicationError> {
         ctx.prepare_owner(
             &self.roots,
-            RootRequest::CharterPending(PendingRoots {
+            RootRequest::CharterPending(Box::new(PendingRoots {
                 commit: ctx.commit_token(),
                 old,
                 added,
                 fence,
-            }),
+            })),
         )
         .map_err(bad)?;
         Ok(())
@@ -227,7 +227,7 @@ impl Provider {
             settle_seconds: self.config.settle_seconds,
         };
         offer.matches_birth(&basis.birth)?;
-        let fence = self.fence(inv, ctx, Mode::Admission(admission))?;
+        let fence = self.fence(inv, ctx, Mode::Admission(Box::new(admission)))?;
         self.roots(
             ctx,
             vec![RequiredRoot {
@@ -347,7 +347,7 @@ impl Provider {
         {
             return Err(PublicationError::Mismatch);
         }
-        let fence = self.fence(inv, ctx, Mode::Admission(admission))?;
+        let fence = self.fence(inv, ctx, Mode::Admission(Box::new(admission)))?;
         let native = ctx
             .prepare_owner(
                 self.economy.as_ref().ok_or(PublicationError::Unavailable)?,
@@ -546,8 +546,8 @@ impl Provider {
             inv,
             ctx,
             Mode::Service {
-                runtime: self.runtime.clone(),
-                intent,
+                runtime: Box::new(self.runtime.clone()),
+                intent: Box::new(intent),
             },
         )?;
         let native = ctx
@@ -585,9 +585,9 @@ impl Provider {
                 offer: offer.operation,
                 offer_digest: offer.digest()?,
                 accepted_at_ic: before.accepted_at_ic.clone(),
-                economic: TransferEconomic::Pending(PendingEconomic {
+                economic: TransferEconomic::Pending(Box::new(PendingEconomic {
                     pending: economic.clone(),
-                }),
+                })),
             })
         } else {
             None

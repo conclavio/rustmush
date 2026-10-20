@@ -295,7 +295,35 @@ pub(super) fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionState
     if num(claims, "next_transition")? == 0 || num(claims, "open_owned")? > u32::MAX as u64 {
         return Err(refused("pending claims"));
     }
-    let economic = field(&row, "economic")?;
+    let funding = pending_funding(&row, &o, id)?;
+    let phase = pending_terminal(view, protocol, &row, &o, (id, charter, generation), funding)?;
+    Ok(Pair {
+        row,
+        offer: o,
+        operation: id,
+        charter,
+        generation,
+        sequence: seq,
+        phase,
+    })
+}
+// Each phase borrows the same immutable rows and preserves validation order.
+struct PendingFunding<'a> {
+    economic: &'a Value,
+    intent: &'a Value,
+    consent: &'a Value,
+    accepted: crate::ClockStamp,
+    deadline: crate::ClockStamp,
+    funding: &'a Value,
+    hold: &'a Value,
+}
+#[inline(never)]
+fn pending_funding<'a>(
+    row: &'a Value,
+    o: &Value,
+    id: CommitToken,
+) -> Result<PendingFunding<'a>, ActionStateError> {
+    let economic = field(row, "economic")?;
     shape(economic, &["intent", "funding", "terminal"])?;
     canonical_json_bytes_with_limit(economic, 32768)
         .map_err(|_| refused("pending native history bound"))?;
@@ -318,25 +346,25 @@ pub(super) fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionState
             "deadline",
         ],
     )?;
-    let accepted = stamp(field(&row, "accepted_at_ic")?)?;
-    let offered = stamp(field(&o, "offered_at_ic")?)?;
-    let deadline = stamp(field(&row, "deadline")?)?;
-    let term = native_term(field(&row, "owner_term")?)?;
-    let due = i128::from(accepted.at) + i128::from(signed(&o, "settle_seconds")?);
+    let accepted = stamp(field(row, "accepted_at_ic")?)?;
+    let offered = stamp(field(o, "offered_at_ic")?)?;
+    let deadline = stamp(field(row, "deadline")?)?;
+    let term = native_term(field(row, "owner_term")?)?;
+    let due = i128::from(accepted.at) + i128::from(signed(o, "settle_seconds")?);
     let due = due.min(i128::from(signed(&term, "term_end")?));
     if num(consent, "format")? != 1
-        || field(consent, "operation")? != field(&row, "operation")?
-        || field(consent, "effect")? != field(&row, "action")?
-        || field(consent, "terms")? != &native_terms(&o)?
-        || field(consent, "accepted_at_ic")? != field(&row, "accepted_at_ic")?
-        || field(consent, "deadline")? != field(&row, "deadline")?
+        || field(consent, "operation")? != field(row, "operation")?
+        || field(consent, "effect")? != field(row, "action")?
+        || field(consent, "terms")? != &native_terms(o)?
+        || field(consent, "accepted_at_ic")? != field(row, "accepted_at_ic")?
+        || field(consent, "deadline")? != field(row, "deadline")?
         || accepted.clock != offered.clock
         || accepted.at < offered.at
         || accepted.at >= signed(&term, "term_end")?
         || deadline.clock != accepted.clock
         || i128::from(deadline.at) != due
-        || signed(consent, "accepted_at_utc")? < signed(&o, "offered_at_utc")?
-        || signed(consent, "accepted_at_utc")? >= signed(&o, "expires_at_utc")?
+        || signed(consent, "accepted_at_utc")? < signed(o, "offered_at_utc")?
+        || signed(consent, "accepted_at_utc")? >= signed(o, "expires_at_utc")?
     {
         return Err(refused("pending native consent differs"));
     }
@@ -367,9 +395,9 @@ pub(super) fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionState
     )?;
     if field(hold, "id")? != field(intent, "hold")?
         || field(hold, "account")? != field(consent, "payer")?
-        || field(hold, "amount")? != field(&o, "price")?
+        || field(hold, "amount")? != field(o, "price")?
         || field(hold, "status")? != &json!("Held")
-        || field(hold, "placed_by")? != &json!({"Object":field(&o,"buyer")?})
+        || field(hold, "placed_by")? != &json!({"Object":field(o,"buyer")?})
         || field(hold, "beneficiary")? != &json!({"System":"economy.contract"})
         || field(hold, "purpose")? != &json!({"Escrow":{"contract":field(intent,"contract")?}})
         || field(hold, "holder")?
@@ -380,7 +408,36 @@ pub(super) fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionState
     {
         return Err(refused("pending actual funding hold differs"));
     }
-    let state = field(&row, "state")?;
+    Ok(PendingFunding {
+        economic,
+        intent,
+        consent,
+        accepted,
+        deadline,
+        funding,
+        hold,
+    })
+}
+#[inline(never)]
+fn pending_terminal(
+    view: &View<'_>,
+    protocol: &Protocol,
+    row: &Value,
+    o: &Value,
+    identity: (CommitToken, u64, u64),
+    funding: PendingFunding<'_>,
+) -> Result<String, ActionStateError> {
+    let (id, charter, generation) = identity;
+    let PendingFunding {
+        economic,
+        intent,
+        consent,
+        accepted,
+        deadline,
+        funding,
+        hold,
+    } = funding;
+    let state = field(row, "state")?;
     let phase = text(state, "phase")?.to_owned();
     let terminal = field(economic, "terminal")?;
     if phase == "funded" {
@@ -431,10 +488,10 @@ pub(super) fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionState
         if !(1..=u64::from(u32::MAX)).contains(&num(decision, "actor")?)
             || signed(decision, "posted_at_utc")? < signed(consent, "accepted_at_utc")?
             || [
-                field(&o, "operation")?,
-                field(&o, "birth")?,
-                field(field(&o, "ownership")?, "operation")?,
-                field(field(&o, "owner_term")?, "operation")?,
+                field(o, "operation")?,
+                field(o, "birth")?,
+                field(field(o, "ownership")?, "operation")?,
+                field(field(o, "owner_term")?, "operation")?,
             ]
             .iter()
             .any(|v| **v == json!(commit))
@@ -481,10 +538,10 @@ pub(super) fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionState
                     &["kind", "sanction", "licence", "generation", "term_digest"],
                 )?;
                 if num(reason, "licence")?
-                    != decimal(field(field(&row, "owner_term")?, "licence")?, u64::MAX)?
+                    != decimal(field(field(row, "owner_term")?, "licence")?, u64::MAX)?
                     || num(reason, "generation")?
-                        != decimal(field(field(&row, "owner_term")?, "generation")?, u64::MAX)?
-                    || field(reason, "term_digest")? != field(field(&row, "owner_term")?, "digest")?
+                        != decimal(field(field(row, "owner_term")?, "generation")?, u64::MAX)?
+                    || field(reason, "term_digest")? != field(field(row, "owner_term")?, "digest")?
                 {
                     return Err(refused("pending revocation term"));
                 }
@@ -496,7 +553,7 @@ pub(super) fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionState
         let hm = expected
             .as_object_mut()
             .ok_or_else(|| refused("pending hold"))?;
-        hm.insert("status".into(),if settles {json!({"Consumed":{"transaction":field(terminal,"transaction")?,"amount":field(&o,"price")?}})}else{json!("Released")});
+        hm.insert("status".into(),if settles {json!({"Consumed":{"transaction":field(terminal,"transaction")?,"amount":field(o,"price")?}})}else{json!("Released")});
         hm.insert("revision".into(), json!(2));
         hm.insert(
             "last_journal_seq".into(),
@@ -515,7 +572,7 @@ pub(super) fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionState
             {
                 return Err(refused("pending settled state"));
             }
-            let expected = json!({"object":charter,"title_owner":{"Object":field(&o,"buyer")?},"scope":null,"catalog":field(intent,"catalog")?,"encumbrances":[],"assignment":null,"maintenance_account":null,"acquisition":{"transaction":field(terminal,"transaction")?,"at":field(decision,"posted_at_utc")?},"lifecycle":"Active","last_journal_seq":field(terminal,"journal_seq")?,"revision":num(&o,"title_revision")?+1,"stolen":null,"frozen":false,"frozen_reason":null});
+            let expected = pending_title(o, intent, terminal, decision, charter)?;
             if field(terminal, "title")? != &expected {
                 return Err(refused("pending terminal title differs"));
             }
@@ -530,25 +587,30 @@ pub(super) fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionState
             if kind == "registry_revoked"
                 && field(reason, "sanction")? == field(decision, "operation")?
             {
-                verify_sanction(view, &row, &o, decision, true)?;
+                verify_sanction(view, row, o, decision, true)?;
             } else if action != protocol.actions[3] {
                 return Err(refused("pending refund action"));
             }
             if kind == "registry_revoked" {
-                verify_sanction(view, &row, &o, decision, false)?;
+                verify_sanction(view, row, o, decision, false)?;
             }
         }
     }
-    Ok(Pair {
-        row,
-        offer: o,
-        operation: id,
-        charter,
-        generation,
-        sequence: seq,
-        phase,
-    })
+    Ok(phase)
 }
+#[inline(never)]
+fn pending_title(
+    o: &Value,
+    intent: &Value,
+    terminal: &Value,
+    decision: &Value,
+    charter: u64,
+) -> Result<Value, ActionStateError> {
+    Ok(
+        json!({"object":charter,"title_owner":{"Object":field(o,"buyer")?},"scope":null,"catalog":field(intent,"catalog")?,"encumbrances":[],"assignment":null,"maintenance_account":null,"acquisition":{"transaction":field(terminal,"transaction")?,"at":field(decision,"posted_at_utc")?},"lifecycle":"Active","last_journal_seq":field(terminal,"journal_seq")?,"revision":num(o,"title_revision")?+1,"stolen":null,"frozen":false,"frozen_reason":null}),
+    )
+}
+
 fn plan_hash(v: &Value) -> Result<(), ActionStateError> {
     let _: [u8; 32] =
         serde_json::from_value(v.clone()).map_err(|_| refused("pending plan hash"))?;

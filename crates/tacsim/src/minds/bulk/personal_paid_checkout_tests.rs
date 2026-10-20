@@ -119,7 +119,7 @@ pub(super) fn content() -> TestResult<Box<dyn GameModule>> {
 
 struct PlayerWorld {
     minds_facts: Option<mush_roll::commerce::facts::MindsFactProvider>,
-    engine: Engine,
+    engine: Box<Engine>,
     tasks: ArenaTasks,
     egress: tokio::sync::mpsc::Receiver<ArenaOut>,
     image: HashMap<SmolStr, ModuleBootData>,
@@ -510,6 +510,7 @@ impl PlayerWorld {
             None, false, false, true,
         )
     }
+    #[inline(never)]
     fn boot_options_with_derived_updates(
         f: &PurchaseFixture,
         saved: &Durable,
@@ -626,7 +627,7 @@ impl PlayerWorld {
             }),
             content()?,
         ];
-        let mut engine = Engine::with_modules(saved.world()?, Registry::new(), modules)?;
+        let mut engine = boxed_fixture_engine(saved.world()?, Registry::new(), modules)?;
         engine.set_account_identity(f.accounts.clone());
         load(&mut engine, &saved.disk)?;
         assert_eq!(
@@ -1167,4 +1168,13 @@ pub(super) fn exercise_source(f: &PurchaseFixture, saved: &Durable, permitted: b
 /// The same genuine certificate/paid history, with an explicit fork opt-in.
 pub(super) fn exercise_forks(f: &PurchaseFixture, saved: &Durable, permitted: bool) -> TestResult {
     fork_tests::exercise(f, saved, permitted)
+}
+
+#[inline(never)]
+fn boxed_fixture_engine(
+    world: mush_core::World,
+    registry: mush_core::Registry,
+    modules: Vec<Box<dyn mush_core::GameModule>>,
+) -> Result<Box<mush_core::Engine>, mush_core::ModError> {
+    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
 }

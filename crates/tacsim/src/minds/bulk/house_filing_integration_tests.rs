@@ -102,17 +102,20 @@ impl GameModule for HouseEconomy {
     }
 }
 struct HouseFixture {
-    engine: Engine,
+    // Keep cold and refusal branches from retaining repeated Engine stack images.
+    engine: Box<Engine>,
     disk: Disk,
     action: DefinitionRef,
     catalogue: catalogue::Answers,
 }
 impl HouseFixture {
+    // Actual owner construction stays separate from the retained scenario frame.
+    #[inline(never)]
     fn boot(registry: &Fixture, saved: &Durable) -> TestResult<Self> {
         let shared: Shared = Arc::new(Mutex::new(Registered::default()));
         let house: HouseAction = Arc::new(Mutex::new(None));
         let catalogue = Arc::new(Mutex::new(None));
-        let mut engine = Engine::with_modules(
+        let mut engine = Box::new(Engine::with_modules(
             saved.world()?,
             Registry::new(),
             vec![
@@ -139,7 +142,7 @@ impl HouseFixture {
                     answers: catalogue.clone(),
                 }),
             ],
-        )?;
+        )?);
         engine.set_account_identity(registry.accounts.clone());
         let mut disk = saved.disk.clone();
         load(&mut engine, &disk)?;

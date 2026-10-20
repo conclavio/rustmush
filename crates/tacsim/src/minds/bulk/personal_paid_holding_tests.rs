@@ -201,26 +201,9 @@ fn sealed_arena(
     Ok((arena, full_seal, source))
 }
 
-/// The parent has already completed real Grant and Refund branches from this
-/// same actual funded operation. All branches below replay that real history.
-pub(super) fn exercise(
-    f: &PurchaseFixture,
-    funded: &Durable,
-    granted: &Durable,
-    refunded: &Durable,
-) -> TestResult {
-    let mut before = f.reboot(funded)?;
-    assert!(matches!(
-        observe(&mut before, BUYER, 2, None)?,
-        Err(OwnerReadError::Refused)
-    ));
-    let mut refund = f.reboot(refunded)?;
-    assert!(matches!(
-        observe(&mut refund, BUYER, 2, None)?,
-        Err(OwnerReadError::Refused)
-    ));
-    let mut paid = f.reboot(granted)?;
-    let holding = own(&mut paid, BUYER, 2)?;
+#[inline(never)]
+fn inspect_paid_access(paid: &mut PurchaseFixture) -> TestResult<PersonalFiledHolding> {
+    let holding = own(paid, BUYER, 2)?;
     assert_eq!(holding.actor(), BUYER);
     assert_eq!(holding.licence().get(), 2);
     assert_eq!(
@@ -238,28 +221,28 @@ pub(super) fn exercise(
     assert!(!wire.contains("\"account\""));
     assert!(wire.len() < mush_core::read_service::MAX_OWNER_READ_RESULT_BYTES);
     assert!(
-        own(&mut paid, GOD, 1)?.paid_terms().is_none(),
+        own(paid, GOD, 1)?.paid_terms().is_none(),
         "original route still resolves"
     );
     assert!(matches!(
-        observe(&mut paid, GOD, 2, None)?,
+        observe(paid, GOD, 2, None)?,
         Err(OwnerReadError::Refused)
     ));
     assert!(matches!(
-        observe(&mut paid, BUYER, 1, None)?,
+        observe(paid, BUYER, 1, None)?,
         Err(OwnerReadError::Refused)
     ));
     assert!(matches!(
-        observe(&mut paid, BUYER, u64::MAX, None)?,
+        observe(paid, BUYER, u64::MAX, None)?,
         Err(OwnerReadError::Refused)
     ));
     assert_eq!(
-        observe(&mut paid, GOD, 2, Some(BUYER))??,
+        observe(paid, GOD, 2, Some(BUYER))??,
         holding,
         "admission uses the real separate roster subject, not caller title"
     );
     assert!(matches!(
-        observe(&mut paid, BUYER, 2, Some(GOD))?,
+        observe(paid, BUYER, 2, Some(GOD))?,
         Err(OwnerReadError::Refused)
     ));
 
@@ -274,19 +257,26 @@ pub(super) fn exercise(
         accounts.insert(alt, buyer_account);
     }
     assert!(matches!(
-        observe(&mut paid, alt, 2, None)?,
+        observe(paid, alt, 2, None)?,
         Err(OwnerReadError::Refused)
     ));
 
-    let mut live = f.reboot(granted)?;
-    let (mut arena, full_seal, source) = sealed_arena(&live, holding.clone())?;
+    Ok(holding)
+}
+
+#[inline(never)]
+fn inspect_frozen_execution(
+    live: &mut PurchaseFixture,
+    holding: &PersonalFiledHolding,
+) -> TestResult {
+    let (mut arena, full_seal, source) = sealed_arena(live, holding.clone())?;
     let captured = crate::arena::snapshot::Snapshot::encode(&arena)?;
     let captured_ref = arena.units.first().ok_or("first unit")?.seal.clone();
     let paid_term = one(live.rows("roll", "roll_mind_paid_term"))?;
     let dates = holding.window();
     live.engine.world.set_now(dates.issued_at().get() - 1);
     assert!(matches!(
-        observe(&mut live, BUYER, 2, None)?,
+        observe(live, BUYER, 2, None)?,
         Err(OwnerReadError::Refused)
     ));
     for now in [
@@ -295,7 +285,7 @@ pub(super) fn exercise(
         dates.grace_end().get() - 1,
     ] {
         live.engine.world.set_now(now);
-        assert_eq!(own(&mut live, BUYER, 2)?, holding);
+        assert_eq!(own(live, BUYER, 2)?, *holding);
         assert_eq!(one(live.rows("roll", "roll_mind_paid_term"))?, paid_term);
     }
     // Seller's original owner term starts 17 seconds before the buyer term.
@@ -304,13 +294,13 @@ pub(super) fn exercise(
         .world
         .set_now(1000 + TERM_SECONDS + GRACE_SECONDS);
     assert!(matches!(
-        observe(&mut live, GOD, 1, None)?,
+        observe(live, GOD, 1, None)?,
         Err(OwnerReadError::Refused)
     ));
-    assert_eq!(own(&mut live, BUYER, 2)?, holding);
+    assert_eq!(own(live, BUYER, 2)?, *holding);
     live.engine.world.set_now(dates.grace_end().get());
     assert!(matches!(
-        observe(&mut live, BUYER, 2, None)?,
+        observe(live, BUYER, 2, None)?,
         Err(OwnerReadError::Refused)
     ));
     assert_eq!(one(live.rows("roll", "roll_mind_paid_term"))?, paid_term);
@@ -344,6 +334,33 @@ pub(super) fn exercise(
         restored.units.first().ok_or("restored unit")?.seal,
         captured_ref
     );
+
+    Ok(())
+}
+
+/// The parent has already completed real Grant and Refund branches from this
+/// same actual funded operation. All branches below replay that real history.
+pub(super) fn exercise(
+    f: &PurchaseFixture,
+    funded: &Durable,
+    granted: &Durable,
+    refunded: &Durable,
+) -> TestResult {
+    let mut before = f.reboot(funded)?;
+    assert!(matches!(
+        observe(&mut before, BUYER, 2, None)?,
+        Err(OwnerReadError::Refused)
+    ));
+    let mut refund = f.reboot(refunded)?;
+    assert!(matches!(
+        observe(&mut refund, BUYER, 2, None)?,
+        Err(OwnerReadError::Refused)
+    ));
+    let mut paid = f.reboot(granted)?;
+    let holding = inspect_paid_access(&mut paid)?;
+
+    let mut live = f.reboot(granted)?;
+    inspect_frozen_execution(&mut live, &holding)?;
 
     // Real paid history cannot back a fabricated withdrawal/recall cause.
     // Until those producers exist, the full audit must reject either edited

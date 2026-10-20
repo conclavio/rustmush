@@ -52,7 +52,7 @@ fn fixture(abi: &str, source: &str) -> Result<(Execution, Arena), Box<dyn std::e
             line: "1".into(),
             revision: 1,
             licence: "1".into(),
-            certificate,
+            certificate: Box::new(certificate),
         },
         source_sha256: digest,
     };

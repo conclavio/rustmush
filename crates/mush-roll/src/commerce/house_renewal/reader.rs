@@ -53,14 +53,14 @@ impl RenewalRequest {
 #[derive(Serialize)]
 #[serde(untagged)]
 pub enum RenewalRead {
-    Facts(RenewalFacts),
+    Facts(Box<RenewalFacts>),
     Inventory(RenewalInventory),
-    Operation(super::RenewalOperationV1),
+    Operation(Box<super::RenewalOperationV1>),
 }
 impl RenewalRead {
     pub fn into_facts(self) -> Result<RenewalFacts, OwnerReadError> {
         match self {
-            Self::Facts(v) => Ok(v),
+            Self::Facts(v) => Ok(*v),
             _ => Err(OwnerReadError::Integrity),
         }
     }
@@ -72,7 +72,7 @@ impl RenewalRead {
     }
     pub fn into_operation(self) -> Result<super::RenewalOperationV1, OwnerReadError> {
         match self {
-            Self::Operation(v) => Ok(v),
+            Self::Operation(v) => Ok(*v),
             _ => Err(OwnerReadError::Integrity),
         }
     }
@@ -292,7 +292,7 @@ impl OwnerReadService for RenewalReader {
             RenewalRequest::Operation { operation } if self.service => {
                 return self
                     .operation(roll, ctx, operation)
-                    .map(RenewalRead::Operation);
+                    .map(|operation| RenewalRead::Operation(Box::new(operation)));
             }
             RenewalRequest::Status { status_licence } if self.service => {
                 let licence =
@@ -385,13 +385,13 @@ impl OwnerReadService for RenewalReader {
         {
             return Err(OwnerReadError::Integrity);
         }
-        Ok(RenewalRead::Facts(RenewalFacts {
+        Ok(RenewalRead::Facts(Box::new(RenewalFacts {
             binding,
             predecessor_term_end,
             prior_quote: birth.quote(),
             prior_quote_digest: birth.quote_digest(),
             sale,
-        }))
+        })))
     }
 }
 

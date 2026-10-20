@@ -29,7 +29,7 @@ fn cold(r: &mut Rig) -> TestResult {
     )?;
     Ok(())
 }
-fn ready() -> TestResult<Rig> {
+fn ready() -> TestResult<Box<Rig>> {
     let mut r = Rig::new()?;
     r.publish()?;
     r.state.fold.renewal_receipts.finish_replay()?;

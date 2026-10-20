@@ -73,9 +73,9 @@ impl PaidResaleTerminalReceiptV1 {
 #[serde(deny_unknown_fields)]
 pub struct PaidResaleHistoryV1 {
     intent: Intent,
-    acceptance: PaidResaleAcceptanceReceiptV1,
+    acceptance: Box<PaidResaleAcceptanceReceiptV1>,
     #[serde(deserialize_with = "required")]
-    terminal: Option<PaidResaleTerminalReceiptV1>,
+    terminal: Option<Box<PaidResaleTerminalReceiptV1>>,
 }
 impl PaidResaleHistoryV1 {
     pub fn consent(&self) -> &PaidResaleConsentV1 {
@@ -88,7 +88,7 @@ impl PaidResaleHistoryV1 {
         &self.acceptance
     }
     pub fn terminal(&self) -> Option<&PaidResaleTerminalReceiptV1> {
-        self.terminal.as_ref()
+        self.terminal.as_deref()
     }
     pub(super) fn intent(&self) -> &Intent {
         &self.intent
@@ -329,12 +329,12 @@ pub(super) fn from_acceptance(
     };
     let row = PaidResaleHistoryV1 {
         intent: i,
-        acceptance: PaidResaleAcceptanceReceiptV1 {
+        acceptance: Box::new(PaidResaleAcceptanceReceiptV1 {
             transaction: tx.id,
             journal_seq: tx.journal_seq,
             plan_hash: tx.plan_hash,
             hold,
-        },
+        }),
         terminal: None,
     };
     row.validate()?;
@@ -364,13 +364,13 @@ pub(super) fn with_terminal(
         return Err(refused());
     }
     let mut row = before.clone();
-    row.terminal = Some(PaidResaleTerminalReceiptV1 {
+    row.terminal = Some(Box::new(PaidResaleTerminalReceiptV1 {
         decision: d,
         transaction: tx.id,
         journal_seq: tx.journal_seq,
         plan_hash: tx.plan_hash,
         hold: h.hold.clone(),
-    });
+    }));
     row.validate()?;
     Ok(row)
 }

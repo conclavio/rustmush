@@ -147,32 +147,34 @@ fn exact_close_is_idempotent_and_crossed_identity_cannot_release_capacity() -> T
         transition: held.next_transition(),
         ..close(&a, 10001)?
     };
-    for crossed in [
-        CloseCause {
+    let crossed: [fn(&ClaimRecord, &ClaimRecord, &CloseCause) -> CloseCause; 6] = [
+        |_a, b, cause| CloseCause {
             unit: b.open.unit,
             ..cause.clone()
         },
-        CloseCause {
+        |_a, b, cause| CloseCause {
             sortie: b.open.sortie,
             ..cause.clone()
         },
-        CloseCause {
+        |_a, b, cause| CloseCause {
             open: b.open.operation,
             ..cause.clone()
         },
-        CloseCause {
+        |_a, _b, cause| CloseCause {
             open_digest: digest(9),
             ..cause.clone()
         },
-        CloseCause {
+        |_a, b, cause| CloseCause {
             operation: b.open.operation,
             ..cause.clone()
         },
-        CloseCause {
+        |a, _b, cause| CloseCause {
             action: a.open.action.clone(),
             ..cause.clone()
         },
-    ] {
+    ];
+    for make in crossed {
+        let crossed = make(&a, &b, &cause);
         assert!(held.closing(crossed).is_err());
     }
     assert_eq!(held.open_len(), 2);

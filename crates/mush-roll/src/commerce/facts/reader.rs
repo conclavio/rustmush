@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 #[derive(Serialize)]
 pub(super) enum Query {
     Scoped {
-        scope: ContractFactScope,
+        scope: Box<ContractFactScope>,
         fact: ExternalRef,
     },
     Term(protocol::Request),
@@ -23,7 +23,7 @@ pub(super) enum Query {
 #[derive(Debug, Serialize)]
 pub(super) enum Reply {
     Scoped { truth: Option<Truth> },
-    Term(history::TermProof),
+    Term(Box<history::TermProof>),
 }
 #[derive(Debug, Serialize)]
 pub(super) struct Truth {
@@ -101,7 +101,7 @@ impl OwnerReadService for Reader {
                     request.generation,
                 )
                 .map_err(refuse)?;
-                Ok(Reply::Term(proof))
+                Ok(Reply::Term(Box::new(proof)))
             }
             Query::Scoped { scope, fact } => {
                 let (licence, generation) = match protocol::FactKey::parse(&fact) {

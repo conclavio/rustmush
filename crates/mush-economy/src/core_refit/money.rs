@@ -18,7 +18,7 @@ use mush_org::PrincipalId;
 use std::collections::BTreeMap;
 
 pub(crate) enum Request {
-    Fund(RefitFundingRequest),
+    Fund(Box<RefitFundingRequest>),
     Install(RefitInstallationRequest),
     Cancel(RefitCancellationRequest),
 }
@@ -39,7 +39,7 @@ impl Transition {
 }
 /// Opaque actual owner outputs. Raw decoded histories cannot create them.
 pub struct RefitFundingOutput {
-    pub(super) history: RefitPaymentHistory,
+    pub(super) history: Box<RefitPaymentHistory>,
 }
 impl RefitFundingOutput {
     pub fn subject(&self) -> &super::RefitSubject {
@@ -50,8 +50,8 @@ impl RefitFundingOutput {
     }
 }
 pub struct RefitTerminalOutput {
-    pub(super) history: RefitPaymentHistory,
-    receipt: RefitTerminalReceipt,
+    pub(super) history: Box<RefitPaymentHistory>,
+    receipt: Box<RefitTerminalReceipt>,
 }
 impl RefitTerminalOutput {
     pub fn subject(&self) -> &super::RefitSubject {
@@ -139,7 +139,7 @@ pub(super) fn prepare(
     state: &EconomyStore,
     ctx: &OwnerPrepareContext<'_>,
     request: Request,
-) -> Result<MoneyPreparation, ParticipantError> {
+) -> Result<Box<MoneyPreparation>, ParticipantError> {
     state
         .fold
         .refit_receipts
@@ -181,7 +181,7 @@ pub(super) fn prepare(
             )
             .map_err(|_| refused())?;
             (
-                history.intent.clone(),
+                history.intent.as_ref().clone(),
                 Transition::Install,
                 Some(history),
                 Some(live),
@@ -203,7 +203,7 @@ pub(super) fn prepare(
                 .verify_hold(state.snapshot())
                 .map_err(|_| refused())?;
             (
-                history.intent.clone(),
+                history.intent.as_ref().clone(),
                 Transition::Cancel,
                 Some(history),
                 None,
@@ -269,15 +269,15 @@ pub(super) fn prepare(
     }
     let output = if transition == Transition::Fund {
         Output::Funded(RefitFundingOutput {
-            history: history.clone(),
+            history: Box::new(history.clone()),
         })
     } else {
         Output::Terminal(RefitTerminalOutput {
-            receipt: history.terminal().cloned().ok_or_else(refused)?,
-            history: history.clone(),
+            receipt: Box::new(history.terminal().cloned().ok_or_else(refused)?),
+            history: Box::new(history.clone()),
         })
     };
-    Ok(MoneyPreparation {
+    Ok(Box::new(MoneyPreparation {
         output: Some(output),
         history,
         transition,
@@ -289,7 +289,7 @@ pub(super) fn prepare(
         delta,
         transaction,
         next_hold,
-    })
+    }))
 }
 fn validate(
     state: &EconomyStore,
@@ -349,7 +349,7 @@ pub(super) fn recheck(
         prepared.transition,
         prepared.history.subject().requester,
     )?;
-    let intent = &prepared.history.intent;
+    let intent = prepared.history.intent.as_ref();
     let current = match prepared.transition {
         Transition::Fund => {
             // Historical accepted_at remains fixed. Recheck the exact old offer

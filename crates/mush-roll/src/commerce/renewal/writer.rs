@@ -399,7 +399,7 @@ impl RegisteredRenewalWriter {
             operation: ctx.commit_token(),
             action: self.action.clone(),
             attempt,
-            binding: facts.binding().clone(),
+            binding: Box::new(facts.binding().clone()),
             offer_digest: output.offer_digest(),
             contract: output.contract(),
             consent_hash: output.consent_hash(),
@@ -454,7 +454,7 @@ impl RegisteredRenewalWriter {
                 .map_err(invalid)?;
         }
         self.readback(txn, &row, &next)?;
-        ctx.prepare_owner(&self.roots, RootRequest::Renewal(roots))
+        ctx.prepare_owner(&self.roots, RootRequest::Renewal(Box::new(roots)))
             .map_err(invalid)?;
         Ok(row)
     }
@@ -667,7 +667,7 @@ impl RegisteredRenewalWriter {
             return Err(PublicationError::Mismatch);
         }
         self.readback(txn, &after, &next)?;
-        ctx.prepare_owner(&self.roots, RootRequest::Renewal(roots))
+        ctx.prepare_owner(&self.roots, RootRequest::Renewal(Box::new(roots)))
             .map_err(invalid)?;
         Ok(after)
     }

@@ -154,7 +154,7 @@ enum Proof {
         format: u16,
         operation: CommitToken,
         effect: DefinitionRef,
-        purchase: SubjectWire,
+        purchase: Box<SubjectWire>,
         at_ic: ClockStamp,
     },
     Grant {
@@ -186,7 +186,7 @@ pub(super) fn funding_correlation(
         format: 1,
         operation,
         effect: effect.clone(),
-        purchase: SubjectWire::capture(purchase),
+        purchase: Box::new(SubjectWire::capture(purchase)),
         at_ic,
     })
 }
@@ -437,7 +437,7 @@ impl PurchaseHistory {
             format: 1,
             operation: self.operation,
             effect: self.effect.clone(),
-            purchase: self.purchase.clone(),
+            purchase: Box::new(self.purchase.clone()),
             at_ic: self.funding.at_ic.clone(),
         })
         .map_err(|_| PurchaseAuditError::Refused)?;
@@ -654,17 +654,17 @@ impl PurchaseReceiptAudit {
     pub(super) fn prepare(
         &self,
         tx: &EconomicTransaction,
-    ) -> Result<PreparedHistory, ParticipantError> {
+    ) -> Result<Box<PreparedHistory>, ParticipantError> {
         self.require_complete().map_err(|_| refused())?;
         let after = self.next(tx).map_err(|_| refused())?;
-        Ok(PreparedHistory {
+        Ok(Box::new(PreparedHistory {
             before: self.histories.get(&after.operation).cloned(),
             after,
             count: self.histories.len(),
             complete: self.complete,
             invalid: self.invalid,
             verified: self.verified_this_boot,
-        })
+        }))
     }
     fn next(&self, tx: &EconomicTransaction) -> Result<PurchaseHistory, PurchaseAuditError> {
         let fail = || PurchaseAuditError::Refused;
@@ -747,7 +747,7 @@ impl PurchaseReceiptAudit {
                 PurchaseHistory {
                     operation,
                     effect: definition,
-                    purchase,
+                    purchase: *purchase,
                     created_at: tx.posted_at,
                     hold: h.clone(),
                     plan_hash: tx.plan_hash,
@@ -888,7 +888,7 @@ impl PreparedHistory {
             && a.invalid == self.invalid
             && a.verified_this_boot == self.verified
     }
-    pub(super) fn apply(self, a: &mut PurchaseReceiptAudit) {
+    pub(super) fn apply(self: Box<Self>, a: &mut PurchaseReceiptAudit) {
         a.histories.insert(self.after.operation, self.after);
     }
 }

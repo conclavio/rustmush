@@ -2,6 +2,8 @@
 //! This in-process driver installs the exact acknowledged owner union. Its
 //! observation adapter models no transport absence and grants no authority.
 use super::*;
+#[path = "story/pacing.rs"]
+mod pacing;
 use mush_core::{
     AuthoritativeSubmit, CanonicalId, IdempotencyKey, IdempotencyScope, Inbound,
     OfferExecutionContext, OfferSubmission, Outbox, PerceivedRef, RequestUid, ScopedIdempotencyKey,
@@ -140,7 +142,7 @@ fn revision(r: &Rig, name: &str) -> Result<Option<mush_roll::Revision>> {
         .and_then(|reference| store.revision(GOD, reference).ok())
         .cloned())
 }
-async fn certify(r: &mut Rig, name: &str) -> Result<(mush_roll::Revision, RatingRef)> {
+async fn certify(r: &mut Rig, name: &str, ordinal: u8) -> Result<(mush_roll::Revision, RatingRef)> {
     command(
         r.world_mut(),
         GOD,
@@ -158,6 +160,7 @@ async fn certify(r: &mut Rig, name: &str) -> Result<(mush_roll::Revision, Rating
         tokio::time::sleep(Duration::from_millis(2)).await;
     };
     let reference = revision.reference();
+    let mut pacing = pacing::Progress::new(ordinal);
     command(
         r.world_mut(),
         GOD,
@@ -175,12 +178,15 @@ async fn certify(r: &mut Rig, name: &str) -> Result<(mush_roll::Revision, Rating
             if receipt.subject().revision()
                 == mush_roll::commerce::RevisionIdentity::capture(&revision)?
             {
+                pacing.sample(r, true);
+                pacing.finish(true);
                 return Ok((revision, rating));
             }
         }
         for wire in r.rows("rating_jobs") {
             let job: mush_roll::commerce::rating::RatingJob = serde_json::from_value(wire)?;
             use mush_roll::commerce::rating::RatingJobState;
+            pacing.job(&job, &revision);
             if matches!(
                 job.state(),
                 RatingJobState::Failed { .. }
@@ -188,12 +194,17 @@ async fn certify(r: &mut Rig, name: &str) -> Result<(mush_roll::Revision, Rating
                     | RatingJobState::Interrupted {}
                     | RatingJobState::Nonconforming { .. }
             ) {
+                pacing.sample(r, true);
+                pacing.finish(false);
                 return Err("actual named source did not certify".into());
             }
         }
         if Instant::now() >= deadline {
+            pacing.sample(r, true);
+            pacing.finish(false);
             return Err("actual named Registry service timed out".into());
         }
+        pacing.sample(r, false);
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
@@ -263,7 +274,12 @@ async fn other_named_house(
         GOD,
         &format!("@mind/launch {selector}={}", house.source_name),
     )?;
-    let (revision, rating) = certify(r, &house.source_name).await?;
+    let ordinal = match recipe {
+        LaunchRecipe::Coprates => 1,
+        LaunchRecipe::Meridiani => 2,
+        LaunchRecipe::SafeConduct => 3,
+    };
+    let (revision, rating) = certify(r, &house.source_name, ordinal).await?;
     assert_eq!(
         revision.source(),
         mush_roll::source_digest(&recipe.draft()?.source)
@@ -366,7 +382,7 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
     reboot(&mut r, &d)?;
     connected(&mut r)?;
     command(r.world_mut(), GOD, "@mind/launch coprates=Coprates Drill")?;
-    let (revision, rating) = certify(&mut r, &d.houses.coprates.source_name).await?;
+    let (revision, rating) = certify(&mut r, &d.houses.coprates.source_name, 1).await?;
     assert_eq!(
         revision.source(),
         mush_roll::source_digest(&LaunchRecipe::Coprates.draft()?.source)

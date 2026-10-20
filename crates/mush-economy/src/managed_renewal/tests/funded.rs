@@ -131,7 +131,7 @@ fn prepared(
     request: RenewalMoneyRequest,
     t: Transition,
     n: u64,
-) -> TestResult<funding::MoneyPreparation> {
+) -> TestResult<Box<funding::MoneyPreparation>> {
     let name = match t {
         Transition::Fund => FUND_ACTION,
         Transition::Grant => GRANT_ACTION,
@@ -153,7 +153,7 @@ fn prepared(
 }
 fn install_money(
     r: &mut Rig,
-    p: funding::MoneyPreparation,
+    p: Box<funding::MoneyPreparation>,
 ) -> TestResult<(MoneyOutput, Vec<ReplayWrite>)> {
     let (output, patch, writes) =
         money_install::finish_images(&r.state, r.world.world_ic_now().clock, p)?;
@@ -161,7 +161,7 @@ fn install_money(
     patch.bind(&mut r.state)?.apply();
     Ok((output, writes))
 }
-fn funded(six: bool) -> TestResult<(Rig, RenewalMoneyRequest, Vec<(String, Vec<u8>)>)> {
+fn funded(six: bool) -> TestResult<(Box<Rig>, RenewalMoneyRequest, Vec<(String, Vec<u8>)>)> {
     let mut r = Rig::new()?;
     if six {
         r.six_roles()?;
@@ -865,7 +865,7 @@ fn renewal_terminal_holds_survive_actual_sweep_and_complete_cold_reconstruction(
         let now = terminal_at
             .checked_add(crate::HOLD_GC_AFTER_SECS + 60)
             .ok_or("gc time")?;
-        let mut engine = mush_core::Engine::with_modules(
+        let mut engine = boxed_test_engine(
             r.world,
             mush_core::Registry::new(),
             vec![
@@ -882,7 +882,7 @@ fn renewal_terminal_holds_survive_actual_sweep_and_complete_cold_reconstruction(
             .world
             .module_state_mut::<EconomyStore>()
             .ok_or("actual Economy slot")? = r.state;
-        let mut world = mush_testkit::TestWorld::from_engine(engine);
+        let mut world = mush_testkit::TestWorld::from_engine(*engine);
         let _ = world.take_module_ops();
         world.set_now(now);
         let _ = world.fire_due(now.checked_mul(1000).ok_or("gc milliseconds")?);
@@ -939,4 +939,13 @@ fn renewal_terminal_holds_survive_actual_sweep_and_complete_cold_reconstruction(
         );
     }
     Ok(())
+}
+
+#[inline(never)]
+fn boxed_test_engine(
+    world: mush_core::World,
+    registry: mush_core::Registry,
+    modules: Vec<Box<dyn mush_core::GameModule>>,
+) -> Result<Box<mush_core::Engine>, mush_core::ModError> {
+    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
 }

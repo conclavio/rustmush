@@ -67,6 +67,13 @@ enum Request {
     },
 }
 
+struct PreparedSelection {
+    quota_request: QuotaRequest,
+    old: Option<(RatingJob, RatingExecution)>,
+    marked: Option<crate::commerce::marked_rating::MarkedRatingAccess>,
+    reconformance: Option<super::reconformance::ReconformanceAdmission>,
+}
+
 /// This type and its constructor fields are private to Roll. Trusted module
 /// composition supplies concrete owner types; clients cannot replace a handle,
 /// owner output, current manifest, or typed family.
@@ -174,111 +181,12 @@ where
                 .ok_or(RatingError::Unavailable)?;
             deployment.validate().map_err(invalid)?;
 
-            let (quota_request, old, marked, reconformance) = match request {
-                Request::Reconform { ticket, filed } => {
-                    let handle = self
-                        .reconformance
-                        .as_ref()
-                        .ok_or(RatingError::Unavailable)?;
-                    let result = context
-                        .read_owner_preimage(
-                            txn,
-                            handle,
-                            ReconformanceReadRequest::Candidate { filed },
-                        )
-                        .map_err(invalid)?;
-                    let ReconformanceReadResult::Candidate { candidate } = result else {
-                        return Err(RatingError::Identity);
-                    };
-                    let identity =
-                        RevisionIdentity::capture(candidate.revision()).map_err(invalid)?;
-                    let proof = context.personal_account().map_err(invalid)?;
-                    (
-                        QuotaRequest::admit(ticket, identity, proof),
-                        None,
-                        None,
-                        Some(candidate.binding().clone()),
-                    )
-                }
-                Request::Admit { ticket, revision } => {
-                    let exact = context
-                        .world()
-                        .map_err(invalid)?
-                        .module_state::<RollStore>()
-                        .ok_or(RatingError::Unavailable)?
-                        .revision(inv.actor(), revision.key)
-                        .map_err(invalid)?;
-                    if exact.reference() != revision {
-                        return Err(RatingError::Identity);
-                    }
-                    let identity = RevisionIdentity::capture(exact).map_err(invalid)?;
-                    let marked = if exact.require_original_access().is_ok() {
-                        None
-                    } else {
-                        let handle = self.marked.as_ref().ok_or(RatingError::Unavailable)?;
-                        let access = context
-                            .read_owner_preimage(
-                                txn,
-                                handle,
-                                crate::commerce::marked_rating::MarkedRatingRequest::new(revision),
-                            )
-                            .map_err(invalid)?;
-                        if access.actor() != inv.actor()
-                            || RevisionIdentity::capture(access.revision()).map_err(invalid)?
-                                != identity
-                        {
-                            return Err(RatingError::Identity);
-                        }
-                        Some(access)
-                    };
-                    let proof = context.personal_account().map_err(invalid)?;
-                    (
-                        QuotaRequest::admit(ticket, identity, proof),
-                        None,
-                        marked,
-                        None,
-                    )
-                }
-                Request::Existing { ticket, job } => {
-                    let old_job = txn
-                        .get(&self.ratings.jobs, &job)
-                        .map_err(invalid)?
-                        .cloned()
-                        .ok_or(RatingError::Unavailable)?;
-                    let execution = txn
-                        .get(&self.ratings.executions, &job)
-                        .map_err(invalid)?
-                        .cloned()
-                        .ok_or(RatingError::Unavailable)?;
-                    execution.matches_job(&old_job)?;
-                    if execution.admission().character != inv.actor()
-                        || execution.admission().reconformance.is_some()
-                            != self.reconformance.is_some()
-                        || (self.reconformance.is_none()
-                            && old_job.subject().revision().revision().key.character != inv.actor())
-                        || !accepts_compatibility(
-                            self.transition,
-                            &self.compatibility,
-                            old_job.compatibility().digest(),
-                        )
-                        || execution.observation().phase.terminal()
-                    {
-                        return Err(RatingError::Identity);
-                    }
-                    let request = match self.transition {
-                        Transition::Grant => QuotaRequest::grant(ticket, execution.clone()),
-                        Transition::Settle => QuotaRequest::settle(ticket, execution.clone()),
-                        Transition::Cancel => QuotaRequest::cancel(
-                            ticket,
-                            execution.clone(),
-                            context.personal_account().map_err(invalid)?,
-                        ),
-                        Transition::Recover => QuotaRequest::recover(ticket, execution.clone()),
-                        Transition::Admit => return Err(RatingError::Invalid),
-                    };
-                    (request, Some((old_job, execution)), None, None)
-                }
-            };
+            let PreparedSelection {
+                quota_request,
+                old,
+                marked,
+                reconformance,
+            } = *self.select_quota(request, inv, txn, context)?;
             // These are capabilities for the actual registered slots. Structural
             // constructors on an output type are not an alternate input to here.
             stage = "quota";
@@ -305,226 +213,374 @@ where
                 return Err(RatingError::Identity);
             }
             let commit = context.commit_token();
-            let (job, execution, mut roots) = match old {
-                None => {
-                    if artifacts.into_measured().is_some() {
-                        return Err(RatingError::Identity);
-                    }
-                    if quota.admission().reconformance != reconformance {
-                        return Err(RatingError::Identity);
-                    }
-                    let (subject, compatibility) =
-                        quota.subject().ok_or(RatingError::Incomplete)?;
-                    let exact_revision = context
-                        .world()
-                        .map_err(invalid)?
-                        .module_state::<RollStore>()
-                        .ok_or(RatingError::Unavailable)?
-                        .revision(
-                            subject.revision().revision().key.character,
-                            subject.revision().revision().key,
-                        )
-                        .map_err(invalid)?;
-                    let envelope = super::digest(
-                        "tacsim.registry.envelope.v1",
-                        exact_revision.envelope(),
-                        crate::MAX_ENVELOPE_BYTES,
-                    )?;
-                    if quota.job() != commit
-                        || compatibility != &self.compatibility
-                        || subject.revision()
-                            != RevisionIdentity::capture(exact_revision).map_err(invalid)?
-                        || subject.envelope() != envelope
-                        || subject.schema()
-                            != schema_line_digest(exact_revision.envelope()).map_err(invalid)?
-                    {
-                        return Err(RatingError::Identity);
-                    }
-                    let job = RatingJob::new(
-                        commit,
-                        subject.clone(),
-                        compatibility.clone(),
-                        quota.admission().plan,
-                    );
-                    let execution = RatingExecution::admit(
-                        &job,
-                        quota.admission().clone(),
-                        quota.after().clone(),
-                    )?;
-                    txn.insert(&self.ratings.jobs, &commit, job.clone())
-                        .map_err(invalid)?;
-                    txn.insert(&self.ratings.executions, &commit, execution.clone())
-                        .map_err(invalid)?;
-                    if let Some(binding) = &reconformance {
-                        let head = ReconformanceHead {
-                            format: 1,
-                            filed: binding.filed(),
-                            compatibility: self.compatibility.digest(),
-                            job: commit,
-                            admitted_at_utc: context.world().map_err(invalid)?.now(),
-                        };
-                        head.validate().map_err(invalid)?;
-                        let key = head.key();
-                        let previous = txn
-                            .get(&self.commerce.reconformance_heads, &key)
-                            .map_err(invalid)?;
-                        if previous.map(|h| h.job) != binding.previous_attempt() {
-                            return Err(RatingError::Identity);
-                        }
-                        if previous.is_some() {
-                            txn.replace(&self.commerce.reconformance_heads, &key, head.clone())
-                                .map_err(invalid)?;
-                        } else {
-                            txn.insert(&self.commerce.reconformance_heads, &key, head.clone())
-                                .map_err(invalid)?;
-                        }
-                        exact(txn, &self.commerce.reconformance_heads, &key, &head)?;
-                    }
-                    let roots = match marked {
-                        Some(access) => RatingRoots::admission_marked(
-                            &job,
-                            commit,
-                            self.action.clone(),
-                            access,
-                        )?,
-                        None => RatingRoots::admission(&job, commit)?,
-                    };
-                    context
-                        .reserve_registry_rating_completion(txn)
-                        .map_err(invalid)?;
-                    (job, execution, roots)
-                }
-                Some((old_job, before)) => {
-                    if quota.job() != old_job.job()
-                        || quota.admission() != before.admission()
-                        || quota.before() != Some(before.observation())
-                        || quota.subject().is_some()
-                    {
-                        return Err(RatingError::Identity);
-                    }
-                    stage = "result-publication";
-                    let mut rejection = None;
-                    let completion =
-                        match artifacts.into_measured() {
-                            Some(super::nonconformance::MeasuredRegistryResult::Certified(
-                                measured,
-                            )) => {
-                                let issued = context.world().map_err(invalid)?.world_ic_now();
-                                Some(measured.publish_parts(RatingPublication::new(
-                                    old_job.job(),
-                                    issued,
-                                )?)?)
-                            }
-                            Some(super::nonconformance::MeasuredRegistryResult::Nonconforming(
-                                measured,
-                            )) => {
-                                let issued = context.world().map_err(invalid)?.world_ic_now();
-                                rejection = Some(measured.publish_parts(
-                                    RatingPublication::new(old_job.job(), issued)?,
-                                )?);
-                                None
-                            }
-                            None => None,
-                        };
-                    let receipt = completion.as_ref().map(|(receipt, _)| receipt);
-                    let rejected = rejection.as_ref().map(|(receipt, _)| receipt);
-                    stage = "job-transition";
-                    let job = resulting_job(&old_job, &quota, receipt, rejected)?;
-                    stage = "observation";
-                    let execution = before.observed(
-                        before.observation(),
-                        quota.after().clone(),
-                        &job,
-                        commit,
-                    )?;
-                    if let Some((receipt, pages)) = &completion {
-                        execution.verify_completion(&job, receipt, pages)?;
-                        self.stage_completion(txn, &execution, receipt, pages)?;
-                    }
-                    if let Some((receipt, pages)) = &rejection {
-                        stage = "rejection-verify";
-                        execution.verify_nonconformance(&job, receipt, pages)?;
-                        stage = "rejection-insert";
-                        txn.insert(&self.ratings.nonconformance, &job.job(), receipt.clone())
-                            .map_err(invalid)?;
-                        stage = "rejection-readback";
-                        exact(txn, &self.ratings.nonconformance, &job.job(), receipt)?;
-                        stage = "rejection-pages";
-                        for page in pages {
-                            let key = page.key();
-                            txn.insert(&self.ratings.pages, &key, page.clone())
-                                .map_err(invalid)?;
-                            exact(txn, &self.ratings.pages, &key, page)?;
-                        }
-                    }
-                    stage = "job-replace";
-                    txn.replace(&self.ratings.jobs, &job.job(), job.clone())
-                        .map_err(invalid)?;
-                    txn.replace(&self.ratings.executions, &job.job(), execution.clone())
-                        .map_err(invalid)?;
-                    stage = "root-delta";
-                    let roots = if job == old_job {
-                        RatingRoots::settled_progress(&job, commit)?
-                    } else {
-                        RatingRoots::transition(&old_job, &job, receipt, commit)?
-                    };
-                    stage = "capacity";
-                    if quota.after().phase.terminal() {
-                        context
-                            .finish_registry_rating_completion(txn, job.job())
-                            .map_err(invalid)?;
-                    }
-                    (job, execution, roots)
-                }
+            let published = match old {
+                None => self.publish_admission(
+                    txn,
+                    context,
+                    &quota,
+                    artifacts,
+                    (marked, reconformance),
+                    commit,
+                )?,
+                Some((old_job, before)) => self.publish_existing(
+                    txn,
+                    context,
+                    &quota,
+                    artifacts,
+                    (commit, old_job, before),
+                    &mut stage,
+                )?,
             };
-            if self.reconformance.is_some() {
-                roots = roots.with_reconformance(self.action.clone(), self.manifest.clone())?;
-            }
-            // Read through the exact typed post-images before asking the final
-            // participant to reserve/exchange source roots in the same commit.
-            stage = "readback";
-            exact(txn, &self.ratings.jobs, &job.job(), &job)?;
-            exact(txn, &self.ratings.executions, &job.job(), &execution)?;
-            if let Some(admission) = execution.admission().reconformance.as_ref() {
-                let filed = txn
-                    .get(&self.commerce.filed, &admission.filed().key())
-                    .map_err(invalid)?
-                    .cloned()
-                    .ok_or(RatingError::Incomplete)?;
-                let receipt = match job.state() {
-                    RatingJobState::Completed { receipt } => Some(
-                        txn.get(&self.ratings.receipts, &receipt.job())
-                            .map_err(invalid)?
-                            .cloned()
-                            .ok_or(RatingError::Incomplete)?,
-                    ),
-                    _ => None,
-                };
-                let change = crate::commerce::follow::Change::certificate(
-                    &filed,
-                    &job,
-                    &execution,
-                    receipt.as_ref(),
-                )
-                .map_err(invalid)?;
-                roots = roots.with_follow(change);
-            }
-            stage = "root-owner";
-            context
-                .prepare_owner(&self.roots, RootRequest::Rating(roots))
-                .map_err(invalid)?;
-            let outcome = RulesValue::new(
-            self.outcome.clone(),
-            json!({"job":job.job(),"operation":commit,"transition":self.transition.action_id()}),
-        )
-        .map_err(invalid)?;
-            Ok(AuthoritativeActionOutput::new(outcome)
-                .with_definitions(vec![self.outcome.clone(), self.manifest.clone()])
-                .with_eligible_witnesses(vec![inv.principal().clone()]))
+            self.finish_publication(txn, context, inv, commit, published, &mut stage)
         })();
         result.inspect_err(
             |_| tracing::debug!(target:"registry_preparation",stage,"Registry preparation refused"),
         )
+    }
+
+    #[inline(never)]
+    fn finish_publication(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        context: &mut PrepareCtx<'_>,
+        inv: &ActionInvocation,
+        commit: CommitToken,
+        published: Box<(RatingJob, RatingExecution, RatingRoots)>,
+        stage: &mut &'static str,
+    ) -> Result<AuthoritativeActionOutput, RatingError> {
+        let (job, execution, mut roots) = *published;
+        if self.reconformance.is_some() {
+            roots = roots.with_reconformance(self.action.clone(), self.manifest.clone())?;
+        }
+        // Read through the exact typed post-images before asking the final
+        // participant to reserve/exchange source roots in the same commit.
+        *stage = "readback";
+        exact(txn, &self.ratings.jobs, &job.job(), &job)?;
+        exact(txn, &self.ratings.executions, &job.job(), &execution)?;
+        if let Some(admission) = execution.admission().reconformance.as_ref() {
+            let filed = txn
+                .get(&self.commerce.filed, &admission.filed().key())
+                .map_err(invalid)?
+                .cloned()
+                .ok_or(RatingError::Incomplete)?;
+            let receipt = match job.state() {
+                RatingJobState::Completed { receipt } => Some(
+                    txn.get(&self.ratings.receipts, &receipt.job())
+                        .map_err(invalid)?
+                        .cloned()
+                        .ok_or(RatingError::Incomplete)?,
+                ),
+                _ => None,
+            };
+            let change = crate::commerce::follow::Change::certificate(
+                &filed,
+                &job,
+                &execution,
+                receipt.as_ref(),
+            )
+            .map_err(invalid)?;
+            roots = roots.with_follow(change);
+        }
+        *stage = "root-owner";
+        context
+            .prepare_owner(&self.roots, RootRequest::Rating(Box::new(roots)))
+            .map_err(invalid)?;
+        let outcome = RulesValue::new(
+            self.outcome.clone(),
+            json!({"job":job.job(),"operation":commit,"transition":self.transition.action_id()}),
+        )
+        .map_err(invalid)?;
+        Ok(AuthoritativeActionOutput::new(outcome)
+            .with_definitions(vec![self.outcome.clone(), self.manifest.clone()])
+            .with_eligible_witnesses(vec![inv.principal().clone()]))
+    }
+
+    #[inline(never)]
+    fn select_quota(
+        &self,
+        request: Request,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        context: &mut PrepareCtx<'_>,
+    ) -> Result<Box<PreparedSelection>, RatingError> {
+        let (quota_request, old, marked, reconformance) = match request {
+            Request::Reconform { ticket, filed } => {
+                let handle = self
+                    .reconformance
+                    .as_ref()
+                    .ok_or(RatingError::Unavailable)?;
+                let result = context
+                    .read_owner_preimage(txn, handle, ReconformanceReadRequest::Candidate { filed })
+                    .map_err(invalid)?;
+                let ReconformanceReadResult::Candidate { candidate } = result else {
+                    return Err(RatingError::Identity);
+                };
+                let identity = RevisionIdentity::capture(candidate.revision()).map_err(invalid)?;
+                let proof = context.personal_account().map_err(invalid)?;
+                (
+                    QuotaRequest::admit(ticket, identity, proof),
+                    None,
+                    None,
+                    Some(candidate.binding().clone()),
+                )
+            }
+            Request::Admit { ticket, revision } => {
+                let exact = context
+                    .world()
+                    .map_err(invalid)?
+                    .module_state::<RollStore>()
+                    .ok_or(RatingError::Unavailable)?
+                    .revision(inv.actor(), revision.key)
+                    .map_err(invalid)?;
+                if exact.reference() != revision {
+                    return Err(RatingError::Identity);
+                }
+                let identity = RevisionIdentity::capture(exact).map_err(invalid)?;
+                let marked = if exact.require_original_access().is_ok() {
+                    None
+                } else {
+                    let handle = self.marked.as_ref().ok_or(RatingError::Unavailable)?;
+                    let access = context
+                        .read_owner_preimage(
+                            txn,
+                            handle,
+                            crate::commerce::marked_rating::MarkedRatingRequest::new(revision),
+                        )
+                        .map_err(invalid)?;
+                    if access.actor() != inv.actor()
+                        || RevisionIdentity::capture(access.revision()).map_err(invalid)?
+                            != identity
+                    {
+                        return Err(RatingError::Identity);
+                    }
+                    Some(access)
+                };
+                let proof = context.personal_account().map_err(invalid)?;
+                (
+                    QuotaRequest::admit(ticket, identity, proof),
+                    None,
+                    marked,
+                    None,
+                )
+            }
+            Request::Existing { ticket, job } => {
+                let old_job = txn
+                    .get(&self.ratings.jobs, &job)
+                    .map_err(invalid)?
+                    .cloned()
+                    .ok_or(RatingError::Unavailable)?;
+                let execution = txn
+                    .get(&self.ratings.executions, &job)
+                    .map_err(invalid)?
+                    .cloned()
+                    .ok_or(RatingError::Unavailable)?;
+                execution.matches_job(&old_job)?;
+                if execution.admission().character != inv.actor()
+                    || execution.admission().reconformance.is_some() != self.reconformance.is_some()
+                    || (self.reconformance.is_none()
+                        && old_job.subject().revision().revision().key.character != inv.actor())
+                    || !accepts_compatibility(
+                        self.transition,
+                        &self.compatibility,
+                        old_job.compatibility().digest(),
+                    )
+                    || execution.observation().phase.terminal()
+                {
+                    return Err(RatingError::Identity);
+                }
+                let request = match self.transition {
+                    Transition::Grant => QuotaRequest::grant(ticket, execution.clone()),
+                    Transition::Settle => QuotaRequest::settle(ticket, execution.clone()),
+                    Transition::Cancel => QuotaRequest::cancel(
+                        ticket,
+                        execution.clone(),
+                        context.personal_account().map_err(invalid)?,
+                    ),
+                    Transition::Recover => QuotaRequest::recover(ticket, execution.clone()),
+                    Transition::Admit => return Err(RatingError::Invalid),
+                };
+                (request, Some((old_job, execution)), None, None)
+            }
+        };
+        Ok(Box::new(PreparedSelection {
+            quota_request,
+            old,
+            marked,
+            reconformance,
+        }))
+    }
+
+    #[inline(never)]
+    fn publish_admission(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        context: &mut PrepareCtx<'_>,
+        quota: &QuotaOutput,
+        artifacts: ArtifactOutput,
+        selected: (
+            Option<crate::commerce::marked_rating::MarkedRatingAccess>,
+            Option<super::reconformance::ReconformanceAdmission>,
+        ),
+        commit: CommitToken,
+    ) -> Result<Box<(RatingJob, RatingExecution, RatingRoots)>, RatingError> {
+        let (marked, reconformance) = selected;
+        if artifacts.into_measured().is_some() {
+            return Err(RatingError::Identity);
+        }
+        if quota.admission().reconformance != reconformance {
+            return Err(RatingError::Identity);
+        }
+        let (subject, compatibility) = quota.subject().ok_or(RatingError::Incomplete)?;
+        let exact_revision = context
+            .world()
+            .map_err(invalid)?
+            .module_state::<RollStore>()
+            .ok_or(RatingError::Unavailable)?
+            .revision(
+                subject.revision().revision().key.character,
+                subject.revision().revision().key,
+            )
+            .map_err(invalid)?;
+        let envelope = super::digest(
+            "tacsim.registry.envelope.v1",
+            exact_revision.envelope(),
+            crate::MAX_ENVELOPE_BYTES,
+        )?;
+        if quota.job() != commit
+            || compatibility != &self.compatibility
+            || subject.revision() != RevisionIdentity::capture(exact_revision).map_err(invalid)?
+            || subject.envelope() != envelope
+            || subject.schema() != schema_line_digest(exact_revision.envelope()).map_err(invalid)?
+        {
+            return Err(RatingError::Identity);
+        }
+        let job = RatingJob::new(
+            commit,
+            subject.clone(),
+            compatibility.clone(),
+            quota.admission().plan,
+        );
+        let execution =
+            RatingExecution::admit(&job, quota.admission().clone(), quota.after().clone())?;
+        txn.insert(&self.ratings.jobs, &commit, job.clone())
+            .map_err(invalid)?;
+        txn.insert(&self.ratings.executions, &commit, execution.clone())
+            .map_err(invalid)?;
+        if let Some(binding) = &reconformance {
+            let head = ReconformanceHead {
+                format: 1,
+                filed: binding.filed(),
+                compatibility: self.compatibility.digest(),
+                job: commit,
+                admitted_at_utc: context.world().map_err(invalid)?.now(),
+            };
+            head.validate().map_err(invalid)?;
+            let key = head.key();
+            let previous = txn
+                .get(&self.commerce.reconformance_heads, &key)
+                .map_err(invalid)?;
+            if previous.map(|h| h.job) != binding.previous_attempt() {
+                return Err(RatingError::Identity);
+            }
+            if previous.is_some() {
+                txn.replace(&self.commerce.reconformance_heads, &key, head.clone())
+                    .map_err(invalid)?;
+            } else {
+                txn.insert(&self.commerce.reconformance_heads, &key, head.clone())
+                    .map_err(invalid)?;
+            }
+            exact(txn, &self.commerce.reconformance_heads, &key, &head)?;
+        }
+        let roots = match marked {
+            Some(access) => {
+                RatingRoots::admission_marked(&job, commit, self.action.clone(), access)?
+            }
+            None => RatingRoots::admission(&job, commit)?,
+        };
+        context
+            .reserve_registry_rating_completion(txn)
+            .map_err(invalid)?;
+        Ok(Box::new((job, execution, roots)))
+    }
+
+    #[inline(never)]
+    fn publish_existing(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        context: &mut PrepareCtx<'_>,
+        quota: &QuotaOutput,
+        artifacts: ArtifactOutput,
+        previous: (CommitToken, RatingJob, RatingExecution),
+        stage: &mut &'static str,
+    ) -> Result<Box<(RatingJob, RatingExecution, RatingRoots)>, RatingError> {
+        let (commit, old_job, before) = previous;
+        if quota.job() != old_job.job()
+            || quota.admission() != before.admission()
+            || quota.before() != Some(before.observation())
+            || quota.subject().is_some()
+        {
+            return Err(RatingError::Identity);
+        }
+        *stage = "result-publication";
+        let mut rejection = None;
+        let completion = match artifacts.into_measured() {
+            Some(super::nonconformance::MeasuredRegistryResult::Certified(measured)) => {
+                let issued = context.world().map_err(invalid)?.world_ic_now();
+                Some(measured.publish_parts(RatingPublication::new(old_job.job(), issued)?)?)
+            }
+            Some(super::nonconformance::MeasuredRegistryResult::Nonconforming(measured)) => {
+                let issued = context.world().map_err(invalid)?.world_ic_now();
+                rejection =
+                    Some(measured.publish_parts(RatingPublication::new(old_job.job(), issued)?)?);
+                None
+            }
+            None => None,
+        };
+        let receipt = completion.as_ref().map(|(receipt, _)| receipt);
+        let rejected = rejection.as_ref().map(|(receipt, _)| receipt);
+        *stage = "job-transition";
+        let job = resulting_job(&old_job, quota, receipt, rejected)?;
+        *stage = "observation";
+        let execution =
+            before.observed(before.observation(), quota.after().clone(), &job, commit)?;
+        if let Some((receipt, pages)) = &completion {
+            execution.verify_completion(&job, receipt, pages)?;
+            self.stage_completion(txn, &execution, receipt, pages)?;
+        }
+        if let Some((receipt, pages)) = &rejection {
+            *stage = "rejection-verify";
+            execution.verify_nonconformance(&job, receipt, pages)?;
+            *stage = "rejection-insert";
+            txn.insert(&self.ratings.nonconformance, &job.job(), receipt.clone())
+                .map_err(invalid)?;
+            *stage = "rejection-readback";
+            exact(txn, &self.ratings.nonconformance, &job.job(), receipt)?;
+            *stage = "rejection-pages";
+            for page in pages {
+                let key = page.key();
+                txn.insert(&self.ratings.pages, &key, page.clone())
+                    .map_err(invalid)?;
+                exact(txn, &self.ratings.pages, &key, page)?;
+            }
+        }
+        *stage = "job-replace";
+        txn.replace(&self.ratings.jobs, &job.job(), job.clone())
+            .map_err(invalid)?;
+        txn.replace(&self.ratings.executions, &job.job(), execution.clone())
+            .map_err(invalid)?;
+        *stage = "root-delta";
+        let roots = if job == old_job {
+            RatingRoots::settled_progress(&job, commit)?
+        } else {
+            RatingRoots::transition(&old_job, &job, receipt, commit)?
+        };
+        *stage = "capacity";
+        if quota.after().phase.terminal() {
+            context
+                .finish_registry_rating_completion(txn, job.job())
+                .map_err(invalid)?;
+        }
+        Ok(Box::new((job, execution, roots)))
     }
 
     fn stage_completion(

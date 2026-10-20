@@ -2,7 +2,7 @@
 //! settlement and its complete cold inventory below are actual E4 evidence.
 use super::*;
 
-fn accepted(mode: PaidResaleModeV1, route: PaidBirthRouteV1) -> Result<Fixture> {
+fn accepted(mode: PaidResaleModeV1, route: PaidBirthRouteV1) -> Result<Box<Fixture>> {
     let mut f = Fixture::new()?;
     let mut terms = f.terms()?;
     terms.basis.birth.route = route;
@@ -17,7 +17,7 @@ fn accepted(mode: PaidResaleModeV1, route: PaidBirthRouteV1) -> Result<Fixture> 
         f.buyer,
         2,
         Input::Accept {
-            terms,
+            terms: Box::new(terms),
             payer: AccountId(3),
             mode,
             claims: PaidResaleClaimsV1 {

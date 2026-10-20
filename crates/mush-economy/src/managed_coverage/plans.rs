@@ -45,13 +45,13 @@ impl BindingIntent {
 pub(super) enum Proof {
     Bind {
         format: u16,
-        intent: BindingIntent,
+        intent: Box<BindingIntent>,
     },
     Terminal {
         format: u16,
         binding: CommitToken,
-        decision: CoverageDecisionV1,
-        title: EconomicAsset,
+        decision: Box<CoverageDecisionV1>,
+        title: Box<EconomicAsset>,
     },
 }
 pub(super) fn encode(proof: &Proof) -> Result<String, ParticipantError> {
@@ -98,7 +98,7 @@ pub(super) fn bind(intent: &BindingIntent) -> Result<EconomyPlan, ParticipantErr
             namespace: NAMESPACE.into(),
             correlation: encode(&Proof::Bind {
                 format: 1,
-                intent: intent.clone(),
+                intent: Box::new(intent.clone()),
             })?
             .into(),
         },
@@ -173,8 +173,8 @@ pub(super) fn terminal(
             correlation: encode(&Proof::Terminal {
                 format: 1,
                 binding: c.operation,
-                decision: decision.clone(),
-                title: title.clone(),
+                decision: Box::new(decision.clone()),
+                title: Box::new(title.clone()),
             })?
             .into(),
         },

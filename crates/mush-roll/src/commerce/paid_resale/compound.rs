@@ -61,7 +61,7 @@ pub(crate) fn prepare(
         .cloned()
         .ok_or(PublicationError::Missing)?;
     pointer.validate()?;
-    if b.term() != term
+    if b.term() != term.as_ref()
         || op.charter != b.charter()
         || op.line != b.line()
         || op.birth_operation != b.birth().operation
@@ -163,7 +163,10 @@ pub(crate) fn prepare(
             commit: op.operation,
             at_ic: op.at_ic.clone(),
             at_utc: decision.posted_at_utc,
-            mode: Mode::Registry { ready, fence },
+            mode: Mode::Registry {
+                ready,
+                fence: Box::new(fence),
+            },
         },
     };
     txn.replace(&f.paid_resales, &row.key(), row.clone())

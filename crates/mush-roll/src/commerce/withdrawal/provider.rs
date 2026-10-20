@@ -102,7 +102,7 @@ impl Provider {
         )?;
         let operation = request.operation.clone();
         let status = operation.status();
-        ctx.prepare_owner(&self.roots, RootRequest::Withdrawal(request))
+        ctx.prepare_owner(&self.roots, RootRequest::Withdrawal(Box::new(request)))
             .map_err(bad)?;
         txn.insert(
             &self.families.withdrawals,

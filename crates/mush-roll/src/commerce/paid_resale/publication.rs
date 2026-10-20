@@ -17,13 +17,13 @@ pub(crate) struct ResaleFence {
 pub(super) enum Mode {
     Registry {
         ready: super::Readiness,
-        fence: crate::commerce::registry_revocation::RevocationFence,
+        fence: Box<crate::commerce::registry_revocation::RevocationFence>,
     },
-    Admission(PaidResaleFacts),
+    Admission(Box<PaidResaleFacts>),
     Service {
-        runtime: super::service::Runtime,
+        runtime: Box<super::service::Runtime>,
         ready: super::Readiness,
-        intent: super::service::Intent,
+        intent: Box<super::service::Intent>,
     },
 }
 impl ResaleFence {
@@ -60,7 +60,7 @@ impl ResaleFence {
             } => {
                 ready.check()?;
                 runtime.require(intent)?;
-                if runtime.intent(ctx.invocation(), ctx.action())? != *intent {
+                if &runtime.intent(ctx.invocation(), ctx.action())? != intent.as_ref() {
                     return Err(PublicationError::Mismatch);
                 }
                 intent.fresh(ctx.world())

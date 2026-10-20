@@ -5,7 +5,7 @@ use mush_core::{ArgShape, CmdError, CommandSpec};
 use std::sync::{Arc, Mutex};
 
 pub(in crate::minds) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
-    let held: Arc<Mutex<Option<View>>> = Arc::new(Mutex::new(None));
+    let held: Arc<Mutex<Option<Box<View>>>> = Arc::new(Mutex::new(None));
     reg.command(
         CommandSpec {
             name: "@authored-probe".into(),

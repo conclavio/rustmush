@@ -82,7 +82,7 @@ pub(crate) enum Request {
 }
 /// Actual prepared owner output; no Deserialize or public constructor.
 pub struct CharterPendingOutput {
-    pub(super) history: CharterPendingHistory,
+    pub(super) history: Box<CharterPendingHistory>,
 }
 impl CharterPendingOutput {
     pub fn history(&self) -> &CharterPendingHistory {
@@ -343,7 +343,7 @@ pub(super) fn prepare(
     state: &EconomyStore,
     ctx: &OwnerPrepareContext<'_>,
     request: Request,
-) -> Result<Preparation, ParticipantError> {
+) -> Result<Box<Preparation>, ParticipantError> {
     let (intent, before_history, before_contract, before_hold, decision, next_hold, next_contract) =
         match &request {
             Request::Fund(r) => {
@@ -458,8 +458,10 @@ pub(super) fn prepare(
     if decision.is_none() {
         check_offerable(&contract, &state.snapshot).map_err(|_| refused())?;
     }
-    Ok(Preparation {
-        output: CharterPendingOutput { history },
+    Ok(Box::new(Preparation {
+        output: CharterPendingOutput {
+            history: Box::new(history),
+        },
         binding: ctx.preparation_binding(),
         request,
         before_history,
@@ -473,7 +475,7 @@ pub(super) fn prepare(
         transaction: tx,
         next_hold,
         next_contract,
-    })
+    }))
 }
 pub(super) fn validate(
     state: &EconomyStore,

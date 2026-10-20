@@ -71,11 +71,11 @@ pub struct PaidResaleTerminalRequest {
 }
 #[derive(Clone)]
 pub(crate) enum Request {
-    Accept(PaidResaleAcceptanceRequest),
-    Terminal(PaidResaleTerminalRequest),
+    Accept(Box<PaidResaleAcceptanceRequest>),
+    Terminal(Box<PaidResaleTerminalRequest>),
 }
 pub struct PaidResaleOutput {
-    pub(super) history: PaidResaleHistoryV1,
+    pub(super) history: Box<PaidResaleHistoryV1>,
 }
 impl PaidResaleOutput {
     pub fn history(&self) -> &PaidResaleHistoryV1 {
@@ -327,12 +327,24 @@ pub(super) fn current(
     }
     Ok(())
 }
-pub(super) fn prepare(
+struct Selected {
+    request: Request,
+    intent: Intent,
+    before_history: Option<PaidResaleHistoryV1>,
+    before_contract: Option<EconomicContract>,
+    before_hold: Option<Hold>,
+    decision: Option<PaidResaleDecisionV1>,
+    next_hold: u64,
+    next_contract: u64,
+}
+
+#[inline(never)]
+fn select(
     config: &PaidResaleConfig,
     state: &EconomyStore,
     ctx: &OwnerPrepareContext<'_>,
     request: Request,
-) -> Result<Preparation, ParticipantError> {
+) -> Result<Box<Selected>, ParticipantError> {
     let (intent, before_history, before_contract, before_hold, decision, next_hold, next_contract) =
         match &request {
             Request::Accept(r) => {
@@ -412,6 +424,34 @@ pub(super) fn prepare(
                 )
             }
         };
+    Ok(Box::new(Selected {
+        request,
+        intent,
+        before_history,
+        before_contract,
+        before_hold,
+        decision,
+        next_hold,
+        next_contract,
+    }))
+}
+
+pub(super) fn prepare(
+    config: &PaidResaleConfig,
+    state: &EconomyStore,
+    ctx: &OwnerPrepareContext<'_>,
+    request: Request,
+) -> Result<Box<Preparation>, ParticipantError> {
+    let Selected {
+        request,
+        intent,
+        before_history,
+        before_contract,
+        before_hold,
+        decision,
+        next_hold,
+        next_contract,
+    } = *select(config, state, ctx, request)?;
     let before_titles = if decision.as_ref().is_none_or(|d| d.reason.settles()) {
         intent
             .consent
@@ -462,8 +502,10 @@ pub(super) fn prepare(
     if decision.is_none() {
         check_offerable(&contract, &state.snapshot).map_err(|_| refused())?;
     }
-    Ok(Preparation {
-        output: PaidResaleOutput { history },
+    Ok(Box::new(Preparation {
+        output: PaidResaleOutput {
+            history: Box::new(history),
+        },
         binding: ctx.preparation_binding(),
         request,
         before_history,
@@ -477,7 +519,7 @@ pub(super) fn prepare(
         transaction,
         next_hold,
         next_contract,
-    })
+    }))
 }
 pub(super) fn validate(
     state: &EconomyStore,

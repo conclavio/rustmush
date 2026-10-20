@@ -91,7 +91,7 @@ fn rules() -> Result<Rules> {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Input {
     Bind {
-        basis: CoverageBasisV1,
+        basis: Box<CoverageBasisV1>,
         terms: CoverageQuoteTermsV1,
     },
     Terminal {
@@ -238,9 +238,10 @@ impl ActionProvider for Provider {
     ) -> std::result::Result<AuthoritativeActionOutput, ActionError> {
         let input: Input = serde_json::from_value(inv.parameters().clone()).map_err(|_| error())?;
         let request = match input {
-            Input::Bind { basis, terms } => {
-                EconomyRequest::CoverageBind(CoverageBindRequest { basis, terms })
-            }
+            Input::Bind { basis, terms } => EconomyRequest::CoverageBind(CoverageBindRequest {
+                basis: *basis,
+                terms,
+            }),
             Input::Terminal { binding, reason } => {
                 let w = ctx.world().map_err(|_| error())?;
                 EconomyRequest::CoverageTerminal(CoverageTerminalRequest {
@@ -415,7 +416,8 @@ struct Fixture {
     staged: Option<FixtureReceipt>,
 }
 impl Fixture {
-    fn empty_enabled(enabled: bool) -> Result<Self> {
+    #[inline(never)]
+    fn empty_enabled(enabled: bool) -> Result<Box<Self>> {
         let rules = rules()?;
         let mut world = TestWorld::with_modules(modules(&rules, enabled));
         world.world_mut().set_now(100);
@@ -428,7 +430,7 @@ impl Fixture {
         let shell = world
             .world_mut()
             .create(ObjKind::Thing, "Native covered title", GOD, None)?;
-        Ok(Self {
+        Ok(Box::new(Self {
             world,
             rules,
             actor,
@@ -436,12 +438,12 @@ impl Fixture {
             shell,
             boot: Boot::new(),
             staged: None,
-        })
+        }))
     }
-    fn empty() -> Result<Self> {
+    fn empty() -> Result<Box<Self>> {
         Self::empty_enabled(true)
     }
-    fn new() -> Result<Self> {
+    fn new() -> Result<Box<Self>> {
         let mut f = Self::empty()?;
         for command in [
             "@org/create Underwriter".to_owned(),
@@ -568,7 +570,7 @@ impl Fixture {
             self.buyer,
             n,
             Input::Bind {
-                basis: self.basis()?,
+                basis: Box::new(self.basis()?),
                 terms: self.terms()?,
             },
         )
@@ -590,10 +592,10 @@ impl Fixture {
             },
         )
     }
-    fn cold(&self, boot: Boot) -> Result<Self> {
+    fn cold(&self, boot: Boot) -> Result<Box<Self>> {
         self.cold_enabled(boot, true)
     }
-    fn cold_enabled(&self, mut boot: Boot, enabled: bool) -> Result<Self> {
+    fn cold_enabled(&self, mut boot: Boot, enabled: bool) -> Result<Box<Self>> {
         let mut f = Self::empty_enabled(enabled)?;
         assert_eq!(
             (f.shell, f.actor, f.buyer),
@@ -730,7 +732,7 @@ fn token(n: u8) -> CommitToken {
     CommitToken::from_bytes([n; 16])
 }
 
-fn bound() -> Result<Fixture> {
+fn bound() -> Result<Box<Fixture>> {
     let mut f = Fixture::new()?;
     let pending = f.bind(2)?;
     f.publish(f.rules.actions[0].clone(), 2, pending)?;
@@ -806,7 +808,7 @@ fn native_bind_charges_once_reserves_full_liability_and_replays_exact_collateral
                 contract: h.contract_id()
             })
     );
-    assert!(history(&f.cold(f.boot.clone())?)? == h);
+    assert!(history(f.cold(f.boot.clone())?.as_ref())? == h);
     assert!(f.bind(4).is_err());
     Ok(())
 }
@@ -834,7 +836,7 @@ fn delayed_native_claim_moves_exact_wreck_title_and_pays_without_new_spend() -> 
             .status,
         HoldStatus::Consumed { .. }
     ));
-    assert!(history(&f.cold(f.boot.clone())?)? == actual);
+    assert!(history(f.cold(f.boot.clone())?.as_ref())? == actual);
     assert!(f.terminal(4, loss(&f)?).is_err());
     Ok(())
 }
@@ -867,7 +869,7 @@ fn clean_close_and_buyer_cancellation_release_liability_but_keep_premium() -> Re
         let title = f.state().snapshot.asset(f.shell).ok_or("title")?;
         assert_eq!(title.title_owner, PrincipalId::Object(f.buyer));
         assert!(title.encumbrances.is_empty());
-        assert!(history(&f.cold(f.boot.clone())?)? == h);
+        assert!(history(f.cold(f.boot.clone())?.as_ref())? == h);
     }
     Ok(())
 }
@@ -925,7 +927,7 @@ fn native_cleanup_selector_can_cross_clock_but_claim_and_expiry_cannot() -> Resu
     );
     let p = f.terminal(3, clean())?;
     f.publish(f.rules.actions[2].clone(), 3, p)?;
-    assert!(history(&f.cold(f.boot.clone())?)? == history(&f)?);
+    assert!(history(f.cold(f.boot.clone())?.as_ref())? == history(&f)?);
     Ok(())
 }
 
@@ -946,8 +948,16 @@ fn registered_action_actor_and_native_title_scope_are_all_required() -> Result {
             _ => terms.adjudicator = f.buyer,
         }
         assert!(
-            f.prepare(&action, actor, 2, Input::Bind { basis, terms })
-                .is_err()
+            f.prepare(
+                &action,
+                actor,
+                2,
+                Input::Bind {
+                    basis: Box::new(basis),
+                    terms
+                }
+            )
+            .is_err()
         );
         assert_eq!((posted(&f, 1)?, posted(&f, 3)?), (10000, 10000));
         assert_eq!(f.state().coverage_histories()?.len(), 0);
@@ -1064,7 +1074,7 @@ fn raw_native_inventory_refuses_missing_or_crossed_contract_hold_and_title() -> 
         }
         assert!(f.cold(boot).is_err());
     }
-    assert!(history(&f.cold(f.boot.clone())?)? == h);
+    assert!(history(f.cold(f.boot.clone())?.as_ref())? == h);
     Ok(())
 }
 
@@ -1187,7 +1197,7 @@ fn legacy_engine_cannot_release_managed_collateral_or_hold_and_sweep_retains_ter
     let _ = f.world.fire_due(at * 1000);
     fold_module_ops_into(&mut f.boot, f.world.take_module_ops());
     assert!(f.state().snapshot.hold(h.binding().hold()).is_some());
-    assert!(history(&f.cold(f.boot.clone())?)? == terminal);
+    assert!(history(f.cold(f.boot.clone())?.as_ref())? == terminal);
     Ok(())
 }
 

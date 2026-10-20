@@ -25,29 +25,29 @@ pub(crate) struct RootParticipant;
 /// and artifact participants are available in the same composed invocation.
 pub(crate) enum RootRequest {
     Conduct(Box<super::conduct::publication::Roots>),
-    TermLapse(super::facts::publication::Lapse),
-    Ic(super::ic_claims::roots::IcRoots),
-    Coverage(super::coverage::roots::CoverageRoots),
-    InitialFiling(InitialRoots),
-    CompatibleUpdate(super::line_update::publication::UpdateRoots),
-    DependentFiling(super::dependent_filing::DependentRoots),
-    Rating(RatingRoots),
-    Paid(PaidRoots),
-    Entitlement(super::entitlement::roots::EntitlementRoots),
-    House(super::house_purchase::roots::HouseRoots),
-    Renewal(super::renewal::roots::RenewalRoots),
-    HouseRenewal(super::house_renewal::roots::RenewalRoots),
-    AuthoredFork(super::authored_fork::AuthoredFork),
-    Retirement(super::authored_retirement::Retirement),
-    Withdrawal(super::withdrawal::Withdrawal),
-    CharterTransfer(super::charter_transfer::TransferRoots),
-    CharterPending(super::charter_pending::publication::PendingRoots),
-    PaidResale(super::paid_resale::publication::ResaleRoots),
-    RegistryRecall(super::registry_recall::Recall),
-    MeasuredRecall(super::rating::reconformance::recall::publication::Recall),
-    RegistryRevocation(super::registry_revocation::Revocation),
-    OwnerQualification(super::owner_qualification::Qualification),
-    OwnerAttestation(super::owner_attestation::Attestation),
+    TermLapse(Box<super::facts::publication::Lapse>),
+    Ic(Box<super::ic_claims::roots::IcRoots>),
+    Coverage(Box<super::coverage::roots::CoverageRoots>),
+    InitialFiling(Box<InitialRoots>),
+    CompatibleUpdate(Box<super::line_update::publication::UpdateRoots>),
+    DependentFiling(Box<super::dependent_filing::DependentRoots>),
+    Rating(Box<RatingRoots>),
+    Paid(Box<PaidRoots>),
+    Entitlement(Box<super::entitlement::roots::EntitlementRoots>),
+    House(Box<super::house_purchase::roots::HouseRoots>),
+    Renewal(Box<super::renewal::roots::RenewalRoots>),
+    HouseRenewal(Box<super::house_renewal::roots::RenewalRoots>),
+    AuthoredFork(Box<super::authored_fork::AuthoredFork>),
+    Retirement(Box<super::authored_retirement::Retirement>),
+    Withdrawal(Box<super::withdrawal::Withdrawal>),
+    CharterTransfer(Box<super::charter_transfer::TransferRoots>),
+    CharterPending(Box<super::charter_pending::publication::PendingRoots>),
+    PaidResale(Box<super::paid_resale::publication::ResaleRoots>),
+    RegistryRecall(Box<super::registry_recall::Recall>),
+    MeasuredRecall(Box<super::rating::reconformance::recall::publication::Recall>),
+    RegistryRevocation(Box<super::registry_revocation::Revocation>),
+    OwnerQualification(Box<super::owner_qualification::Qualification>),
+    OwnerAttestation(Box<super::owner_attestation::Attestation>),
 }
 
 impl RootRequest {
@@ -107,35 +107,945 @@ impl RootOutput {
 }
 
 pub(crate) struct RootPatch {
-    conduct: Option<super::conduct::publication::Fence>,
-    term_lapse: Option<super::facts::publication::LapseFence>,
+    conduct: Option<Box<super::conduct::publication::Fence>>,
+    term_lapse: Option<Box<super::facts::publication::LapseFence>>,
     commit: CommitToken,
-    ic: Option<super::ic_claims::roots::IcFence>,
-    coverage: Option<super::coverage::roots::CoverageFence>,
+    ic: Option<Box<super::ic_claims::roots::IcFence>>,
+    coverage: Option<Box<super::coverage::roots::CoverageFence>>,
     change: PreparedChange,
-    fresh_paid: Option<super::sale_reader::OriginalSaleFacts>,
-    entitlement: Option<super::entitlement::roots::EntitlementFence>,
-    house: Option<super::house_purchase::roots::HouseFence>,
-    renewal: Option<super::renewal::roots::RenewalFence>,
-    house_renewal: Option<super::house_renewal::roots::RenewalFence>,
-    dependent: Option<super::dependent_filing::FilingFence>,
-    update: Option<super::line_update::publication::UpdateFence>,
-    marked: Option<super::marked_rating::AdmissionFence>,
-    reconformance: Option<super::rating::reconformance::fence::ServiceFence>,
-    retirement: Option<super::authored_retirement::RetirementFence>,
-    withdrawal: Option<super::withdrawal::WithdrawalFence>,
-    charter_transfer: Option<super::charter_transfer::TransferFence>,
-    charter_pending: Option<super::charter_pending::publication::PendingFence>,
-    paid_resale: Option<super::paid_resale::publication::ResaleFence>,
-    registry_recall: Option<super::registry_recall::RecallFence>,
-    measured_recall: Option<super::rating::reconformance::recall::publication::RecallFence>,
-    registry_revocation: Option<super::registry_revocation::RevocationFence>,
-    qualification: Option<super::owner_qualification::QualificationFence>,
-    attestation: Option<super::owner_attestation::AttestationFence>,
-    fork: Option<(
-        mush_core::DefinitionRef,
-        super::parent_grant::CurrentParentGrant,
+    fresh_paid: Option<Box<super::sale_reader::OriginalSaleFacts>>,
+    entitlement: Option<Box<super::entitlement::roots::EntitlementFence>>,
+    house: Option<Box<super::house_purchase::roots::HouseFence>>,
+    renewal: Option<Box<super::renewal::roots::RenewalFence>>,
+    house_renewal: Option<Box<super::house_renewal::roots::RenewalFence>>,
+    dependent: Option<Box<super::dependent_filing::FilingFence>>,
+    update: Option<Box<super::line_update::publication::UpdateFence>>,
+    marked: Option<Box<super::marked_rating::AdmissionFence>>,
+    reconformance: Option<Box<super::rating::reconformance::fence::ServiceFence>>,
+    retirement: Option<Box<super::authored_retirement::RetirementFence>>,
+    withdrawal: Option<Box<super::withdrawal::WithdrawalFence>>,
+    charter_transfer: Option<Box<super::charter_transfer::TransferFence>>,
+    charter_pending: Option<Box<super::charter_pending::publication::PendingFence>>,
+    paid_resale: Option<Box<super::paid_resale::publication::ResaleFence>>,
+    registry_recall: Option<Box<super::registry_recall::RecallFence>>,
+    measured_recall: Option<Box<super::rating::reconformance::recall::publication::RecallFence>>,
+    registry_revocation: Option<Box<super::registry_revocation::RevocationFence>>,
+    qualification: Option<Box<super::owner_qualification::QualificationFence>>,
+    attestation: Option<Box<super::owner_attestation::AttestationFence>>,
+    fork: Option<
+        Box<(
+            mush_core::DefinitionRef,
+            super::parent_grant::CurrentParentGrant,
+        )>,
+    >,
+}
+
+#[inline(never)]
+fn capture_conduct(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::conduct::publication::Fence>>, ParticipantError> {
+    let conduct = match request {
+        RootRequest::Conduct(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(conduct)
+}
+
+#[inline(never)]
+fn capture_term_lapse(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::facts::publication::LapseFence>>, ParticipantError> {
+    let term_lapse = match request {
+        RootRequest::TermLapse(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(term_lapse)
+}
+
+#[inline(never)]
+fn capture_ic(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::ic_claims::roots::IcFence>>, ParticipantError> {
+    let ic = match request {
+        RootRequest::Ic(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(ic)
+}
+
+#[inline(never)]
+fn capture_dependent(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::dependent_filing::FilingFence>>, ParticipantError> {
+    let dependent = match request {
+        RootRequest::DependentFiling(request) => {
+            request
+                .fence()
+                .check(request.commit(), context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        RootRequest::InitialFiling(_) => {
+            if context.action().key().owner.as_str() != NS
+                || context.action().key().kind.as_str() != "action"
+                || !matches!(
+                    context.action().key().id.as_str(),
+                    "initial_filing" | "house_initial_filing"
+                )
+                || context.action().version() != 1
+            {
+                return Err(ParticipantError::Authority);
+            }
+            None
+        }
+        _ => None,
+    };
+    Ok(dependent)
+}
+
+#[inline(never)]
+fn capture_fresh_paid(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::sale_reader::OriginalSaleFacts>>, ParticipantError> {
+    let fresh_paid = match request {
+        RootRequest::Paid(paid) => paid.fresh().cloned().map(Box::new),
+        _ => None,
+    };
+    super::paid_roots::check_fresh(fresh_paid.as_deref(), context)
+        .map_err(|_| ParticipantError::Authority)?;
+    Ok(fresh_paid)
+}
+
+#[inline(never)]
+fn capture_reconformance(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::rating::reconformance::fence::ServiceFence>>, ParticipantError> {
+    let reconformance = match request {
+        RootRequest::Rating(request) => request.reconformance().cloned().map(Box::new),
+        _ => None,
+    };
+    if let Some(fence) = &reconformance {
+        fence
+            .check(context)
+            .map_err(|_| ParticipantError::Authority)?;
+    }
+    Ok(reconformance)
+}
+
+#[inline(never)]
+fn capture_marked(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::marked_rating::AdmissionFence>>, ParticipantError> {
+    let marked = match request {
+        RootRequest::Rating(request) => request.marked().cloned().map(Box::new),
+        _ => None,
+    };
+    if let Some(marked) = &marked {
+        marked
+            .check(context)
+            .map_err(|_| ParticipantError::Authority)?;
+    }
+    Ok(marked)
+}
+
+#[inline(never)]
+fn capture_fork(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<
+    Option<
+        Box<(
+            mush_core::DefinitionRef,
+            super::parent_grant::CurrentParentGrant,
+        )>,
+    >,
+    ParticipantError,
+> {
+    let fork = match request {
+        RootRequest::AuthoredFork(request) => {
+            request
+                .check_context(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new((
+                request.action().clone(),
+                request.grant().clone(),
+            )))
+        }
+        _ => None,
+    };
+    Ok(fork)
+}
+
+#[inline(never)]
+fn capture_retirement(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::authored_retirement::RetirementFence>>, ParticipantError> {
+    let retirement = match request {
+        RootRequest::Retirement(request) => {
+            request
+                .check_context(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence()))
+        }
+        _ => None,
+    };
+    Ok(retirement)
+}
+
+#[inline(never)]
+fn capture_entitlement(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::entitlement::roots::EntitlementFence>>, ParticipantError> {
+    let entitlement = match request {
+        RootRequest::Entitlement(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(entitlement)
+}
+
+#[inline(never)]
+fn capture_coverage(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::coverage::roots::CoverageFence>>, ParticipantError> {
+    let coverage = match request {
+        RootRequest::Coverage(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(coverage)
+}
+
+#[inline(never)]
+fn capture_house(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::house_purchase::roots::HouseFence>>, ParticipantError> {
+    let house = match request {
+        RootRequest::House(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(house)
+}
+
+#[inline(never)]
+fn capture_renewal(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::renewal::roots::RenewalFence>>, ParticipantError> {
+    let renewal = match request {
+        RootRequest::Renewal(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(renewal)
+}
+
+#[inline(never)]
+fn capture_house_renewal(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::house_renewal::roots::RenewalFence>>, ParticipantError> {
+    let house_renewal = match request {
+        RootRequest::HouseRenewal(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(house_renewal)
+}
+
+#[inline(never)]
+fn capture_registry_recall(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::registry_recall::RecallFence>>, ParticipantError> {
+    let registry_recall = match request {
+        RootRequest::RegistryRecall(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(registry_recall)
+}
+
+#[inline(never)]
+fn capture_measured_recall(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<
+    Option<Box<super::rating::reconformance::recall::publication::RecallFence>>,
+    ParticipantError,
+> {
+    let measured_recall = match request {
+        RootRequest::MeasuredRecall(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(measured_recall)
+}
+
+#[inline(never)]
+fn capture_registry_revocation(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::registry_revocation::RevocationFence>>, ParticipantError> {
+    let registry_revocation = match request {
+        RootRequest::RegistryRevocation(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(registry_revocation)
+}
+
+#[inline(never)]
+fn capture_paid_resale(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::paid_resale::publication::ResaleFence>>, ParticipantError> {
+    let paid_resale = match request {
+        RootRequest::RegistryRevocation(request) => request
+            .resale()
+            .map(|r| {
+                r.fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Ok(Box::new(r.fence().clone()))
+            })
+            .transpose()?,
+        RootRequest::PaidResale(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(paid_resale)
+}
+
+#[inline(never)]
+fn capture_charter_pending(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::charter_pending::publication::PendingFence>>, ParticipantError> {
+    let charter_pending = match request {
+        RootRequest::RegistryRevocation(request) => request
+            .pending()
+            .map(|p| {
+                p.fence()
+                    .check(context)
+                    .map_err(|_| ParticipantError::Authority)?;
+                Ok(Box::new(p.fence().clone()))
+            })
+            .transpose()?,
+        RootRequest::CharterPending(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(charter_pending)
+}
+
+#[inline(never)]
+fn capture_charter_transfer(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::charter_transfer::TransferFence>>, ParticipantError> {
+    let charter_transfer = match request {
+        RootRequest::CharterTransfer(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(charter_transfer)
+}
+
+#[inline(never)]
+fn capture_withdrawal(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::withdrawal::WithdrawalFence>>, ParticipantError> {
+    let withdrawal = match request {
+        RootRequest::Withdrawal(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(withdrawal)
+}
+
+#[inline(never)]
+fn capture_attestation(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::owner_attestation::AttestationFence>>, ParticipantError> {
+    let attestation = match request {
+        RootRequest::OwnerAttestation(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(attestation)
+}
+
+#[inline(never)]
+fn capture_qualification(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::owner_qualification::QualificationFence>>, ParticipantError> {
+    let qualification = match request {
+        RootRequest::OwnerQualification(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(qualification)
+}
+
+#[inline(never)]
+fn capture_update(
+    request: &RootRequest,
+    context: &OwnerPrepareContext<'_>,
+) -> Result<Option<Box<super::line_update::publication::UpdateFence>>, ParticipantError> {
+    let update = match request {
+        RootRequest::CompatibleUpdate(request) => {
+            request
+                .fence()
+                .check(context)
+                .map_err(|_| ParticipantError::Authority)?;
+            Some(Box::new(request.fence().clone()))
+        }
+        _ => None,
+    };
+    Ok(update)
+}
+
+#[inline(never)]
+fn plan_term_lapse(
+    state: &RollStore,
+    request: &super::facts::publication::Lapse,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
     )>,
+    ParticipantError,
+> {
+    let result = (
+        state.prepare_term_lapse_root(request).map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_ic(
+    state: &RollStore,
+    request: &super::ic_claims::roots::IcRoots,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state.prepare_ic_claim_roots(request).map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_initial_filing(
+    state: &RollStore,
+    request: &InitialRoots,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state.prepare_commercial_roots(request).map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_compatible_update(
+    state: &RollStore,
+    request: &super::line_update::publication::UpdateRoots,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state.prepare_line_update_roots(request).map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_dependent_filing(
+    state: &RollStore,
+    request: &super::dependent_filing::DependentRoots,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state
+            .prepare_commercial_roots(request.roots())
+            .map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_conduct(
+    state: &RollStore,
+    request: &super::conduct::publication::Roots,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = { (state.prepare_conduct_root(request).map_err(refusal)?, None) };
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_rating(
+    state: &RollStore,
+    request: &RatingRoots,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = { (state.prepare_rating_roots(request).map_err(refusal)?, None) };
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_paid(
+    state: &RollStore,
+    request: &PaidRoots,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = { (state.prepare_paid_roots(request).map_err(refusal)?, None) };
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_entitlement(
+    state: &RollStore,
+    request: &super::entitlement::roots::EntitlementRoots,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state.prepare_entitlement_roots(request).map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_house(
+    state: &RollStore,
+    request: &super::house_purchase::roots::HouseRoots,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = { (state.prepare_house_roots(request).map_err(refusal)?, None) };
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_coverage(
+    state: &RollStore,
+    request: &super::coverage::roots::CoverageRoots,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state.prepare_coverage_roots(request).map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_renewal(
+    state: &RollStore,
+    request: &super::renewal::roots::RenewalRoots,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = { (state.prepare_renewal_roots(request).map_err(refusal)?, None) };
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_house_renewal(
+    state: &RollStore,
+    request: &super::house_renewal::roots::RenewalRoots,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state
+            .prepare_house_renewal_roots(request)
+            .map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_owner_attestation(
+    state: &RollStore,
+    request: &super::owner_attestation::Attestation,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state
+            .prepare_owner_attestation_roots(request)
+            .map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_owner_qualification(
+    state: &RollStore,
+    request: &super::owner_qualification::Qualification,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state
+            .prepare_owner_qualification_root(request)
+            .map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_registry_recall(
+    state: &RollStore,
+    request: &super::registry_recall::Recall,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state
+            .prepare_registry_recall_root(request)
+            .map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_measured_recall(
+    state: &RollStore,
+    request: &super::rating::reconformance::recall::publication::Recall,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state
+            .prepare_measured_recall_root(request)
+            .map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_registry_revocation(
+    state: &RollStore,
+    request: &super::registry_revocation::Revocation,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state
+            .prepare_registry_revocation_root(request)
+            .map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_paid_resale(
+    state: &RollStore,
+    request: &super::paid_resale::publication::ResaleRoots,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state.prepare_paid_resale_roots(request).map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_charter_pending(
+    state: &RollStore,
+    request: &super::charter_pending::publication::PendingRoots,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state
+            .prepare_charter_pending_roots(request)
+            .map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_charter_transfer(
+    state: &RollStore,
+    request: &super::charter_transfer::TransferRoots,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state
+            .prepare_charter_transfer_root(request)
+            .map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_withdrawal(
+    state: &RollStore,
+    request: &super::withdrawal::Withdrawal,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = (
+        state.prepare_withdrawal_root(request).map_err(refusal)?,
+        None,
+    );
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_retirement(
+    state: &RollStore,
+    request: &super::authored_retirement::Retirement,
+    retired: &mut Option<super::authored_retirement::RetirementOutput>,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = {
+        let (change, output) = state
+            .prepare_authored_retirement(request)
+            .map_err(refusal)?;
+        *retired = Some(output);
+        (change, None)
+    };
+    Ok(Box::new(result))
+}
+
+#[inline(never)]
+fn plan_authored_fork(
+    state: &RollStore,
+    request: &super::authored_fork::AuthoredFork,
+) -> Result<
+    Box<(
+        PreparedChange,
+        Option<super::parent_selector::DraftParentSelection>,
+    )>,
+    ParticipantError,
+> {
+    let result = {
+        let (change, selection) = state.prepare_authored_fork(request).map_err(refusal)?;
+        (change, Some(selection))
+    };
+    Ok(Box::new(result))
 }
 
 impl OwnerParticipant for RootParticipant {
@@ -154,383 +1064,56 @@ impl OwnerParticipant for RootParticipant {
         if request.commit() != context.commit_token() {
             return Err(ParticipantError::Authority);
         }
-        let conduct = match &request {
-            RootRequest::Conduct(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let term_lapse = match &request {
-            RootRequest::TermLapse(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let ic = match &request {
-            RootRequest::Ic(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let dependent = match &request {
-            RootRequest::DependentFiling(request) => {
-                request
-                    .fence()
-                    .check(request.commit(), context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            RootRequest::InitialFiling(_) => {
-                if context.action().key().owner.as_str() != NS
-                    || context.action().key().kind.as_str() != "action"
-                    || !matches!(
-                        context.action().key().id.as_str(),
-                        "initial_filing" | "house_initial_filing"
-                    )
-                    || context.action().version() != 1
-                {
-                    return Err(ParticipantError::Authority);
-                }
-                None
-            }
-            _ => None,
-        };
-        let fresh_paid = match &request {
-            RootRequest::Paid(paid) => paid.fresh().cloned(),
-            _ => None,
-        };
-        super::paid_roots::check_fresh(fresh_paid.as_ref(), context)
-            .map_err(|_| ParticipantError::Authority)?;
-        let reconformance = match &request {
-            RootRequest::Rating(request) => request.reconformance().cloned(),
-            _ => None,
-        };
-        if let Some(fence) = &reconformance {
-            fence
-                .check(context)
-                .map_err(|_| ParticipantError::Authority)?;
-        }
-        let marked = match &request {
-            RootRequest::Rating(request) => request.marked().cloned(),
-            _ => None,
-        };
-        if let Some(marked) = &marked {
-            marked
-                .check(context)
-                .map_err(|_| ParticipantError::Authority)?;
-        }
-        let fork = match &request {
-            RootRequest::AuthoredFork(request) => {
-                request
-                    .check_context(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some((request.action().clone(), request.grant().clone()))
-            }
-            _ => None,
-        };
-        let retirement = match &request {
-            RootRequest::Retirement(request) => {
-                request
-                    .check_context(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence())
-            }
-            _ => None,
-        };
-        let entitlement = match &request {
-            RootRequest::Entitlement(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let coverage = match &request {
-            RootRequest::Coverage(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let house = match &request {
-            RootRequest::House(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let renewal = match &request {
-            RootRequest::Renewal(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let house_renewal = match &request {
-            RootRequest::HouseRenewal(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let registry_recall = match &request {
-            RootRequest::RegistryRecall(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let measured_recall = match &request {
-            RootRequest::MeasuredRecall(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let registry_revocation = match &request {
-            RootRequest::RegistryRevocation(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let paid_resale = match &request {
-            RootRequest::RegistryRevocation(request) => request
-                .resale()
-                .map(|r| {
-                    r.fence()
-                        .check(context)
-                        .map_err(|_| ParticipantError::Authority)?;
-                    Ok(r.fence().clone())
-                })
-                .transpose()?,
-            RootRequest::PaidResale(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let charter_pending = match &request {
-            RootRequest::RegistryRevocation(request) => request
-                .pending()
-                .map(|p| {
-                    p.fence()
-                        .check(context)
-                        .map_err(|_| ParticipantError::Authority)?;
-                    Ok(p.fence().clone())
-                })
-                .transpose()?,
-            RootRequest::CharterPending(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let charter_transfer = match &request {
-            RootRequest::CharterTransfer(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let withdrawal = match &request {
-            RootRequest::Withdrawal(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let attestation = match &request {
-            RootRequest::OwnerAttestation(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let qualification = match &request {
-            RootRequest::OwnerQualification(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
-        let update = match &request {
-            RootRequest::CompatibleUpdate(request) => {
-                request
-                    .fence()
-                    .check(context)
-                    .map_err(|_| ParticipantError::Authority)?;
-                Some(request.fence().clone())
-            }
-            _ => None,
-        };
+        let conduct = capture_conduct(&request, context)?;
+        let term_lapse = capture_term_lapse(&request, context)?;
+        let ic = capture_ic(&request, context)?;
+        let dependent = capture_dependent(&request, context)?;
+        let fresh_paid = capture_fresh_paid(&request, context)?;
+        let reconformance = capture_reconformance(&request, context)?;
+        let marked = capture_marked(&request, context)?;
+        let fork = capture_fork(&request, context)?;
+        let retirement = capture_retirement(&request, context)?;
+        let entitlement = capture_entitlement(&request, context)?;
+        let coverage = capture_coverage(&request, context)?;
+        let house = capture_house(&request, context)?;
+        let renewal = capture_renewal(&request, context)?;
+        let house_renewal = capture_house_renewal(&request, context)?;
+        let registry_recall = capture_registry_recall(&request, context)?;
+        let measured_recall = capture_measured_recall(&request, context)?;
+        let registry_revocation = capture_registry_revocation(&request, context)?;
+        let paid_resale = capture_paid_resale(&request, context)?;
+        let charter_pending = capture_charter_pending(&request, context)?;
+        let charter_transfer = capture_charter_transfer(&request, context)?;
+        let withdrawal = capture_withdrawal(&request, context)?;
+        let attestation = capture_attestation(&request, context)?;
+        let qualification = capture_qualification(&request, context)?;
+        let update = capture_update(&request, context)?;
         let mut retired = None;
-        let (mut change, selection) = match &request {
-            RootRequest::TermLapse(request) => (
-                state.prepare_term_lapse_root(request).map_err(refusal)?,
-                None,
-            ),
-            RootRequest::Ic(request) => (
-                state.prepare_ic_claim_roots(request).map_err(refusal)?,
-                None,
-            ),
-            RootRequest::InitialFiling(request) => (
-                state.prepare_commercial_roots(request).map_err(refusal)?,
-                None,
-            ),
-            RootRequest::CompatibleUpdate(request) => (
-                state.prepare_line_update_roots(request).map_err(refusal)?,
-                None,
-            ),
-            RootRequest::DependentFiling(request) => (
-                state
-                    .prepare_commercial_roots(request.roots())
-                    .map_err(refusal)?,
-                None,
-            ),
-            RootRequest::Conduct(request) => {
-                (state.prepare_conduct_root(request).map_err(refusal)?, None)
-            }
-            RootRequest::Rating(request) => {
-                (state.prepare_rating_roots(request).map_err(refusal)?, None)
-            }
-            RootRequest::Paid(request) => {
-                (state.prepare_paid_roots(request).map_err(refusal)?, None)
-            }
-            RootRequest::Entitlement(request) => (
-                state.prepare_entitlement_roots(request).map_err(refusal)?,
-                None,
-            ),
-            RootRequest::House(request) => {
-                (state.prepare_house_roots(request).map_err(refusal)?, None)
-            }
-            RootRequest::Coverage(request) => (
-                state.prepare_coverage_roots(request).map_err(refusal)?,
-                None,
-            ),
-            RootRequest::Renewal(request) => {
-                (state.prepare_renewal_roots(request).map_err(refusal)?, None)
-            }
-            RootRequest::HouseRenewal(request) => (
-                state
-                    .prepare_house_renewal_roots(request)
-                    .map_err(refusal)?,
-                None,
-            ),
-            RootRequest::OwnerAttestation(request) => (
-                state
-                    .prepare_owner_attestation_roots(request)
-                    .map_err(refusal)?,
-                None,
-            ),
-            RootRequest::OwnerQualification(request) => (
-                state
-                    .prepare_owner_qualification_root(request)
-                    .map_err(refusal)?,
-                None,
-            ),
-            RootRequest::RegistryRecall(request) => (
-                state
-                    .prepare_registry_recall_root(request)
-                    .map_err(refusal)?,
-                None,
-            ),
-            RootRequest::MeasuredRecall(request) => (
-                state
-                    .prepare_measured_recall_root(request)
-                    .map_err(refusal)?,
-                None,
-            ),
-            RootRequest::RegistryRevocation(request) => (
-                state
-                    .prepare_registry_revocation_root(request)
-                    .map_err(refusal)?,
-                None,
-            ),
-            RootRequest::PaidResale(request) => (
-                state.prepare_paid_resale_roots(request).map_err(refusal)?,
-                None,
-            ),
-            RootRequest::CharterPending(request) => (
-                state
-                    .prepare_charter_pending_roots(request)
-                    .map_err(refusal)?,
-                None,
-            ),
-            RootRequest::CharterTransfer(request) => (
-                state
-                    .prepare_charter_transfer_root(request)
-                    .map_err(refusal)?,
-                None,
-            ),
-            RootRequest::Withdrawal(request) => (
-                state.prepare_withdrawal_root(request).map_err(refusal)?,
-                None,
-            ),
-            RootRequest::Retirement(request) => {
-                let (change, output) = state
-                    .prepare_authored_retirement(request)
-                    .map_err(refusal)?;
-                retired = Some(output);
-                (change, None)
-            }
-            RootRequest::AuthoredFork(request) => {
-                let (change, selection) = state.prepare_authored_fork(request).map_err(refusal)?;
-                (change, Some(selection))
-            }
+        let (mut change, selection) = *match &request {
+            RootRequest::TermLapse(request) => plan_term_lapse(state, request)?,
+            RootRequest::Ic(request) => plan_ic(state, request)?,
+            RootRequest::InitialFiling(request) => plan_initial_filing(state, request)?,
+            RootRequest::CompatibleUpdate(request) => plan_compatible_update(state, request)?,
+            RootRequest::DependentFiling(request) => plan_dependent_filing(state, request)?,
+            RootRequest::Conduct(request) => plan_conduct(state, request)?,
+            RootRequest::Rating(request) => plan_rating(state, request)?,
+            RootRequest::Paid(request) => plan_paid(state, request)?,
+            RootRequest::Entitlement(request) => plan_entitlement(state, request)?,
+            RootRequest::House(request) => plan_house(state, request)?,
+            RootRequest::Coverage(request) => plan_coverage(state, request)?,
+            RootRequest::Renewal(request) => plan_renewal(state, request)?,
+            RootRequest::HouseRenewal(request) => plan_house_renewal(state, request)?,
+            RootRequest::OwnerAttestation(request) => plan_owner_attestation(state, request)?,
+            RootRequest::OwnerQualification(request) => plan_owner_qualification(state, request)?,
+            RootRequest::RegistryRecall(request) => plan_registry_recall(state, request)?,
+            RootRequest::MeasuredRecall(request) => plan_measured_recall(state, request)?,
+            RootRequest::RegistryRevocation(request) => plan_registry_revocation(state, request)?,
+            RootRequest::PaidResale(request) => plan_paid_resale(state, request)?,
+            RootRequest::CharterPending(request) => plan_charter_pending(state, request)?,
+            RootRequest::CharterTransfer(request) => plan_charter_transfer(state, request)?,
+            RootRequest::Withdrawal(request) => plan_withdrawal(state, request)?,
+            RootRequest::Retirement(request) => plan_retirement(state, request, &mut retired)?,
+            RootRequest::AuthoredFork(request) => plan_authored_fork(state, request)?,
         };
         let follow = match &request {
             RootRequest::InitialFiling(request) => Some(
@@ -707,7 +1290,7 @@ impl OwnerParticipant for RootParticipant {
                 .check(patch.commit, context)
                 .map_err(|_| ParticipantError::Authority)?;
         }
-        super::paid_roots::check_fresh(patch.fresh_paid.as_ref(), context)
+        super::paid_roots::check_fresh(patch.fresh_paid.as_deref(), context)
             .map_err(|_| ParticipantError::Authority)?;
         if let Some(fence) = &patch.reconformance {
             fence
@@ -719,7 +1302,7 @@ impl OwnerParticipant for RootParticipant {
                 .check(context)
                 .map_err(|_| ParticipantError::Authority)?;
         }
-        if let Some((action, grant)) = &patch.fork {
+        if let Some((action, grant)) = patch.fork.as_deref() {
             super::authored_fork::check_action(action, patch.commit, grant, context)
                 .map_err(|_| ParticipantError::Authority)?;
         }

@@ -13,14 +13,14 @@ use std::sync::{
 pub(super) enum Request {
     Proving {
         ticket: u64,
-        recipe: Recipe,
+        recipe: Box<Recipe>,
         factory: Arc<ScenarioFactory>,
     },
     Reconformance {
         ticket: u64,
         account: mush_core::AccountId,
         nonce: u64,
-        candidate: mush_roll::commerce::rating::reconformance::reader::ReconformanceCandidate,
+        candidate: Box<mush_roll::commerce::rating::reconformance::reader::ReconformanceCandidate>,
         source: Arc<str>,
         factory: Arc<crate::minds::registry::factory::Factory>,
     },
@@ -28,7 +28,7 @@ pub(super) enum Request {
         ticket: u64,
         account: mush_core::AccountId,
         nonce: u64,
-        candidate: mush_roll::commerce::conduct::ConductCandidate,
+        candidate: Box<mush_roll::commerce::conduct::ConductCandidate>,
         source: Arc<str>,
         factory: Arc<crate::minds::registry::conduct::factory::Factory>,
     },
@@ -37,7 +37,7 @@ pub(super) enum Request {
         account: mush_core::AccountId,
         actor: mush_core::ObjId,
         nonce: u64,
-        revision: mush_roll::Revision,
+        revision: Box<mush_roll::Revision>,
         source: Arc<str>,
         factory: Arc<crate::minds::registry::factory::Factory>,
     },
@@ -45,16 +45,16 @@ pub(super) enum Request {
 pub(super) enum Completion {
     Conduct {
         ticket: u64,
-        result: Result<crate::minds::registry::conduct::factory::PreparedConduct, BulkError>,
+        result: Box<Result<crate::minds::registry::conduct::factory::PreparedConduct, BulkError>>,
     },
     Proving {
         ticket: u64,
-        recipe: Recipe,
-        result: Result<FrozenProving, BulkError>,
+        recipe: Box<Recipe>,
+        result: Box<Result<FrozenProving, BulkError>>,
     },
     Registry {
         ticket: u64,
-        result: Result<crate::minds::registry::factory::PreparedRegistry, BulkError>,
+        result: Box<Result<crate::minds::registry::factory::PreparedRegistry, BulkError>>,
     },
 }
 impl Completion {
@@ -100,13 +100,16 @@ impl Preparer {
                         } => {
                             let result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    factory.prepare(account, nonce, candidate, source)
+                                    factory.prepare(account, nonce, *candidate, source)
                                 }))
                                 .map_err(|_| invalid("Conduct preparation failed"))
                                 .and_then(|r| {
                                     r.map_err(|_| invalid("Conduct preparation refused"))
                                 });
-                            Completion::Conduct { ticket, result }
+                            Completion::Conduct {
+                                ticket,
+                                result: Box::new(result),
+                            }
                         }
                         Request::Proving {
                             ticket,
@@ -121,7 +124,7 @@ impl Preparer {
                             Completion::Proving {
                                 ticket,
                                 recipe,
-                                result,
+                                result: Box::new(result),
                             }
                         }
                         Request::Reconformance {
@@ -134,7 +137,8 @@ impl Preparer {
                         } => {
                             let result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    factory.prepare_reconformance(account, nonce, candidate, source)
+                                    factory
+                                        .prepare_reconformance(account, nonce, *candidate, source)
                                 }))
                                 .map_err(|_| invalid("Registry re-conformance preparation failed"))
                                 .and_then(|r| {
@@ -142,7 +146,10 @@ impl Preparer {
                                         invalid("Registry re-conformance preparation refused")
                                     })
                                 });
-                            Completion::Registry { ticket, result }
+                            Completion::Registry {
+                                ticket,
+                                result: Box::new(result),
+                            }
                         }
                         Request::Registry {
                             ticket,
@@ -155,13 +162,16 @@ impl Preparer {
                         } => {
                             let result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    factory.prepare(account, actor, nonce, revision, source)
+                                    factory.prepare(account, actor, nonce, *revision, source)
                                 }))
                                 .map_err(|_| invalid("Registry preparation failed"))
                                 .and_then(|r| {
                                     r.map_err(|_| invalid("Registry preparation refused"))
                                 });
-                            Completion::Registry { ticket, result }
+                            Completion::Registry {
+                                ticket,
+                                result: Box::new(result),
+                            }
                         }
                     };
                     if finished.send(done).is_err() {

@@ -36,7 +36,7 @@ impl OwnerReadService for Readiness {
 }
 pub(crate) enum Request {
     Initialize,
-    Issue(DieCertificate),
+    Issue(Box<DieCertificate>),
     Integration(super::integration::owner::Request),
     Refit(super::refit::owner::Request),
 }
@@ -51,7 +51,7 @@ pub(crate) struct OriginParticipant {
 }
 pub(crate) struct OriginPatch {
     before: Option<OriginIndex>,
-    after: OriginIndex,
+    after: Box<OriginIndex>,
     generation: u64,
     next_generation: u64,
     actor: ObjId,
@@ -61,12 +61,12 @@ pub(crate) struct OriginPatch {
 }
 pub(crate) struct OriginBound<'a> {
     state: &'a mut CoreProductionState,
-    index: OriginIndex,
+    index: Box<OriginIndex>,
     generation: u64,
 }
 impl BoundParticipant for OriginBound<'_> {
     fn apply(self) {
-        self.state.index = Some(self.index);
+        self.state.index = Some(*self.index);
         self.state.generation = self.generation;
     }
 }
@@ -89,7 +89,7 @@ impl OriginParticipant {
         state: &CoreProductionState,
         ctx: &OwnerPrepareContext<'_>,
         request: Request,
-    ) -> Result<(OriginIndex, OriginPatch, Vec<ReplayWrite>), ParticipantError> {
+    ) -> Result<(Box<OriginIndex>, Box<OriginPatch>, Vec<ReplayWrite>), ParticipantError> {
         identity(ctx)?;
         if !state.ready {
             return Err(refused());
@@ -114,6 +114,7 @@ impl OriginParticipant {
                 )
             }
             Request::Issue(certificate) => {
+                let certificate = *certificate;
                 certificate.validate().map_err(|_| refused())?;
                 if self.config.mode != CoreOriginMode::Active
                     || certificate.policy != self.config.policy
@@ -153,7 +154,7 @@ impl OriginParticipant {
         }];
         let patch = OriginPatch {
             before: state.index.clone(),
-            after: after.clone(),
+            after: Box::new(after.clone()),
             generation: state.generation,
             next_generation,
             actor: ctx.invocation().actor(),
@@ -161,7 +162,7 @@ impl OriginParticipant {
             commit: ctx.commit_token(),
             live,
         };
-        Ok((after, patch, writes))
+        Ok((Box::new(after), Box::new(patch), writes))
     }
     fn recheck_origin(
         &self,
@@ -232,12 +233,12 @@ impl OriginParticipant {
 }
 
 pub(crate) enum Output {
-    Origin(OriginIndex),
-    Integration(super::integration::owner::Output),
-    Refit(super::refit::owner::Output),
+    Origin(Box<OriginIndex>),
+    Integration(Box<super::integration::owner::Output>),
+    Refit(Box<super::refit::owner::Output>),
 }
 impl Output {
-    pub(crate) fn refit(self) -> Result<super::refit::owner::Output, ParticipantError> {
+    pub(crate) fn refit(self) -> Result<Box<super::refit::owner::Output>, ParticipantError> {
         match self {
             Self::Refit(v) => Ok(v),
             _ => Err(refused()),
@@ -245,11 +246,13 @@ impl Output {
     }
     pub(crate) fn origin(self) -> Result<OriginIndex, ParticipantError> {
         match self {
-            Self::Origin(v) => Ok(v),
+            Self::Origin(v) => Ok(*v),
             _ => Err(refused()),
         }
     }
-    pub(crate) fn integration(self) -> Result<super::integration::owner::Output, ParticipantError> {
+    pub(crate) fn integration(
+        self,
+    ) -> Result<Box<super::integration::owner::Output>, ParticipantError> {
         match self {
             Self::Integration(v) => Ok(v),
             _ => Err(refused()),
@@ -257,19 +260,19 @@ impl Output {
     }
 }
 pub(crate) enum Patch {
-    Origin(OriginPatch),
-    Integration(super::integration::owner::Patch),
-    Refit(super::refit::owner::Patch),
+    Origin(Box<OriginPatch>),
+    Integration(Box<super::integration::owner::Patch>),
+    Refit(Box<super::refit::owner::Patch>),
 }
 pub(crate) enum Bound<'a> {
     Origin(OriginBound<'a>),
     Refit {
         state: &'a mut CoreProductionState,
-        patch: super::refit::owner::Patch,
+        patch: Box<super::refit::owner::Patch>,
     },
     Integration {
         state: &'a mut CoreProductionState,
-        patch: super::integration::owner::Patch,
+        patch: Box<super::integration::owner::Patch>,
     },
 }
 impl BoundParticipant for Bound<'_> {
@@ -376,7 +379,7 @@ impl OwnerParticipant for OriginParticipant {
         patch: Patch,
     ) -> Result<Bound<'a>, ParticipantError> {
         match patch {
-            Patch::Origin(p) => self.bind_origin(state, p).map(Bound::Origin),
+            Patch::Origin(p) => self.bind_origin(state, *p).map(Bound::Origin),
             Patch::Refit(p) => {
                 p.check_local(state)?;
                 Ok(Bound::Refit { state, patch: p })

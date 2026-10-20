@@ -285,8 +285,11 @@ impl Provider {
                 parent,
             },
         };
-        ctx.prepare_owner(&self.roots, RootRequest::OwnerQualification(request))
-            .map_err(invalid)?;
+        ctx.prepare_owner(
+            &self.roots,
+            RootRequest::OwnerQualification(Box::new(request)),
+        )
+        .map_err(invalid)?;
         txn.insert(
             &self.families.owner_qualification_operations,
             &operation.key(),

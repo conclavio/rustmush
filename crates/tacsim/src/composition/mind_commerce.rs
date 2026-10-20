@@ -35,6 +35,10 @@ mod conduct_tests;
 /// Its private worker policy comes only from the actual configured Tacsim
 /// catalog and genuine application of the fixed shipped Registry ground.
 pub struct MindCommerce {
+    state: Box<MindCommerceState>,
+}
+
+struct MindCommerceState {
     registry: Registration,
     conduct: Option<crate::minds::registry::conduct::composition::Registration>,
     coverage: Option<crate::underwriting::CoverageConfiguration>,
@@ -77,22 +81,26 @@ impl MindCommerce {
     /// Opt in the actual five-action metered Conduct service on a catalogue
     /// that already contains its bound carrier. No trial or result is minted.
     pub fn with_conduct_trials(mut self, layer: &TacsimRuleset) -> Result<Self, ModError> {
-        if self.conduct.is_some() {
+        if self.state.conduct.is_some() {
             return Err(ModError::msg("Conduct already configured"));
         }
-        self.registry
+        self.state
+            .registry
             .check(layer.config(), &layer.definition_catalog()?)?;
         let conduct = crate::minds::registry::conduct::composition::Registration::prepare(
             layer,
-            self.mode,
+            self.state.mode,
             self.manifest(),
         )?;
-        self.roll = self.roll.with_conduct_trials(conduct.roll_config()?)?;
-        self.conduct = Some(conduct);
+        self.state.roll = self
+            .state
+            .roll
+            .with_conduct_trials(conduct.roll_config()?)?;
+        self.state.conduct = Some(conduct);
         Ok(self)
     }
     pub fn conduct_manifest(&self) -> Option<&DefinitionRef> {
-        self.conduct.as_ref().map(|c| c.reference())
+        self.state.conduct.as_ref().map(|c| c.reference())
     }
 
     /// Freeze a fixed shipped certification ground with this layer's exact
@@ -114,35 +122,37 @@ impl MindCommerce {
         )?;
         let filing_action = roll.initial_filing_action()?;
         Ok(Self {
-            registry,
-            conduct: None,
-            coverage: None,
-            minds_facts: None,
-            ic: None,
-            mode,
-            roll,
-            filing,
-            filing_action,
-            compatible_update_action: None,
-            derived_update_action: None,
-            charter_transfer_action: None,
-            registry_revocation_action: None,
-            pending_charters: None,
-            paid_resales: None,
-            house_filing_action: None,
-            house_purchases: None,
-            house_purchase_actions: None,
-            two_seat_house_purchase_actions: None,
-            house_renewals: None,
-            house_renewal_actions: None,
-            house_renewal_service: None,
-            dependent_filing_action: None,
-            purchases: None,
-            entitlements: None,
-            entitlement_actions: None,
-            purchase_actions: None,
-            authored_forks: false,
-            marked_registry: false,
+            state: Box::new(MindCommerceState {
+                registry,
+                conduct: None,
+                coverage: None,
+                minds_facts: None,
+                ic: None,
+                mode,
+                roll,
+                filing,
+                filing_action,
+                compatible_update_action: None,
+                derived_update_action: None,
+                charter_transfer_action: None,
+                registry_revocation_action: None,
+                pending_charters: None,
+                paid_resales: None,
+                house_filing_action: None,
+                house_purchases: None,
+                house_purchase_actions: None,
+                two_seat_house_purchase_actions: None,
+                house_renewals: None,
+                house_renewal_actions: None,
+                house_renewal_service: None,
+                dependent_filing_action: None,
+                purchases: None,
+                entitlements: None,
+                entitlement_actions: None,
+                purchase_actions: None,
+                authored_forks: false,
+                marked_registry: false,
+            }),
         })
     }
 
@@ -152,12 +162,13 @@ impl MindCommerce {
         mut self,
         policy: mush_market::mind_house_renewal::RenewalPolicy,
     ) -> Result<Self, ModError> {
-        if self.mode != CommerceMode::Active || self.house_renewals.is_some() {
+        if self.state.mode != CommerceMode::Active || self.state.house_renewals.is_some() {
             return Err(ModError::msg(
                 "House renewals require one Active composition",
             ));
         }
         let house = self
+            .state
             .house_purchases
             .as_ref()
             .ok_or_else(|| ModError::msg("House renewals require House purchases"))?;
@@ -167,21 +178,22 @@ impl MindCommerce {
             policy,
         )?;
         let actions = config.actions()?;
-        self.roll = self.roll.with_house_mind_renewals(
+        self.state.roll = self.state.roll.with_house_mind_renewals(
             config.writer(),
             config.participants().clone(),
             actions.clone(),
         )?;
-        self.house_renewal_actions = Some(actions);
-        self.house_renewals = Some(config);
+        self.state.house_renewal_actions = Some(actions);
+        self.state.house_renewals = Some(config);
         Ok(self)
     }
     /// Source-free offer/status and acknowledged terminal continuations.
     pub fn with_house_mind_renewal_service(mut self) -> Result<Self, ModError> {
-        if self.house_renewal_service.is_some() {
+        if self.state.house_renewal_service.is_some() {
             return Err(ModError::msg("House renewal service already configured"));
         }
         let config = self
+            .state
             .house_renewals
             .take()
             .ok_or_else(|| ModError::msg("House renewal service requires renewals"))?
@@ -189,17 +201,20 @@ impl MindCommerce {
         let action = config
             .service_action()?
             .ok_or_else(|| ModError::msg("House renewal service action"))?;
-        self.roll = self.roll.with_house_mind_renewal_service(action.clone())?;
-        self.house_renewal_service = Some(action);
-        self.house_renewals = Some(config);
+        self.state.roll = self
+            .state
+            .roll
+            .with_house_mind_renewal_service(action.clone())?;
+        self.state.house_renewal_service = Some(action);
+        self.state.house_renewals = Some(config);
         Ok(self)
     }
 
     /// Re-conform exact retained filed revisions under the current Registry.
     /// Default composition starts no automatic work or recall service.
     pub fn with_registry_reconformance(mut self) -> Result<Self, ModError> {
-        self.roll = self.roll.with_registry_reconformance()?;
-        self.registry = self.registry.with_reconformance()?;
+        self.state.roll = self.state.roll.with_registry_reconformance()?;
+        self.state.registry = self.state.registry.with_reconformance()?;
         Ok(self)
     }
 
@@ -207,12 +222,12 @@ impl MindCommerce {
     /// This opts in the same opaque provider in the actual Roll and Economy
     /// owners; it grants no source, transfer or house authority.
     pub fn with_minds_facts(mut self) -> Result<Self, ModError> {
-        if self.mode != CommerceMode::Active || self.minds_facts.is_some() {
+        if self.state.mode != CommerceMode::Active || self.state.minds_facts.is_some() {
             return Err(ModError::msg("minds facts require one Active composition"));
         }
         let provider = mush_roll::commerce::facts::MindsFactProvider::new();
-        self.roll = self.roll.with_minds_facts(provider.clone())?;
-        self.minds_facts = Some(provider);
+        self.state.roll = self.state.roll.with_minds_facts(provider.clone())?;
+        self.state.minds_facts = Some(provider);
         Ok(self)
     }
 
@@ -222,7 +237,7 @@ impl MindCommerce {
         mut self,
         bases: Vec<mush_sim::ic_exclusion::ConfiguredIcBase>,
     ) -> Result<Self, ModError> {
-        if self.mode != CommerceMode::Active || self.ic.is_some() {
+        if self.state.mode != CommerceMode::Active || self.state.ic.is_some() {
             return Err(ModError::msg(
                 "IC requires explicit Active composition once",
             ));
@@ -231,13 +246,14 @@ impl MindCommerce {
             self.manifest().clone(),
             bases,
         )?;
-        self.roll = self
+        self.state.roll = self
+            .state
             .roll
             .with_ic_minds::<crate::minds::ic_sortie::IcSortieParticipant>(
                 ic.claims.clone(),
                 ic.writer.clone(),
             )?;
-        self.ic = Some(ic);
+        self.state.ic = Some(ic);
         Ok(self)
     }
     /// Explicit ordinary hull cover. This composes real owners but produces no
@@ -247,7 +263,10 @@ impl MindCommerce {
         service: mush_core::ObjId,
         products: Vec<crate::underwriting::CoverageProductV1>,
     ) -> Result<Self, ModError> {
-        if self.mode != CommerceMode::Active || self.ic.is_none() || self.coverage.is_some() {
+        if self.state.mode != CommerceMode::Active
+            || self.state.ic.is_none()
+            || self.state.coverage.is_some()
+        {
             return Err(ModError::msg(
                 "coverage requires one actual Active IC composition",
             ));
@@ -259,7 +278,7 @@ impl MindCommerce {
                     DefinitionKind::new("owner_participant").map_err(error)?,
                     DefinitionId::new("initial_filing").map_err(error)?,
                     1,
-                    self.filing.definition_payload(),
+                    self.state.filing.definition_payload(),
                 )
                 .map_err(error)?,
             )
@@ -276,8 +295,8 @@ impl MindCommerce {
             service,
             products,
         )?;
-        self.roll = coverage.configure_roll(self.roll)?;
-        self.coverage = Some(coverage);
+        self.state.roll = coverage.configure_roll(self.state.roll)?;
+        self.state.coverage = Some(coverage);
         Ok(self)
     }
     /// Qualified cover requires the actual registered Conduct owner; selectors
@@ -292,7 +311,10 @@ impl MindCommerce {
             Vec<mush_core::CommitToken>,
         >,
     ) -> Result<Self, ModError> {
-        if self.mode != CommerceMode::Active || self.ic.is_none() || self.coverage.is_some() {
+        if self.state.mode != CommerceMode::Active
+            || self.state.ic.is_none()
+            || self.state.coverage.is_some()
+        {
             return Err(ModError::msg(
                 "coverage requires one actual Active IC composition",
             ));
@@ -304,7 +326,7 @@ impl MindCommerce {
                     DefinitionKind::new("owner_participant").map_err(error)?,
                     DefinitionId::new("initial_filing").map_err(error)?,
                     1,
-                    self.filing.definition_payload(),
+                    self.state.filing.definition_payload(),
                 )
                 .map_err(error)?,
             )
@@ -323,8 +345,8 @@ impl MindCommerce {
             conduct_manifest,
             selections,
         )?;
-        self.roll = coverage.configure_roll(self.roll)?;
-        self.coverage = Some(coverage);
+        self.state.roll = coverage.configure_roll(self.state.roll)?;
+        self.state.coverage = Some(coverage);
         Ok(self)
     }
     pub fn configure_ic_physical(
@@ -332,7 +354,7 @@ impl MindCommerce {
         tactics: mush_tactics::TacticsModule,
         sim: mush_sim::SimulationModule,
     ) -> (mush_tactics::TacticsModule, mush_sim::SimulationModule) {
-        match &self.ic {
+        match &self.state.ic {
             Some(ic) => ic.physical(tactics, sim),
             None => (tactics, sim),
         }
@@ -343,8 +365,8 @@ impl MindCommerce {
     pub fn with_charter_transfers(mut self) -> Result<Self, ModError> {
         let config = mush_roll::commerce::charter_transfer::CharterTransferConfig::new();
         let [_, accept] = config.actions()?;
-        self.roll = self.roll.with_charter_transfers(config)?;
-        self.charter_transfer_action = Some(accept);
+        self.state.roll = self.state.roll.with_charter_transfers(config)?;
+        self.state.charter_transfer_action = Some(accept);
         Ok(self)
     }
 
@@ -354,9 +376,9 @@ impl MindCommerce {
         mut self,
         config: mush_roll::commerce::PendingCharterTransferConfig,
     ) -> Result<Self, ModError> {
-        if self.mode != CommerceMode::Active
-            || self.pending_charters.is_some()
-            || self.charter_transfer_action.is_none()
+        if self.state.mode != CommerceMode::Active
+            || self.state.pending_charters.is_some()
+            || self.state.charter_transfer_action.is_none()
         {
             return Err(ModError::msg(
                 "pending charters require one Active charter composition",
@@ -369,7 +391,7 @@ impl MindCommerce {
                     DefinitionKind::new("owner_participant").map_err(error)?,
                     DefinitionId::new("initial_filing").map_err(error)?,
                     1,
-                    self.filing.definition_payload(),
+                    self.state.filing.definition_payload(),
                 )
                 .map_err(error)?,
             )
@@ -382,43 +404,44 @@ impl MindCommerce {
             .map_err(error)?;
         let participants = PurchaseParticipants::new(economy, retention).map_err(error)?;
         let native = config.economy_config(
-            self.filing.issuer().clone(),
-            self.filing.catalog().clone(),
-            self.registry_revocation_action.clone(),
+            self.state.filing.issuer().clone(),
+            self.state.filing.catalog().clone(),
+            self.state.registry_revocation_action.clone(),
         )?;
-        self.roll = self
+        self.state.roll = self
+            .state
             .roll
             .with_pending_charter_transfers(config.clone(), participants)?;
-        self.pending_charters = Some((config, native));
+        self.state.pending_charters = Some((config, native));
         Ok(self)
     }
 
     /// Explicit positive-fee original-author updates; no new major or paid Follow.
     pub fn with_compatible_updates(mut self) -> Result<Self, ModError> {
-        self.roll = self.roll.with_compatible_updates()?;
-        self.compatible_update_action = Some(self.roll.compatible_update_action()?);
+        self.state.roll = self.state.roll.with_compatible_updates()?;
+        self.state.compatible_update_action = Some(self.state.roll.compatible_update_action()?);
         Ok(self)
     }
 
     /// Explicit compatible revisions for an already filed personal derivative.
     /// Reuses the real parent-reader and fee/root owner slots.
     pub fn with_derived_updates(mut self) -> Result<Self, ModError> {
-        self.roll = self.roll.with_derived_updates()?;
-        self.derived_update_action = Some(self.roll.derived_update_action()?);
+        self.state.roll = self.state.roll.with_derived_updates()?;
+        self.state.derived_update_action = Some(self.state.roll.derived_update_action()?);
         Ok(self)
     }
 
     /// Explicit scoped filing only. The real curator must independently hold
     /// every required current scoped authorization. House sales/use stay closed.
     pub fn with_house_filings(mut self) -> Result<Self, ModError> {
-        self.roll = self.roll.with_house_filings()?;
-        self.house_filing_action = Some(self.roll.house_filing_action()?);
+        self.state.roll = self.state.roll.with_house_filings()?;
+        self.state.house_filing_action = Some(self.state.roll.house_filing_action()?);
         Ok(self)
     }
     /// Opt in only to personal dependent filing and its current owner rights.
     pub fn with_dependent_owner_filings(mut self) -> Result<Self, ModError> {
-        self.roll = self.roll.with_dependent_owner_filings()?;
-        self.dependent_filing_action = Some(self.roll.dependent_filing_action()?);
+        self.state.roll = self.state.roll.with_dependent_owner_filings()?;
+        self.state.dependent_filing_action = Some(self.state.roll.dependent_filing_action()?);
         Ok(self)
     }
 
@@ -442,16 +465,16 @@ impl MindCommerce {
     /// Explicit first-generation fork preparation only. Existing source forms
     /// must already be selected; dependent editing, filing and sales stay closed.
     pub fn with_authored_forks(mut self) -> Result<Self, ModError> {
-        self.roll = self.roll.with_authored_forks()?;
-        self.authored_forks = true;
+        self.state.roll = self.state.roll.with_authored_forks()?;
+        self.state.authored_forks = true;
         Ok(self)
     }
 
     /// Explicit current-parent admission for saved authored forks. Rating is
     /// behavior evidence only; dependent filing/sales remain separate.
     pub fn with_marked_registry(mut self) -> Result<Self, ModError> {
-        self.roll = self.roll.with_marked_registry()?;
-        self.marked_registry = true;
+        self.state.roll = self.state.roll.with_marked_registry()?;
+        self.state.marked_registry = true;
         Ok(self)
     }
 
@@ -472,9 +495,9 @@ impl MindCommerce {
             std::sync::Arc<dyn mush_roll::commerce::house_purchase::HouseBuyerAdmission>,
         >,
     ) -> Result<Self, ModError> {
-        if self.mode != CommerceMode::Active
-            || self.house_filing_action.is_none()
-            || self.house_purchases.is_some()
+        if self.state.mode != CommerceMode::Active
+            || self.state.house_filing_action.is_none()
+            || self.state.house_purchases.is_some()
         {
             return Err(ModError::msg(
                 "house purchases require one Active house filing composition",
@@ -487,7 +510,7 @@ impl MindCommerce {
                     DefinitionKind::new("owner_participant").map_err(error)?,
                     DefinitionId::new("initial_filing").map_err(error)?,
                     1,
-                    self.filing.definition_payload(),
+                    self.state.filing.definition_payload(),
                 )
                 .map_err(error)?,
             )
@@ -510,15 +533,15 @@ impl MindCommerce {
             participants.clone(),
             writer.clone(),
         )?;
-        self.roll = self.roll.with_house_mind_purchases(
+        self.state.roll = self.state.roll.with_house_mind_purchases(
             writer,
             participants,
             config.owner_actions(mush_roll::commerce::house_purchase::HouseProtocol::HouseV1)?,
         )?;
-        self.house_purchase_actions = Some(
+        self.state.house_purchase_actions = Some(
             config.purchase_actions(mush_roll::commerce::house_purchase::HouseProtocol::HouseV1)?,
         );
-        self.house_purchases = Some(config);
+        self.state.house_purchases = Some(config);
         Ok(self)
     }
 
@@ -528,25 +551,27 @@ impl MindCommerce {
         mut self,
         policy: mush_market::mind_house::HousePolicy,
     ) -> Result<Self, ModError> {
-        if self.mode != CommerceMode::Active
-            || self.two_seat_house_purchase_actions.is_some()
-            || self.house_renewals.is_some()
+        if self.state.mode != CommerceMode::Active
+            || self.state.two_seat_house_purchase_actions.is_some()
+            || self.state.house_renewals.is_some()
         {
             return Err(ModError::msg(
                 "two-seat House pins require one Active purchase composition before renewals",
             ));
         }
         let house = self
+            .state
             .house_purchases
             .take()
             .ok_or_else(|| ModError::msg("House purchases unavailable"))?
             .with_two_seat_pins(policy)?;
         let protocol = mush_roll::commerce::house_purchase::HouseProtocol::HouseV2;
-        self.roll = self
+        self.state.roll = self
+            .state
             .roll
             .with_two_seat_house_pins(house.owner_actions(protocol)?)?;
-        self.two_seat_house_purchase_actions = Some(house.purchase_actions(protocol)?);
-        self.house_purchases = Some(house);
+        self.state.two_seat_house_purchase_actions = Some(house.purchase_actions(protocol)?);
+        self.state.house_purchases = Some(house);
         Ok(self)
     }
 
@@ -556,37 +581,38 @@ impl MindCommerce {
         mut self,
         policy: mush_market::mind_entitlement::EntitlementPolicy,
     ) -> Result<Self, ModError> {
-        if self.mode != CommerceMode::Active
-            || self.dependent_filing_action.is_none()
-            || self.entitlements.is_some()
+        if self.state.mode != CommerceMode::Active
+            || self.state.dependent_filing_action.is_none()
+            || self.state.entitlements.is_some()
         {
             return Err(ModError::msg(
                 "entitlement purchase requires one Active dependent-owner composition",
             ));
         }
-        let old = self
-            .purchases
-            .as_ref()
-            .ok_or_else(|| ModError::msg("historical original purchase composition is missing"))?;
+        let old =
+            self.state.purchases.as_ref().ok_or_else(|| {
+                ModError::msg("historical original purchase composition is missing")
+            })?;
         let participants = old.participants().clone();
         let writer = mush_roll::commerce::entitlement::writer::EntitlementPurchaseWriter::new();
         let config = mush_market::mind_entitlement::EntitlementConfig::new(
             policy,
-            self.registry.reference().clone(),
+            self.state.registry.reference().clone(),
             participants.clone(),
             writer.clone(),
         )?;
         use mush_economy::managed_entitlement::EntitlementProtocol::{DerivedV1, OriginalV3};
         let original = config.owner_actions(OriginalV3)?;
         let derived = config.owner_actions(DerivedV1)?;
-        self.roll = self
-            .roll
-            .with_mind_entitlements(writer, participants, original, derived)?;
-        self.entitlement_actions = Some([
+        self.state.roll =
+            self.state
+                .roll
+                .with_mind_entitlements(writer, participants, original, derived)?;
+        self.state.entitlement_actions = Some([
             config.purchase_actions(OriginalV3)?,
             config.purchase_actions(DerivedV1)?,
         ]);
-        self.entitlements = Some(config);
+        self.state.entitlements = Some(config);
         Ok(self)
     }
 
@@ -598,34 +624,37 @@ impl MindCommerce {
         service: mush_core::ObjId,
         offer_seconds: i64,
     ) -> Result<Self, ModError> {
-        if self.mode != CommerceMode::Active || self.paid_resales.is_some() {
+        if self.state.mode != CommerceMode::Active || self.state.paid_resales.is_some() {
             return Err(ModError::msg(
                 "paid resale requires one Active configuration",
             ));
         }
         let participants = self
+            .state
             .purchases
             .as_ref()
             .map(|p| p.participants().clone())
             .or_else(|| {
-                self.house_purchases
+                self.state
+                    .house_purchases
                     .as_ref()
                     .map(|p| p.participants().clone())
             })
             .ok_or_else(|| ModError::msg("paid resale requires an actual purchase composition"))?;
         let writer = mush_roll::commerce::paid_resale::writer::PaidResaleWriter::new();
         let config = mush_market::mind_paid_resale::PaidResaleConfig::new(
-            self.filing.issuer().clone(),
+            self.state.filing.issuer().clone(),
             service,
             offer_seconds,
             participants.clone(),
             writer.clone(),
-            self.registry_revocation_action.clone(),
+            self.state.registry_revocation_action.clone(),
         )?;
-        self.roll = self
+        self.state.roll = self
+            .state
             .roll
             .with_paid_mind_resale(writer, participants, service)?;
-        self.paid_resales = Some(config);
+        self.state.paid_resales = Some(config);
         Ok(self)
     }
 
@@ -636,18 +665,18 @@ impl MindCommerce {
         policy: mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
     ) -> Result<Self, ModError> {
         let action = policy.action()?;
-        if let Some((config, native)) = &mut self.pending_charters {
+        if let Some((config, native)) = &mut self.state.pending_charters {
             *native = config.economy_config(
-                self.filing.issuer().clone(),
-                self.filing.catalog().clone(),
+                self.state.filing.issuer().clone(),
+                self.state.filing.catalog().clone(),
                 Some(action.clone()),
             )?;
         }
-        if let Some(config) = self.paid_resales.take() {
-            self.paid_resales = Some(config.with_registry_revocation(action.clone())?);
+        if let Some(config) = self.state.paid_resales.take() {
+            self.state.paid_resales = Some(config.with_registry_revocation(action.clone())?);
         }
-        self.registry_revocation_action = Some(action);
-        self.roll = self.roll.with_registry_revocation(policy)?;
+        self.state.registry_revocation_action = Some(action);
+        self.state.roll = self.state.roll.with_registry_revocation(policy)?;
         Ok(self)
     }
 
@@ -658,7 +687,7 @@ impl MindCommerce {
         mut self,
         policy: mush_roll::commerce::registry_recall::RegistryRecallPolicy,
     ) -> Result<Self, ModError> {
-        self.roll = self.roll.with_registry_recall(policy)?;
+        self.state.roll = self.state.roll.with_registry_recall(policy)?;
         Ok(self)
     }
 
@@ -667,7 +696,7 @@ impl MindCommerce {
         policy: OriginalQuotePolicy,
         source_forms: bool,
     ) -> Result<Self, ModError> {
-        if self.mode != CommerceMode::Active || self.purchases.is_some() {
+        if self.state.mode != CommerceMode::Active || self.state.purchases.is_some() {
             return Err(ModError::msg(
                 "original purchases require one Active commerce configuration",
             ));
@@ -679,7 +708,7 @@ impl MindCommerce {
                     DefinitionKind::new("owner_participant").map_err(error)?,
                     DefinitionId::new("initial_filing").map_err(error)?,
                     1,
-                    self.filing.definition_payload(),
+                    self.state.filing.definition_payload(),
                 )
                 .map_err(error)?,
             )
@@ -692,7 +721,7 @@ impl MindCommerce {
             .map_err(error)?;
         let participants = PurchaseParticipants::new(economy, retention).map_err(error)?;
         let writer = OriginalPurchaseWriter::new();
-        let quotes = OriginalQuoteConfig::new(policy, self.registry.reference().clone())?;
+        let quotes = OriginalQuoteConfig::new(policy, self.state.registry.reference().clone())?;
         let quotes = if source_forms {
             quotes.with_source_forms()
         } else {
@@ -700,22 +729,23 @@ impl MindCommerce {
         };
         let purchases = OriginalPurchaseConfig::new(quotes, participants.clone(), writer.clone())?;
         let actions = purchases.actions()?;
-        self.roll = self
-            .roll
-            .with_original_purchases(writer, participants, actions.clone())?;
-        self.purchases = Some(purchases);
-        self.purchase_actions = Some(actions);
+        self.state.roll =
+            self.state
+                .roll
+                .with_original_purchases(writer, participants, actions.clone())?;
+        self.state.purchases = Some(purchases);
+        self.state.purchase_actions = Some(actions);
         Ok(self)
     }
 
     /// Structural identity for trusted roster configuration only. The real
     /// Tacsim registrar must install this exact descriptor before freeze.
     pub fn manifest(&self) -> &DefinitionRef {
-        self.registry.reference()
+        self.state.registry.reference()
     }
 
     pub(crate) fn filing_issuer(&self) -> &mush_org::SystemPrincipalId {
-        self.filing.issuer()
+        self.state.filing.issuer()
     }
 
     /// Preserve the actual layer and all its boot hooks. A stale configuration
@@ -730,14 +760,15 @@ impl MindCommerce {
             ));
         }
         let catalog = layer.definition_catalog()?;
-        self.registry.check(layer.config(), &catalog)?;
-        if self.mode == CommerceMode::Active {
-            layer = if self.entitlements.is_some() {
+        self.state.registry.check(layer.config(), &catalog)?;
+        if self.state.mode == CommerceMode::Active {
+            layer = if self.state.entitlements.is_some() {
                 layer.with_mind_entitlement_holdings(self.manifest().clone())
-            } else if self.dependent_filing_action.is_some() {
+            } else if self.state.dependent_filing_action.is_some() {
                 layer.with_dependent_owner_holdings(self.manifest().clone())
-            } else if self.purchases.is_some() {
+            } else if self.state.purchases.is_some() {
                 if self
+                    .state
                     .purchase_actions
                     .as_ref()
                     .is_some_and(|actions| actions[0].version() == 2)
@@ -750,26 +781,27 @@ impl MindCommerce {
                 layer.with_original_holdings(self.manifest().clone())
             };
         }
-        if self.house_purchases.is_some() {
+        if self.state.house_purchases.is_some() {
             layer = layer.with_house_mind_holdings(self.manifest().clone());
         }
-        if self.authored_forks {
+        if self.state.authored_forks {
             layer.fork_material = Some(self.manifest().clone());
         }
-        if self.marked_registry {
+        if self.state.marked_registry {
             layer.marked_registry = Some(self.manifest().clone());
         }
         layer.ic_minds = self
+            .state
             .ic
             .as_ref()
-            .map(|ic| ic.layer(&layer.cfg))
+            .map(|ic| ic.layer(&layer.cfg).map(Box::new))
             .transpose()?;
-        layer.registry_commerce = Some(self.registry.clone());
-        if let Some(conduct) = &self.conduct {
+        layer.registry_commerce = Some(Box::new(self.state.registry.clone()));
+        if let Some(conduct) = &self.state.conduct {
             conduct.check(layer.config(), &layer.definition_catalog()?)?;
-            layer.conduct_trials = Some(conduct.clone());
+            layer.conduct_trials = Some(Box::new(conduct.clone()));
         }
-        if let Some(coverage) = &self.coverage {
+        if let Some(coverage) = &self.state.coverage {
             layer = layer.with_hull_coverage(coverage.clone())?;
         }
         Ok(layer)
@@ -778,13 +810,13 @@ impl MindCommerce {
     /// Keep the supplied Roll module's real hooks and source writers. The host
     /// must include Tacsim in those writers, as in the ordinary game roster.
     pub fn configure_roll(&self, module: RollModule) -> RollModule {
-        let module = module.with_commerce(self.roll.clone());
-        let module = if self.authored_forks {
+        let module = module.with_commerce(self.state.roll.clone());
+        let module = if self.state.authored_forks {
             module.with_authored_fork_source::<crate::minds::workshop::fork_material::ForkMaterialReader>()
         } else {
             module
         };
-        if self.mode == CommerceMode::Active {
+        if self.state.mode == CommerceMode::Active {
             crate::minds::registry::configure_roll(module)
         } else {
             module
@@ -797,54 +829,58 @@ impl MindCommerce {
     /// # Errors
     /// The native owner's exact configuration error if a paired service differs.
     pub fn configure_economy(&self, module: EconomyModule) -> Result<EconomyModule, ModError> {
-        let module = match &self.minds_facts {
+        let module = match &self.state.minds_facts {
             Some(provider) => module.with_fact_provider(std::sync::Arc::new(provider.clone())),
             None => module,
         };
-        let module = module.with_initial_filing(self.filing.clone(), self.filing_action.clone());
-        let module = match &self.charter_transfer_action {
+        let module =
+            module.with_initial_filing(self.state.filing.clone(), self.state.filing_action.clone());
+        let module = match &self.state.charter_transfer_action {
             Some(action) => module.with_mind_charter_transfers(action.clone()),
             None => module,
         };
-        let module = match &self.pending_charters {
+        let module = match &self.state.pending_charters {
             Some((_, config)) => module.with_mind_charter_pending(config.clone()),
             None => module,
         };
-        let module = match &self.compatible_update_action {
+        let module = match &self.state.compatible_update_action {
             Some(action) => module.with_compatible_mind_updates(action.clone()),
             None => module,
         };
-        let module = match &self.derived_update_action {
+        let module = match &self.state.derived_update_action {
             Some(action) => module.with_derived_mind_updates(action.clone()),
             None => module,
         };
-        let module = match &self.house_filing_action {
+        let module = match &self.state.house_filing_action {
             Some(action) => module.with_house_initial_filing(action.clone()),
             None => module,
         };
-        let module = match &self.dependent_filing_action {
+        let module = match &self.state.dependent_filing_action {
             Some(action) => module.with_dependent_initial_filing(action.clone()),
             None => module,
         };
-        let module = match &self.purchase_actions {
+        let module = match &self.state.purchase_actions {
             Some(actions) => module.with_original_mind_purchases(actions.clone()),
             None => module,
         };
-        let module = match &self.entitlement_actions {
+        let module = match &self.state.entitlement_actions {
             Some([original, derived]) => {
                 module.with_mind_entitlement_purchases(original.clone(), derived.clone())
             }
             None => module,
         };
-        let module = match &self.house_purchase_actions {
+        let module = match &self.state.house_purchase_actions {
             Some(actions) => module.with_house_mind_purchases(actions.clone()),
             None => module,
         };
-        let module = match &self.two_seat_house_purchase_actions {
+        let module = match &self.state.two_seat_house_purchase_actions {
             Some(actions) => module.with_two_seat_house_pins(actions.clone()),
             None => module,
         };
-        let module = match (&self.house_renewals, &self.house_renewal_actions) {
+        let module = match (
+            &self.state.house_renewals,
+            &self.state.house_renewal_actions,
+        ) {
             (Some(config), Some(actions)) => module.with_house_mind_renewals(
                 config.manifest().clone(),
                 [
@@ -855,18 +891,18 @@ impl MindCommerce {
             ),
             _ => module,
         };
-        let module = match &self.house_renewal_service {
+        let module = match &self.state.house_renewal_service {
             // This private option is produced only by the checked Market/Roll
             // builder. The preceding branch installs those same immutable
             // participants and manifest afresh, with no service yet attached.
             Some(action) => module.with_house_mind_renewal_service(action.clone())?,
             None => module,
         };
-        let module = match &self.paid_resales {
+        let module = match &self.state.paid_resales {
             Some(config) => module.with_paid_mind_resale(config.economy()?),
             None => module,
         };
-        match &self.coverage {
+        match &self.state.coverage {
             Some(coverage) => coverage.configure_economy(module),
             None => Ok(module),
         }
@@ -876,23 +912,23 @@ impl MindCommerce {
     /// writer binding is checked at final definition freeze, so the existing
     /// Market-before-Roll order remains intact.
     pub fn configure_market(&self, module: MarketModule) -> MarketModule {
-        let module = match &self.purchases {
+        let module = match &self.state.purchases {
             Some(config) => module.with_original_mind_purchases(config.clone()),
             None => module,
         };
-        let module = match &self.entitlements {
+        let module = match &self.state.entitlements {
             Some(config) => module.with_mind_entitlements(config.clone()),
             None => module,
         };
-        let module = match &self.house_purchases {
+        let module = match &self.state.house_purchases {
             Some(config) => module.with_house_minds(config.clone()),
             None => module,
         };
-        let module = match &self.house_renewals {
+        let module = match &self.state.house_renewals {
             Some(config) => module.with_house_mind_renewals(config.clone()),
             None => module,
         };
-        match &self.paid_resales {
+        match &self.state.paid_resales {
             Some(config) => module.with_paid_mind_resale(config.clone()),
             None => module,
         }

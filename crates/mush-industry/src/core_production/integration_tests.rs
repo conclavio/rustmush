@@ -237,7 +237,7 @@ impl Composition {
     }
 }
 struct FactoryRig {
-    r: Rig,
+    r: Box<Rig>,
     composition: Composition,
     buyer: ObjId,
     payer: AccountId,
@@ -245,13 +245,14 @@ struct FactoryRig {
     reverse: bool,
 }
 impl FactoryRig {
-    fn new(reverse: bool) -> Result<Self> {
+    fn new(reverse: bool) -> Result<Box<Self>> {
         Self::new_delivery(reverse, false)
     }
-    fn new_delivery(reverse: bool, delivery: bool) -> Result<Self> {
+    fn new_delivery(reverse: bool, delivery: bool) -> Result<Box<Self>> {
         Self::new_options(reverse, delivery, false)
     }
-    fn new_options(reverse: bool, delivery: bool, refits: bool) -> Result<Self> {
+    #[inline(never)]
+    fn new_options(reverse: bool, delivery: bool, refits: bool) -> Result<Box<Self>> {
         let mut r = Rig::new(true)?;
         let operator = r.policy.agents[1].actor;
         let certificate = r.issue(operator, 2, DieClass::I)?;
@@ -387,14 +388,14 @@ impl FactoryRig {
             recipe,
             refits: refits.then(refit_rules::Rules::new).transpose()?,
         };
-        let mut f = Self {
+        let mut f = Box::new(Self {
             r,
             composition,
             buyer,
             payer,
             certificate,
             reverse,
-        };
+        });
         f.restart(CoreOriginMode::Initialize)
             .map_err(|e| format!("factory fixture initialization boot: {e}"))?;
         f.commit(0, GOD, 10, json!({}))
@@ -430,11 +431,13 @@ impl FactoryRig {
         self.take_install()?;
         Ok(())
     }
-    fn runtime(&self) -> Result<factory::runtime::Runtime> {
+    #[inline(never)]
+    fn runtime(&self) -> Result<Box<factory::runtime::Runtime>> {
         self.r
             .runtime
             .integration
             .clone()
+            .map(Box::new)
             .ok_or_else(|| "factory runtime".into())
     }
     fn cold(
@@ -758,6 +761,38 @@ fn genuine_supplier_buyer_order_runs_native_schedule_and_consumes_exact_certifie
         let before = f.balance(f.payer)?;
         let id = f.accepted()?;
         let accepted = f.order(id)?;
+        // Actual supplier consent keeps the historical flat wire despite heap storage.
+        let offer =
+            f.r.w
+                .engine()
+                .action_state()
+                .get(&f.runtime()?.families.offers, &token(20))?
+                .ok_or("actual supplier offer")?;
+        let input_wire = json!({
+            "kind": "supplier_stock",
+            "certificate": accepted.intent.certificate,
+            "lot": accepted.intent.lot,
+        });
+        assert_eq!(serde_json::to_value(&offer.input)?, input_wire);
+        fn decode_like<T: serde::de::DeserializeOwned>(
+            value: Value,
+            _: &T,
+        ) -> serde_json::Result<T> {
+            serde_json::from_value(value)
+        }
+        let decoded = decode_like(input_wire.clone(), &offer.input)?;
+        assert_eq!(decoded, offer.input);
+        let mut unknown = input_wire;
+        unknown
+            .as_object_mut()
+            .ok_or("supplier input wire")?
+            .insert("unregistered".into(), json!(true));
+        assert!(decode_like(unknown, &offer.input).is_err());
+        let requester = decode_like(json!({"kind":"requester_supplied"}), &offer.input)?;
+        assert_eq!(
+            serde_json::to_value(requester)?,
+            json!({"kind":"requester_supplied"})
+        );
         assert_eq!(
             accepted.intent.expires_at.at - accepted.intent.accepted_at.at,
             7 * 86400
@@ -1252,110 +1287,128 @@ fn projected_class_values_enter_actual_origin_and_factory_providers() -> Result 
 #[path = "integration_delivery_tests.rs"]
 mod delivery_tests;
 
+#[inline(never)]
+fn apply_scheduler_ingress(f: &mut FactoryRig, actual: &ActionInvocation) -> Result {
+    let p = f.prepare_inv(4, actual, 24)?;
+    f.stage_inv(4, actual, 24, p)?;
+    f.take_install()?;
+    Ok(())
+}
+
+#[inline(never)]
+fn scheduler_ingress_case(wrong_request: bool) -> Result {
+    let mut f = FactoryRig::new(false)?;
+    let id = f.accepted()?;
+    let actual = f.advance_invocation(id)?;
+    let before = f.order(id)?;
+    let balance = f.balance(f.payer)?;
+    let revision = f.r.w.engine().action_state().revision();
+    let forged = if wrong_request {
+        ActionInvocation::new(ActionInvocationDraft {
+            request: RequestUid::from_bytes([99; 16]),
+            principal: actual.principal().clone(),
+            actor: actual.actor(),
+            offered_action: ActionOfferId(CanonicalHash::from_bytes([2; 32])),
+            subject: PerceivedRef::SelfActor,
+            targets: vec![],
+            parameters: actual.parameters().clone(),
+            idempotency: actual.idempotency().clone(),
+        })?
+    } else {
+        invocation(f.buyer, 24, actual.parameters().clone())
+    };
+    assert!(
+        f.prepare_inv(4, &forged, 24).is_err(),
+        "wrong scheduler ingress accepted"
+    );
+    assert!(
+        f.order(id)? == before,
+        "refused scheduler changed the order"
+    );
+    assert_eq!(f.balance(f.payer)?, balance);
+    assert_eq!(f.r.w.engine().action_state().revision(), revision);
+    // Exact K-shaped ingress alone is insufficient: only the scheduler
+    // entry point seeds the authoritative cursor into this transaction.
+    let action = f.phase_action(4)?;
+    assert!(
+        f.r.w
+            .engine_mut()
+            .prepare_registered_composed_authoritative_action(&action, &actual, token(24))
+            .is_err()
+    );
+    assert_eq!(f.r.w.engine().action_state().revision(), revision);
+    assert!(f.order(id)? == before);
+    // The identical actual K ingress remains admissible after refusal.
+    apply_scheduler_ingress(&mut f, &actual)?;
+    assert_ne!(f.order(id)?.progress, before.progress);
+    Ok(())
+}
+
+#[inline(never)]
+fn scheduler_fence_case(dependency: &str, phase: i32) -> Result {
+    let mut f = FactoryRig::new(false)?;
+    let id = f.accepted()?;
+    let inv = f.advance_invocation(id)?;
+    let before = f.order(id)?;
+    let balance = f.balance(f.payer)?;
+    let revision = f.r.w.engine().action_state().revision();
+    let disk = f.r.boot.clone();
+    let p = if phase > 0 {
+        Some(f.prepare_inv(4, &inv, 24)?)
+    } else {
+        None
+    };
+    let p = if phase == 2 {
+        f.stage_inv(4, &inv, 24, p.ok_or("scheduled prepared image")?)?;
+        None
+    } else {
+        p
+    };
+    f.r.w.engine().registry.freeze_mechanics_owner(
+        &OwnerId::new(dependency)?,
+        mush_core::mechanics::IncidentId(1),
+        mush_core::mechanics::RecoveryReason::IntegrityViolation {
+            code: super::id("factory_schedule_fixture")?,
+        },
+    )?;
+    match phase {
+        0 => assert!(
+            f.prepare_inv(4, &inv, 24).is_err(),
+            "frozen dependency prepared"
+        ),
+        1 => assert!(
+            f.stage_inv(4, &inv, 24, p.ok_or("scheduled prepared image")?)
+                .is_err(),
+            "frozen dependency staged"
+        ),
+        _ => assert!(
+            f.r.w.engine_mut().take_staged_action().is_err(),
+            "frozen dependency reached custody"
+        ),
+    }
+    assert_eq!(f.r.w.engine().action_state().revision(), revision);
+    assert_eq!(f.balance(f.payer)?, balance);
+    // Owner reads correctly refuse a frozen owner; the durable image is
+    // compared directly without granting a post-freeze read capability.
+    assert!(
+        factory_boot_image(&f.r.boot) == factory_boot_image(&disk),
+        "refusal changed persistence"
+    );
+    assert!(
+        before.terminal.is_none(),
+        "fixture must retain unfinished work"
+    );
+    Ok(())
+}
+
 #[test]
 fn scheduled_progress_preserves_actual_ingress_and_all_dependency_custody_fences() -> Result {
     for wrong_request in [false, true] {
-        let mut f = FactoryRig::new(false)?;
-        let id = f.accepted()?;
-        let actual = f.advance_invocation(id)?;
-        let before = f.order(id)?;
-        let balance = f.balance(f.payer)?;
-        let revision = f.r.w.engine().action_state().revision();
-        let forged = if wrong_request {
-            ActionInvocation::new(ActionInvocationDraft {
-                request: RequestUid::from_bytes([99; 16]),
-                principal: actual.principal().clone(),
-                actor: actual.actor(),
-                offered_action: ActionOfferId(CanonicalHash::from_bytes([2; 32])),
-                subject: PerceivedRef::SelfActor,
-                targets: vec![],
-                parameters: actual.parameters().clone(),
-                idempotency: actual.idempotency().clone(),
-            })?
-        } else {
-            invocation(f.buyer, 24, actual.parameters().clone())
-        };
-        assert!(
-            f.prepare_inv(4, &forged, 24).is_err(),
-            "wrong scheduler ingress accepted"
-        );
-        assert!(
-            f.order(id)? == before,
-            "refused scheduler changed the order"
-        );
-        assert_eq!(f.balance(f.payer)?, balance);
-        assert_eq!(f.r.w.engine().action_state().revision(), revision);
-        // Exact K-shaped ingress alone is insufficient: only the scheduler
-        // entry point seeds the authoritative cursor into this transaction.
-        let action = f.phase_action(4)?;
-        assert!(
-            f.r.w
-                .engine_mut()
-                .prepare_registered_composed_authoritative_action(&action, &actual, token(24))
-                .is_err()
-        );
-        assert_eq!(f.r.w.engine().action_state().revision(), revision);
-        assert!(f.order(id)? == before);
-        // The identical actual K ingress remains admissible after refusal.
-        let p = f.prepare_inv(4, &actual, 24)?;
-        f.stage_inv(4, &actual, 24, p)?;
-        f.take_install()?;
-        assert_ne!(f.order(id)?.progress, before.progress);
+        scheduler_ingress_case(wrong_request)?;
     }
     for dependency in ["industry", "org", "economy", "inventory", "tacsim"] {
         for phase in 0..3 {
-            let mut f = FactoryRig::new(false)?;
-            let id = f.accepted()?;
-            let inv = f.advance_invocation(id)?;
-            let before = f.order(id)?;
-            let balance = f.balance(f.payer)?;
-            let revision = f.r.w.engine().action_state().revision();
-            let disk = f.r.boot.clone();
-            let p = if phase > 0 {
-                Some(f.prepare_inv(4, &inv, 24)?)
-            } else {
-                None
-            };
-            let p = if phase == 2 {
-                f.stage_inv(4, &inv, 24, p.ok_or("scheduled prepared image")?)?;
-                None
-            } else {
-                p
-            };
-            f.r.w.engine().registry.freeze_mechanics_owner(
-                &OwnerId::new(dependency)?,
-                mush_core::mechanics::IncidentId(1),
-                mush_core::mechanics::RecoveryReason::IntegrityViolation {
-                    code: super::id("factory_schedule_fixture")?,
-                },
-            )?;
-            match phase {
-                0 => assert!(
-                    f.prepare_inv(4, &inv, 24).is_err(),
-                    "frozen dependency prepared"
-                ),
-                1 => assert!(
-                    f.stage_inv(4, &inv, 24, p.ok_or("scheduled prepared image")?)
-                        .is_err(),
-                    "frozen dependency staged"
-                ),
-                _ => assert!(
-                    f.r.w.engine_mut().take_staged_action().is_err(),
-                    "frozen dependency reached custody"
-                ),
-            }
-            assert_eq!(f.r.w.engine().action_state().revision(), revision);
-            assert_eq!(f.balance(f.payer)?, balance);
-            // Owner reads correctly refuse a frozen owner; the durable image is
-            // compared directly without granting a post-freeze read capability.
-            assert!(
-                factory_boot_image(&f.r.boot) == factory_boot_image(&disk),
-                "refusal changed persistence"
-            );
-            assert!(
-                before.terminal.is_none(),
-                "fixture must retain unfinished work"
-            );
+            scheduler_fence_case(dependency, phase)?;
         }
     }
     Ok(())

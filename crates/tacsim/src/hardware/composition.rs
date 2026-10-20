@@ -64,6 +64,11 @@ impl Registration {
 /// constructor creates this object or supplies default deployment identities.
 #[derive(Clone)]
 pub struct GovernedHardware {
+    state: Box<GovernedHardwareState>,
+}
+
+#[derive(Clone)]
+struct GovernedHardwareState {
     publication: PublishedHardware,
     registration: Registration,
     origin: CoreOriginConfig,
@@ -86,6 +91,10 @@ pub struct HardwareOwners {
 /// fail; applying it to the ordinary owner modules is infallible and makes no
 /// state. This keeps the ordinary roster's API and owner order unchanged.
 pub(crate) struct RosterPolicy {
+    state: Box<RosterPolicyState>,
+}
+
+struct RosterPolicyState {
     hardware: GovernedHardware,
     input: mush_inventory::core_input::CoreInputBinding,
     economy: mush_economy::core_integration::CoreIntegrationConfig,
@@ -94,60 +103,79 @@ pub(crate) struct RosterPolicy {
 }
 impl RosterPolicy {
     pub(crate) fn inventory(&self, module: InventoryModule) -> InventoryModule {
-        module.with_core_inputs(self.input.clone())
+        module.with_core_inputs(self.state.input.clone())
     }
     pub(crate) fn industry(&self, module: IndustryModule) -> IndustryModule {
-        self.hardware.configure_industry(module)
+        self.state.hardware.configure_industry(module)
     }
     pub(crate) fn economy(&self, module: EconomyModule) -> EconomyModule {
         module
-            .with_core_integration(self.economy.clone())
-            .with_core_refit(self.fitting.clone())
+            .with_core_integration(self.state.economy.clone())
+            .with_core_refit(self.state.fitting.clone())
     }
     pub(crate) fn tactics(&self) -> TacticsModule {
-        TacticsModule::with_catalog(self.hardware.registration.family.catalog().units.clone())
-            .with_component_replacement(
-                self.hardware.refit.replacement_policy(),
-                self.install.clone(),
-                self.hardware.refit.component().clone(),
-                self.hardware
-                    .refit
-                    .payment()
-                    .fitted_units
-                    .iter()
-                    .cloned()
-                    .collect(),
-            )
+        TacticsModule::with_catalog(
+            self.state
+                .hardware
+                .state
+                .registration
+                .family
+                .catalog()
+                .units
+                .clone(),
+        )
+        .with_component_replacement(
+            self.state.hardware.state.refit.replacement_policy(),
+            self.state.install.clone(),
+            self.state.hardware.state.refit.component().clone(),
+            self.state
+                .hardware
+                .state
+                .refit
+                .payment()
+                .fitted_units
+                .iter()
+                .cloned()
+                .collect(),
+        )
     }
 }
 impl GovernedHardware {
     pub(crate) fn roster_policy(&self) -> Result<RosterPolicy, ModError> {
         Ok(RosterPolicy {
-            hardware: self.clone(),
-            input: mush_inventory::core_input::CoreInputBinding::new(
-                self.factory
-                    .action("accept_core_integration")
-                    .map_err(bad)?,
-                self.factory
-                    .action("complete_core_integration")
-                    .map_err(bad)?,
-                self.factory
-                    .action("cancel_core_integration")
-                    .map_err(bad)?,
-            )
-            .map_err(bad)?,
-            economy: self
-                .factory
-                .economy_config(self.origin.policy())
+            state: Box::new(RosterPolicyState {
+                hardware: self.clone(),
+                input: mush_inventory::core_input::CoreInputBinding::new(
+                    self.state
+                        .factory
+                        .action("accept_core_integration")
+                        .map_err(bad)?,
+                    self.state
+                        .factory
+                        .action("complete_core_integration")
+                        .map_err(bad)?,
+                    self.state
+                        .factory
+                        .action("cancel_core_integration")
+                        .map_err(bad)?,
+                )
                 .map_err(bad)?,
-            fitting: self
-                .factory
-                .economy_refit_config(self.origin.policy())
-                .map_err(bad)?,
-            install: self
-                .refit
-                .action(mush_economy::core_refit::INSTALL_ACTION)
-                .map_err(bad)?,
+                economy: self
+                    .state
+                    .factory
+                    .economy_config(self.state.origin.policy())
+                    .map_err(bad)?,
+                fitting: self
+                    .state
+                    .factory
+                    .economy_refit_config(self.state.origin.policy())
+                    .map_err(bad)?,
+                install: self
+                    .state
+                    .refit
+                    .action(mush_economy::core_refit::INSTALL_ACTION)
+                    .map_err(bad)?,
+            }),
         })
     }
     pub fn prepare(
@@ -278,25 +306,27 @@ impl GovernedHardware {
             .with_refits(refit.clone())
             .map_err(bad)?;
         Ok(Self {
-            publication,
-            registration: Registration { family, content },
-            origin,
-            factory,
-            refit,
+            state: Box::new(GovernedHardwareState {
+                publication,
+                registration: Registration { family, content },
+                origin,
+                factory,
+                refit,
+            }),
         })
     }
 
     pub fn origin_policy(&self) -> &OriginPolicy {
-        self.origin.policy()
+        self.state.origin.policy()
     }
     pub fn payment_policy(&self) -> &CorePaymentPolicy {
-        self.factory.payment()
+        self.state.factory.payment()
     }
     pub fn fitting_policy(&self) -> &RefitPaymentPolicy {
-        self.refit.payment()
+        self.state.refit.payment()
     }
     pub fn family(&self) -> &GovernedLineCores {
-        &self.registration.family
+        &self.state.registration.family
     }
 
     /// Uses the normal acknowledged pack-load route. Preparing composition alone
@@ -312,25 +342,25 @@ impl GovernedHardware {
                 .map_err(bad)?,
         )
         .map_err(bad)?;
-        if family.catalog().descriptors != self.registration.family.catalog().descriptors {
+        if family.catalog().descriptors != self.state.registration.family.catalog().descriptors {
             return Err(bad("hardware composition catalogue changed"));
         }
         let packs = layer.loaded.as_mut().map_err(|e| bad(e.as_str()))?;
-        let manifest = self.publication.pack().manifest();
+        let manifest = self.state.publication.pack().manifest();
         match packs.iter().find(|p| {
             p.pack.manifest().id() == manifest.id()
                 && p.pack.manifest().version() == manifest.version()
         }) {
-            Some(p) if &p.pack != self.publication.pack() => {
+            Some(p) if &p.pack != self.state.publication.pack() => {
                 return Err(bad("shipped hardware publication changed"));
             }
             Some(_) => {}
             None => packs.push(LoadedPack {
                 source: "shipped governed hardware".into(),
-                pack: self.publication.pack().clone(),
+                pack: self.state.publication.pack().clone(),
             }),
         }
-        layer.governed_hardware = Some(self.registration.clone());
+        layer.governed_hardware = Some(Box::new(self.state.registration.clone()));
         Ok(layer)
     }
     pub fn configure_inventory(
@@ -339,13 +369,16 @@ impl GovernedHardware {
     ) -> Result<InventoryModule, ModError> {
         Ok(module.with_core_inputs(
             mush_inventory::core_input::CoreInputBinding::new(
-                self.factory
+                self.state
+                    .factory
                     .action("accept_core_integration")
                     .map_err(bad)?,
-                self.factory
+                self.state
+                    .factory
                     .action("complete_core_integration")
                     .map_err(bad)?,
-                self.factory
+                self.state
+                    .factory
                     .action("cancel_core_integration")
                     .map_err(bad)?,
             )
@@ -354,34 +387,43 @@ impl GovernedHardware {
     }
     pub fn configure_industry(&self, module: IndustryModule) -> IndustryModule {
         module
-            .with_core_origins(self.origin.clone())
-            .with_core_factory(self.factory.clone())
+            .with_core_origins(self.state.origin.clone())
+            .with_core_factory(self.state.factory.clone())
     }
     /// Preserves the caller's already configured initial filing owner and all
     /// other native profiles. Registration requires the exact captured owner.
     pub fn configure_economy(&self, module: EconomyModule) -> Result<EconomyModule, ModError> {
         Ok(module
             .with_core_integration(
-                self.factory
-                    .economy_config(self.origin.policy())
+                self.state
+                    .factory
+                    .economy_config(self.state.origin.policy())
                     .map_err(bad)?,
             )
             .with_core_refit(
-                self.factory
-                    .economy_refit_config(self.origin.policy())
+                self.state
+                    .factory
+                    .economy_refit_config(self.state.origin.policy())
                     .map_err(bad)?,
             ))
     }
     pub fn tactics(&self) -> Result<TacticsModule, ModError> {
         Ok(
-            TacticsModule::with_catalog(self.registration.family.catalog().units.clone())
+            TacticsModule::with_catalog(self.state.registration.family.catalog().units.clone())
                 .with_component_replacement(
-                    self.refit.replacement_policy(),
-                    self.refit
+                    self.state.refit.replacement_policy(),
+                    self.state
+                        .refit
                         .action(mush_economy::core_refit::INSTALL_ACTION)
                         .map_err(bad)?,
-                    self.refit.component().clone(),
-                    self.refit.payment().fitted_units.iter().cloned().collect(),
+                    self.state.refit.component().clone(),
+                    self.state
+                        .refit
+                        .payment()
+                        .fitted_units
+                        .iter()
+                        .cloned()
+                        .collect(),
                 ),
         )
     }

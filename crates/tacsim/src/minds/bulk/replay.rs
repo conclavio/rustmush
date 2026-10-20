@@ -164,7 +164,7 @@ struct ReplayMachine {
     unit: ObjId,
     memory_allowed: bool,
     diff: Option<super::experiment::Diff>,
-    branch: Option<super::branch::Branch>,
+    branch: Option<Box<super::branch::Branch>>,
     goal: Option<i64>,
     rewind: bool,
     picture: Arc<Picture>,
@@ -298,7 +298,10 @@ impl ReplayMachine {
         self.picture = Arc::new(picture);
         Ok(())
     }
-    fn replace_branch(&mut self, next: Option<super::branch::Branch>) -> Result<(), BulkError> {
+    fn replace_branch(
+        &mut self,
+        next: Option<Box<super::branch::Branch>>,
+    ) -> Result<(), BulkError> {
         let old = std::mem::replace(&mut self.branch, next);
         if let Err(error) = self.refresh() {
             self.branch = old;

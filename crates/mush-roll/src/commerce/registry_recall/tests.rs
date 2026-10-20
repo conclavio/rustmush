@@ -129,7 +129,7 @@ fn boot(e: &mut Engine, data: HashMap<smol_str::SmolStr, ModuleBootData>) -> Res
     Ok(())
 }
 struct Rig {
-    engine: Engine,
+    engine: Box<Engine>,
     policy: RegistryRecallPolicy,
     ready: Readiness,
     pending: Pending,
@@ -139,7 +139,7 @@ struct Rig {
 impl Rig {
     fn new() -> Result<Self> {
         let pending = Pending::default();
-        let mut seed = Engine::with_modules(
+        let mut seed = boxed_test_engine(
             World::new_minimal(),
             Registry::new(),
             vec![Box::new(TestOrg {
@@ -194,7 +194,7 @@ impl Rig {
         }
         let mut world = World::from_objects(seed.world.iter().cloned(), seed.world.next_id())?;
         world.set_now(seed.world.now());
-        let mut engine = Engine::with_modules(
+        let mut engine = boxed_test_engine(
             world,
             Registry::new(),
             vec![
@@ -548,4 +548,13 @@ fn registry_recall_policy_is_closed_bounded_and_does_not_invent_identifier_minim
         .insert("god_override".into(), json!(true));
     assert!(serde_json::from_value::<RegistryRecallPolicy>(raw).is_err());
     Ok(())
+}
+
+#[inline(never)]
+fn boxed_test_engine(
+    world: mush_core::World,
+    registry: mush_core::Registry,
+    modules: Vec<Box<dyn mush_core::GameModule>>,
+) -> std::result::Result<Box<mush_core::Engine>, mush_core::ModError> {
+    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
 }

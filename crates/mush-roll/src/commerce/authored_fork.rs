@@ -171,13 +171,13 @@ impl<S: OwnerReadService<Request = ForkMaterialRequest, Output = ForkMaterial>> 
         let selection = ctx
             .prepare_owner(
                 &self.roots,
-                RootRequest::AuthoredFork(AuthoredFork {
+                RootRequest::AuthoredFork(Box::new(AuthoredFork {
                     action: self.action.clone(),
                     commit,
                     grant,
                     name: request.name,
                     material,
-                }),
+                })),
             )
             .map_err(invalid)?
             .authored_fork()?;

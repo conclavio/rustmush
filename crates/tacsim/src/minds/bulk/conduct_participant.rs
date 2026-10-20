@@ -247,9 +247,7 @@ impl OwnerParticipant for QuotaParticipant {
                         current_account(context, binding.account)?;
                         state.prepare_grant(binding.account, binding.run, now, *maximum_ms)
                     }
-                    TicketKind::Settle { receipt, .. } => {
-                        state.prepare_finish(receipt.clone(), now)
-                    }
+                    TicketKind::Settle(data) => state.prepare_finish(data.receipt.clone(), now),
                     TicketKind::Cancel(binding) => {
                         state.prepare_cancel(binding.account, binding.character, binding.run, now)
                     }
@@ -521,15 +519,13 @@ impl OwnerParticipant for ArtifactParticipant {
                     None,
                 )
             }
-            (
-                TicketKind::Settle {
+            (TicketKind::Settle(data), Transition::Settle) => {
+                let super::conduct_tickets::SettlementData {
                     binding,
                     artifact,
                     measurement,
                     ..
-                },
-                Transition::Settle,
-            ) => {
+                } = data.as_ref();
                 if binding.job != quota.job() || binding.run.0 != quota.admission().run() {
                     return Err(ParticipantError::Authority);
                 }

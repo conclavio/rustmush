@@ -5,14 +5,14 @@ fn configured() -> Result<MindCommerce, Box<dyn std::error::Error>> {
         .with_ic_minds(vec![base()?])?
         .with_hull_coverage(mush_core::GOD, vec![])?)
 }
-fn actual(c: &MindCommerce, omit: Option<&str>) -> Result<Engine, ModError> {
+fn actual(c: &MindCommerce, omit: Option<&str>) -> Result<Box<Engine>, ModError> {
     actual_on(c, omit, layer())
 }
 fn actual_on(
     c: &MindCommerce,
     omit: Option<&str>,
     layer: TacsimRuleset,
-) -> Result<Engine, ModError> {
+) -> Result<Box<Engine>, ModError> {
     let (tactics, sim) = c.configure_ic_physical(
         mush_tactics::TacticsModule::new(),
         mush_sim::SimulationModule::new(),
@@ -37,7 +37,7 @@ fn actual_on(
             c.configure_roll(RollModule::with_writers([crate::NS])),
         ));
     }
-    Engine::with_modules(World::new_minimal(), Registry::new(), modules)
+    compose_boxed(World::new_minimal(), Registry::new(), modules)
 }
 #[test]
 fn coverage_requires_explicit_active_ic_and_cannot_enable_twice() -> TestResult {
@@ -74,7 +74,7 @@ fn coverage_registers_publication_metadata_and_exact_two_monetary_owners() -> Te
     }
     assert!(has(&e, "tacsim", "owner_participant", "coverage_metadata"));
     assert!(has(&e, "roll", "owner_read", "hull_coverage_open"));
-    let config = c.coverage.as_ref().ok_or("configured coverage")?;
+    let config = c.state.coverage.as_ref().ok_or("configured coverage")?;
     let actual = config.actions()?;
     let defs = e.registry.definitions().ok_or("definitions")?;
     for r in actual {

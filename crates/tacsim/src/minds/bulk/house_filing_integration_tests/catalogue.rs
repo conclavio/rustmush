@@ -73,6 +73,7 @@ impl GameModule for Market {
             }),
         )?;
         // Test admin adapters call the actual Org service and persist its audit.
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.command(
             CommandSpec {
                 name: "@house-policy-test".into(),

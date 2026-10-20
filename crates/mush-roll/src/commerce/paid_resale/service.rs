@@ -272,7 +272,7 @@ fn discover(
         let AcceptedTerm::Paid { term } = &op.term else {
             return Err(PublicationError::Mismatch);
         };
-        if term != row.binding().term() || op.charter != row.binding().charter() {
+        if term.as_ref() != row.binding().term() || op.charter != row.binding().charter() {
             return Err(PublicationError::Mismatch);
         }
         w.module_state::<crate::RollStore>()

@@ -7,9 +7,25 @@ use std::{future::Future, mem::size_of, pin::Pin};
 
 // Bound construction temporaries as well as the retained future. This is a
 // fixture bound, not a source/worker execution limit or a larger thread stack.
-const MAX_PHASE_BYTES: usize = 256 * 1024;
+// Match clippy.toml's future-size-threshold even for explicitly boxed phases.
+const MAX_PHASE_BYTES: usize = 16 * 1024;
 
 pub(super) fn story_phase<F: Future>(
+    phase: &'static str,
+    make: impl FnOnce() -> F,
+) -> TestResult<Pin<Box<F>>> {
+    // Check every instantiated phase while building the real test binary,
+    // including phases an earlier failing assertion would never reach.
+    const {
+        assert!(
+            size_of::<F>() <= MAX_PHASE_BYTES,
+            "story future exceeds the configured 16 KiB bound"
+        );
+    }
+    checked_story_phase(phase, make)
+}
+
+fn checked_story_phase<F: Future>(
     phase: &'static str,
     make: impl FnOnce() -> F,
 ) -> TestResult<Pin<Box<F>>> {
@@ -64,7 +80,7 @@ mod tests {
     #[test]
     fn oversized_story_future_is_refused_before_factory_entry() {
         let constructed = Cell::new(false);
-        let result = story_phase("test.oversized", || -> Oversized {
+        let result = checked_story_phase("test.oversized", || -> Oversized {
             constructed.set(true);
             panic!("oversized factory must not be entered")
         });

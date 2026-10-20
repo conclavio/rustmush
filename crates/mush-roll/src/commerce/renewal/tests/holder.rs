@@ -53,7 +53,7 @@ fn holder_binding_preserves_old_bytes_and_requires_exact_new_attempt_evidence() 
     let wire = serde_json::to_value(&row.binding)?;
     assert_eq!(
         serde_json::from_value::<RenewalBindingV1>(wire.clone())?,
-        row.binding
+        *row.binding
     );
     for bad in [
         serde_json::Value::Null,
@@ -81,8 +81,8 @@ fn holder_binding_preserves_old_bytes_and_requires_exact_new_attempt_evidence() 
     Ok(())
 }
 
-#[test]
-fn transferred_buyer_automatic_then_own_retry_preserves_holder_after_grant() -> TestResult {
+#[inline(never)]
+fn granted_holder_cases() -> TestResult<Box<GrantedHolderCases>> {
     let b = birth()?;
     let old = closed(&draft(&b, 90, 20, RenewalAttemptV1::Automatic {})?)?;
     let automatic = holder_draft(&b, 70, 40, 2, None)?;
@@ -121,6 +121,32 @@ fn transferred_buyer_automatic_then_own_retry_preserves_holder_after_grant() -> 
         &terms,
         &economics,
     )?;
+    Ok(Box::new(GrantedHolderCases {
+        b,
+        old,
+        automatic,
+        pointer,
+        buyer_closed,
+    }))
+}
+
+struct GrantedHolderCases {
+    b: Birth,
+    old: RenewalOperationV1,
+    automatic: RenewalOperationV1,
+    pointer: crate::commerce::paid::PersonalPaidLicence,
+    buyer_closed: RenewalOperationV1,
+}
+
+#[test]
+fn transferred_buyer_automatic_then_own_retry_preserves_holder_after_grant() -> TestResult {
+    let GrantedHolderCases {
+        b,
+        old,
+        automatic,
+        pointer,
+        buyer_closed,
+    } = *granted_holder_cases()?;
     let seller_retry = draft(
         &b,
         11,

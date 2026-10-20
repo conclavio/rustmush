@@ -285,6 +285,19 @@ impl Executor {
                             Err(_) => return,
                         };
                         let Ok(mut task) = task else { return };
+                        #[cfg(test)]
+                        let timing = task
+                            .ready
+                            .registry_binding
+                            .map(|binding| (binding.job, task.lease.diagnostic_sequence()));
+                        #[cfg(test)]
+                        if let Some((job, sequence)) = timing {
+                            super::registry_timing::record(
+                                job,
+                                sequence,
+                                super::registry_timing::Point::WorkerStart,
+                            );
+                        }
                         let maximum = task.lease.maximum_sim_ms();
                         let worker_day = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -389,6 +402,14 @@ impl Executor {
                             receipt,
                             ready: keep.then_some(task.ready),
                         };
+                        #[cfg(test)]
+                        if let Some((job, sequence)) = timing {
+                            super::registry_timing::record(
+                                job,
+                                sequence,
+                                super::registry_timing::Point::WorkerEnd,
+                            );
+                        }
                         if done.send(completion).is_err() {
                             return;
                         }

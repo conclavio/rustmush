@@ -212,7 +212,8 @@ impl GameModule for Foreign {
         )
     }
 }
-fn engine(class: CommandCompatibility) -> TestResult<(Engine, Arc<Shared>)> {
+#[inline(never)]
+fn engine(class: CommandCompatibility) -> TestResult<(Box<Engine>, Arc<Shared>)> {
     let mut world = World::new_minimal();
     assert_eq!(
         world.create(crate::ObjKind::Player, "Subject", GOD, Some(crate::LIMBO))?,
@@ -232,7 +233,7 @@ fn engine(class: CommandCompatibility) -> TestResult<(Engine, Arc<Shared>)> {
         ],
     )?;
     attach(&mut engine, CONN, ACTOR);
-    Ok((engine, shared))
+    Ok((Box::new(engine), shared))
 }
 fn attach(engine: &mut Engine, conn: ConnId, actor: ObjId) {
     engine.step(

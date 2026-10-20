@@ -142,7 +142,7 @@ impl EntitlementFixture {
         &self,
         funding: &FundingOutput,
         outcome: PurchaseOutcome,
-    ) -> Result<terminal::TerminalPreparation, Box<dyn std::error::Error>> {
+    ) -> Result<Box<terminal::TerminalPreparation>, Box<dyn std::error::Error>> {
         let action = action(
             self.purchase.protocol,
             if outcome == PurchaseOutcome::Granted {

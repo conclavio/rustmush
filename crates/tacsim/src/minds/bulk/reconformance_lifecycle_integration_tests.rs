@@ -564,5 +564,8 @@ pub(super) fn exercise(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()?
-        .block_on(Box::pin(scenario(f, saved, &expensive, &expensive_saved)))
+        .block_on(super::fork_tests::boxed_story_phase(
+            "reconformance.scenario",
+            || scenario(f, saved, &expensive, &expensive_saved),
+        )?)
 }

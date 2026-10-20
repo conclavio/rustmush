@@ -251,6 +251,282 @@ fn alter_binding(saved: &mut Durable, owner: ObjId) -> TestResult {
     Ok(())
 }
 
+#[inline(never)]
+async fn exercise_cold_execution(
+    f: &PurchaseFixture,
+    filed: &Durable,
+    saved: &Revision,
+    parent: &PaidTermRecord,
+    rating: &RatingRef,
+    revision: mush_roll::RevisionRef,
+    licence: u64,
+) -> TestResult {
+    // Exact same typed+owner union cold-loads, including complete roots and
+    // historical parent grant/E4 evidence, before any player use.
+    let mut cold = PlayerWorld::boot_dependent(f, filed)?;
+    filed_source(&mut cold, BUYER, licence, true, saved.source())?;
+    filed_source(&mut cold, GOD, licence, false, saved.source())?;
+    select(&mut cold, licence, true)?;
+    cold.start()?;
+    let boarded = cold.board()?;
+    assert_eq!(
+        cold.state()?,
+        crate::match_::MatchState::Running,
+        "{}",
+        PlayerWorld::private_text(&boarded, BUYER)
+    );
+    let id = crate::match_::centre_of(&cold.engine.world)
+        .and_then(|c| c.match_id)
+        .ok_or("actual match")?;
+    let record = cold.record(id)?;
+    let unit = record
+        .teams
+        .iter()
+        .flat_map(|team| team.pilots.iter())
+        .find_map(|(pilot, unit)| (*pilot == BUYER).then_some(*unit))
+        .ok_or("actual unit")?;
+    let seal = record
+        .minds
+        .get(&unit)
+        .ok_or("dependent seal")?
+        .seal
+        .clone();
+    let certificate = seal
+        .requested
+        .origin
+        .certificate()
+        .ok_or("exact filed certificate")?;
+    assert_eq!(certificate.rating_job, rating.job());
+    assert_eq!(certificate.rating_id, rating.id().digest());
+    assert_eq!(certificate.rating_digest, rating.receipt_digest());
+    assert_eq!(
+        (
+            certificate.revision_character,
+            certificate.revision_mind,
+            certificate.revision_number,
+            certificate.revision_digest
+        ),
+        (
+            revision.key.character,
+            revision.key.mind,
+            revision.key.number,
+            revision.digest
+        )
+    );
+    cold.read_sealed_mind(&seal.mind).await?;
+    let deadline = Instant::now() + WAIT;
+    while !cold.snapshots.contains_key(&id) {
+        cold.pump()?;
+        if Instant::now() >= deadline {
+            return Err("dependent opening snapshot".into());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let initial = cold.snapshots.get(&id).ok_or("actual opening snapshot")?;
+    let ground = crate::arena_bridge::ground_of(&cold.engine.world, id).ok_or("actual ground")?;
+    let arena = crate::arena::Snapshot::decode(&initial.document, (*ground).clone())?;
+    let piloted = arena
+        .units
+        .iter()
+        .find(|row| row.id == unit)
+        .ok_or("actual opening unit")?;
+    assert_eq!(piloted.controller, crate::arena::Controller::Pilot);
+    assert_eq!(piloted.seal, seal.seal_ref());
+    cold.engine.world.set_now(parent.window().grace_end().get());
+    filed_source(&mut cold, BUYER, licence, false, saved.source())?;
+    cold.read_sealed_mind(&seal.mind).await?;
+    let before_exit = cold
+        .snapshots
+        .get(&id)
+        .map_or(-1, |snapshot| snapshot.at_ms);
+    cold.say(BUYER, "EXIT")?;
+    let first = cold
+        .progressed_snapshot(id, unit, before_exit, 0, -1)
+        .await?;
+    let (thinks, landed) = crate::minds::bulk::registry_integration_tests::original_purchase::paid_checkout::assert_captured(&cold, id, unit, &seal, &first)?;
+    let second = cold
+        .progressed_snapshot(id, unit, first.at_ms, thinks, landed)
+        .await?;
+    crate::minds::bulk::registry_integration_tests::original_purchase::paid_checkout::assert_captured(&cold, id, unit, &seal, &second)?;
+    cold.tasks.shutdown(Duration::from_secs(5)).await;
+    Ok(())
+}
+
+#[inline(never)]
+async fn exercise_title_and_expiry(
+    f: &PurchaseFixture,
+    filed: &Durable,
+    saved: &Revision,
+    parent: &PaidTermRecord,
+    licence: u64,
+    shell: ObjId,
+) -> TestResult {
+    let mut sale = PlayerWorld::boot_dependent(f, filed)?;
+    let listing = f.config.quotes.listing_action()?;
+    for actor in [GOD, BUYER] {
+        sale.engine.world.move_to(actor, ROOM)?;
+    }
+    // Positive control uses the same real OriginalSaleReader/venue/wallet
+    // composition; the dependent owner cannot widen its original promise.
+    let (prepared, _) = sale
+        .engine
+        .prepare_registered_composed_authoritative_action(
+            &listing,
+            &action_request(
+                FIRST + 10,
+                GOD,
+                "market",
+                json!({"owner_licence":"1","form":"open"}),
+            )?,
+            token(FIRST + 10),
+        )?;
+    let (writes, installation) = prepared.into_parts();
+    apply(&mut sale, &writes, installation)?;
+    let before_sale = disk(&sale);
+    assert!(
+        sale.engine
+            .prepare_registered_composed_authoritative_action(
+                &listing,
+                &action_request(
+                    FIRST + 11,
+                    BUYER,
+                    "market",
+                    json!({"owner_licence":licence.to_string(),"form":"open"})
+                )?,
+                token(FIRST + 11)
+            )
+            .is_err()
+    );
+    assert_eq!(disk(&sale), before_sale);
+    sale.tasks.shutdown(Duration::from_secs(5)).await;
+    let mut titles = PlayerWorld::boot_dependent(f, filed)?;
+    let parent_licence: PersonalPaidLicence = serde_json::from_value(one(rows(
+        &filed.disk,
+        "roll",
+        "roll_mind_personal_paid_licence",
+    ))?)?;
+    let parent_charter = parent_licence.charter().object();
+    titles.transfer_charter(parent_charter, BUYER, 49_000_060)?;
+    assert_eq!(
+        titles
+            .engine
+            .world
+            .module_state::<EconomyStore>()
+            .ok_or("economy")?
+            .snapshot()
+            .asset(parent_charter)
+            .ok_or("parent title")?
+            .title_owner,
+        EconomicOwner::Object(BUYER)
+    );
+    // The issuer's title departure does not revoke the customer's own
+    // qualifying paid grant or its dependent owner's source.
+    filed_source(&mut titles, BUYER, licence, true, saved.source())?;
+    filed_source(
+        &mut titles,
+        BUYER,
+        parent_licence.id().get(),
+        true,
+        mush_roll::source_digest(SOURCE),
+    )?;
+    titles.transfer_charter(shell, GOD, 49_000_070)?;
+    assert_eq!(
+        titles
+            .engine
+            .world
+            .module_state::<EconomyStore>()
+            .ok_or("economy")?
+            .snapshot()
+            .asset(shell)
+            .ok_or("child title")?
+            .title_owner,
+        EconomicOwner::Object(GOD)
+    );
+    filed_source(&mut titles, BUYER, licence, false, saved.source())?;
+    filed_source(&mut titles, GOD, licence, false, saved.source())?;
+    // A transferred original title or staff status cannot inherit the old
+    // owner's parent binding. The paid grant itself remains independent.
+    filed_source(
+        &mut titles,
+        BUYER,
+        parent_licence.id().get(),
+        true,
+        mush_roll::source_digest(SOURCE),
+    )?;
+    let transferred = capture(&titles, &disk(&titles));
+    let mut transferred_cold = PlayerWorld::boot_dependent(f, &transferred)?;
+    filed_source(&mut transferred_cold, GOD, licence, false, saved.source())?;
+    transferred_cold
+        .tasks
+        .shutdown(Duration::from_secs(5))
+        .await;
+    titles.tasks.shutdown(Duration::from_secs(5)).await;
+    // Fresh owner selection refuses at expiry, but historical cold audit
+    // remains valid. No term is extended or a seller parent purchased.
+    let mut expired = PlayerWorld::boot_dependent(f, filed)?;
+    expired
+        .engine
+        .world
+        .set_now(parent.window().grace_end().get());
+    select(&mut expired, licence, false)?;
+    let expired_image = capture(&expired, &disk(&expired));
+    let restarted = PlayerWorld::boot_dependent(f, &expired_image)?;
+    restarted.tasks.shutdown(Duration::from_secs(5)).await;
+    expired.tasks.shutdown(Duration::from_secs(5)).await;
+    Ok(())
+}
+
+#[inline(never)]
+fn inspect_filed_child(
+    world: &PlayerWorld,
+    filed: &Durable,
+    parent: &PaidTermRecord,
+    shell: ObjId,
+) -> TestResult<u64> {
+    let op = operation(filed)?;
+    let value = serde_json::to_value(&op)?;
+    let licence = serde_json::from_value::<mush_roll::commerce::LicenceId>(
+        value.get("licence").ok_or("issued owner licence")?.clone(),
+    )?
+    .get();
+    let owner_term: OwnerTerm = serde_json::from_value(
+        rows(&filed.disk, "roll", "roll_mind_owner_term")
+            .into_iter()
+            .find(|row| row.get("licence") == Some(&json!(licence.to_string())))
+            .ok_or("actual owner term")?,
+    )?;
+    assert_eq!(
+        owner_term.window(),
+        mush_roll::commerce::rights::dependent_owner_window(
+            mush_roll::commerce::WorldIcSeconds::from_stamp(&world.engine.world.world_ic_now())?,
+            TERM_SECONDS,
+            GRACE_SECONDS,
+            parent.window()
+        )?
+    );
+    let child: FiledRecord = serde_json::from_value(
+        rows(&filed.disk, "roll", "roll_mind_filed")
+            .into_iter()
+            .find(|row| row.get("operation") == Some(&json!(token(FIRST + 1))))
+            .ok_or("actual filed child")?,
+    )?;
+    assert!(child.content().parent().is_some());
+    assert_eq!(rows(&filed.disk, "roll", "roll_mind_owner_parent").len(), 1);
+    assert_eq!(
+        world
+            .engine
+            .world
+            .module_state::<EconomyStore>()
+            .ok_or("economy")?
+            .snapshot()
+            .asset(shell)
+            .ok_or("actual child title")?
+            .title_owner,
+        EconomicOwner::Object(BUYER)
+    );
+    Ok(licence)
+}
+
 pub(super) async fn exercise(
     f: &PurchaseFixture,
     certified: &Durable,
@@ -297,109 +573,9 @@ pub(super) async fn exercise(
         apply(&mut world, &writes, install)?;
         assert_eq!(wallet(&world)?, before_cash.checked_sub(Amount::from_minor(100)).ok_or("fee arithmetic")?);
         let filed = capture(&world, &disk(&world));
-        let op = operation(&filed)?;
-        let value = serde_json::to_value(&op)?;
-        let licence = serde_json::from_value::<mush_roll::commerce::LicenceId>(value.get("licence").ok_or("issued owner licence")?.clone())?.get();
-        let owner_term: OwnerTerm = serde_json::from_value(rows(&filed.disk, "roll", "roll_mind_owner_term")
-            .into_iter().find(|row| row.get("licence") == Some(&json!(licence.to_string()))).ok_or("actual owner term")?)?;
-        assert_eq!(owner_term.window(), mush_roll::commerce::rights::dependent_owner_window(
-            mush_roll::commerce::WorldIcSeconds::from_stamp(&world.engine.world.world_ic_now())?, TERM_SECONDS,
-            GRACE_SECONDS, parent.window())?);
-        let child: FiledRecord = serde_json::from_value(rows(&filed.disk, "roll", "roll_mind_filed")
-            .into_iter().find(|row| row.get("operation") == Some(&json!(token(FIRST + 1)))).ok_or("actual filed child")?)?;
-        assert!(child.content().parent().is_some());
-        assert_eq!(rows(&filed.disk, "roll", "roll_mind_owner_parent").len(), 1);
-        assert_eq!(world.engine.world.module_state::<EconomyStore>().ok_or("economy")?.snapshot()
-            .asset(shell).ok_or("actual child title")?.title_owner, EconomicOwner::Object(BUYER));
-        // Exact same typed+owner union cold-loads, including complete roots and
-        // historical parent grant/E4 evidence, before any player use.
-        let mut cold = PlayerWorld::boot_dependent(f, &filed)?;
-        filed_source(&mut cold, BUYER, licence, true, saved.source())?;
-        filed_source(&mut cold, GOD, licence, false, saved.source())?;
-        select(&mut cold, licence, true)?;
-        cold.start()?;
-        let boarded = cold.board()?;
-        assert_eq!(cold.state()?, crate::match_::MatchState::Running,
-            "{}", PlayerWorld::private_text(&boarded, BUYER));
-        let id = crate::match_::centre_of(&cold.engine.world).and_then(|c|c.match_id).ok_or("actual match")?;
-        let record = cold.record(id)?;
-        let unit = record.teams.iter().flat_map(|team|team.pilots.iter())
-            .find_map(|(pilot,unit)|(*pilot==BUYER).then_some(*unit)).ok_or("actual unit")?;
-        let seal = record.minds.get(&unit).ok_or("dependent seal")?.seal.clone();
-        let certificate = seal.requested.origin.certificate().ok_or("exact filed certificate")?;
-        assert_eq!(certificate.rating_job, rating.job());
-        assert_eq!(certificate.rating_id, rating.id().digest());
-        assert_eq!(certificate.rating_digest, rating.receipt_digest());
-        assert_eq!((certificate.revision_character, certificate.revision_mind, certificate.revision_number, certificate.revision_digest),
-            (revision.key.character, revision.key.mind, revision.key.number, revision.digest));
-        cold.read_sealed_mind(&seal.mind).await?;
-        let deadline = Instant::now() + WAIT;
-        while !cold.snapshots.contains_key(&id) {
-            cold.pump()?;
-            if Instant::now() >= deadline { return Err("dependent opening snapshot".into()); }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let initial = cold.snapshots.get(&id).ok_or("actual opening snapshot")?;
-        let ground = crate::arena_bridge::ground_of(&cold.engine.world, id).ok_or("actual ground")?;
-        let arena = crate::arena::Snapshot::decode(&initial.document, (*ground).clone())?;
-        let piloted = arena.units.iter().find(|row| row.id == unit).ok_or("actual opening unit")?;
-        assert_eq!(piloted.controller, crate::arena::Controller::Pilot);
-        assert_eq!(piloted.seal, seal.seal_ref());
-        cold.engine.world.set_now(parent.window().grace_end().get());
-        filed_source(&mut cold, BUYER, licence, false, saved.source())?;
-        cold.read_sealed_mind(&seal.mind).await?;
-        let before_exit = cold.snapshots.get(&id).map_or(-1, |snapshot|snapshot.at_ms);
-        cold.say(BUYER, "EXIT")?;
-        let first = cold.progressed_snapshot(id, unit, before_exit, 0, -1).await?;
-        let (thinks, landed) = crate::minds::bulk::registry_integration_tests::original_purchase::paid_checkout::assert_captured(&cold, id, unit, &seal, &first)?;
-        let second = cold.progressed_snapshot(id, unit, first.at_ms, thinks, landed).await?;
-        crate::minds::bulk::registry_integration_tests::original_purchase::paid_checkout::assert_captured(&cold, id, unit, &seal, &second)?;
-        cold.tasks.shutdown(Duration::from_secs(5)).await;
-        let mut sale = PlayerWorld::boot_dependent(f, &filed)?;
-        let listing = f.config.quotes.listing_action()?;
-        for actor in [GOD, BUYER] { sale.engine.world.move_to(actor, ROOM)?; }
-        // Positive control uses the same real OriginalSaleReader/venue/wallet
-        // composition; the dependent owner cannot widen its original promise.
-        let (prepared, _) = sale.engine.prepare_registered_composed_authoritative_action(&listing,
-            &action_request(FIRST+10, GOD, "market", json!({"owner_licence":"1","form":"open"}))?, token(FIRST+10))?;
-        let (writes, installation) = prepared.into_parts(); apply(&mut sale, &writes, installation)?;
-        let before_sale = disk(&sale);
-        assert!(sale.engine.prepare_registered_composed_authoritative_action(&listing,
-            &action_request(FIRST+11, BUYER, "market", json!({"owner_licence":licence.to_string(),"form":"open"}))?, token(FIRST+11)).is_err());
-        assert_eq!(disk(&sale), before_sale);
-        sale.tasks.shutdown(Duration::from_secs(5)).await;
-        let mut titles = PlayerWorld::boot_dependent(f, &filed)?;
-        let parent_licence: PersonalPaidLicence = serde_json::from_value(one(rows(&filed.disk, "roll", "roll_mind_personal_paid_licence"))?)?;
-        let parent_charter = parent_licence.charter().object();
-        titles.transfer_charter(parent_charter, BUYER, 49_000_060)?;
-        assert_eq!(titles.engine.world.module_state::<EconomyStore>().ok_or("economy")?.snapshot()
-            .asset(parent_charter).ok_or("parent title")?.title_owner, EconomicOwner::Object(BUYER));
-        // The issuer's title departure does not revoke the customer's own
-        // qualifying paid grant or its dependent owner's source.
-        filed_source(&mut titles, BUYER, licence, true, saved.source())?;
-        filed_source(&mut titles, BUYER, parent_licence.id().get(), true, mush_roll::source_digest(SOURCE))?;
-        titles.transfer_charter(shell, GOD, 49_000_070)?;
-        assert_eq!(titles.engine.world.module_state::<EconomyStore>().ok_or("economy")?.snapshot()
-            .asset(shell).ok_or("child title")?.title_owner, EconomicOwner::Object(GOD));
-        filed_source(&mut titles, BUYER, licence, false, saved.source())?;
-        filed_source(&mut titles, GOD, licence, false, saved.source())?;
-        // A transferred original title or staff status cannot inherit the old
-        // owner's parent binding. The paid grant itself remains independent.
-        filed_source(&mut titles, BUYER, parent_licence.id().get(), true, mush_roll::source_digest(SOURCE))?;
-        let transferred = capture(&titles, &disk(&titles));
-        let mut transferred_cold = PlayerWorld::boot_dependent(f, &transferred)?;
-        filed_source(&mut transferred_cold, GOD, licence, false, saved.source())?;
-        transferred_cold.tasks.shutdown(Duration::from_secs(5)).await;
-        titles.tasks.shutdown(Duration::from_secs(5)).await;
-        // Fresh owner selection refuses at expiry, but historical cold audit
-        // remains valid. No term is extended or a seller parent purchased.
-        let mut expired = PlayerWorld::boot_dependent(f, &filed)?;
-        expired.engine.world.set_now(parent.window().grace_end().get());
-        select(&mut expired, licence, false)?;
-        let expired_image = capture(&expired, &disk(&expired));
-        let restarted = PlayerWorld::boot_dependent(f, &expired_image)?;
-        restarted.tasks.shutdown(Duration::from_secs(5)).await;
-        expired.tasks.shutdown(Duration::from_secs(5)).await;
+        let licence = inspect_filed_child(&world, &filed, &parent, shell)?;
+        story_phase("dependent.cold_execution", || exercise_cold_execution(f, &filed, &saved, &parent, rating, revision, licence))?.await?;
+        story_phase("dependent.title_and_expiry", || exercise_title_and_expiry(f, &filed, &saved, &parent, licence, shell))?.await?;
         // Stage/take must re-resolve the actual parent's time fence.
         for clock in [false, true] {
             let mut staged = PlayerWorld::boot_dependent(f, &before)?;

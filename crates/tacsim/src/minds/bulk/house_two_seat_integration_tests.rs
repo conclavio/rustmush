@@ -83,13 +83,13 @@ fn act(
     let (p, output) = w
         .engine
         .prepare_registered_composed_resolved_authoritative_action(&action, &resolved, token(n))?;
-    let prepared = Prepared {
+    let prepared = Box::new(Prepared {
         p,
         output,
         invocation,
         action,
         serial: n,
-    };
+    });
     land(w, prepared)
 }
 fn paid_term(w: &IcWorld, generation: u64) -> TestResult<PaidTermRecord> {
@@ -112,7 +112,10 @@ fn close(w: &mut IcWorld, actor: ObjId, opening: u128, n: u128, hull: ObjId) -> 
 }
 
 #[inline(never)]
-pub(in super::super) fn exercise(registry: &Fixture, saved: &Durable) -> TestResult {
+fn open_purchased_house(
+    registry: &Fixture,
+    saved: &Durable,
+) -> TestResult<(Box<IcWorld>, ObjId, WalletId, WalletId)> {
     let initial = one(rows(&saved.disk, "roll", "roll_mind_initial_filing"))?;
     let owner: LicenceId =
         serde_json::from_value(initial.get("licence").cloned().ok_or("House owner")?)?;
@@ -180,6 +183,63 @@ pub(in super::super) fn exercise(registry: &Fixture, saved: &Durable) -> TestRes
     ] {
         act(&mut w, id, 2, actor, n, parameters)?;
     }
+    Ok((Box::new(w), third, seller_account, buyer_account))
+}
+
+#[inline(never)]
+fn exercise_new_holder_renewal(
+    registry: &Fixture,
+    mut w: Box<IcWorld>,
+    original: &PersonalPaidLicence,
+    transferred: &PersonalPaidLicence,
+    term: &mush_roll::commerce::paid::PaidTermRecord,
+    birth: &[Value],
+) -> TestResult {
+    // The same acquired two-seat template survives a new-holder generation and
+    // a real same-contract renewal; no ancestor licence is issued to this buyer.
+    w.engine.world.set_now(term.window().term_end().get());
+    act(
+        &mut w,
+        "draft_house_mind_renewal",
+        1,
+        GOD,
+        FIRST + 30,
+        json!({"licence":original.id().get()}),
+    )?;
+    assert_eq!(pointer(&w)?, *transferred, "draft changed paid use");
+    act(
+        &mut w,
+        "fund_house_mind_renewal",
+        1,
+        GOD,
+        FIRST + 31,
+        json!({"operation":token(FIRST+30)}),
+    )?;
+    let mut w = w.reboot_house(registry, &w.snapshot())?;
+    act(
+        &mut w,
+        "settle_house_mind_renewal",
+        1,
+        GOD,
+        FIRST + 32,
+        json!({"operation":token(FIRST+30)}),
+    )?;
+    let renewed = pointer(&w)?;
+    assert_eq!(renewed.term().get(), 2);
+    assert_eq!(renewed.ownership(), transferred.ownership());
+    assert_eq!(renewed.operation(), original.operation());
+    assert_eq!(paid_term(&w, 1)?, *term);
+    assert_eq!(paid_term(&w, 2)?.terms().seats().get(), 2);
+    assert_eq!(rows(&w.disk, "roll", BIRTH).as_slice(), birth);
+    let cold = w.reboot_house(registry, &w.snapshot())?;
+    assert_eq!(pointer(&cold)?, renewed);
+    assert_eq!(paid_term(&cold, 2)?, paid_term(&w, 2)?);
+    Ok(())
+}
+
+#[inline(never)]
+pub(in super::super) fn exercise(registry: &Fixture, saved: &Durable) -> TestResult {
+    let (mut w, third, seller_account, buyer_account) = open_purchased_house(registry, saved)?;
     let allocation: HouseAllocationV1 = serde_json::from_value(one(rows(&w.disk, "roll", BIRTH))?)?;
     assert_eq!(allocation.protocol(), HouseProtocol::HouseV2);
     let original = pointer(&w)?;
@@ -295,44 +355,13 @@ pub(in super::super) fn exercise(registry: &Fixture, saved: &Durable) -> TestRes
     let mut w = w.reboot_house(registry, &w.snapshot())?;
     assert_eq!(pointer(&w)?, transferred);
     assert!(!w.held(first)? && !w.held(second)? && !w.held(third)?);
-    // The same acquired two-seat template survives a new-holder generation and
-    // a real same-contract renewal; no ancestor licence is issued to this buyer.
-    w.engine.world.set_now(term.window().term_end().get());
-    act(
-        &mut w,
-        "draft_house_mind_renewal",
-        1,
-        GOD,
-        FIRST + 30,
-        json!({"licence":original.id().get()}),
+    exercise_new_holder_renewal(
+        registry,
+        Box::new(w),
+        &original,
+        &transferred,
+        &term,
+        &birth,
     )?;
-    assert_eq!(pointer(&w)?, transferred, "draft changed paid use");
-    act(
-        &mut w,
-        "fund_house_mind_renewal",
-        1,
-        GOD,
-        FIRST + 31,
-        json!({"operation":token(FIRST+30)}),
-    )?;
-    let mut w = w.reboot_house(registry, &w.snapshot())?;
-    act(
-        &mut w,
-        "settle_house_mind_renewal",
-        1,
-        GOD,
-        FIRST + 32,
-        json!({"operation":token(FIRST+30)}),
-    )?;
-    let renewed = pointer(&w)?;
-    assert_eq!(renewed.term().get(), 2);
-    assert_eq!(renewed.ownership(), transferred.ownership());
-    assert_eq!(renewed.operation(), original.operation());
-    assert_eq!(paid_term(&w, 1)?, term);
-    assert_eq!(paid_term(&w, 2)?.terms().seats().get(), 2);
-    assert_eq!(rows(&w.disk, "roll", BIRTH), birth);
-    let cold = w.reboot_house(registry, &w.snapshot())?;
-    assert_eq!(pointer(&cold)?, renewed);
-    assert_eq!(paid_term(&cold, 2)?, paid_term(&w, 2)?);
     Ok(())
 }

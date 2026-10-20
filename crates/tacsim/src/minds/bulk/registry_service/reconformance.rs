@@ -166,7 +166,7 @@ pub(super) fn execution(
         let ReconformanceReadResult::Job { execution, .. } = result else {
             return Err(BulkError::Stale);
         };
-        execution
+        *execution
     } else {
         ctx.read_owner(&config.reader, RegistryReadRequest::new(job))
             .map_err(|_| BulkError::Stale)?

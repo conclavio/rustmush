@@ -75,9 +75,9 @@ impl CoverageTerminalReceiptV1 {
 #[serde(deny_unknown_fields)]
 pub struct CoverageHistory {
     intent: BindingIntent,
-    binding: CoverageBindingReceiptV1,
+    binding: Box<CoverageBindingReceiptV1>,
     #[serde(deserialize_with = "required_option")]
-    terminal: Option<CoverageTerminalReceiptV1>,
+    terminal: Option<Box<CoverageTerminalReceiptV1>>,
 }
 fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
@@ -102,7 +102,7 @@ impl CoverageHistory {
         &self.binding
     }
     pub fn terminal(&self) -> Option<&CoverageTerminalReceiptV1> {
-        self.terminal.as_ref()
+        self.terminal.as_deref()
     }
     pub(super) fn intent(&self) -> &BindingIntent {
         &self.intent
@@ -378,13 +378,13 @@ pub(super) fn from_binding(
     }
     let row = CoverageHistory {
         intent,
-        binding: CoverageBindingReceiptV1 {
+        binding: Box::new(CoverageBindingReceiptV1 {
             transaction: tx.id,
             journal_seq: tx.journal_seq,
             plan_hash: tx.plan_hash,
             hold: hold.hold.clone(),
             title: title.post.clone(),
-        },
+        }),
         terminal: None,
     };
     row.validate()?;
@@ -450,7 +450,7 @@ pub(super) fn with_terminal(
         return Err(refused());
     }
     let mut row = before.clone();
-    row.terminal = Some(CoverageTerminalReceiptV1 {
+    row.terminal = Some(Box::new(CoverageTerminalReceiptV1 {
         decision,
         before_title: title,
         transaction: tx.id,
@@ -458,7 +458,7 @@ pub(super) fn with_terminal(
         plan_hash: tx.plan_hash,
         hold: hold.hold.clone(),
         title: final_title,
-    });
+    }));
     row.validate()?;
     Ok(row)
 }

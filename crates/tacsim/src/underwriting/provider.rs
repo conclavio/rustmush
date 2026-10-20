@@ -108,6 +108,396 @@ impl Provider {
         }
         Ok(p)
     }
+    #[inline(never)]
+    fn prepare_quote(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+        intent: Intent,
+        retained: (DefinitionDigest, mush_core::CommitToken, Intent),
+    ) -> Result<&'static str, CoverageError> {
+        let (request, operation, retained_intent) = retained;
+        let Intent::Quote {
+            departure,
+            publication,
+            payer,
+            value,
+        } = intent
+        else {
+            return Err(CoverageError::Authority);
+        };
+        let kind = {
+            let observed = self.open(ctx, txn, &departure)?;
+            let p = self.product(ctx, txn, publication)?;
+            let product = &p.product;
+            let qualified = super::qualification::current(
+                ctx,
+                txn,
+                self.conduct_reader.as_ref(),
+                &p,
+                &departure,
+                observed.facts(),
+            )?;
+            let illustration = product.illustrate(value)?;
+            let amounts = if qualified.is_some() {
+                illustration.with_qualified_safe_conduct()
+            } else {
+                illustration.ordinary()
+            };
+            let w = ctx.world().map_err(bad)?;
+            let now = w.now();
+            if now < p.posted_at_utc
+                || !product.hulls().contains(departure.unit_schema())
+                || !product.zones().contains(departure.zone())
+            {
+                return Err(CoverageError::Authority);
+            }
+            accounts(w, inv.actor(), payer, product)?;
+            let q = Quote {
+                format: 1,
+                request,
+                operation,
+                action: self.action.clone(),
+                protocol: self.protocol.clone(),
+                publication,
+                publication_digest: p.digest()?,
+                product_digest: product.digest()?,
+                risk: Risk {
+                    ic_open: departure.open(),
+                    seal_digest: departure.seal_digest(),
+                    admission_digest: departure.admission_digest(),
+                    departure_digest: departure.digest(),
+                    hull: departure.unit(),
+                    hull_title_revision: observed.facts().hull_title_revision(),
+                    hull_revision: departure.unit_revision(),
+                    hull_schema: departure.unit_schema().clone(),
+                    zone: departure.zone().clone(),
+                    qualified: qualified.as_ref().map(|(selection, _)| selection.clone()),
+                },
+                terms: mush_economy::managed_coverage::CoverageQuoteTermsV1 {
+                    format: 1,
+                    buyer: inv.actor(),
+                    insurer: product.insurer(),
+                    scope: product.scope(),
+                    treasury: product.treasury(),
+                    payer,
+                    instrument: product.terms().instrument().clone(),
+                    adjudicator: product.adjudicator(),
+                    insured_value: value,
+                    base_premium: amounts.base_premium(),
+                    discount: amounts.discount(),
+                    premium: amounts.premium(),
+                    liability: amounts.maximum_payout(),
+                    duration_seconds: product.terms().term_seconds(),
+                    claim_delay_seconds: product.terms().claim_delay_seconds(),
+                    quoted_at_utc: now,
+                    expires_at_utc: now
+                        .checked_add(product.quote_seconds())
+                        .ok_or(CoverageError::Arithmetic)?,
+                },
+            };
+            q.matches_publication(&p)?;
+            self.families.admit(txn, 1)?;
+            families::insert(txn, &self.families.quotes, &q)?;
+            let check = super::fence::HostCheck::capture(
+                self.host.clone(),
+                self.action.clone(),
+                operation,
+                inv.actor(),
+                self.index,
+                request,
+                retained_intent,
+                Some((product.clone(), payer)),
+                qualified.map(|(_, proof)| proof),
+            );
+            self.writer.quote(ctx, observed, check).map_err(bad)?;
+            "quoted"
+        };
+        Ok(kind)
+    }
+    #[inline(never)]
+    fn bind_history(
+        &self,
+        ctx: &PrepareCtx<'_>,
+        txn: &mut ActionTxn<'_>,
+        q: &Quote,
+    ) -> Result<(Option<HullHead>, u64, Option<mush_core::CommitToken>), CoverageError> {
+        let hull_key = format!("{:08x}", q.risk.hull.0);
+        let head = txn
+            .get(&self.families.hulls, &hull_key)
+            .map_err(bad)?
+            .cloned();
+        let (sequence, previous) = if let Some(h) = &head {
+            if h.active.is_some() {
+                return Err(CoverageError::Authority);
+            }
+            let old = families::read(txn, &self.families.policies, h.latest.to_hex())?;
+            if *h != HullHead::from_policy(&old)? {
+                return Err(CoverageError::Product);
+            }
+            let d = old
+                .history
+                .terminal()
+                .ok_or(CoverageError::Authority)?
+                .decision();
+            let w = ctx.world().map_err(bad)?;
+            let now = w.world_ic_now();
+            if w.now() < d.posted_at_utc || now.clock == d.at_ic.clock && now.at < d.at_ic.at {
+                return Err(CoverageError::Clock);
+            }
+            (
+                h.sequence.checked_add(1).ok_or(CoverageError::Bound)?,
+                Some(h.latest),
+            )
+        } else {
+            (1, None)
+        };
+        Ok((head, sequence, previous))
+    }
+    #[inline(never)]
+    fn prepare_bind(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+        intent: Intent,
+        retained: (DefinitionDigest, mush_core::CommitToken, Intent),
+    ) -> Result<&'static str, CoverageError> {
+        let (request, operation, retained_intent) = retained;
+        let Intent::Bind { departure, quote } = intent else {
+            return Err(CoverageError::Authority);
+        };
+        let kind = {
+            let observed = self.open(ctx, txn, &departure)?;
+            let q = families::read(txn, &self.families.quotes, quote.to_hex())?;
+            let p = self.product(ctx, txn, q.publication)?;
+            q.matches_publication(&p)?;
+            if q.risk.ic_open != departure.open()
+                || q.risk.departure_digest != departure.digest()
+                || q.terms.buyer != inv.actor()
+                || q.risk.hull_title_revision != observed.facts().hull_title_revision()
+            {
+                return Err(CoverageError::Authority);
+            }
+            let conduct = if let Some(expected) = &q.risk.qualified {
+                let (selection, proof) = super::qualification::current(
+                    ctx,
+                    txn,
+                    self.conduct_reader.as_ref(),
+                    &p,
+                    &departure,
+                    observed.facts(),
+                )?
+                .ok_or(CoverageError::Authority)?;
+                if &selection != expected {
+                    return Err(CoverageError::Authority);
+                }
+                Some(proof)
+            } else {
+                None
+            };
+            let (head, sequence, previous) = self.bind_history(ctx, txn, &q)?;
+            let output = ctx
+                .prepare_owner(
+                    self.economy.as_ref().ok_or(CoverageError::Authority)?,
+                    EconomyRequest::CoverageBind(CoverageBindRequest {
+                        basis: q.native_basis()?,
+                        terms: q.terms.clone(),
+                    }),
+                )
+                .map_err(bad)?
+                .coverage()
+                .map_err(bad)?;
+            let check = super::fence::HostCheck::capture(
+                self.host.clone(),
+                self.action.clone(),
+                operation,
+                inv.actor(),
+                self.index,
+                request,
+                retained_intent,
+                Some((p.product.clone(), q.terms.payer)),
+                conduct,
+            );
+            let actual = self
+                .writer
+                .bind(ctx, txn, observed, output, check)
+                .map_err(bad)?;
+            let policy = Policy {
+                format: 1,
+                request,
+                operation,
+                action: self.action.clone(),
+                protocol: self.protocol.clone(),
+                sequence,
+                previous,
+                quote,
+                quote_digest: q.digest()?,
+                history: actual.history().clone(),
+            };
+            policy.matches_quote(&q)?;
+            super::capacity::before_money(&self.families, &policy)?;
+            actual
+                .retention()
+                .matches_history(&policy.history)
+                .map_err(bad)?;
+            self.families.admit(txn, 2)?;
+            families::insert(txn, &self.families.policies, &policy)?;
+            families::insert(
+                txn,
+                &self.families.exposures,
+                &Exposure::from_policy(&policy)?,
+            )?;
+            let after = HullHead::from_policy(&policy)?;
+            if head.is_some() {
+                families::replace(txn, &self.families.hulls, &after)?;
+            } else {
+                families::insert(txn, &self.families.hulls, &after)?;
+            }
+            ctx.reserve_hull_coverage_completion(txn).map_err(bad)?;
+            "bound"
+        };
+        Ok(kind)
+    }
+    #[inline(never)]
+    fn prepare_terminal(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+        intent: Intent,
+        retained: (DefinitionDigest, mush_core::CommitToken, Intent),
+    ) -> Result<&'static str, CoverageError> {
+        let (request, operation, retained_intent) = retained;
+        let Intent::Terminal {
+            close,
+            policy,
+            cancel,
+        } = intent
+        else {
+            return Err(CoverageError::Authority);
+        };
+        let kind = {
+            let before = families::read(txn, &self.families.policies, policy.to_hex())?;
+            if before.history.terminal().is_some() {
+                return Err(CoverageError::Authority);
+            }
+            let c = before.history.consent();
+            let proof = CloseProof::capture(ctx.world().map_err(bad)?, &close)?;
+            if proof.open != c.basis.ic_open {
+                return Err(CoverageError::Authority);
+            }
+            let pays = proof.covered_loss(c)?;
+            if self.index != if pays { 3 } else { 4 }
+                || cancel && pays
+                || inv.actor()
+                    != if cancel {
+                        c.terms.buyer
+                    } else {
+                        self.host.service
+                    }
+            {
+                return Err(CoverageError::Authority);
+            }
+            let reason = if pays {
+                CoverageDecisionKindV1::Destroyed {
+                    loss: proof.close,
+                    loss_digest: proof.digest,
+                    occurred_at: proof.at_ic.clone(),
+                    zone: proof.zone.clone(),
+                    transition: proof.transition,
+                }
+            } else if cancel {
+                CoverageDecisionKindV1::Cancelled {
+                    close: proof.close,
+                    close_digest: proof.digest,
+                    transition: proof.transition,
+                }
+            } else {
+                let now = ctx.world().map_err(bad)?.world_ic_now();
+                if now.clock == c.terms.ends_at.clock && now.at >= c.terms.ends_at.at {
+                    CoverageDecisionKindV1::ExpiredClean {
+                        close: proof.close,
+                        close_digest: proof.digest,
+                        transition: proof.transition,
+                    }
+                } else {
+                    CoverageDecisionKindV1::CleanClose {
+                        close: proof.close,
+                        close_digest: proof.digest,
+                        transition: proof.transition,
+                    }
+                }
+            };
+            let w = ctx.world().map_err(bad)?;
+            let decision = CoverageDecisionV1 {
+                format: 1,
+                operation,
+                action: self.action.clone(),
+                actor: inv.actor(),
+                at_ic: w.world_ic_now(),
+                posted_at_utc: w.now(),
+                reason,
+            };
+            decision.matches_consent(c).map_err(bad)?;
+            let h = families::read(txn, &self.families.hulls, format!("{:08x}", c.basis.hull.0))?;
+            if h != HullHead::from_policy(&before)? || h.active != Some(policy) {
+                return Err(CoverageError::Product);
+            }
+            let output = ctx
+                .prepare_owner(
+                    self.economy.as_ref().ok_or(CoverageError::Authority)?,
+                    EconomyRequest::CoverageTerminal(CoverageTerminalRequest {
+                        binding: policy,
+                        decision,
+                    }),
+                )
+                .map_err(bad)?
+                .coverage()
+                .map_err(bad)?;
+            let check = super::fence::HostCheck::capture(
+                self.host.clone(),
+                self.action.clone(),
+                operation,
+                inv.actor(),
+                self.index,
+                request,
+                retained_intent,
+                None,
+                None,
+            );
+            let actual = self.writer.finish(ctx, txn, output, check).map_err(bad)?;
+            let mut after = before.clone();
+            after.history = actual.history().clone();
+            after.terminal_of(&before)?;
+            let terminal = Terminal {
+                format: 1,
+                request,
+                operation,
+                action: self.action.clone(),
+                protocol: self.protocol.clone(),
+                policy,
+                policy_digest: after.digest()?,
+                native_history: after.history.digest().map_err(bad)?,
+                close: proof,
+            };
+            terminal.matches_policy(&after)?;
+            families::replace(txn, &self.families.policies, &after)?;
+            families::replace(
+                txn,
+                &self.families.exposures,
+                &Exposure::from_policy(&after)?,
+            )?;
+            families::replace(txn, &self.families.hulls, &HullHead::from_policy(&after)?)?;
+            families::insert(txn, &self.families.terminals, &terminal)?;
+            families::insert(txn, &self.families.receipts, &Receipt::from_policy(&after)?)?;
+            ctx.finish_hull_coverage_completion(txn, policy)
+                .map_err(bad)?;
+            if pays { "claimed" } else { "released" }
+        };
+        Ok(kind)
+    }
     fn prepare(
         &self,
         inv: &ActionInvocation,
@@ -120,341 +510,14 @@ impl Provider {
         let operation = ctx.commit_token();
         let retained_intent = intent.clone();
         let kind = match intent {
-            Intent::Quote {
-                departure,
-                publication,
-                payer,
-                value,
-            } if self.index == 1 => {
-                let observed = self.open(ctx, txn, &departure)?;
-                let p = self.product(ctx, txn, publication)?;
-                let product = &p.product;
-                let qualified = super::qualification::current(
-                    ctx,
-                    txn,
-                    self.conduct_reader.as_ref(),
-                    &p,
-                    &departure,
-                    observed.facts(),
-                )?;
-                let illustration = product.illustrate(value)?;
-                let amounts = if qualified.is_some() {
-                    illustration.with_qualified_safe_conduct()
-                } else {
-                    illustration.ordinary()
-                };
-                let w = ctx.world().map_err(bad)?;
-                let now = w.now();
-                if now < p.posted_at_utc
-                    || !product.hulls().contains(departure.unit_schema())
-                    || !product.zones().contains(departure.zone())
-                {
-                    return Err(CoverageError::Authority);
-                }
-                accounts(w, inv.actor(), payer, product)?;
-                let q = Quote {
-                    format: 1,
-                    request,
-                    operation,
-                    action: self.action.clone(),
-                    protocol: self.protocol.clone(),
-                    publication,
-                    publication_digest: p.digest()?,
-                    product_digest: product.digest()?,
-                    risk: Risk {
-                        ic_open: departure.open(),
-                        seal_digest: departure.seal_digest(),
-                        admission_digest: departure.admission_digest(),
-                        departure_digest: departure.digest(),
-                        hull: departure.unit(),
-                        hull_title_revision: observed.facts().hull_title_revision(),
-                        hull_revision: departure.unit_revision(),
-                        hull_schema: departure.unit_schema().clone(),
-                        zone: departure.zone().clone(),
-                        qualified: qualified.as_ref().map(|(selection, _)| selection.clone()),
-                    },
-                    terms: mush_economy::managed_coverage::CoverageQuoteTermsV1 {
-                        format: 1,
-                        buyer: inv.actor(),
-                        insurer: product.insurer(),
-                        scope: product.scope(),
-                        treasury: product.treasury(),
-                        payer,
-                        instrument: product.terms().instrument().clone(),
-                        adjudicator: product.adjudicator(),
-                        insured_value: value,
-                        base_premium: amounts.base_premium(),
-                        discount: amounts.discount(),
-                        premium: amounts.premium(),
-                        liability: amounts.maximum_payout(),
-                        duration_seconds: product.terms().term_seconds(),
-                        claim_delay_seconds: product.terms().claim_delay_seconds(),
-                        quoted_at_utc: now,
-                        expires_at_utc: now
-                            .checked_add(product.quote_seconds())
-                            .ok_or(CoverageError::Arithmetic)?,
-                    },
-                };
-                q.matches_publication(&p)?;
-                self.families.admit(txn, 1)?;
-                families::insert(txn, &self.families.quotes, &q)?;
-                let check = super::fence::HostCheck::capture(
-                    self.host.clone(),
-                    self.action.clone(),
-                    operation,
-                    inv.actor(),
-                    self.index,
-                    request,
-                    retained_intent,
-                    Some((product.clone(), payer)),
-                    qualified.map(|(_, proof)| proof),
-                );
-                self.writer.quote(ctx, observed, check).map_err(bad)?;
-                "quoted"
+            intent @ Intent::Quote { .. } if self.index == 1 => {
+                self.prepare_quote(inv, txn, ctx, intent, (request, operation, retained_intent))?
             }
-            Intent::Bind { departure, quote } if self.index == 2 => {
-                let observed = self.open(ctx, txn, &departure)?;
-                let q = families::read(txn, &self.families.quotes, quote.to_hex())?;
-                let p = self.product(ctx, txn, q.publication)?;
-                q.matches_publication(&p)?;
-                if q.risk.ic_open != departure.open()
-                    || q.risk.departure_digest != departure.digest()
-                    || q.terms.buyer != inv.actor()
-                    || q.risk.hull_title_revision != observed.facts().hull_title_revision()
-                {
-                    return Err(CoverageError::Authority);
-                }
-                let conduct = if let Some(expected) = &q.risk.qualified {
-                    let (selection, proof) = super::qualification::current(
-                        ctx,
-                        txn,
-                        self.conduct_reader.as_ref(),
-                        &p,
-                        &departure,
-                        observed.facts(),
-                    )?
-                    .ok_or(CoverageError::Authority)?;
-                    if &selection != expected {
-                        return Err(CoverageError::Authority);
-                    }
-                    Some(proof)
-                } else {
-                    None
-                };
-                let hull_key = format!("{:08x}", q.risk.hull.0);
-                let head = txn
-                    .get(&self.families.hulls, &hull_key)
-                    .map_err(bad)?
-                    .cloned();
-                let (sequence, previous) = if let Some(h) = &head {
-                    if h.active.is_some() {
-                        return Err(CoverageError::Authority);
-                    }
-                    let old = families::read(txn, &self.families.policies, h.latest.to_hex())?;
-                    if *h != HullHead::from_policy(&old)? {
-                        return Err(CoverageError::Product);
-                    }
-                    let d = old
-                        .history
-                        .terminal()
-                        .ok_or(CoverageError::Authority)?
-                        .decision();
-                    let w = ctx.world().map_err(bad)?;
-                    let now = w.world_ic_now();
-                    if w.now() < d.posted_at_utc
-                        || now.clock == d.at_ic.clock && now.at < d.at_ic.at
-                    {
-                        return Err(CoverageError::Clock);
-                    }
-                    (
-                        h.sequence.checked_add(1).ok_or(CoverageError::Bound)?,
-                        Some(h.latest),
-                    )
-                } else {
-                    (1, None)
-                };
-                let output = ctx
-                    .prepare_owner(
-                        self.economy.as_ref().ok_or(CoverageError::Authority)?,
-                        EconomyRequest::CoverageBind(CoverageBindRequest {
-                            basis: q.native_basis()?,
-                            terms: q.terms.clone(),
-                        }),
-                    )
-                    .map_err(bad)?
-                    .coverage()
-                    .map_err(bad)?;
-                let check = super::fence::HostCheck::capture(
-                    self.host.clone(),
-                    self.action.clone(),
-                    operation,
-                    inv.actor(),
-                    self.index,
-                    request,
-                    retained_intent,
-                    Some((p.product.clone(), q.terms.payer)),
-                    conduct,
-                );
-                let actual = self
-                    .writer
-                    .bind(ctx, txn, observed, output, check)
-                    .map_err(bad)?;
-                let policy = Policy {
-                    format: 1,
-                    request,
-                    operation,
-                    action: self.action.clone(),
-                    protocol: self.protocol.clone(),
-                    sequence,
-                    previous,
-                    quote,
-                    quote_digest: q.digest()?,
-                    history: actual.history().clone(),
-                };
-                policy.matches_quote(&q)?;
-                super::capacity::before_money(&self.families, &policy)?;
-                actual
-                    .retention()
-                    .matches_history(&policy.history)
-                    .map_err(bad)?;
-                self.families.admit(txn, 2)?;
-                families::insert(txn, &self.families.policies, &policy)?;
-                families::insert(
-                    txn,
-                    &self.families.exposures,
-                    &Exposure::from_policy(&policy)?,
-                )?;
-                let after = HullHead::from_policy(&policy)?;
-                if head.is_some() {
-                    families::replace(txn, &self.families.hulls, &after)?;
-                } else {
-                    families::insert(txn, &self.families.hulls, &after)?;
-                }
-                ctx.reserve_hull_coverage_completion(txn).map_err(bad)?;
-                "bound"
+            intent @ Intent::Bind { .. } if self.index == 2 => {
+                self.prepare_bind(inv, txn, ctx, intent, (request, operation, retained_intent))?
             }
-            Intent::Terminal {
-                close,
-                policy,
-                cancel,
-            } if self.index == 3 || self.index == 4 => {
-                let before = families::read(txn, &self.families.policies, policy.to_hex())?;
-                if before.history.terminal().is_some() {
-                    return Err(CoverageError::Authority);
-                }
-                let c = before.history.consent();
-                let proof = CloseProof::capture(ctx.world().map_err(bad)?, &close)?;
-                if proof.open != c.basis.ic_open {
-                    return Err(CoverageError::Authority);
-                }
-                let pays = proof.covered_loss(c)?;
-                if self.index != if pays { 3 } else { 4 }
-                    || cancel && pays
-                    || inv.actor()
-                        != if cancel {
-                            c.terms.buyer
-                        } else {
-                            self.host.service
-                        }
-                {
-                    return Err(CoverageError::Authority);
-                }
-                let reason = if pays {
-                    CoverageDecisionKindV1::Destroyed {
-                        loss: proof.close,
-                        loss_digest: proof.digest,
-                        occurred_at: proof.at_ic.clone(),
-                        zone: proof.zone.clone(),
-                        transition: proof.transition,
-                    }
-                } else if cancel {
-                    CoverageDecisionKindV1::Cancelled {
-                        close: proof.close,
-                        close_digest: proof.digest,
-                        transition: proof.transition,
-                    }
-                } else {
-                    let now = ctx.world().map_err(bad)?.world_ic_now();
-                    if now.clock == c.terms.ends_at.clock && now.at >= c.terms.ends_at.at {
-                        CoverageDecisionKindV1::ExpiredClean {
-                            close: proof.close,
-                            close_digest: proof.digest,
-                            transition: proof.transition,
-                        }
-                    } else {
-                        CoverageDecisionKindV1::CleanClose {
-                            close: proof.close,
-                            close_digest: proof.digest,
-                            transition: proof.transition,
-                        }
-                    }
-                };
-                let w = ctx.world().map_err(bad)?;
-                let decision = CoverageDecisionV1 {
-                    format: 1,
-                    operation,
-                    action: self.action.clone(),
-                    actor: inv.actor(),
-                    at_ic: w.world_ic_now(),
-                    posted_at_utc: w.now(),
-                    reason,
-                };
-                decision.matches_consent(c).map_err(bad)?;
-                let h =
-                    families::read(txn, &self.families.hulls, format!("{:08x}", c.basis.hull.0))?;
-                if h != HullHead::from_policy(&before)? || h.active != Some(policy) {
-                    return Err(CoverageError::Product);
-                }
-                let output = ctx
-                    .prepare_owner(
-                        self.economy.as_ref().ok_or(CoverageError::Authority)?,
-                        EconomyRequest::CoverageTerminal(CoverageTerminalRequest {
-                            binding: policy,
-                            decision,
-                        }),
-                    )
-                    .map_err(bad)?
-                    .coverage()
-                    .map_err(bad)?;
-                let check = super::fence::HostCheck::capture(
-                    self.host.clone(),
-                    self.action.clone(),
-                    operation,
-                    inv.actor(),
-                    self.index,
-                    request,
-                    retained_intent,
-                    None,
-                    None,
-                );
-                let actual = self.writer.finish(ctx, txn, output, check).map_err(bad)?;
-                let mut after = before.clone();
-                after.history = actual.history().clone();
-                after.terminal_of(&before)?;
-                let terminal = Terminal {
-                    format: 1,
-                    request,
-                    operation,
-                    action: self.action.clone(),
-                    protocol: self.protocol.clone(),
-                    policy,
-                    policy_digest: after.digest()?,
-                    native_history: after.history.digest().map_err(bad)?,
-                    close: proof,
-                };
-                terminal.matches_policy(&after)?;
-                families::replace(txn, &self.families.policies, &after)?;
-                families::replace(
-                    txn,
-                    &self.families.exposures,
-                    &Exposure::from_policy(&after)?,
-                )?;
-                families::replace(txn, &self.families.hulls, &HullHead::from_policy(&after)?)?;
-                families::insert(txn, &self.families.terminals, &terminal)?;
-                families::insert(txn, &self.families.receipts, &Receipt::from_policy(&after)?)?;
-                ctx.finish_hull_coverage_completion(txn, policy)
-                    .map_err(bad)?;
-                if pays { "claimed" } else { "released" }
+            intent @ Intent::Terminal { .. } if self.index == 3 || self.index == 4 => {
+                self.prepare_terminal(inv, txn, ctx, intent, (request, operation, retained_intent))?
             }
             _ => return Err(CoverageError::Authority),
         };

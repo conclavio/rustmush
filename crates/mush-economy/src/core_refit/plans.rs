@@ -34,7 +34,7 @@ pub(super) enum Proof {
         format: u16,
         commit: CommitToken,
         action: DefinitionRef,
-        intent: FundingIntent,
+        intent: Box<FundingIntent>,
     },
     Install {
         format: u16,
@@ -104,7 +104,7 @@ pub(super) fn funding(
             format: 1,
             commit,
             action: action.clone(),
-            intent: intent.clone(),
+            intent: Box::new(intent.clone()),
         },
         vec![],
     )?;

@@ -236,57 +236,7 @@ pub(in crate::action_state::terminal_capacity) fn validate_changes(
         return Err(refused("core integration requester/principal differs"));
     }
     if index == 0 {
-        if value(&before, &super::order_key(order)?)?.is_some() || next.accepted != identity.commit
-        {
-            return Err(refused("core integration order reused"));
-        }
-        let r = changes
-            .funding
-            .as_ref()
-            .ok_or_else(|| refused("core integration future capacity missing"))?;
-        verify(Phase::Funding, r, &after)?;
-        let mut expected = expected(&keys, &[ORDER, INPUT, SLOTS, BOOK, SCHEDULE, JOB], &[])?;
-        expected.extend([
-            (
-                scope_key(
-                    "industry",
-                    "industry_core_integration_deployment",
-                    "registry".into(),
-                )?,
-                false,
-            ),
-            (
-                scope_key(
-                    "inventory",
-                    "inventory_core_input_heads",
-                    format!("{:016x}", number(field(&next.intent, "lot")?, "id")?),
-                )?,
-                false,
-            ),
-            (
-                scope_key(
-                    "inventory",
-                    "inventory_core_input_census",
-                    "registry".into(),
-                )?,
-                false,
-            ),
-            (
-                scope_key(
-                    "industry",
-                    "industry_capacity_index",
-                    parsed::<crate::ReservationId>(field(&next.raw, "capacity")?)?
-                        .0
-                        .to_hex(),
-                )?,
-                false,
-            ),
-        ]);
-        exact(mutations, &after, expected)?;
-        if value(&before, &required_key(&keys, OUTPUT)?)?.is_some() {
-            return Err(refused("core integration future output already occupied"));
-        }
-        return Ok(());
+        return validate_funding(&before, &after, &next, &keys, mutations, changes, identity);
     }
     let prior = row(&before, order)?;
     let id = ReservationId(owner_id("industry")?, prior.accepted.to_hex());
@@ -434,6 +384,69 @@ pub(in crate::action_state::terminal_capacity) fn validate_changes(
     }
     Ok(())
 }
+#[inline(never)]
+fn validate_funding(
+    before: &View<'_>,
+    after: &View<'_>,
+    next: &Row,
+    keys: &BTreeMap<&'static str, Key>,
+    mutations: &BTreeMap<StateKey, TxnMutation>,
+    changes: &Changes,
+    identity: &RegisteredTxnIdentity,
+) -> Result<(), ActionStateError> {
+    let order = next.order;
+    if value(before, &super::order_key(order)?)?.is_some() || next.accepted != identity.commit {
+        return Err(refused("core integration order reused"));
+    }
+    let r = changes
+        .funding
+        .as_ref()
+        .ok_or_else(|| refused("core integration future capacity missing"))?;
+    verify(Phase::Funding, r, after)?;
+    let mut expected = expected(keys, &[ORDER, INPUT, SLOTS, BOOK, SCHEDULE, JOB], &[])?;
+    expected.extend([
+        (
+            scope_key(
+                "industry",
+                "industry_core_integration_deployment",
+                "registry".into(),
+            )?,
+            false,
+        ),
+        (
+            scope_key(
+                "inventory",
+                "inventory_core_input_heads",
+                format!("{:016x}", number(field(&next.intent, "lot")?, "id")?),
+            )?,
+            false,
+        ),
+        (
+            scope_key(
+                "inventory",
+                "inventory_core_input_census",
+                "registry".into(),
+            )?,
+            false,
+        ),
+        (
+            scope_key(
+                "industry",
+                "industry_capacity_index",
+                parsed::<crate::ReservationId>(field(&next.raw, "capacity")?)?
+                    .0
+                    .to_hex(),
+            )?,
+            false,
+        ),
+    ]);
+    exact(mutations, after, expected)?;
+    if value(before, &required_key(keys, OUTPUT)?)?.is_some() {
+        return Err(refused("core integration future output already occupied"));
+    }
+    Ok(())
+}
+
 pub(in crate::action_state::terminal_capacity) fn audit_boot(
     view: &View<'_>,
     reservations: &BTreeMap<ReservationId, Arc<StoredReservation>>,

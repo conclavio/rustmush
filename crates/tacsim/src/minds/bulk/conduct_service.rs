@@ -123,7 +123,7 @@ enum Phase {
         lease: Option<Lease>,
     },
     Working,
-    Returned(Option<Completion>),
+    Returned(Option<Box<Completion>>),
     Settle(Option<Ready>),
     Cancel(Option<Ready>),
     Recover(Option<StoppedBinding>),
@@ -321,7 +321,7 @@ fn start(ctx: &mut Ctx<'_>) -> Result<(), BulkError> {
             ticket,
             account,
             nonce,
-            candidate,
+            candidate: Box::new(candidate),
             source: Arc::from(source),
             factory: cfg.factory,
         })
@@ -691,7 +691,7 @@ pub(super) fn completed(_ctx: &mut Ctx<'_>, runtime: &mut Runtime, done: Complet
             && e.binding.is_some_and(|b| b.run == done.receipt.run())
             && matches!(e.phase, Phase::Working)
     }) {
-        entry.phase = Phase::Returned(Some(done));
+        entry.phase = Phase::Returned(Some(Box::new(done)));
         return;
     }
     tracing::error!("Conduct completion has no retained continuation");

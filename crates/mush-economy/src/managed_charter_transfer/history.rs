@@ -63,9 +63,9 @@ impl CharterPendingTerminalReceiptV1 {
 #[serde(deny_unknown_fields)]
 pub struct CharterPendingHistory {
     intent: FundingIntent,
-    funding: CharterPendingFundingReceiptV1,
+    funding: Box<CharterPendingFundingReceiptV1>,
     #[serde(deserialize_with = "required_option")]
-    terminal: Option<CharterPendingTerminalReceiptV1>,
+    terminal: Option<Box<CharterPendingTerminalReceiptV1>>,
 }
 fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
@@ -83,7 +83,7 @@ impl CharterPendingHistory {
         &self.funding
     }
     pub fn terminal(&self) -> Option<&CharterPendingTerminalReceiptV1> {
-        self.terminal.as_ref()
+        self.terminal.as_deref()
     }
     pub(super) fn intent(&self) -> &FundingIntent {
         &self.intent
@@ -330,12 +330,12 @@ fn from_funding(
     }
     let row = CharterPendingHistory {
         intent,
-        funding: CharterPendingFundingReceiptV1 {
+        funding: Box::new(CharterPendingFundingReceiptV1 {
             transaction: tx.id,
             journal_seq: tx.journal_seq,
             plan_hash: tx.plan_hash,
             hold: hold.hold.clone(),
-        },
+        }),
         terminal: None,
     };
     row.validate()?;
@@ -386,14 +386,14 @@ fn with_terminal(
         return Err(refused());
     }
     let mut row = before.clone();
-    row.terminal = Some(CharterPendingTerminalReceiptV1 {
+    row.terminal = Some(Box::new(CharterPendingTerminalReceiptV1 {
         decision,
         transaction: tx.id,
         journal_seq: tx.journal_seq,
         plan_hash: tx.plan_hash,
         hold: hold.hold.clone(),
         title,
-    });
+    }));
     row.validate()?;
     Ok(row)
 }
@@ -509,7 +509,7 @@ impl CharterPendingAudit {
         let row = self.histories.get(&funding).ok_or_else(refused)?;
         let terminal = row.terminal.as_ref().ok_or_else(refused)?;
         if !decision.reason.settles()
-            || terminal.decision != decision
+            || terminal.decision != *decision
             || terminal.transaction != tx.id
             || terminal.journal_seq != tx.journal_seq
             || terminal.plan_hash != tx.plan_hash
@@ -634,7 +634,7 @@ impl CharterPendingAudit {
                 {
                     return Err(refused());
                 }
-                from_funding(tx, intent)
+                from_funding(tx, *intent)
             }
             Proof::Terminal {
                 format: 1,
@@ -643,7 +643,7 @@ impl CharterPendingAudit {
             } => with_terminal(
                 self.histories.get(&funding).ok_or_else(refused)?,
                 tx,
-                decision,
+                *decision,
             ),
             _ => Err(refused()),
         }

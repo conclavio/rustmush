@@ -22,7 +22,7 @@ use crate::snapshot::EconomySnapshot;
 /// cloned merely to preflight one bounded purchase.
 struct PurchaseFold {
     before: FoldBefore,
-    history: super::receipt::PreparedHistory,
+    history: Box<super::receipt::PreparedHistory>,
     accounts: Vec<FoldAccount>,
     hold: Hold,
     terminal_at: Option<i64>,
@@ -222,7 +222,7 @@ pub struct PurchasePatch {
     next_hold: u64,
     next_contract: u64,
     chunk: u64,
-    fold: PurchaseFold,
+    fold: Box<PurchaseFold>,
 }
 
 struct ImageInput {
@@ -255,7 +255,7 @@ pub(crate) fn prepare_images(
     state: &EconomyStore,
     context: &OwnerPrepareContext<'_>,
     request: impl Into<PurchaseSubject>,
-) -> Result<(FundingOutput, PurchasePatch, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<(FundingOutput, Box<PurchasePatch>, Vec<ReplayWrite>), ParticipantError> {
     finish_images(
         state,
         context.world().world_ic_now().clock,
@@ -267,7 +267,7 @@ pub(crate) fn finish_images(
     state: &EconomyStore,
     clock: ClockRef,
     prepared: FundingPreparation,
-) -> Result<(FundingOutput, PurchasePatch, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<(FundingOutput, Box<PurchasePatch>, Vec<ReplayWrite>), ParticipantError> {
     let FundingPreparation {
         output,
         request,
@@ -302,7 +302,7 @@ pub(crate) fn prepare_terminal_images(
     context: &OwnerPrepareContext<'_>,
     request: impl Into<SubjectTerminal>,
     outcome: PurchaseOutcome,
-) -> Result<(TerminalOutput, PurchasePatch, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<(TerminalOutput, Box<PurchasePatch>, Vec<ReplayWrite>), ParticipantError> {
     finish_terminal_images(
         state,
         context.world().world_ic_now().clock,
@@ -313,8 +313,8 @@ pub(crate) fn prepare_terminal_images(
 pub(crate) fn finish_terminal_images(
     state: &EconomyStore,
     clock: ClockRef,
-    prepared: terminal::TerminalPreparation,
-) -> Result<(TerminalOutput, PurchasePatch, Vec<ReplayWrite>), ParticipantError> {
+    prepared: Box<terminal::TerminalPreparation>,
+) -> Result<(TerminalOutput, Box<PurchasePatch>, Vec<ReplayWrite>), ParticipantError> {
     let terminal::TerminalPreparation {
         output,
         request,
@@ -325,7 +325,7 @@ pub(crate) fn finish_terminal_images(
         contract,
         delta,
         transaction,
-    } = prepared;
+    } = *prepared;
     let (patch, writes) = images(
         state,
         clock,
@@ -348,7 +348,7 @@ fn images(
     state: &EconomyStore,
     clock: ClockRef,
     input: ImageInput,
-) -> Result<(PurchasePatch, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<(Box<PurchasePatch>, Vec<ReplayWrite>), ParticipantError> {
     let ImageInput {
         request,
         plan,
@@ -362,11 +362,11 @@ fn images(
     } = input;
     let next_transaction = state.next_transaction.checked_add(1).ok_or_else(refused)?;
     let next_posts = state.posts_since_boot.checked_add(1).ok_or_else(refused)?;
-    let fold = PurchaseFold::prepare(
+    let fold = Box::new(PurchaseFold::prepare(
         &state.fold,
         &transaction,
         request.subject().maximum_payouts(),
-    )?;
+    )?);
     let journal = state
         .journal
         .prepare_append(
@@ -441,7 +441,7 @@ fn images(
     } else {
         None
     };
-    let patch = PurchasePatch {
+    let patch = Box::new(PurchasePatch {
         clock,
         request,
         plan,
@@ -470,7 +470,7 @@ fn images(
         next_contract,
         chunk: state.journal.open_chunk(JOURNAL_LOG),
         fold,
-    };
+    });
     Ok((patch, writes))
 }
 
@@ -536,7 +536,7 @@ impl PurchasePatch {
         Ok(())
     }
     pub(crate) fn bind(
-        self,
+        self: Box<Self>,
         state: &mut EconomyStore,
     ) -> Result<BoundPurchase<'_>, ParticipantError> {
         self.check_local(state)?;
@@ -572,7 +572,7 @@ impl PurchasePatch {
             fold: fold_patch,
             next_window,
             ..
-        } = self;
+        } = *self;
         let journal = journal
             .bind_prepared(prepared_journal)
             .map_err(|_| refused())?;
@@ -632,7 +632,7 @@ pub struct BoundPurchase<'a> {
     after_contract: u64,
     next_posts: u64,
     chunk: u64,
-    fold_patch: PurchaseFold,
+    fold_patch: Box<PurchaseFold>,
 }
 impl BoundParticipant for BoundPurchase<'_> {
     fn apply(self) {
@@ -659,7 +659,7 @@ impl BoundParticipant for BoundPurchase<'_> {
         );
         self.cold_keys.remove(&self.transaction.idempotency);
         self.bloom.apply();
-        self.fold_patch.apply(self.fold);
+        (*self.fold_patch).apply(self.fold);
         match self.next_window {
             Some(window) => {
                 self.debit_window.insert(self.payer, window);

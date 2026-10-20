@@ -20,8 +20,8 @@ pub(crate) struct PendingEconomic {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum TransferEconomic {
-    Immediate(CharterTransferAuditSubject),
-    Pending(PendingEconomic),
+    Immediate(Box<CharterTransferAuditSubject>),
+    Pending(Box<PendingEconomic>),
 }
 
 /// Borrowed facts from the selected native proof. This is never an immediate
@@ -130,6 +130,6 @@ impl TransferEconomic {
 
 impl From<CharterTransferAuditSubject> for TransferEconomic {
     fn from(row: CharterTransferAuditSubject) -> Self {
-        Self::Immediate(row)
+        Self::Immediate(Box::new(row))
     }
 }

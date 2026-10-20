@@ -106,7 +106,7 @@ fn pending_requires_matching_real_economy_and_roll_owner_configuration() -> Test
         let economy = if missing_economy { &plain } else { &selected };
         let roll = if missing_economy { &selected } else { &plain };
         let result =
-            Engine::with_modules(
+            compose_boxed(
                 World::new_minimal(),
                 Registry::new(),
                 vec![

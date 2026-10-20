@@ -371,13 +371,14 @@ fn modules(
     Ok((modules, specs, trace))
 }
 
+#[inline(never)]
 fn attempt(
     economy_first: bool,
     fault: Fault,
-) -> TestResult<(Result<Engine, ModError>, Specs, Trace)> {
+) -> TestResult<(Result<Box<Engine>, ModError>, Specs, Trace)> {
     let (modules, specs, trace) = modules(economy_first, fault)?;
     Ok((
-        Engine::with_modules(World::new_minimal(), Registry::new(), modules),
+        Engine::with_modules(World::new_minimal(), Registry::new(), modules).map(Box::new),
         specs,
         trace,
     ))

@@ -44,6 +44,38 @@ struct Request {
     rating: RatingRef,
     payer: AccountId,
 }
+// These owned observations are produced only by the existing ordered checks.
+// Heap boundaries keep mutually successive preparation temporaries in separate frames.
+type PreparedParent = Option<(
+    super::derived::DerivedParent,
+    crate::commerce::parent_grant::CurrentParentGrant,
+)>;
+struct CurrentUpdate {
+    request: Request,
+    line: LineRecord,
+    birth: InitialFilingOperation,
+    term: OwnerTerm,
+    ownership: crate::commerce::charter_transfer::records::CharterOwnershipRef,
+    parent: PreparedParent,
+    previous: FiledRecord,
+}
+struct PreparedUpdate {
+    line: LineRecord,
+    term: OwnerTerm,
+    parent: PreparedParent,
+    previous: FiledRecord,
+    rating: crate::commerce::rating::RatingReceipt,
+    after: LineRecord,
+    deployment: CommerceDeployment,
+    file: FiledRecord,
+    operation: UpdateOperation,
+    position: UpdatePosition,
+    status: RevisionStatus,
+    duplicate_row: FiledIdentityIndex,
+    commit: CommitToken,
+    filed_id: FiledRevisionId,
+    sequence: u64,
+}
 pub(crate) struct UpdateProvider {
     pub(crate) action: DefinitionRef,
     pub(crate) outcome: DefinitionRef,
@@ -87,12 +119,13 @@ impl UpdateProvider {
         Ok(Request{line:LineId::new(w.line).map_err(bad)?,revision:RevisionRef{key:RevisionKey{character:inv.actor(),mind:w.mind,number:w.revision},digest:w.revision_digest},
             rating:serde_json::from_value(json!({"schema":1,"job":w.rating_job,"id":w.rating_id,"receipt_digest":w.rating_digest})).map_err(bad)?,payer:w.payer})
     }
-    fn prepare(
+    #[inline(never)]
+    fn current_update(
         &self,
         inv: &ActionInvocation,
         txn: &mut ActionTxn<'_>,
         ctx: &mut PrepareCtx<'_>,
-    ) -> Result<AuthoritativeActionOutput, PublicationError> {
+    ) -> Result<Box<CurrentUpdate>, PublicationError> {
         let request = self.request(inv)?;
         let line = txn
             .get(&self.families.lines, &request.line.key())
@@ -184,6 +217,33 @@ impl UpdateProvider {
         {
             return Err(PublicationError::Mismatch);
         }
+        Ok(Box::new(CurrentUpdate {
+            request,
+            line,
+            birth,
+            term,
+            ownership,
+            parent,
+            previous,
+        }))
+    }
+    #[inline(never)]
+    fn prepare_records(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+        current: Box<CurrentUpdate>,
+    ) -> Result<Box<PreparedUpdate>, PublicationError> {
+        let CurrentUpdate {
+            request,
+            line,
+            birth,
+            term,
+            ownership,
+            parent,
+            previous,
+        } = *current;
         let (revision, observed, title_revision) = {
             let world = ctx.world().map_err(bad)?;
             let roll = world
@@ -364,6 +424,49 @@ impl UpdateProvider {
             revision: identity,
             filed: filed_id,
         };
+        Ok(Box::new(PreparedUpdate {
+            line,
+            term,
+            parent,
+            previous,
+            rating,
+            after,
+            deployment,
+            file,
+            operation,
+            position,
+            status,
+            duplicate_row,
+            commit,
+            filed_id,
+            sequence,
+        }))
+    }
+    #[inline(never)]
+    fn publish_update(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+        prepared: Box<PreparedUpdate>,
+    ) -> Result<AuthoritativeActionOutput, PublicationError> {
+        let PreparedUpdate {
+            line,
+            term,
+            parent,
+            previous,
+            rating,
+            after,
+            deployment,
+            file,
+            operation,
+            position,
+            status,
+            duplicate_row,
+            commit,
+            filed_id,
+            sequence,
+        } = *prepared;
         txn.insert(&self.families.filed, &file.key(), file.clone())
             .map_err(bad)?;
         txn.insert(&self.families.status, &status.key(), status.clone())
@@ -421,7 +524,7 @@ impl UpdateProvider {
         if let Some((evidence, actual)) = parent {
             roots = roots.with_parent(&evidence, actual)?;
         }
-        ctx.prepare_owner(&self.roots, RootRequest::CompatibleUpdate(roots))
+        ctx.prepare_owner(&self.roots, RootRequest::CompatibleUpdate(Box::new(roots)))
             .map_err(bad)?;
         Ok(AuthoritativeActionOutput::new(
             RulesValue::new(
@@ -432,6 +535,16 @@ impl UpdateProvider {
         )
         .with_definitions(vec![self.outcome.clone(), self.manifest.clone()])
         .with_eligible_witnesses(vec![inv.principal().clone()]))
+    }
+    fn prepare(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+    ) -> Result<AuthoritativeActionOutput, PublicationError> {
+        let current = self.current_update(inv, txn, ctx)?;
+        let prepared = self.prepare_records(inv, txn, ctx, current)?;
+        self.publish_update(inv, txn, ctx, prepared)
     }
 }
 impl ActionProvider for UpdateProvider {

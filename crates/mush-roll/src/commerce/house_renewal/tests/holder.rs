@@ -81,9 +81,14 @@ fn holder_binding_preserves_old_bytes_and_requires_exact_new_attempt_evidence() 
     Ok(())
 }
 
-#[test]
-fn transferred_buyer_automatic_then_own_retry_preserves_holder_after_grant() -> TestResult {
-    let b = birth()?;
+#[inline(never)]
+fn holder_birth() -> TestResult<Box<Birth>> {
+    Ok(Box::new(birth()?))
+}
+
+#[inline(never)]
+fn granted_holder_cases() -> TestResult<Box<GrantedHolderCases>> {
+    let b = holder_birth()?;
     let old = closed(&draft(&b, 90, 20, RenewalAttemptV1::Automatic {})?)?;
     let automatic = holder_draft(&b, 70, 40, 2, None)?;
     let pointer = automatic.binding.accepted_pointer(b.licence.term())?;
@@ -122,6 +127,32 @@ fn transferred_buyer_automatic_then_own_retry_preserves_holder_after_grant() -> 
         &terms,
         &economics,
     )?;
+    Ok(Box::new(GrantedHolderCases {
+        b,
+        old,
+        automatic,
+        pointer,
+        buyer_closed,
+    }))
+}
+
+struct GrantedHolderCases {
+    b: Box<Birth>,
+    old: RenewalOperationV1,
+    automatic: RenewalOperationV1,
+    pointer: crate::commerce::paid::PersonalPaidLicence,
+    buyer_closed: RenewalOperationV1,
+}
+
+#[test]
+fn transferred_buyer_automatic_then_own_retry_preserves_holder_after_grant() -> TestResult {
+    let GrantedHolderCases {
+        b,
+        old,
+        automatic,
+        pointer,
+        buyer_closed,
+    } = *granted_holder_cases()?;
     let seller_retry = draft(
         &b,
         11,

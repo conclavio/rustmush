@@ -16,18 +16,18 @@ use mush_economy::core_refit::{RefitFundingOutput, RefitTerminalOutput, RefitTer
 use std::sync::Arc;
 pub(crate) enum Request {
     Initialize,
-    Offer(RefitOffer),
+    Offer(Box<RefitOffer>),
     Accept {
-        order: RefitOrder,
-        payment: RefitFundingOutput,
+        order: Box<RefitOrder>,
+        payment: Box<RefitFundingOutput>,
     },
     Advance {
-        before: RefitOrder,
-        advance: mush_core::ScheduleAdvance,
+        before: Box<RefitOrder>,
+        advance: Box<mush_core::ScheduleAdvance>,
     },
     Cancel {
-        before: RefitOrder,
-        payment: RefitTerminalOutput,
+        before: Box<RefitOrder>,
+        payment: Box<RefitTerminalOutput>,
     },
 }
 pub(crate) struct Output {
@@ -99,32 +99,21 @@ fn pending(
         .map_err(|_| refused())?;
     before.verify_payment(history).map_err(|_| refused())
 }
-pub(crate) fn prepare(
-    state: &CoreProductionState,
-    ctx: &OwnerPrepareContext<'_>,
-    c: &CoreRefitFactoryConfig,
-    request: Request,
-) -> Result<(Output, Patch, Vec<ReplayWrite>), ParticipantError> {
-    identity(
-        ctx,
-        match &request {
-            Request::Advance { advance, .. } => Some(advance),
-            _ => None,
-        },
-    )?;
-    authority::cleanup(ctx.world(), c).map_err(|_| refused())?;
-    let p = state
-        .refit
-        .as_ref()
-        .filter(|p| p.ready)
-        .ok_or_else(refused)?;
-    if !state.ready {
-        return Err(refused());
-    }
-    let mut after = p.clone();
-    let mut order_out = None;
-    let fence = match request {
-        Request::Initialize => {
+struct OwnerPhase<'a, 'w> {
+    ctx: &'a OwnerPrepareContext<'w>,
+    c: &'a CoreRefitFactoryConfig,
+    p: &'a Projection,
+    after: &'a mut Projection,
+    order_out: &'a mut Option<RefitOrder>,
+}
+
+impl OwnerPhase<'_, '_> {
+    #[inline(never)]
+    fn prepare_initialize(self) -> Result<Fence, ParticipantError> {
+        let Self {
+            ctx, c, p, after, ..
+        } = self;
+        Ok({
             if c.mode != CoreOriginMode::Initialize
                 || ctx.invocation().actor() != mush_core::GOD
                 || ctx.action() != &c.action(super::INITIALIZE).map_err(|_| refused())?
@@ -138,8 +127,16 @@ pub(crate) fn prepare(
                 RefitIndex::new(ctx.commit_token(), c.payment.clone()).map_err(|_| refused())?,
             );
             Fence::Initialize
-        }
-        Request::Offer(row) => {
+        })
+    }
+
+    #[inline(never)]
+    fn prepare_offer(self, row: Box<RefitOffer>) -> Result<Fence, ParticipantError> {
+        let Self {
+            ctx, c, p, after, ..
+        } = self;
+        Ok({
+            let row = *row;
             if c.mode != CoreOriginMode::Active
                 || row.operation != ctx.commit_token()
                 || row.action != *ctx.action()
@@ -161,8 +158,24 @@ pub(crate) fn prepare(
             );
             after.offers.insert(row.operation, Arc::new(row.clone()));
             Fence::Offer(row, live)
-        }
-        Request::Accept { order, payment } => {
+        })
+    }
+
+    #[inline(never)]
+    fn prepare_accept(
+        self,
+        order: Box<RefitOrder>,
+        payment: Box<RefitFundingOutput>,
+    ) -> Result<Fence, ParticipantError> {
+        let Self {
+            ctx,
+            c,
+            p,
+            after,
+            order_out,
+        } = self;
+        Ok({
+            let (order, payment) = (*order, *payment);
             order.validate().map_err(|_| refused())?;
             let id = order.intent.order;
             let economy = ctx
@@ -219,10 +232,26 @@ pub(crate) fn prepare(
             );
             after.orders.insert(id, Arc::new(order.clone()));
             let fence = Fence::Accept(order.intent.clone(), live);
-            order_out = Some(order);
+            *order_out = Some(order);
             fence
-        }
-        Request::Advance { before, advance } => {
+        })
+    }
+
+    #[inline(never)]
+    fn prepare_advance(
+        self,
+        before: Box<RefitOrder>,
+        advance: Box<mush_core::ScheduleAdvance>,
+    ) -> Result<Fence, ParticipantError> {
+        let Self {
+            ctx,
+            c,
+            p,
+            after,
+            order_out,
+        } = self;
+        Ok({
+            let (before, advance) = (*before, *advance);
             pending(p, &before, ctx)?;
             if c.mode != CoreOriginMode::Active
                 || ctx.action() != &c.action(super::ADVANCE).map_err(|_| refused())?
@@ -240,10 +269,26 @@ pub(crate) fn prepare(
                 .orders
                 .insert(next.intent.order, Arc::new(next.clone()));
             let fence = Fence::Advance(next.intent.clone(), advance);
-            order_out = Some(next);
+            *order_out = Some(next);
             fence
-        }
-        Request::Cancel { before, payment } => {
+        })
+    }
+
+    #[inline(never)]
+    fn prepare_cancel(
+        self,
+        before: Box<RefitOrder>,
+        payment: Box<RefitTerminalOutput>,
+    ) -> Result<Fence, ParticipantError> {
+        let Self {
+            ctx,
+            c,
+            p,
+            after,
+            order_out,
+        } = self;
+        Ok({
+            let (before, payment) = (*before, *payment);
             pending(p, &before, ctx)?;
             if ctx.action() != &c.action(super::CANCEL).map_err(|_| refused())?
                 || payment.receipt().commit() != ctx.commit_token()
@@ -264,10 +309,21 @@ pub(crate) fn prepare(
             after
                 .orders
                 .insert(next.intent.order, Arc::new(next.clone()));
-            order_out = Some(next);
+            *order_out = Some(next);
             Fence::Cancel
-        }
-    };
+        })
+    }
+}
+
+#[inline(never)]
+fn finish_preparation(
+    state: &CoreProductionState,
+    ctx: &OwnerPrepareContext<'_>,
+    p: &Projection,
+    after: Projection,
+    order_out: Option<RefitOrder>,
+    fence: Fence,
+) -> Result<(Box<Output>, Box<Patch>, Vec<ReplayWrite>), ParticipantError> {
     let index = after.index.clone().ok_or_else(refused)?;
     let writes = vec![ReplayWrite::ModuleJsonSet {
         namespace: mush_core::OwnerId::new(crate::NS).map_err(|_| refused())?,
@@ -275,20 +331,61 @@ pub(crate) fn prepare(
         value: encode(&index, INDEX_BYTES).map_err(|_| refused())?,
     }];
     Ok((
-        Output {
+        Box::new(Output {
             index,
             order: order_out,
-        },
-        Patch {
+        }),
+        Box::new(Patch {
             after,
             next_generation: state.generation.checked_add(1).ok_or_else(refused)?,
             generation: state.generation,
             before_index: p.index.clone(),
             binding: ctx.preparation_binding(),
             fence,
-        },
+        }),
         writes,
     ))
+}
+
+pub(crate) fn prepare(
+    state: &CoreProductionState,
+    ctx: &OwnerPrepareContext<'_>,
+    c: &CoreRefitFactoryConfig,
+    request: Request,
+) -> Result<(Box<Output>, Box<Patch>, Vec<ReplayWrite>), ParticipantError> {
+    identity(
+        ctx,
+        match &request {
+            Request::Advance { advance, .. } => Some(advance.as_ref()),
+            _ => None,
+        },
+    )?;
+    authority::cleanup(ctx.world(), c).map_err(|_| refused())?;
+    let p = state
+        .refit
+        .as_ref()
+        .filter(|p| p.ready)
+        .ok_or_else(refused)?;
+    if !state.ready {
+        return Err(refused());
+    }
+    let mut after = p.clone();
+    let mut order_out = None;
+    let phase = OwnerPhase {
+        ctx,
+        c,
+        p,
+        after: &mut after,
+        order_out: &mut order_out,
+    };
+    let fence = match request {
+        Request::Initialize => phase.prepare_initialize()?,
+        Request::Offer(row) => phase.prepare_offer(row)?,
+        Request::Accept { order, payment } => phase.prepare_accept(order, payment)?,
+        Request::Advance { before, advance } => phase.prepare_advance(before, advance)?,
+        Request::Cancel { before, payment } => phase.prepare_cancel(before, payment)?,
+    };
+    finish_preparation(state, ctx, p, after, order_out, fence)
 }
 impl Patch {
     pub(crate) fn check_local(&self, s: &CoreProductionState) -> Result<(), ParticipantError> {

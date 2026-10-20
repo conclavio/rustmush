@@ -356,60 +356,48 @@ pub(crate) fn load_boot_with_core_refit(
         false,
     )
 }
-pub(crate) fn load_boot_with_coverage(
-    ctx: &mut ModuleCtx<'_>,
-    data: ModuleBootData,
-    providers: &CustodyTable,
-    outcomes: &crate::contract::CanonOutcomeKinds,
-    tail_max: usize,
-    window_secs: i64,
-    require_filing_receipts: bool,
-    require_purchase_receipts: bool,
-    require_renewal_receipts: bool,
-    require_update_receipts: bool,
-    require_charter_transfer_receipts: bool,
-    require_core_receipts: bool,
+
+struct ParsedDocuments {
+    instruments: BTreeMap<InstrumentId, InstrumentDef>,
+    stored_accounts: BTreeMap<AccountId, Account>,
+    stored_assets: BTreeMap<ObjId, EconomicAsset>,
+    stored_vaults: BTreeMap<VaultId, Vault>,
+    stored_approvals: BTreeMap<ApprovalRequestId, ApprovalRequest>,
+    stored_holds: BTreeMap<HoldId, Hold>,
+    stored_obligations: BTreeMap<ObligationId, Obligation>,
+    stored_cadences: BTreeMap<CadenceId, CadenceClock>,
+    stored_escalations: BTreeMap<EscalationId, Escalation>,
+    stored_contracts: BTreeMap<ContractId, EconomicContract>,
+    stored_notices: BTreeMap<ObjId, Vec<crate::notice::PendingNotice>>,
+    meta: Option<serde_json::Value>,
+    max_approval_key: Option<u64>,
+    max_obligation_key: Option<u64>,
+    max_cadence_key: Option<u64>,
+    max_escalation_key: Option<u64>,
+    max_contract_key: Option<u64>,
+    checkpoint_keys: BTreeSet<SmolStr>,
+}
+struct DocumentRecovery {
     require_charter_pending: bool,
+    require_coverage: bool,
     require_house_renewal_receipts: bool,
     require_paid_resale: bool,
-    require_refit_receipts: bool,
-    require_coverage: bool,
-) -> Result<EconomyStore, ModError> {
-    let ModuleBootData {
-        kv,
-        ledger: mut ledger_docs,
-        omitted,
-        ..
-    } = data;
-    let renewal_documents =
-        crate::managed_renewal::bridge::documents(&kv, require_renewal_receipts)?;
-    let house_renewal_documents =
-        crate::managed_house_renewal::bridge::documents(&kv, require_house_renewal_receipts)?;
-    // J4 (doc 12 §5.6): what the loader left out on the boot manifest — the
-    // min-present marker the inspection honours; 0 for a whole fetch.
-    let narrowed_below: u64 = omitted
-        .get(crate::module::JOURNAL_LOG)
-        .copied()
-        .unwrap_or(0);
-    // J1 (doc 12): ONE inspection of the journal's chunk documents serves the
-    // contiguity decision, the ledger restore and the typed pass below; each
-    // chunk is decoded from its text once, and the text is dropped as it goes.
-    // Unreplayable journal → fail the boot (never destructively "recover" money).
-    let mut journal = Ledger::new();
-    let history = journal.inspect_from(&ledger_docs, &omitted);
-    if !history.is_clean() {
-        return Err(ModError::msg(format!(
-            "economy: journal contiguity breach; refusing to boot on a hole ({} breach(es); first {:?})",
-            history.total_breaches(),
-            history.breaches().first()
-        )));
-    }
-    journal.restore_from_history(&history).map_err(|error| {
-        ModError::msg(format!(
-            "economy: authoritative journal restore refused: {error}"
-        ))
-    })?;
-
+    require_purchase_receipts: bool,
+    require_renewal_receipts: bool,
+}
+#[inline(never)]
+fn parse_documents(
+    kv: &[(SmolStr, serde_json::Value)],
+    recovery: DocumentRecovery,
+) -> Result<ParsedDocuments, ModError> {
+    let DocumentRecovery {
+        require_charter_pending,
+        require_coverage,
+        require_house_renewal_receipts,
+        require_paid_resale,
+        require_purchase_receipts,
+        require_renewal_receipts,
+    } = recovery;
     // Parse the persisted docs. Instruments + accounts + vaults are containers (a
     // corrupt one fails the boot — proceeding would classify live money, or a live
     // custody binding, as absent). An asset doc is a projection, but a corrupt one
@@ -440,7 +428,7 @@ pub(crate) fn load_boot_with_coverage(
     let mut max_contract_key: Option<u64> = None;
     let mut checkpoint_keys: BTreeSet<SmolStr> = BTreeSet::new();
 
-    for (key, value) in &kv {
+    for (key, value) in kv {
         if key == META_KEY {
             meta = Some(value.clone());
         } else if let Some(id) = key.strip_prefix("instrument:") {
@@ -728,54 +716,51 @@ pub(crate) fn load_boot_with_coverage(
         }
     }
 
-    // J2: the typed pass and the fold are one streamed loop (below), chunk by
-    // chunk, so no more than one chunk's records exist outside the RAM tail at
-    // any moment. What the fold needs of the whole journal is known up front.
-    // J4-F1: the journal's length is the restored tail's next sequence, not the
-    // inspection's entry count — a narrowed fetch hands over only the chunks
-    // at or above the manifest's floor, and a tail floor computed from those
-    // alone sat far too low (every present body was retained).
-    let journal_len = journal.next_seq(crate::module::JOURNAL_LOG);
-    let journal_empty = journal_len == 0;
-    let journal_max: Option<u64> = journal_len.checked_sub(1);
-    // The RAM tail keeps the newest `tail_max` bodies: every entry at or past
-    // this sequence. The index below keeps every id.
-    let keep_from: u64 = journal_len.saturating_sub(u64::try_from(tail_max).unwrap_or(u64::MAX));
-    let mut tx_index: BTreeMap<TransactionId, TxRef> = BTreeMap::new();
-    let mut chunk_firsts: BTreeMap<u64, u64> = BTreeMap::new();
-    let mut chunk_first_ids: BTreeMap<u64, TransactionId> = BTreeMap::new();
-    // Doc 13 W2 (W-D2): the replay keeps only the window's keys in the map and
-    // the index — once every key has its document (W-D5); the count bound is
-    // applied when the store is up. The filter takes every key regardless.
-    let boot_now = ctx.w.now();
+    Ok(ParsedDocuments {
+        instruments,
+        stored_accounts,
+        stored_assets,
+        stored_vaults,
+        stored_approvals,
+        stored_holds,
+        stored_obligations,
+        stored_cadences,
+        stored_escalations,
+        stored_contracts,
+        stored_notices,
+        meta,
+        max_approval_key,
+        max_obligation_key,
+        max_cadence_key,
+        max_escalation_key,
+        max_contract_key,
+        checkpoint_keys,
+    })
+}
 
-    // Replay: the journal-authority accumulators (J3, `FoldState`, the one fold
-    // the live post path uses too), plus what only boot captures — each
-    // projection's journal value at the sequence its stored doc CLAIMS (the
-    // drift detectors), the idempotency index and the reversed set into the
-    // snapshot, the transaction index, and the RAM tail.
-    let mut state = FoldState::default();
-    let mut snapshot_at_stored: BTreeMap<AccountId, i128> = BTreeMap::new();
-    let mut asset_at_stored: BTreeMap<ObjId, EconomicAsset> = BTreeMap::new();
-    // E6a step 1 (D-E6-21): the rolling-window tails, folded by the same function
-    // `index_transaction` uses, so replay and live indexing cannot disagree.
-    let mut debit_window: BTreeMap<AccountId, crate::module::WindowTail> = BTreeMap::new();
-    let mut hold_at_stored: BTreeMap<HoldId, Hold> = BTreeMap::new();
-    let mut held_at_stored: BTreeMap<AccountId, i128> = BTreeMap::new();
-    let mut transactions: BTreeMap<TransactionId, EconomicTransaction> = BTreeMap::new();
-    // Doc 13 (W-D3): every key ever posted — replayed whole, or seeded from the
-    // checkpoint's bloom part and extended by the tail.
-    let mut key_filter = crate::bloom::ScalableBloom::new();
-    let mut snapshot = EconomySnapshot::new();
-    for def in instruments.values() {
-        snapshot.put_instrument(def.clone());
-    }
-    // J3: seed from the newest VALID checkpoint, if any; every rejected one is
-    // said at `error` and ignored — a checkpoint is a projection, never
-    // authority, so an invalid one costs a full replay and nothing else.
-    let checkpoint_started = std::time::Instant::now();
+struct CheckpointRecovery {
+    require_filing_receipts: bool,
+    require_purchase_receipts: bool,
+    require_renewal_receipts: bool,
+    require_house_renewal_receipts: bool,
+}
+
+#[inline(never)]
+fn select_boot_checkpoint(
+    kv: &[(SmolStr, serde_json::Value)],
+    journal_max: Option<u64>,
+    history: &mush_core::LedgerHistory,
+    narrowed_below: u64,
+    recovery: CheckpointRecovery,
+) -> Result<Option<ValidCheckpoint>, ModError> {
+    let CheckpointRecovery {
+        require_filing_receipts,
+        require_purchase_receipts,
+        require_renewal_receipts,
+        require_house_renewal_receipts,
+    } = recovery;
     let (mut checkpoint, mut checkpoint_notes) =
-        crate::checkpoint::select(&kv, journal_max, &history);
+        crate::checkpoint::select(kv, journal_max, history);
     if require_filing_receipts
         && checkpoint
             .as_ref()
@@ -942,6 +927,35 @@ pub(crate) fn load_boot_with_coverage(
             });
         }
     }
+    Ok(checkpoint)
+}
+
+struct CheckpointProjection<'a> {
+    key_filter: &'a mut crate::bloom::ScalableBloom,
+    snapshot: &'a mut EconomySnapshot,
+    tx_index: &'a mut BTreeMap<TransactionId, TxRef>,
+    state: &'a mut FoldState,
+    debit_window: &'a mut BTreeMap<AccountId, crate::module::WindowTail>,
+    chunk_firsts: &'a mut BTreeMap<u64, u64>,
+    chunk_first_ids: &'a mut BTreeMap<u64, TransactionId>,
+}
+
+#[inline(never)]
+fn seed_boot_checkpoint(
+    checkpoint: Option<ValidCheckpoint>,
+    keep_from: u64,
+    narrowed_below: u64,
+    projection: CheckpointProjection<'_>,
+) -> Result<(Option<u64>, u64, Option<CheckpointMeta>), ModError> {
+    let CheckpointProjection {
+        key_filter,
+        snapshot,
+        tx_index,
+        state,
+        debit_window,
+        chunk_firsts,
+        chunk_first_ids,
+    } = projection;
     let mut covered: Option<u64> = None;
     let mut skip_below_chunk: u64 = 0;
     let mut checkpoint_meta: Option<CheckpointMeta> = None;
@@ -952,7 +966,7 @@ pub(crate) fn load_boot_with_coverage(
         filter,
     }) = checkpoint
     {
-        key_filter = filter;
+        *key_filter = filter;
         for row in &rows {
             let Some((record, tx_ref)) = ValidCheckpoint::record_of(row) else {
                 return Err(ModError::msg(format!(
@@ -963,13 +977,13 @@ pub(crate) fn load_boot_with_coverage(
             snapshot.put_idempotency(record);
             tx_index.insert(row.tx, tx_ref);
         }
-        state = head.body.fold;
+        *state = head.body.fold;
         for target in &state.reversed {
             snapshot.mark_reversed(*target);
         }
-        debit_window = head.body.debit_window;
-        chunk_firsts = head.body.chunk_firsts;
-        chunk_first_ids = head.body.chunk_first_ids;
+        *debit_window = head.body.debit_window;
+        *chunk_firsts = head.body.chunk_firsts;
+        *chunk_first_ids = head.body.chunk_first_ids;
         covered = Some(head.covered_seq);
         // J3-F4: the RAM tail (J2) is the newest `tail_max` bodies whatever the
         // boot seeded from, so the chunks holding `keep_from..` are decoded
@@ -1007,6 +1021,1046 @@ pub(crate) fn load_boot_with_coverage(
             "economy: booting from a checkpoint; replaying the tail"
         );
     }
+    Ok((covered, skip_below_chunk, checkpoint_meta))
+}
+
+struct ProjectionInputs<'a> {
+    meta: &'a Option<serde_json::Value>,
+    state: &'a FoldState,
+    snapshot: &'a mut EconomySnapshot,
+    stored_accounts: BTreeMap<AccountId, Account>,
+    stored_assets: &'a mut BTreeMap<ObjId, EconomicAsset>,
+    stored_holds: &'a mut BTreeMap<HoldId, Hold>,
+    journal_max: Option<u64>,
+    snapshot_at_stored: &'a BTreeMap<AccountId, i128>,
+    held_at_stored: &'a BTreeMap<AccountId, i128>,
+    asset_at_stored: &'a BTreeMap<ObjId, EconomicAsset>,
+    hold_at_stored: &'a BTreeMap<HoldId, Hold>,
+    lag_accounts: &'a BTreeSet<AccountId>,
+    lag_held: &'a BTreeSet<AccountId>,
+    lag_assets: &'a BTreeSet<ObjId>,
+    lag_holds: &'a BTreeSet<HoldId>,
+}
+
+struct ProjectionRepairs {
+    frozen: bool,
+    healed: Vec<Account>,
+    healed_assets: Vec<EconomicAsset>,
+    healed_holds: Vec<Hold>,
+}
+
+#[inline(never)]
+fn reconcile_boot_projections(inputs: ProjectionInputs<'_>) -> ProjectionRepairs {
+    let ProjectionInputs {
+        meta,
+        state,
+        snapshot,
+        stored_accounts,
+        stored_assets,
+        stored_holds,
+        journal_max,
+        snapshot_at_stored,
+        held_at_stored,
+        asset_at_stored,
+        hold_at_stored,
+        lag_accounts,
+        lag_held,
+        lag_assets,
+        lag_holds,
+    } = inputs;
+    // Directional self-heal + drift/ahead detection per account.
+    //
+    // The freeze latch starts from the **stored** one: a boot that froze also healed
+    // the drifted docs it found and persisted them, so re-deriving from the docs
+    // alone would come up clean on the very next boot and hand spending authority
+    // back without any staff decision. `#[serde(default)]`-style tolerance (an
+    // absent field reads `false`) keeps pre-E3 meta docs loading.
+    let mut frozen = meta
+        .as_ref()
+        .and_then(|m| m.get("frozen"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if frozen {
+        tracing::error!(
+            "economy: the stored whole-economy freeze latch is set; staying frozen (@econ/unfreeze clears it)"
+        );
+    }
+    // `held_amount`, re-derived: Σ of the account's still-`Held` reservations (§4.2).
+    let mut derived_held: BTreeMap<AccountId, i128> = BTreeMap::new();
+    for h in state.journal_holds.values() {
+        if h.status.is_held() {
+            *derived_held.entry(h.account).or_insert(0) += h.amount.widen();
+        }
+    }
+    let mut healed: Vec<Account> = Vec::new();
+    for (id, mut acct) in stored_accounts {
+        let derived = i64::try_from(*state.running.get(&id).unwrap_or(&0))
+            .ok()
+            .map(Amount::from_minor);
+        let Some(derived) = derived else {
+            tracing::error!(
+                account = id.0,
+                "economy: replayed balance does not fit i64; freezing"
+            );
+            frozen = true;
+            acct.status = crate::record::AccountStatus::Frozen;
+            snapshot.put_account(acct);
+            continue;
+        };
+        // AHEAD: the projection remembers a journal entry the journal no longer has.
+        if acct.last_journal_seq > journal_max.unwrap_or(0) && acct.last_journal_seq != 0 {
+            tracing::error!(account = id.0, stored_seq = acct.last_journal_seq, journal_max = ?journal_max, "economy: projection ahead of the journal (lost tail); freezing");
+            frozen = true;
+        }
+        // DRIFT: the stored balance disagrees with the journal at its own claimed seq.
+        //
+        // ...or claims a sequence at which the account has no line at all (E4b1
+        // verify fold, B5): the asset and hold projections have always treated that
+        // as an impossible doc and frozen on it, and the account arm has to, because
+        // `unwrap_or(0)` reads exactly like a legitimately zero balance. A doc
+        // claiming a sequence it never appears at, with a zero balance, was the one
+        // shape that walked straight through. `last_journal_seq == 0` is the "never
+        // touched" sentinel and is not a claim.
+        if acct.last_journal_seq != 0
+            && !snapshot_at_stored.contains_key(&id)
+            && !lag_accounts.contains(&id)
+        {
+            tracing::error!(
+                account = id.0,
+                stored_seq = acct.last_journal_seq,
+                "economy: account projection claims a sequence it never appears at; freezing"
+            );
+            frozen = true;
+        }
+        let claimed = snapshot_at_stored.get(&id).copied().unwrap_or(0);
+        if !lag_accounts.contains(&id) && Amount::from_widened(claimed) != Some(acct.posted_balance)
+        {
+            tracing::error!(
+                account = id.0,
+                "economy: stored balance drifts from the journal at its claimed seq; freezing"
+            );
+            frozen = true;
+        }
+        // ---- E4b1: `held_amount`, on its OWN sequence anchor (§4.2, D11) ----
+        //
+        // The same three directional rules as `posted_balance`, asked at
+        // `last_hold_seq` rather than `last_journal_seq`: a `Place`/`Release`/`Expire`
+        // is an effect-only entry that never moves the money anchor, so comparing the
+        // reservation projection there would read every placement as drift.
+        let derived_held_amount = i64::try_from(derived_held.get(&id).copied().unwrap_or(0))
+            .ok()
+            .map(Amount::from_minor);
+        let hold_touch = state.last_hold_touch.get(&id).copied().unwrap_or(0);
+        let mut held_ok = true;
+        if acct.last_hold_seq > journal_max.unwrap_or(0) && acct.last_hold_seq != 0 {
+            tracing::error!(account = id.0, stored_seq = acct.last_hold_seq, journal_max = ?journal_max, "economy: held projection ahead of the journal (lost tail); freezing");
+            frozen = true;
+        }
+        // The third rule, mirrored from the asset and hold arms (B5): a doc claiming
+        // a hold sequence at which this account has NO hold effect is impossible, and
+        // `held_amount: 0` is precisely where the comparison below goes blind —
+        // `unwrap_or(0)` cannot tell "no effect there" from "reserved nothing there".
+        if acct.last_hold_seq != 0 && !held_at_stored.contains_key(&id) && !lag_held.contains(&id) {
+            tracing::error!(
+                account = id.0,
+                stored_seq = acct.last_hold_seq,
+                "economy: held projection claims a sequence it never appears at; freezing"
+            );
+            frozen = true;
+        }
+        let claimed_held = held_at_stored.get(&id).copied().unwrap_or(0);
+        if !lag_held.contains(&id) && Amount::from_widened(claimed_held) != Some(acct.held_amount) {
+            tracing::error!(
+                account = id.0,
+                "economy: stored held_amount drifts from the journal at its claimed hold seq; freezing"
+            );
+            frozen = true;
+        }
+        let held_moved = match derived_held_amount {
+            Some(h) => {
+                let moved = acct.held_amount != h || acct.last_hold_seq != hold_touch;
+                acct.held_amount = h;
+                acct.last_hold_seq = hold_touch;
+                moved
+            }
+            None => {
+                tracing::error!(
+                    account = id.0,
+                    "economy: replayed held_amount does not fit i64; freezing"
+                );
+                frozen = true;
+                held_ok = false;
+                false
+            }
+        };
+        if !held_ok {
+            acct.status = crate::record::AccountStatus::Frozen;
+        }
+        // Adopt the journal-derived balance (heals a benign lag; a no-op when clean),
+        // and with it the journal-derived REVISION. Replay never re-derived
+        // `revision`, so a lagging doc healed its balance forward and left its
+        // revision behind — and an `expected_revisions` guard written against the
+        // pre-reboot value then passed against a state it was never checked against.
+        // `max` because `revision` is also bumped by doc-authority backstops (the
+        // destruction freeze), which the journal cannot see: never LOWER it.
+        let journal_revision = 1 + state.touches.get(&id).copied().unwrap_or(0);
+        let stale_seq = acct.last_journal_seq != state.last_touch.get(&id).copied().unwrap_or(0);
+        if acct.posted_balance != derived
+            || stale_seq
+            || acct.revision < journal_revision
+            || held_moved
+        {
+            acct.posted_balance = derived;
+            acct.last_journal_seq = state.last_touch.get(&id).copied().unwrap_or(0);
+            acct.revision = acct.revision.max(journal_revision);
+            healed.push(acct.clone());
+        }
+        snapshot.put_account(acct);
+    }
+
+    // ---- E3: asset projections ------------------------------------------
+    let mut healed_assets: Vec<EconomicAsset> = Vec::new();
+    for (object, derived) in &state.journal_assets {
+        match stored_assets.remove(object) {
+            None => {
+                // A journaled title whose doc vanished: rebuild it, but NEVER silently
+                // heal the latch — a lost doc is a lost latch, so it comes back frozen.
+                tracing::error!(
+                    object = object.0,
+                    "economy: asset doc lost; rebuilding from the journal, frozen"
+                );
+                let mut a = derived.clone();
+                a.frozen = true;
+                a.frozen_reason = Some(SmolStr::new_static("doc-lost"));
+                healed_assets.push(a.clone());
+                snapshot.put_asset(a);
+            }
+            Some(doc) => {
+                // Whether THIS title is the one that latched the whole-economy
+                // freeze — it earns its own per-asset latch, so the trace of which
+                // record needs staff attention survives the recovery boot (the
+                // whole-economy freeze is cleared in one motion; a per-asset one is
+                // cleared per record, deliberately).
+                let mut drifted = false;
+                if doc.last_journal_seq > journal_max.unwrap_or(0) {
+                    tracing::error!(object = object.0, stored_seq = doc.last_journal_seq, journal_max = ?journal_max, "economy: asset projection ahead of the journal (lost tail); freezing");
+                    drifted = true;
+                } else {
+                    match asset_at_stored.get(object) {
+                        // The doc claims a sequence at which this object really had an
+                        // effect: its journal-authority fields must match it exactly.
+                        Some(at) if journal_fields_eq(&doc, at) => {}
+                        Some(_) => {
+                            tracing::error!(
+                                object = object.0,
+                                "economy: asset projection drifts from the journal at its claimed seq; freezing"
+                            );
+                            drifted = true;
+                        }
+                        // J3: a pre-checkpoint version the fold cannot judge; healed.
+                        None if lag_assets.contains(object) => {
+                            tracing::info!(
+                                object = object.0,
+                                stored_seq = doc.last_journal_seq,
+                                "economy: asset projection lags a pre-checkpoint version; healed unverified"
+                            );
+                        }
+                        // ...or a sequence at which it had none: an impossible doc.
+                        None => {
+                            tracing::error!(
+                                object = object.0,
+                                stored_seq = doc.last_journal_seq,
+                                "economy: asset projection claims a sequence it never appears at; freezing"
+                            );
+                            drifted = true;
+                        }
+                    }
+                }
+                frozen |= drifted;
+                // Adopt the journal head (heals a benign lag), keeping the latch.
+                let mut a = derived.clone();
+                a.frozen = doc.frozen || drifted;
+                a.frozen_reason = if doc.frozen {
+                    doc.frozen_reason.clone()
+                } else if drifted {
+                    Some(SmolStr::new_static("drift"))
+                } else {
+                    None
+                };
+                if drifted || !journal_fields_eq(&doc, derived) {
+                    healed_assets.push(a.clone());
+                }
+                snapshot.put_asset(a);
+            }
+        }
+    }
+    // Docs with NO journal history are not titles (C6): loading one would let a
+    // hand-written doc mint ownership. Loud, and left on disk for staff.
+    for object in stored_assets.keys() {
+        tracing::warn!(
+            object = object.0,
+            "economy: asset doc has no journal history; NOT loaded"
+        );
+    }
+
+    // ---- E4b1: hold projections (§4.2) -----------------------------------
+    //
+    // The asset rules, minus the latch: a [`Hold`] has **no doc-authority field at
+    // all**, so the whole record is compared and a missing (or unreadable) doc is
+    // rebuilt SILENTLY — there is nothing a lost hold doc could lose. Only a doc that
+    // disagrees with the journal at its own claimed sequence, or one ahead of the
+    // journal, is drift, and drift freezes.
+    let mut healed_holds: Vec<Hold> = Vec::new();
+    for (id, derived) in &state.journal_holds {
+        match stored_holds.remove(id) {
+            None => {
+                tracing::warn!(
+                    hold = id.0,
+                    "economy: hold doc missing; rebuilt from the journal"
+                );
+                healed_holds.push(derived.clone());
+                snapshot.put_hold(derived.clone());
+            }
+            Some(doc) => {
+                let mut drifted = false;
+                if doc.last_journal_seq > journal_max.unwrap_or(0) {
+                    tracing::error!(hold = id.0, stored_seq = doc.last_journal_seq, journal_max = ?journal_max, "economy: hold projection ahead of the journal (lost tail); freezing");
+                    drifted = true;
+                } else {
+                    match hold_at_stored.get(id) {
+                        Some(at) if *at == doc => {}
+                        Some(_) => {
+                            tracing::error!(
+                                hold = id.0,
+                                "economy: hold projection drifts from the journal at its claimed seq; freezing"
+                            );
+                            drifted = true;
+                        }
+                        None if lag_holds.contains(id) => {
+                            tracing::info!(
+                                hold = id.0,
+                                stored_seq = doc.last_journal_seq,
+                                "economy: hold projection lags a pre-checkpoint version; healed unverified"
+                            );
+                        }
+                        None => {
+                            tracing::error!(
+                                hold = id.0,
+                                stored_seq = doc.last_journal_seq,
+                                "economy: hold projection claims a sequence it never appears at; freezing"
+                            );
+                            drifted = true;
+                        }
+                    }
+                }
+                frozen |= drifted;
+                if drifted || doc != *derived {
+                    healed_holds.push(derived.clone());
+                }
+                snapshot.put_hold(derived.clone());
+            }
+        }
+    }
+    // A hold doc with no journal history is not a reservation (the asset rule, C6):
+    // loading one would let a hand-written doc freeze someone's money.
+    for id in stored_holds.keys() {
+        tracing::warn!(
+            hold = id.0,
+            "economy: hold doc has no journal history; NOT loaded"
+        );
+    }
+
+    ProjectionRepairs {
+        frozen,
+        healed,
+        healed_assets,
+        healed_holds,
+    }
+}
+
+struct ContractReconciliation<'a> {
+    stored_contracts: BTreeMap<ContractId, EconomicContract>,
+    state: &'a FoldState,
+    snapshot: &'a mut EconomySnapshot,
+    outcomes: &'a crate::contract::CanonOutcomeKinds,
+    tx_index: &'a BTreeMap<TransactionId, TxRef>,
+    boot_gate: &'a dyn crate::engine::KeyGate,
+    idem_backfilled: bool,
+    key_filter: &'a crate::bloom::ScalableBloom,
+    heal_wanted: &'a mut BTreeSet<ContractId>,
+    frozen: &'a mut bool,
+    opened_escalations: &'a mut Vec<Escalation>,
+    next_escalation: &'a mut u64,
+    now: i64,
+}
+
+#[inline(never)]
+fn reconcile_boot_contracts(inputs: ContractReconciliation<'_>) -> Vec<EconomicContract> {
+    let ContractReconciliation {
+        stored_contracts,
+        state,
+        snapshot,
+        outcomes,
+        tx_index,
+        boot_gate,
+        idem_backfilled,
+        key_filter,
+        heal_wanted,
+        frozen,
+        opened_escalations,
+        next_escalation,
+        now,
+    } = inputs;
+    // ---- E4b2: contracts (containers, §5) --------------------------------
+    //
+    // Contracts load BEFORE obligations, because a `Contract`-caused obligation's
+    // own reconciliation asks whether its contract is still live — E4b1 answered
+    // "no record, so no" for every one of them, which was the fail-closed reading
+    // and is now the real question.
+    //
+    // Three journal checks, each with a different answer because each means
+    // something different:
+    //
+    // - an `Active`/`ReadyToSettle` contract whose escrow is not `Held` in the
+    //   journal is an agreement standing on money that is gone → **`Disputed`** and
+    //   a loud log (§15.2 "disable and quarantine, reserve no value"). Nothing is
+    //   captured, nothing is released; the escrow, whatever is left of it, freezes.
+    // - a `Settled { transaction }` whose transaction the journal does not have is
+    //   **drift**: a settlement the journal never saw is a doc claiming money moved.
+    //   That is the whole-economy freeze, with the level-2 companion record E4b1
+    //   opens for one.
+    // - a `Settled` transaction the journal has but which was **reversed** →
+    //   `Disputed`. Invariant 28 makes that unreachable (a capture-carrying entry
+    //   cannot be reversed), which is exactly why it is checked: an unreachable
+    //   state that shows up is evidence about the journal, not about the contract.
+    let mut healed_contracts: Vec<EconomicContract> = Vec::new();
+    for (_, mut c) in stored_contracts {
+        let mut quarantine: Option<String> = None;
+        // E4b2 verify fold, B6: **a stored surface is not evidence.** `Offered` on
+        // disk only means it passed `check_offerable` at some past moment, against a
+        // past code version, before whatever edit or migration produced the bytes now
+        // on disk. A record whose `After` anchors form a cycle, whose split cannot be
+        // paid, whose deadline names a clock nothing resolves, or whose payer is not a
+        // party can never settle — and its escrow would sit until a deadline that may
+        // itself be unresolvable, with nothing saying why. Re-run the structural half
+        // here (the world half needs a snapshot boot is still assembling) and
+        // quarantine what it refuses; the escrow is untouched either way.
+        // E6a step 1 verify fold (M6): remember *whether it was a `System` party*.
+        // The quarantine page recommends `@contract/resolve #N=settle` alongside
+        // `=refund`, and `settlement_plan` re-runs `check_structure_basic` — which is
+        // the very check that refused this contract — so a staffer following the first
+        // recommendation on a legacy faucet party gets a refusal and no explanation.
+        // Only `=refund` can move it, so only `=refund` is offered.
+        let mut system_party = false;
+        if !c.state.is_terminal()
+            && let Err(e) = crate::contract::check_structure(&c, outcomes)
+        {
+            system_party = matches!(e, crate::contract::ContractError::SystemParty);
+            quarantine = Some(format!(
+                "contract #{} could not settle as stored ({e}); its surface is quarantined",
+                c.id
+            ));
+        }
+        match &c.state {
+            ContractState::Active | ContractState::ReadyToSettle => {
+                let broken = c.escrow.iter().any(|id| {
+                    !state
+                        .journal_holds
+                        .get(id)
+                        .is_some_and(|h| h.status.is_held())
+                });
+                // E4b2 verify fold, B1: **finish the transition before disputing it.**
+                // A terminal transition is a post under the contract's own
+                // deterministic key followed by a state write, so a lost doc write
+                // leaves exactly this shape: escrow released (or captured) in the
+                // journal, and a record still claiming to be live. Disputing that is
+                // wrong twice over — it pages a human about a contract that is
+                // finished, and it leaves the state machine claiming money is reserved
+                // that the journal says is not. The key resolves the question with no
+                // guessing at all.
+                if broken && quarantine.is_none() {
+                    match finished_transition(&c, snapshot, tx_index, boot_gate) {
+                        // Doc 13 W2 (W-D7): the keys are outside the RAM window and
+                        // the filter has seen one — the sweep asks the store and
+                        // finishes it exactly as this arm would; not a quarantine.
+                        Finished::Unknown => {
+                            tracing::info!(
+                                contract = c.id.0,
+                                "economy: a contract's escrow is not held in the journal and its \
+                                 terminal keys are outside the RAM window; the sweep resolves it \
+                                 through the store"
+                            );
+                            heal_wanted.insert(c.id);
+                        }
+                        Finished::Yes(state) => {
+                            tracing::info!(
+                                contract = c.id.0,
+                                state = ?state.kind(),
+                                "economy: a contract's terminal transition had posted but its doc \
+                                 write was lost; finishing it from the idempotency index"
+                            );
+                            c.state = state;
+                            c.pending = None;
+                            c.revision += 1;
+                            healed_contracts.push(c.clone());
+                        }
+                        Finished::No => {
+                            quarantine = Some(format!(
+                                "contract #{}'s escrow is not held in the journal, and none of its \
+                                 terminal keys resolves to a transaction",
+                                c.id
+                            ));
+                        }
+                    }
+                }
+            }
+            ContractState::Settled { transaction } => {
+                // E4b2 verify fold, B5: existence is not identity. A doc naming a
+                // transaction the journal HAS, but which is some other contract's
+                // settlement (or any other post), is a record claiming a payout that
+                // never happened to it — the same class of drift as naming a
+                // transaction that does not exist, and it must not read as clean.
+                let mine = crate::contract::contract_op_key(c.id, "settle", c.amendments);
+                let claims_another = tx_index
+                    .get(transaction)
+                    .is_some_and(|r| r.idempotency != mine);
+                // Doc 13 W2: a settlement older than the RAM window has no index
+                // entry; it is the journal's when the allocator minted its id and
+                // the filter has seen this contract's own settle key.
+                let outside_window = !tx_index.contains_key(transaction)
+                    && idem_backfilled
+                    && transaction.0 <= state.max_txid
+                    && key_filter.might_contain(&mine);
+                if (!tx_index.contains_key(transaction) && !outside_window) || claims_another {
+                    tracing::error!(
+                        contract = c.id.0,
+                        transaction = transaction.0,
+                        claims_another,
+                        "economy: a settled contract names a transaction that is not its own \
+                         settlement; freezing the economy"
+                    );
+                    *frozen = true;
+                    if opened_escalations.len() < MAX_BOOT_ESCALATIONS
+                        && let Some(id) = mint_escalation(next_escalation)
+                    {
+                        opened_escalations.push(Escalation::page(
+                            id,
+                            EscalationKind::EconomyFrozen,
+                            EscalationSubject::Contract(c.id),
+                            format!(
+                                "contract #{} says it settled as transaction #{transaction}, and \
+                                 that is not this contract's settlement. A settlement the journal \
+                                 does not attribute here is drift, so the whole economy is frozen.",
+                                c.id
+                            ),
+                            vec![
+                                format!("@contract/show #{}", c.id),
+                                "@econ/audit".to_string(),
+                                "@econ/unfreeze   (only after the journal is understood)"
+                                    .to_string(),
+                            ],
+                            now,
+                        ));
+                    }
+                } else if snapshot.is_reversed(*transaction) {
+                    quarantine = Some(format!(
+                        "contract #{}'s settlement transaction #{transaction} was reversed",
+                        c.id
+                    ));
+                }
+            }
+            ContractState::Draft
+            | ContractState::Offered
+            | ContractState::Disputed
+            | ContractState::Cancelled
+            | ContractState::Expired => {}
+        }
+        if let Some(reason) = quarantine {
+            tracing::error!(contract = c.id.0, %reason, "economy: boot quarantined a contract");
+            c.state = ContractState::Disputed;
+            c.pending = None;
+            c.revision += 1;
+            healed_contracts.push(c.clone());
+            if opened_escalations.len() < MAX_BOOT_ESCALATIONS
+                && let Some(id) = mint_escalation(next_escalation)
+            {
+                // M6: a settlement re-runs the structural check this contract just
+                // failed, so recommending it would be recommending a refusal.
+                let recommended = if system_party {
+                    vec![
+                        format!("@contract/show #{}", c.id),
+                        format!(
+                            "@contract/resolve #{}=refund   (a `System` party can never settle: \
+                             nobody acts for one)",
+                            c.id
+                        ),
+                    ]
+                } else {
+                    vec![
+                        format!("@contract/show #{}", c.id),
+                        format!("@contract/resolve #{}=refund", c.id),
+                        format!("@contract/resolve #{}=settle", c.id),
+                    ]
+                };
+                opened_escalations.push(Escalation::page(
+                    id,
+                    EscalationKind::BootReconciliation,
+                    EscalationSubject::Contract(c.id),
+                    reason,
+                    recommended,
+                    now,
+                ));
+            }
+        }
+        // The depositor of every live `DepositInto`, from the journal's last-custody
+        // map (§5). Recording it here is what lets a refund put the object back: the
+        // custody lock has no exception, so the contract's own unwind is the only
+        // route out, and it has to know whose the thing was.
+        if c.state.is_live() {
+            let deposits = derive_deposits(&c, &state.last_custody);
+            if deposits != c.deposits {
+                c.deposits = deposits;
+                c.revision += 1;
+                healed_contracts.push(c.clone());
+            }
+        }
+        // `put_contract` re-derives the custody locks from the record's own
+        // `DepositInto` conditions, so the locks come back exactly as the live states
+        // describe them and a terminal contract holds nothing.
+        snapshot.put_contract(c);
+    }
+
+    // ---- E4b2 verify fold, B2: orphan escrow ------------------------------
+    //
+    // A hold the journal says is **`Held`** with `purpose: Escrow { contract }`, that
+    // the contract's own `escrow` list does not name, is money nothing in the world
+    // can reach: `WorldAuth::authorize_hold` refuses every op on an escrow hold, and
+    // `ContractAuth` only ever touches what `qualifying_escrow` returns — which reads
+    // that list. It is exactly what a lost `@contract/accept` doc write leaves behind
+    // (which is why the accept now rides the post's own batch), and a boot is the one
+    // place that can see both halves at once.
+    //
+    // Three answers, because the three cases are different:
+    //
+    // - **non-terminal and it qualifies** — the hold matches an unclaimed
+    //   consideration, so it IS this contract's escrow: adopt it. Loud, no page: the
+    //   record is now right and the contract can settle or refund normally.
+    // - **terminal** — the money has to come back, and the contract's own unwind is
+    //   the only thing that may release it. Adopt it, advance the key **generation**
+    //   (the old refund key is spent, and reusing it would be an idempotency HIT that
+    //   hands nothing back), and set `pending` so the sweep posts the unwind under a
+    //   fresh key and lands the same terminal state again.
+    // - **anything else** — a settled contract, a hold matching no consideration, a
+    //   contract with no record at all: a human decides. Page, with the command.
+    let orphans: Vec<Hold> = state
+        .journal_holds
+        .values()
+        .filter(|h| h.status.is_held())
+        .filter(|h| match h.purpose {
+            crate::record::HoldPurpose::Escrow { contract } => snapshot
+                .contract(contract)
+                .is_none_or(|c| !c.escrow.contains(&h.id)),
+            _ => false,
+        })
+        .cloned()
+        .collect();
+    for hold in orphans {
+        let crate::record::HoldPurpose::Escrow { contract } = hold.purpose else {
+            continue;
+        };
+        let Some(mut c) = snapshot.contract(contract).cloned() else {
+            tracing::error!(
+                hold = hold.id.0,
+                contract = contract.0,
+                "economy: an escrow hold names a contract with no record"
+            );
+            if opened_escalations.len() < MAX_BOOT_ESCALATIONS
+                && let Some(id) = mint_escalation(next_escalation)
+            {
+                opened_escalations.push(Escalation::page(
+                    id,
+                    EscalationKind::BootReconciliation,
+                    EscalationSubject::Contract(contract),
+                    format!(
+                        "hold #{} is escrow for contract #{contract}, and there is no such contract                          record; the money is reserved and nothing can release it",
+                        hold.id
+                    ),
+                    vec![format!("@contract/show #{contract}"), "@econ/audit".to_string()],
+                    now,
+                ));
+            }
+            continue;
+        };
+        // Does it qualify? Ask the real predicate, with the hold provisionally listed.
+        let mut probe = c.clone();
+        probe.escrow.push(hold.id);
+        let qualifies = crate::contract::qualifying_escrow(&probe, snapshot)
+            .holds
+            .iter()
+            .any(|h| h.id == hold.id);
+        let terminal = c.state.is_terminal();
+        if qualifies && !terminal {
+            tracing::warn!(
+                hold = hold.id.0,
+                contract = contract.0,
+                "economy: adopting an orphaned escrow hold into its contract"
+            );
+            c.escrow.push(hold.id);
+            c.revision += 1;
+            healed_contracts.push(c.clone());
+            snapshot.put_contract(c);
+            continue;
+        }
+        if qualifies && matches!(c.state, ContractState::Cancelled | ContractState::Expired) {
+            tracing::error!(
+                hold = hold.id.0,
+                contract = contract.0,
+                "economy: an ended contract still holds escrow; scheduling its own unwind under a fresh key generation"
+            );
+            c.escrow.push(hold.id);
+            c.amendments = c.amendments.saturating_add(1);
+            c.pending = Some(crate::contract::PendingTerminal {
+                kind: if c.state == ContractState::Cancelled {
+                    crate::contract::PendingKind::Cancel
+                } else {
+                    crate::contract::PendingKind::Expire
+                },
+                attempts: 0,
+                since: now,
+            });
+            c.revision += 1;
+            healed_contracts.push(c.clone());
+            snapshot.put_contract(c);
+            continue;
+        }
+        tracing::error!(hold = hold.id.0, contract = contract.0, state = ?c.state.kind(), "economy: an escrow hold belongs to no consideration its contract names");
+        if opened_escalations.len() < MAX_BOOT_ESCALATIONS
+            && let Some(id) = mint_escalation(next_escalation)
+        {
+            opened_escalations.push(Escalation::page(
+                id,
+                EscalationKind::BootReconciliation,
+                EscalationSubject::Contract(contract),
+                format!(
+                    "hold #{} is escrow for contract #{contract} but matches nothing that contract                      agreed to pay; the money is reserved and only a human can decide where it goes",
+                    hold.id
+                ),
+                vec![
+                    format!("@contract/show #{contract}"),
+                    format!("@contract/resolve #{contract}=refund"),
+                    "@econ/audit".to_string(),
+                ],
+                now,
+            ));
+        }
+    }
+
+    healed_contracts
+}
+
+struct RemainingReconciliation<'a> {
+    world: &'a World,
+    providers: &'a CustodyTable,
+    stored_obligations: BTreeMap<ObligationId, Obligation>,
+    snapshot: &'a mut EconomySnapshot,
+    opened_escalations: &'a mut Vec<Escalation>,
+    next_escalation: &'a mut u64,
+    escalations: &'a mut BTreeMap<EscalationId, Escalation>,
+    state: &'a FoldState,
+    healed_assets: &'a mut Vec<EconomicAsset>,
+    now: i64,
+}
+
+#[inline(never)]
+fn reconcile_boot_obligations_and_custody(inputs: RemainingReconciliation<'_>) -> Vec<Obligation> {
+    let RemainingReconciliation {
+        world,
+        providers,
+        stored_obligations,
+        snapshot,
+        opened_escalations,
+        next_escalation,
+        escalations,
+        state,
+        healed_assets,
+        now,
+    } = inputs;
+    // ---- E4b1: obligations (containers, §4.2) ----------------------------
+    //
+    // Boot never guesses and never deletes: an obligation whose debtor, creditor, or
+    // either account can no longer carry it is **suspended** — out of the due pool, so
+    // the sweep stops attempting it — and, per the ladder (§4.6, D-E4-14), paged with
+    // the command that fixes it already written out. Nothing is charged, nothing is
+    // lost, and a staffer sees the question rather than a silent stall.
+    let mut healed_obligations: Vec<Obligation> = Vec::new();
+    for (_, mut o) in stored_obligations {
+        if let Some(reason) = obligation_unusable(world, snapshot, &o)
+            && o.status.in_due_pool()
+        {
+            {
+                tracing::error!(obligation = o.id.0, %reason, "economy: boot suspended an obligation it cannot settle");
+                let minted = (opened_escalations.len() < MAX_BOOT_ESCALATIONS)
+                    .then(|| mint_escalation(next_escalation))
+                    .flatten();
+                let suspend = if let Some(id) = minted {
+                    let record = Escalation::page(
+                        id,
+                        EscalationKind::BootReconciliation,
+                        EscalationSubject::Obligation(o.id),
+                        reason,
+                        boot_advice(&o),
+                        now,
+                    );
+                    opened_escalations.push(record);
+                    SuspendReason::Escalated(id)
+                } else {
+                    // Past the cap the subject is still stopped and the reason still
+                    // logged: a broken world must not mint an unbounded alert storm.
+                    SuspendReason::Staff {
+                        reason: SmolStr::new_static("boot-reconciliation"),
+                    }
+                };
+                // Under the ladder's own key (look-back fold, D-LBK-1): `@econ/ack`
+                // releases it, and a layered module's hold is neither lifted by that
+                // nor lifts it.
+                o = crate::obligation::hold(&o, suspend, now);
+                healed_obligations.push(o.clone());
+            }
+        }
+        snapshot.put_obligation(o);
+    }
+    for e in opened_escalations.iter() {
+        escalations.insert(e.id, e.clone());
+    }
+
+    // ---- E3: custody reconciliation (audit-only; never derives a location) --
+    let deposited: Vec<(ObjId, VaultId)> = state
+        .last_custody
+        .iter()
+        .filter(|(_, mark)| mark.direction == CustodyDirection::Deposit)
+        .map(|(o, mark)| (*o, mark.vault))
+        .collect();
+    let mut mismatched: BTreeSet<ObjId> = BTreeSet::new();
+    for (object, vault_id) in deposited {
+        let Some(vault) = snapshot.vault(vault_id) else {
+            tracing::warn!(
+                object = object.0,
+                vault = vault_id.0,
+                "economy: custody effect names a vault with no doc"
+            );
+            continue;
+        };
+        let answer = crate::custody::resolve(providers, world, &vault.backing, None)
+            .ok()
+            .and_then(|p| p.holds(world, &vault.backing, object));
+        match answer {
+            Some(true) => {}
+            Some(false) => {
+                tracing::warn!(
+                    object = object.0,
+                    vault = vault_id.0,
+                    "economy: deposited object is no longer in its vault"
+                );
+                if snapshot.asset(object).is_some() {
+                    mismatched.insert(object);
+                }
+            }
+            // The provider cannot answer (its own state boots later — economy boots
+            // before sim). Unknown is NOT drift.
+            None => {
+                tracing::warn!(
+                    object = object.0,
+                    vault = vault_id.0,
+                    "economy: no custody provider could answer for this vault; skipping reconciliation"
+                );
+            }
+        }
+    }
+    for object in mismatched {
+        if let Some(a) = snapshot.asset_mut(object)
+            && !a.frozen
+        {
+            // `revision` is journal authority and stays put (see `set_asset_frozen`).
+            a.frozen = true;
+            a.frozen_reason = Some(SmolStr::new_static("custody-mismatch"));
+            healed_assets.push(a.clone());
+        }
+    }
+
+    // ---- E3: liveness (the boot half of the destruction backstop) ---------
+    let dead: Vec<ObjId> = snapshot
+        .assets()
+        .filter(|a| !a.frozen && !asset_is_live(world, a))
+        .map(|a| a.object)
+        .collect();
+    for object in dead {
+        if let Some(a) = snapshot.asset_mut(object) {
+            a.frozen = true;
+            a.frozen_reason = Some(SmolStr::new_static("principal-gone"));
+            healed_assets.push(a.clone());
+        }
+    }
+
+    healed_obligations
+}
+
+pub(crate) fn load_boot_with_coverage(
+    ctx: &mut ModuleCtx<'_>,
+    data: ModuleBootData,
+    providers: &CustodyTable,
+    outcomes: &crate::contract::CanonOutcomeKinds,
+    tail_max: usize,
+    window_secs: i64,
+    require_filing_receipts: bool,
+    require_purchase_receipts: bool,
+    require_renewal_receipts: bool,
+    require_update_receipts: bool,
+    require_charter_transfer_receipts: bool,
+    require_core_receipts: bool,
+    require_charter_pending: bool,
+    require_house_renewal_receipts: bool,
+    require_paid_resale: bool,
+    require_refit_receipts: bool,
+    require_coverage: bool,
+) -> Result<EconomyStore, ModError> {
+    let ModuleBootData {
+        kv,
+        ledger: mut ledger_docs,
+        omitted,
+        ..
+    } = data;
+    let renewal_documents =
+        crate::managed_renewal::bridge::documents(&kv, require_renewal_receipts)?;
+    let house_renewal_documents =
+        crate::managed_house_renewal::bridge::documents(&kv, require_house_renewal_receipts)?;
+    // J4 (doc 12 §5.6): what the loader left out on the boot manifest — the
+    // min-present marker the inspection honours; 0 for a whole fetch.
+    let narrowed_below: u64 = omitted
+        .get(crate::module::JOURNAL_LOG)
+        .copied()
+        .unwrap_or(0);
+    // J1 (doc 12): ONE inspection of the journal's chunk documents serves the
+    // contiguity decision, the ledger restore and the typed pass below; each
+    // chunk is decoded from its text once, and the text is dropped as it goes.
+    // Unreplayable journal → fail the boot (never destructively "recover" money).
+    let mut journal = Ledger::new();
+    let history = journal.inspect_from(&ledger_docs, &omitted);
+    if !history.is_clean() {
+        return Err(ModError::msg(format!(
+            "economy: journal contiguity breach; refusing to boot on a hole ({} breach(es); first {:?})",
+            history.total_breaches(),
+            history.breaches().first()
+        )));
+    }
+    journal.restore_from_history(&history).map_err(|error| {
+        ModError::msg(format!(
+            "economy: authoritative journal restore refused: {error}"
+        ))
+    })?;
+
+    let ParsedDocuments {
+        instruments,
+        stored_accounts,
+        mut stored_assets,
+        stored_vaults,
+        stored_approvals,
+        mut stored_holds,
+        stored_obligations,
+        stored_cadences,
+        stored_escalations,
+        mut stored_contracts,
+        stored_notices,
+        meta,
+        max_approval_key,
+        max_obligation_key,
+        max_cadence_key,
+        max_escalation_key,
+        max_contract_key,
+        checkpoint_keys,
+    } = parse_documents(
+        &kv,
+        DocumentRecovery {
+            require_charter_pending,
+            require_coverage,
+            require_house_renewal_receipts,
+            require_paid_resale,
+            require_purchase_receipts,
+            require_renewal_receipts,
+        },
+    )?;
+
+    // J2: the typed pass and the fold are one streamed loop (below), chunk by
+    // chunk, so no more than one chunk's records exist outside the RAM tail at
+    // any moment. What the fold needs of the whole journal is known up front.
+    // J4-F1: the journal's length is the restored tail's next sequence, not the
+    // inspection's entry count — a narrowed fetch hands over only the chunks
+    // at or above the manifest's floor, and a tail floor computed from those
+    // alone sat far too low (every present body was retained).
+    let journal_len = journal.next_seq(crate::module::JOURNAL_LOG);
+    let journal_empty = journal_len == 0;
+    let journal_max: Option<u64> = journal_len.checked_sub(1);
+    // The RAM tail keeps the newest `tail_max` bodies: every entry at or past
+    // this sequence. The index below keeps every id.
+    let keep_from: u64 = journal_len.saturating_sub(u64::try_from(tail_max).unwrap_or(u64::MAX));
+    let mut tx_index: BTreeMap<TransactionId, TxRef> = BTreeMap::new();
+    let mut chunk_firsts: BTreeMap<u64, u64> = BTreeMap::new();
+    let mut chunk_first_ids: BTreeMap<u64, TransactionId> = BTreeMap::new();
+    // Doc 13 W2 (W-D2): the replay keeps only the window's keys in the map and
+    // the index — once every key has its document (W-D5); the count bound is
+    // applied when the store is up. The filter takes every key regardless.
+    let boot_now = ctx.w.now();
+
+    // Replay: the journal-authority accumulators (J3, `FoldState`, the one fold
+    // the live post path uses too), plus what only boot captures — each
+    // projection's journal value at the sequence its stored doc CLAIMS (the
+    // drift detectors), the idempotency index and the reversed set into the
+    // snapshot, the transaction index, and the RAM tail.
+    let mut state = FoldState::default();
+    let mut snapshot_at_stored: BTreeMap<AccountId, i128> = BTreeMap::new();
+    let mut asset_at_stored: BTreeMap<ObjId, EconomicAsset> = BTreeMap::new();
+    // E6a step 1 (D-E6-21): the rolling-window tails, folded by the same function
+    // `index_transaction` uses, so replay and live indexing cannot disagree.
+    let mut debit_window: BTreeMap<AccountId, crate::module::WindowTail> = BTreeMap::new();
+    let mut hold_at_stored: BTreeMap<HoldId, Hold> = BTreeMap::new();
+    let mut held_at_stored: BTreeMap<AccountId, i128> = BTreeMap::new();
+    let mut transactions: BTreeMap<TransactionId, EconomicTransaction> = BTreeMap::new();
+    // Doc 13 (W-D3): every key ever posted — replayed whole, or seeded from the
+    // checkpoint's bloom part and extended by the tail.
+    let mut key_filter = crate::bloom::ScalableBloom::new();
+    let mut snapshot = EconomySnapshot::new();
+    for def in instruments.values() {
+        snapshot.put_instrument(def.clone());
+    }
+    // J3: seed from the newest VALID checkpoint, if any; every rejected one is
+    // said at `error` and ignored — a checkpoint is a projection, never
+    // authority, so an invalid one costs a full replay and nothing else.
+    let checkpoint_started = std::time::Instant::now();
+    let checkpoint = select_boot_checkpoint(
+        &kv,
+        journal_max,
+        &history,
+        narrowed_below,
+        CheckpointRecovery {
+            require_filing_receipts,
+            require_purchase_receipts,
+            require_renewal_receipts,
+            require_house_renewal_receipts,
+        },
+    )?;
+    let (covered, skip_below_chunk, checkpoint_meta) = seed_boot_checkpoint(
+        checkpoint,
+        keep_from,
+        narrowed_below,
+        CheckpointProjection {
+            key_filter: &mut key_filter,
+            snapshot: &mut snapshot,
+            tx_index: &mut tx_index,
+            state: &mut state,
+            debit_window: &mut debit_window,
+            chunk_firsts: &mut chunk_firsts,
+            chunk_first_ids: &mut chunk_first_ids,
+        },
+    )?;
     let checkpoint_ms = u64::try_from(checkpoint_started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     // Doc 13 (W-D5): the key-document backfill's cursor and flag; an empty
@@ -1386,307 +2440,28 @@ pub(crate) fn load_boot_with_coverage(
         }
     }
 
-    // Directional self-heal + drift/ahead detection per account.
-    //
-    // The freeze latch starts from the **stored** one: a boot that froze also healed
-    // the drifted docs it found and persisted them, so re-deriving from the docs
-    // alone would come up clean on the very next boot and hand spending authority
-    // back without any staff decision. `#[serde(default)]`-style tolerance (an
-    // absent field reads `false`) keeps pre-E3 meta docs loading.
-    let mut frozen = meta
-        .as_ref()
-        .and_then(|m| m.get("frozen"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    if frozen {
-        tracing::error!(
-            "economy: the stored whole-economy freeze latch is set; staying frozen (@econ/unfreeze clears it)"
-        );
-    }
-    // `held_amount`, re-derived: Σ of the account's still-`Held` reservations (§4.2).
-    let mut derived_held: BTreeMap<AccountId, i128> = BTreeMap::new();
-    for h in state.journal_holds.values() {
-        if h.status.is_held() {
-            *derived_held.entry(h.account).or_insert(0) += h.amount.widen();
-        }
-    }
-    let mut healed: Vec<Account> = Vec::new();
-    for (id, mut acct) in stored_accounts {
-        let derived = i64::try_from(*state.running.get(&id).unwrap_or(&0))
-            .ok()
-            .map(Amount::from_minor);
-        let Some(derived) = derived else {
-            tracing::error!(
-                account = id.0,
-                "economy: replayed balance does not fit i64; freezing"
-            );
-            frozen = true;
-            acct.status = crate::record::AccountStatus::Frozen;
-            snapshot.put_account(acct);
-            continue;
-        };
-        // AHEAD: the projection remembers a journal entry the journal no longer has.
-        if acct.last_journal_seq > journal_max.unwrap_or(0) && acct.last_journal_seq != 0 {
-            tracing::error!(account = id.0, stored_seq = acct.last_journal_seq, journal_max = ?journal_max, "economy: projection ahead of the journal (lost tail); freezing");
-            frozen = true;
-        }
-        // DRIFT: the stored balance disagrees with the journal at its own claimed seq.
-        //
-        // ...or claims a sequence at which the account has no line at all (E4b1
-        // verify fold, B5): the asset and hold projections have always treated that
-        // as an impossible doc and frozen on it, and the account arm has to, because
-        // `unwrap_or(0)` reads exactly like a legitimately zero balance. A doc
-        // claiming a sequence it never appears at, with a zero balance, was the one
-        // shape that walked straight through. `last_journal_seq == 0` is the "never
-        // touched" sentinel and is not a claim.
-        if acct.last_journal_seq != 0
-            && !snapshot_at_stored.contains_key(&id)
-            && !lag_accounts.contains(&id)
-        {
-            tracing::error!(
-                account = id.0,
-                stored_seq = acct.last_journal_seq,
-                "economy: account projection claims a sequence it never appears at; freezing"
-            );
-            frozen = true;
-        }
-        let claimed = snapshot_at_stored.get(&id).copied().unwrap_or(0);
-        if !lag_accounts.contains(&id) && Amount::from_widened(claimed) != Some(acct.posted_balance)
-        {
-            tracing::error!(
-                account = id.0,
-                "economy: stored balance drifts from the journal at its claimed seq; freezing"
-            );
-            frozen = true;
-        }
-        // ---- E4b1: `held_amount`, on its OWN sequence anchor (§4.2, D11) ----
-        //
-        // The same three directional rules as `posted_balance`, asked at
-        // `last_hold_seq` rather than `last_journal_seq`: a `Place`/`Release`/`Expire`
-        // is an effect-only entry that never moves the money anchor, so comparing the
-        // reservation projection there would read every placement as drift.
-        let derived_held_amount = i64::try_from(derived_held.get(&id).copied().unwrap_or(0))
-            .ok()
-            .map(Amount::from_minor);
-        let hold_touch = state.last_hold_touch.get(&id).copied().unwrap_or(0);
-        let mut held_ok = true;
-        if acct.last_hold_seq > journal_max.unwrap_or(0) && acct.last_hold_seq != 0 {
-            tracing::error!(account = id.0, stored_seq = acct.last_hold_seq, journal_max = ?journal_max, "economy: held projection ahead of the journal (lost tail); freezing");
-            frozen = true;
-        }
-        // The third rule, mirrored from the asset and hold arms (B5): a doc claiming
-        // a hold sequence at which this account has NO hold effect is impossible, and
-        // `held_amount: 0` is precisely where the comparison below goes blind —
-        // `unwrap_or(0)` cannot tell "no effect there" from "reserved nothing there".
-        if acct.last_hold_seq != 0 && !held_at_stored.contains_key(&id) && !lag_held.contains(&id) {
-            tracing::error!(
-                account = id.0,
-                stored_seq = acct.last_hold_seq,
-                "economy: held projection claims a sequence it never appears at; freezing"
-            );
-            frozen = true;
-        }
-        let claimed_held = held_at_stored.get(&id).copied().unwrap_or(0);
-        if !lag_held.contains(&id) && Amount::from_widened(claimed_held) != Some(acct.held_amount) {
-            tracing::error!(
-                account = id.0,
-                "economy: stored held_amount drifts from the journal at its claimed hold seq; freezing"
-            );
-            frozen = true;
-        }
-        let held_moved = match derived_held_amount {
-            Some(h) => {
-                let moved = acct.held_amount != h || acct.last_hold_seq != hold_touch;
-                acct.held_amount = h;
-                acct.last_hold_seq = hold_touch;
-                moved
-            }
-            None => {
-                tracing::error!(
-                    account = id.0,
-                    "economy: replayed held_amount does not fit i64; freezing"
-                );
-                frozen = true;
-                held_ok = false;
-                false
-            }
-        };
-        if !held_ok {
-            acct.status = crate::record::AccountStatus::Frozen;
-        }
-        // Adopt the journal-derived balance (heals a benign lag; a no-op when clean),
-        // and with it the journal-derived REVISION. Replay never re-derived
-        // `revision`, so a lagging doc healed its balance forward and left its
-        // revision behind — and an `expected_revisions` guard written against the
-        // pre-reboot value then passed against a state it was never checked against.
-        // `max` because `revision` is also bumped by doc-authority backstops (the
-        // destruction freeze), which the journal cannot see: never LOWER it.
-        let journal_revision = 1 + state.touches.get(&id).copied().unwrap_or(0);
-        let stale_seq = acct.last_journal_seq != state.last_touch.get(&id).copied().unwrap_or(0);
-        if acct.posted_balance != derived
-            || stale_seq
-            || acct.revision < journal_revision
-            || held_moved
-        {
-            acct.posted_balance = derived;
-            acct.last_journal_seq = state.last_touch.get(&id).copied().unwrap_or(0);
-            acct.revision = acct.revision.max(journal_revision);
-            healed.push(acct.clone());
-        }
-        snapshot.put_account(acct);
-    }
-
-    // ---- E3: asset projections ------------------------------------------
-    let mut healed_assets: Vec<EconomicAsset> = Vec::new();
-    for (object, derived) in &state.journal_assets {
-        match stored_assets.remove(object) {
-            None => {
-                // A journaled title whose doc vanished: rebuild it, but NEVER silently
-                // heal the latch — a lost doc is a lost latch, so it comes back frozen.
-                tracing::error!(
-                    object = object.0,
-                    "economy: asset doc lost; rebuilding from the journal, frozen"
-                );
-                let mut a = derived.clone();
-                a.frozen = true;
-                a.frozen_reason = Some(SmolStr::new_static("doc-lost"));
-                healed_assets.push(a.clone());
-                snapshot.put_asset(a);
-            }
-            Some(doc) => {
-                // Whether THIS title is the one that latched the whole-economy
-                // freeze — it earns its own per-asset latch, so the trace of which
-                // record needs staff attention survives the recovery boot (the
-                // whole-economy freeze is cleared in one motion; a per-asset one is
-                // cleared per record, deliberately).
-                let mut drifted = false;
-                if doc.last_journal_seq > journal_max.unwrap_or(0) {
-                    tracing::error!(object = object.0, stored_seq = doc.last_journal_seq, journal_max = ?journal_max, "economy: asset projection ahead of the journal (lost tail); freezing");
-                    drifted = true;
-                } else {
-                    match asset_at_stored.get(object) {
-                        // The doc claims a sequence at which this object really had an
-                        // effect: its journal-authority fields must match it exactly.
-                        Some(at) if journal_fields_eq(&doc, at) => {}
-                        Some(_) => {
-                            tracing::error!(
-                                object = object.0,
-                                "economy: asset projection drifts from the journal at its claimed seq; freezing"
-                            );
-                            drifted = true;
-                        }
-                        // J3: a pre-checkpoint version the fold cannot judge; healed.
-                        None if lag_assets.contains(object) => {
-                            tracing::info!(
-                                object = object.0,
-                                stored_seq = doc.last_journal_seq,
-                                "economy: asset projection lags a pre-checkpoint version; healed unverified"
-                            );
-                        }
-                        // ...or a sequence at which it had none: an impossible doc.
-                        None => {
-                            tracing::error!(
-                                object = object.0,
-                                stored_seq = doc.last_journal_seq,
-                                "economy: asset projection claims a sequence it never appears at; freezing"
-                            );
-                            drifted = true;
-                        }
-                    }
-                }
-                frozen |= drifted;
-                // Adopt the journal head (heals a benign lag), keeping the latch.
-                let mut a = derived.clone();
-                a.frozen = doc.frozen || drifted;
-                a.frozen_reason = if doc.frozen {
-                    doc.frozen_reason.clone()
-                } else if drifted {
-                    Some(SmolStr::new_static("drift"))
-                } else {
-                    None
-                };
-                if drifted || !journal_fields_eq(&doc, derived) {
-                    healed_assets.push(a.clone());
-                }
-                snapshot.put_asset(a);
-            }
-        }
-    }
-    // Docs with NO journal history are not titles (C6): loading one would let a
-    // hand-written doc mint ownership. Loud, and left on disk for staff.
-    for object in stored_assets.keys() {
-        tracing::warn!(
-            object = object.0,
-            "economy: asset doc has no journal history; NOT loaded"
-        );
-    }
-
-    // ---- E4b1: hold projections (§4.2) -----------------------------------
-    //
-    // The asset rules, minus the latch: a [`Hold`] has **no doc-authority field at
-    // all**, so the whole record is compared and a missing (or unreadable) doc is
-    // rebuilt SILENTLY — there is nothing a lost hold doc could lose. Only a doc that
-    // disagrees with the journal at its own claimed sequence, or one ahead of the
-    // journal, is drift, and drift freezes.
-    let mut healed_holds: Vec<Hold> = Vec::new();
-    for (id, derived) in &state.journal_holds {
-        match stored_holds.remove(id) {
-            None => {
-                tracing::warn!(
-                    hold = id.0,
-                    "economy: hold doc missing; rebuilt from the journal"
-                );
-                healed_holds.push(derived.clone());
-                snapshot.put_hold(derived.clone());
-            }
-            Some(doc) => {
-                let mut drifted = false;
-                if doc.last_journal_seq > journal_max.unwrap_or(0) {
-                    tracing::error!(hold = id.0, stored_seq = doc.last_journal_seq, journal_max = ?journal_max, "economy: hold projection ahead of the journal (lost tail); freezing");
-                    drifted = true;
-                } else {
-                    match hold_at_stored.get(id) {
-                        Some(at) if *at == doc => {}
-                        Some(_) => {
-                            tracing::error!(
-                                hold = id.0,
-                                "economy: hold projection drifts from the journal at its claimed seq; freezing"
-                            );
-                            drifted = true;
-                        }
-                        None if lag_holds.contains(id) => {
-                            tracing::info!(
-                                hold = id.0,
-                                stored_seq = doc.last_journal_seq,
-                                "economy: hold projection lags a pre-checkpoint version; healed unverified"
-                            );
-                        }
-                        None => {
-                            tracing::error!(
-                                hold = id.0,
-                                stored_seq = doc.last_journal_seq,
-                                "economy: hold projection claims a sequence it never appears at; freezing"
-                            );
-                            drifted = true;
-                        }
-                    }
-                }
-                frozen |= drifted;
-                if drifted || doc != *derived {
-                    healed_holds.push(derived.clone());
-                }
-                snapshot.put_hold(derived.clone());
-            }
-        }
-    }
-    // A hold doc with no journal history is not a reservation (the asset rule, C6):
-    // loading one would let a hand-written doc freeze someone's money.
-    for id in stored_holds.keys() {
-        tracing::warn!(
-            hold = id.0,
-            "economy: hold doc has no journal history; NOT loaded"
-        );
-    }
+    let ProjectionRepairs {
+        mut frozen,
+        healed,
+        mut healed_assets,
+        healed_holds,
+    } = reconcile_boot_projections(ProjectionInputs {
+        meta: &meta,
+        state: &state,
+        snapshot: &mut snapshot,
+        stored_accounts,
+        stored_assets: &mut stored_assets,
+        stored_holds: &mut stored_holds,
+        journal_max,
+        snapshot_at_stored: &snapshot_at_stored,
+        held_at_stored: &held_at_stored,
+        asset_at_stored: &asset_at_stored,
+        hold_at_stored: &hold_at_stored,
+        lag_accounts: &lag_accounts,
+        lag_held: &lag_held,
+        lag_assets: &lag_assets,
+        lag_holds: &lag_holds,
+    });
 
     // ---- E3: vaults -------------------------------------------------------
     let mut healed_vaults: Vec<Vault> = Vec::new();
@@ -1776,465 +2551,34 @@ pub(crate) fn load_boot_with_coverage(
     // and the subject is stopped either way.
     let mut opened_escalations: Vec<Escalation> = Vec::new();
 
-    // ---- E4b2: contracts (containers, §5) --------------------------------
-    //
-    // Contracts load BEFORE obligations, because a `Contract`-caused obligation's
-    // own reconciliation asks whether its contract is still live — E4b1 answered
-    // "no record, so no" for every one of them, which was the fail-closed reading
-    // and is now the real question.
-    //
-    // Three journal checks, each with a different answer because each means
-    // something different:
-    //
-    // - an `Active`/`ReadyToSettle` contract whose escrow is not `Held` in the
-    //   journal is an agreement standing on money that is gone → **`Disputed`** and
-    //   a loud log (§15.2 "disable and quarantine, reserve no value"). Nothing is
-    //   captured, nothing is released; the escrow, whatever is left of it, freezes.
-    // - a `Settled { transaction }` whose transaction the journal does not have is
-    //   **drift**: a settlement the journal never saw is a doc claiming money moved.
-    //   That is the whole-economy freeze, with the level-2 companion record E4b1
-    //   opens for one.
-    // - a `Settled` transaction the journal has but which was **reversed** →
-    //   `Disputed`. Invariant 28 makes that unreachable (a capture-carrying entry
-    //   cannot be reversed), which is exactly why it is checked: an unreachable
-    //   state that shows up is evidence about the journal, not about the contract.
-    let mut healed_contracts: Vec<EconomicContract> = Vec::new();
-    for (_, mut c) in stored_contracts {
-        let mut quarantine: Option<String> = None;
-        // E4b2 verify fold, B6: **a stored surface is not evidence.** `Offered` on
-        // disk only means it passed `check_offerable` at some past moment, against a
-        // past code version, before whatever edit or migration produced the bytes now
-        // on disk. A record whose `After` anchors form a cycle, whose split cannot be
-        // paid, whose deadline names a clock nothing resolves, or whose payer is not a
-        // party can never settle — and its escrow would sit until a deadline that may
-        // itself be unresolvable, with nothing saying why. Re-run the structural half
-        // here (the world half needs a snapshot boot is still assembling) and
-        // quarantine what it refuses; the escrow is untouched either way.
-        // E6a step 1 verify fold (M6): remember *whether it was a `System` party*.
-        // The quarantine page recommends `@contract/resolve #N=settle` alongside
-        // `=refund`, and `settlement_plan` re-runs `check_structure_basic` — which is
-        // the very check that refused this contract — so a staffer following the first
-        // recommendation on a legacy faucet party gets a refusal and no explanation.
-        // Only `=refund` can move it, so only `=refund` is offered.
-        let mut system_party = false;
-        if !c.state.is_terminal()
-            && let Err(e) = crate::contract::check_structure(&c, outcomes)
-        {
-            system_party = matches!(e, crate::contract::ContractError::SystemParty);
-            quarantine = Some(format!(
-                "contract #{} could not settle as stored ({e}); its surface is quarantined",
-                c.id
-            ));
-        }
-        match &c.state {
-            ContractState::Active | ContractState::ReadyToSettle => {
-                let broken = c.escrow.iter().any(|id| {
-                    !state
-                        .journal_holds
-                        .get(id)
-                        .is_some_and(|h| h.status.is_held())
-                });
-                // E4b2 verify fold, B1: **finish the transition before disputing it.**
-                // A terminal transition is a post under the contract's own
-                // deterministic key followed by a state write, so a lost doc write
-                // leaves exactly this shape: escrow released (or captured) in the
-                // journal, and a record still claiming to be live. Disputing that is
-                // wrong twice over — it pages a human about a contract that is
-                // finished, and it leaves the state machine claiming money is reserved
-                // that the journal says is not. The key resolves the question with no
-                // guessing at all.
-                if broken && quarantine.is_none() {
-                    match finished_transition(&c, &snapshot, &tx_index, &boot_gate) {
-                        // Doc 13 W2 (W-D7): the keys are outside the RAM window and
-                        // the filter has seen one — the sweep asks the store and
-                        // finishes it exactly as this arm would; not a quarantine.
-                        Finished::Unknown => {
-                            tracing::info!(
-                                contract = c.id.0,
-                                "economy: a contract's escrow is not held in the journal and its \
-                                 terminal keys are outside the RAM window; the sweep resolves it \
-                                 through the store"
-                            );
-                            heal_wanted.insert(c.id);
-                        }
-                        Finished::Yes(state) => {
-                            tracing::info!(
-                                contract = c.id.0,
-                                state = ?state.kind(),
-                                "economy: a contract's terminal transition had posted but its doc \
-                                 write was lost; finishing it from the idempotency index"
-                            );
-                            c.state = state;
-                            c.pending = None;
-                            c.revision += 1;
-                            healed_contracts.push(c.clone());
-                        }
-                        Finished::No => {
-                            quarantine = Some(format!(
-                                "contract #{}'s escrow is not held in the journal, and none of its \
-                                 terminal keys resolves to a transaction",
-                                c.id
-                            ));
-                        }
-                    }
-                }
-            }
-            ContractState::Settled { transaction } => {
-                // E4b2 verify fold, B5: existence is not identity. A doc naming a
-                // transaction the journal HAS, but which is some other contract's
-                // settlement (or any other post), is a record claiming a payout that
-                // never happened to it — the same class of drift as naming a
-                // transaction that does not exist, and it must not read as clean.
-                let mine = crate::contract::contract_op_key(c.id, "settle", c.amendments);
-                let claims_another = tx_index
-                    .get(transaction)
-                    .is_some_and(|r| r.idempotency != mine);
-                // Doc 13 W2: a settlement older than the RAM window has no index
-                // entry; it is the journal's when the allocator minted its id and
-                // the filter has seen this contract's own settle key.
-                let outside_window = !tx_index.contains_key(transaction)
-                    && idem_backfilled
-                    && transaction.0 <= state.max_txid
-                    && key_filter.might_contain(&mine);
-                if (!tx_index.contains_key(transaction) && !outside_window) || claims_another {
-                    tracing::error!(
-                        contract = c.id.0,
-                        transaction = transaction.0,
-                        claims_another,
-                        "economy: a settled contract names a transaction that is not its own \
-                         settlement; freezing the economy"
-                    );
-                    frozen = true;
-                    if opened_escalations.len() < MAX_BOOT_ESCALATIONS
-                        && let Some(id) = mint_escalation(&mut next_escalation)
-                    {
-                        opened_escalations.push(Escalation::page(
-                            id,
-                            EscalationKind::EconomyFrozen,
-                            EscalationSubject::Contract(c.id),
-                            format!(
-                                "contract #{} says it settled as transaction #{transaction}, and \
-                                 that is not this contract's settlement. A settlement the journal \
-                                 does not attribute here is drift, so the whole economy is frozen.",
-                                c.id
-                            ),
-                            vec![
-                                format!("@contract/show #{}", c.id),
-                                "@econ/audit".to_string(),
-                                "@econ/unfreeze   (only after the journal is understood)"
-                                    .to_string(),
-                            ],
-                            now,
-                        ));
-                    }
-                } else if snapshot.is_reversed(*transaction) {
-                    quarantine = Some(format!(
-                        "contract #{}'s settlement transaction #{transaction} was reversed",
-                        c.id
-                    ));
-                }
-            }
-            ContractState::Draft
-            | ContractState::Offered
-            | ContractState::Disputed
-            | ContractState::Cancelled
-            | ContractState::Expired => {}
-        }
-        if let Some(reason) = quarantine {
-            tracing::error!(contract = c.id.0, %reason, "economy: boot quarantined a contract");
-            c.state = ContractState::Disputed;
-            c.pending = None;
-            c.revision += 1;
-            healed_contracts.push(c.clone());
-            if opened_escalations.len() < MAX_BOOT_ESCALATIONS
-                && let Some(id) = mint_escalation(&mut next_escalation)
-            {
-                // M6: a settlement re-runs the structural check this contract just
-                // failed, so recommending it would be recommending a refusal.
-                let recommended = if system_party {
-                    vec![
-                        format!("@contract/show #{}", c.id),
-                        format!(
-                            "@contract/resolve #{}=refund   (a `System` party can never settle: \
-                             nobody acts for one)",
-                            c.id
-                        ),
-                    ]
-                } else {
-                    vec![
-                        format!("@contract/show #{}", c.id),
-                        format!("@contract/resolve #{}=refund", c.id),
-                        format!("@contract/resolve #{}=settle", c.id),
-                    ]
-                };
-                opened_escalations.push(Escalation::page(
-                    id,
-                    EscalationKind::BootReconciliation,
-                    EscalationSubject::Contract(c.id),
-                    reason,
-                    recommended,
-                    now,
-                ));
-            }
-        }
-        // The depositor of every live `DepositInto`, from the journal's last-custody
-        // map (§5). Recording it here is what lets a refund put the object back: the
-        // custody lock has no exception, so the contract's own unwind is the only
-        // route out, and it has to know whose the thing was.
-        if c.state.is_live() {
-            let deposits = derive_deposits(&c, &state.last_custody);
-            if deposits != c.deposits {
-                c.deposits = deposits;
-                c.revision += 1;
-                healed_contracts.push(c.clone());
-            }
-        }
-        // `put_contract` re-derives the custody locks from the record's own
-        // `DepositInto` conditions, so the locks come back exactly as the live states
-        // describe them and a terminal contract holds nothing.
-        snapshot.put_contract(c);
-    }
+    let healed_contracts = reconcile_boot_contracts(ContractReconciliation {
+        stored_contracts,
+        state: &state,
+        snapshot: &mut snapshot,
+        outcomes,
+        tx_index: &tx_index,
+        boot_gate: &boot_gate,
+        idem_backfilled,
+        key_filter: &key_filter,
+        heal_wanted: &mut heal_wanted,
+        frozen: &mut frozen,
+        opened_escalations: &mut opened_escalations,
+        next_escalation: &mut next_escalation,
+        now,
+    });
 
-    // ---- E4b2 verify fold, B2: orphan escrow ------------------------------
-    //
-    // A hold the journal says is **`Held`** with `purpose: Escrow { contract }`, that
-    // the contract's own `escrow` list does not name, is money nothing in the world
-    // can reach: `WorldAuth::authorize_hold` refuses every op on an escrow hold, and
-    // `ContractAuth` only ever touches what `qualifying_escrow` returns — which reads
-    // that list. It is exactly what a lost `@contract/accept` doc write leaves behind
-    // (which is why the accept now rides the post's own batch), and a boot is the one
-    // place that can see both halves at once.
-    //
-    // Three answers, because the three cases are different:
-    //
-    // - **non-terminal and it qualifies** — the hold matches an unclaimed
-    //   consideration, so it IS this contract's escrow: adopt it. Loud, no page: the
-    //   record is now right and the contract can settle or refund normally.
-    // - **terminal** — the money has to come back, and the contract's own unwind is
-    //   the only thing that may release it. Adopt it, advance the key **generation**
-    //   (the old refund key is spent, and reusing it would be an idempotency HIT that
-    //   hands nothing back), and set `pending` so the sweep posts the unwind under a
-    //   fresh key and lands the same terminal state again.
-    // - **anything else** — a settled contract, a hold matching no consideration, a
-    //   contract with no record at all: a human decides. Page, with the command.
-    let orphans: Vec<Hold> = state
-        .journal_holds
-        .values()
-        .filter(|h| h.status.is_held())
-        .filter(|h| match h.purpose {
-            crate::record::HoldPurpose::Escrow { contract } => snapshot
-                .contract(contract)
-                .is_none_or(|c| !c.escrow.contains(&h.id)),
-            _ => false,
-        })
-        .cloned()
-        .collect();
-    for hold in orphans {
-        let crate::record::HoldPurpose::Escrow { contract } = hold.purpose else {
-            continue;
-        };
-        let Some(mut c) = snapshot.contract(contract).cloned() else {
-            tracing::error!(
-                hold = hold.id.0,
-                contract = contract.0,
-                "economy: an escrow hold names a contract with no record"
-            );
-            if opened_escalations.len() < MAX_BOOT_ESCALATIONS
-                && let Some(id) = mint_escalation(&mut next_escalation)
-            {
-                opened_escalations.push(Escalation::page(
-                    id,
-                    EscalationKind::BootReconciliation,
-                    EscalationSubject::Contract(contract),
-                    format!(
-                        "hold #{} is escrow for contract #{contract}, and there is no such contract                          record; the money is reserved and nothing can release it",
-                        hold.id
-                    ),
-                    vec![format!("@contract/show #{contract}"), "@econ/audit".to_string()],
-                    now,
-                ));
-            }
-            continue;
-        };
-        // Does it qualify? Ask the real predicate, with the hold provisionally listed.
-        let mut probe = c.clone();
-        probe.escrow.push(hold.id);
-        let qualifies = crate::contract::qualifying_escrow(&probe, &snapshot)
-            .holds
-            .iter()
-            .any(|h| h.id == hold.id);
-        let terminal = c.state.is_terminal();
-        if qualifies && !terminal {
-            tracing::warn!(
-                hold = hold.id.0,
-                contract = contract.0,
-                "economy: adopting an orphaned escrow hold into its contract"
-            );
-            c.escrow.push(hold.id);
-            c.revision += 1;
-            healed_contracts.push(c.clone());
-            snapshot.put_contract(c);
-            continue;
-        }
-        if qualifies && matches!(c.state, ContractState::Cancelled | ContractState::Expired) {
-            tracing::error!(
-                hold = hold.id.0,
-                contract = contract.0,
-                "economy: an ended contract still holds escrow; scheduling its own unwind under a fresh key generation"
-            );
-            c.escrow.push(hold.id);
-            c.amendments = c.amendments.saturating_add(1);
-            c.pending = Some(crate::contract::PendingTerminal {
-                kind: if c.state == ContractState::Cancelled {
-                    crate::contract::PendingKind::Cancel
-                } else {
-                    crate::contract::PendingKind::Expire
-                },
-                attempts: 0,
-                since: now,
-            });
-            c.revision += 1;
-            healed_contracts.push(c.clone());
-            snapshot.put_contract(c);
-            continue;
-        }
-        tracing::error!(hold = hold.id.0, contract = contract.0, state = ?c.state.kind(), "economy: an escrow hold belongs to no consideration its contract names");
-        if opened_escalations.len() < MAX_BOOT_ESCALATIONS
-            && let Some(id) = mint_escalation(&mut next_escalation)
-        {
-            opened_escalations.push(Escalation::page(
-                id,
-                EscalationKind::BootReconciliation,
-                EscalationSubject::Contract(contract),
-                format!(
-                    "hold #{} is escrow for contract #{contract} but matches nothing that contract                      agreed to pay; the money is reserved and only a human can decide where it goes",
-                    hold.id
-                ),
-                vec![
-                    format!("@contract/show #{contract}"),
-                    format!("@contract/resolve #{contract}=refund"),
-                    "@econ/audit".to_string(),
-                ],
-                now,
-            ));
-        }
-    }
-
-    // ---- E4b1: obligations (containers, §4.2) ----------------------------
-    //
-    // Boot never guesses and never deletes: an obligation whose debtor, creditor, or
-    // either account can no longer carry it is **suspended** — out of the due pool, so
-    // the sweep stops attempting it — and, per the ladder (§4.6, D-E4-14), paged with
-    // the command that fixes it already written out. Nothing is charged, nothing is
-    // lost, and a staffer sees the question rather than a silent stall.
-    let mut healed_obligations: Vec<Obligation> = Vec::new();
-    for (_, mut o) in stored_obligations {
-        if let Some(reason) = obligation_unusable(ctx.w, &snapshot, &o)
-            && o.status.in_due_pool()
-        {
-            {
-                tracing::error!(obligation = o.id.0, %reason, "economy: boot suspended an obligation it cannot settle");
-                let minted = (opened_escalations.len() < MAX_BOOT_ESCALATIONS)
-                    .then(|| mint_escalation(&mut next_escalation))
-                    .flatten();
-                let suspend = if let Some(id) = minted {
-                    let record = Escalation::page(
-                        id,
-                        EscalationKind::BootReconciliation,
-                        EscalationSubject::Obligation(o.id),
-                        reason,
-                        boot_advice(&o),
-                        now,
-                    );
-                    opened_escalations.push(record);
-                    SuspendReason::Escalated(id)
-                } else {
-                    // Past the cap the subject is still stopped and the reason still
-                    // logged: a broken world must not mint an unbounded alert storm.
-                    SuspendReason::Staff {
-                        reason: SmolStr::new_static("boot-reconciliation"),
-                    }
-                };
-                // Under the ladder's own key (look-back fold, D-LBK-1): `@econ/ack`
-                // releases it, and a layered module's hold is neither lifted by that
-                // nor lifts it.
-                o = crate::obligation::hold(&o, suspend, now);
-                healed_obligations.push(o.clone());
-            }
-        }
-        snapshot.put_obligation(o);
-    }
-    for e in &opened_escalations {
-        escalations.insert(e.id, e.clone());
-    }
-
-    // ---- E3: custody reconciliation (audit-only; never derives a location) --
-    let deposited: Vec<(ObjId, VaultId)> = state
-        .last_custody
-        .iter()
-        .filter(|(_, mark)| mark.direction == CustodyDirection::Deposit)
-        .map(|(o, mark)| (*o, mark.vault))
-        .collect();
-    let mut mismatched: BTreeSet<ObjId> = BTreeSet::new();
-    for (object, vault_id) in deposited {
-        let Some(vault) = snapshot.vault(vault_id) else {
-            tracing::warn!(
-                object = object.0,
-                vault = vault_id.0,
-                "economy: custody effect names a vault with no doc"
-            );
-            continue;
-        };
-        let answer = crate::custody::resolve(providers, ctx.w, &vault.backing, None)
-            .ok()
-            .and_then(|p| p.holds(ctx.w, &vault.backing, object));
-        match answer {
-            Some(true) => {}
-            Some(false) => {
-                tracing::warn!(
-                    object = object.0,
-                    vault = vault_id.0,
-                    "economy: deposited object is no longer in its vault"
-                );
-                if snapshot.asset(object).is_some() {
-                    mismatched.insert(object);
-                }
-            }
-            // The provider cannot answer (its own state boots later — economy boots
-            // before sim). Unknown is NOT drift.
-            None => {
-                tracing::warn!(
-                    object = object.0,
-                    vault = vault_id.0,
-                    "economy: no custody provider could answer for this vault; skipping reconciliation"
-                );
-            }
-        }
-    }
-    for object in mismatched {
-        if let Some(a) = snapshot.asset_mut(object)
-            && !a.frozen
-        {
-            // `revision` is journal authority and stays put (see `set_asset_frozen`).
-            a.frozen = true;
-            a.frozen_reason = Some(SmolStr::new_static("custody-mismatch"));
-            healed_assets.push(a.clone());
-        }
-    }
-
-    // ---- E3: liveness (the boot half of the destruction backstop) ---------
-    let dead: Vec<ObjId> = snapshot
-        .assets()
-        .filter(|a| !a.frozen && !asset_is_live(ctx.w, a))
-        .map(|a| a.object)
-        .collect();
-    for object in dead {
-        if let Some(a) = snapshot.asset_mut(object) {
-            a.frozen = true;
-            a.frozen_reason = Some(SmolStr::new_static("principal-gone"));
-            healed_assets.push(a.clone());
-        }
-    }
+    let healed_obligations = reconcile_boot_obligations_and_custody(RemainingReconciliation {
+        world: ctx.w,
+        providers,
+        stored_obligations,
+        snapshot: &mut snapshot,
+        opened_escalations: &mut opened_escalations,
+        next_escalation: &mut next_escalation,
+        escalations: &mut escalations,
+        state: &state,
+        healed_assets: &mut healed_assets,
+        now,
+    });
 
     // Conservation tripwire (R-R5): with a zero start and all mint/burn through a
     // system source/sink, every instrument's balances sum to exactly zero. A

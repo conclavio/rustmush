@@ -180,20 +180,17 @@ fn due_world(
         .set_now(world.engine.world.now().max(due));
     Ok(world)
 }
-fn grant_chain(
-    f: &PurchaseFixture,
-    granted: &Durable,
+#[inline(never)]
+fn check_early_renewal(
+    world: &mut PlayerWorld,
     birth: &EntitlementAllocationV1,
-) -> TestResult<(Durable, Durable)> {
-    let mut world = PlayerWorld::boot_renewals(f, granted)?;
-    let old = licence(&world, birth.licence())?;
-    let old_term = term(&world, old.id(), old.term())?;
-    let old_economics = economics(&world, old.id(), old.term())?;
-    let before = disk(&world);
+    old_term: &PaidTermRecord,
+) -> TestResult {
+    let before = disk(world);
     assert!(world.engine.world.now() < old_term.window().term_end().get());
     assert!(
         prepare_step(
-            &mut world,
+            world,
             DRAFT,
             GOD,
             START + 89,
@@ -212,7 +209,7 @@ fn grant_chain(
     );
     assert!(
         prepare_step(
-            &mut world,
+            world,
             DRAFT,
             GOD,
             START + 89,
@@ -221,11 +218,24 @@ fn grant_chain(
         .is_err(),
         "one second before term_end remains too early"
     );
-    assert_disk(&world, &before);
+    assert_disk(world, &before);
     world
         .engine
         .world
         .set_now(old_term.window().term_end().get());
+    Ok(())
+}
+
+fn grant_chain(
+    f: &PurchaseFixture,
+    granted: &Durable,
+    birth: &EntitlementAllocationV1,
+) -> TestResult<(Durable, Durable)> {
+    let mut world = PlayerWorld::boot_renewals(f, granted)?;
+    let old = licence(&world, birth.licence())?;
+    let old_term = term(&world, old.id(), old.term())?;
+    let old_economics = economics(&world, old.id(), old.term())?;
+    check_early_renewal(&mut world, birth, &old_term)?;
     let old_balances = balances(&world)?;
     let before = disk(&world);
     let params = json!({"licence":birth.licence().get()});

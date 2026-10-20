@@ -1060,7 +1060,7 @@ pub struct InitialFilingPatch {
     next_transaction: u64,
     next_posts: u64,
     chunk: u64,
-    fold: InitialFold,
+    fold: Box<InitialFold>,
 }
 
 /// The exact fields whose prepared meta image will be written. Comparing this
@@ -1238,7 +1238,7 @@ impl InitialFilingParticipant {
             return Err(refused());
         }
         let title = delta.assets.first().cloned().ok_or_else(refused)?;
-        let fold = InitialFold::prepare(&state.fold, &transaction)?;
+        let fold = Box::new(InitialFold::prepare(&state.fold, &transaction)?);
         let journal = state
             .journal
             .prepare_append(
@@ -1340,7 +1340,7 @@ impl InitialFilingParticipant {
 pub enum EconomyRequest {
     CoverageBind(crate::managed_coverage::CoverageBindRequest),
     CoverageTerminal(crate::managed_coverage::CoverageTerminalRequest),
-    PaidResaleAcceptance(crate::managed_paid_resale::PaidResaleAcceptanceRequest),
+    PaidResaleAcceptance(Box<crate::managed_paid_resale::PaidResaleAcceptanceRequest>),
     PaidResaleTerminal(crate::managed_paid_resale::PaidResaleTerminalRequest),
     HouseFunding(crate::managed_house_purchase::HousePurchase),
     HouseGrant(crate::managed_house_purchase::HouseTerminal),
@@ -1685,7 +1685,7 @@ impl InitialFilingParticipant {
             crate::managed_coverage::install::prepare(config, state, context, request)?;
         Ok(OwnerPreparation::new(
             EconomyOutput::Coverage(output),
-            EconomyPatch::Coverage(Box::new(patch)),
+            EconomyPatch::Coverage(patch),
             writes,
         ))
     }
@@ -1700,7 +1700,7 @@ impl InitialFilingParticipant {
             crate::managed_paid_resale::install::prepare(config, state, context, request)?;
         Ok(OwnerPreparation::new(
             EconomyOutput::PaidResale(output),
-            EconomyPatch::PaidResale(Box::new(patch)),
+            EconomyPatch::PaidResale(patch),
             writes,
         ))
     }
@@ -1715,7 +1715,7 @@ impl InitialFilingParticipant {
             crate::managed_charter_transfer::install::prepare(config, state, context, request)?;
         Ok(OwnerPreparation::new(
             EconomyOutput::CharterPending(output),
-            EconomyPatch::CharterPending(Box::new(patch)),
+            EconomyPatch::CharterPending(patch),
             writes,
         ))
     }
@@ -1738,7 +1738,7 @@ impl InitialFilingParticipant {
         };
         Ok(OwnerPreparation::new(
             output,
-            EconomyPatch::CoreMoney(Box::new(patch)),
+            EconomyPatch::CoreMoney(patch),
             writes,
         ))
     }
@@ -1759,7 +1759,7 @@ impl InitialFilingParticipant {
         };
         Ok(OwnerPreparation::new(
             output,
-            EconomyPatch::RefitMoney(Box::new(patch)),
+            EconomyPatch::RefitMoney(patch),
             writes,
         ))
     }
@@ -2136,16 +2136,16 @@ impl OwnerParticipant for InitialFilingParticipant {
         patch: EconomyPatch,
     ) -> Result<BoundEconomy<'a>, ParticipantError> {
         match patch {
-            EconomyPatch::PaidResale(patch) => (*patch).bind(state).map(BoundEconomy::PaidResale),
-            EconomyPatch::Coverage(patch) => (*patch).bind(state).map(BoundEconomy::Coverage),
+            EconomyPatch::PaidResale(patch) => patch.bind(state).map(BoundEconomy::PaidResale),
+            EconomyPatch::Coverage(patch) => patch.bind(state).map(BoundEconomy::Coverage),
             EconomyPatch::CharterPending(patch) => {
-                (*patch).bind(state).map(BoundEconomy::CharterPending)
+                patch.bind(state).map(BoundEconomy::CharterPending)
             }
             EconomyPatch::CharterTransfer(patch) => {
                 charter_transfer::bind(state, *patch).map(BoundEconomy::CharterTransfer)
             }
-            EconomyPatch::CoreMoney(patch) => (*patch).bind(state).map(BoundEconomy::CoreMoney),
-            EconomyPatch::RefitMoney(patch) => (*patch).bind(state).map(BoundEconomy::RefitMoney),
+            EconomyPatch::CoreMoney(patch) => patch.bind(state).map(BoundEconomy::CoreMoney),
+            EconomyPatch::RefitMoney(patch) => patch.bind(state).map(BoundEconomy::RefitMoney),
             EconomyPatch::CompatibleUpdate(patch)
             | EconomyPatch::DerivedCompatibleUpdate(patch)
             | EconomyPatch::OriginalMajor(patch)
@@ -2155,18 +2155,14 @@ impl OwnerParticipant for InitialFilingParticipant {
             EconomyPatch::InitialFiling(patch) => self
                 .bind_filing(state, *patch)
                 .map(BoundEconomy::InitialFiling),
-            EconomyPatch::Purchase(patch) => (*patch).bind(state).map(BoundEconomy::Purchase),
-            EconomyPatch::RenewalOffer(patch) => {
-                (*patch).bind(state).map(BoundEconomy::RenewalOffer)
-            }
-            EconomyPatch::RenewalMoney(patch) => {
-                (*patch).bind(state).map(BoundEconomy::RenewalMoney)
-            }
+            EconomyPatch::Purchase(patch) => patch.bind(state).map(BoundEconomy::Purchase),
+            EconomyPatch::RenewalOffer(patch) => patch.bind(state).map(BoundEconomy::RenewalOffer),
+            EconomyPatch::RenewalMoney(patch) => patch.bind(state).map(BoundEconomy::RenewalMoney),
             EconomyPatch::HouseRenewalOffer(patch) => {
-                (*patch).bind(state).map(BoundEconomy::HouseRenewalOffer)
+                patch.bind(state).map(BoundEconomy::HouseRenewalOffer)
             }
             EconomyPatch::HouseRenewalMoney(patch) => {
-                (*patch).bind(state).map(BoundEconomy::HouseRenewalMoney)
+                patch.bind(state).map(BoundEconomy::HouseRenewalMoney)
             }
         }
     }
@@ -2300,7 +2296,7 @@ pub struct BoundInitialFiling<'a> {
     after_next: u64,
     next_posts: u64,
     chunk: u64,
-    fold_patch: InitialFold,
+    fold_patch: Box<InitialFold>,
     next_window: Option<WindowTail>,
     payer: AccountId,
 }
@@ -2346,7 +2342,7 @@ impl BoundParticipant for BoundInitialFiling<'_> {
         );
         cold_keys.remove(&transaction.idempotency);
         bloom.apply();
-        fold_patch.apply(fold);
+        (*fold_patch).apply(fold);
         match next_window {
             Some(window) => {
                 debit_window.insert(payer, window);

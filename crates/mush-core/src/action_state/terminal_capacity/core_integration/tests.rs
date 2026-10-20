@@ -422,7 +422,7 @@ impl ActionProvider for Provider {
     }
 }
 struct Fixture {
-    engine: Engine,
+    engine: Box<Engine>,
     defs: Arc<Defs>,
     handles: Handles,
     disk: Disk,
@@ -434,6 +434,7 @@ fn fixture(version: u64, enabled: bool, reverse: bool) -> TestResult<Fixture> {
 fn fixture_fault(version: u64, enabled: bool, reverse: bool, fault: u8) -> TestResult<Fixture> {
     fixture_profile(version, enabled, reverse, fault, false)
 }
+#[inline(never)]
 fn fixture_profile(
     version: u64,
     enabled: bool,
@@ -461,7 +462,7 @@ fn fixture_profile(
     }
     let engine = Engine::with_modules(World::new_minimal(), Registry::new(), modules)?;
     Ok(Fixture {
-        engine,
+        engine: Box::new(engine),
         defs,
         handles,
         disk: BTreeMap::new(),

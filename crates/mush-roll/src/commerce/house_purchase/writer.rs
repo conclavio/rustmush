@@ -721,7 +721,7 @@ impl RegisteredHouseWriter {
         let facts = self.observed(ctx, observation)?;
         self.require_action(self.protocol()?, Transition::List)?;
         let roots = HouseRoots::listing(&self.action, self.protocol()?, ctx.commit_token(), facts)?;
-        ctx.prepare_owner(&self.roots, RootRequest::House(roots))
+        ctx.prepare_owner(&self.roots, RootRequest::House(Box::new(roots)))
             .map_err(invalid)?;
         Ok(())
     }
@@ -852,13 +852,13 @@ impl RegisteredHouseWriter {
         }
         ctx.prepare_owner(
             &self.roots,
-            RootRequest::House(HouseRoots::funding(
+            RootRequest::House(Box::new(HouseRoots::funding(
                 &self.action,
                 &row,
                 commit,
                 facts,
                 self.registration.1.clone(),
-            )?),
+            )?)),
         )
         .map_err(invalid)?;
         Ok(row)
@@ -986,7 +986,7 @@ impl RegisteredHouseWriter {
         {
             return Err(PublicationError::Mismatch);
         }
-        ctx.prepare_owner(&self.roots, RootRequest::House(roots))
+        ctx.prepare_owner(&self.roots, RootRequest::House(Box::new(roots)))
             .map_err(invalid)?;
         Ok(after)
     }

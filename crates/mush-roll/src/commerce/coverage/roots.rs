@@ -27,7 +27,7 @@ pub(crate) struct CoverageFence {
 }
 #[derive(Clone)]
 enum FenceKind {
-    Open(OpenFence),
+    Open(Box<OpenFence>),
     Publication(super::publication::PublicationFence),
 }
 impl CoverageFence {
@@ -45,7 +45,7 @@ impl CoverageFence {
     }
     fn open(fence: OpenFence) -> Self {
         Self {
-            inner: FenceKind::Open(fence),
+            inner: FenceKind::Open(Box::new(fence)),
         }
     }
 }

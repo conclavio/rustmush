@@ -90,8 +90,8 @@ const RECEIPT_FAMILY: &str = "charter_sale_fixture_receipt";
     deny_unknown_fields
 )]
 enum FixtureEffect {
-    Initial(super::super::receipt::InitialFilingAuditSubject),
-    Transfer(CharterTransferAuditSubject),
+    Initial(Box<super::super::receipt::InitialFilingAuditSubject>),
+    Transfer(Box<CharterTransferAuditSubject>),
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -263,7 +263,7 @@ impl ActionProvider for Provider {
         let effect = if self.initial {
             let output = output.initial_filing().map_err(|_| error())?;
             let title = output.title();
-            FixtureEffect::Initial(
+            FixtureEffect::Initial(Box::new(
                 super::super::receipt::InitialFilingAuditSubject::new(
                     output.commit_token(),
                     output.transaction(),
@@ -278,15 +278,15 @@ impl ActionProvider for Provider {
                     title.catalog.clone().ok_or_else(error)?,
                 )
                 .map_err(|_| error())?,
-            )
+            ))
         } else {
-            FixtureEffect::Transfer(
+            FixtureEffect::Transfer(Box::new(
                 output
                     .charter_transfer()
                     .map_err(|_| error())?
                     .subject()
                     .clone(),
-            )
+            ))
         };
         let value = serde_json::to_value(&effect).map_err(|_| error())?;
         txn.insert(

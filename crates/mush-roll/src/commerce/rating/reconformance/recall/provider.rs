@@ -48,7 +48,8 @@ impl Provider {
         else {
             return Err(PublicationError::Mismatch);
         };
-        if proof != intent.proof || proof.compatibility.digest() != self.manifest.digest() {
+        if proof.as_ref() != &intent.proof || proof.compatibility.digest() != self.manifest.digest()
+        {
             return Err(PublicationError::Mismatch);
         }
         let filed = txn
@@ -97,7 +98,7 @@ impl Provider {
             self.runtime.clone(),
             self.ready.clone(),
         )?;
-        ctx.prepare_owner(&self.roots, RootRequest::MeasuredRecall(roots))
+        ctx.prepare_owner(&self.roots, RootRequest::MeasuredRecall(Box::new(roots)))
             .map_err(bad)?;
         txn.insert(
             &self.f.measured_recalls,

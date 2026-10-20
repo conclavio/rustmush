@@ -192,10 +192,11 @@ fn spec() -> CommandSpec {
         ..CommandSpec::default()
     }
 }
+#[inline(never)]
 fn engine(
     spec: CommandSpec,
     registration: Option<&'static str>,
-) -> TestResult<(Engine, Arc<Shared>)> {
+) -> TestResult<(Box<Engine>, Arc<Shared>)> {
     let mut world = World::new_minimal();
     assert_eq!(
         world.create(crate::ObjKind::Player, "Subject", GOD, Some(ObjId(0)))?,
@@ -215,7 +216,7 @@ fn engine(
             Box::new(Foreign(Arc::clone(&shared))),
         ],
     )?;
-    Ok((engine, shared))
+    Ok((Box::new(engine), shared))
 }
 fn command(engine: &mut Engine, actor: ObjId, text: &str) -> Outbox {
     let mut out = Outbox::new();

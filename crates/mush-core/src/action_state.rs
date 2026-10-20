@@ -745,19 +745,19 @@ pub struct StateFamilyRegistryBuilder {
     delegations: BTreeSet<(OwnerId, OwnerId)>,
     /// Exact `(family owner, family id, grantee)` grants.
     family_delegations: BTreeSet<(OwnerId, StateFamilyId, OwnerId)>,
-    registry_rating: Option<terminal_capacity::Protocol>,
-    original_purchase: Option<terminal_capacity::PurchaseProtocol>,
-    entitlement_purchase: Option<terminal_capacity::EntitlementProtocol>,
-    house_purchase: Option<terminal_capacity::HouseProtocol>,
-    charter_pending: Option<terminal_capacity::CharterPendingProtocol>,
-    paid_resale: Option<terminal_capacity::PaidResaleProtocol>,
-    mind_renewal: Option<terminal_capacity::RenewalProtocol>,
-    house_mind_renewal: Option<terminal_capacity::HouseRenewalProtocol>,
-    ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
-    core_integration: Option<terminal_capacity::CoreIntegrationProtocol>,
-    core_refit: Option<terminal_capacity::CoreRefitProtocol>,
-    hull_coverage: Option<terminal_capacity::CoverageProtocol>,
-    conduct_trial: Option<terminal_capacity::ConductProtocol>,
+    registry_rating: Option<Box<terminal_capacity::Protocol>>,
+    original_purchase: Option<Box<terminal_capacity::PurchaseProtocol>>,
+    entitlement_purchase: Option<Box<terminal_capacity::EntitlementProtocol>>,
+    house_purchase: Option<Box<terminal_capacity::HouseProtocol>>,
+    charter_pending: Option<Box<terminal_capacity::CharterPendingProtocol>>,
+    paid_resale: Option<Box<terminal_capacity::PaidResaleProtocol>>,
+    mind_renewal: Option<Box<terminal_capacity::RenewalProtocol>>,
+    house_mind_renewal: Option<Box<terminal_capacity::HouseRenewalProtocol>>,
+    ic_mind_claim: Option<Box<terminal_capacity::IcClaimProtocol>>,
+    core_integration: Option<Box<terminal_capacity::CoreIntegrationProtocol>>,
+    core_refit: Option<Box<terminal_capacity::CoreRefitProtocol>>,
+    hull_coverage: Option<Box<terminal_capacity::CoverageProtocol>>,
+    conduct_trial: Option<Box<terminal_capacity::ConductProtocol>>,
 }
 
 impl fmt::Debug for StateFamilyRegistryBuilder {
@@ -928,7 +928,9 @@ impl StateFamilyRegistryBuilder {
                 "duplicate Registry protocol",
             ));
         }
-        self.registry_rating = Some(terminal_capacity::Protocol::new(owner, manifest, actions)?);
+        self.registry_rating = Some(Box::new(terminal_capacity::Protocol::new(
+            owner, manifest, actions,
+        )?));
         Ok(())
     }
 
@@ -957,12 +959,12 @@ impl StateFamilyRegistryBuilder {
                 "duplicate purchase protocol",
             ));
         }
-        self.original_purchase = Some(terminal_capacity::PurchaseProtocol::new(
+        self.original_purchase = Some(Box::new(terminal_capacity::PurchaseProtocol::new(
             owner,
             manifest,
             participants,
             actions,
-        )?);
+        )?));
         Ok(())
     }
 
@@ -978,12 +980,12 @@ impl StateFamilyRegistryBuilder {
                 "duplicate pending charter protocol",
             ));
         }
-        self.charter_pending = Some(terminal_capacity::CharterPendingProtocol::new(
+        self.charter_pending = Some(Box::new(terminal_capacity::CharterPendingProtocol::new(
             owner,
             participants,
             actions,
             registry_revocation,
-        )?);
+        )?));
         Ok(())
     }
 
@@ -999,12 +1001,12 @@ impl StateFamilyRegistryBuilder {
                 "duplicate paid resale protocol",
             ));
         }
-        self.paid_resale = Some(terminal_capacity::PaidResaleProtocol::new(
+        self.paid_resale = Some(Box::new(terminal_capacity::PaidResaleProtocol::new(
             owner,
             participants,
             actions,
             registry_revocation,
-        )?);
+        )?));
         Ok(())
     }
 
@@ -1022,14 +1024,14 @@ impl StateFamilyRegistryBuilder {
                 "duplicate purchase protocol",
             ));
         }
-        self.house_purchase = Some(terminal_capacity::HouseProtocol::with_follow(
+        self.house_purchase = Some(Box::new(terminal_capacity::HouseProtocol::with_follow(
             owner,
             manifest,
             participants,
             house_v1,
             house_v2,
             house_v3,
-        )?);
+        )?));
         Ok(())
     }
 
@@ -1045,12 +1047,12 @@ impl StateFamilyRegistryBuilder {
                 "duplicate purchase protocol",
             ));
         }
-        self.house_purchase = Some(terminal_capacity::HouseProtocol::new(
+        self.house_purchase = Some(Box::new(terminal_capacity::HouseProtocol::new(
             owner,
             manifest,
             participants,
             actions,
-        )?);
+        )?));
         Ok(())
     }
 
@@ -1067,13 +1069,15 @@ impl StateFamilyRegistryBuilder {
                 "duplicate purchase protocol",
             ));
         }
-        self.house_purchase = Some(terminal_capacity::HouseProtocol::with_two_seat_pins(
-            owner,
-            manifest,
-            participants,
-            house_v1,
-            house_v2,
-        )?);
+        self.house_purchase = Some(Box::new(
+            terminal_capacity::HouseProtocol::with_two_seat_pins(
+                owner,
+                manifest,
+                participants,
+                house_v1,
+                house_v2,
+            )?,
+        ));
         Ok(())
     }
 
@@ -1092,15 +1096,17 @@ impl StateFamilyRegistryBuilder {
                 "duplicate purchase protocol",
             ));
         }
-        self.entitlement_purchase = Some(terminal_capacity::EntitlementProtocol::with_follow(
-            owner,
-            manifest,
-            participants,
-            original_v3,
-            derived_v1,
-            original_v4,
-            derived_v2,
-        )?);
+        self.entitlement_purchase = Some(Box::new(
+            terminal_capacity::EntitlementProtocol::with_follow(
+                owner,
+                manifest,
+                participants,
+                original_v3,
+                derived_v1,
+                original_v4,
+                derived_v2,
+            )?,
+        ));
         Ok(())
     }
 
@@ -1117,13 +1123,13 @@ impl StateFamilyRegistryBuilder {
                 "duplicate entitlement purchase protocol",
             ));
         }
-        self.entitlement_purchase = Some(terminal_capacity::EntitlementProtocol::new(
+        self.entitlement_purchase = Some(Box::new(terminal_capacity::EntitlementProtocol::new(
             owner,
             manifest,
             participants,
             original_actions,
             derived_actions,
-        )?);
+        )?));
         Ok(())
     }
 
@@ -1139,12 +1145,12 @@ impl StateFamilyRegistryBuilder {
                 "duplicate Conduct protocol",
             ));
         }
-        self.conduct_trial = Some(terminal_capacity::ConductProtocol::new(
+        self.conduct_trial = Some(Box::new(terminal_capacity::ConductProtocol::new(
             owner,
             manifest,
             participants,
             actions,
-        )?);
+        )?));
         Ok(())
     }
     pub(crate) fn hull_coverage_capacity(
@@ -1159,12 +1165,12 @@ impl StateFamilyRegistryBuilder {
                 "duplicate hull coverage protocol",
             ));
         }
-        self.hull_coverage = Some(terminal_capacity::CoverageProtocol::new(
+        self.hull_coverage = Some(Box::new(terminal_capacity::CoverageProtocol::new(
             owner,
             manifest,
             participants,
             actions,
-        )?);
+        )?));
         Ok(())
     }
 
@@ -1179,11 +1185,11 @@ impl StateFamilyRegistryBuilder {
                 "duplicate core refit protocol",
             ));
         }
-        self.core_refit = Some(terminal_capacity::CoreRefitProtocol::new(
+        self.core_refit = Some(Box::new(terminal_capacity::CoreRefitProtocol::new(
             owner,
             participants,
             actions,
-        )?);
+        )?));
         Ok(())
     }
 
@@ -1198,11 +1204,11 @@ impl StateFamilyRegistryBuilder {
                 "duplicate core integration protocol",
             ));
         }
-        self.core_integration = Some(terminal_capacity::CoreIntegrationProtocol::new(
+        self.core_integration = Some(Box::new(terminal_capacity::CoreIntegrationProtocol::new(
             owner,
             participants,
             actions,
-        )?);
+        )?));
         Ok(())
     }
 
@@ -1217,11 +1223,13 @@ impl StateFamilyRegistryBuilder {
                 "duplicate core integration protocol",
             ));
         }
-        self.core_integration = Some(terminal_capacity::CoreIntegrationProtocol::with_delivery(
-            owner,
-            participants,
-            actions,
-        )?);
+        self.core_integration = Some(Box::new(
+            terminal_capacity::CoreIntegrationProtocol::with_delivery(
+                owner,
+                participants,
+                actions,
+            )?,
+        ));
         Ok(())
     }
 
@@ -1237,12 +1245,12 @@ impl StateFamilyRegistryBuilder {
                 "duplicate IC claim protocol",
             ));
         }
-        self.ic_mind_claim = Some(terminal_capacity::IcClaimProtocol::new(
+        self.ic_mind_claim = Some(Box::new(terminal_capacity::IcClaimProtocol::new(
             owner,
             manifest,
             participants,
             actions,
-        )?);
+        )?));
         Ok(())
     }
 
@@ -1258,12 +1266,12 @@ impl StateFamilyRegistryBuilder {
                 "duplicate renewal protocol",
             ));
         }
-        self.mind_renewal = Some(terminal_capacity::RenewalProtocol::new(
+        self.mind_renewal = Some(Box::new(terminal_capacity::RenewalProtocol::new(
             owner,
             manifest,
             participants,
             actions,
-        )?);
+        )?));
         Ok(())
     }
 
@@ -1279,12 +1287,12 @@ impl StateFamilyRegistryBuilder {
                 "duplicate renewal protocol",
             ));
         }
-        self.house_mind_renewal = Some(terminal_capacity::HouseRenewalProtocol::new(
+        self.house_mind_renewal = Some(Box::new(terminal_capacity::HouseRenewalProtocol::new(
             owner,
             manifest,
             participants,
             actions,
-        )?);
+        )?));
         Ok(())
     }
 
@@ -1301,13 +1309,13 @@ impl StateFamilyRegistryBuilder {
                 "duplicate renewal protocol",
             ));
         }
-        self.mind_renewal = Some(terminal_capacity::RenewalProtocol::with_service(
+        self.mind_renewal = Some(Box::new(terminal_capacity::RenewalProtocol::with_service(
             owner,
             manifest,
             participants,
             actions,
             service_close,
-        )?);
+        )?));
         Ok(())
     }
 
@@ -1324,13 +1332,15 @@ impl StateFamilyRegistryBuilder {
                 "duplicate renewal protocol",
             ));
         }
-        self.house_mind_renewal = Some(terminal_capacity::HouseRenewalProtocol::with_service(
-            owner,
-            manifest,
-            participants,
-            actions,
-            service_close,
-        )?);
+        self.house_mind_renewal = Some(Box::new(
+            terminal_capacity::HouseRenewalProtocol::with_service(
+                owner,
+                manifest,
+                participants,
+                actions,
+                service_close,
+            )?,
+        ));
         Ok(())
     }
 
@@ -1368,19 +1378,19 @@ impl StateFamilyRegistryBuilder {
             self.entries.values(),
             &self.delegations,
             &self.family_delegations,
-            self.registry_rating.as_ref(),
-            self.original_purchase.as_ref(),
-            self.entitlement_purchase.as_ref(),
-            self.mind_renewal.as_ref(),
-            self.ic_mind_claim.as_ref(),
-            self.core_integration.as_ref(),
-            self.house_purchase.as_ref(),
-            self.charter_pending.as_ref(),
-            self.house_mind_renewal.as_ref(),
-            self.paid_resale.as_ref(),
-            self.core_refit.as_ref(),
-            self.hull_coverage.as_ref(),
-            self.conduct_trial.as_ref(),
+            self.registry_rating.as_deref(),
+            self.original_purchase.as_deref(),
+            self.entitlement_purchase.as_deref(),
+            self.mind_renewal.as_deref(),
+            self.ic_mind_claim.as_deref(),
+            self.core_integration.as_deref(),
+            self.house_purchase.as_deref(),
+            self.charter_pending.as_deref(),
+            self.house_mind_renewal.as_deref(),
+            self.paid_resale.as_deref(),
+            self.core_refit.as_deref(),
+            self.hull_coverage.as_deref(),
+            self.conduct_trial.as_deref(),
         )?;
         let registry = StateFamilyRegistry {
             entries: self.entries,
@@ -1477,19 +1487,19 @@ pub struct StateFamilyRegistry {
     delegations: BTreeSet<(OwnerId, OwnerId)>,
     /// Exact `(family owner, family id, grantee)` grants.
     family_delegations: BTreeSet<(OwnerId, StateFamilyId, OwnerId)>,
-    registry_rating: Option<terminal_capacity::Protocol>,
-    original_purchase: Option<terminal_capacity::PurchaseProtocol>,
-    entitlement_purchase: Option<terminal_capacity::EntitlementProtocol>,
-    house_purchase: Option<terminal_capacity::HouseProtocol>,
-    charter_pending: Option<terminal_capacity::CharterPendingProtocol>,
-    paid_resale: Option<terminal_capacity::PaidResaleProtocol>,
-    mind_renewal: Option<terminal_capacity::RenewalProtocol>,
-    house_mind_renewal: Option<terminal_capacity::HouseRenewalProtocol>,
-    ic_mind_claim: Option<terminal_capacity::IcClaimProtocol>,
-    core_integration: Option<terminal_capacity::CoreIntegrationProtocol>,
-    core_refit: Option<terminal_capacity::CoreRefitProtocol>,
-    hull_coverage: Option<terminal_capacity::CoverageProtocol>,
-    conduct_trial: Option<terminal_capacity::ConductProtocol>,
+    registry_rating: Option<Box<terminal_capacity::Protocol>>,
+    original_purchase: Option<Box<terminal_capacity::PurchaseProtocol>>,
+    entitlement_purchase: Option<Box<terminal_capacity::EntitlementProtocol>>,
+    house_purchase: Option<Box<terminal_capacity::HouseProtocol>>,
+    charter_pending: Option<Box<terminal_capacity::CharterPendingProtocol>>,
+    paid_resale: Option<Box<terminal_capacity::PaidResaleProtocol>>,
+    mind_renewal: Option<Box<terminal_capacity::RenewalProtocol>>,
+    house_mind_renewal: Option<Box<terminal_capacity::HouseRenewalProtocol>>,
+    ic_mind_claim: Option<Box<terminal_capacity::IcClaimProtocol>>,
+    core_integration: Option<Box<terminal_capacity::CoreIntegrationProtocol>>,
+    core_refit: Option<Box<terminal_capacity::CoreRefitProtocol>>,
+    hull_coverage: Option<Box<terminal_capacity::CoverageProtocol>>,
+    conduct_trial: Option<Box<terminal_capacity::ConductProtocol>>,
     fingerprint: DefinitionDigest,
     owner_readiness: MechanicalOwnerReadiness,
 }

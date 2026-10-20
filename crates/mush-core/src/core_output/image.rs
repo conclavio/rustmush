@@ -69,8 +69,8 @@ pub(crate) struct CoreOutputObjects {
     fence: Box<dyn OutputFence>,
     actor: Obj,
     before_next: u32,
-    object: Option<Obj>,
-    container: Option<(Obj, Option<Obj>)>,
+    object: Option<Box<Obj>>,
+    container: Option<(Obj, Option<Box<Obj>>)>,
     create: bool,
     writes: Vec<ReplayWrite>,
 }
@@ -113,7 +113,7 @@ impl CoreOutputObjects {
             fence,
             actor,
             before_next: world.next_id(),
-            object,
+            object: object.map(Box::new),
             container,
             create: false,
             writes: Vec::new(),
@@ -180,8 +180,8 @@ impl CoreOutputObjects {
             fence,
             actor,
             before_next,
-            object: Some(object),
-            container: Some((before, Some(after))),
+            object: Some(Box::new(object)),
+            container: Some((before, Some(Box::new(after)))),
             create: true,
             writes,
         };
@@ -189,7 +189,7 @@ impl CoreOutputObjects {
         Ok(result)
     }
     pub(crate) fn object(&self) -> Option<&Obj> {
-        self.object.as_ref()
+        self.object.as_deref()
     }
     fn recheck(&self, world: &World) -> Result<(), ParticipantError> {
         self.fence.recheck(world)?;
@@ -203,7 +203,7 @@ impl CoreOutputObjects {
                 if self.create {
                     world.get(object.id).is_some()
                 } else {
-                    world.get(object.id) != Some(object)
+                    world.get(object.id) != Some(object.as_ref())
                 }
             })
         {
@@ -235,11 +235,9 @@ impl CoreOutputObjects {
             objects
                 .try_reserve(1)
                 .map_err(|_| ParticipantError::ImageLimit)?;
-        } else if self
-            .object
-            .as_ref()
-            .is_some_and(|o| objects.get(o.id.0 as usize).and_then(Option::as_ref) != Some(o))
-        {
+        } else if self.object.as_ref().is_some_and(|o| {
+            objects.get(o.id.0 as usize).and_then(Option::as_ref) != Some(o.as_ref())
+        }) {
             return Err(ParticipantError::Authority);
         }
         let next = if self.create {
@@ -275,8 +273,8 @@ pub(crate) struct BoundCoreOutputObjects<'a> {
     objects: &'a mut Vec<Option<Obj>>,
     next_id: &'a mut u32,
     next: u32,
-    created: Option<Obj>,
-    container: Option<Obj>,
+    created: Option<Box<Obj>>,
+    container: Option<Box<Obj>>,
 }
 impl BoundCoreOutputObjects<'_> {
     fn apply(self) {
@@ -284,10 +282,10 @@ impl BoundCoreOutputObjects<'_> {
             // This exact occupied index was validated under the retained
             // exclusive Vec borrow in bind. No callback or lookup can intervene.
             let index = container.id.0 as usize;
-            self.objects[index] = Some(container);
+            self.objects[index] = Some(*container);
         }
         if let Some(object) = self.created {
-            self.objects.push(Some(object));
+            self.objects.push(Some(*object));
         }
         *self.next_id = self.next;
     }
@@ -295,14 +293,14 @@ impl BoundCoreOutputObjects<'_> {
 
 #[derive(Debug)]
 pub(crate) enum BuiltinObjects {
-    Shell(ShellObjects),
-    CoreOutput(CoreOutputObjects),
-    Delivery(crate::core_delivery::DeliveryObjects),
-    Exchange(crate::core_exchange::image::ExchangeObjects),
+    Shell(Box<ShellObjects>),
+    CoreOutput(Box<CoreOutputObjects>),
+    Delivery(Box<crate::core_delivery::DeliveryObjects>),
+    Exchange(Box<crate::core_exchange::image::ExchangeObjects>),
 }
 impl From<ShellObjects> for BuiltinObjects {
     fn from(value: ShellObjects) -> Self {
-        Self::Shell(value)
+        Self::Shell(Box::new(value))
     }
 }
 impl BuiltinObjects {

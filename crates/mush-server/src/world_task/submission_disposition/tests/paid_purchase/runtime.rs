@@ -102,7 +102,22 @@ impl Running {
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = TestResult<Self>> + 'a>> {
         // Keep the complete boot state out of the calling test/timeout futures.
         // Like production build_engine, this remains lazy until first polled.
-        Box::pin(Self::boot_inner(config, store, commerce))
+        Self::bounded_boot_future(|| Self::boot_inner(config, store, commerce))
+    }
+
+    // Check the concrete future during test-binary code generation, including
+    // boot paths that an earlier failing assertion would never reach.
+    #[inline(never)]
+    fn bounded_boot_future<F: std::future::Future>(
+        make: impl FnOnce() -> F,
+    ) -> std::pin::Pin<Box<F>> {
+        const {
+            assert!(
+                std::mem::size_of::<F>() <= 16 * 1024,
+                "server story boot future exceeds the configured 16 KiB bound"
+            );
+        }
+        Box::pin(make())
     }
 
     async fn boot_inner(
@@ -128,11 +143,13 @@ impl Running {
             Some(commerce) => crate::boot::game_modules_with_mind_commerce(config, &llm, commerce)?,
             None => crate::boot::game_modules(config, &llm)?,
         };
-        let composition = Engine::compose_modules(registry, modules)?;
-        let mut world = crate::persist::load_or_seed_world(&*store).await?;
+        // These actual boot aggregates cross store awaits. Retain their
+        // ownership on the heap while the guarded boot future is pending.
+        let composition = Box::new(Engine::compose_modules(registry, modules)?);
+        let mut world = Box::new(crate::persist::load_or_seed_world(&*store).await?);
         crate::timeline::hydrate_world_timeline(&mut world, &*store, config.game.game_clock()?)
             .await?;
-        let mut engine = Engine::from_composition(world, composition);
+        let mut engine = Box::new(Engine::from_composition(*world, *composition));
         engine.set_offer_keys(mush_core::offer::OfferKeyRing::new(
             mush_core::offer::OfferSecret::new(1, [0x51; 32])?,
             [],
@@ -183,7 +200,7 @@ impl Running {
             outbox_adapters: Vec::new(),
         };
         let handles = crate::world_task::spawn_persist_with_gateway_production(
-            engine,
+            *engine,
             deps,
             Some(llm),
             2,

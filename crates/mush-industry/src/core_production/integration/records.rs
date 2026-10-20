@@ -149,7 +149,7 @@ impl AcceptedIntent {
         }
         match &offer.input {
             super::offer::OfferedInput::SupplierStock { certificate, lot }
-                if certificate == &self.certificate && lot == &self.lot => {}
+                if certificate.as_ref() == &self.certificate && lot.as_ref() == &self.lot => {}
             super::offer::OfferedInput::RequesterSupplied {}
                 if !self.policy.supplier_stock.contains(&self.lot.endpoint().0) => {}
             _ => return Err(Error::Integrity),

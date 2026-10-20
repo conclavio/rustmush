@@ -198,20 +198,22 @@ impl Provider {
                         self.economy
                             .as_ref()
                             .ok_or_else(|| invalid("economy grant absent"))?,
-                        EconomyRequest::PaidResaleAcceptance(PaidResaleAcceptanceRequest {
-                            terms: row.terms().clone(),
-                            offer_digest: row.digest()?,
-                            payer,
-                            claims: PaidResaleClaimsV1 {
-                                next_transition: observed.facts().claims().next_transition(),
-                                open_paid: observed.facts().claims().open_paid(),
+                        EconomyRequest::PaidResaleAcceptance(Box::new(
+                            PaidResaleAcceptanceRequest {
+                                terms: row.terms().clone(),
+                                offer_digest: row.digest()?,
+                                payer,
+                                claims: PaidResaleClaimsV1 {
+                                    next_transition: observed.facts().claims().next_transition(),
+                                    open_paid: observed.facts().claims().open_paid(),
+                                },
+                                mode: if immediate {
+                                    PaidResaleModeV1::Immediate
+                                } else {
+                                    PaidResaleModeV1::Pending
+                                },
                             },
-                            mode: if immediate {
-                                PaidResaleModeV1::Immediate
-                            } else {
-                                PaidResaleModeV1::Pending
-                            },
-                        }),
+                        )),
                     )
                     .and_then(|o| o.paid_resale())
                     .map_err(invalid)?;

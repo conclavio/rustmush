@@ -267,10 +267,10 @@ fn config() -> CommerceConfig {
     )
     .unwrap()
 }
-fn engine(world: World, sources: Sources) -> (Engine, Handles) {
+fn engine(world: World, sources: Sources) -> (Box<Engine>, Handles) {
     engine_with_market(world, sources, false)
 }
-fn engine_with_market(world: World, sources: Sources, market: bool) -> (Engine, Handles) {
+fn engine_with_market(world: World, sources: Sources, market: bool) -> (Box<Engine>, Handles) {
     try_engine_with_market(world, sources, market, market).unwrap()
 }
 fn try_engine_with_market(
@@ -278,7 +278,7 @@ fn try_engine_with_market(
     sources: Sources,
     market: bool,
     requester: bool,
-) -> Result<(Engine, Handles), ModError> {
+) -> Result<(Box<Engine>, Handles), ModError> {
     let config = if market {
         config().with_original_market_quotes()
     } else {
@@ -311,7 +311,7 @@ fn try_engine_with_market(
     if requester {
         modules.push(Box::new(sale_reads::Market));
     }
-    let engine = Engine::with_modules(world, Registry::new(), modules)?;
+    let engine = boxed_test_engine(world, Registry::new(), modules)?;
     let handles = handles.lock().unwrap().clone().unwrap();
     Ok((engine, handles))
 }
@@ -413,7 +413,7 @@ fn seed_accounts(disk: &mut Disk, credit: bool) {
     }
 }
 struct Fixture {
-    engine: Engine,
+    engine: Box<Engine>,
     families: CommerceFamilies,
     ratings: RatingFamilies,
     disk: Disk,
@@ -1022,3 +1022,12 @@ fn source_revalidation_after_custody_refuses_every_filing_image_and_fail_stops()
 
 #[path = "sale_reader/tests.rs"]
 mod sale_reads;
+
+#[inline(never)]
+fn boxed_test_engine(
+    world: mush_core::World,
+    registry: mush_core::Registry,
+    modules: Vec<Box<dyn mush_core::GameModule>>,
+) -> std::result::Result<Box<mush_core::Engine>, mush_core::ModError> {
+    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
+}

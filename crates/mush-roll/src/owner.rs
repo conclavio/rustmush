@@ -2752,8 +2752,8 @@ fn named_reference(
 #[derive(Default)]
 pub struct RollModule {
     writers: Vec<String>,
-    commerce: Option<crate::commerce::module::CommerceConfig>,
-    registration: Option<crate::commerce::module::CommerceRegistration>,
+    commerce: Option<Box<crate::commerce::module::CommerceConfig>>,
+    registration: Option<Box<crate::commerce::module::CommerceRegistration>>,
     registry_owners: Option<Box<dyn crate::commerce::rating::registration::Installer>>,
     fork_source: Option<Box<dyn crate::commerce::authored_fork::Installer>>,
 }
@@ -2769,7 +2769,7 @@ impl RollModule {
     /// Opt in to the closed, registered commercial composition. Existing save
     /// delegations remain intact; this does not itself open business readiness.
     pub fn with_commerce(mut self, config: crate::commerce::module::CommerceConfig) -> Self {
-        self.commerce = Some(config);
+        self.commerce = Some(Box::new(config));
         self
     }
 
@@ -2835,12 +2835,12 @@ impl GameModule for RollModule {
             )?;
         }
         if let Some(config) = &self.commerce {
-            self.registration = Some(crate::commerce::module::register(
+            self.registration = Some(Box::new(crate::commerce::module::register(
                 reg,
                 config,
                 self.registry_owners.as_deref(),
                 self.fork_source.as_deref(),
-            )?);
+            )?));
         } else if self.registry_owners.is_some() || self.fork_source.is_some() {
             return Err(ModError::msg(
                 "Registry owners require explicit Active commerce",

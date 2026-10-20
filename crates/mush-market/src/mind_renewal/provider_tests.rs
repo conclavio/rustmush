@@ -156,8 +156,8 @@ fn renewal_host_policy_bounds_fees_and_deadline_without_repricing_the_template()
     assert_eq!(row.offer().terms.price, Amount::from_minor(500));
     Ok(())
 }
-#[test]
-fn renewal_publication_keeps_exact_offer_and_rejects_crossed_closed_writer_data() -> TestResult {
+#[inline(never)]
+fn publication_cases() -> TestResult<Box<(MindRenewalOperationV1, MindRenewalOperationV1)>> {
     let row = fixture()?;
     let c = config(&row)?;
     let roll = row.roll_projection()?;
@@ -175,12 +175,23 @@ fn renewal_publication_keeps_exact_offer_and_rejects_crossed_closed_writer_data(
     offer.terms.expires_at.at += 1;
     assert!(MindRenewalOperationV1::captured(&c, offer, &roll).is_err());
     assert!(row.receipt().is_err());
-    for end in [
-        terminal(&fund, true)?,
-        terminal(&fund, false)?,
-        closed(&row, false)?,
-        closed(&row, true)?,
-    ] {
+    Ok(Box::new((row, fund)))
+}
+
+#[test]
+fn renewal_publication_keeps_exact_offer_and_rejects_crossed_closed_writer_data() -> TestResult {
+    let (row, fund) = *publication_cases()?;
+    let ends: [fn(
+        &MindRenewalOperationV1,
+        &MindRenewalOperationV1,
+    ) -> TestResult<MindRenewalOperationV1>; 4] = [
+        |_, fund| terminal(fund, true),
+        |_, fund| terminal(fund, false),
+        |row, _| closed(row, false),
+        |row, _| closed(row, true),
+    ];
+    for make in ends {
+        let end = make(&row, &fund)?;
         let receipt = end.receipt()?;
         receipt.matches_operation(&end)?;
         assert!(receipt.matches_operation(&fund).is_err());
@@ -205,13 +216,13 @@ impl GameModule for FamilyModule {
         Ok(())
     }
 }
-fn registered() -> TestResult<(Engine, Families)> {
+#[inline(never)]
+fn composed(modules: Vec<Box<dyn GameModule>>) -> Result<Box<Engine>, ModError> {
+    Engine::with_modules(World::new_minimal(), Registry::new(), modules).map(Box::new)
+}
+fn registered() -> TestResult<(Box<Engine>, Families)> {
     let slot = Arc::new(Mutex::new(None));
-    let engine = Engine::with_modules(
-        World::new_minimal(),
-        Registry::new(),
-        vec![Box::new(FamilyModule(slot.clone()))],
-    )?;
+    let engine = composed(vec![Box::new(FamilyModule(slot.clone()))])?;
     let family = slot
         .lock()
         .map_err(|_| "test family lock")?
@@ -238,14 +249,19 @@ fn renewal_admission_reserves_complete_registered_operation_and_receipt_envelope
     assert_eq!(f.receipts.descriptor().max_record_bytes(), 8192);
     capacity::check(&f, &row)?;
     let fund = funded(&row)?;
-    for state in [
-        row.clone(),
-        fund.clone(),
-        terminal(&fund, true)?,
-        terminal(&fund, false)?,
-        closed(&row, false)?,
-        closed(&row, true)?,
-    ] {
+    let states: [fn(
+        &MindRenewalOperationV1,
+        &MindRenewalOperationV1,
+    ) -> TestResult<MindRenewalOperationV1>; 6] = [
+        |row, _| Ok(row.clone()),
+        |_, fund| Ok(fund.clone()),
+        |_, fund| terminal(fund, true),
+        |_, fund| terminal(fund, false),
+        |row, _| closed(row, false),
+        |row, _| closed(row, true),
+    ];
+    for make in states {
+        let state = make(&row, &fund)?;
         assert!(complete(&f.operations, state.operation(), &state)? <= 32768);
         if !state.state().pending() {
             assert!(complete(&f.receipts, state.operation(), &state.receipt()?)? <= 8192);
@@ -258,20 +274,12 @@ fn renewal_admission_reserves_complete_registered_operation_and_receipt_envelope
 }
 #[test]
 fn renewal_config_does_not_allow_missing_existing_purchase_composition() -> TestResult {
-    Engine::with_modules(
-        World::new_minimal(),
-        Registry::new(),
-        vec![Box::new(crate::MarketModule::new())],
-    )?;
+    composed(vec![Box::new(crate::MarketModule::new())])?;
     let c = config(&fixture()?)?;
     let module = crate::MarketModule::new().with_mind_renewals(c);
-    let refusal = Engine::with_modules(
-        World::new_minimal(),
-        Registry::new(),
-        vec![Box::new(module)],
-    )
-    .err()
-    .ok_or("missing renewal prerequisites were accepted")?;
+    let refusal = composed(vec![Box::new(module)])
+        .err()
+        .ok_or("missing renewal prerequisites were accepted")?;
     assert!(
         refusal
             .to_string()

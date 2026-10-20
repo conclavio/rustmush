@@ -139,7 +139,7 @@ impl RenewalInventoryEntry {
 /// clock checks through Root prepare/stage/take. It carries no source bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RenewalFacts {
-    binding: RenewalBindingV1,
+    binding: Box<RenewalBindingV1>,
     predecessor_term_end: WorldIcSeconds,
     prior_quote: CommitToken,
     prior_quote_digest: DefinitionDigest,
@@ -392,7 +392,7 @@ impl OwnerReadService for RenewalReader {
             return Err(OwnerReadError::Integrity);
         }
         Ok(RenewalRead::Facts(RenewalFacts {
-            binding,
+            binding: Box::new(binding),
             predecessor_term_end,
             prior_quote: birth.quote(),
             prior_quote_digest: birth.quote_digest(),

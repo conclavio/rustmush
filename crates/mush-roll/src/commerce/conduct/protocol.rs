@@ -369,14 +369,14 @@ pub struct ConductSelector {
     subject: SelectorSubject,
 }
 enum SelectorSubject {
-    Admission(super::ConductSubject),
+    Admission(Box<super::ConductSubject>),
     Existing(CommitToken),
 }
 impl ConductSelector {
     pub fn admission(ticket: TicketId, subject: super::ConductSubject) -> Self {
         Self {
             ticket,
-            subject: SelectorSubject::Admission(subject),
+            subject: SelectorSubject::Admission(Box::new(subject)),
         }
     }
     pub fn existing(ticket: TicketId, operation: CommitToken) -> Self {

@@ -25,6 +25,13 @@ fn bad(_: impl std::fmt::Display) -> PublicationError {
 fn error(e: impl std::fmt::Display) -> ModError {
     ModError::msg(e.to_string())
 }
+struct ClosedClaim {
+    before: ClaimRecord,
+    row: ClaimRecord,
+    open: CommitToken,
+    commit: CommitToken,
+}
+
 #[derive(Clone)]
 struct Registration {
     families: CommerceFamilies,
@@ -292,7 +299,7 @@ where
         if txn.get(&r.families.ic_claims, &row.key()).map_err(bad)? != Some(&row) {
             return Err(PublicationError::Mismatch);
         }
-        ctx.prepare_owner(&self.roots, RootRequest::Ic(roots))
+        ctx.prepare_owner(&self.roots, RootRequest::Ic(Box::new(roots)))
             .map_err(bad)?;
         ctx.reserve_ic_mind_claim_completion(txn).map_err(bad)?;
         Ok(IcClaimReceipt {
@@ -300,15 +307,14 @@ where
             closed: None,
         })
     }
-    /// Drains only an actual opaque owner event. No current grant, holder,
-    /// issuer term, parent eligibility or same-clock predicate enters Close.
-    pub fn close(
+    #[inline(never)]
+    fn prepare_close_record(
         &self,
+        r: &Registration,
         ctx: &mut PrepareCtx<'_>,
         txn: &mut ActionTxn<'_>,
         event: S::Close,
-    ) -> Result<IcClaimReceipt, PublicationError> {
-        let r = self.registration(Transition::Close)?;
+    ) -> Result<Box<ClosedClaim>, PublicationError> {
         let open = S::closing_open(&event);
         let before = txn
             .get(&r.families.ic_claims, &open.to_hex())
@@ -398,13 +404,36 @@ where
             kind,
             at_ic: seal.at_ic().clone(),
         });
+        Ok(Box::new(ClosedClaim {
+            before,
+            row,
+            open,
+            commit,
+        }))
+    }
+
+    /// Drains only an actual opaque owner event. No current grant, holder,
+    /// issuer term, parent eligibility or same-clock predicate enters Close.
+    pub fn close(
+        &self,
+        ctx: &mut PrepareCtx<'_>,
+        txn: &mut ActionTxn<'_>,
+        event: S::Close,
+    ) -> Result<IcClaimReceipt, PublicationError> {
+        let r = self.registration(Transition::Close)?;
+        let ClosedClaim {
+            before,
+            row,
+            open,
+            commit,
+        } = *self.prepare_close_record(r, ctx, txn, event)?;
         let roots = super::roots::IcRoots::new(row.clone(), Some(before), None)?;
         txn.replace(&r.families.ic_claims, &row.key(), row.clone())
             .map_err(bad)?;
         if txn.get(&r.families.ic_claims, &row.key()).map_err(bad)? != Some(&row) {
             return Err(PublicationError::Mismatch);
         }
-        ctx.prepare_owner(&self.roots, RootRequest::Ic(roots))
+        ctx.prepare_owner(&self.roots, RootRequest::Ic(Box::new(roots)))
             .map_err(bad)?;
         ctx.close_ic_mind_claim_completion(txn, open).map_err(bad)?;
         Ok(IcClaimReceipt {

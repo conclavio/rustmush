@@ -17,13 +17,14 @@ impl GameModule for Owner {
         Ok(())
     }
 }
-fn families() -> TestResult<(Engine, CommerceFamilies)> {
+#[inline(never)]
+fn families() -> TestResult<(Box<Engine>, CommerceFamilies)> {
     let shared = Arc::new(Mutex::new(None));
-    let engine = Engine::with_modules(
+    let engine = Box::new(Engine::with_modules(
         World::new_minimal(),
         Registry::new(),
         vec![Box::new(Owner(shared.clone()))],
-    )?;
+    )?);
     let families = shared
         .lock()
         .map_err(|_| "family lock")?
@@ -100,13 +101,15 @@ fn admitted_widest_economics_keeps_all_actual_roll_terminal_envelopes_bounded() 
     )?;
     crate::commerce::renewal::capacity::check(&f, &opened)?;
     let funded = funded(&opened)?;
-    for row in [
-        opened.clone(),
-        funded.clone(),
-        terminal(&funded, true)?,
-        terminal(&funded, false)?,
-        closed(&opened)?,
-    ] {
+    let rows: [fn(&RenewalOperationV1, &RenewalOperationV1) -> TestResult<RenewalOperationV1>; 5] = [
+        |opened, _| Ok(opened.clone()),
+        |_, funded| Ok(funded.clone()),
+        |_, funded| terminal(funded, true),
+        |_, funded| terminal(funded, false),
+        |opened, _| closed(opened),
+    ];
+    for make in rows {
+        let row = make(&opened, &funded)?;
         let bytes = serde_json::to_vec(&row)?;
         assert_eq!(RenewalOperationV1::decode(&bytes)?, row);
         assert!(

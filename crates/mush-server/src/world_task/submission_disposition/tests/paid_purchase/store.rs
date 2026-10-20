@@ -1,4 +1,7 @@
 //! Actual durable store forwarding. Only the selected paid Grant writer phase is faulted.
+#[path = "registry_timing.rs"]
+mod registry_timing;
+
 use futures::future::BoxFuture;
 use mush_core::{
     AuthoritativeBundle, CanonicalHash, CommitToken, IdempotencyScope, ObjId, ScopedIdempotencyKey,
@@ -58,6 +61,7 @@ pub(super) struct PurchaseFaultStore {
     state: Mutex<State>,
     released: AtomicBool,
     release: Notify,
+    registry_timing: registry_timing::Observer,
 }
 
 impl PurchaseFaultStore {
@@ -67,6 +71,7 @@ impl PurchaseFaultStore {
             state: Mutex::new(State::default()),
             released: AtomicBool::new(true),
             release: Notify::new(),
+            registry_timing: registry_timing::Observer::new(),
         }
     }
 
@@ -261,6 +266,7 @@ impl PurchaseFaultStore {
         bundle: AuthoritativeBundle,
     ) -> BoxFuture<'_, Result<IntentReceipt, StoreError>> {
         Box::pin(async move {
+            self.registry_timing.reserve_enter(&bundle);
             let exact = Self::identify(&bundle)?;
             let fault = exact
                 .as_ref()
@@ -280,6 +286,8 @@ impl PurchaseFaultStore {
                 return Err(invalid("fixture rejects this exact unreserved grant"));
             }
             let receipt = self.inner.reserve_authoritative_intent(bundle).await?;
+            self.registry_timing
+                .reserved(receipt.token, receipt.bundle_hash);
             self.mark(receipt.token, receipt.bundle_hash, false)?;
             Ok(receipt)
         })
@@ -291,6 +299,7 @@ impl PurchaseFaultStore {
         hash: CanonicalHash,
     ) -> BoxFuture<'_, Result<AuthoritativeReceipt, StoreError>> {
         Box::pin(async move {
+            self.registry_timing.reconcile_enter(token, hash);
             let selected = {
                 let state = self
                     .state
@@ -308,6 +317,7 @@ impl PurchaseFaultStore {
                 return Err(StoreError::AuthoritativeEpochContention);
             }
             let receipt = self.inner.reconcile_authoritative(token, hash).await?;
+            self.registry_timing.committed(token, hash);
             self.mark(token, hash, true)?;
             Ok(receipt)
         })

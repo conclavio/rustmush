@@ -31,7 +31,7 @@ fn config(mode: CommerceMode) -> Result<CommerceConfig, ModError> {
 }
 
 fn refuses(config: CommerceConfig, definition: DefinitionDescriptor) -> Result<(), ModError> {
-    let result = Engine::with_modules(
+    let result = boxed_test_engine(
         World::new_minimal(),
         Registry::new(),
         vec![
@@ -174,8 +174,8 @@ fn freeze_registry_declarations(
     config: CommerceConfig,
     registry: RegistryDefinitions,
     definitions: Vec<DefinitionDescriptor>,
-) -> Result<Engine, ModError> {
-    Engine::with_modules(
+) -> Result<Box<Engine>, ModError> {
+    boxed_test_engine(
         World::new_minimal(),
         Registry::new(),
         vec![
@@ -306,4 +306,13 @@ fn house_filing_opt_in_preserves_personal_identity_and_refuses_unconfigured_sche
         .with_references(expected.references().to_vec()),
     )?;
     Ok(())
+}
+
+#[inline(never)]
+fn boxed_test_engine(
+    world: mush_core::World,
+    registry: mush_core::Registry,
+    modules: Vec<Box<dyn mush_core::GameModule>>,
+) -> std::result::Result<Box<mush_core::Engine>, mush_core::ModError> {
+    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
 }

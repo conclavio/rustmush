@@ -33,7 +33,7 @@ fn actual_filed_charter_refuses_every_generic_title_and_collateral_escape() -> T
     let (_, patch, _) =
         adapter.prepare_images(&state, &world, actor, commit(), request(actor, shell))?;
     assert!(!state.snapshot.managed_titles.contains(shell));
-    Arc::new(adapter).bind(&mut state, patch.into())?.apply();
+    Arc::new(*adapter).bind(&mut state, patch.into())?.apply();
     assert!(state.snapshot.managed_titles.contains(shell));
     let before = state.snapshot.clone();
     let mut operations = vec![
@@ -94,7 +94,7 @@ fn birth_identity_outlives_mutable_title_fields_and_catalogue_text_is_not_author
     let (world, mut state, adapter, actor, shell) = fixture(Amount::from_minor(100))?;
     let (_, patch, _) =
         adapter.prepare_images(&state, &world, actor, commit(), request(actor, shell))?;
-    Arc::new(adapter).bind(&mut state, patch.into())?.apply();
+    Arc::new(*adapter).bind(&mut state, patch.into())?.apply();
     let mut changed = state.snapshot.asset(shell).ok_or("title")?.clone();
     changed.catalog = None;
     changed.lifecycle = crate::AssetLifecycle::WrittenOff;
@@ -142,7 +142,7 @@ fn managed_title_projection_requires_complete_actual_receipt_replay() -> TestRes
     let (world, mut state, adapter, actor, shell) = fixture(Amount::from_minor(100))?;
     let (output, patch, _) =
         adapter.prepare_images(&state, &world, actor, commit(), request(actor, shell))?;
-    Arc::new(adapter).bind(&mut state, patch.into())?.apply();
+    Arc::new(*adapter).bind(&mut state, patch.into())?.apply();
     let mut audit = ReceiptAudit::default();
     audit.observe(
         state

@@ -361,7 +361,7 @@ pub(crate) fn command(ctx: &mut Ctx<'_>, switch: &str, text: &str) -> Result<(),
             .preparer
             .submit(preparation::Request::Proving {
                 ticket,
-                recipe,
+                recipe: Box::new(recipe),
                 factory,
             })
             .map_err(|(e, _)| e)?;
@@ -513,12 +513,12 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
         };
         let (recipe, result) = match done {
             preparation::Completion::Conduct { result, .. } => {
-                super::conduct_service::prepared(ctx, &mut runtime, p, result);
+                super::conduct_service::prepared(ctx, &mut runtime, p, *result);
                 continue;
             }
-            preparation::Completion::Proving { recipe, result, .. } => (recipe, result),
+            preparation::Completion::Proving { recipe, result, .. } => (*recipe, *result),
             preparation::Completion::Registry { result, .. } => {
-                super::registry_service::prepared(ctx, &mut runtime, p, result);
+                super::registry_service::prepared(ctx, &mut runtime, p, *result);
                 continue;
             }
         };

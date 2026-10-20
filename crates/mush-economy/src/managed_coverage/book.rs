@@ -242,7 +242,7 @@ impl CoverageBook {
                 {
                     return Err(refused());
                 }
-                history::from_binding(tx, intent)?
+                history::from_binding(tx, *intent)?
             }
             Proof::Terminal {
                 format: 1,
@@ -252,8 +252,8 @@ impl CoverageBook {
             } => history::with_terminal(
                 self.histories.get(&binding).ok_or_else(refused)?,
                 tx,
-                decision,
-                title,
+                *decision,
+                *title,
             )?,
             _ => return Err(refused()),
         };

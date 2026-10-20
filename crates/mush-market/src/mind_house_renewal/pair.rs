@@ -19,7 +19,7 @@ impl MindRenewalOperationV1 {
     /// be called with a serialized receipt or a merely terminal contract.
     pub fn verify_history(&self, actual: &RenewalOfferView<'_>) -> Result<(), String> {
         self.validate()?;
-        if actual.offer() != &self.offer {
+        if actual.offer() != self.offer.as_ref() {
             return Err(invalid());
         }
         self.roll_projection()?

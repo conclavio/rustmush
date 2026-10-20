@@ -19,21 +19,21 @@ use std::sync::Arc;
 pub(crate) enum Request {
     Initialize,
     Deliver {
-        before: CoreIntegrationOrder,
-        output: mush_core::core_delivery::DeliveredCoreOutput,
+        before: Box<CoreIntegrationOrder>,
+        output: Box<mush_core::core_delivery::DeliveredCoreOutput>,
     },
-    Offer(FactoryOffer),
+    Offer(Box<FactoryOffer>),
     Accept {
-        order: CoreIntegrationOrder,
-        payment: CoreFundingOutput,
+        order: Box<CoreIntegrationOrder>,
+        payment: Box<CoreFundingOutput>,
     },
     Advance {
-        before: CoreIntegrationOrder,
-        advance: mush_core::ScheduleAdvance,
+        before: Box<CoreIntegrationOrder>,
+        advance: Box<mush_core::ScheduleAdvance>,
     },
     Terminal {
-        before: CoreIntegrationOrder,
-        payment: CoreTerminalOutput,
+        before: Box<CoreIntegrationOrder>,
+        payment: Box<CoreTerminalOutput>,
     },
 }
 pub(crate) struct Output {
@@ -44,12 +44,12 @@ pub(crate) struct Output {
 }
 enum Fence {
     Initialize,
-    Offer(FactoryOffer, Live),
-    Accept(FactoryOffer, AcceptedIntent, Live),
-    Advance(AcceptedIntent, mush_core::ScheduleAdvance),
-    Complete(AcceptedIntent, Live),
+    Offer(Box<FactoryOffer>, Box<Live>),
+    Accept(Box<FactoryOffer>, Box<AcceptedIntent>, Box<Live>),
+    Advance(Box<AcceptedIntent>, Box<mush_core::ScheduleAdvance>),
+    Complete(Box<AcceptedIntent>, Box<Live>),
     Cancel,
-    Deliver(CoreIntegrationOrder),
+    Deliver(Box<CoreIntegrationOrder>),
 }
 pub(crate) struct Patch {
     pub(crate) after: Projection,
@@ -128,36 +128,31 @@ fn current_order(
     }
     Ok(())
 }
-pub(crate) fn prepare(
-    state: &CoreProductionState,
-    ctx: &OwnerPrepareContext<'_>,
-    config: &CoreFactoryConfig,
-    defs: &Definitions,
-    content: &mush_core::DefinitionRef,
-    inputs: &RegisteredCoreInputs,
-    request: Request,
-) -> Result<(Output, Patch, Vec<ReplayWrite>), ParticipantError> {
-    identity(
-        ctx,
-        match &request {
-            Request::Advance { advance, .. } => Some(advance),
-            _ => None,
-        },
-    )?;
-    let projection = state
-        .integration
-        .as_ref()
-        .filter(|p| p.ready)
-        .ok_or_else(refused)?;
-    if !state.ready {
-        return Err(refused());
-    }
-    let mut after = projection.clone();
-    let mut order_output = None;
-    let mut input = None;
-    let mut delivered = None;
-    let fence = match request {
-        Request::Initialize => {
+struct OwnerPhase<'a, 'w> {
+    ctx: &'a OwnerPrepareContext<'w>,
+    config: &'a CoreFactoryConfig,
+    defs: &'a Definitions,
+    content: &'a mush_core::DefinitionRef,
+    inputs: &'a RegisteredCoreInputs,
+    projection: &'a Projection,
+    after: &'a mut Projection,
+    order_output: &'a mut Option<CoreIntegrationOrder>,
+    input: &'a mut Option<Arc<CoreInputWitness>>,
+    delivered: &'a mut Option<super::delivery::Record>,
+}
+
+impl OwnerPhase<'_, '_> {
+    #[inline(never)]
+    fn prepare_initialize(self) -> Result<Fence, ParticipantError> {
+        let Self {
+            ctx,
+            config,
+            defs,
+            projection,
+            after,
+            ..
+        } = self;
+        Ok({
             if config.mode != CoreOriginMode::Initialize
                 || ctx.invocation().actor() != GOD
                 || ctx.action() != &config.action(super::INITIALIZE).map_err(|_| refused())?
@@ -179,8 +174,27 @@ pub(crate) fn prepare(
                     Some(super::delivery::Index::new(ctx.commit_token()).map_err(|_| refused())?);
             }
             Fence::Initialize
-        }
-        Request::Deliver { before, output } => {
+        })
+    }
+
+    #[inline(never)]
+    fn prepare_deliver(
+        self,
+        before: Box<CoreIntegrationOrder>,
+        output: Box<mush_core::core_delivery::DeliveredCoreOutput>,
+    ) -> Result<Fence, ParticipantError> {
+        let Self {
+            ctx,
+            config,
+            defs,
+            projection,
+            after,
+            order_output,
+            delivered,
+            ..
+        } = self;
+        Ok({
+            let (before, output) = (*before, *output);
             before.validate().map_err(|_| refused())?;
             if config.mode != CoreOriginMode::Active
                 || config.payment.delivery.is_none()
@@ -215,11 +229,24 @@ pub(crate) fn prepare(
             after
                 .deliveries
                 .insert(before.intent.order, Arc::new(record.clone()));
-            delivered = Some(record);
-            order_output = Some(before.clone());
-            Fence::Deliver(before)
-        }
-        Request::Offer(row) => {
+            *delivered = Some(record);
+            *order_output = Some(before.clone());
+            Fence::Deliver(Box::new(before))
+        })
+    }
+
+    #[inline(never)]
+    fn prepare_offer(self, row: Box<FactoryOffer>) -> Result<Fence, ParticipantError> {
+        let Self {
+            ctx,
+            config,
+            defs,
+            projection,
+            after,
+            ..
+        } = self;
+        Ok({
+            let row = *row;
             row.validate().map_err(|_| refused())?;
             if config.mode != CoreOriginMode::Active
                 || (config.payment.delivery.is_some() && projection.delivery_index.is_none())
@@ -257,9 +284,29 @@ pub(crate) fn prepare(
                     .map_err(|_| refused())?,
             );
             after.offers.insert(row.operation, Arc::new(row.clone()));
-            Fence::Offer(row, live)
-        }
-        Request::Accept { order, payment } => {
+            Fence::Offer(Box::new(row), Box::new(live))
+        })
+    }
+
+    #[inline(never)]
+    fn prepare_accept(
+        self,
+        order: Box<CoreIntegrationOrder>,
+        payment: Box<CoreFundingOutput>,
+    ) -> Result<Fence, ParticipantError> {
+        let Self {
+            ctx,
+            config,
+            defs,
+            inputs,
+            projection,
+            after,
+            order_output,
+            input,
+            ..
+        } = self;
+        Ok({
+            let (order, payment) = (*order, *payment);
             order.validate().map_err(|_| refused())?;
             if config.mode != CoreOriginMode::Active
                 || (config.payment.delivery.is_some() && projection.delivery_index.is_none())
@@ -300,7 +347,7 @@ pub(crate) fn prepare(
                 .ok_or_else(refused)?;
             let live = authority::accept(ctx.world(), defs, config, offer, &order.intent)
                 .map_err(|_| refused())?;
-            input = Some(
+            *input = Some(
                 inputs
                     .capture(
                         ctx,
@@ -323,11 +370,34 @@ pub(crate) fn prepare(
             after
                 .orders
                 .insert(order.intent.order, Arc::new(OrderView::capture(&order)));
-            let fence = Fence::Accept((**offer).clone(), order.intent.clone(), live);
-            order_output = Some(order);
+            let fence = Fence::Accept(
+                Box::new((**offer).clone()),
+                Box::new(order.intent.clone()),
+                Box::new(live),
+            );
+            *order_output = Some(order);
             fence
-        }
-        Request::Advance { before, advance } => {
+        })
+    }
+
+    #[inline(never)]
+    fn prepare_advance(
+        self,
+        before: Box<CoreIntegrationOrder>,
+        advance: Box<mush_core::ScheduleAdvance>,
+    ) -> Result<Fence, ParticipantError> {
+        let Self {
+            ctx,
+            config,
+            defs,
+            content,
+            projection,
+            after,
+            order_output,
+            ..
+        } = self;
+        Ok({
+            let (before, advance) = (*before, *advance);
             let mut stage = "owner-readiness";
             let result: Result<Fence, ParticipantError> = (|| {
                 scheduled_readiness(ctx, defs, content)?;
@@ -353,13 +423,33 @@ pub(crate) fn prepare(
                 after
                     .orders
                     .insert(next.intent.order, Arc::new(OrderView::capture(&next)));
-                let fence = Fence::Advance(next.intent.clone(), advance);
-                order_output = Some(next);
+                let fence = Fence::Advance(Box::new(next.intent.clone()), Box::new(advance));
+                *order_output = Some(next);
                 Ok(fence)
             })();
             result.inspect_err(|_| tracing::debug!(target: "core_integration_preparation", stage, "Core integration preparation refused"))?
-        }
-        Request::Terminal { before, payment } => {
+        })
+    }
+
+    #[inline(never)]
+    fn prepare_terminal(
+        self,
+        before: Box<CoreIntegrationOrder>,
+        payment: Box<CoreTerminalOutput>,
+    ) -> Result<Fence, ParticipantError> {
+        let Self {
+            ctx,
+            config,
+            defs,
+            inputs,
+            projection,
+            after,
+            order_output,
+            input,
+            ..
+        } = self;
+        Ok({
+            let (before, payment) = (*before, *payment);
             current_order(projection, &before, ctx)?;
             if payment.subject() != &before.intent.subject().map_err(|_| refused())?
                 || payment.receipt().commit() != ctx.commit_token()
@@ -379,7 +469,7 @@ pub(crate) fn prepare(
                 }
                 let live = authority::complete(ctx.world(), defs, config, &before.intent)
                     .map_err(|_| refused())?;
-                input = Some(
+                *input = Some(
                     inputs
                         .capture(
                             ctx,
@@ -391,13 +481,13 @@ pub(crate) fn prepare(
                         )
                         .map_err(|_| refused())?,
                 );
-                Fence::Complete(before.intent.clone(), live)
+                Fence::Complete(Box::new(before.intent.clone()), Box::new(live))
             } else {
                 if ctx.action() != &config.action(super::CANCEL).map_err(|_| refused())? {
                     return Err(refused());
                 }
                 authority::cleanup(ctx.world(), defs).map_err(|_| refused())?;
-                input = Some(
+                *input = Some(
                     inputs
                         .capture(
                             ctx,
@@ -417,9 +507,59 @@ pub(crate) fn prepare(
             after
                 .orders
                 .insert(next.intent.order, Arc::new(OrderView::capture(&next)));
-            order_output = Some(next);
+            *order_output = Some(next);
             fence
-        }
+        })
+    }
+}
+
+pub(crate) fn prepare(
+    state: &CoreProductionState,
+    ctx: &OwnerPrepareContext<'_>,
+    config: &CoreFactoryConfig,
+    defs: &Definitions,
+    content: &mush_core::DefinitionRef,
+    inputs: &RegisteredCoreInputs,
+    request: Request,
+) -> Result<(Box<Output>, Box<Patch>, Vec<ReplayWrite>), ParticipantError> {
+    identity(
+        ctx,
+        match &request {
+            Request::Advance { advance, .. } => Some(advance.as_ref()),
+            _ => None,
+        },
+    )?;
+    let projection = state
+        .integration
+        .as_ref()
+        .filter(|p| p.ready)
+        .ok_or_else(refused)?;
+    if !state.ready {
+        return Err(refused());
+    }
+    let mut after = projection.clone();
+    let mut order_output = None;
+    let mut input = None;
+    let mut delivered = None;
+    let phase = OwnerPhase {
+        ctx,
+        config,
+        defs,
+        content,
+        inputs,
+        projection,
+        after: &mut after,
+        order_output: &mut order_output,
+        input: &mut input,
+        delivered: &mut delivered,
+    };
+    let fence = match request {
+        Request::Initialize => phase.prepare_initialize()?,
+        Request::Deliver { before, output } => phase.prepare_deliver(before, output)?,
+        Request::Offer(row) => phase.prepare_offer(row)?,
+        Request::Accept { order, payment } => phase.prepare_accept(order, payment)?,
+        Request::Advance { before, advance } => phase.prepare_advance(before, advance)?,
+        Request::Terminal { before, payment } => phase.prepare_terminal(before, payment)?,
     };
     let index = after.index.clone().ok_or_else(refused)?;
     let mut writes = vec![ReplayWrite::ModuleJsonSet {
@@ -436,13 +576,13 @@ pub(crate) fn prepare(
             value: encode(delivery, super::delivery::INDEX_BYTES).map_err(|_| refused())?,
         });
     }
-    let output = Output {
+    let output = Box::new(Output {
         index,
         order: order_output,
         input: input.clone(),
         delivered,
-    };
-    let patch = Patch {
+    });
+    let patch = Box::new(Patch {
         after,
         generation: state.generation,
         next_generation: state.generation.checked_add(1).ok_or_else(refused)?,
@@ -451,7 +591,7 @@ pub(crate) fn prepare(
         before_delivery: projection.delivery_index.clone(),
         fence,
         input,
-    };
+    });
     Ok((output, patch, writes))
 }
 impl Patch {
@@ -479,7 +619,7 @@ impl Patch {
         identity(
             ctx,
             match &self.fence {
-                Fence::Advance(_, advance) => Some(advance),
+                Fence::Advance(_, advance) => Some(advance.as_ref()),
                 _ => None,
             },
         )?;

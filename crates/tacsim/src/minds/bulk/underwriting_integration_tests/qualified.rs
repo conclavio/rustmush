@@ -117,48 +117,13 @@ fn cold_inverse(f: &PurchaseFixture, w: &IcWorld, saved: &Durable) -> TestResult
     Ok(())
 }
 
-pub(in super::super) fn exercise(
-    f: &PurchaseFixture,
-    base: &IcWorld,
-    saved: &Durable,
+#[inline(never)]
+fn configure_recall(
+    w: &mut IcWorld,
     retained: &ConductTrialProof,
-) -> TestResult {
-    eprintln!("M7_STORY phase=qualified_coverage event=begin");
-    assert_eq!(retained.profile(), "Transit");
-    assert_eq!(
-        retained.role(),
-        mush_roll::commerce::conduct::ConductRole::Transit
-    );
-    let mut w = base.reboot(f, saved)?;
-    // Author one real Class-II carrier through the registered unit command.
-    let hull =
-        w.engine
-            .world
-            .create(ObjKind::Thing, "Conduct insured carrier", GOD, Some(w.base))?;
-    w.engine.world.attach_behavior(
-        hull,
-        mush_core::BehaviorId::new("sim.participant")?,
-        mush_core::BehaviorBinding {
-            schema_version: 1,
-            attached_by: GOD,
-            attached_at: 0,
-        },
-    )?;
-    w.persist_setup()?;
-    w.command(&format!(
-        "@unit/create #{}=tacsim.unit.conduct_carrier",
-        hull.0
-    ))?;
-    w.command(&format!("@asset/title #{}=#{}", hull.0, BUYER.0))?;
-    w.command(&format!(
-        "@spatial/place/interior #{}=#{}",
-        hull.0, w.base.0
-    ))?;
-    assert!(mush_tactics::module::unit_of(&w.engine.world, hull).is_some());
-    w.hulls[0] = hull;
-    let (mut w, ordinary, payer, treasury, _, _) = setup(f, &w, &w.snapshot())?;
-    let qualified = product(&ordinary, retained, SafeConductRole::Transit)?;
-    let wrong_role = product(&ordinary, retained, SafeConductRole::Escort)?;
+    qualified: &CoverageProductV1,
+    wrong_role: &CoverageProductV1,
+) -> TestResult<Configuration> {
     w.command("@org/create ConductRegistry")?;
     w.command("@org/scope create ConductRegistry=recall")?;
     let state = w
@@ -189,31 +154,22 @@ pub(in super::super) fn exercise(
         ]),
         recall: RegistryRecallPolicy::new(issuer()?, org, scope, vec![GOD])?,
     };
-    let mut w = IcWorld::boot_source_qualified(
-        f.into(),
-        &w.snapshot(),
-        w.base,
-        w.field,
-        w.hulls,
-        true,
-        w.pending_charters,
-        w.paid_resales,
-        w.registry_revocation.clone(),
-        Some(vec![
-            ordinary.clone(),
-            qualified.clone(),
-            wrong_role.clone(),
-        ]),
-        false,
-        w.transfer_facts.clone(),
-        true,
-        Some(config),
-    )?;
-    let publication = reference(&w, "publish_hull_coverage")?;
+    Ok(config)
+}
+
+#[inline(never)]
+fn publish_products(
+    f: &PurchaseFixture,
+    w: &mut IcWorld,
+    ordinary: &CoverageProductV1,
+    qualified: &CoverageProductV1,
+    wrong_role: &CoverageProductV1,
+) -> TestResult<Durable> {
+    let publication = reference(w, "publish_hull_coverage")?;
     let before = w.disk.clone();
     assert!(
         prepare(
-            &mut w,
+            w,
             GOD,
             &publication,
             N,
@@ -222,22 +178,30 @@ pub(in super::super) fn exercise(
         .is_err()
     );
     assert!(w.disk == before, "wrong role changed durable records");
-    for (n, product) in [(N, &ordinary), (N + 1, &qualified)] {
+    for (n, product) in [(N, ordinary), (N + 1, qualified)] {
         let p = prepare(
-            &mut w,
+            w,
             GOD,
             &publication,
             n,
             json!({"product":product.digest()?.to_hex()}),
         )?;
-        install(&mut w, &publication, n, p)?;
+        install(w, &publication, n, p)?;
     }
     let published = w.snapshot();
-    cold_inverse(f, &w, &published)?;
-    let original = (money(&w, payer)?, money(&w, treasury)?);
-    let zone = selected_base(w.base, w.field)?.definition().clone();
-    // A genuine different selected profile does not inherit Transit pricing.
-    let mut other = w.reboot(f, &published)?;
+    cold_inverse(f, w, &published)?;
+    Ok(published)
+}
+
+#[inline(never)]
+fn quote_other_profile(
+    other: &mut IcWorld,
+    zone: &DefinitionRef,
+    hull: ObjId,
+    payer: MoneyAccount,
+    treasury: MoneyAccount,
+    original: (Amount, Amount),
+) -> TestResult {
     let other_permit = ic_sortie::fixture_withheld(
         ic_sortie::fixture_start(&other.engine.world, BUYER, hull)?,
         zone.clone(),
@@ -254,7 +218,7 @@ pub(in super::super) fn exercise(
             .acknowledge_withheld(&other.engine.world, &pending)?
             .ok_or("actual Escort Open")?,
     );
-    let other_host = host(&other)?;
+    let other_host = host(other)?;
     let quote = other_host.quote(
         &other.engine.world,
         departure,
@@ -262,45 +226,28 @@ pub(in super::super) fn exercise(
         payer,
         Amount::from_minor(10_000),
     )?;
-    observed_quote(&mut other, quote, N + 3)?;
-    let row = quote_row(&other, N + 3)?;
+    observed_quote(other, quote, N + 3)?;
+    let row = quote_row(other, N + 3)?;
     assert_eq!(row["terms"]["premium"], json!(100));
     assert_eq!(row["risk"]["qualified"], Value::Null);
-    assert_eq!((money(&other, payer)?, money(&other, treasury)?), original);
+    assert_eq!((money(other, payer)?, money(other, treasury)?), original);
 
-    let permit = ic_sortie::fixture_withheld(
-        ic_sortie::fixture_start(&w.engine.world, BUYER, hull)?,
-        zone.clone(),
-        DefinitionDigest::from_bytes([112; 32]),
-    )?;
-    let pending = w
-        .host
-        .enqueue_withheld(&permit, LicenceId::new(2)?, vec!["Transit".into()])?;
-    w.land(pending.ticket(), N + 4, hull, false)?;
-    let departure = Arc::new(
-        w.host
-            .acknowledge_withheld(&w.engine.world, &pending)?
-            .ok_or("actual Transit Open")?,
-    );
-    let h = host(&w)?;
-    for (publication, n, premium, discount) in [(N, N + 5, 100, 0), (N + 1, N + 6, 90, 10)] {
-        let t = h.quote(
-            &w.engine.world,
-            departure.clone(),
-            token(publication),
-            payer,
-            Amount::from_minor(10_000),
-        )?;
-        observed_quote(&mut w, t, n)?;
-        let row = quote_row(&w, n)?;
-        assert_eq!(row["terms"]["premium"], json!(premium));
-        assert_eq!(row["terms"]["discount"], json!(discount));
-        assert_eq!(row["risk"]["qualified"].is_null(), discount == 0);
-    }
-    assert_eq!((money(&w, payer)?, money(&w, treasury)?), original);
-    let quoted = w.snapshot();
+    Ok(())
+}
+
+#[inline(never)]
+fn recall_bind_fences(
+    f: &PurchaseFixture,
+    w: &IcWorld,
+    quoted: &Durable,
+    retained: &ConductTrialProof,
+    departure: &Arc<ic_sortie::AcknowledgedDeparture>,
+    accounts: (MoneyAccount, MoneyAccount),
+    original: (Amount, Amount),
+) -> TestResult {
+    let (payer, treasury) = accounts;
     for phase in 0..3 {
-        let mut probe = w.reboot(f, &quoted)?;
+        let mut probe = w.reboot(f, quoted)?;
         let ph = host(&probe)?;
         let bind = ph.bind(&probe.engine.world, departure.clone(), token(N + 6))?;
         if phase == 0 {
@@ -324,20 +271,166 @@ pub(in super::super) fn exercise(
         assert!(rows(&probe.disk, "tacsim", "tacsim_coverage_policies").is_empty());
         assert_eq!((money(&probe, payer)?, money(&probe, treasury)?), original);
     }
+    Ok(())
+}
+
+#[inline(never)]
+fn create_qualified_carrier(w: &mut IcWorld) -> TestResult<ObjId> {
+    // Author one real Class-II carrier through the registered unit command.
+    let hull =
+        w.engine
+            .world
+            .create(ObjKind::Thing, "Conduct insured carrier", GOD, Some(w.base))?;
+    w.engine.world.attach_behavior(
+        hull,
+        mush_core::BehaviorId::new("sim.participant")?,
+        mush_core::BehaviorBinding {
+            schema_version: 1,
+            attached_by: GOD,
+            attached_at: 0,
+        },
+    )?;
+    w.persist_setup()?;
+    w.command(&format!(
+        "@unit/create #{}=tacsim.unit.conduct_carrier",
+        hull.0
+    ))?;
+    w.command(&format!("@asset/title #{}=#{}", hull.0, BUYER.0))?;
+    w.command(&format!(
+        "@spatial/place/interior #{}=#{}",
+        hull.0, w.base.0
+    ))?;
+    assert!(mush_tactics::module::unit_of(&w.engine.world, hull).is_some());
+    w.hulls[0] = hull;
+    Ok(hull)
+}
+
+#[inline(never)]
+fn quote_and_bind(
+    f: &PurchaseFixture,
+    w: &mut IcWorld,
+    retained: &ConductTrialProof,
+    hull: ObjId,
+    zone: &DefinitionRef,
+    accounts: (MoneyAccount, MoneyAccount),
+    original: (Amount, Amount),
+) -> TestResult<(
+    Arc<ic_sortie::WithheldDeparture>,
+    Arc<ic_sortie::AcknowledgedDeparture>,
+    Amount,
+)> {
+    let (payer, treasury) = accounts;
+    let permit = ic_sortie::fixture_withheld(
+        ic_sortie::fixture_start(&w.engine.world, BUYER, hull)?,
+        zone.clone(),
+        DefinitionDigest::from_bytes([112; 32]),
+    )?;
+    let pending = w
+        .host
+        .enqueue_withheld(&permit, LicenceId::new(2)?, vec!["Transit".into()])?;
+    w.land(pending.ticket(), N + 4, hull, false)?;
+    let departure = Arc::new(
+        w.host
+            .acknowledge_withheld(&w.engine.world, &pending)?
+            .ok_or("actual Transit Open")?,
+    );
+    let h = host(w)?;
+    for (publication, n, premium, discount) in [(N, N + 5, 100, 0), (N + 1, N + 6, 90, 10)] {
+        let t = h.quote(
+            &w.engine.world,
+            departure.clone(),
+            token(publication),
+            payer,
+            Amount::from_minor(10_000),
+        )?;
+        observed_quote(w, t, n)?;
+        let row = quote_row(w, n)?;
+        assert_eq!(row["terms"]["premium"], json!(premium));
+        assert_eq!(row["terms"]["discount"], json!(discount));
+        assert_eq!(row["risk"]["qualified"].is_null(), discount == 0);
+    }
+    assert_eq!((money(w, payer)?, money(w, treasury)?), original);
+    let quoted = w.snapshot();
+    recall_bind_fences(
+        f,
+        w,
+        &quoted,
+        retained,
+        &departure,
+        (payer, treasury),
+        original,
+    )?;
     let bind = h.bind(&w.engine.world, departure.clone(), token(N + 6))?;
-    assert_eq!(land_ticket(&mut w, bind, N + 7)?.kind(), "bound");
+    assert_eq!(land_ticket(w, bind, N + 7)?.kind(), "bound");
     let paid = original
         .0
         .checked_sub(Amount::from_minor(90))
         .ok_or("premium")?;
-    assert_eq!(money(&w, payer)?, paid);
+    assert_eq!(money(w, payer)?, paid);
     assert_eq!(
-        money(&w, treasury)?,
+        money(w, treasury)?,
         original
             .1
             .checked_add(Amount::from_minor(90))
             .ok_or("premium")?
     );
+    Ok((permit, departure, paid))
+}
+
+pub(in super::super) fn exercise(
+    f: &PurchaseFixture,
+    base: &IcWorld,
+    saved: &Durable,
+    retained: &ConductTrialProof,
+) -> TestResult {
+    eprintln!("M7_STORY phase=qualified_coverage event=begin");
+    assert_eq!(retained.profile(), "Transit");
+    assert_eq!(
+        retained.role(),
+        mush_roll::commerce::conduct::ConductRole::Transit
+    );
+    let mut w = base.reboot(f, saved)?;
+    let hull = create_qualified_carrier(&mut w)?;
+    let (mut w, ordinary, payer, treasury, _, _) = setup(f, &w, &w.snapshot())?;
+    let qualified = product(&ordinary, retained, SafeConductRole::Transit)?;
+    let wrong_role = product(&ordinary, retained, SafeConductRole::Escort)?;
+    let config = configure_recall(&mut w, retained, &qualified, &wrong_role)?;
+    let mut w = IcWorld::boot_source_qualified(
+        f.into(),
+        &w.snapshot(),
+        w.base,
+        w.field,
+        w.hulls,
+        true,
+        w.pending_charters,
+        w.paid_resales,
+        w.registry_revocation.clone(),
+        Some(vec![
+            ordinary.clone(),
+            qualified.clone(),
+            wrong_role.clone(),
+        ]),
+        false,
+        w.transfer_facts.clone(),
+        true,
+        Some(config),
+    )?;
+    let published = publish_products(f, &mut w, &ordinary, &qualified, &wrong_role)?;
+    let original = (money(&w, payer)?, money(&w, treasury)?);
+    let zone = selected_base(w.base, w.field)?.definition().clone();
+    // A genuine different selected profile does not inherit Transit pricing.
+    let mut other = w.reboot(f, &published)?;
+    quote_other_profile(&mut other, &zone, hull, payer, treasury, original)?;
+
+    let (permit, departure, paid) = quote_and_bind(
+        f,
+        &mut w,
+        retained,
+        hull,
+        &zone,
+        (payer, treasury),
+        original,
+    )?;
     let mut w = w.reboot(f, &w.snapshot())?;
     let recovered_host = host(&w)?;
     context(&mut w, BUYER, move |ctx| {

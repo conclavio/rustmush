@@ -238,7 +238,7 @@ pub(crate) fn prepare_offer(
 ) -> Result<
     (
         RenewalOfferOutput,
-        install::OfferPatch,
+        Box<install::OfferPatch>,
         Vec<mush_core::authoritative::ReplayWrite>,
     ),
     ParticipantError,
@@ -255,7 +255,7 @@ pub(crate) fn prepare_retry(
 ) -> Result<
     (
         RenewalOfferOutput,
-        install::OfferPatch,
+        Box<install::OfferPatch>,
         Vec<mush_core::authoritative::ReplayWrite>,
     ),
     ParticipantError,
@@ -277,7 +277,7 @@ pub(crate) fn prepare_holder_offer(
 ) -> Result<
     (
         RenewalOfferOutput,
-        install::OfferPatch,
+        Box<install::OfferPatch>,
         Vec<mush_core::authoritative::ReplayWrite>,
     ),
     ParticipantError,
@@ -299,7 +299,7 @@ pub(crate) fn prepare_close(
 ) -> Result<
     (
         RenewalOfferOutput,
-        install::OfferPatch,
+        Box<install::OfferPatch>,
         Vec<mush_core::authoritative::ReplayWrite>,
     ),
     ParticipantError,
@@ -320,7 +320,7 @@ pub(crate) fn prepare_service_close(
 ) -> Result<
     (
         RenewalOfferOutput,
-        install::OfferPatch,
+        Box<install::OfferPatch>,
         Vec<mush_core::authoritative::ReplayWrite>,
     ),
     ParticipantError,
@@ -341,7 +341,7 @@ pub(crate) fn prepare_funding(
 ) -> Result<
     (
         RenewalFundingOutput,
-        money_install::RenewalMoneyPatch,
+        Box<money_install::RenewalMoneyPatch>,
         Vec<mush_core::authoritative::ReplayWrite>,
     ),
     ParticipantError,
@@ -361,7 +361,7 @@ pub(crate) fn prepare_terminal(
 ) -> Result<
     (
         RenewalTerminalOutput,
-        money_install::RenewalMoneyPatch,
+        Box<money_install::RenewalMoneyPatch>,
         Vec<mush_core::authoritative::ReplayWrite>,
     ),
     ParticipantError,

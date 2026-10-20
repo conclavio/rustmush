@@ -185,7 +185,7 @@ impl Fixture {
         &self,
         funding: &FundingOutput,
         outcome: PurchaseOutcome,
-    ) -> Result<terminal::TerminalPreparation, Box<dyn std::error::Error>> {
+    ) -> Result<Box<terminal::TerminalPreparation>, Box<dyn std::error::Error>> {
         self.terminal_as(funding, outcome, self.request.buyer)
     }
     fn terminal_as(
@@ -193,7 +193,7 @@ impl Fixture {
         funding: &FundingOutput,
         outcome: PurchaseOutcome,
         actor: ObjId,
-    ) -> Result<terminal::TerminalPreparation, Box<dyn std::error::Error>> {
+    ) -> Result<Box<terminal::TerminalPreparation>, Box<dyn std::error::Error>> {
         let (name, transition) = match outcome {
             PurchaseOutcome::Granted => ("settle_original_mind", "grant"),
             PurchaseOutcome::Refunded => ("refund_original_mind", "refund"),

@@ -246,7 +246,7 @@ impl RegisteredCoveragePublicationWriter {
         let request = CoverageRoots::publication(&row, fence, &proofs)?;
         txn.insert(&r.families.coverage_publications, &row.key(), row.clone())
             .map_err(bad)?;
-        ctx.prepare_owner(&self.roots, RootRequest::Coverage(request))
+        ctx.prepare_owner(&self.roots, RootRequest::Coverage(Box::new(request)))
             .map_err(bad)?;
         if txn
             .get(&r.families.coverage_publications, &row.key())
@@ -272,15 +272,18 @@ impl PreparedCoverageOpen {
     }
 }
 pub struct CoverageWriteResult {
+    state: Box<CoverageWriteState>,
+}
+struct CoverageWriteState {
     retention: CoverageRetention,
     history: CoverageHistory,
 }
 impl CoverageWriteResult {
     pub fn retention(&self) -> &CoverageRetention {
-        &self.retention
+        &self.state.retention
     }
     pub fn history(&self) -> &CoverageHistory {
-        &self.history
+        &self.state.history
     }
 }
 pub struct RegisteredCoverageWriter {
@@ -322,7 +325,7 @@ impl RegisteredCoverageWriter {
             observed.facts,
             extra,
         )?;
-        ctx.prepare_owner(&self.roots, RootRequest::Coverage(request))
+        ctx.prepare_owner(&self.roots, RootRequest::Coverage(Box::new(request)))
             .map_err(bad)?;
         Ok(())
     }
@@ -393,14 +396,16 @@ impl RegisteredCoverageWriter {
         txn.insert(&r.families.coverages, &key, row.clone())
             .map_err(bad)?;
         let request = CoverageRoots::bind(&row, observed.facts, extra)?;
-        ctx.prepare_owner(&self.roots, RootRequest::Coverage(request))
+        ctx.prepare_owner(&self.roots, RootRequest::Coverage(Box::new(request)))
             .map_err(bad)?;
         if txn.get(&r.families.coverages, &key).map_err(bad)? != Some(&row) {
             return Err(PublicationError::Mismatch);
         }
         Ok(CoverageWriteResult {
-            retention: row,
-            history: output.history().clone(),
+            state: Box::new(CoverageWriteState {
+                retention: row,
+                history: output.history().clone(),
+            }),
         })
     }
     pub fn finish(
@@ -445,15 +450,19 @@ impl RegisteredCoverageWriter {
             .map_err(bad)?;
         ctx.prepare_owner(
             &self.roots,
-            RootRequest::Coverage(CoverageRoots::terminal(&before, &after, claim, extra)?),
+            RootRequest::Coverage(Box::new(CoverageRoots::terminal(
+                &before, &after, claim, extra,
+            )?)),
         )
         .map_err(bad)?;
         if txn.get(&r.families.coverages, &key).map_err(bad)? != Some(&after) {
             return Err(PublicationError::Mismatch);
         }
         Ok(CoverageWriteResult {
-            retention: after,
-            history: history.clone(),
+            state: Box::new(CoverageWriteState {
+                retention: after,
+                history: history.clone(),
+            }),
         })
     }
 }

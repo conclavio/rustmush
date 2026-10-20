@@ -48,8 +48,8 @@ impl CoreFundingReceipt {
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CoreTerminalResult {
     Completed {
-        output: CoreOutputBirth,
-        title: EconomicAsset,
+        output: Box<CoreOutputBirth>,
+        title: Box<EconomicAsset>,
     },
     Cancelled {},
 }
@@ -92,10 +92,10 @@ impl CoreTerminalReceipt {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CorePaymentHistory {
-    pub(super) intent: FundingIntent,
-    pub(crate) funding: CoreFundingReceipt,
+    pub(super) intent: Box<FundingIntent>,
+    pub(crate) funding: Box<CoreFundingReceipt>,
     #[serde(deserialize_with = "required_option")]
-    pub(crate) terminal: Option<CoreTerminalReceipt>,
+    pub(crate) terminal: Option<Box<CoreTerminalReceipt>>,
 }
 fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
@@ -113,7 +113,7 @@ impl CorePaymentHistory {
         &self.funding
     }
     pub fn terminal(&self) -> Option<&CoreTerminalReceipt> {
-        self.terminal.as_ref()
+        self.terminal.as_deref()
     }
     pub fn title_birth(&self) -> Option<&EconomicAsset> {
         match &self.terminal.as_ref()?.result {
@@ -174,7 +174,7 @@ impl CorePaymentHistory {
         }
         if let Some(t) = &self.terminal {
             let output = match &t.result {
-                CoreTerminalResult::Completed { output, .. } => Some(output),
+                CoreTerminalResult::Completed { output, .. } => Some(output.as_ref()),
                 CoreTerminalResult::Cancelled {} => None,
             };
             let plan = plans::terminal(
@@ -208,7 +208,7 @@ impl CorePaymentHistory {
                 return Err(Error::Integrity);
             }
             if let CoreTerminalResult::Completed { output, title } = &t.result {
-                if title
+                if title.as_ref()
                     != &title_birth(
                         &self.intent,
                         output,
@@ -263,19 +263,19 @@ impl CorePaymentHistory {
             };
             let result = if complete {
                 CoreTerminalResult::Completed {
-                    output: output.clone(),
-                    title: title_birth(
+                    output: Box::new(output.clone()),
+                    title: Box::new(title_birth(
                         &self.intent,
                         &output,
                         TransactionId(u64::MAX),
                         u64::MAX,
                         i64::MIN,
-                    )?,
+                    )?),
                 }
             } else {
                 CoreTerminalResult::Cancelled {}
             };
-            row.terminal = Some(CoreTerminalReceipt {
+            row.terminal = Some(Box::new(CoreTerminalReceipt {
                 commit: CommitToken::from_bytes([255; 16]),
                 action: p.action_ref(if complete {
                     super::COMPLETE_ACTION
@@ -294,7 +294,7 @@ impl CorePaymentHistory {
                 plan_hash: [255; 32],
                 hold: hold.clone(),
                 result,
-            });
+            }));
             bounded(&row, HISTORY_BYTES)?;
         }
         Ok(())
@@ -577,7 +577,7 @@ impl CoreReceiptAudit {
                 require_transaction(tx, &plan, &intent.policy.instrument)?;
                 let row = CorePaymentHistory {
                     intent,
-                    funding: CoreFundingReceipt {
+                    funding: Box::new(CoreFundingReceipt {
                         commit,
                         action,
                         transaction: tx.id,
@@ -585,7 +585,7 @@ impl CoreReceiptAudit {
                         posted_at: tx.posted_at,
                         plan_hash: tx.plan_hash,
                         hold: effect.hold.clone(),
-                    },
+                    }),
                     terminal: None,
                 };
                 row.require_terminal_room()?;
@@ -598,7 +598,7 @@ impl CoreReceiptAudit {
                 action,
                 at,
                 output,
-            } => self.terminal_row(tx, acceptance, commit, action, at, Some(output))?,
+            } => self.terminal_row(tx, acceptance, commit, action, at, Some(*output))?,
             Proof::Cancel {
                 format: 1,
                 acceptance,
@@ -656,8 +656,8 @@ impl CoreReceiptAudit {
                 return Err(Error::Integrity);
             }
             CoreTerminalResult::Completed {
-                output,
-                title: asset.post.clone(),
+                output: Box::new(output),
+                title: Box::new(asset.post.clone()),
             }
         } else {
             if effect.kind != HoldEffectKind::Released || !tx.asset_effects.is_empty() {
@@ -665,7 +665,7 @@ impl CoreReceiptAudit {
             }
             CoreTerminalResult::Cancelled {}
         };
-        row.terminal = Some(CoreTerminalReceipt {
+        row.terminal = Some(Box::new(CoreTerminalReceipt {
             commit,
             action,
             transaction: tx.id,
@@ -675,7 +675,7 @@ impl CoreReceiptAudit {
             plan_hash: tx.plan_hash,
             hold: effect.hold.clone(),
             result,
-        });
+        }));
         Ok(row)
     }
 }

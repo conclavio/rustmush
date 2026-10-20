@@ -1,6 +1,646 @@
 # 17f — Mind commerce, Registry rights and IC hardware: implementation plan
 
-## Current status — what works and what remains unproved, 2026-10-20
+## Current status — stopping checkpoint, 2026-10-20
+
+**M6 is merged. M7 has no clean full integration run. New feature work remains
+paused; this commit is a resumable stabilization checkpoint, not acceptance.**
+
+What is verified:
+
+- All six M7 crates and all targets report zero warnings for the four requested
+  size lints at 64 KiB per frame and 16 KiB per future (V18). The diagnostic used
+  `--cap-lints warn`; 1,714 other warnings remain. Standard workspace Clippy/CI
+  is not green.
+- Actual Tacsim and server test binaries build with their compile-time future
+  bounds. That build executed no tests.
+- The last full run (N111) compiled and passed 29 commerce/boot tests, then
+  stack-aborted in purchase fixture setup. It left 73 stages and all eight Redis
+  scopes unrun. Later focused results do not replace a full run.
+
+The V18 purchase story now clears the earlier paired-recovery refusal but fails
+at `actual HouseV2 public offer` (103.377 seconds, no stack abort). Source review
+found that its policy names the private `fixture` venue while the shared IC
+fixture installs the production port-room gate. The existing room-bound test
+adapter is the likely correction; it has not been changed or tested.
+
+The V18 Conduct story also clears its earlier paid-purchase recovery failure,
+but now refuses the actual `conduct_trial_admit` action (294.512 seconds, no
+stack abort). Its generic provider refusal does not establish which admission
+proof failed. A targeted admission trace is the next step; no cause or repair
+is claimed. Both V18 stories failed, and their copied sessions are quiescent.
+
+Both earlier V17 server/launch pacing observations stopped intentionally at
+600 seconds, without stack aborts; both are **incomplete**, not passes. The
+first 32 launch leases showed short worker handling separated by repeated
+acknowledgment/retry waits. A reviewed successful-progress wakeup change is now
+included locally (canonical 614), with one new regression test, but is **not
+covered by V18's lint/build/runtime evidence** and still needs validation.
+
+The branch is also behind three available surface-system commits on main
+(`bd718fb2`, `96cc7303`, `eb99c9be`). They have not been merged into this tested
+candidate. Integrate latest main and repeat the exact-candidate checks before a
+final completion claim. N112 has not been generated.
+
+Paid Follow consumers, the original-major producer/story, scoped House author
+updates/attestation/source access, and remaining House/dependent major variants
+stay parked until the included baseline passes. Even a green 76-stage plus
+8-scope Redis baseline is distinct from M7 acceptance: uncapped lint/CI,
+frontend and cross-host checks remain. The ignored M6 24-Class-III/900-second
+scale-replay test is outside that roster and remains a separate check.
+
+## Resume from this checkpoint
+
+1. Preserve the frozen V17/V18 evidence under `target/m7-registry-pacing-*` and
+   `target/m7-size-clippy-v18-*`; do not label a 600-second observation cutoff
+   as success. Repair the diagnosed House fixture venue mismatch without
+   bypassing the actual public offer, custody or recovery checks. Resolve the
+   Conduct result recorded above before expanding scope.
+2. Validate the included wakeup change and the fixture repair on one newly
+   frozen source: selected four-lint inventory, actual two-package codegen,
+   then the three ordinary service/scheduler regressions and genuine cases below. Keep the
+   normal stack, unchanged simulation/workload/guards and serial test threads.
+   These commands are targeted checks, not the full baseline:
+
+   ```sh
+   export CARGO_BUILD_JOBS=8
+   cargo test -p tacsim --lib minds::bulk::registry_service::tests::absent_or_wrong_ack_never_releases_machine_and_retries_the_same_actor_selector -- --exact --test-threads=1 --nocapture
+   cargo test -p tacsim --lib minds::bulk::registry_service::tests::two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement -- --exact --test-threads=1 --nocapture
+   cargo test -p tacsim --lib minds::bulk::registry_integration_tests::registry_scheduling_tests::new_progress_wakes_registered_continuations_without_duplicate_paid_work -- --exact --test-threads=1 --nocapture
+   cargo test -p tacsim --lib minds::bulk::registry_integration_tests::original_purchase::genuine_registry_original_purchase_grant_refund_and_paired_recovery -- --ignored --exact --test-threads=1 --nocapture
+   cargo test -p tacsim --lib minds::bulk::registry_integration_tests::original_purchase::ic_tests::conduct::genuine_safe_conduct_service_result_and_complete_cold_inverse -- --ignored --exact --test-threads=1 --nocapture
+   cargo test -p mush-server --lib world_task::submission_disposition::tests::paid_purchase::genuine_registry_purchase_writer_unknown_expiry_and_recovery -- --ignored --exact --test-threads=1 --nocapture
+   cargo test -p tacsim --lib hardware::flow::launch::story::named_coprates_real_save_rate_house_sale_and_membership_fences -- --ignored --exact --test-threads=1 --nocapture
+   ```
+
+   Expect exactly one executed test per command. The three ordinary tests do
+   not use `--ignored`. The current copied-runtime helper supports only ignored
+   stories, not the new ordinary scheduler scenario; no helper extension has
+   been prepared. Keep all raw output private.
+
+3. Integrate latest main after obtaining feedback on these repairs. The read-only
+   overlap report is `target/m7-prep-main-overlap/README.md`; preserve both the
+   surface changes and the M7 order/storage fixes. Rerun compilation and the
+   affected size/runtime checks on the merged candidate.
+4. Freeze the next full candidate and generate N112 from N111 using
+   `target/prepare-m7-inherited-runner.py 112 111` only after the new input and
+   tree exist. Apply/review the retained early-story transformation in
+   `target/m7-prep-early-stories-runner` and eight-build-job transformation in
+   `target/m7-prep-next-jobs8` against that generated script. Recheck all 76
+   exact commands, 99 full-scope flags and 149 evidence predicates; account
+   honestly for the added regression count. No focused flag, skipped/missing
+   stage, zero-test pass or mixed-candidate evidence can satisfy the baseline.
+   Run all eight owned Redis scopes only after that complete baseline is green,
+   against its identical source/census. Reconciliation alone is not a green
+   verdict. Lint, frontend, cross-host and the separate M6 scale replay remain
+   explicit follow-up gates.
+
+The Linux lane is rooted persistently at `/var/tmp/rustmush-unit-minds-gate-20261017`
+with the prior `/tmp` alias. Builds use eight jobs; tests remain serial. Runtime
+and raw diagnostic output stay private. Exact-copy stack aborts require GDB on
+the preserved binary/source before rebuilding; stop cleanly and record any
+unrun work rather than inventing a pass.
+
+<details>
+<summary>Historical checkpoints and evidence — not current completion status</summary>
+
+### N111 full-run checkpoint
+
+The frozen candidate was tree
+`4f1d6a0b58af55ff87b932c45e3fa0e6de6acd5b`. Its sealed full-run archive SHA-256 is
+`c6c7a78783530708aa8e56089747bcf16ceb281186965aa9d7203bb148755d76`.
+Compilation and all 29 commerce-roster tests passed. The next stage, the exact
+ignored genuine purchase story, aborted with a stack overflow during its initial
+fixture construction. The complete source census remained unchanged. The other
+73 stages and all eight isolated Redis scopes were unrun.
+
+Exact-binary GDB diagnosed a 2,014,256-byte frame in the story test, before the
+actual purchase scenario began. The GDB record SHA-256 is
+`530fb35a60b6cbeabf9178523bc0cabcaf44f9e0e5244a413f5db4957d8e812c`.
+The reviewed fixture repair
+`5ad87db36c05bbcf8f5ec5da480a814e45494d188b8a20d86c15414f48e8287c`
+boxes `PurchaseFixture.engine` and keeps construction behind a non-inline
+boundary. The entire story body, assertions, child flows, module roster and
+cleanup order are unchanged. It does not increase the test stack.
+
+### First N111 four-story diagnostic — second measured stack abort
+
+The first temporary run started from that exact N111 source with only the
+reviewed purchase-fixture repair. Its input archive SHA-256 was
+`51713967dc3316c34d58e6d8da4ac98c402641e26b6030800d1f7ba6fc8482b4`;
+the runner SHA-256 was
+`34c0df61d3e711451862963c40f4e286ea6bdb835ad8549b87cd0ecb05ed67c8`.
+It finished the genuine Registry phase and entered the House branch, then stopped
+on a second stack overflow. The other three stories did not execute. The private
+purchase log SHA-256 is
+`e6084821972333f20ef6ba4baa87eeae201d02a88e650c840a13fcd52d231f6f`;
+the preserved diagnostic status SHA-256 is
+`337c684950fe21fdc16308c416892487cf7b0724135957fae4ec5fbc9c415773`.
+
+The exact second GDB record SHA-256 is
+`00924a48505e1f53a49b45623d6bc3960293304e05f1e2cce20f9a9680c94df4`.
+It confirms that the purchase frame fell to 207,744 bytes; the remaining House
+exercise and boot frames were 918,400 and 360,992 bytes. The separate reviewed
+House repair
+`932a81318f4914d611e0a76ff1192e49148cf2366a9cea21debd5c81e7f4a376`
+boxes the actual House fixture Engine behind the same non-inline construction
+boundary, with its complete exercise and catalogue assertions unchanged.
+
+### Host recovery and second four-story diagnostic
+
+After that GDB run completed and its JSON record was downloaded, the VPS rebooted
+during the upgrade from 4 vCPUs/16 GB to 8 vCPUs/32 GB. No test was running at the
+reboot. The temporary workspace, diagnostic overlay and compile cache were lost.
+The raw second GDB log was not downloaded: only its recorded SHA-256,
+`def040a5cc82b4bedbccc36dd3bc86e7182a0186977ce9e414beef18d22a532c`,
+survives. The downloaded GDB JSON, diagnostic status and purchase log remain
+available; the raw GDB log is not claimed as preserved evidence.
+
+The complete frozen N111 source archive SHA-256 is
+`39b93aad946089294c8f9726948090279446ca21e30f60e47b1ea166fbb87b52`.
+Its 2,679 files were independently checked against the original complete census
+`b84b132479126ec5bd0a554bf69ee9da7503c6774b90257fbbc554eeead9a184`.
+Root restored that source under persistent `/var/tmp` storage, with the previous
+`/tmp` path retained as an alias.
+
+The second diagnostic uses both reviewed fixture repairs. Its input archive
+SHA-256 is
+`0a99b39f957f9633b1ff702b1da3507c990891126c3ba5a29b4a10cb769f590d`;
+the reviewed runner SHA-256 is
+`c4ca38c5a8c4a241aac1729871da80700b35672a55f85e9fe88b8804f5966795`.
+It retains the same four exact ignored-story selections and single test thread;
+only Cargo build parallelism changes to four jobs. The resolved binary-root
+check supports the persistent path alias. Ordinary test failures still permit
+the remaining stories to run, while a stack abort preserves the exact source
+and binary for diagnosis. Ordinary outcomes require complete source verification
+and restoration of the original N111 census.
+
+The purchase stage completed with one ordinary failure and no stack overflow.
+Its private log SHA-256 is
+`76c0bcbca102b899b901d9e8918c20003cc0f426136b99ece55541a28833809a`.
+Core correctly refused the test-only Market wrapper's unclassified
+`@house-policy-test` command. The reviewed one-line repair
+`314c1745662e04ed6644660619c432a49c2d2bda999b22a124c62aa0afdca0a6`
+declares `LegacyPostImage`, matching the handler's actual validated Org
+post-image/audit submission. Its handler, authority checks and assertions are
+unchanged. Root prepared all three reviewed fixture repairs in the local
+canonical overlay (packages 503 to 506) for the next candidate. Tracked HEAD,
+the main remote run and the copied diagnostic source remain unchanged.
+No runtime pass for the command-class repair is claimed.
+
+At the intermediate checkpoint, the server story was still running the real
+Registry schedule, including long simulated battles and real transaction retry
+waits. Conduct and named launch were queued. Later retained evidence established
+the fixed-time-guard stop, Conduct stack abort and unstarted main launch recorded
+below; the intermediate elapsed-time observation was not a pass.
+
+Eight-job build settings were reviewed separately for subsequent runs; this
+four-job run retained its original runner and verifier. Test execution remains
+serial. These diagnostics are ineligible for acceptance.
+
+### Independent copied-binary Conduct check — stack abort
+
+After independent isolation review, the separate diagnostic copied the exact
+N111-plus-two-repairs source and already-built Tacsim binary. It ran Conduct
+directly with the same serial ignored-test arguments. Conduct aborted with a
+stack overflow (exit signal 6); launch was left unstarted. No successful test
+result is inferred from the abort.
+
+The sealed archive SHA-256 is
+`0358013b93fcb2767819ba045f10db61da9d80548a73ec1e025ca176a3233d67`
+(291,593 bytes; 11 verified files). Its status SHA-256 is
+`191f744bc49fa0b4fd076a82233409b825f446228b90f773ad42489d2a0dc591`;
+the exact copied-runner SHA-256 is
+`390d9ea320b391c1930106371e37448d2bba9e026d666a99ddca5aedc1eda6b7`.
+The local archive check verified every indexed file hash, both original-status
+snapshots, the pinned input and runner, and the complete 2,679-file copied census.
+The terminal record reports unchanged copied source, binary and system libraries,
+quiescent owned sessions, and no original-source mutation. The copied source and
+binary remain on the host. Exact GDB has now completed and its downloaded
+metadata/log pair was checked locally. The metadata SHA-256 is
+`b1df88fabcdd50138c1a7bcb25ecaf8c1c161167b508314fbadcb7bb31f3daaa`;
+the private log SHA-256 is
+`8efe1576f1ade53fcdceab3ec8ccdfb2163e38b8cbf5ae2fb1d196dce5016792`.
+The matching binary stopped on SIGSEGV; measured frames include 707,840 bytes
+in the Conduct root and 705,392 bytes in the PurchaseRoll registration wrapper.
+The source remained unchanged. A separate launch-only check subsequently ran on
+that immutable copy after the completed GDB prerequisite. Its completed outcome
+is recorded below. Neither copied check can be appended as a full-run stage
+result.
+
+### Systematic stack/future lint pass — complete baseline, repairs in progress
+
+The requested four size lints cover `mush-roll`, `mush-economy`, `mush-market`,
+`mush-industry`, `mush-core` and `tacsim`, including test frames and exported APIs.
+The thresholds remain 65,536 bytes for frames and 16,384 bytes for futures.
+The first two diagnostic attempts were blocked by unrelated lint errors. The
+third used diagnostic-only `--cap-lints warn` while retaining all four size
+force-warns; repository policy and test stacks were not changed.
+
+The verified v3 inventory covers all six crates: 1,935 raw reports at 1,737
+unique package/lint/source locations, comprising 53 future, 1,788 frame and
+94 enum reports (no by-value reports). Its SHA-256 is
+`1140222b4f1c738754913d0b7ed6f2b7a6e7f4a40cba936c5c5daa5c7f48b4a6`.
+After only the two shared Core storage repairs, v4 reports 652 raw warnings at
+489 unique locations: seven future, 555 frame and 90 enum reports. Core itself
+has 14 frame reports and no enum warning. The v4 inventory SHA-256 is
+`18bc5d59856e945cb995a29d3967969f33ab8cf9ed3311869b805f1e22a5e224`.
+These counts were independently recomputed from the retained inventories.
+
+The combined v5 run was incomplete: five Economy test compiler errors stopped
+full collection. V6 was also incomplete with three Industry test type-path
+errors. V7 stopped at four Core stamp-type diagnostics before producing a size
+inventory. These are compiler-blocked runs, not zero-finding results. The narrow
+compiler repairs were reviewed before the later complete measurements below.
+None of these diagnostic measurements establishes runtime correctness,
+a repository lint-gate pass or a clean integration baseline. Their evidence
+remains separate from the runtime diagnostics.
+
+The complete v9 diagnostic compiled all six crates and all targets with no
+compiler errors. Independently deduplicating its 233 raw reports yields 191
+frame locations: Economy 63, Tacsim 61, Industry 30, Roll 29 and Market eight;
+Core has none. Future, enum and by-value size warning counts are zero. Its
+inventory SHA-256 is
+`6b4e69e80770c089b2c7e3bcba558dcd5ca49669649596647cf9c5c9d49e8622`.
+The snapshot includes the Root capture and resale observation changes but not
+the later Registry producer and registration-declaration phase packages.
+Diagnostic `--cap-lints warn` remains explicit; this is not an ordinary lint
+policy pass or runtime proof.
+
+The v10 collection was incomplete: 16 Economy test compiler errors prevented
+a complete replacement measurement. The narrowly reviewed correction preserves
+all test bodies and assertions. Its status SHA-256 is
+`917e2f677aedae4bf36f23392fe0da591d515b287508beaa4a1cc7399dba96fb`.
+V11 then compiled all six crates and all targets with exit zero and no compiler
+errors. Its 123 raw reports reduce to 101 unique frame-warning locations: Core
+zero, Economy 18, Industry 29, Market one, Roll 21 and Tacsim 32. The other three
+size-warning classes remain zero. The inventory SHA-256 is
+`ccb99d6ea72da4ab647b8a821ec20b27f6e58ac4145928655cd8d41e6dc2849e`;
+the status SHA-256 is
+`e7d65e24d4b287837a76a19fa11844c46960217a0cbbe1e1d7d64725b60e6e25`.
+
+V12 is incomplete: two Tacsim helper-visibility compiler errors stopped the
+all-target collection. Its partial 22 frame locations (Economy ten, Industry
+four, Roll six, two reported Tacsim locations; Core and Market zero) are not a complete
+replacement for V11: the Tacsim test-library collection is incomplete. Those
+visibility errors were then repaired locally before V13. V12 inventory and status SHA-256 values are
+`5996ac75ad78c6b475c54fec840b36cd7414d7592c23fafee2db23d40b7a621f`
+and `225ad6dcf22004cab49664e59e989b1f4c7e06be786e9251ec7661bb29f81fec`.
+Incomplete collection never means zero findings.
+
+Retained main-story evidence now confirms the server test stopped at its fixed
+7,200-second Registry guard while still running, without a terminal result.
+The following Conduct test stack-aborted and the main launch test was unstarted.
+The read-only evidence helper and local reconciliation bind the same 2,679-file
+source, input, binary, test and arguments. The prior copied GDB used a different
+environment sanitization recipe, so it does not discharge the exact-main trace.
+The local pre-seal `target/m7-prep-main-story-evidence/offline-reconciliation.json`
+SHA-256 is
+`eb4d8f82fbac7bfc3b5964ed2a1a3011b612aabc164b32d3ebb7cdb8ab51f68e`.
+The host-sealed `reconciliation.json` inside
+`target/m7-n111-stories-preflight-v2-sealed-evidence.tar.gz` has SHA-256
+`ac979a275f6eef92c59fdffb05f9f6578a220825a669cedce42af5d8e4927a2d`;
+this is the actual sealed reconciliation, including the host source checks.
+
+The exact-main Conduct GDB trace has now also completed. Its metadata SHA-256 is
+`42ad0e1df84dac7cffc1167bcf6456ade11e252f86f4eac7de0a4eb02e0ab39d`;
+its private log SHA-256 is
+`ad8cbc7db07667132f31e6a2251bcf95885f51908c9f041df0b4c5ed00a6f71c`.
+It records SIGSEGV and the same 31 frames, with source, binary, retained evidence
+and system libraries unchanged and the owned debugger session quiescent. The
+original runtime environment was not captured completely; the recorded recipe
+and that historical gap remain explicit. This trace diagnoses the failure and
+does not add a runtime pass.
+
+V13 is the latest complete collection: all six crates and all targets completed
+with exit zero and no compiler errors. Its 16 raw reports reduce to 13 unique
+locations: twelve frame warnings (Economy two, Industry one, Roll two, Tacsim
+seven) and one Roll enum warning. Core and Market have none of the four requested
+size warnings; future and by-value warning counts remain zero. The inventory
+SHA-256 is
+`41d155b1e0979a565aa929ecf48ff0feaa6a3aafc1630a614f798e49dccc147d`;
+the status SHA-256 is
+`773aab90d3e1f12b896eff68148554eeb280a4c3e6f316d96abd77dd74c2bd3a`.
+The remaining repair batch and code generation for the actual 16 KiB future
+bound are separate from this diagnostic result. No runtime pass or clean
+integrated baseline is inferred.
+
+The V13 Tacsim test-binary build then completed with exit zero and no compiler
+errors, instantiating the existing compile-time 16 KiB story-future bounds.
+No test executed. Source and inventory evidence remained unchanged. Build status
+SHA-256 is
+`3eab8c21455b81bb0515f940fd2f026e41d3fd589d5868feae1d41244b85d129`;
+its artifact index is
+`914f6b3c4c3e80432479490886d52e98081c59ba4bec39a06915ef0221fd8c29`.
+
+After the exact-main GDB trace, the separately reviewed restoration helper
+reversed only the two original fixture patches and verified the complete
+2,679-file N111 base. Original failed status, sealed evidence and binary remained
+unchanged; no compiler or test ran during restoration. The distinct receipt at
+`target/m7-n111-stories-preflight-v2-restoration.json` has SHA-256
+`c1643548acfb04f78efa6f02b2299211fcf7611e98947bd184c24ff208733cc3`.
+This is source restoration evidence, not a changed test outcome.
+
+### Independent copied-binary launch check — Registry time guard
+
+The separate launch-only check completed with exit 101 after 7,206 seconds:
+zero passed, one failed and 1,513 filtered. It reports neither an outer-runner
+timeout nor a stack abort. The exact error is the named Registry service time
+guard. The 401-byte private log at
+`target/m7-n111-v2-copied-launch-only-launch-story.log` has SHA-256
+`f59b880f1c512e9fdae727dce6201998ef5d90ecc613277087853c233ed59ee2`;
+its status at `target/m7-n111-v2-copied-launch-only-status.json` has SHA-256
+`74d6f451e262ba0769aabb7b458a0d05bdfe907e58cb994d4acb84cc05f6ff63`.
+
+That log contains no case-progress observations, so it does not establish
+whether this launch run stalled or needed more time. The separate server-story
+log records 238 progress updates through case 11 before its 7,200-second guard;
+that continuing progress cannot be attributed to the copied launch run. Neither
+story has a full pass. The copied launch status records unchanged source, binary,
+libraries and retained evidence, quiescent owned sessions, no original-source
+mutation and diagnostic-only eligibility. Test observability is being prepared
+without changing semantics or guards.
+
+V14 completed on snapshot 605 with exit zero, no compiler errors and all six
+crates and targets collected. Four raw reports reduce to three frame-warning
+locations: one Roll registration frame and two Tacsim story frames. Future,
+enum and by-value counts are zero. Its inventory SHA-256 is
+`225d64e421b3c9d5013e51a906af9ec67d13ca5a711b5351c693c54f0b4a6fce`;
+its status SHA-256 is
+`ed3092e830ce29968bfe1afaf00bbccb1e7302133b482243a1997802a80cb675`.
+The three residual repairs have been reviewed for the next measurement. This
+result concerns the four selected size lints only; the diagnostic command caps
+other lint levels to warnings. Other warnings remain, and no standard workspace
+Clippy gate or runtime result is claimed. The separate two-binary V14 code-generation check subsequently failed, as
+recorded below.
+
+### Selected size lints clear; separate server future bound still blocks codegen
+
+V15 completed snapshot 608 across all six selected crates and all targets with
+exit zero, a complete inventory, zero selected reports and zero compiler errors.
+All four requested size-warning counts are zero. The input archive SHA-256 is
+`5401517fcf7344a721debe985a2b72bda6c7825a20883d9cf2b44c44e9684bbc`;
+the inventory SHA-256 is
+`c7470931324afb018f210fb77d55a7d5cea6fad874a3dc47777d911bd373eeae`;
+the status SHA-256 is
+`77c85f28f8c3506d20adf4516e5e6e2f5ac5106854a9f4969d7a2fac2b5a591f`.
+The raw compiler log, inventory, stderr and status match the retained index.
+There are still 1,714 other warnings under diagnostic `--cap-lints warn`; this
+clears only the four selected size lints, not the standard workspace lint gate.
+No runtime test or integrated acceptance follows from this result.
+
+The separate V14 two-package test-binary build (`tacsim` and `mush-server`,
+`--lib --no-run`) failed with exit 101 and one E0080: the actual
+`Running::boot_inner` future exceeds its configured 16 KiB compile-time bound.
+It retained a Tacsim binary, but the combined build did not succeed and no tests
+executed. Source and inventory evidence remained unchanged. Its status SHA-256
+is `51700c87b43065778ac1d5738e5234aa1915e853c6fb64867828ab51f46bbd05`;
+its artifact-index SHA-256 is
+`9c944ded7049df58f03244fb45893208264a8f514180ce105a33c95b518f9b33`.
+The indexed status, compiler log and stderr were checked locally. This does not
+contradict the earlier successful V13 Tacsim-only code generation: the server
+future was outside that earlier build. Its repair and the test-observability
+changes require subsequent snapshot checks. The draft remains unfrozen.
+
+### Post-measurement bookkeeping and current main divergence
+
+V16 on snapshot 611 includes the reviewed observations, CI step and server
+storage repair, but collection is incomplete: one E0583 names the missing test
+pacing module. The narrow explicit-path correction was applied before V17.
+V16 is not zero-warning evidence; V15 was the last complete result at that
+checkpoint, superseded by the complete V17 measurement below.
+V16 status and inventory SHA-256 values are
+`96ad83b974c85b2aec875ddd6f360b870ea95a7fae15969b96d5fdfd98b697da`
+and `a1b56c17b146c507a470e54e4ee6f27d81c8b098987d0e337961bbdc50138572`.
+The installed CI memory step has not been demonstrated uncapped-clean: existing
+denied lints, including panic_in_result_fn, remain outside this size repair.
+No CI or standard workspace Clippy pass is claimed.
+
+The separately reviewed executable-mode helper restored only the two census
+100755 script entries from 0600 to 0755 on the restored N111 main source. All
+2,679 file bytes, other modes and original evidence remained unchanged; no script
+or Cargo ran. Receipt `target/m7-n111-original-executable-modes.json` has SHA-256
+`e946b91b92435fe567758e2942a4644a224b8ddbc1b62779cf2a5359022f59f7`;
+helper SHA-256 is
+`76827486c4c8480beb7f08fd0f51a3795d4060ed220bc41af27591ee03d608f4`.
+
+A read-only Git check finds clean worktree HEAD
+`db93d6b89962901b9ce15adee6f015f05f576493`, while the locally available
+origin/main is `eb99c9be49a3474a0a3448072974c80931e0adee`. Main adds the three
+SM.2/SM.3a/SM.3b surface commits since shared ancestor
+`6f79797409f6792447d0fb1ed2d15335d2214387`. They are not folded into the frozen
+runtime candidate. The overlap assessment is retained at
+`target/m7-prep-main-overlap/README.md` (SHA-256
+`ea4414af8de4e53013620d7b4a5394798d1eb9fc0693cb77dd8188ae1da56870`):
+106 incoming files, 23 shared changed paths, with likely textual joins in the
+port action definitions and test-support imports. This is a static assessment,
+not an attempted merge. After feedback on the current repair batch, latest main
+must be integrated and the exact roster, selected lints, code generation and
+runtime checks repeated before final acceptance.
+
+### V17 selected-lint check complete; combined code generation pending
+
+V17 snapshot 612, containing 2,682 source files, completed all six crates and
+all targets with exit zero, a complete inventory, zero compiler errors and zero
+reports for all four selected size lints. Its 1,714 other warnings remain; this
+is still diagnostic selected-lint evidence, not an uncapped CI or workspace
+Clippy pass. It includes the CI step, test-only Registry observations, server
+fixture storage and explicit observer-module path correction. No test executed.
+The two-package test-binary build was still running at that lint checkpoint;
+its subsequent verified successful result is recorded below.
+
+Input archive SHA-256:
+`117f77e0feee7882ef52e2a2ab3f0a545494ff5f3c334645ffcff84c1db67a72`.
+Complete source census SHA-256:
+`cca9271c48bb189c84e3bb7224383cdb973efae6f46e04a1c4f2f3e0f1d1f3df`.
+Inventory SHA-256:
+`0153f9d5b7325fb302cc24d8a7bb4e35e10ea3deb806acb657a7bf1e31065c6d`.
+Status SHA-256:
+`142dd42251349416acef76433dfad56e3aa728161ce4522fab9c908d4725d99d`.
+The local raw compiler log, inventory, stderr and status match their retained
+index entries. The separately reviewed copied-binary pacing helper is ready,
+with intentional time-bounded stops classified incomplete and no acceptance
+eligibility; readiness of that helper is not a runtime result.
+
+### V17 test binaries built; bounded runtime observations active
+
+The actual V17 two-package `--lib --no-run` build completed with exit zero, no
+compiler errors and both Tacsim and mush_server binaries. The inline-constant
+16 KiB future guards instantiated successfully, including the repaired server
+boot future. The indexed status, compiler log and stderr were verified locally;
+source and inventory evidence remained unchanged. No test executed in this build.
+Build status SHA-256:
+`7620a6b7e75328f3ac8bfde0e08cf5e78ff9c8a8874fee795d645697c0666a01`.
+Build artifact-index SHA-256:
+`c06e9a1a3263cffc0429d883af9afe78a0b652670d4de765577453ad588b3a8c`.
+
+Two independent immutable-copy observations are now active under the reviewed
+runner: `m7-registry-pacing-v17-regressions` selects purchase then Conduct, and
+`m7-registry-pacing-v17-pacing` selects server then launch. Each exact case runs
+serially within its own scenario for at most 600 seconds. A deliberate cutoff
+is incomplete; it does not satisfy the full story. Any ordinary result remains
+a focused diagnostic result, and a stack abort preserves the exact copy for
+GDB. No runtime outcome is claimed at this checkpoint. The draft stays unfrozen
+until the first verified outcomes arrive.
+
+### First V17 focused runtime outcome — ordinary purchase failure
+
+The copied purchase case completed after 99.646 seconds with exit 101, zero
+passed and one failed, without a stack abort. Its short fixed error is
+`renewal paired recovery is incomplete or contradictory`. This identifies the
+refusing boundary, not yet the underlying cause. Conduct was still running in
+the same scenario at the captured checkpoint. The 869-byte completed purchase
+log at `target/m7-registry-pacing-v17-purchase.log` matches the stage hash
+`42ff18b44821a976c465884cfa2aab31b67747a6d3598493add227683eb1e877`
+in `target/m7-registry-pacing-v17-regressions-live-2-status.json`, SHA-256
+`4014841865f9b01296f263cadbae1faf0b14847cd6f76cb123fdbed5ae57d056`.
+The enclosing diagnostic is still live; no sealed final-scenario result is
+claimed and the ordinary failure is not a purchase-story pass.
+
+The separate server live1 sample contains five grant store reserve-entry to
+commit-receipt intervals with median 24.856 milliseconds, versus four consecutive
+grant-entry intervals with median 7.013819 seconds. These are small unsealed
+store observations, not worker duration or consumed service-ACK measurements;
+they do not by themselves identify the delay. The numeric reduction at
+`target/m7-registry-pacing-v17-server-live-1-reduced.json` has SHA-256
+`e70115f4a88e15a849ac3ddc01979a1ac86e4f0d7c64f6a1081991369863e83b`.
+Its reviewed reducer SHA-256 is
+`869bf31ccc220ccf7efd8c1c5cdf9422da9bffe5ef2ab589a8a80d43f0e03567`;
+it retains closed observer fields, excludes conflicting/negative intervals and
+labels live snapshots unsealed and ineligible for acceptance.
+
+
+### V17 purchase and Conduct diagnostic finished — shared fixture dependency
+
+The final regressions status has SHA-256
+`8b1031ea06e34e528ec45f9019208a92cf4d6b52b174a46f235c22047bcddf5a`.
+Conduct completed after 199.007 seconds with exit 101, zero passed and one failed,
+without a stack abort. Its fixed error is
+`paid purchase recovery: invalid commercial record`. The 859-byte completed log
+`target/m7-registry-pacing-v17-regressions-conduct.log` has SHA-256
+`6a2bf7c9e6f071cf26414fb0de273359c9126b0c38fa010a6f09ffe68aeb8754`,
+matching the final status. Original/copy source and copied binaries remained
+unchanged, and owned sessions are quiescent. These are two ordinary failed
+checks, not an integrated or story pass.
+
+Independent source review traced both errors to `IcWorld::boot_source_qualified`:
+its fixture places Market before Roll, while Core executes final audits in
+module order. Conduct's retained paid purchase requires Roll's completed audit;
+House renewal requires the same readiness even for an empty inventory. The
+production roster already places Roll before Market. A shared fixture correction
+is being prepared without weakening recovery checks; it has not been rerun.
+
+
+### Shared fixture repair and V18 inventory — runtime rerun pending
+
+The reviewed one-file fixture patch
+`57799d281cc5bb83470fcb4913a0975918e4b2c38e6df676a46187b4c5d851dd`
+now matches production Economy → Roll → Market order. Constructor expressions,
+typed hydration, configured guards and assertions are unchanged. It is applied
+locally as snapshot 613; the actual purchase and Conduct stories remain the
+required runtime regressions.
+
+V18 completes all six crates/all targets with zero selected size-lint reports,
+zero compiler errors and 1,714 other warnings. It remains diagnostic capped-lint
+evidence, not an uncapped Clippy/CI or runtime pass. Input archive SHA-256 is
+`800dbe2a1079d007ed61be8bb675897cde498a87cab593aafc372b53c09d6b68`,
+status SHA-256 is
+`b6fe6b1fc232682f066cc26127c5f3a6f8e3599b733fac83c11056ac07630998`,
+and inventory SHA-256 is
+`f1368eb106e9c1efd3cfdb25293ee8b1aed666e341efb0cc07c938140ab81ee4`.
+The recorded 2,682-file census SHA-256 is
+`fc91d63aaf0d18ea87505b209cef78b766daa7c144649e3ca99795518b35e4d7`.
+The local status, inventory, raw Clippy output and stderr match the artifact
+index. The new two-package test-binary build is active; no result or runtime
+repair pass is claimed yet.
+
+The prior V17 server observation reached its intentional 600-second cutoff:
+exit -15 after 600.152 seconds, no stack abort, classification incomplete.
+Its 30,736-byte log SHA-256 is
+`8459c0af3255a8c8318e6cf5ff650e6799368d276ab4ee90da83119a682643ae`,
+and the 313-observation JSON SHA-256 is
+`4f8985ba0cd5baf6c21cb958fe5aaac0e3b3ecff6c3749825dda97be9673c60f`.
+Both match the completed stage in the live3 status snapshot; the following
+launch case is still active in that snapshot. This is no server-story pass.
+
+
+### V17 pacing observation finished — both cases intentionally incomplete
+
+The final pacing status has SHA-256
+`c0a95e1a6f751e4d757451c99b904488459d85aa5811b6b0d47a724f652e46df`.
+Server and launch were deliberately stopped at their 600-second observation
+limits after 600.152 and 600.164 seconds respectively. Both exited -15, were
+classified incomplete and had no stack abort. Original/copy source, copied
+binaries and linked libraries remained unchanged; owned sessions are quiescent.
+The final status, both logs and both observation files match the local artifact
+index. Launch log SHA-256 is
+`28ca94c4096ad0023e5a4851944f9efe3ad357fc5790d95d8d4e563b23881329`;
+its 214-record observation file SHA-256 is
+`25ac2712ea9fbd7de88115ff610786db8217a3dd62efaed9b0ee8e2a6c06cc16`.
+Neither diagnostic ran the full story to a result.
+
+The first 32 actual launch leases retain all six phase points in the final
+evidence. Their median worker-handling interval is 13.8635 milliseconds, compared
+with a 4.012937-second consecutive-lease-start interval. Grant and settlement
+submission to consumed ACK take medians 1.010734 and 1.0094815 seconds; worker
+end to settlement submission takes 976.8595 milliseconds. These bounded samples
+support repeated continuation/retry waiting as a pacing problem, not a claim
+about all cases or total Registry throughput. The narrow wakeup proposal is
+under review and remains unapplied pending fixture-only V18 runtime feedback.
+
+
+### V18 actual two-package build passed — fixture-only rerun active
+
+The actual Tacsim and server test-binary build completed with exit zero and no
+compiler errors. It instantiates the inline-const future-size checks and executed
+no tests. Both source and inventory evidence remained unchanged. The status
+SHA-256 is
+`2ca95640511e25aa9f1261b07d3bcbda49c41b7bf8ed1ea0da061a4039a1dd96`;
+status, build JSONL and stderr match the local build artifact index.
+
+The unchanged bounded runner `03d84130` now runs the fixture-only candidate's
+purchase and Conduct cases under `m7-registry-pacing-v18-regressions`, with the
+same 600-second limit per case. It is active with no outcome yet. This separates
+selected-lint success and successful test code generation from the still-unproved
+actual story results. The wakeup proposal is not part of this runtime candidate.
+
+
+### Stopping checkpoint — V18 terminal failures and unvalidated wakeup change
+
+The final V18 regressions status has SHA-256
+`83698fdb328ba5699a50edc13ff9e5a39a728485beea325ca5e552c4301d5430`.
+Purchase and Conduct each completed with exit 101, zero passed and one failed,
+without stack aborts. The respective durations were 103.377 and 294.512 seconds.
+The purchase log is 838 bytes with SHA-256
+`e4f986ec5058194fd888965e54092913c29dd68c2e1da8459cf17cca9c7c0728`;
+the Conduct log is 1,208 bytes with SHA-256
+`2a2bcc1dc4ac1dde19c3693b9bb4fd5a62105c7bd5d33065b5a79af24fef7eb1`.
+Both match the final status, which records unchanged original/copy source and
+copied binaries, and quiescent owned sessions. The earlier recovery errors are
+gone; these later failures are not passes and do not prove later story phases.
+
+The purchase refusal is the fixed `actual HouseV2 public offer` lookup in
+`house_two_seat_integration_tests.rs`. Its expected @2 verbs exactly match the
+registered Market presentation. Independent source review found the fixture's
+`fixture` venue policy paired with the production PortVenueGate; the private
+parent Venue adapter already maps actual ROOM presence to that fixture venue.
+No corrective patch has been prepared or applied at this checkpoint.
+
+Conduct reaches `conduct_trial_admit` and receives `ProviderRejected` with the
+fixed message `The owned Conduct trial is unavailable or its evidence changed.`
+from Roll's Conduct registration. The generic refusal does not identify the
+failed proof. Stop here and diagnose admission on resumption rather than
+asserting a speculative cause.
+
+Canonical 614 additionally contains the reviewed successful-progress wakeup
+patch `e4dcfaa818076e8395a29bad49e0b9ad4b2b49939f5e65b19412fc5f5ef8782b`.
+V18 measured and ran snapshot 613, before that change. The new ordinary
+registered-continuation regression and two augmented service tests remain
+unexecuted, and the wakeup candidate still requires fresh lint/codegen evidence.
+N112 is reserved and ungenerated; this stopping checkpoint carries no N112
+compile, runtime, full-baseline or acceptance claim. No further build/runtime
+work is being started as part of the checkpoint.
+
+### N110 focused repairs before the N111 run (historical)
 
 **M6 is merged. M7 still has no clean integrated baseline. New feature work is
 paused while the included code is stabilized.**
@@ -38,9 +678,6 @@ remain separate. The ignored M6 scale-replay check is also outside the
 producer and its genuine story, scoped House author updates/attestation/source
 access, and the remaining House or dependent major variants. They will resume
 only after the baseline is green, in smaller validated steps.
-
-<details>
-<summary>Historical checkpoints and evidence — not current completion status</summary>
 
 ### N110 focused ordinary-stack diagnostic
 

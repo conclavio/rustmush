@@ -529,8 +529,42 @@ fn absent_or_wrong_ack_never_releases_machine_and_retries_the_same_actor_selecto
         transition: Transition::Grant,
         ..ack
     }));
+    let now = 86_400_001;
+    assert!(
+        lane.entries
+            .get_mut(&binding.character)
+            .ok_or("entry")?
+            .continuation(now, false)
+            .is_none(),
+        "wrong acknowledgements do not reset unresolved retry backoff"
+    );
     assert!(lane.accept_ack(ack));
+    let entry = lane.entries.get_mut(&binding.character).ok_or("entry")?;
+    assert!(
+        entry.continuation(now, true).is_none(),
+        "fresh ACK keeps Core custody gate"
+    );
+    assert_eq!(
+        entry.continuation(now, false),
+        Some((binding.character, "17".into()))
+    );
     assert!(!lane.accept_ack(ack), "an Ack is consumed only once");
+    assert!(
+        lane.entries
+            .get_mut(&binding.character)
+            .ok_or("entry")?
+            .continuation(now, false)
+            .is_none(),
+        "duplicate ACK cannot queue another callback"
+    );
+    assert!(
+        lane.entries
+            .get_mut(&binding.character)
+            .ok_or("entry")?
+            .continuation(now + RETRY_MS - 1, false)
+            .is_none(),
+        "same unresolved state retains 1000ms backoff"
+    );
     assert!(
         matches!(
             lane.entries.get(&binding.character).ok_or("entry")?.phase,
@@ -570,6 +604,7 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
         entry.phase = Phase::Queued;
         entry.pending = None;
         entry.binding = Some(binding);
+        entry.schedule_after = 10_000;
         lane.entries.insert(binding.character, entry);
         queue
             .push(Ready::registry(
@@ -582,6 +617,16 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
     lane.take_fair_turn(queue.pop().ok_or("A fair head")?)
         .map_err(|_| "take A")?;
     assert_eq!(lane.pending_turn, Some(a.character));
+    let head = lane.entries.get_mut(&a.character).ok_or("A entry")?;
+    assert!(
+        head.continuation(1, true).is_none(),
+        "new turn keeps Core custody gate"
+    );
+    assert_eq!(
+        head.continuation(1, false),
+        Some((a.character, "17".into()))
+    );
+    assert!(head.continuation(1, false).is_none());
     let op_a = CommitToken::from_bytes([41; 16]);
     let change = store.prepare_grant(a.account, a.run, 0, 2_000)?;
     install(&mut store, change, op_a)?;
@@ -600,6 +645,13 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
     lane.take_fair_turn(queue.pop().ok_or("B fair head")?)
         .map_err(|_| "take B")?;
     assert_eq!(lane.pending_turn, Some(b.character));
+    assert_eq!(
+        lane.entries
+            .get_mut(&b.character)
+            .ok_or("B entry")?
+            .continuation(2, false),
+        Some((b.character, "18".into()))
+    );
     let mut harness = ObservedHarness::new()?;
     let mut tickets = Tickets::default();
     let ticket = tickets.grant(b, 2_000)?;
@@ -662,10 +714,23 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
         .push(ready_a.take().ok_or("A real retained machine")?)
         .map_err(|(e, _)| e)?;
     let next_a = queue.pop().ok_or("A returned queue tail")?;
+    let previous_deadline = lane
+        .entries
+        .get(&a.character)
+        .ok_or("A entry")?
+        .schedule_after;
     let next_a = lane
         .take_fair_turn(next_a)
         .err()
         .ok_or("B must still own turn")?;
+    assert_eq!(
+        lane.entries
+            .get(&a.character)
+            .ok_or("A entry")?
+            .schedule_after,
+        previous_deadline,
+        "refused fair turn cannot reset scheduling"
+    );
     queue.push(next_a).map_err(|(e, _)| e)?;
     let change = store.prepare_grant(b.account, b.run, 0, 2_000)?;
     let op_b = CommitToken::from_bytes([43; 16]);
@@ -681,6 +746,13 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
     lane.take_fair_turn(queue.pop().ok_or("A follows B")?)
         .map_err(|_| "next A")?;
     assert_eq!(lane.pending_turn, Some(a.character));
+    assert_eq!(
+        lane.entries
+            .get_mut(&a.character)
+            .ok_or("A entry")?
+            .continuation(3, false),
+        Some((a.character, "17".into()))
+    );
     Ok(())
 }
 

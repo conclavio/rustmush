@@ -110,7 +110,378 @@ pub(crate) struct Provider {
     readiness: OwnerReadHandle<Readiness>,
     refusal: ActionError,
 }
+type PreparedTransition = (&'static str, Option<CommitToken>, Option<WorkOrderId>);
+
 impl Provider {
+    #[inline(never)]
+    fn prepare_initialize(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+    ) -> Result<PreparedTransition, Error> {
+        let r = &self.runtime;
+        let offer_id = None;
+        let order = None;
+        let state = {
+            if r.config.mode != CoreOriginMode::Initialize
+                || inv.actor() != mush_core::GOD
+                || txn.get(&r.families.deployment, &()).map_err(bad)?.is_some()
+                || !txn.family_is_empty(&r.families.offers).map_err(bad)?
+                || !txn.family_is_empty(&r.families.orders).map_err(bad)?
+                || !txn.family_is_empty(&r.families.assets).map_err(bad)?
+                || !txn.family_is_empty(&r.families.hulls).map_err(bad)?
+            {
+                return Err(Error::Unavailable);
+            }
+            let out = self.owner(ctx, owner::Request::Initialize)?;
+            if out.order.is_some() {
+                return Err(Error::Integrity);
+            }
+            txn.insert(&r.families.deployment, &(), out.index)
+                .map_err(bad)?;
+            "initialized"
+        };
+        Ok((state, offer_id, order))
+    }
+
+    #[inline(never)]
+    fn prepare_offer(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+        commit: CommitToken,
+        action: &DefinitionRef,
+    ) -> Result<PreparedTransition, Error> {
+        let r = &self.runtime;
+        let offer_id;
+        let order = None;
+        let state = {
+            let s: OfferSelector = decode(inv.parameters())?;
+            let index = txn
+                .get(&r.families.deployment, &())
+                .map_err(bad)?
+                .cloned()
+                .ok_or(Error::Unavailable)?;
+            index.validate()?;
+            if index.offers >= MAX_ORDERS
+                || txn.get(&r.families.offers, &commit).map_err(bad)?.is_some()
+            {
+                return Err(Error::Capacity);
+            }
+            let live = authority::current(
+                ctx.world().map_err(bad)?,
+                &r.config,
+                s.requester,
+                s.hull,
+                s.incoming,
+                s.manufacture,
+                s.class,
+            )?;
+            let row = RefitOffer {
+                format: 1,
+                sequence: index.offers.checked_add(1).ok_or(Error::Capacity)?,
+                operation: commit,
+                action: action.clone(),
+                operator: inv.actor(),
+                requester: s.requester,
+                policy: r.config.payment.clone(),
+                facility: live.facility,
+                recipe: live.recipe,
+                core_acceptance: s.manufacture,
+                incoming: s.incoming,
+                hull: s.hull,
+                unit_revision: live.unit_revision,
+                before: live.before,
+                component: r.config.component.clone(),
+                displaced: live.displaced,
+                observed_ic: live.at,
+                observed_utc: live.utc,
+                expires_utc: live.utc.checked_add(OFFER_SECONDS).ok_or(Error::Capacity)?,
+            };
+            row.validate()?;
+            let out = self.owner(ctx, owner::Request::Offer(Box::new(row.clone())))?;
+            if out.index != index.offer(&row)? || out.order.is_some() {
+                return Err(Error::Integrity);
+            }
+            txn.insert(&r.families.offers, &commit, row).map_err(bad)?;
+            txn.replace(&r.families.deployment, &(), out.index)
+                .map_err(bad)?;
+            offer_id = Some(commit);
+            "offered"
+        };
+        Ok((state, offer_id, order))
+    }
+
+    #[inline(never)]
+    fn prepare_accept(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+        commit: CommitToken,
+        action: &DefinitionRef,
+    ) -> Result<PreparedTransition, Error> {
+        let r = &self.runtime;
+        let offer_id;
+        let order;
+        let state = {
+            let s: AcceptSelector = decode(inv.parameters())?;
+            let offer = txn
+                .get(&r.families.offers, &s.offer)
+                .map_err(bad)?
+                .cloned()
+                .ok_or(Error::Unavailable)?;
+            if offer.requester != inv.actor() {
+                return Err(Error::Unavailable);
+            }
+            let index = txn
+                .get(&r.families.deployment, &())
+                .map_err(bad)?
+                .cloned()
+                .ok_or(Error::Unavailable)?;
+            index.validate()?;
+            let id = derive_work_order_id(inv.request(), 0).map_err(bad)?;
+            if index.accepted >= MAX_ORDERS
+                || txn.get(&r.families.orders, &id).map_err(bad)?.is_some()
+                || txn
+                    .get(&r.industry.work_orders, &id)
+                    .map_err(bad)?
+                    .is_some()
+                || txn.get(&r.manufacture.orders, &id).map_err(bad)?.is_some()
+            {
+                return Err(Error::Capacity);
+            }
+            let at = ctx.world().map_err(bad)?.world_ic_now();
+            let intent = AcceptedIntent {
+                order: id,
+                offer,
+                payer: payer(&s.payer)?,
+                accepted_at: at.clone(),
+                expires_at: mush_inventory::reservation_deadline(&at).map_err(bad)?,
+            };
+            authority::accept(ctx.world().map_err(bad)?, &r.config, &intent)?;
+            let capacity = r
+                .industry
+                .reserve_slot(
+                    txn,
+                    intent.offer.policy.factory,
+                    intent.offer.facility.maximum_slots(),
+                    &wo_holder(id).map_err(bad)?,
+                    &at,
+                )
+                .map_err(bad)?;
+            let payment = ctx
+                .prepare_owner(
+                    self.economy.as_ref().ok_or(Error::Unavailable)?,
+                    EconomyRequest::RefitFunding(RefitFundingRequest {
+                        subject: intent.subject()?,
+                    }),
+                )
+                .map_err(bad)?
+                .refit_funding()
+                .map_err(bad)?;
+            let row = RefitOrder {
+                format: 1,
+                sequence: index.accepted.checked_add(1).ok_or(Error::Capacity)?,
+                accepted: commit,
+                action: action.clone(),
+                progress: super::progress::RefitProgress::new(
+                    id,
+                    at,
+                    intent.offer.recipe.work_units(),
+                )?,
+                intent,
+                funding: payment.receipt().clone(),
+                capacity,
+                terminal: None,
+                installation: None,
+            };
+            row.validate()?;
+            super::capacity::terminal_room(ctx.world().map_err(bad)?, r, &row)?;
+            let out = self.owner(
+                ctx,
+                owner::Request::Accept {
+                    order: Box::new(row.clone()),
+                    payment: Box::new(payment),
+                },
+            )?;
+            if out.index != index.accept(&row)? || out.order.as_ref() != Some(&row) {
+                return Err(Error::Integrity);
+            }
+            r.families.accept_heads(txn, &row)?;
+            r.families.publish_schedule(txn, &row)?;
+            txn.insert(&r.families.orders, &id, row).map_err(bad)?;
+            txn.replace(&r.families.deployment, &(), out.index)
+                .map_err(bad)?;
+            ctx.reserve_core_refit_completion(txn, id.0).map_err(bad)?;
+            offer_id = Some(s.offer);
+            order = Some(id);
+            "accepted"
+        };
+        Ok((state, offer_id, order))
+    }
+
+    #[inline(never)]
+    fn prepare_advance(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+    ) -> Result<PreparedTransition, Error> {
+        let r = &self.runtime;
+        let offer_id = None;
+        let order;
+        let state = {
+            let s: AdvanceSelector = decode(inv.parameters())?;
+            let before = self.before(txn, s.order, inv.actor())?;
+            if s.observed != ctx.world().map_err(bad)?.world_ic_now() {
+                return Err(Error::Unavailable);
+            }
+            let cursor = before.progress.cursor();
+            let mush_core::ScheduleEvaluation::Advance(advance) = cursor
+                .plan_due(
+                    cursor.revision(),
+                    &s.observed,
+                    if s.restart {
+                        mush_core::ScheduleDriveCause::Restart
+                    } else {
+                        mush_core::ScheduleDriveCause::Live
+                    },
+                )
+                .map_err(bad)?
+            else {
+                return Err(Error::Unavailable);
+            };
+            let out = self.owner(
+                ctx,
+                owner::Request::Advance {
+                    before: Box::new(before),
+                    advance,
+                },
+            )?;
+            let row = out.order.ok_or(Error::Integrity)?;
+            // Core owns the schedule advance; the owner's reproduced
+            // progress must equal its already seeded typed postimage.
+            if txn
+                .get(
+                    &r.families.schedules,
+                    &super::progress::schedule_id(s.order)?,
+                )
+                .map_err(bad)?
+                != Some(row.progress.cursor())
+            {
+                return Err(Error::Integrity);
+            }
+            txn.replace(&r.families.orders, &s.order, row)
+                .map_err(bad)?;
+            ctx.advance_core_refit_completion(txn, s.order.0)
+                .map_err(bad)?;
+            order = Some(s.order);
+            "advanced"
+        };
+        Ok((state, offer_id, order))
+    }
+
+    #[inline(never)]
+    fn prepare_install(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+    ) -> Result<PreparedTransition, Error> {
+        let r = &self.runtime;
+        let offer_id = None;
+        let order;
+        let state = {
+            let id = order_id(&decode::<OrderSelector>(inv.parameters())?.order)?;
+            let before = self.before(txn, id, inv.actor())?;
+            if !before.progress.production().is_complete() {
+                return Err(Error::Unavailable);
+            }
+            // Both actual owners prepare before the closed Core physical image. Industry
+            // publication below is typed data; a third native image is neither requested
+            // nor permitted by the Core exchange protocol.
+            let tactics = ctx
+                .prepare_owner(
+                    self.tactics.as_ref().ok_or(Error::Unavailable)?,
+                    ReplacementRequest::new(
+                        before.intent.offer.hull,
+                        before.intent.offer.unit_revision,
+                        id,
+                    ),
+                )
+                .map_err(bad)?;
+            let payment = ctx
+                .prepare_owner(
+                    self.economy.as_ref().ok_or(Error::Unavailable)?,
+                    EconomyRequest::RefitInstallation(RefitInstallationRequest {
+                        acceptance: before.accepted,
+                    }),
+                )
+                .map_err(bad)?
+                .refit_terminal()
+                .map_err(bad)?;
+            let physical = ctx
+                .exchange_core_component(&r.exchanges, txn, id.0)
+                .map_err(bad)?;
+            let row = before.install(&payment, &tactics, &physical)?;
+            r.industry
+                .release_slot(txn, row.intent.offer.policy.factory, row.capacity, 1)
+                .map_err(bad)?;
+            r.families.terminal_heads(txn, &row)?;
+            txn.replace(&r.families.orders, &id, row).map_err(bad)?;
+            ctx.advance_core_refit_completion(txn, id.0).map_err(bad)?;
+            order = Some(id);
+            "installed"
+        };
+        Ok((state, offer_id, order))
+    }
+
+    #[inline(never)]
+    fn prepare_cancel(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+    ) -> Result<PreparedTransition, Error> {
+        let r = &self.runtime;
+        let offer_id = None;
+        let order;
+        let state = {
+            let id = order_id(&decode::<OrderSelector>(inv.parameters())?.order)?;
+            let before = self.before(txn, id, inv.actor())?;
+            let payment = ctx
+                .prepare_owner(
+                    self.economy.as_ref().ok_or(Error::Unavailable)?,
+                    EconomyRequest::RefitCancellation(RefitCancellationRequest {
+                        acceptance: before.accepted,
+                    }),
+                )
+                .map_err(bad)?
+                .refit_terminal()
+                .map_err(bad)?;
+            let out = self.owner(
+                ctx,
+                owner::Request::Cancel {
+                    before: Box::new(before),
+                    payment: Box::new(payment),
+                },
+            )?;
+            let row = out.order.ok_or(Error::Integrity)?;
+            r.industry
+                .release_slot(txn, row.intent.offer.policy.factory, row.capacity, 1)
+                .map_err(bad)?;
+            r.families.terminal_heads(txn, &row)?;
+            txn.replace(&r.families.orders, &id, row).map_err(bad)?;
+            ctx.advance_core_refit_completion(txn, id.0).map_err(bad)?;
+            order = Some(id);
+            "cancelled"
+        };
+        Ok((state, offer_id, order))
+    }
+
     fn action(&self) -> Result<&DefinitionRef, Error> {
         self.runtime.actions.get(self.index).ok_or(Error::Integrity)
     }
@@ -118,7 +489,7 @@ impl Provider {
         &self,
         ctx: &mut PrepareCtx<'_>,
         request: owner::Request,
-    ) -> Result<owner::Output, Error> {
+    ) -> Result<Box<owner::Output>, Error> {
         ctx.prepare_owner(
             self.owner.as_ref().ok_or(Error::Unavailable)?,
             OwnerRequest::Refit(request),
@@ -162,290 +533,13 @@ impl Provider {
         }
         let commit = ctx.commit_token();
         let action = self.action()?;
-        let mut offer_id = None;
-        let mut order = None;
-        let state = match self.index {
-            0 => {
-                if r.config.mode != CoreOriginMode::Initialize
-                    || inv.actor() != mush_core::GOD
-                    || txn.get(&r.families.deployment, &()).map_err(bad)?.is_some()
-                    || !txn.family_is_empty(&r.families.offers).map_err(bad)?
-                    || !txn.family_is_empty(&r.families.orders).map_err(bad)?
-                    || !txn.family_is_empty(&r.families.assets).map_err(bad)?
-                    || !txn.family_is_empty(&r.families.hulls).map_err(bad)?
-                {
-                    return Err(Error::Unavailable);
-                }
-                let out = self.owner(ctx, owner::Request::Initialize)?;
-                if out.order.is_some() {
-                    return Err(Error::Integrity);
-                }
-                txn.insert(&r.families.deployment, &(), out.index)
-                    .map_err(bad)?;
-                "initialized"
-            }
-            1 => {
-                let s: OfferSelector = decode(inv.parameters())?;
-                let index = txn
-                    .get(&r.families.deployment, &())
-                    .map_err(bad)?
-                    .cloned()
-                    .ok_or(Error::Unavailable)?;
-                index.validate()?;
-                if index.offers >= MAX_ORDERS
-                    || txn.get(&r.families.offers, &commit).map_err(bad)?.is_some()
-                {
-                    return Err(Error::Capacity);
-                }
-                let live = authority::current(
-                    ctx.world().map_err(bad)?,
-                    &r.config,
-                    s.requester,
-                    s.hull,
-                    s.incoming,
-                    s.manufacture,
-                    s.class,
-                )?;
-                let row = RefitOffer {
-                    format: 1,
-                    sequence: index.offers.checked_add(1).ok_or(Error::Capacity)?,
-                    operation: commit,
-                    action: action.clone(),
-                    operator: inv.actor(),
-                    requester: s.requester,
-                    policy: r.config.payment.clone(),
-                    facility: live.facility,
-                    recipe: live.recipe,
-                    core_acceptance: s.manufacture,
-                    incoming: s.incoming,
-                    hull: s.hull,
-                    unit_revision: live.unit_revision,
-                    before: live.before,
-                    component: r.config.component.clone(),
-                    displaced: live.displaced,
-                    observed_ic: live.at,
-                    observed_utc: live.utc,
-                    expires_utc: live.utc.checked_add(OFFER_SECONDS).ok_or(Error::Capacity)?,
-                };
-                row.validate()?;
-                let out = self.owner(ctx, owner::Request::Offer(row.clone()))?;
-                if out.index != index.offer(&row)? || out.order.is_some() {
-                    return Err(Error::Integrity);
-                }
-                txn.insert(&r.families.offers, &commit, row).map_err(bad)?;
-                txn.replace(&r.families.deployment, &(), out.index)
-                    .map_err(bad)?;
-                offer_id = Some(commit);
-                "offered"
-            }
-            2 => {
-                let s: AcceptSelector = decode(inv.parameters())?;
-                let offer = txn
-                    .get(&r.families.offers, &s.offer)
-                    .map_err(bad)?
-                    .cloned()
-                    .ok_or(Error::Unavailable)?;
-                if offer.requester != inv.actor() {
-                    return Err(Error::Unavailable);
-                }
-                let index = txn
-                    .get(&r.families.deployment, &())
-                    .map_err(bad)?
-                    .cloned()
-                    .ok_or(Error::Unavailable)?;
-                index.validate()?;
-                let id = derive_work_order_id(inv.request(), 0).map_err(bad)?;
-                if index.accepted >= MAX_ORDERS
-                    || txn.get(&r.families.orders, &id).map_err(bad)?.is_some()
-                    || txn
-                        .get(&r.industry.work_orders, &id)
-                        .map_err(bad)?
-                        .is_some()
-                    || txn.get(&r.manufacture.orders, &id).map_err(bad)?.is_some()
-                {
-                    return Err(Error::Capacity);
-                }
-                let at = ctx.world().map_err(bad)?.world_ic_now();
-                let intent = AcceptedIntent {
-                    order: id,
-                    offer,
-                    payer: payer(&s.payer)?,
-                    accepted_at: at.clone(),
-                    expires_at: mush_inventory::reservation_deadline(&at).map_err(bad)?,
-                };
-                authority::accept(ctx.world().map_err(bad)?, &r.config, &intent)?;
-                let capacity = r
-                    .industry
-                    .reserve_slot(
-                        txn,
-                        intent.offer.policy.factory,
-                        intent.offer.facility.maximum_slots(),
-                        &wo_holder(id).map_err(bad)?,
-                        &at,
-                    )
-                    .map_err(bad)?;
-                let payment = ctx
-                    .prepare_owner(
-                        self.economy.as_ref().ok_or(Error::Unavailable)?,
-                        EconomyRequest::RefitFunding(RefitFundingRequest {
-                            subject: intent.subject()?,
-                        }),
-                    )
-                    .map_err(bad)?
-                    .refit_funding()
-                    .map_err(bad)?;
-                let row = RefitOrder {
-                    format: 1,
-                    sequence: index.accepted.checked_add(1).ok_or(Error::Capacity)?,
-                    accepted: commit,
-                    action: action.clone(),
-                    progress: super::progress::RefitProgress::new(
-                        id,
-                        at,
-                        intent.offer.recipe.work_units(),
-                    )?,
-                    intent,
-                    funding: payment.receipt().clone(),
-                    capacity,
-                    terminal: None,
-                    installation: None,
-                };
-                row.validate()?;
-                super::capacity::terminal_room(ctx.world().map_err(bad)?, r, &row)?;
-                let out = self.owner(
-                    ctx,
-                    owner::Request::Accept {
-                        order: row.clone(),
-                        payment,
-                    },
-                )?;
-                if out.index != index.accept(&row)? || out.order.as_ref() != Some(&row) {
-                    return Err(Error::Integrity);
-                }
-                r.families.accept_heads(txn, &row)?;
-                r.families.publish_schedule(txn, &row)?;
-                txn.insert(&r.families.orders, &id, row).map_err(bad)?;
-                txn.replace(&r.families.deployment, &(), out.index)
-                    .map_err(bad)?;
-                ctx.reserve_core_refit_completion(txn, id.0).map_err(bad)?;
-                offer_id = Some(s.offer);
-                order = Some(id);
-                "accepted"
-            }
-            3 => {
-                let s: AdvanceSelector = decode(inv.parameters())?;
-                let before = self.before(txn, s.order, inv.actor())?;
-                if s.observed != ctx.world().map_err(bad)?.world_ic_now() {
-                    return Err(Error::Unavailable);
-                }
-                let cursor = before.progress.cursor();
-                let mush_core::ScheduleEvaluation::Advance(advance) = cursor
-                    .plan_due(
-                        cursor.revision(),
-                        &s.observed,
-                        if s.restart {
-                            mush_core::ScheduleDriveCause::Restart
-                        } else {
-                            mush_core::ScheduleDriveCause::Live
-                        },
-                    )
-                    .map_err(bad)?
-                else {
-                    return Err(Error::Unavailable);
-                };
-                let out = self.owner(
-                    ctx,
-                    owner::Request::Advance {
-                        before,
-                        advance: *advance,
-                    },
-                )?;
-                let row = out.order.ok_or(Error::Integrity)?;
-                // Core owns the schedule advance; the owner's reproduced
-                // progress must equal its already seeded typed postimage.
-                if txn
-                    .get(
-                        &r.families.schedules,
-                        &super::progress::schedule_id(s.order)?,
-                    )
-                    .map_err(bad)?
-                    != Some(row.progress.cursor())
-                {
-                    return Err(Error::Integrity);
-                }
-                txn.replace(&r.families.orders, &s.order, row)
-                    .map_err(bad)?;
-                ctx.advance_core_refit_completion(txn, s.order.0)
-                    .map_err(bad)?;
-                order = Some(s.order);
-                "advanced"
-            }
-            4 => {
-                let id = order_id(&decode::<OrderSelector>(inv.parameters())?.order)?;
-                let before = self.before(txn, id, inv.actor())?;
-                if !before.progress.production().is_complete() {
-                    return Err(Error::Unavailable);
-                }
-                // Both actual owners prepare before the closed Core physical image. Industry
-                // publication below is typed data; a third native image is neither requested
-                // nor permitted by the Core exchange protocol.
-                let tactics = ctx
-                    .prepare_owner(
-                        self.tactics.as_ref().ok_or(Error::Unavailable)?,
-                        ReplacementRequest::new(
-                            before.intent.offer.hull,
-                            before.intent.offer.unit_revision,
-                            id,
-                        ),
-                    )
-                    .map_err(bad)?;
-                let payment = ctx
-                    .prepare_owner(
-                        self.economy.as_ref().ok_or(Error::Unavailable)?,
-                        EconomyRequest::RefitInstallation(RefitInstallationRequest {
-                            acceptance: before.accepted,
-                        }),
-                    )
-                    .map_err(bad)?
-                    .refit_terminal()
-                    .map_err(bad)?;
-                let physical = ctx
-                    .exchange_core_component(&r.exchanges, txn, id.0)
-                    .map_err(bad)?;
-                let row = before.install(&payment, &tactics, &physical)?;
-                r.industry
-                    .release_slot(txn, row.intent.offer.policy.factory, row.capacity, 1)
-                    .map_err(bad)?;
-                r.families.terminal_heads(txn, &row)?;
-                txn.replace(&r.families.orders, &id, row).map_err(bad)?;
-                ctx.advance_core_refit_completion(txn, id.0).map_err(bad)?;
-                order = Some(id);
-                "installed"
-            }
-            5 => {
-                let id = order_id(&decode::<OrderSelector>(inv.parameters())?.order)?;
-                let before = self.before(txn, id, inv.actor())?;
-                let payment = ctx
-                    .prepare_owner(
-                        self.economy.as_ref().ok_or(Error::Unavailable)?,
-                        EconomyRequest::RefitCancellation(RefitCancellationRequest {
-                            acceptance: before.accepted,
-                        }),
-                    )
-                    .map_err(bad)?
-                    .refit_terminal()
-                    .map_err(bad)?;
-                let out = self.owner(ctx, owner::Request::Cancel { before, payment })?;
-                let row = out.order.ok_or(Error::Integrity)?;
-                r.industry
-                    .release_slot(txn, row.intent.offer.policy.factory, row.capacity, 1)
-                    .map_err(bad)?;
-                r.families.terminal_heads(txn, &row)?;
-                txn.replace(&r.families.orders, &id, row).map_err(bad)?;
-                ctx.advance_core_refit_completion(txn, id.0).map_err(bad)?;
-                order = Some(id);
-                "cancelled"
-            }
+        let (state, offer_id, order) = match self.index {
+            0 => self.prepare_initialize(inv, txn, ctx)?,
+            1 => self.prepare_offer(inv, txn, ctx, commit, action)?,
+            2 => self.prepare_accept(inv, txn, ctx, commit, action)?,
+            3 => self.prepare_advance(inv, txn, ctx)?,
+            4 => self.prepare_install(inv, txn, ctx)?,
+            5 => self.prepare_cancel(inv, txn, ctx)?,
             _ => return Err(Error::Invalid),
         };
         Ok(AuthoritativeActionOutput::new(

@@ -336,6 +336,170 @@ impl Provider {
         }
         Ok(facts)
     }
+    #[inline(never)]
+    fn prepare_funding(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+        quote: CommitToken,
+        commit: CommitToken,
+    ) -> Result<(CommitToken, &'static str), String> {
+        if quote == commit {
+            return Err("quote is not acknowledged".into());
+        }
+        let q = txn
+            .get(&self.offers.quotes, &quote)
+            .map_err(|e| e.to_string())?
+            .cloned()
+            .ok_or("quote unavailable")?;
+        if q.publication != quote {
+            return Err("quote key differs".into());
+        }
+        let listing = txn
+            .get(&self.offers.listings, &q.listing)
+            .map_err(|e| e.to_string())?
+            .ok_or("listing unavailable")?;
+        listing.validate()?;
+        if listing.publication != q.listing || listing.digest()? != q.listing_digest {
+            return Err("quoted listing changed or was withdrawn".into());
+        }
+        let facts = self.current(inv, txn, ctx, &q)?;
+        let output = ctx
+            .prepare_owner(
+                &self.economy,
+                EconomyRequest::PurchaseFunding(economics(&q)?),
+            )
+            .and_then(|o| o.funding())
+            .map_err(|e| e.to_string())?;
+        let allocation = self
+            .writer
+            .fund(
+                ctx,
+                txn,
+                PurchaseQuoteIdentity {
+                    quote,
+                    quote_digest: q.digest()?,
+                    product_digest: q.product_digest,
+                },
+                terms(&q),
+                &facts,
+                &output,
+            )
+            .map_err(|e| e.to_string())?;
+        let row = Purchase::funded(
+            q.clone(),
+            self.action.clone(),
+            self.config.participants.clone(),
+            &output,
+            &allocation,
+        )?;
+        txn.insert(&self.families.operations, &commit, row.clone())
+            .map_err(|e| e.to_string())?;
+        super::index::retire_quotes(
+            txn,
+            &self.offers,
+            &[quote],
+            Some(inv.actor()),
+            ctx.world().map_err(|e| e.to_string())?.now(),
+        )?;
+        if txn
+            .get(&self.families.operations, &commit)
+            .map_err(|e| e.to_string())?
+            != Some(&row)
+        {
+            return Err("funded typed post-image differs".into());
+        }
+        // The kernel derives all five keys from these actual paired
+        // rows and checks the unchanged quote and shared allocator.
+        ctx.reserve_original_mind_purchase_completion(txn)
+            .map_err(|e| e.to_string())?;
+        Ok((commit, "funded"))
+    }
+    #[inline(never)]
+    fn prepare_terminal(
+        &self,
+        inv: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        ctx: &mut PrepareCtx<'_>,
+        request: Request,
+    ) -> Result<(CommitToken, &'static str), String> {
+        let (operation, grant) = match request {
+            Request::Grant(id) => (id, true),
+            Request::Refund(id) => (id, false),
+            Request::Fund(_) => return Err("unexpected funding transition".into()),
+        };
+        let before = txn
+            .get(&self.families.operations, &operation)
+            .map_err(|e| e.to_string())?
+            .cloned()
+            .ok_or("funded purchase unavailable")?;
+        before.validate()?;
+        if before.operation != operation
+            || before.phase != (PurchasePhase::Funded {})
+            || (inv.actor() != before.quote.buyer && (grant || inv.actor() != mush_core::GOD))
+        {
+            return Err("purchase terminal authority differs".into());
+        }
+        let allocation = self
+            .writer
+            .allocation(txn, operation)
+            .map_err(|e| e.to_string())?;
+        before.matches_allocation(&allocation)?;
+        let facts = if grant {
+            if before.participants != self.config.participants {
+                return Err("purchase participants are historical".into());
+            }
+            Some(self.current(inv, txn, ctx, &before.quote)?)
+        } else {
+            None
+        };
+        let terminal = PurchaseTerminal {
+            operation,
+            purchase: economics(&before.quote)?,
+            funding: before.funding.clone(),
+        };
+        let request = if grant {
+            EconomyRequest::PurchaseGrant(terminal)
+        } else {
+            EconomyRequest::PurchaseRefund(terminal)
+        };
+        let output = ctx
+            .prepare_owner(&self.economy, request)
+            .and_then(|o| o.terminal())
+            .map_err(|e| e.to_string())?;
+        let after_allocation = self
+            .writer
+            .terminal(
+                ctx,
+                txn,
+                &allocation,
+                terms(&before.quote),
+                facts.as_ref(),
+                &output,
+            )
+            .map_err(|e| e.to_string())?;
+        let (after, receipt) = before.terminal(&output)?;
+        after.matches_allocation(&after_allocation)?;
+        txn.replace(&self.families.operations, &operation, after.clone())
+            .map_err(|e| e.to_string())?;
+        txn.insert(&self.families.receipts, &operation, receipt.clone())
+            .map_err(|e| e.to_string())?;
+        if txn
+            .get(&self.families.operations, &operation)
+            .map_err(|e| e.to_string())?
+            != Some(&after)
+            || txn
+                .get(&self.families.receipts, &operation)
+                .map_err(|e| e.to_string())?
+                != Some(&receipt)
+        {
+            return Err("terminal typed post-images differ".into());
+        }
+        ctx.finish_original_mind_purchase_completion(txn, operation)
+            .map_err(|e| e.to_string())?;
+        Ok((operation, if grant { "granted" } else { "refunded" }))
+    }
     fn prepare(
         &self,
         inv: &ActionInvocation,
@@ -344,156 +508,8 @@ impl Provider {
     ) -> Result<AuthoritativeActionOutput, String> {
         let commit = ctx.commit_token();
         let (operation, kind) = match self.request(inv)? {
-            Request::Fund(quote) => {
-                if quote == commit {
-                    return Err("quote is not acknowledged".into());
-                }
-                let q = txn
-                    .get(&self.offers.quotes, &quote)
-                    .map_err(|e| e.to_string())?
-                    .cloned()
-                    .ok_or("quote unavailable")?;
-                if q.publication != quote {
-                    return Err("quote key differs".into());
-                }
-                let listing = txn
-                    .get(&self.offers.listings, &q.listing)
-                    .map_err(|e| e.to_string())?
-                    .ok_or("listing unavailable")?;
-                listing.validate()?;
-                if listing.publication != q.listing || listing.digest()? != q.listing_digest {
-                    return Err("quoted listing changed or was withdrawn".into());
-                }
-                let facts = self.current(inv, txn, ctx, &q)?;
-                let output = ctx
-                    .prepare_owner(
-                        &self.economy,
-                        EconomyRequest::PurchaseFunding(economics(&q)?),
-                    )
-                    .and_then(|o| o.funding())
-                    .map_err(|e| e.to_string())?;
-                let allocation = self
-                    .writer
-                    .fund(
-                        ctx,
-                        txn,
-                        PurchaseQuoteIdentity {
-                            quote,
-                            quote_digest: q.digest()?,
-                            product_digest: q.product_digest,
-                        },
-                        terms(&q),
-                        &facts,
-                        &output,
-                    )
-                    .map_err(|e| e.to_string())?;
-                let row = Purchase::funded(
-                    q.clone(),
-                    self.action.clone(),
-                    self.config.participants.clone(),
-                    &output,
-                    &allocation,
-                )?;
-                txn.insert(&self.families.operations, &commit, row.clone())
-                    .map_err(|e| e.to_string())?;
-                super::index::retire_quotes(
-                    txn,
-                    &self.offers,
-                    &[quote],
-                    Some(inv.actor()),
-                    ctx.world().map_err(|e| e.to_string())?.now(),
-                )?;
-                if txn
-                    .get(&self.families.operations, &commit)
-                    .map_err(|e| e.to_string())?
-                    != Some(&row)
-                {
-                    return Err("funded typed post-image differs".into());
-                }
-                // The kernel derives all five keys from these actual paired
-                // rows and checks the unchanged quote and shared allocator.
-                ctx.reserve_original_mind_purchase_completion(txn)
-                    .map_err(|e| e.to_string())?;
-                (commit, "funded")
-            }
-            request => {
-                let (operation, grant) = match request {
-                    Request::Grant(id) => (id, true),
-                    Request::Refund(id) => (id, false),
-                    Request::Fund(_) => return Err("unexpected funding transition".into()),
-                };
-                let before = txn
-                    .get(&self.families.operations, &operation)
-                    .map_err(|e| e.to_string())?
-                    .cloned()
-                    .ok_or("funded purchase unavailable")?;
-                before.validate()?;
-                if before.operation != operation
-                    || before.phase != (PurchasePhase::Funded {})
-                    || (inv.actor() != before.quote.buyer
-                        && (grant || inv.actor() != mush_core::GOD))
-                {
-                    return Err("purchase terminal authority differs".into());
-                }
-                let allocation = self
-                    .writer
-                    .allocation(txn, operation)
-                    .map_err(|e| e.to_string())?;
-                before.matches_allocation(&allocation)?;
-                let facts = if grant {
-                    if before.participants != self.config.participants {
-                        return Err("purchase participants are historical".into());
-                    }
-                    Some(self.current(inv, txn, ctx, &before.quote)?)
-                } else {
-                    None
-                };
-                let terminal = PurchaseTerminal {
-                    operation,
-                    purchase: economics(&before.quote)?,
-                    funding: before.funding.clone(),
-                };
-                let request = if grant {
-                    EconomyRequest::PurchaseGrant(terminal)
-                } else {
-                    EconomyRequest::PurchaseRefund(terminal)
-                };
-                let output = ctx
-                    .prepare_owner(&self.economy, request)
-                    .and_then(|o| o.terminal())
-                    .map_err(|e| e.to_string())?;
-                let after_allocation = self
-                    .writer
-                    .terminal(
-                        ctx,
-                        txn,
-                        &allocation,
-                        terms(&before.quote),
-                        facts.as_ref(),
-                        &output,
-                    )
-                    .map_err(|e| e.to_string())?;
-                let (after, receipt) = before.terminal(&output)?;
-                after.matches_allocation(&after_allocation)?;
-                txn.replace(&self.families.operations, &operation, after.clone())
-                    .map_err(|e| e.to_string())?;
-                txn.insert(&self.families.receipts, &operation, receipt.clone())
-                    .map_err(|e| e.to_string())?;
-                if txn
-                    .get(&self.families.operations, &operation)
-                    .map_err(|e| e.to_string())?
-                    != Some(&after)
-                    || txn
-                        .get(&self.families.receipts, &operation)
-                        .map_err(|e| e.to_string())?
-                        != Some(&receipt)
-                {
-                    return Err("terminal typed post-images differ".into());
-                }
-                ctx.finish_original_mind_purchase_completion(txn, operation)
-                    .map_err(|e| e.to_string())?;
-                (operation, if grant { "granted" } else { "refunded" })
-            }
+            Request::Fund(quote) => self.prepare_funding(inv, txn, ctx, quote, commit)?,
+            request => self.prepare_terminal(inv, txn, ctx, request)?,
         };
         let outcome = RulesValue::new(
             self.outcome.clone(),

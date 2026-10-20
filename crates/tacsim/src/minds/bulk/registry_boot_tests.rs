@@ -29,7 +29,7 @@ fn command(engine: &mut Engine, line: &str) {
         &mut mush_core::engine::Effects::new(),
     );
 }
-fn real_engine(f: &Fixture) -> TestResult<Box<Engine>> {
+pub(super) fn real_engine(f: &Fixture) -> TestResult<Box<Engine>> {
     let (mut engine, _) =
         composed_engine(&f.resources, f.accounts.clone(), CommerceMode::Active, true)?;
     engine.set_submission_runtime(Arc::new(Unresolved))?;

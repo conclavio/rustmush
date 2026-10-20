@@ -99,7 +99,7 @@ impl Factory {
                 plan,
                 start,
             },
-            machine: Box::new(machine),
+            machine,
         })
     }
 }

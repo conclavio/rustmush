@@ -303,6 +303,140 @@ fn third_holder<'a>(
     Ok((actor, account, login))
 }
 
+#[inline(never)]
+fn exercise_refund(
+    f: &PurchaseFixture,
+    w: &IcWorld,
+    funded: &Durable,
+    id: ContractId,
+) -> TestResult {
+    // A real refusal/refund never satisfies the same authorized condition.
+    let mut refund = w.reboot(f, funded)?;
+    refund.engine.set_submission_runtime(Arc::new(Runtime))?;
+    refund.command("@account/approval 0=1 threshold:1")?;
+    let (request, _) = next(&mut refund, REFUND)?;
+    let prepared = terminal(&mut refund, &request, N + 3)?;
+    land(&mut refund, prepared)?;
+    assert_eq!(
+        history(&refund, N + 2)?.outcome(),
+        mush_economy::managed_paid_resale::PaidResaleOutcome::Refunded
+    );
+    assert_eq!(read(&mut refund, BUYER, id, fact(N + 2, 2))?, None);
+    assert_eq!(contract(&refund, id)?.state, ContractState::Active);
+    let mut refund = refund.reboot(f, &refund.snapshot())?;
+    assert_eq!(read(&mut refund, BUYER, id, fact(N + 2, 2))?, None);
+    drop(refund);
+
+    Ok(())
+}
+
+#[inline(never)]
+fn exercise_later_holder(
+    f: &PurchaseFixture,
+    w: &mut IcWorld,
+    original: &PersonalPaidLicence,
+    id: ContractId,
+    expected: FactState,
+) -> TestResult {
+    // The same real licence can change holder again; the old transaction still
+    // belongs to its original parties, not to the new unrelated holder.
+    let (later, payer, _login) = third_holder(f, w)?;
+    offer(w, N + 10, GOD, later, 0)?;
+    buy(w, N + 11, N + 10, ACCEPT, later, payer.0)?;
+    assert_eq!(pointer(w)?.ownership().ok_or("ownership")?.generation, 3);
+    assert_eq!(pointer(w)?.holder(), later);
+    assert_eq!(pointer(w)?.term(), original.term());
+    assert_eq!(read(w, BUYER, id, fact(N + 2, 2))?, Some(expected.clone()));
+    assert_eq!(read(w, later, id, fact(N + 2, 2))?, None);
+    let foreign = draft(w, later, "Not my earlier transfer")?;
+    say(w, later, &format!("@contract/party {foreign}=#{}", GOD.0))?;
+    let before = contract(w, foreign)?;
+    attach(w, later, foreign, N + 2, 2)?;
+    assert_eq!(
+        contract(w, foreign)?,
+        before,
+        "current ownership never authorizes somebody else's historical transaction"
+    );
+    assert_eq!(
+        read(w, later, foreign, fact(N + 2, 2))?,
+        None,
+        "missing attachment marker"
+    );
+
+    // Lapse scope follows the real current ownership proof while the accepted
+    // term's holder remains immutable. No event is fabricated by attachment.
+    let lapse = draft(w, later, "Current holder lapse scope")?;
+    say(
+        w,
+        later,
+        &format!(
+            "@contract/condition {lapse}=fact minds licence.lapsed {} revision={}",
+            original.id().key(),
+            original.term().get()
+        ),
+    )?;
+    assert_eq!(contract(w, lapse)?.consent.conditions.len(), 1);
+    let former = draft(w, BUYER, "Former holder lapse refusal")?;
+    let old = contract(w, former)?;
+    say(
+        w,
+        BUYER,
+        &format!(
+            "@contract/condition {former}=fact minds licence.lapsed {} revision={}",
+            original.id().key(),
+            original.term().get()
+        ),
+    )?;
+    assert_eq!(contract(w, former)?, old);
+
+    // Actual immediate settlement uses acceptance UTC, not its term clock.
+    attach(w, later, foreign, N + 11, 3)?;
+    assert_eq!(contract(w, foreign)?.consent.conditions.len(), 1);
+    for line in [
+        format!("@contract/pay {foreign}={payer} 1"),
+        format!("@contract/split {foreign}=0 1"),
+        format!("@contract/remainder {foreign}={payer}"),
+        format!("@contract/offer {foreign}"),
+    ] {
+        say(w, later, &line)?;
+    }
+    assert_eq!(contract(w, foreign)?.state, ContractState::Offered);
+    let immediate = history(w, N + 11)?;
+    assert!(immediate.terminal().is_none());
+    let now = FactState {
+        satisfied: true,
+        actor: Some(later),
+        at: immediate.consent().accepted_at_utc,
+    };
+    assert_eq!(read(w, later, foreign, fact(N + 11, 3))?, Some(now));
+    let kept = w.snapshot();
+    let mut cold = w.reboot(f, &kept)?;
+    assert_eq!(read(&mut cold, BUYER, id, fact(N + 2, 2))?, Some(expected));
+    cold.engine.registry.freeze_mechanics_owner(
+        &OwnerId::new("market")?,
+        mush_core::mechanics::IncidentId(64_001),
+        mush_core::mechanics::RecoveryReason::IntegrityViolation {
+            code: CanonicalId::new("transfer_fact_fixture")?,
+        },
+    )?;
+    assert_eq!(
+        read(&mut cold, BUYER, id, fact(N + 2, 2))?,
+        None,
+        "unavailable actual owner refuses"
+    );
+    // Paired boot still refuses a missing actual holder receipt.
+    let mut missing = kept.clone();
+    let before = missing.disk.len();
+    missing.disk.retain(|(owner, _), v| {
+        !(owner == "roll"
+            && v.pointer("/family/id") == Some(&json!(HOLDER))
+            && v.pointer("/value/generation") == Some(&json!(2)))
+    });
+    assert_eq!(missing.disk.len() + 1, before);
+    assert!(w.reboot(f, &missing).is_err());
+    Ok(())
+}
+
 pub(super) fn exercise(f: &PurchaseFixture, template: &IcWorld, saved: &Durable) -> TestResult {
     eprintln!("M7_STORY phase=transfer_facts event=begin");
     let mut w = branch(f, template, saved)?;
@@ -319,22 +453,7 @@ pub(super) fn exercise(f: &PurchaseFixture, template: &IcWorld, saved: &Durable)
         "pending is not completion"
     );
     let funded = w.snapshot();
-    // A real refusal/refund never satisfies the same authorized condition.
-    let mut refund = w.reboot(f, &funded)?;
-    refund.engine.set_submission_runtime(Arc::new(Runtime))?;
-    refund.command("@account/approval 0=1 threshold:1")?;
-    let (request, _) = next(&mut refund, REFUND)?;
-    let prepared = terminal(&mut refund, &request, N + 3)?;
-    land(&mut refund, prepared)?;
-    assert_eq!(
-        history(&refund, N + 2)?.outcome(),
-        mush_economy::managed_paid_resale::PaidResaleOutcome::Refunded
-    );
-    assert_eq!(read(&mut refund, BUYER, id, fact(N + 2, 2))?, None);
-    assert_eq!(contract(&refund, id)?.state, ContractState::Active);
-    let mut refund = refund.reboot(f, &refund.snapshot())?;
-    assert_eq!(read(&mut refund, BUYER, id, fact(N + 2, 2))?, None);
-    drop(refund);
+    exercise_refund(f, &w, &funded, id)?;
 
     let event = ic_sortie::fixture_close(&w.engine.world, BUYER, token(N), w.base)?;
     let close = w.host.enqueue_close(&event)?;
@@ -378,109 +497,7 @@ pub(super) fn exercise(f: &PurchaseFixture, template: &IcWorld, saved: &Durable)
         Some(expected.clone())
     );
 
-    // The same real licence can change holder again; the old transaction still
-    // belongs to its original parties, not to the new unrelated holder.
-    let (later, payer, _login) = third_holder(f, &mut w)?;
-    offer(&mut w, N + 10, GOD, later, 0)?;
-    buy(&mut w, N + 11, N + 10, ACCEPT, later, payer.0)?;
-    assert_eq!(pointer(&w)?.ownership().ok_or("ownership")?.generation, 3);
-    assert_eq!(pointer(&w)?.holder(), later);
-    assert_eq!(pointer(&w)?.term(), original.term());
-    assert_eq!(
-        read(&mut w, BUYER, id, fact(N + 2, 2))?,
-        Some(expected.clone())
-    );
-    assert_eq!(read(&mut w, later, id, fact(N + 2, 2))?, None);
-    let foreign = draft(&mut w, later, "Not my earlier transfer")?;
-    say(
-        &mut w,
-        later,
-        &format!("@contract/party {foreign}=#{}", GOD.0),
-    )?;
-    let before = contract(&w, foreign)?;
-    attach(&mut w, later, foreign, N + 2, 2)?;
-    assert_eq!(
-        contract(&w, foreign)?,
-        before,
-        "current ownership never authorizes somebody else's historical transaction"
-    );
-    assert_eq!(
-        read(&mut w, later, foreign, fact(N + 2, 2))?,
-        None,
-        "missing attachment marker"
-    );
-
-    // Lapse scope follows the real current ownership proof while the accepted
-    // term's holder remains immutable. No event is fabricated by attachment.
-    let lapse = draft(&mut w, later, "Current holder lapse scope")?;
-    say(
-        &mut w,
-        later,
-        &format!(
-            "@contract/condition {lapse}=fact minds licence.lapsed {} revision={}",
-            original.id().key(),
-            original.term().get()
-        ),
-    )?;
-    assert_eq!(contract(&w, lapse)?.consent.conditions.len(), 1);
-    let former = draft(&mut w, BUYER, "Former holder lapse refusal")?;
-    let old = contract(&w, former)?;
-    say(
-        &mut w,
-        BUYER,
-        &format!(
-            "@contract/condition {former}=fact minds licence.lapsed {} revision={}",
-            original.id().key(),
-            original.term().get()
-        ),
-    )?;
-    assert_eq!(contract(&w, former)?, old);
-
-    // Actual immediate settlement uses acceptance UTC, not its term clock.
-    attach(&mut w, later, foreign, N + 11, 3)?;
-    assert_eq!(contract(&w, foreign)?.consent.conditions.len(), 1);
-    for line in [
-        format!("@contract/pay {foreign}={payer} 1"),
-        format!("@contract/split {foreign}=0 1"),
-        format!("@contract/remainder {foreign}={payer}"),
-        format!("@contract/offer {foreign}"),
-    ] {
-        say(&mut w, later, &line)?;
-    }
-    assert_eq!(contract(&w, foreign)?.state, ContractState::Offered);
-    let immediate = history(&w, N + 11)?;
-    assert!(immediate.terminal().is_none());
-    let now = FactState {
-        satisfied: true,
-        actor: Some(later),
-        at: immediate.consent().accepted_at_utc,
-    };
-    assert_eq!(read(&mut w, later, foreign, fact(N + 11, 3))?, Some(now));
-    let kept = w.snapshot();
-    let mut cold = w.reboot(f, &kept)?;
-    assert_eq!(read(&mut cold, BUYER, id, fact(N + 2, 2))?, Some(expected));
-    cold.engine.registry.freeze_mechanics_owner(
-        &OwnerId::new("market")?,
-        mush_core::mechanics::IncidentId(64_001),
-        mush_core::mechanics::RecoveryReason::IntegrityViolation {
-            code: CanonicalId::new("transfer_fact_fixture")?,
-        },
-    )?;
-    assert_eq!(
-        read(&mut cold, BUYER, id, fact(N + 2, 2))?,
-        None,
-        "unavailable actual owner refuses"
-    );
-    // Paired boot still refuses a missing actual holder receipt.
-    let mut missing = kept.clone();
-    let before = missing.disk.len();
-    missing.disk.retain(|(owner, _), v| {
-        !(owner == "roll"
-            && v.pointer("/family/id") == Some(&json!(HOLDER))
-            && v.pointer("/value/generation") == Some(&json!(2)))
-    });
-    assert_eq!(missing.disk.len() + 1, before);
-    assert!(w.reboot(f, &missing).is_err());
+    exercise_later_holder(f, &mut w, &original, id, expected)?;
     eprintln!("M7_STORY phase=transfer_facts event=complete");
     Ok(())
 }

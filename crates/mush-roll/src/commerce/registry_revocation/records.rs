@@ -17,8 +17,8 @@ pub(crate) enum Reason {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum AcceptedTerm {
-    Owner { term: OwnerTerm },
-    Paid { term: PaidTermRecord },
+    Owner { term: Box<OwnerTerm> },
+    Paid { term: Box<PaidTermRecord> },
 }
 impl AcceptedTerm {
     pub(crate) fn licence(&self) -> LicenceId {

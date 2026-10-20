@@ -30,7 +30,7 @@ pub enum CommerceMode {
 
 #[derive(Clone, Debug)]
 pub struct CommerceConfig {
-    conduct: Option<super::conduct::ConductConfig>,
+    conduct: Option<Box<super::conduct::ConductConfig>>,
     pub(crate) mode: CommerceMode,
     terms: InitialFilingTerms,
     manifest: DefinitionRef,
@@ -38,11 +38,11 @@ pub struct CommerceConfig {
     original_market_quotes: bool,
     author_withdrawal: bool,
     charter_transfers: bool,
-    pending_charters: Option<PendingRegistration>,
-    paid_resales: Option<PaidResaleRegistration>,
-    minds_facts: Option<super::facts::MindsFactProvider>,
-    registry_recall: Option<super::registry_recall::RegistryRecallPolicy>,
-    registry_revocation: Option<super::registry_revocation::RegistryRevocationPolicy>,
+    pending_charters: Option<Box<PendingRegistration>>,
+    paid_resales: Option<Box<PaidResaleRegistration>>,
+    minds_facts: Option<Box<super::facts::MindsFactProvider>>,
+    registry_recall: Option<Box<super::registry_recall::RegistryRecallPolicy>>,
+    registry_revocation: Option<Box<super::registry_revocation::RegistryRevocationPolicy>>,
     owner_qualification: bool,
     owner_attestations: bool,
     compatible_updates: bool,
@@ -52,12 +52,12 @@ pub struct CommerceConfig {
     reconformance: bool,
     house_filings: bool,
     dependent_owners: bool,
-    original_purchases: Option<PurchaseRegistration>,
-    entitlements: Option<EntitlementRegistration>,
-    house_purchases: Option<HouseRegistration>,
-    renewals: Option<RenewalRegistration>,
-    house_renewals: Option<HouseRenewalRegistration>,
-    coverage: Option<CoverageRegistration>,
+    original_purchases: Option<Box<PurchaseRegistration>>,
+    entitlements: Option<Box<EntitlementRegistration>>,
+    house_purchases: Option<Box<HouseRegistration>>,
+    renewals: Option<Box<RenewalRegistration>>,
+    house_renewals: Option<Box<HouseRenewalRegistration>>,
+    coverage: Option<Box<CoverageRegistration>>,
     ic: Option<std::sync::Arc<dyn super::ic_claims::registration::Installer>>,
 }
 #[derive(Clone, Debug)]
@@ -171,7 +171,7 @@ impl CommerceConfig {
         if self.mode != CommerceMode::Active || self.conduct.is_some() {
             return Err(error("Conduct requires one Active composition"));
         }
-        self.conduct = Some(config);
+        self.conduct = Some(Box::new(config));
         Ok(self)
     }
 
@@ -190,7 +190,7 @@ impl CommerceConfig {
         {
             return Err(error("coverage requires one exact Active composition"));
         }
-        self.coverage = Some(CoverageRegistration { protocol, writer });
+        self.coverage = Some(Box::new(CoverageRegistration { protocol, writer }));
         Ok(self)
     }
 
@@ -213,11 +213,11 @@ impl CommerceConfig {
                 "paid resale requires actual Active paid commerce",
             ));
         }
-        self.paid_resales = Some(PaidResaleRegistration {
+        self.paid_resales = Some(Box::new(PaidResaleRegistration {
             writer,
             participants,
             service,
-        });
+        }));
         Ok(self)
     }
 
@@ -244,7 +244,7 @@ impl CommerceConfig {
                 "minds facts require one Active configuration",
             ));
         }
-        self.minds_facts = Some(provider);
+        self.minds_facts = Some(Box::new(provider));
         Ok(self)
     }
 
@@ -352,7 +352,7 @@ impl CommerceConfig {
             ));
         }
         policy.validate().map_err(error)?;
-        self.registry_recall = Some(policy);
+        self.registry_recall = Some(Box::new(policy));
         Ok(self)
     }
 
@@ -368,7 +368,7 @@ impl CommerceConfig {
             ));
         }
         policy.validate().map_err(error)?;
-        self.registry_revocation = Some(policy);
+        self.registry_revocation = Some(Box::new(policy));
         Ok(self)
     }
 
@@ -401,10 +401,10 @@ impl CommerceConfig {
             ));
         }
         participants.validate().map_err(error)?;
-        self.pending_charters = Some(PendingRegistration {
+        self.pending_charters = Some(Box::new(PendingRegistration {
             config,
             participants,
-        });
+        }));
         Ok(self)
     }
 
@@ -473,11 +473,11 @@ impl CommerceConfig {
             }
         }
         self.original_market_quotes = true;
-        self.original_purchases = Some(PurchaseRegistration {
+        self.original_purchases = Some(Box::new(PurchaseRegistration {
             writer,
             participants,
             actions,
-        });
+        }));
         Ok(self)
     }
 
@@ -556,12 +556,12 @@ impl CommerceConfig {
             &original,
             &derived,
         )?;
-        self.entitlements = Some(EntitlementRegistration {
+        self.entitlements = Some(Box::new(EntitlementRegistration {
             writer,
             participants,
             original,
             derived,
-        });
+        }));
         Ok(self)
     }
 
@@ -581,12 +581,12 @@ impl CommerceConfig {
             ));
         }
         super::house_purchase::writer::validate_refs(&self.manifest, &participants, &actions)?;
-        self.house_purchases = Some(HouseRegistration {
+        self.house_purchases = Some(Box::new(HouseRegistration {
             writer,
             participants,
             actions,
             two_seat_actions: None,
-        });
+        }));
         Ok(self)
     }
 
@@ -630,12 +630,12 @@ impl CommerceConfig {
             ));
         }
         super::renewal::protocol::validate_refs(&self.manifest, &participants, &actions)?;
-        self.renewals = Some(RenewalRegistration {
+        self.renewals = Some(Box::new(RenewalRegistration {
             writer,
             participants,
             actions,
             service_close: None,
-        });
+        }));
         Ok(self)
     }
 
@@ -655,12 +655,12 @@ impl CommerceConfig {
             ));
         }
         super::house_renewal::protocol::validate_refs(&self.manifest, &participants, &actions)?;
-        self.house_renewals = Some(HouseRenewalRegistration {
+        self.house_renewals = Some(Box::new(HouseRenewalRegistration {
             writer,
             participants,
             actions,
             service_close: None,
-        });
+        }));
         Ok(self)
     }
 
@@ -986,57 +986,15 @@ pub(super) fn validate_definitions(
     }
 }
 
-pub(crate) fn register(
+#[inline(never)]
+fn register_active_readers(
     reg: &mut Registrar<'_>,
     config: &CommerceConfig,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
     installer: Option<&dyn Installer>,
     fork: Option<&dyn super::authored_fork::Installer>,
-) -> Result<CommerceRegistration, ModError> {
-    if reg.module() != crate::NS {
-        return Err(ModError::msg("commerce registration is Roll-owned"));
-    }
-    if installer.is_some() && config.mode != CommerceMode::Active {
-        return Err(ModError::msg(
-            "Registry jobs require Active commerce after acknowledged setup",
-        ));
-    }
-    if config.authored_forks != fork.is_some() {
-        return Err(ModError::msg(
-            "authored fork configuration and actual source owner differ",
-        ));
-    }
-    if config.marked_registry && (installer.is_none() || fork.is_none()) {
-        return Err(ModError::msg(
-            "marked Registry requires actual Registry and fork owners",
-        ));
-    }
-    if config.reconformance && installer.is_none() {
-        return Err(ModError::msg(
-            "reconformance requires actual Registry owners",
-        ));
-    }
-    if config.coverage.is_some()
-        && (config.ic.is_none() || installer.is_none() || config.mode != CommerceMode::Active)
-    {
-        return Err(error(
-            "coverage requires actual IC and Registry owners in Active mode",
-        ));
-    }
-    if config.conduct.is_some() && installer.is_none() {
-        return Err(error("Conduct requires actual Registry owners"));
-    }
-    let reconformance = config
-        .reconformance
-        .then(|| {
-            super::rating::registration::ReconformanceDefinitions::new(config.manifest.clone())
-        })
-        .transpose()?;
-    let registry = installer
-        .map(|_| RegistryDefinitions::new(config.manifest.clone()))
-        .transpose()?;
-    config.register_validators_for(reg, registry.as_ref())?;
-    let families = CommerceFamilies::register(reg)?;
-    let ratings = RatingFamilies::register(reg)?;
+) -> Result<(), ModError> {
     if config.mode == CommerceMode::Active {
         let mut declarations = vec![super::holding_reader::descriptor(&config.manifest)?];
         if let Some(conduct) = &config.conduct {
@@ -1270,6 +1228,245 @@ pub(crate) fn register(
             )?;
         }
     }
+    Ok(())
+}
+
+#[inline(never)]
+fn register_paid_writers(
+    reg: &mut Registrar<'_>,
+    config: &CommerceConfig,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    root_definition: &DefinitionRef,
+    root_actions: &mut BTreeSet<DefinitionRef>,
+) -> Result<(), ModError> {
+    if let Some(purchase) = &config.original_purchases {
+        if purchase.participants.retention() != root_definition {
+            return Err(ModError::msg("paid retention definition differs"));
+        }
+        root_actions.extend(purchase.actions.iter().cloned());
+        purchase.writer.install(
+            reg,
+            families.clone(),
+            config.manifest.clone(),
+            purchase.participants.clone(),
+            purchase.actions.clone(),
+        )?;
+    }
+    if let Some(entitlement) = &config.entitlements {
+        if entitlement.participants.retention() != root_definition {
+            return Err(ModError::msg("entitlement retention definition differs"));
+        }
+        root_actions.extend(
+            entitlement
+                .original
+                .iter()
+                .chain(&entitlement.derived)
+                .cloned(),
+        );
+        entitlement.writer.install(
+            reg,
+            families.clone(),
+            config.manifest.clone(),
+            entitlement.participants.clone(),
+            entitlement.original.clone(),
+            entitlement.derived.clone(),
+        )?;
+    }
+    if let Some(house) = &config.house_purchases {
+        if house.participants.retention() != root_definition {
+            return Err(ModError::msg("house retention definition differs"));
+        }
+        root_actions.extend(house.actions.iter().cloned());
+        root_actions.extend(house.two_seat_actions.iter().flatten().cloned());
+        house.writer.install(
+            reg,
+            families.clone(),
+            ratings.clone(),
+            config.manifest.clone(),
+            house.participants.clone(),
+            house.actions.clone(),
+            house.two_seat_actions.clone(),
+        )?;
+    }
+    if let Some(renewal) = &config.renewals {
+        if renewal.participants.retention() != root_definition {
+            return Err(ModError::msg("renewal retention definition differs"));
+        }
+        root_actions.extend(renewal.actions.iter().cloned());
+        root_actions.extend(renewal.service_close.iter().cloned());
+        renewal.writer.install(
+            reg,
+            families.clone(),
+            config.manifest.clone(),
+            renewal.participants.clone(),
+            renewal.actions.clone(),
+            renewal.service_close.clone(),
+        )?;
+    }
+    if let Some(renewal) = &config.house_renewals {
+        if renewal.participants.retention() != root_definition {
+            return Err(ModError::msg("renewal retention definition differs"));
+        }
+        root_actions.extend(renewal.actions.iter().cloned());
+        root_actions.extend(renewal.service_close.iter().cloned());
+        renewal.writer.install(
+            reg,
+            families.clone(),
+            config.manifest.clone(),
+            renewal.participants.clone(),
+            renewal.actions.clone(),
+            renewal.service_close.clone(),
+        )?;
+    }
+    if let Some(coverage) = &config.coverage {
+        if coverage.protocol.participants[1] != *root_definition {
+            return Err(error("coverage retention definition differs"));
+        }
+        root_actions.extend(
+            coverage.protocol.actions().map_err(error)?[..]
+                .iter()
+                .cloned(),
+        );
+        coverage
+            .writer
+            .install(reg, families.clone(), coverage.protocol.clone())?;
+    }
+    Ok(())
+}
+
+struct FilingProviders {
+    initial: (DefinitionRef, DefinitionRef),
+    house: Option<(DefinitionRef, DefinitionRef)>,
+    dependent: Option<(
+        DefinitionRef,
+        DefinitionRef,
+        mush_core::read_service::OwnerReadHandle<super::dependent_filing::FilingParentReader>,
+    )>,
+}
+
+#[inline(never)]
+fn register_filing_providers(
+    reg: &mut Registrar<'_>,
+    config: &CommerceConfig,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    shells: &ShellReservations,
+    definitions: FilingProviders,
+) -> Result<(), ModError> {
+    let FilingProviders {
+        initial: (action, outcome),
+        house: house_filing,
+        dependent: dependent_filing,
+    } = definitions;
+    let economy = reg.request_owner_participant::<InitialFilingParticipant>(action.clone())?;
+    let roots = reg.request_owner_participant::<RootParticipant>(action.clone())?;
+    let refusal = ActionError::new(
+        ActionErrorCode::ProviderRejected,
+        false,
+        "The owned rated revision cannot be filed under these terms.",
+    )
+    .map_err(error)?;
+    reg.action_provider(
+        action.clone(),
+        InitialFilingBuilder {
+            house: false,
+            dependent: None,
+            action,
+            outcome,
+            manifest: config.manifest.clone(),
+            compatibility: config.compatibility.clone(),
+            terms: config.terms.clone(),
+            families: families.clone(),
+            ratings: ratings.clone(),
+            shells: shells.clone(),
+            economy,
+            roots,
+            refusal,
+        },
+    )?;
+    if let Some((action, outcome)) = house_filing {
+        let economy = reg.request_owner_participant::<InitialFilingParticipant>(action.clone())?;
+        let roots = reg.request_owner_participant::<RootParticipant>(action.clone())?;
+        let refusal = ActionError::new(
+            ActionErrorCode::ProviderRejected,
+            false,
+            "The rated revision cannot be filed for this organization scope.",
+        )
+        .map_err(error)?;
+        reg.action_provider(
+            action.clone(),
+            InitialFilingBuilder {
+                house: true,
+                dependent: None,
+                action,
+                outcome,
+                manifest: config.manifest.clone(),
+                compatibility: config.compatibility.clone(),
+                terms: config.terms.clone(),
+                families: families.clone(),
+                ratings: ratings.clone(),
+                shells: shells.clone(),
+                economy,
+                roots,
+                refusal,
+            },
+        )?;
+    }
+    if let Some((action, outcome, reader)) = dependent_filing {
+        let economy = reg.request_owner_participant::<InitialFilingParticipant>(action.clone())?;
+        let roots = reg.request_owner_participant::<RootParticipant>(action.clone())?;
+        let refusal = ActionError::new(
+            ActionErrorCode::ProviderRejected,
+            false,
+            "The rated derivative cannot be filed under current parent rights.",
+        )
+        .map_err(error)?;
+        reg.action_provider(
+            action.clone(),
+            InitialFilingBuilder {
+                house: false,
+                dependent: Some(reader),
+                action,
+                outcome,
+                manifest: config.manifest.clone(),
+                compatibility: config.compatibility.clone(),
+                terms: config.terms.clone(),
+                families: families.clone(),
+                ratings: ratings.clone(),
+                shells: shells.clone(),
+                economy,
+                roots,
+                refusal,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+struct FilingDeclarations {
+    shells: ShellReservations,
+    action: DefinitionRef,
+    outcome: DefinitionRef,
+    house_filing: Option<(DefinitionRef, DefinitionRef)>,
+    dependent_filing: Option<(
+        DefinitionRef,
+        DefinitionRef,
+        mush_core::read_service::OwnerReadHandle<super::dependent_filing::FilingParentReader>,
+    )>,
+    update_registration: Option<[DefinitionRef; 2]>,
+    update: Option<DefinitionRef>,
+    derived_registration: Option<[DefinitionRef; 2]>,
+    derived_update: Option<DefinitionRef>,
+}
+
+#[inline(never)]
+fn register_filing_declarations(
+    reg: &mut Registrar<'_>,
+    config: &CommerceConfig,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
+) -> Result<Box<FilingDeclarations>, ModError> {
     let reserve = reg.definition(descriptor(
         "action",
         RESERVE_ACTION,
@@ -1334,139 +1531,34 @@ pub(crate) fn register(
     };
     let derived_update = derived_registration.as_ref().map(|pair| pair[0].clone());
 
-    let root_definition = reg.definition(commercial_roots_descriptor()?)?;
-    let mut root_actions = BTreeSet::from([action.clone()]);
-    if let Some(ic) = &config.ic {
-        if ic.config().participants().first() != Some(&root_definition) {
-            return Err(ModError::msg("IC retention definition differs"));
-        }
-        root_actions.extend(ic.config().actions()?);
-        ic.register(
-            reg,
-            families.clone(),
-            ratings.clone(),
-            config.compatibility.clone(),
-        )?;
-    }
-    if let Some(action) = &update {
-        root_actions.insert(action.clone());
-    }
-    if let Some(action) = &derived_update {
-        root_actions.insert(action.clone());
-    }
-    if let Some((house_action, _)) = &house_filing {
-        root_actions.insert(house_action.clone());
-    }
-    if let Some((action, _, _)) = &dependent_filing {
-        root_actions.insert(action.clone());
-    }
-    if let Some(registry) = &registry {
-        root_actions.extend(registry.actions().iter().cloned());
-    }
-    if let Some(reconformance) = &reconformance {
-        root_actions.extend(reconformance.actions().iter().cloned());
-    }
-    if let Some(purchase) = &config.original_purchases {
-        if purchase.participants.retention() != &root_definition {
-            return Err(ModError::msg("paid retention definition differs"));
-        }
-        root_actions.extend(purchase.actions.iter().cloned());
-        purchase.writer.install(
-            reg,
-            families.clone(),
-            config.manifest.clone(),
-            purchase.participants.clone(),
-            purchase.actions.clone(),
-        )?;
-    }
-    if let Some(entitlement) = &config.entitlements {
-        if entitlement.participants.retention() != &root_definition {
-            return Err(ModError::msg("entitlement retention definition differs"));
-        }
-        root_actions.extend(
-            entitlement
-                .original
-                .iter()
-                .chain(&entitlement.derived)
-                .cloned(),
-        );
-        entitlement.writer.install(
-            reg,
-            families.clone(),
-            config.manifest.clone(),
-            entitlement.participants.clone(),
-            entitlement.original.clone(),
-            entitlement.derived.clone(),
-        )?;
-    }
-    if let Some(house) = &config.house_purchases {
-        if house.participants.retention() != &root_definition {
-            return Err(ModError::msg("house retention definition differs"));
-        }
-        root_actions.extend(house.actions.iter().cloned());
-        root_actions.extend(house.two_seat_actions.iter().flatten().cloned());
-        house.writer.install(
-            reg,
-            families.clone(),
-            ratings.clone(),
-            config.manifest.clone(),
-            house.participants.clone(),
-            house.actions.clone(),
-            house.two_seat_actions.clone(),
-        )?;
-    }
-    if let Some(renewal) = &config.renewals {
-        if renewal.participants.retention() != &root_definition {
-            return Err(ModError::msg("renewal retention definition differs"));
-        }
-        root_actions.extend(renewal.actions.iter().cloned());
-        root_actions.extend(renewal.service_close.iter().cloned());
-        renewal.writer.install(
-            reg,
-            families.clone(),
-            config.manifest.clone(),
-            renewal.participants.clone(),
-            renewal.actions.clone(),
-            renewal.service_close.clone(),
-        )?;
-    }
-    if let Some(renewal) = &config.house_renewals {
-        if renewal.participants.retention() != &root_definition {
-            return Err(ModError::msg("renewal retention definition differs"));
-        }
-        root_actions.extend(renewal.actions.iter().cloned());
-        root_actions.extend(renewal.service_close.iter().cloned());
-        renewal.writer.install(
-            reg,
-            families.clone(),
-            config.manifest.clone(),
-            renewal.participants.clone(),
-            renewal.actions.clone(),
-            renewal.service_close.clone(),
-        )?;
-    }
-    if let Some(coverage) = &config.coverage {
-        if coverage.protocol.participants[1] != root_definition {
-            return Err(error("coverage retention definition differs"));
-        }
-        root_actions.extend(
-            coverage.protocol.actions().map_err(error)?[..]
-                .iter()
-                .cloned(),
-        );
-        coverage
-            .writer
-            .install(reg, families.clone(), coverage.protocol.clone())?;
-    }
-    let fork_registration = if let Some(installer) = fork {
-        let [action, outcome] = super::authored_fork::definitions(&config.manifest)?;
-        let action = reg.definition(action)?;
-        let outcome = reg.definition(outcome)?;
-        root_actions.insert(action.clone());
-        Some((installer, [action, outcome]))
-    } else {
-        None
-    };
+    Ok(Box::new(FilingDeclarations {
+        shells,
+        action,
+        outcome,
+        house_filing,
+        dependent_filing,
+        update_registration,
+        update,
+        derived_registration,
+        derived_update,
+    }))
+}
+
+struct AuthorDeclarations {
+    retirement_registration: Option<[DefinitionRef; 4]>,
+    attestation_registration: Option<[DefinitionRef; 2]>,
+    qualification_registration: Option<[DefinitionRef; 2]>,
+    facts_registration: Option<[DefinitionRef; 2]>,
+    measured_recall_registration: Option<[DefinitionRef; 2]>,
+}
+
+#[inline(never)]
+fn register_author_declarations(
+    reg: &mut Registrar<'_>,
+    config: &CommerceConfig,
+    fork: Option<&dyn super::authored_fork::Installer>,
+    root_actions: &mut BTreeSet<DefinitionRef>,
+) -> Result<Box<AuthorDeclarations>, ModError> {
     let retirement_registration = if fork.is_some() {
         let [action, outcome, metadata] = super::authored_retirement::definitions()?;
         let action = reg.definition(action)?;
@@ -1519,7 +1611,43 @@ pub(crate) fn register(
     } else {
         None
     };
-    let recall_registration = if let Some(policy) = &config.registry_recall {
+    Ok(Box::new(AuthorDeclarations {
+        retirement_registration,
+        attestation_registration,
+        qualification_registration,
+        facts_registration,
+        measured_recall_registration,
+    }))
+}
+
+struct TransferDeclarations {
+    recall_registration: Option<(
+        super::registry_recall::RegistryRecallPolicy,
+        [DefinitionRef; 3],
+    )>,
+    revocation_registration: Option<(
+        super::registry_revocation::RegistryRevocationPolicy,
+        [DefinitionRef; 3],
+    )>,
+    charter_transfer_registration: Option<[DefinitionRef; 4]>,
+    pending_registration: Option<(
+        super::charter_pending::PendingCharterTransferConfig,
+        [DefinitionRef; 8],
+    )>,
+    withdrawal_registration: Option<[DefinitionRef; 2]>,
+    paid_resales: Option<super::paid_resale::writer::PaidResaleWriter>,
+}
+
+#[inline(never)]
+fn register_transfer_declarations(
+    reg: &mut Registrar<'_>,
+    config: &CommerceConfig,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    root_definition: &DefinitionRef,
+    root_actions: &mut BTreeSet<DefinitionRef>,
+) -> Result<Box<TransferDeclarations>, ModError> {
+    let recall_registration = if let Some(policy) = config.registry_recall.as_deref() {
         let [authority, action, outcome] = policy.definitions()?;
         let authority = reg.definition(authority)?;
         let action = reg.definition(action)?;
@@ -1529,7 +1657,7 @@ pub(crate) fn register(
     } else {
         None
     };
-    let revocation_registration = if let Some(policy) = &config.registry_revocation {
+    let revocation_registration = if let Some(policy) = config.registry_revocation.as_deref() {
         let [authority, action, outcome] = policy.definitions()?;
         let authority = reg.definition(authority)?;
         let action = reg.definition(action)?;
@@ -1553,7 +1681,7 @@ pub(crate) fn register(
         None
     };
     let pending_registration = if let Some(pending) = &config.pending_charters {
-        if pending.participants.retention() != &root_definition {
+        if pending.participants.retention() != root_definition {
             return Err(error("pending charter retention definition differs"));
         }
         let descriptors = super::charter_pending::protocol::definitions()?;
@@ -1588,7 +1716,7 @@ pub(crate) fn register(
         None
     };
     let paid_resales = if let Some(resale) = &config.paid_resales {
-        if resale.participants.retention() != &root_definition {
+        if resale.participants.retention() != root_definition {
             return Err(error("paid resale retention differs"));
         }
         let actions = super::paid_resale::protocol::actions()?;
@@ -1610,10 +1738,73 @@ pub(crate) fn register(
     } else {
         None
     };
-    if let Some(conduct) = &config.conduct {
-        root_actions.extend(conduct.actions()?);
-    }
-    reg.owner_participant(root_definition, root_actions, RootParticipant)?;
+    Ok(Box::new(TransferDeclarations {
+        recall_registration,
+        revocation_registration,
+        charter_transfer_registration,
+        pending_registration,
+        withdrawal_registration,
+        paid_resales,
+    }))
+}
+
+struct RegistrationPaths<'a> {
+    update_registration: Option<[DefinitionRef; 2]>,
+    facts_registration: Option<[DefinitionRef; 2]>,
+    recall_registration: Option<(
+        super::registry_recall::RegistryRecallPolicy,
+        [DefinitionRef; 3],
+    )>,
+    pending_registration: Option<(
+        super::charter_pending::PendingCharterTransferConfig,
+        [DefinitionRef; 8],
+    )>,
+    revocation_registration: Option<(
+        super::registry_revocation::RegistryRevocationPolicy,
+        [DefinitionRef; 3],
+    )>,
+    charter_transfer_registration: Option<[DefinitionRef; 4]>,
+    withdrawal_registration: Option<[DefinitionRef; 2]>,
+    retirement_registration: Option<[DefinitionRef; 4]>,
+    fork_registration: Option<(&'a dyn super::authored_fork::Installer, [DefinitionRef; 2])>,
+    qualification_registration: Option<[DefinitionRef; 2]>,
+    derived_registration: Option<[DefinitionRef; 2]>,
+    attestation_registration: Option<[DefinitionRef; 2]>,
+}
+
+struct InstalledReadiness {
+    facts_readiness: Option<super::facts::MindsFactProvider>,
+    registry_recall: Option<super::registry_recall::Readiness>,
+    pending_charters: Option<super::charter_pending::Readiness>,
+    registry_revocation: Option<super::registry_revocation::Readiness>,
+    charter_transfer: Option<super::charter_transfer::Readiness>,
+    withdrawal: Option<super::withdrawal::EconomyReadiness>,
+    attestation_readiness: Option<super::withdrawal::EconomyReadiness>,
+}
+
+#[inline(never)]
+fn register_owner_paths(
+    reg: &mut Registrar<'_>,
+    config: &CommerceConfig,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    paid_resales: &Option<super::paid_resale::writer::PaidResaleWriter>,
+    paths: Box<RegistrationPaths<'_>>,
+) -> Result<Box<InstalledReadiness>, ModError> {
+    let RegistrationPaths {
+        update_registration,
+        facts_registration,
+        recall_registration,
+        pending_registration,
+        revocation_registration,
+        charter_transfer_registration,
+        withdrawal_registration,
+        retirement_registration,
+        fork_registration,
+        qualification_registration,
+        derived_registration,
+        attestation_registration,
+    } = *paths;
     if let Some(definitions) = update_registration {
         super::line_update::registration::register(
             reg,
@@ -1740,103 +1931,25 @@ pub(crate) fn register(
         None
     };
 
-    let economy = reg.request_owner_participant::<InitialFilingParticipant>(action.clone())?;
-    let roots = reg.request_owner_participant::<RootParticipant>(action.clone())?;
-    let refusal = ActionError::new(
-        ActionErrorCode::ProviderRejected,
-        false,
-        "The owned rated revision cannot be filed under these terms.",
-    )
-    .map_err(error)?;
-    reg.action_provider(
-        action.clone(),
-        InitialFilingBuilder {
-            house: false,
-            dependent: None,
-            action,
-            outcome,
-            manifest: config.manifest.clone(),
-            compatibility: config.compatibility.clone(),
-            terms: config.terms.clone(),
-            families: families.clone(),
-            ratings: ratings.clone(),
-            shells: shells.clone(),
-            economy,
-            roots,
-            refusal,
-        },
-    )?;
-    if let Some((action, outcome)) = house_filing {
-        let economy = reg.request_owner_participant::<InitialFilingParticipant>(action.clone())?;
-        let roots = reg.request_owner_participant::<RootParticipant>(action.clone())?;
-        let refusal = ActionError::new(
-            ActionErrorCode::ProviderRejected,
-            false,
-            "The rated revision cannot be filed for this organization scope.",
-        )
-        .map_err(error)?;
-        reg.action_provider(
-            action.clone(),
-            InitialFilingBuilder {
-                house: true,
-                dependent: None,
-                action,
-                outcome,
-                manifest: config.manifest.clone(),
-                compatibility: config.compatibility.clone(),
-                terms: config.terms.clone(),
-                families: families.clone(),
-                ratings: ratings.clone(),
-                shells: shells.clone(),
-                economy,
-                roots,
-                refusal,
-            },
-        )?;
-    }
-    if let Some((action, outcome, reader)) = dependent_filing {
-        let economy = reg.request_owner_participant::<InitialFilingParticipant>(action.clone())?;
-        let roots = reg.request_owner_participant::<RootParticipant>(action.clone())?;
-        let refusal = ActionError::new(
-            ActionErrorCode::ProviderRejected,
-            false,
-            "The rated derivative cannot be filed under current parent rights.",
-        )
-        .map_err(error)?;
-        reg.action_provider(
-            action.clone(),
-            InitialFilingBuilder {
-                house: false,
-                dependent: Some(reader),
-                action,
-                outcome,
-                manifest: config.manifest.clone(),
-                compatibility: config.compatibility.clone(),
-                terms: config.terms.clone(),
-                families: families.clone(),
-                ratings: ratings.clone(),
-                shells: shells.clone(),
-                economy,
-                roots,
-                refusal,
-            },
-        )?;
-    }
-    let measured_recall = if let (Some(installer), Some(registry)) = (installer, registry.as_ref())
-    {
-        installer.register(
-            reg,
-            registry,
-            &config.compatibility,
-            families.clone(),
-            ratings.clone(),
-            config.marked_registry,
-            reconformance.as_ref(),
-            measured_recall_registration,
-        )?
-    } else {
-        None
-    };
+    Ok(Box::new(InstalledReadiness {
+        facts_readiness,
+        registry_recall,
+        pending_charters,
+        registry_revocation,
+        charter_transfer,
+        withdrawal,
+        attestation_readiness,
+    }))
+}
+
+#[inline(never)]
+fn register_initialize_bootstrap(
+    reg: &mut Registrar<'_>,
+    config: &CommerceConfig,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    shells: &ShellReservations,
+) -> Result<(), ModError> {
     if config.mode == CommerceMode::Initialize {
         let action = reg.definition(descriptor(
             "action",
@@ -1857,6 +1970,205 @@ pub(crate) fn register(
             shells.clone(),
         )?;
     }
+    Ok(())
+}
+
+pub(crate) fn register(
+    reg: &mut Registrar<'_>,
+    config: &CommerceConfig,
+    installer: Option<&dyn Installer>,
+    fork: Option<&dyn super::authored_fork::Installer>,
+) -> Result<CommerceRegistration, ModError> {
+    if reg.module() != crate::NS {
+        return Err(ModError::msg("commerce registration is Roll-owned"));
+    }
+    if installer.is_some() && config.mode != CommerceMode::Active {
+        return Err(ModError::msg(
+            "Registry jobs require Active commerce after acknowledged setup",
+        ));
+    }
+    if config.authored_forks != fork.is_some() {
+        return Err(ModError::msg(
+            "authored fork configuration and actual source owner differ",
+        ));
+    }
+    if config.marked_registry && (installer.is_none() || fork.is_none()) {
+        return Err(ModError::msg(
+            "marked Registry requires actual Registry and fork owners",
+        ));
+    }
+    if config.reconformance && installer.is_none() {
+        return Err(ModError::msg(
+            "reconformance requires actual Registry owners",
+        ));
+    }
+    if config.coverage.is_some()
+        && (config.ic.is_none() || installer.is_none() || config.mode != CommerceMode::Active)
+    {
+        return Err(error(
+            "coverage requires actual IC and Registry owners in Active mode",
+        ));
+    }
+    if config.conduct.is_some() && installer.is_none() {
+        return Err(error("Conduct requires actual Registry owners"));
+    }
+    let reconformance = config
+        .reconformance
+        .then(|| {
+            super::rating::registration::ReconformanceDefinitions::new(config.manifest.clone())
+        })
+        .transpose()?;
+    let registry = installer
+        .map(|_| RegistryDefinitions::new(config.manifest.clone()))
+        .transpose()?;
+    config.register_validators_for(reg, registry.as_ref())?;
+    let families = CommerceFamilies::register(reg)?;
+    let ratings = RatingFamilies::register(reg)?;
+    register_active_readers(reg, config, &families, &ratings, installer, fork)?;
+    let FilingDeclarations {
+        shells,
+        action,
+        outcome,
+        house_filing,
+        dependent_filing,
+        update_registration,
+        update,
+        derived_registration,
+        derived_update,
+    } = *register_filing_declarations(reg, config, &families, &ratings)?;
+    let root_definition = reg.definition(commercial_roots_descriptor()?)?;
+    let mut root_actions = BTreeSet::from([action.clone()]);
+    if let Some(ic) = &config.ic {
+        if ic.config().participants().first() != Some(&root_definition) {
+            return Err(ModError::msg("IC retention definition differs"));
+        }
+        root_actions.extend(ic.config().actions()?);
+        ic.register(
+            reg,
+            families.clone(),
+            ratings.clone(),
+            config.compatibility.clone(),
+        )?;
+    }
+    if let Some(action) = &update {
+        root_actions.insert(action.clone());
+    }
+    if let Some(action) = &derived_update {
+        root_actions.insert(action.clone());
+    }
+    if let Some((house_action, _)) = &house_filing {
+        root_actions.insert(house_action.clone());
+    }
+    if let Some((action, _, _)) = &dependent_filing {
+        root_actions.insert(action.clone());
+    }
+    if let Some(registry) = &registry {
+        root_actions.extend(registry.actions().iter().cloned());
+    }
+    if let Some(reconformance) = &reconformance {
+        root_actions.extend(reconformance.actions().iter().cloned());
+    }
+    register_paid_writers(
+        reg,
+        config,
+        &families,
+        &ratings,
+        &root_definition,
+        &mut root_actions,
+    )?;
+    let fork_registration = if let Some(installer) = fork {
+        let [action, outcome] = super::authored_fork::definitions(&config.manifest)?;
+        let action = reg.definition(action)?;
+        let outcome = reg.definition(outcome)?;
+        root_actions.insert(action.clone());
+        Some((installer, [action, outcome]))
+    } else {
+        None
+    };
+    let AuthorDeclarations {
+        retirement_registration,
+        attestation_registration,
+        qualification_registration,
+        facts_registration,
+        measured_recall_registration,
+    } = *register_author_declarations(reg, config, fork, &mut root_actions)?;
+    let TransferDeclarations {
+        recall_registration,
+        revocation_registration,
+        charter_transfer_registration,
+        pending_registration,
+        withdrawal_registration,
+        paid_resales,
+    } = *register_transfer_declarations(
+        reg,
+        config,
+        &families,
+        &ratings,
+        &root_definition,
+        &mut root_actions,
+    )?;
+    if let Some(conduct) = &config.conduct {
+        root_actions.extend(conduct.actions()?);
+    }
+    reg.owner_participant(root_definition, root_actions, RootParticipant)?;
+    let InstalledReadiness {
+        facts_readiness,
+        registry_recall,
+        pending_charters,
+        registry_revocation,
+        charter_transfer,
+        withdrawal,
+        attestation_readiness,
+    } = *register_owner_paths(
+        reg,
+        config,
+        &families,
+        &ratings,
+        &paid_resales,
+        Box::new(RegistrationPaths {
+            update_registration,
+            facts_registration,
+            recall_registration,
+            pending_registration,
+            revocation_registration,
+            charter_transfer_registration,
+            withdrawal_registration,
+            retirement_registration,
+            fork_registration,
+            qualification_registration,
+            derived_registration,
+            attestation_registration,
+        }),
+    )?;
+
+    register_filing_providers(
+        reg,
+        config,
+        &families,
+        &ratings,
+        &shells,
+        FilingProviders {
+            initial: (action, outcome),
+            house: house_filing,
+            dependent: dependent_filing,
+        },
+    )?;
+    let measured_recall = if let (Some(installer), Some(registry)) = (installer, registry.as_ref())
+    {
+        installer.register(
+            reg,
+            registry,
+            &config.compatibility,
+            families.clone(),
+            ratings.clone(),
+            config.marked_registry,
+            reconformance.as_ref(),
+            measured_recall_registration,
+        )?
+    } else {
+        None
+    };
+    register_initialize_bootstrap(reg, config, &families, &ratings, &shells)?;
     if facts_readiness.is_some()
         || measured_recall.is_some()
         || pending_charters.is_some()

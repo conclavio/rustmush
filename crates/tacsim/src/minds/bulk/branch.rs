@@ -71,7 +71,7 @@ impl Branch {
         serial: u64,
         parent_event: usize,
         memory_allowed: bool,
-    ) -> Result<Self, BulkError> {
+    ) -> Result<Box<Self>, BulkError> {
         arena.arena_cfg.snapshot_max_bytes = CHECKPOINT_BYTES;
         crate::arena::snapshot_capacity::admit(&arena)
             .map_err(|_| invalid("fork state exceeds the reserved capacity"))?;
@@ -80,7 +80,7 @@ impl Branch {
         arena.tape_witnesses.disable();
         let clock = arena.clock.replay_state();
         let wall = arena.clock.replay_wall_ms().unwrap_or(0);
-        Ok(Self {
+        Ok(Box::new(Self {
             timeline: Timeline::Fork {
                 serial: serial.to_string(),
                 parent_event,
@@ -101,7 +101,7 @@ impl Branch {
             cursor: 0,
             possessed: false,
             refusals: Vec::new(),
-        })
+        }))
     }
     pub fn arena(&self) -> Option<&Arena> {
         self.arena.as_ref()
@@ -485,7 +485,7 @@ mod tests {
         Channel, Controller, Team,
         test_support::{arena_of, pose, tank},
     };
-    fn branch() -> Branch {
+    fn branch() -> Box<Branch> {
         let mut red = tank(ObjId(4), Team::Red, pose(1500, 4500));
         red.weapons.push(crate::arena::test_support::cannon());
         red.controller = Controller::Mind;

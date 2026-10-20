@@ -334,7 +334,7 @@ impl GameModule for Consumer {
     }
 }
 struct Fixture {
-    engine: Engine,
+    engine: Box<Engine>,
     handles: RatingFamilies,
     answers: Answers,
     evidence: [test_support::CompleteRating; 2],
@@ -348,7 +348,7 @@ impl Fixture {
         ];
         let handles: Handles = Arc::new(Mutex::new(None));
         let answers: Answers = Arc::new(Mutex::new(Vec::new()));
-        let mut engine = Engine::with_modules(
+        let mut engine = boxed_test_engine(
             World::new_minimal(),
             Registry::new(),
             vec![
@@ -451,4 +451,13 @@ fn batching_preserves_last_page_attempt_binding_and_independent_current_status()
         assert_eq!(f.read()?, Err(OwnerReadError::Integrity));
     }
     Ok(())
+}
+
+#[inline(never)]
+fn boxed_test_engine(
+    world: mush_core::World,
+    registry: mush_core::Registry,
+    modules: Vec<Box<dyn mush_core::GameModule>>,
+) -> std::result::Result<Box<mush_core::Engine>, mush_core::ModError> {
+    mush_core::Engine::with_modules(world, registry, modules).map(Box::new)
 }

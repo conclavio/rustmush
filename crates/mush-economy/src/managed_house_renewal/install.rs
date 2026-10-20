@@ -89,7 +89,7 @@ pub(super) fn offer(
     state: &EconomyStore,
     context: &OfferContext<'_>,
     request: RenewalOffer,
-) -> Result<(RenewalOfferOutput, OfferPatch, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<(RenewalOfferOutput, Box<OfferPatch>, Vec<ReplayWrite>), ParticipantError> {
     create(state, context, request, super::RenewalAttemptV1::Automatic)
 }
 pub(super) fn retry(
@@ -97,7 +97,7 @@ pub(super) fn retry(
     context: &OfferContext<'_>,
     request: RenewalOffer,
     previous_operation: CommitToken,
-) -> Result<(RenewalOfferOutput, OfferPatch, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<(RenewalOfferOutput, Box<OfferPatch>, Vec<ReplayWrite>), ParticipantError> {
     create(
         state,
         context,
@@ -111,7 +111,7 @@ pub(super) fn holder_offer(
     request: RenewalOffer,
     basis: crate::managed_paid_resale::RenewalHolderBasisV1,
     previous_operation: Option<CommitToken>,
-) -> Result<(RenewalOfferOutput, OfferPatch, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<(RenewalOfferOutput, Box<OfferPatch>, Vec<ReplayWrite>), ParticipantError> {
     basis.validate()?;
     let attempt = match previous_operation {
         None => super::RenewalAttemptV1::HolderAutomatic { basis },
@@ -127,7 +127,7 @@ fn create(
     context: &OfferContext<'_>,
     request: RenewalOffer,
     attempt: super::RenewalAttemptV1,
-) -> Result<(RenewalOfferOutput, OfferPatch, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<(RenewalOfferOutput, Box<OfferPatch>, Vec<ReplayWrite>), ParticipantError> {
     request.validate()?;
     offer_current(state, context, &request)?;
     let id = crate::ContractId(state.next_contract);
@@ -164,7 +164,7 @@ pub(super) fn close(
     context: &OfferContext<'_>,
     operation: CommitToken,
     reason: UnfundedCloseReason,
-) -> Result<(RenewalOfferOutput, OfferPatch, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<(RenewalOfferOutput, Box<OfferPatch>, Vec<ReplayWrite>), ParticipantError> {
     let before = state
         .house_renewal_offers
         .get(operation)
@@ -200,7 +200,7 @@ pub(super) fn service_close(
     context: &OfferContext<'_>,
     operation: CommitToken,
     reason: super::RenewalServiceCloseReason,
-) -> Result<(RenewalOfferOutput, OfferPatch, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<(RenewalOfferOutput, Box<OfferPatch>, Vec<ReplayWrite>), ParticipantError> {
     let before = state
         .house_renewal_offers
         .get(operation)
@@ -302,7 +302,7 @@ fn images(
     before_contract: Option<EconomicContract>,
     next_contract: u64,
     service: Option<super::service::ServiceRecord>,
-) -> Result<(RenewalOfferOutput, OfferPatch, Vec<ReplayWrite>), ParticipantError> {
+) -> Result<(RenewalOfferOutput, Box<OfferPatch>, Vec<ReplayWrite>), ParticipantError> {
     row.validate()?;
     let next_book_generation = state.house_renewal_offers.next_generation()?;
     let mut writes = vec![json_write(crate::api::contract_key(after.id), &after)?];
@@ -393,7 +393,7 @@ fn images(
         output.action = record.closure.action().clone();
         output.posted_at_utc = record.closure.posted_at_utc();
     }
-    let patch = OfferPatch {
+    let patch = Box::new(OfferPatch {
         before_meta: MetaFence::capture(state),
         before_book_generation: state.house_renewal_offers.generation(),
         before_record: state.house_renewal_offers.get(row.operation).cloned(),
@@ -407,7 +407,7 @@ fn images(
         contract: after,
         next_contract,
         next_book_generation,
-    };
+    });
     Ok((output, patch, writes))
 }
 impl OfferPatch {
@@ -493,7 +493,10 @@ impl OfferPatch {
         }
         Ok(())
     }
-    pub(crate) fn bind(self, state: &mut EconomyStore) -> Result<BoundOffer<'_>, ParticipantError> {
+    pub(crate) fn bind(
+        self: Box<Self>,
+        state: &mut EconomyStore,
+    ) -> Result<BoundOffer<'_>, ParticipantError> {
         self.check_local(state)?;
         Ok(BoundOffer {
             snapshot: &mut state.snapshot,

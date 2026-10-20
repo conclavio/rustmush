@@ -241,38 +241,7 @@ pub(super) fn history(
         }
     } else {
         let operation = token(field(row, "operation")?)?;
-        shape(
-            h,
-            &[
-                "id",
-                "account",
-                "amount",
-                "status",
-                "placed_by",
-                "beneficiary",
-                "purpose",
-                "holder",
-                "expires",
-                "revision",
-                "last_journal_seq",
-            ],
-        )?;
-        num(h, "id")?;
-        if field(h, "id")? != field(intent, "hold")?
-            || field(h, "account")? != field(c, "payer")?
-            || field(h, "amount")? != field(t, "price")?
-            || field(h, "status")? != "Held"
-            || field(h, "placed_by")? != &json!({"Object":field(t,"buyer")?})
-            || field(h, "beneficiary")? != &json!({"System":"economy.contract"})
-            || field(h, "purpose")? != &json!({"Escrow":{"contract":field(intent,"contract")?}})
-            || field(h, "holder")?
-                != &json!({"namespace":"market.paid_resale.v1","key":format!("{}/fund",operation.to_hex())})
-            || !field(h, "expires")?.is_null()
-            || num(h, "revision")? != 1
-            || field(h, "last_journal_seq")? != field(a, "journal_seq")?
-        {
-            return Err(refused("resale acceptance hold differs"));
-        }
+        pending_hold(h, intent, c, t, operation, a)?;
         if phase == "funded" {
             shape(state, &["phase"])?;
             if !terminal.is_null() {
@@ -340,6 +309,50 @@ pub(super) fn history(
     }
     Ok(phase.to_owned())
 }
+#[inline(never)]
+fn pending_hold(
+    h: &Value,
+    intent: &Value,
+    c: &Value,
+    t: &Value,
+    operation: CommitToken,
+    a: &Value,
+) -> Result<(), ActionStateError> {
+    shape(
+        h,
+        &[
+            "id",
+            "account",
+            "amount",
+            "status",
+            "placed_by",
+            "beneficiary",
+            "purpose",
+            "holder",
+            "expires",
+            "revision",
+            "last_journal_seq",
+        ],
+    )?;
+    num(h, "id")?;
+    if field(h, "id")? != field(intent, "hold")?
+        || field(h, "account")? != field(c, "payer")?
+        || field(h, "amount")? != field(t, "price")?
+        || field(h, "status")? != "Held"
+        || field(h, "placed_by")? != &json!({"Object":field(t,"buyer")?})
+        || field(h, "beneficiary")? != &json!({"System":"economy.contract"})
+        || field(h, "purpose")? != &json!({"Escrow":{"contract":field(intent,"contract")?}})
+        || field(h, "holder")?
+            != &json!({"namespace":"market.paid_resale.v1","key":format!("{}/fund",operation.to_hex())})
+        || !field(h, "expires")?.is_null()
+        || num(h, "revision")? != 1
+        || field(h, "last_journal_seq")? != field(a, "journal_seq")?
+    {
+        return Err(refused("resale acceptance hold differs"));
+    }
+    Ok(())
+}
+
 fn decision(
     view: &View<'_>,
     row: &Value,

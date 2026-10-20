@@ -52,39 +52,24 @@ pub struct PaidResalePatch {
     next_hold: u64,
     next_contract: u64,
     chunk: u64,
-    fold: ResaleFold,
+    fold: Box<ResaleFold>,
 }
 pub(crate) fn prepare(
     config: &PaidResaleConfig,
     state: &EconomyStore,
     ctx: &OwnerPrepareContext<'_>,
     request: Request,
-) -> Result<(PaidResaleOutput, PaidResalePatch, Vec<ReplayWrite>), ParticipantError> {
-    let native::Preparation {
-        output,
-        binding,
-        request,
-        before_history,
-        before_contract,
-        before_hold,
-        before_titles,
-        plan,
-        validated,
-        contract,
-        delta,
-        transaction,
-        next_hold,
-        next_contract,
-    } = native::prepare(config, state, ctx, request)?;
-    let history = output.history.clone();
+) -> Result<(PaidResaleOutput, Box<PaidResalePatch>, Vec<ReplayWrite>), ParticipantError> {
+    let prepared = native::prepare(config, state, ctx, request)?;
+    let history = prepared.output.history().clone();
     let next_transaction = state.next_transaction.checked_add(1).ok_or_else(refused)?;
     let next_posts = state.posts_since_boot.checked_add(1).ok_or_else(refused)?;
-    let fold = ResaleFold::prepare(&state.fold, &transaction)?;
+    let fold = Box::new(ResaleFold::prepare(&state.fold, &prepared.transaction)?);
     let journal = state
         .journal
         .prepare_append(
             JOURNAL_LOG,
-            serde_json::to_value(&transaction).map_err(|_| ParticipantError::Encoding)?,
+            serde_json::to_value(&prepared.transaction).map_err(|_| ParticipantError::Encoding)?,
         )
         .map_err(|_| refused())?;
     let mut writes = vec![
@@ -92,28 +77,31 @@ pub(crate) fn prepare(
             .authoritative_replay_write(OwnerId::new(crate::module::NS).map_err(|_| refused())?)
             .map_err(|_| ParticipantError::Encoding)?,
     ];
-    for a in &delta.accounts {
+    for a in &prepared.delta.accounts {
         writes.push(json_write(crate::api::account_key(a.id), a)?);
     }
-    for h in &delta.holds {
+    for h in &prepared.delta.holds {
         writes.push(json_write(crate::api::hold_key(h.id), h)?);
     }
-    for a in &delta.assets {
+    for a in &prepared.delta.assets {
         writes.push(json_write(crate::api::asset_key(a.object), a)?);
     }
     writes.push(json_write(
-        crate::api::contract_key(contract.id),
-        &contract,
+        crate::api::contract_key(prepared.contract.id),
+        &prepared.contract,
     )?);
     writes.push(json_write(
-        crate::keys::idem_key(&transaction.idempotency),
-        &crate::keys::IdemDoc::of(&transaction),
+        crate::keys::idem_key(&prepared.transaction.idempotency),
+        &crate::keys::IdemDoc::of(&prepared.transaction),
     )?);
     let mut meta = state.meta_doc();
     let object = meta.as_object_mut().ok_or(ParticipantError::Encoding)?;
     object.insert("next_transaction_id".into(), Value::from(next_transaction));
-    object.insert("next_hold_id".into(), Value::from(next_hold));
-    object.insert("next_contract_id".into(), Value::from(next_contract));
+    object.insert("next_hold_id".into(), Value::from(prepared.next_hold));
+    object.insert(
+        "next_contract_id".into(),
+        Value::from(prepared.next_contract),
+    );
     writes.push(json_write(crate::api::META_KEY.into(), &meta)?);
     let consent = history.consent();
     let mut ids = BTreeSet::from([consent.payer]);
@@ -137,44 +125,44 @@ pub(crate) fn prepare(
     if let Some(w) = &before_window {
         windows.insert(consent.payer, w.clone());
     }
-    crate::module::note_window_debits(&mut windows, &transaction);
+    crate::module::note_window_debits(&mut windows, &prepared.transaction);
     let next_window = if crate::module::account_windowed(&state.snapshot, consent.payer) {
         windows.remove(&consent.payer)
     } else {
         None
     };
-    let patch = PaidResalePatch {
-        binding,
-        request,
+    let patch = Box::new(PaidResalePatch {
+        binding: prepared.binding,
+        request: prepared.request,
         history,
-        before_history,
-        before_contract,
-        before_hold,
-        before_titles,
+        before_history: prepared.before_history,
+        before_contract: prepared.before_contract,
+        before_hold: prepared.before_hold,
+        before_titles: prepared.before_titles,
         before_accounts,
         before_instrument,
         before_meta: MetaFence::capture(state),
         before_posts: state.posts_since_boot,
         before_window,
         next_window,
-        plan,
-        validated,
+        plan: prepared.plan,
+        validated: prepared.validated,
         journal,
         bloom: state
             .key_filter
-            .prepare_insert(&transaction.idempotency)
+            .prepare_insert(&prepared.transaction.idempotency)
             .ok_or_else(refused)?,
-        delta,
-        transaction,
-        contract,
+        delta: prepared.delta,
+        transaction: prepared.transaction,
+        contract: prepared.contract,
         next_transaction,
         next_posts,
-        next_hold,
-        next_contract,
+        next_hold: prepared.next_hold,
+        next_contract: prepared.next_contract,
         chunk: state.journal.open_chunk(JOURNAL_LOG),
         fold,
-    };
-    Ok((output, patch, writes))
+    });
+    Ok((prepared.output, patch, writes))
 }
 impl PaidResalePatch {
     pub(crate) fn recheck(
@@ -246,7 +234,7 @@ impl PaidResalePatch {
         Ok(())
     }
     pub(crate) fn bind(
-        self,
+        self: Box<Self>,
         state: &mut EconomyStore,
     ) -> Result<BoundPaidResale<'_>, ParticipantError> {
         self.check_local(state)?;
@@ -282,7 +270,7 @@ impl PaidResalePatch {
             fold: fold_patch,
             next_window,
             ..
-        } = self;
+        } = *self;
         let journal = journal
             .bind_prepared(prepared_journal)
             .map_err(|_| refused())?;
@@ -341,7 +329,7 @@ pub struct BoundPaidResale<'a> {
     after_contract: u64,
     next_posts: u64,
     chunk: u64,
-    fold_patch: ResaleFold,
+    fold_patch: Box<ResaleFold>,
 }
 impl BoundParticipant for BoundPaidResale<'_> {
     fn apply(self) {
@@ -368,7 +356,7 @@ impl BoundParticipant for BoundPaidResale<'_> {
         );
         self.cold_keys.remove(&self.transaction.idempotency);
         self.bloom.apply();
-        self.fold_patch.apply(self.fold);
+        (*self.fold_patch).apply(self.fold);
         match self.next_window {
             Some(w) => {
                 self.debit_window.insert(self.payer, w);

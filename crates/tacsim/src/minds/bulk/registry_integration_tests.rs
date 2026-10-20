@@ -62,6 +62,8 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 type Disk = BTreeMap<(String, String), Value>;
 #[path = "registry_boot_tests.rs"]
 mod registry_boot_tests;
+#[path = "registry_scheduling_tests.rs"]
+mod registry_scheduling_tests;
 const SOURCE: &str = "fn think(v,c) { stock::rules(); speed(0); this.landed = t_ms(); }";
 
 fn module_error(error: impl std::fmt::Display) -> ModError {
@@ -479,15 +481,15 @@ struct Fixture {
     source: Arc<str>,
 }
 impl Fixture {
-    fn new() -> TestResult<Self> {
+    fn new() -> TestResult<Box<Self>> {
         Self::with_source(SOURCE, "I")
     }
-    fn with_source(source: &str, class: &str) -> TestResult<Self> {
+    fn with_source(source: &str, class: &str) -> TestResult<Box<Self>> {
         Self::with_program(source, fixture_envelope(class))
     }
     // This accepts source/envelope input only. The ordinary registered Save,
     // Registry worker and complete certificate publication remain mandatory.
-    fn with_program(source: &str, envelope: Envelope) -> TestResult<Self> {
+    fn with_program(source: &str, envelope: Envelope) -> TestResult<Box<Self>> {
         let resources = Resources::capture()?;
         let account = AccountId::mint("registry-engine-fixture", 1)?;
         let accounts = Arc::new(Accounts::default());
@@ -538,7 +540,7 @@ impl Fixture {
         let shared = shared.lock().map_err(module_error)?;
         let definitions = RegistryDefinitions::new(shared.manifest.clone().ok_or("manifest")?)?;
         let factory = shared.factory.clone().ok_or("registered factory")?;
-        Ok(Self {
+        Ok(Box::new(Self {
             resources,
             accounts,
             account,
@@ -548,7 +550,7 @@ impl Fixture {
             factory,
             revision,
             source: Arc::from(source),
-        })
+        }))
     }
     fn artifacts(&self) -> TestResult<&Artifacts> {
         self.engine
@@ -1039,6 +1041,7 @@ fn real_measured_maximum_class_rejection_publishes_and_survives_private_history_
     // The original real boot and worker assertions below remain unchanged.
     assert!(std::mem::size_of::<Fixture>() <= 16 * 1024);
     assert!(std::mem::size_of::<TestResult<Fixture>>() <= 16 * 1024);
+    assert!(std::mem::size_of::<TestResult<Box<Fixture>>>() <= 16 * 1024);
     let diagnostic = rejection_diagnostic::Phases::default();
     let _tracing = tracing::subscriber::set_default(diagnostic.clone());
     for declared in ["I", "III"] {

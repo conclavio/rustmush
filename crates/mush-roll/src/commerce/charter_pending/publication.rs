@@ -77,9 +77,12 @@ impl Admission {
 }
 #[derive(Clone)]
 pub(super) enum Mode {
-    Admission(Admission),
-    RegistryRefund(crate::commerce::registry_revocation::RevocationFence),
-    Service { runtime: Runtime, intent: Intent },
+    Admission(Box<Admission>),
+    RegistryRefund(Box<crate::commerce::registry_revocation::RevocationFence>),
+    Service {
+        runtime: Box<Runtime>,
+        intent: Box<Intent>,
+    },
 }
 #[derive(Clone)]
 pub(crate) struct PendingFence {
