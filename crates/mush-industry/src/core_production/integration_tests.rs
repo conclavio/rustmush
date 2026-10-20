@@ -165,10 +165,20 @@ impl Composition {
             let mut config = self.factory.clone();
             config.mode = mode;
             if let Some(r) = &self.refits {
-                let fitting = r.config(&config, mode)?;
-                tactics = Some(r.tactics(&fitting)?);
-                config = config.with_refits(fitting)?;
-                economy = economy.with_core_refit(config.economy_refit_config(&self.origin)?);
+                let fitting = r
+                    .config(&config, mode)
+                    .map_err(|e| format!("factory fixture refit configuration: {e}"))?;
+                tactics = Some(
+                    r.tactics(&fitting)
+                        .map_err(|e| format!("factory fixture tactics configuration: {e}"))?,
+                );
+                config = config
+                    .with_refits(fitting)
+                    .map_err(|e| format!("factory fixture refit binding: {e}"))?;
+                economy =
+                    economy.with_core_refit(config.economy_refit_config(&self.origin).map_err(
+                        |e| format!("factory fixture refit economy configuration: {e}"),
+                    )?);
             }
             inventory = inventory.with_core_inputs(CoreInputBinding::new(
                 config.action(factory::ACCEPT)?,
@@ -177,7 +187,11 @@ impl Composition {
             )?);
             economy = economy
                 .with_initial_filing(self.filing.clone(), filing_ref()?)
-                .with_core_integration(config.economy_config(&self.origin)?);
+                .with_core_integration(
+                    config
+                        .economy_config(&self.origin)
+                        .map_err(|e| format!("factory fixture economy configuration: {e}"))?,
+                );
             industry = industry.with_core_factory(config);
         }
         let mut modules: Vec<Box<dyn GameModule>> = vec![
@@ -197,7 +211,18 @@ impl Composition {
             modules.push(Box::new(tactics));
         }
         if reverse {
-            modules.reverse()
+            modules.reverse();
+            // Inventory publishes its shared handle during registration. Vary
+            // the other owners while preserving this required dependency.
+            let inventory = modules
+                .iter()
+                .position(|m| m.name() == "inventory")
+                .unwrap();
+            let industry = modules.iter().position(|m| m.name() == "industry").unwrap();
+            if inventory > industry {
+                let module = modules.remove(inventory);
+                modules.insert(industry, module);
+            }
         }
         Ok(modules)
     }
@@ -368,12 +393,40 @@ impl FactoryRig {
             certificate,
             reverse,
         };
-        f.restart(CoreOriginMode::Initialize)?;
-        f.commit(0, GOD, 10, json!({}))?;
+        f.restart(CoreOriginMode::Initialize)
+            .map_err(|e| format!("factory fixture initialization boot: {e}"))?;
+        f.commit(0, GOD, 10, json!({}))
+            .map_err(|e| format!("factory fixture initialization action: {e}"))?;
         // Initialize only publishes the two actual empty deployment images.
         assert!(f.prepare(1, operator, 11, f.offer_parameters()).is_err());
-        f.restart(CoreOriginMode::Active)?;
+        if refits {
+            f.initialize_refit()
+                .map_err(|e| format!("factory fixture refit initialization action: {e}"))?;
+        }
+        f.restart(CoreOriginMode::Active)
+            .map_err(|e| format!("factory fixture active boot: {e}"))?;
         Ok(f)
+    }
+    fn initialize_refit(&mut self) -> Result {
+        let action = self
+            .r
+            .runtime
+            .refit
+            .as_ref()
+            .ok_or("refit runtime")?
+            .actions
+            .first()
+            .cloned()
+            .ok_or("refit initialization action")?;
+        let inv = invocation(GOD, 12, json!({}));
+        let prepared = self
+            .r
+            .w
+            .engine_mut()
+            .prepare_registered_composed_authoritative_action(&action, &inv, token(12))?;
+        self.stage_action(action, &inv, 12, prepared)?;
+        self.take_install()?;
+        Ok(())
     }
     fn runtime(&self) -> Result<factory::runtime::Runtime> {
         self.r

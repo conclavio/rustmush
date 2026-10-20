@@ -18,8 +18,7 @@ struct Fitting {
 }
 impl Fitting {
     fn new(reverse: bool) -> Result<Self> {
-        let mut f = FactoryRig::new_options(reverse, true, true)?;
-        f.restart(CoreOriginMode::Initialize)?;
+        let f = FactoryRig::new_options(reverse, true, true)?;
         let mut s = Self {
             hull: GOD,
             incoming: GOD,
@@ -27,8 +26,6 @@ impl Fitting {
             class: DieClass::I,
             f,
         };
-        s.commit(0, GOD, 12, json!({}))?;
-        s.f.restart(CoreOriginMode::Active)?;
         let buyer = s.f.buyer;
         let factory = s.f.composition.factory.payment.factory;
         s.f.r.w.world_mut().move_to(buyer, factory)?;

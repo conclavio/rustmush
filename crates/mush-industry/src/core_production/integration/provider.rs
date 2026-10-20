@@ -447,50 +447,62 @@ impl Provider {
                 "output_reserved"
             }
             4 => {
-                let selected: AdvanceSelector = decode(inv.parameters())?;
-                let selected_order = selected.order;
-                let before = self.before(txn, selected_order, inv.actor())?;
-                if selected.observed != ctx.world().map_err(bad)?.world_ic_now() {
-                    return Err(Error::Unavailable);
-                }
-                let cursor = before.progress.cursor();
-                let mush_core::ScheduleEvaluation::Advance(advance) = cursor
-                    .plan_due(
-                        cursor.revision(),
-                        &selected.observed,
-                        if selected.restart {
-                            mush_core::ScheduleDriveCause::Restart
-                        } else {
-                            mush_core::ScheduleDriveCause::Live
+                let mut stage = "provider-selector";
+                let result: Result<&str, Error> = (|| {
+                    let selected: AdvanceSelector = decode(inv.parameters())?;
+                    let selected_order = selected.order;
+                    stage = "provider-order";
+                    let before = self.before(txn, selected_order, inv.actor())?;
+                    stage = "provider-clock";
+                    if selected.observed != ctx.world().map_err(bad)?.world_ic_now() {
+                        return Err(Error::Unavailable);
+                    }
+                    stage = "provider-schedule";
+                    let cursor = before.progress.cursor();
+                    let mush_core::ScheduleEvaluation::Advance(advance) = cursor
+                        .plan_due(
+                            cursor.revision(),
+                            &selected.observed,
+                            if selected.restart {
+                                mush_core::ScheduleDriveCause::Restart
+                            } else {
+                                mush_core::ScheduleDriveCause::Live
+                            },
+                        )
+                        .map_err(bad)?
+                    else {
+                        return Err(Error::Unavailable);
+                    };
+                    stage = "provider-owner";
+                    let after = self.owner(
+                        ctx,
+                        owner::Request::Advance {
+                            before,
+                            advance: *advance,
                         },
+                    )?;
+                    stage = "provider-owner-output";
+                    let row = after.order.ok_or(Error::Integrity)?;
+                    if after.input.is_some() {
+                        return Err(Error::Integrity);
+                    }
+                    stage = "provider-order-write";
+                    txn.replace(&r.families.orders, &selected_order, row.clone())
+                        .map_err(bad)?;
+                    stage = "provider-schedule-write";
+                    txn.replace(
+                        &r.families.schedules,
+                        &super::progress::schedule_id(selected_order)?,
+                        row.progress.cursor().clone(),
                     )
-                    .map_err(bad)?
-                else {
-                    return Err(Error::Unavailable);
-                };
-                let after = self.owner(
-                    ctx,
-                    owner::Request::Advance {
-                        before,
-                        advance: *advance,
-                    },
-                )?;
-                let row = after.order.ok_or(Error::Integrity)?;
-                if after.input.is_some() {
-                    return Err(Error::Integrity);
-                }
-                txn.replace(&r.families.orders, &selected_order, row.clone())
                     .map_err(bad)?;
-                txn.replace(
-                    &r.families.schedules,
-                    &super::progress::schedule_id(selected_order)?,
-                    row.progress.cursor().clone(),
-                )
-                .map_err(bad)?;
-                ctx.advance_core_integration_completion(txn, selected_order.0)
-                    .map_err(bad)?;
-                order_id = Some(selected_order);
-                "advanced"
+                    stage = "provider-core-capacity";
+                    ctx.advance_core_integration_completion(txn, selected_order.0)
+                        .map_err(bad)?;
+                    order_id = Some(selected_order);
+                    Ok("advanced")
+                })();
+                result.inspect_err(|_| tracing::debug!(target: "core_integration_preparation", stage, "Core integration preparation refused"))?
             }
             5 | 6 => {
                 let selected: OrderSelector = decode(inv.parameters())?;
@@ -596,6 +608,11 @@ impl ActionProvider for Provider {
         ctx: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         self.prepare(inv, txn, ctx)
+            .inspect_err(|_| {
+                if self.index == 4 {
+                    tracing::debug!(target: "core_integration_preparation", stage = "provider-entry", "Core integration preparation refused");
+                }
+            })
             .map_err(|_| self.refusal.clone())
     }
     fn project_offer(

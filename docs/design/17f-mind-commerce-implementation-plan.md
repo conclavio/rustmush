@@ -6,23 +6,29 @@
 The amount of code written is not a reliable completion percentage. New feature
 work is paused at the owner's request until the existing code passes together.
 
-The frozen baseline is N101, source tree
-`10faf28bcdd53ab5633934a85e4be910843da139`. It includes the fixes prepared after
-N97–N100. Its result, not the sum of older passing tests, will establish the
-integration baseline.
+The current diagnostic run is N101, source tree
+`10faf28bcdd53ab5633934a85e4be910843da139`. It compiled, but has runtime failures;
+it cannot establish a green baseline. Stabilization fixes are being prepared
+separately while its remaining checks finish. Older passes cannot be combined
+with a newer candidate to claim acceptance.
 
 | Check | Status on this baseline |
 | --- | --- |
 | Compile all selected production and test targets | Passed |
-| Conduct, hardware and industry runtime tests | Running; earlier failures are not yet cleared |
+| Conduct, hardware and industry runtime tests | Failed; withdrawal qualification, launch/manufacture and shared refit setup are being repaired |
 | Remaining component and service integration tests | Pending this run |
 | Genuine purchase, server recovery, Conduct and named launch stories | Pending this run |
-| Full workspace, lint, documentation, web and cross-host final acceptance | Still required after the integration baseline |
+| Default workspace tests and separate bot pass | Required for the baseline; not yet run on this candidate |
+| Live Redis recovery on an isolated instance | Required for the baseline; not yet run on this candidate |
+| Lint, frontend, remaining feature-specific and cross-host final acceptance | Still required before M7 closes |
 
 **What happens next:** finish this run, fix failures without adding features,
-and repeat until one candidate passes every required integration stage and
-story. Runner errors count as errors to fix; they do not justify ignoring tests.
-The final record will distinguish passing, failing and unexecuted checks.
+and repeat until one candidate passes every selected integration stage, the
+default workspace suite, the separate bot pass, live Redis recovery, and all four
+genuine stories. The workspace run alone does not prove Redis: its service-gated
+tests can skip when no Redis URL is present. Runner errors count as errors to fix;
+they do not justify ignoring tests. The final record will distinguish passing,
+failing and unexecuted checks.
 
 **What a green baseline will mean:** the code currently included works together
 under the integration suite. It will not mean M7 is finished. Paid Follow's

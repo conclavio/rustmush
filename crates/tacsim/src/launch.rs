@@ -67,9 +67,15 @@ impl LaunchComposition {
             &filing,
         )?;
         let roster = hardware.roster_policy()?;
+        // Capture the same finite hardware catalogue the actual layer will
+        // register. Preserve the host's already verified packs (including the
+        // Conduct carrier); this temporary configuration owns no live state.
+        let mut prepared_layer = crate::TacsimRuleset::with_config(layer.config().clone());
+        prepared_layer.loaded = layer.loaded.clone();
+        let prepared_layer = hardware.configure_tacsim(prepared_layer)?;
         let admission = admission::CopratesAdmission::new(&deployment)?;
         let mut commerce = crate::composition::mind_commerce::MindCommerce::prepare(
-            layer,
+            &prepared_layer,
             mode,
             InitialFilingTerms::new(content::TERM_SECONDS, content::GRACE_SECONDS).map_err(bad)?,
             filing,
@@ -85,7 +91,7 @@ impl LaunchComposition {
             };
             commerce = commerce
                 .with_house_filings()?
-                .with_conduct_trials(layer)?
+                .with_conduct_trials(&prepared_layer)?
                 .with_registry_reconformance()?
                 .with_minds_facts()?
                 .with_house_minds_and_admission(
@@ -140,8 +146,8 @@ impl LaunchComposition {
             return Err(bad("launch already configured"));
         }
         let mut layer = self
-            .hardware
-            .configure_tacsim(self.commerce.configure_tacsim(layer)?)?;
+            .commerce
+            .configure_tacsim(self.hardware.configure_tacsim(layer)?)?;
         layer.launch = Some(self.registration.clone());
         Ok(layer)
     }

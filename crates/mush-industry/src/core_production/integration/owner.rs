@@ -328,27 +328,36 @@ pub(crate) fn prepare(
             fence
         }
         Request::Advance { before, advance } => {
-            scheduled_readiness(ctx, defs, content)?;
-            current_order(projection, &before, ctx)?;
-            if config.mode != CoreOriginMode::Active
-                || ctx.action() != &config.action(super::ADVANCE).map_err(|_| refused())?
-                || advance.observed_at() != &ctx.world().world_ic_now()
-            {
-                return Err(refused());
-            }
-            authority::cleanup(ctx.world(), defs).map_err(|_| refused())?;
-            let progress = before
-                .progress
-                .advance(ctx.commit_token(), &advance)
-                .map_err(|_| refused())?;
-            let next = CoreIntegrationOrder { progress, ..before };
-            next.validate().map_err(|_| refused())?;
-            after
-                .orders
-                .insert(next.intent.order, Arc::new(OrderView::capture(&next)));
-            let fence = Fence::Advance(next.intent.clone(), advance);
-            order_output = Some(next);
-            fence
+            let mut stage = "owner-readiness";
+            let result: Result<Fence, ParticipantError> = (|| {
+                scheduled_readiness(ctx, defs, content)?;
+                stage = "owner-current-order";
+                current_order(projection, &before, ctx)?;
+                stage = "owner-action-clock";
+                if config.mode != CoreOriginMode::Active
+                    || ctx.action() != &config.action(super::ADVANCE).map_err(|_| refused())?
+                    || advance.observed_at() != &ctx.world().world_ic_now()
+                {
+                    return Err(refused());
+                }
+                stage = "owner-cleanup";
+                authority::cleanup(ctx.world(), defs).map_err(|_| refused())?;
+                stage = "owner-progress";
+                let progress = before
+                    .progress
+                    .advance(ctx.commit_token(), &advance)
+                    .map_err(|_| refused())?;
+                let next = CoreIntegrationOrder { progress, ..before };
+                stage = "owner-postimage";
+                next.validate().map_err(|_| refused())?;
+                after
+                    .orders
+                    .insert(next.intent.order, Arc::new(OrderView::capture(&next)));
+                let fence = Fence::Advance(next.intent.clone(), advance);
+                order_output = Some(next);
+                Ok(fence)
+            })();
+            result.inspect_err(|_| tracing::debug!(target: "core_integration_preparation", stage, "Core integration preparation refused"))?
         }
         Request::Terminal { before, payment } => {
             current_order(projection, &before, ctx)?;

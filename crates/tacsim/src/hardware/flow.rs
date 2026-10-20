@@ -661,13 +661,18 @@ async fn shipped_class_three_requires_actual_entitlement_and_never_charges_on_re
         );
     }
     let before = r.money(r.payer)?;
-    let (_, die) = r.perform("industry", "issue_core_die", agent, json!({"class":"iii"}))?;
+    let (_, die) = r.perform(
+        "industry",
+        "issue_core_die",
+        agent,
+        json!({"class":mush_industry::core_production::DieClass::III}),
+    )?;
     let lot = serde_json::from_value::<mush_inventory::LotId>(die["lot"].clone())?;
     let (offer, _) = r.perform(
         "industry",
         "offer_core_integration",
         agent,
-        json!({"requester":buyer.0,"class":"iii","supplier_lot":lot.to_string()}),
+        json!({"requester":buyer.0,"class":mush_industry::core_production::DieClass::III,"supplier_lot":lot.to_string()}),
     )?;
     let disk = r.boot.clone();
     assert!(

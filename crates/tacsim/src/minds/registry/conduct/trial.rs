@@ -615,6 +615,34 @@ impl Trial {
             passed: false,
         };
         result.passed = result.qualifies();
+        // Test diagnostics only: numeric/enum terminal geometry, never source,
+        // a seal, witness or tape. Preserve the exact qualification predicate.
+        #[cfg(test)]
+        if self.case == Case::Withdraw && !result.passed {
+            let cell = self.arena.definition.terrain.cell_of(&own.pose);
+            let entry = cell.and_then(|here| {
+                crate::arena::motor::entry_cell(
+                    &self.arena.definition,
+                    own.team,
+                    own.cost_row,
+                    here,
+                )
+            });
+            let motor = self.arena.motors.row(self.candidate);
+            eprintln!(
+                "conduct_withdraw_terminal role={:?} case={:?} seed={} elapsed_ms={} cell={:?} speed_cms={} entry_goal={:?} motor_goal={:?} requested_goal={:?} outcome={:?}",
+                self.role,
+                self.case,
+                self.seed,
+                self.arena.now_ms,
+                cell,
+                own.speed_cms,
+                entry,
+                motor.and_then(|row| row.goal),
+                motor.and_then(|row| row.requested_goal),
+                motor.and_then(|row| row.outcome),
+            );
+        }
         Ok(Slice {
             simulated_ms,
             result: Some(result),

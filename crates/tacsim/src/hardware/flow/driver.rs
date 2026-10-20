@@ -225,7 +225,7 @@ impl Rig {
         Ok(())
     }
     pub(super) fn progress(&mut self, name: &str, hours: usize) -> Result {
-        for _ in 0..hours {
+        for hour in 0..hours {
             let utc = self.world().world().now();
             self.world_mut()
                 .world_mut()
@@ -253,14 +253,29 @@ impl Rig {
             let (action, invocation, guards) = plan.into_parts();
             self.serial += 1;
             let commit = token(self.serial);
-            let prepared = self
-                .world_mut()
-                .engine_mut()
-                .prepare_registered_composed_scheduled_authoritative_action(
-                    candidate,
-                    &invocation,
-                    commit,
-                )?;
+            let prepared = if name == "advance_core_integration" {
+                // Industry is an ordinary dependency of this test crate. Its
+                // quiet fixed-label events are captured only for this call.
+                let diagnostic = progress_diagnostic::Phase::default();
+                tracing::subscriber::with_default(diagnostic.clone(), || {
+                    self.world_mut()
+                        .engine_mut()
+                        .prepare_registered_composed_scheduled_authoritative_action(
+                            candidate,
+                            &invocation,
+                            commit,
+                        )
+                })
+                .map_err(|_| diagnostic.error(hour))?
+            } else {
+                self.world_mut()
+                    .engine_mut()
+                    .prepare_registered_composed_scheduled_authoritative_action(
+                        candidate,
+                        &invocation,
+                        commit,
+                    )?
+            };
             self.install(Planned {
                 action,
                 invocation,
@@ -270,5 +285,77 @@ impl Rig {
             })?;
         }
         Ok(())
+    }
+}
+
+/// Test-only capture: an exact whitelist, first failing boundary, no error or
+/// event payload formatter. The actual prepare still has to succeed.
+mod progress_diagnostic {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    pub(super) struct Phase(Arc<Mutex<Option<&'static str>>>);
+    impl Phase {
+        pub(super) fn error(&self, hour: usize) -> String {
+            let stage = self
+                .0
+                .lock()
+                .ok()
+                .and_then(|value| *value)
+                .unwrap_or("unobserved");
+            format!("Hardware manufacture progress preparation refused: stage={stage}, hour={hour}")
+        }
+    }
+    struct PhaseVisitor(Option<&'static str>);
+    impl tracing::field::Visit for PhaseVisitor {
+        fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            if field.name() != "stage" {
+                return;
+            }
+            self.0 = match value {
+                "provider-entry" => Some("provider-entry"),
+                "provider-selector" => Some("provider-selector"),
+                "provider-order" => Some("provider-order"),
+                "provider-clock" => Some("provider-clock"),
+                "provider-schedule" => Some("provider-schedule"),
+                "provider-owner" => Some("provider-owner"),
+                "provider-owner-output" => Some("provider-owner-output"),
+                "provider-order-write" => Some("provider-order-write"),
+                "provider-schedule-write" => Some("provider-schedule-write"),
+                "provider-core-capacity" => Some("provider-core-capacity"),
+                "owner-readiness" => Some("owner-readiness"),
+                "owner-current-order" => Some("owner-current-order"),
+                "owner-action-clock" => Some("owner-action-clock"),
+                "owner-cleanup" => Some("owner-cleanup"),
+                "owner-progress" => Some("owner-progress"),
+                "owner-postimage" => Some("owner-postimage"),
+                _ => None,
+            };
+        }
+    }
+    impl tracing::Subscriber for Phase {
+        fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
+            m.target() == "core_integration_preparation"
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            if event.metadata().target() != "core_integration_preparation" {
+                return;
+            }
+            let mut visitor = PhaseVisitor(None);
+            event.record(&mut visitor);
+            if let Ok(mut value) = self.0.lock() {
+                if value.is_none() {
+                    *value = visitor.0;
+                }
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
     }
 }
