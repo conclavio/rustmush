@@ -164,6 +164,12 @@ fn open_purchased_house(
     )?;
     w.command(&format!("@econ/mint {faucet}={seller_account} 2000"))?;
     w.command(&format!("@econ/mint {faucet}={buyer_account} 2000"))?;
+    // The House guard admits a requester only inside the venue: the bay is the
+    // `fixture` venue here, as the one-seat House fixture seats both actors.
+    for actor in [GOD, BUYER] {
+        w.engine.world.move_to(actor, w.base)?;
+    }
+    w.persist_setup()?;
     for (id, actor, n, parameters) in [
         (
             "list_house_mind",
