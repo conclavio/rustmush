@@ -160,6 +160,34 @@ pub struct PortDef {
     /// grow every `PackEntry` (clippy's `large_enum_variant`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vehicles: Option<Box<VehiclesDef>>,
+    /// **Doc 20 cut SM.5 (§9.1, D-20-12)** — the prospecting licence this port's
+    /// org issues: the Freeport Registry's at Ceres. At most one port of a lane
+    /// authors it, and every site's `issuer` is its org ([`check_ports`]); the
+    /// instrument is [`crate::economy::LICENCE_FREEPORT`]. Absent everywhere else. Boxed,
+    /// so a port entry does not grow every `PackEntry` (clippy's `large_enum_variant`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub licence: Option<Box<LicenceDef>>,
+}
+
+/// The most a prospecting licence's fee may be, major units (doc 20 cut SM.5).
+pub const MAX_LICENCE_FEE_MAJOR: u64 = 1_000_000;
+/// The longest a prospecting licence's term may be, IC days (doc 20 cut SM.5).
+pub const MAX_LICENCE_TERM_IC_DAYS: u32 = 365;
+
+/// **Doc 20 cut SM.5 (§9.1, §11's Tenure row, §12.3)**: the prospecting
+/// licence's terms, which are levers and so lane data (the [`VehiclesDef`]
+/// precedent). `+licence/buy` (`crate::port::licence`) reads them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LicenceDef {
+    /// One of this entry's orgs: the issuer, paid the fee (`freeport_registry`).
+    pub org: CanonicalId,
+    /// The fee for one term, major units, `1..=`[`MAX_LICENCE_FEE_MAJOR`].
+    pub fee_major: u64,
+    /// One term, IC days, `1..=`[`MAX_LICENCE_TERM_IC_DAYS`].
+    pub term_ic_days: u32,
+    /// The grace after a term ends, IC days, at most the term.
+    pub grace_ic_days: u32,
 }
 
 /// **Doc 20 cut SM.3a (§4.3, Q-20-6)**: a lessor's pool of terrain vehicles,
@@ -471,6 +499,27 @@ pub struct PortOrgDef {
     /// The polity it answers to (`freeport`, `concord`, `republic`). Carried
     /// and validated, read by nothing until the faction cut (lead ruling L16).
     pub faction: CanonicalId,
+    /// **Doc 20 cut SM.5 (§7.3, §12.3)**: capital raised after the base, each
+    /// raise minted as its own appended tranches ([`capital_schedule`]). Append-only
+    /// across versions: a raise once issued is never edited, dropped or reordered
+    /// (the applier refuses it as drift). At most [`MAX_CAPITAL_RAISES`]; the
+    /// capital with every raise stays within [`MAX_PORT_CAPITAL_MAJOR`]. Occator's
+    /// 250,000 at v11 takes it from 50,000 to 300,000.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub raises: Vec<u64>,
+}
+
+/// The most capital raises one institution may author (doc 20 cut SM.5).
+pub const MAX_CAPITAL_RAISES: usize = 8;
+
+impl PortOrgDef {
+    /// The capital with every raise, major units; `None` on overflow.
+    #[must_use]
+    pub fn capital_total(&self) -> Option<u64> {
+        self.raises
+            .iter()
+            .try_fold(self.capital_major, |total, raise| total.checked_add(*raise))
+    }
 }
 
 /// **The First Captain programme** (doc 18 §4.1, R2, D-18-25).
@@ -502,6 +551,12 @@ pub struct ProgrammeDef {
     /// Good → `"<port entry>/<org>"`: the listing whose posted ask is the
     /// reference price (D-18-24: it names a listing, never a price).
     pub reference: BTreeMap<CanonicalId, String>,
+    /// **Doc 20 cut SM.5 (§7.4, Q-20-5)**: good → a fixed reference price in
+    /// minor units, for a good **no port of the lane asks** (ore at half its bid),
+    /// read before any listing by `CoopProceeds`. A good is in at most one of the
+    /// two maps ([`check_ports`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reference_minor: BTreeMap<CanonicalId, u64>,
     /// The buyout price of a hull, major units.
     pub buyout_major: u64,
     /// How long a lease may lie idle before it is released, real days.
@@ -592,6 +647,38 @@ pub struct BidDef {
     /// [`AskDef::boards`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub boards: Vec<CanonicalId>,
+    /// **Doc 20 cut SM.5 (§7.3, Q-20-11)**: an intake the stock clerk refreshes by
+    /// a drip each IC day, to a cap (the ore bids at Ceres). Present, the bid is
+    /// the drip's (`crate::port::stock`) and never the lapsed-bid re-post's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<RefreshDef>,
+}
+
+/// **An intake's daily refresh** (doc 20 §7.3, Q-20-11; cut SM.5): at most once
+/// an IC day the clerk re-posts the bid at `min(cap, unfilled + per_ic_day)`,
+/// within what the house can fund.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefreshDef {
+    /// Units added to the unfilled intake each IC day, `1..=cap`.
+    pub per_ic_day: u64,
+    /// The most the intake ever stands at, `per_ic_day..=mush_market::MAX_QUANTITY`
+    /// and at least the bid's opening `intake`.
+    pub cap: u64,
+}
+
+/// **An institution's capital schedule with its raises** (doc 20 cut SM.5; §7.3,
+/// D-18-14): the base's [`tranches`], then each raise's own [`tranches`] in
+/// authored order, so a raise appends tranches and never re-cuts an issued one,
+/// and every tranche stays at most [`MAX_TRANCHE_MAJOR`] under the mint cap.
+/// `capital_schedule(50_000, &[250_000])` is `[50000, 250000]`.
+#[must_use]
+pub fn capital_schedule(base_major: u64, raises: &[u64]) -> Vec<u64> {
+    let mut out = tranches(base_major);
+    for raise in raises {
+        out.extend(tranches(*raise));
+    }
+    out
 }
 
 /// **An institution's capital as tranches** (D-18-14; doc 18 §4.3): greedy
@@ -669,11 +756,13 @@ impl PortDef {
                 || self.premium.is_some()
                 || self.emergency.is_some()
                 || self.vehicles.is_some()
+                || self.licence.is_some()
             {
-                // Doc 20 cut SM.3a: nor a rig pool (rigs are leased at a station).
+                // Doc 20 cut SM.3a: nor a rig pool (rigs are leased at a station);
+                // cut SM.5: nor a licence (the Registry issues it at its station).
                 return Err(
                     "site: a site authors no orgs, rooms, programme, vendors, premium or \
-                     emergency, and no vehicles block; its pad is its gallery"
+                     emergency, and no vehicles or licence block; its pad is its gallery"
                         .to_owned(),
                 );
             }
@@ -700,6 +789,23 @@ impl PortDef {
                 return Err(format!(
                     "org {}: capital_major must be 1..={MAX_PORT_CAPITAL_MAJOR}, not {}",
                     org.id, org.capital_major
+                ));
+            }
+            // Doc 20 cut SM.5 (§7.3, §12.3): the appended raises.
+            if !org.raises.is_empty()
+                && (org.raises.len() > MAX_CAPITAL_RAISES
+                    || org
+                        .raises
+                        .iter()
+                        .any(|raise| *raise == 0 || *raise > MAX_PORT_CAPITAL_MAJOR)
+                    || org
+                        .capital_total()
+                        .is_none_or(|total| total > MAX_PORT_CAPITAL_MAJOR))
+            {
+                return Err(format!(
+                    "org {}: raises: at most {MAX_CAPITAL_RAISES}, each 1..={MAX_PORT_CAPITAL_MAJOR}, \
+                     and the capital with every raise at most {MAX_PORT_CAPITAL_MAJOR}",
+                    org.id
                 ));
             }
         }
@@ -855,6 +961,41 @@ impl PortDef {
         // Doc 20 cut SM.3a: the rig pool.
         if let Some(vehicles) = &self.vehicles {
             self.check_vehicles(vehicles)?;
+        }
+        // Doc 20 cut SM.5: the licence block.
+        if let Some(licence) = &self.licence {
+            self.check_licence(licence)?;
+        }
+        Ok(())
+    }
+
+    /// **The licence block's bounds** (doc 20 cut SM.5; §9.1): its org one of the
+    /// entry's, the fee and the term in bounds, the grace at most the term. Each
+    /// sentence starts `licence: `.
+    fn check_licence(&self, licence: &LicenceDef) -> Result<(), String> {
+        if !self.orgs.iter().any(|org| org.id == licence.org) {
+            return Err(format!(
+                "licence: org {} is not one of this port's orgs",
+                licence.org
+            ));
+        }
+        if licence.fee_major == 0 || licence.fee_major > MAX_LICENCE_FEE_MAJOR {
+            return Err(format!(
+                "licence: fee_major must be 1..={MAX_LICENCE_FEE_MAJOR}, not {}",
+                licence.fee_major
+            ));
+        }
+        if licence.term_ic_days == 0 || licence.term_ic_days > MAX_LICENCE_TERM_IC_DAYS {
+            return Err(format!(
+                "licence: term_ic_days must be 1..={MAX_LICENCE_TERM_IC_DAYS}, not {}",
+                licence.term_ic_days
+            ));
+        }
+        if licence.grace_ic_days > licence.term_ic_days {
+            return Err(format!(
+                "licence: grace_ic_days must be at most the term ({}), not {}",
+                licence.term_ic_days, licence.grace_ic_days
+            ));
         }
         Ok(())
     }
@@ -1035,6 +1176,24 @@ impl PortDef {
         if let Some(good) = asks.intersection(&bids).next() {
             return Err(format!("vendor {org}: {good} is both asked and bid"));
         }
+        // Doc 20 cut SM.5 (§7.3, Q-20-11): a refreshed intake's drip and cap.
+        for bid in &vendor.bids {
+            let Some(refresh) = &bid.refresh else {
+                continue;
+            };
+            if refresh.per_ic_day == 0
+                || refresh.per_ic_day > refresh.cap
+                || refresh.cap > mush_market::MAX_QUANTITY
+                || bid.intake > refresh.cap
+            {
+                return Err(format!(
+                    "vendor {org}: bid {}: refresh: per_ic_day and cap are 1..={}, per_ic_day is \
+                     at most cap, and the intake is at most the cap",
+                    bid.good,
+                    mush_market::MAX_QUANTITY
+                ));
+            }
+        }
         let lines = vendor
             .asks
             .iter()
@@ -1174,12 +1333,14 @@ impl PortDef {
             .stake_major
             .checked_mul(u64::from(programme.pool))
             .and_then(|stakes| stakes.checked_add(programme.floor_major));
+        // Doc 20 cut SM.5: the capital with its raises (the Trust raises nothing).
+        let capital = org.capital_total().unwrap_or(org.capital_major);
         match needed {
-            Some(needed) if needed <= org.capital_major => Ok(()),
+            Some(needed) if needed <= capital => Ok(()),
             Some(needed) => Err(format!(
                 "programme {pid}: floor_major + pool × stake_major is {needed}, more than org \
                  {}'s capital_major {}",
-                org.id, org.capital_major
+                org.id, capital
             )),
             None => Err(format!(
                 "programme {pid}: floor_major + pool × stake_major overflows"
@@ -1202,7 +1363,13 @@ impl PortDef {
 ///   in an entry that authors vendors (doc 18 cut IC8, lead ruling L23), that
 ///   org is a vendor of that entry whose asks include the good;
 /// - (cut IC8) no stock clerk (`vendors[].agent`) serves two port entries;
-/// - (cut IC8) every stock, ask and bid good is a row of the goods table.
+/// - (cut IC8) every stock, ask and bid good is a row of the goods table;
+/// - (doc 20 cut SM.5) a programme's `reference_minor` names a trade good, at
+///   least 1 minor unit, that is not also in `reference` and that **no vendor of
+///   any port entry of the pack asks** (§7.4: a fixed reference only for a good
+///   no port asks);
+/// - (doc 20 cut SM.5) at most one port entry authors a `licence` block, and
+///   when one does every site's `issuer` is its org (D-20-12, phase 1).
 ///
 /// # Errors
 ///
@@ -1226,6 +1393,8 @@ pub fn check_ports(
     let mut agents: BTreeMap<&CanonicalId, &CanonicalId> = BTreeMap::new();
     // Doc 20 cut SM.3a (reviewer F11): one rig lessor a lane.
     let mut lessor: Option<&CanonicalId> = None;
+    // Doc 20 cut SM.5: the one licence block's port and org.
+    let mut licensor: Option<(&CanonicalId, &CanonicalId)> = None;
     for (id, def) in &ports {
         let fail = |detail: String| Err(((*id).clone(), detail));
         // Doc 20 cut SM.3a (reviewer F11): at most one port of the pack authors a
@@ -1247,6 +1416,16 @@ pub fn check_ports(
                 ));
             }
             lessor = Some(*id);
+        }
+        // Doc 20 cut SM.5 (§9.1, D-20-12): one licence issuer a lane in phase 1.
+        if let Some(licence) = &def.licence {
+            if let Some((other, _)) = licensor {
+                return fail(format!(
+                    "licence: port {id} also authors a licence block (port {other}'s); a lane \
+                     has one licence issuer in phase 1"
+                ));
+            }
+            licensor = Some((*id, &licence.org));
         }
         // Doc 18 cut IC8 (lead ruling L2): a stock clerk is one port's.
         if let Some(vendor) = def.vendors.first()
@@ -1338,6 +1517,16 @@ pub fn check_ports(
                 site.issuer
             ));
         }
+        // Doc 20 cut SM.5 (D-20-12): phase 1 has one instrument, so every site is
+        // the licence issuer's.
+        if let Some((_, org)) = licensor
+            && site.issuer != *org
+        {
+            return fail(format!(
+                "site: issuer {} is not the lane's licence issuer {org}",
+                site.issuer
+            ));
+        }
         for (letter, row) in &site.blocks {
             if let Some(holder) = &row.holder
                 && !orgs.contains_key(holder)
@@ -1373,10 +1562,9 @@ pub fn check_ports(
                 }
             }
         }
-        let references = def
-            .programme
-            .as_ref()
-            .filter(|programme| !programme.reference.is_empty());
+        let references = def.programme.as_ref().filter(|programme| {
+            !programme.reference.is_empty() || !programme.reference_minor.is_empty()
+        });
         if references.is_none() && def.vendors.is_empty() {
             continue;
         }
@@ -1457,6 +1645,42 @@ pub fn check_ports(
                     }
                 }
             }
+            // Doc 20 cut SM.5 (§7.4, Q-20-5, amending D-18-24 for a good no port
+            // asks): a fixed reference, in minor units. The live listing stays the
+            // rule for every good some port asks, so a fixed one is refused there.
+            let pid = &programme.id;
+            for (good, minor) in &programme.reference_minor {
+                let trade = goods
+                    .good(good)
+                    .is_some_and(|row| row.family.is_some() && row.consumable.is_none());
+                if !trade {
+                    return fail(format!(
+                        "programme {pid}: reference_minor {good} is not a trade good of the goods \
+                         table"
+                    ));
+                }
+                if *minor == 0 {
+                    return fail(format!(
+                        "programme {pid}: reference_minor {good} must be at least 1"
+                    ));
+                }
+                if programme.reference.contains_key(good) {
+                    return fail(format!(
+                        "programme {pid}: {good} has both a reference listing and a fixed reference"
+                    ));
+                }
+                let asker = ports.iter().find(|(_, port)| {
+                    port.vendors
+                        .iter()
+                        .any(|vendor| vendor.asks.iter().any(|ask| &ask.good == good))
+                });
+                if let Some((entry, _)) = asker {
+                    return fail(format!(
+                        "programme {pid}: reference_minor {good}: a fixed reference is only for a \
+                         good no port of this lane asks, and port {entry} asks it"
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -1476,6 +1700,7 @@ mod tests {
             name: format!("The {id}"),
             capital_major: capital,
             faction: cid("freeport"),
+            raises: Vec::new(),
         }
     }
 
@@ -1504,6 +1729,7 @@ mod tests {
                 stake_major: 25_000,
                 share_permille: 250,
                 reference: BTreeMap::new(),
+                reference_minor: BTreeMap::new(),
                 buyout_major: 90_000,
                 dormancy_real_days: 7,
                 per_account: 1,
@@ -1515,6 +1741,7 @@ mod tests {
             emergency: None,
             site: None,
             vehicles: None,
+            licence: None,
         }
     }
 
@@ -1739,6 +1966,7 @@ mod tests {
                 blocks: BTreeMap::new(),
             }),
             vehicles: None,
+            licence: None,
         }
     }
 
@@ -1870,5 +2098,306 @@ mod tests {
         let json = serde_json::to_value(site_port()).unwrap_or_default();
         assert!(json.get("rooms").is_none() && json.get("orgs").is_none());
         assert_eq!(json["treasury"], "tacsim.treasury");
+    }
+
+    /// A vendor of `org` asking `asks` (each with a stock row) and bidding `bids`.
+    fn sm5_vendor(org: &str, agent: &str, asks: &[&str], bids: Vec<BidDef>) -> VendorDef {
+        VendorDef {
+            org: cid(org),
+            storefront: "neighborhood.ceres_freeport.room.c07_exchange".to_owned(),
+            agent: cid(agent),
+            signatory: "neighborhood.ceres_freeport.npc.someone".to_owned(),
+            stock: asks
+                .iter()
+                .map(|good| StockRowDef {
+                    good: cid(good),
+                    qty: 10,
+                    grade: 50,
+                    issue: 1,
+                })
+                .collect(),
+            asks: asks
+                .iter()
+                .map(|good| AskDef {
+                    good: cid(good),
+                    price_major: 100,
+                    boards: Vec::new(),
+                })
+                .collect(),
+            bids,
+        }
+    }
+
+    fn sm5_bid(good: &str, intake: u64, refresh: Option<(u64, u64)>) -> BidDef {
+        BidDef {
+            good: cid(good),
+            price_major: 70,
+            intake,
+            as_name: None,
+            boards: Vec::new(),
+            refresh: refresh.map(|(per_ic_day, cap)| RefreshDef { per_ic_day, cap }),
+        }
+    }
+
+    /// **Doc 20 cut SM.5 (§7.3, Q-20-11)**: each bound of a refresh row refused with
+    /// its sentence; the lane's four rows accepted.
+    #[test]
+    fn sm5_a_refresh_row_is_bounded() {
+        let with = |bid: BidDef| {
+            let mut def = port();
+            def.vendors
+                .push(sm5_vendor("coop", "npc.someone", &[], vec![bid]));
+            refused(&def)
+        };
+        let sentence = |good: &str| {
+            format!(
+                "vendor coop: bid {good}: refresh: per_ic_day and cap are 1..={}, per_ic_day is \
+                 at most cap, and the intake is at most the cap",
+                mush_market::MAX_QUANTITY
+            )
+        };
+        assert_eq!(
+            with(sm5_bid("metal_ore", 240, Some((0, 240)))),
+            sentence("metal_ore")
+        );
+        assert_eq!(
+            with(sm5_bid("metal_ore", 240, Some((241, 240)))),
+            sentence("metal_ore")
+        );
+        assert_eq!(
+            with(sm5_bid("metal_ore", 241, Some((40, 240)))),
+            sentence("metal_ore")
+        );
+        assert_eq!(
+            with(sm5_bid(
+                "metal_ore",
+                1,
+                Some((1, mush_market::MAX_QUANTITY + 1))
+            )),
+            sentence("metal_ore")
+        );
+        // The lane's four rows.
+        for (good, intake, per, cap) in [
+            ("metal_ore", 240, 40, 240),
+            ("carbon_ore", 120, 20, 120),
+            ("strategic_ore", 12, 2, 12),
+            ("ice_ore", 240, 40, 240),
+        ] {
+            assert_eq!(
+                with(sm5_bid(good, intake, Some((per, cap)))),
+                "accepted",
+                "{good}"
+            );
+        }
+        // The bounds themselves are admitted.
+        assert_eq!(with(sm5_bid("metal_ore", 1, Some((1, 1)))), "accepted");
+        // The wire: `refresh` is skipped when absent and strict when present.
+        let bare = serde_json::to_value(sm5_bid("metals", 1, None)).unwrap_or_default();
+        assert!(bare.get("refresh").is_none());
+        assert!(
+            serde_json::from_value::<RefreshDef>(
+                serde_json::json!({"per_ic_day": 1, "cap": 1, "x": 1})
+            )
+            .is_err()
+        );
+    }
+
+    /// **Doc 20 cut SM.5 (§7.3; lead ruling 3)**: a raise appends its own tranches to
+    /// the base's, every tranche at most 800,000.
+    #[test]
+    fn sm5_the_capital_schedule_appends_each_raise() {
+        assert_eq!(capital_schedule(50_000, &[250_000]), vec![50_000, 250_000]);
+        let mut want = vec![800_000; 5];
+        want.extend([800_000, 100_000]);
+        assert_eq!(capital_schedule(4_000_000, &[900_000]), want);
+        assert_eq!(capital_schedule(50_000, &[]), vec![50_000]);
+        assert_eq!(
+            capital_schedule(50_000, &[250_000, 1]),
+            vec![50_000, 250_000, 1]
+        );
+        let mut occator = org("occator", 50_000);
+        occator.raises = vec![250_000];
+        assert_eq!(occator.capital_total(), Some(300_000));
+        // The bounds.
+        let sentence = format!(
+            "org occator: raises: at most {MAX_CAPITAL_RAISES}, each 1..={MAX_PORT_CAPITAL_MAJOR}, \
+             and the capital with every raise at most {MAX_PORT_CAPITAL_MAJOR}"
+        );
+        let with = |raises: Vec<u64>| {
+            let mut def = port();
+            let mut occator = org("occator", 50_000);
+            occator.raises = raises;
+            def.orgs.push(occator);
+            refused(&def)
+        };
+        assert_eq!(with(vec![250_000]), "accepted");
+        assert_eq!(with(vec![0]), sentence);
+        assert_eq!(with(vec![MAX_PORT_CAPITAL_MAJOR + 1]), sentence);
+        assert_eq!(
+            with(vec![MAX_PORT_CAPITAL_MAJOR]),
+            sentence,
+            "the total passes the bound"
+        );
+        assert_eq!(with(vec![1; MAX_CAPITAL_RAISES]), "accepted");
+        assert_eq!(with(vec![1; MAX_CAPITAL_RAISES + 1]), sentence);
+        // The wire: `raises` is skipped when empty.
+        let bare = serde_json::to_value(org("occator", 50_000)).unwrap_or_default();
+        assert!(bare.get("raises").is_none());
+    }
+
+    /// **Doc 20 cut SM.5 (§9.1)**: the licence block's bounds, and a site authors none.
+    #[test]
+    fn sm5_a_licence_block_is_bounded() {
+        let licence = LicenceDef {
+            org: cid("trust"),
+            fee_major: 2_500,
+            term_ic_days: 168,
+            grace_ic_days: 3,
+        };
+        let with = |edit: &dyn Fn(&mut LicenceDef)| {
+            let mut def = port();
+            let mut block = licence.clone();
+            edit(&mut block);
+            def.licence = Some(Box::new(block));
+            refused(&def)
+        };
+        assert_eq!(with(&|_| {}), "accepted");
+        assert_eq!(
+            with(&|l| l.org = cid("nobody")),
+            "licence: org nobody is not one of this port's orgs"
+        );
+        assert_eq!(
+            with(&|l| l.fee_major = 0),
+            format!("licence: fee_major must be 1..={MAX_LICENCE_FEE_MAJOR}, not 0")
+        );
+        assert!(
+            with(&|l| l.fee_major = MAX_LICENCE_FEE_MAJOR + 1).starts_with("licence: fee_major")
+        );
+        assert_eq!(
+            with(&|l| l.term_ic_days = 0),
+            format!("licence: term_ic_days must be 1..={MAX_LICENCE_TERM_IC_DAYS}, not 0")
+        );
+        assert!(
+            with(&|l| l.term_ic_days = MAX_LICENCE_TERM_IC_DAYS + 1)
+                .starts_with("licence: term_ic_days")
+        );
+        assert_eq!(
+            with(&|l| l.grace_ic_days = 169),
+            "licence: grace_ic_days must be at most the term (168), not 169"
+        );
+        assert_eq!(with(&|l| l.grace_ic_days = 168), "accepted");
+        let mut site = site_port();
+        site.licence = Some(Box::new(licence.clone()));
+        assert_eq!(
+            refused(&site),
+            "site: a site authors no orgs, rooms, programme, vendors, premium or emergency, and \
+             no vehicles or licence block; its pad is its gallery"
+        );
+        assert!(
+            serde_json::from_value::<LicenceDef>(serde_json::json!({
+                "org": "x", "fee_major": 1, "term_ic_days": 1, "grace_ic_days": 0, "extra": 1
+            }))
+            .is_err()
+        );
+    }
+
+    /// A pack entry from its JSON.
+    fn sm5_entry(value: serde_json::Value) -> PackEntry {
+        serde_json::from_value(value).unwrap_or_else(|error| panic!("an entry: {error}"))
+    }
+
+    /// Two ports, `ceres_port` (the programme's, at the `here` location) and
+    /// `stickney_port` (a vendor asking `metals`, at `there`), routed to each other.
+    fn sm5_two_ports(edit: &dyn Fn(&mut ProgrammeDef)) -> BTreeMap<CanonicalId, PackEntry> {
+        let mut ceres = port();
+        if let Some(programme) = ceres.programme.as_mut() {
+            edit(programme);
+        }
+        let mut stickney = port();
+        stickney.programme = None;
+        stickney.venue = cid("stickney");
+        stickney.location = cid("there");
+        stickney.orgs = vec![org("kasei", 1_000)];
+        stickney.routes = BTreeMap::from([(cid("ceres"), vec![cid("back")])]);
+        stickney.vendors.push(sm5_vendor(
+            "kasei",
+            "npc.kasei_clerk",
+            &["metals"],
+            Vec::new(),
+        ));
+        let place = |label: &str| {
+            sm5_entry(serde_json::json!({
+                "kind": "location", "def": { "label": label, "role": "port" }
+            }))
+        };
+        let route = |from: &str, to: &str| {
+            sm5_entry(serde_json::json!({
+                "kind": "route",
+                "def": { "from": from, "to": to, "legs": [ { "to": to, "base_s": 1 } ],
+                         "drive_class": "coast_hauler", "propellant": 0 }
+            }))
+        };
+        BTreeMap::from([
+            (cid("here"), place("Here")),
+            (cid("there"), place("There")),
+            (cid("out"), route("here", "there")),
+            (cid("back"), route("there", "here")),
+            (
+                cid("ceres_port"),
+                sm5_entry(serde_json::json!({ "kind": "port", "def": ceres })),
+            ),
+            (
+                cid("stickney_port"),
+                sm5_entry(serde_json::json!({ "kind": "port", "def": stickney })),
+            ),
+        ])
+    }
+
+    /// **Doc 20 cut SM.5 (§7.4, Q-20-5)**: a fixed reference is only for a good no port
+    /// of the lane asks; never also a reference listing; never 0; always a trade good.
+    #[test]
+    fn sm5_a_fixed_reference_is_only_for_a_good_no_port_asks() {
+        let check = |edit: &dyn Fn(&mut ProgrammeDef)| {
+            check_ports(&sm5_two_ports(edit)).err().map_or_else(
+                || "accepted".to_owned(),
+                |(entry, detail)| format!("{entry}: {detail}"),
+            )
+        };
+        assert_eq!(check(&|_| {}), "accepted");
+        assert_eq!(
+            check(&|p| {
+                p.reference_minor.insert(cid("metal_ore"), 3_500);
+            }),
+            "accepted"
+        );
+        assert_eq!(
+            check(&|p| {
+                p.reference_minor.insert(cid("metals"), 10_000);
+            }),
+            "ceres_port: programme coop.first_captain: reference_minor metals: a fixed \
+             reference is only for a good no port of this lane asks, and port stickney_port asks it"
+        );
+        assert_eq!(
+            check(&|p| {
+                p.reference
+                    .insert(cid("metal_ore"), "ceres_port/coop".to_owned());
+                p.reference_minor.insert(cid("metal_ore"), 3_500);
+            }),
+            "ceres_port: programme coop.first_captain: metal_ore has both a reference listing \
+             and a fixed reference"
+        );
+        assert_eq!(
+            check(&|p| {
+                p.reference_minor.insert(cid("metal_ore"), 0);
+            }),
+            "ceres_port: programme coop.first_captain: reference_minor metal_ore must be at least 1"
+        );
+        assert_eq!(
+            check(&|p| {
+                p.reference_minor.insert(cid("provisions"), 100);
+            }),
+            "ceres_port: programme coop.first_captain: reference_minor provisions is not a trade \
+             good of the goods table"
+        );
     }
 }

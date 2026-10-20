@@ -531,6 +531,17 @@ pub struct PortTickState {
     /// Doc 18 cut IC10: the bid re-posts the market refused this boot, by `(vault,
     /// good)` — each is logged once.
     pub(crate) bid_warned: BTreeSet<(u64, CanonicalId)>,
+    /// Doc 20 cut SM.5 (§7.3; reviewer F10): the intake drip's warnings this boot, by
+    /// `(vault, good, kind)` — keyed apart by [`crate::port::stock::DripWarn`], so a
+    /// first warning never hides the second; each is logged once.
+    pub(crate) drip_warned: BTreeSet<(u64, CanonicalId, crate::port::stock::DripWarn)>,
+    /// Doc 20 cut SM.5 (lead ruling L24's rule, applied to the drip): the refresh rows
+    /// whose drip act the market refused having moved nothing, by `(vault, good)`, with
+    /// the IC day of that refusal. The drip passes over such a row for the rest of that
+    /// IC day, so one row's standing refusal (a suspended house, a listing cap) never
+    /// stalls the other intakes or the lapsed-bid re-post behind it. Bounded by
+    /// `crate::port::stock::MAX_CLERK_ROWS`.
+    pub(crate) drip_refused: BTreeMap<(u64, CanonicalId), i64>,
     /// Doc 19 cut A.4b: when each port's emergency reading was last taken with
     /// nothing to do, by entry id (real seconds); the clerk reads it again
     /// `crate::port::price::EMERGENCY_CHECK_SECS` later.

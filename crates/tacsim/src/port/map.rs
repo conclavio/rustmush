@@ -236,6 +236,11 @@ pub struct BidRow {
     /// a bid that is gone because it lapsed (re-posted by the next apply when its
     /// intake is unchanged) from one gone before it (exhausted — "not buying").
     pub expires: i64,
+    /// **Doc 20 cut SM.5 (§7.3)**: the IC instant of the row's last post, which the
+    /// intake drip (`crate::port::stock`) measures its one-a-day boundary from.
+    /// `None` on a row written before the cut, read as "a boundary has passed".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub posted_ic: Option<i64>,
 }
 
 impl PortMap {
@@ -284,12 +289,19 @@ pub struct PortOrgRow {
     /// completed (an apply that stopped part way); different, the entry is
     /// refused as drift — never topped up, even when the recorded tranches are
     /// a prefix of the new list (4,000,000 → 4,800,000 is five rows of 800,000
-    /// either way).
+    /// either way). Since doc 20 cut SM.5 capital is added only by an appended
+    /// raise ([`PortOrgRow::raises`]), never by a changed base.
     pub capital_major: u64,
     /// `AccountId.0`: the org's scoped `tacsim.credit` account.
     pub account: Option<u64>,
     /// The tranche obligations made so far, in tranche order.
     pub capital: Vec<TrancheRow>,
+    /// **Doc 20 cut SM.5 (§7.3)**: the capital raises the row has begun, a prefix
+    /// of the authored `PortOrgDef.raises`. The tranche schedule is
+    /// `capital_schedule(capital_major, raises)`; a later apply whose authored raises
+    /// do not extend these is refused as drift.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub raises: Vec<u64>,
 }
 
 /// **One capital tranche** (D-18-14): its index in `tranches(capital_major)`,

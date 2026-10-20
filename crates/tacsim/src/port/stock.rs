@@ -2,7 +2,7 @@
 //! "Finite seeded stock", "The driver"; D-18-26, D-18-32, Q-18-31; lead rulings L4,
 //! L5, L7, L19, L20).
 //!
-//! Three things live here, all driven by the `tacsim.port` tick
+//! Four things live here, all driven by the `tacsim.port` tick
 //! ([`crate::port_tick`]), which runs as GOD and submits nothing itself: every
 //! authoritative act below is made inside `Fire::as_principal`, as the principal it
 //! is for, at most one per principal per fire (D-18-32).
@@ -22,6 +22,19 @@
 //!   when no listing stands, no Draw on the pool is in flight and the pool holds
 //!   stock (lead ruling L5's one rule). The drift check pages once per boot per pool
 //!   (lead ruling L19). The clerk is a Thing: nobody is notified.
+//! - **The intake drip** (`drip_step`; doc 20 cut SM.5, §7.3, Q-20-11): the stock
+//!   arm's step for a bid with a `refresh` (the Ceres ore intakes), after the ask list
+//!   step and before the lapsed-bid re-post. Once an IC-day boundary has passed since
+//!   the row's last post (`BidRow.posted_ic`), the clerk withdraws the standing bid
+//!   and posts it afresh at `min(cap, unfilled + per_ic_day)` within what the house
+//!   can fund (`drip_target`); one act a fire. A standing bid near its deadline is
+//!   renewed at its standing quantity, a lapsed one comes back at one drip, and one
+//!   withdrawn by hand waits for its deadline. **One drip per IC day at most**, measured
+//!   from the last post: downtime accrues nothing beyond one, and a row that waited at
+//!   its cap through a quiet IC day holds **one banked drip** (its `posted_ic` is not
+//!   advanced), spent at the first fire after a sale into it — never more than one. A
+//!   row whose act the market refused having moved nothing waits for the next IC day,
+//!   so it never stalls the rows after it (lead ruling L24's rule).
 //! - **The lapsed-hold release arm** (`release_verify`, `release_agent`,
 //!   `release_step`): a player's hold-backed lot listing that lapsed is released
 //!   by the tick acting **as the vault's owner** through
@@ -522,8 +535,9 @@ fn swapped(result: Result<(), SwapRefused>) -> Step {
 /// step for the port's clerk this fire — the first that is due, in authored order: mint
 /// a row with no receipt, dissolve a minted lot still standing at the storefront, then
 /// (every row seeded) list an ask whose pool has stock, no live listing and no Draw in
-/// flight, then (doc 18 cut IC10, lead 2h-ii) re-post a lapsed standing bid. The drift
-/// check takes no step. Nothing is notified: the clerk is a Thing.
+/// flight, then (doc 20 cut SM.5) the intake drip for a refreshed bid, then (doc 18 cut
+/// IC10, lead 2h-ii) re-post a lapsed standing bid. The drift check takes no step.
+/// Nothing is notified: the clerk is a Thing.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn stock_step(
     ctx: &mut Ctx<'_>,
@@ -709,6 +723,11 @@ pub(crate) fn stock_step(
         }
     }
     let Some((vendor, vault, good, price_major, pool)) = due else {
+        // Doc 20 cut SM.5 (lead ruling 4): the intake drip, before the lapsed-bid
+        // re-post (which never touches a refresh row).
+        if let Some(step) = drip_step(ctx, state, fire, clerk, &map, &def) {
+            return step;
+        }
         return bid_step(ctx, state, fire, clerk, &map, &def);
     };
     let Some(price) = ask_price(ctx.w, price_major) else {
@@ -774,6 +793,11 @@ fn bid_step(
             continue;
         };
         for bid in &vendor.bids {
+            // Doc 20 cut SM.5 (lead ruling 4): a refreshed intake is the drip's, and
+            // `posts_afresh` is never consulted for it.
+            if bid.refresh.is_some() {
+                continue;
+            }
             let Some(recorded) = row.bids.get(&bid.good) else {
                 continue;
             };
@@ -816,6 +840,8 @@ fn bid_step(
             {
                 recorded.listing = listing.0;
                 recorded.expires = expires;
+                // Doc 20 cut SM.5: every post records its IC instant.
+                recorded.posted_ic = Some(ctx.w.world_ic_now().at);
                 crate::store::put_port_map(ctx, &map);
             }
             Step::Worked
@@ -832,6 +858,365 @@ fn bid_step(
         Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => Step::Deferred,
         Err(SwapRefused::God | SwapRefused::Gone) => Step::Refused,
     }
+}
+
+// ---- doc 20 cut SM.5: the intake drip ----------------------------------------------
+
+/// **How close to its recorded deadline a standing refresh bid is renewed**, real
+/// seconds (doc 20 cut SM.5; reviewer F2): one real day. A standing intake whose
+/// deadline is within it (or already past, unswept) is withdrawn and re-posted, so an
+/// untouched intake never ages to the market's 90-day TTL.
+pub(crate) const DRIP_RENEW_SECS: i64 = 86_400;
+
+/// An IC day, seconds: the drip's boundary is a change of `instant.div_euclid(IC_DAY)`.
+const IC_DAY: i64 = 86_400;
+
+/// **Why the drip warned** (doc 20 cut SM.5; reviewer F10): two keys, so the first
+/// warning of a `(vault, good)` never hides the second.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum DripWarn {
+    /// The house cannot fund one unit of the intake: nothing is posted.
+    Unfunded,
+    /// The market refused the drip's withdraw or post.
+    Refused,
+}
+
+/// **The drip's target** (doc 20 §7.3, Q-20-11; cut SM.5): `min(cap, unfilled +
+/// per_ic_day, fundable, MAX_QUANTITY)` — never past the cap, never past what the house
+/// can pay, never past the market's own bound. Pure.
+#[must_use]
+pub(crate) fn drip_target(cap: u64, per_ic_day: u64, unfilled: u64, fundable: u64) -> u64 {
+    cap.min(unfilled.saturating_add(per_ic_day))
+        .min(fundable)
+        .min(mush_market::MAX_QUANTITY)
+}
+
+/// **What a lapsed refresh row comes back at** (doc 20 §7.3; owner-critical default,
+/// decision 20): **one drip**, within the house's funds — `drip_target(cap, per_ic_day,
+/// 0, fundable)`. The one rule the drip's case 4 and the port applier's part (e).8 (a
+/// staff `@atlas/pack apply` of a later version while an intake is lapsed) both post
+/// by, so the two cannot drift (the lead's pre-commit round, item 2). Pure.
+#[must_use]
+pub(crate) fn lapsed_drip(refresh: crate::port::def::RefreshDef, fundable: u64) -> u64 {
+    drip_target(refresh.cap, refresh.per_ic_day, 0, fundable)
+}
+
+/// **Whether a drip target of 0 is the house's want of funds** (the lead's pre-commit
+/// round, item 3(c)): only when it cannot fund one unit. A target of 0 also comes from a
+/// renewal due with no IC-day boundary passed over an exhausted bid (`unfilled 0`, `per
+/// 0`), which is no warning: warning it would spend the once-a-boot `Unfunded` key for
+/// that `(vault, good)` and hide a later genuine one. `None` when no warning is owed.
+/// Pure.
+#[must_use]
+pub(crate) fn drip_zero_warning(target: u64, fundable: u64) -> Option<DripWarn> {
+    (target == 0 && fundable == 0).then_some(DripWarn::Unfunded)
+}
+
+/// How one drip act landed, for [`drip_row`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DripLanded {
+    /// The new listing stands, with its deadline.
+    Posted {
+        /// The new listing.
+        listing: u64,
+        /// Its real-time deadline.
+        expires: i64,
+    },
+    /// The standing listing was withdrawn and the post then refused.
+    RefusedAfterWithdraw,
+    /// The withdraw (or a post with nothing to withdraw) was refused: nothing moved.
+    Refused,
+}
+
+/// **The `BidRow` a drip act leaves** (doc 20 cut SM.5): pure, so case 5's bookkeeping
+/// is tested without a world. A post rewrites only the row's `listing`, `expires` and
+/// `posted_ic` (an unrecorded row is recorded whole, at the authored price and intake —
+/// the drip never touches those, which the applier compares); a post refused after its
+/// withdraw landed rewrites only `expires = now`, so the row reads lapsed and the next
+/// fire posts one drip (case 4); a refusal that moved nothing writes nothing (`None`).
+#[must_use]
+pub(crate) fn drip_row(
+    recorded: Option<&crate::port::BidRow>,
+    bid: &crate::port::def::BidDef,
+    landed: DripLanded,
+    now: i64,
+    now_ic: i64,
+) -> Option<crate::port::BidRow> {
+    match (landed, recorded) {
+        (DripLanded::Posted { listing, expires }, Some(row)) => Some(crate::port::BidRow {
+            listing,
+            expires,
+            posted_ic: Some(now_ic),
+            ..row.clone()
+        }),
+        (DripLanded::Posted { listing, expires }, None) => Some(crate::port::BidRow {
+            listing,
+            price_major: bid.price_major,
+            intake: bid.intake,
+            expires,
+            posted_ic: Some(now_ic),
+        }),
+        (DripLanded::RefusedAfterWithdraw, Some(row)) => Some(crate::port::BidRow {
+            expires: now,
+            ..row.clone()
+        }),
+        (DripLanded::RefusedAfterWithdraw | DripLanded::Refused, _) => None,
+    }
+}
+
+/// One drip act chosen for this fire.
+struct DripAct {
+    org: CanonicalId,
+    bid: crate::port::def::BidDef,
+    vault: VaultId,
+    vendor: mush_market::VendorId,
+    price: Amount,
+    /// The standing listing to withdraw first, if any.
+    withdraw: Option<ListingId>,
+    /// The quantity to post.
+    target: u64,
+}
+
+/// Warn once a boot under `(vault, good, kind)`.
+fn drip_warn(
+    state: &mut PortTickState,
+    vault: u64,
+    good: &CanonicalId,
+    kind: DripWarn,
+    detail: &str,
+) {
+    if state.drip_warned.insert((vault, good.clone(), kind)) {
+        match kind {
+            DripWarn::Unfunded => tracing::warn!(
+                vault, good = %good,
+                "tacsim: a house cannot fund a unit of its ore intake; it posts nothing"
+            ),
+            DripWarn::Refused => tracing::warn!(
+                vault, good = %good, error = detail,
+                "tacsim: the clerk's intake drip was refused"
+            ),
+        }
+    }
+}
+
+/// **The intake drip** (doc 20 §7.3, Q-20-11; cut SM.5, lead ruling 4): the stock arm's
+/// step for the refreshed intakes (`BidDef.refresh`), after the ask list step and
+/// before the lapsed-bid re-post, which never touches a refresh row. It walks the
+/// refresh rows in authored order (vendors, then bids) whose vendor row names a market
+/// vendor, and **the first row with something to do acts — one act a fire**:
+///
+/// 1. **Unrecorded** (the apply never posted it): post the opening intake (within the
+///    house's funds) and record the row — a world whose apply never posted it heals.
+/// 2. **Standing, renewal due** (its recorded deadline within [`DRIP_RENEW_SECS`], or
+///    past and unswept): re-post at `drip_target(cap, boundary ? per_ic_day : 0,
+///    unfilled, fundable)`, **even at the standing quantity** (reviewer F2: a bid at its
+///    cap is never sold into and would otherwise age to the market's TTL); a target of
+///    0 is left to lapse.
+/// 3. **Standing, an IC-day boundary passed since the row's last post** (`posted_ic`),
+///    and the target differs from the unfilled intake: re-post at the target — **smaller
+///    too**, when the house's funds bound it (reviewer F10: a standing bid never promises
+///    more than the house can pay). A target of 0 leaves the standing listing as it is
+///    (the sale's own funds check refuses an unfunded sale) and warns once a boot. A
+///    target equal to the unfilled intake does nothing and **does not advance
+///    `posted_ic`**, so a row that waited at its cap through a quiet IC day keeps **one
+///    banked drip**, which the first fire after a sale into it spends at once — at most
+///    one drip, never more (decision 4b).
+/// 4. **Gone past its recorded deadline** (it lapsed: the server was down across the
+///    renewal window, or an unfunded house let it lapse): post **one drip** at once
+///    (owner-critical default, decision 20).
+/// 5. **Gone before its recorded deadline**: withdrawn by hand, and — `posts_afresh`'s
+///    rule — not re-posted until that deadline, after which case 4 holds. The drip's own
+///    withdraw-then-refused-post marks the row lapsed (`expires = now`, [`drip_row`]) so
+///    case 4 re-posts it on the next fire.
+///
+/// The act is ONE actor swap as the clerk: withdraw the standing listing, then
+/// `post_wanted` at the target through the applier's own `wanted_spec`; only that
+/// `BidRow`'s `listing`, `expires` and `posted_ic` are rewritten. The authored price
+/// is posted (`bid_price_major`: ore has no reach premium). Every refresh act churns
+/// the bid's listing id (decision 19). A refused act that moved nothing (the withdraw
+/// refused, or a post with nothing to withdraw) is `Step::Refused` this fire and the
+/// row is passed over for the rest of that IC day (`PortTickState::drip_refused`,
+/// lead ruling L24's rule), so one row's standing refusal never stalls the other
+/// intakes or the lapsed-bid re-post. `None` when no refresh row has anything to do —
+/// the stock arm goes on.
+fn drip_step(
+    ctx: &mut Ctx<'_>,
+    state: &mut PortTickState,
+    fire: &mut Fire,
+    clerk: ObjId,
+    map: &PortMap,
+    def: &PortDef,
+) -> Option<Step> {
+    let now = ctx.w.now();
+    let now_ic = ctx.w.world_ic_now().at;
+    let mut act: Option<DripAct> = None;
+    'vendors: for vendor in &def.vendors {
+        let Some(row) = map.vendors.get(&vendor.org) else {
+            continue;
+        };
+        let Some(vendor_id) = row.vendor.map(mush_market::VendorId) else {
+            continue;
+        };
+        for bid in &vendor.bids {
+            let Some(refresh) = bid.refresh else {
+                continue;
+            };
+            // A row the market refused today, having moved nothing, waits for the next
+            // IC day: it never stalls the rows after it (lead ruling L24's rule).
+            if state
+                .drip_refused
+                .get(&(row.vault, bid.good.clone()))
+                .is_some_and(|day| *day == now_ic.div_euclid(IC_DAY))
+            {
+                continue;
+            }
+            let Some(price) =
+                ask_price(ctx.w, crate::port::price::bid_price_major(ctx.w, def, bid))
+            else {
+                continue;
+            };
+            let recorded = row.bids.get(&bid.good);
+            let (standing, fundable) = {
+                let market = ctx.w.module_state::<MarketStore>()?;
+                let standing = recorded.and_then(|r| {
+                    market
+                        .listing(ListingId(r.listing))
+                        .map(|listing| (listing.id, listing.quantity))
+                });
+                let fundable =
+                    crate::port::board::vendor_fundable_units(ctx.w, market, vendor_id, price);
+                (standing, fundable)
+            };
+            // (target, withdraw), or the next row.
+            let chosen: Option<(u64, Option<ListingId>)> = match (recorded, standing) {
+                // 1. Unrecorded.
+                (None, _) => Some((
+                    bid.intake.min(fundable).min(mush_market::MAX_QUANTITY),
+                    None,
+                )),
+                (Some(r), Some((listing, unfilled))) => {
+                    let boundary = r
+                        .posted_ic
+                        .is_none_or(|p| p.div_euclid(IC_DAY) < now_ic.div_euclid(IC_DAY));
+                    if r.expires.saturating_sub(now) <= DRIP_RENEW_SECS {
+                        // 2. Renewal due.
+                        let per = if boundary { refresh.per_ic_day } else { 0 };
+                        Some((
+                            drip_target(refresh.cap, per, unfilled, fundable),
+                            Some(listing),
+                        ))
+                    } else if boundary {
+                        // 3. A boundary passed.
+                        let target =
+                            drip_target(refresh.cap, refresh.per_ic_day, unfilled, fundable);
+                        if target == unfilled {
+                            None
+                        } else {
+                            Some((target, Some(listing)))
+                        }
+                    } else {
+                        None
+                    }
+                }
+                // 4. Lapsed: one drip, at once (the applier's re-post reads the same rule).
+                (Some(r), None) if now >= r.expires => Some((lapsed_drip(refresh, fundable), None)),
+                // 5. Withdrawn by hand before its deadline: wait for it.
+                (Some(_), None) => None,
+            };
+            let Some((target, withdraw)) = chosen else {
+                continue;
+            };
+            if target == 0 {
+                // Nothing to post: the standing listing (if any) is left as it is, and
+                // the next row is read. Warned only when the house cannot fund a unit
+                // (a renewal with no boundary over an exhausted bid is no warning).
+                if let Some(kind) = drip_zero_warning(target, fundable) {
+                    drip_warn(state, row.vault, &bid.good, kind, "");
+                }
+                continue;
+            }
+            act = Some(DripAct {
+                org: vendor.org.clone(),
+                bid: bid.clone(),
+                vault: VaultId(row.vault),
+                vendor: vendor_id,
+                price,
+                withdraw,
+                target,
+            });
+            break 'vendors;
+        }
+    }
+    let act = act?;
+    let posted = crate::port::def::BidDef {
+        intake: act.target,
+        ..act.bid.clone()
+    };
+    let spec = crate::port::vendor::wanted_spec(act.vendor, act.vault, &posted, act.price);
+    let withdraw = act.withdraw;
+    let outcome = fire.as_principal(ctx, clerk, clerk, |ctx| {
+        if let Some(listing) = withdraw {
+            mush_market::withdraw_listing(ctx, listing)
+                .map_err(|error| (false, format!("{error:?}")))?;
+        }
+        mush_market::post_wanted(ctx, spec)
+            .map_err(|error| (withdraw.is_some(), format!("{error:?}")))
+    });
+    let recorded = map
+        .vendors
+        .get(&act.org)
+        .and_then(|row| row.bids.get(&act.bid.good))
+        .cloned();
+    let refused_key = (act.vault.0, act.bid.good.clone());
+    let (landed, step) = match outcome {
+        Ok(Ok(listing)) => {
+            state.drip_refused.remove(&refused_key);
+            let expires = ctx
+                .w
+                .module_state::<MarketStore>()
+                .and_then(|s| s.listing(listing).map(|l| l.expires.at))
+                .unwrap_or_else(|| now.saturating_add(mush_market::MAX_LISTING_TTL_SECS));
+            (
+                DripLanded::Posted {
+                    listing: listing.0,
+                    expires,
+                },
+                Step::Worked,
+            )
+        }
+        Ok(Err((withdrew, error))) => {
+            drip_warn(state, act.vault.0, &act.bid.good, DripWarn::Refused, &error);
+            let landed = if withdrew {
+                // The withdraw landed: the row is marked lapsed (case 5) and the next
+                // fire posts it again.
+                DripLanded::RefusedAfterWithdraw
+            } else {
+                // Nothing moved: the row waits for the next IC day, and the next fire
+                // reads the rows after it.
+                if state.drip_refused.contains_key(&refused_key)
+                    || state.drip_refused.len() < MAX_CLERK_ROWS
+                {
+                    state
+                        .drip_refused
+                        .insert(refused_key, now_ic.div_euclid(IC_DAY));
+                }
+                DripLanded::Refused
+            };
+            (landed, Step::Refused)
+        }
+        Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => {
+            return Some(Step::Deferred);
+        }
+        Err(SwapRefused::God | SwapRefused::Gone) => return Some(Step::Refused),
+    };
+    if let Some(row) = drip_row(recorded.as_ref(), &act.bid, landed, now, now_ic) {
+        let mut map = map.clone();
+        if let Some(vendor) = map.vendors.get_mut(&act.org) {
+            vendor.bids.insert(act.bid.good.clone(), row);
+            crate::store::put_port_map(ctx, &map);
+        }
+    }
+    Some(step)
 }
 
 // ---- doc 19 cut A.4b: the emergency bids -----------------------------------------
@@ -956,6 +1341,7 @@ fn emergency_step(
                 intake: emergency.intake,
                 as_name: None,
                 boards: Vec::new(),
+                refresh: None,
             };
             let spec = crate::port::vendor::wanted_spec(vendor, vault, &bid, price);
             match fire.as_principal(ctx, clerk, clerk, |ctx| mush_market::post_wanted(ctx, spec)) {
@@ -973,6 +1359,9 @@ fn emergency_step(
                             price_major: reference,
                             intake: emergency.intake,
                             expires,
+                            // Doc 20 cut SM.5: every post records its IC instant
+                            // (read only by the intake drip, never for this row).
+                            posted_ic: Some(ctx.w.world_ic_now().at),
                         },
                     );
                     crate::store::put_port_map(ctx, &map);
@@ -1241,6 +1630,159 @@ mod tests {
         assert!(
             rows_of(std::iter::once(&map), ObjId(41)).is_empty(),
             "another object gets nothing"
+        );
+    }
+
+    /// Doc 20 cut SM.5 (§7.3, Q-20-11): the drip's target is the unfilled intake plus one
+    /// drip, never past the cap, the house's funds or the market's bound.
+    #[test]
+    fn sm5_the_drip_target_is_bounded_by_cap_and_funds() {
+        // A sale left 154 of 240: one drip of 40 → 194.
+        assert_eq!(drip_target(240, 40, 154, u64::MAX), 194);
+        // Never past the cap.
+        assert_eq!(drip_target(240, 40, 230, u64::MAX), 240);
+        assert_eq!(drip_target(240, 40, 240, u64::MAX), 240);
+        // Funds bound it, below the standing quantity too (reviewer F10).
+        assert_eq!(drip_target(240, 40, 154, 100), 100);
+        assert_eq!(drip_target(240, 40, 154, 0), 0);
+        // A lapsed row comes back at one drip; a renewal with no boundary keeps it.
+        assert_eq!(drip_target(240, 40, 0, u64::MAX), 40);
+        assert_eq!(drip_target(240, 0, 240, u64::MAX), 240);
+        // The market's own bound.
+        assert_eq!(
+            drip_target(u64::MAX, u64::MAX, u64::MAX, u64::MAX),
+            mush_market::MAX_QUANTITY
+        );
+        assert_eq!(drip_target(12, 2, 0, 1), 1);
+    }
+
+    /// The lead's pre-commit round, item 2 (decision 20): a lapsed refresh row comes back
+    /// at one drip within the house's funds — the one rule the drip's case 4 and the port
+    /// applier's part (e).8 both post by — never at its cap.
+    #[test]
+    fn sm5_a_lapsed_row_comes_back_at_one_drip() {
+        let metal = crate::port::def::RefreshDef {
+            per_ic_day: 40,
+            cap: 240,
+        };
+        assert_eq!(lapsed_drip(metal, u64::MAX), 40);
+        assert_eq!(lapsed_drip(metal, 25), 25, "within the house's funds");
+        assert_eq!(
+            lapsed_drip(metal, 0),
+            0,
+            "nothing an unfunded house can post"
+        );
+        let strategic = crate::port::def::RefreshDef {
+            per_ic_day: 2,
+            cap: 12,
+        };
+        assert_eq!(lapsed_drip(strategic, u64::MAX), 2);
+    }
+
+    /// The lead's pre-commit round, item 3(c): a drip target of 0 warns `Unfunded` only when
+    /// the house cannot fund a unit. A renewal due with no IC-day boundary over an exhausted
+    /// bid (`unfilled 0`, `per 0`) also targets 0 with the house funded; it warns nothing,
+    /// so the once-a-boot key stays free for a genuine want of funds later.
+    #[test]
+    fn sm5_a_zero_target_warns_only_when_the_house_cannot_fund_a_unit() {
+        // The renewal with no boundary over an exhausted bid, the house funded.
+        let renewal = drip_target(240, 0, 0, 1_000);
+        assert_eq!(renewal, 0);
+        assert_eq!(drip_zero_warning(renewal, 1_000), None);
+        // The house cannot fund a unit: warned.
+        let unfunded = drip_target(240, 40, 154, 0);
+        assert_eq!(unfunded, 0);
+        assert_eq!(drip_zero_warning(unfunded, 0), Some(DripWarn::Unfunded));
+        assert_eq!(
+            drip_zero_warning(
+                lapsed_drip(
+                    crate::port::def::RefreshDef {
+                        per_ic_day: 40,
+                        cap: 240
+                    },
+                    0
+                ),
+                0
+            ),
+            Some(DripWarn::Unfunded)
+        );
+        // A target to post is never a warning.
+        assert_eq!(drip_zero_warning(40, 0), None);
+        assert_eq!(drip_zero_warning(40, 1_000), None);
+    }
+
+    /// Doc 20 cut SM.5 (case 5): a drip post refused after its withdraw landed marks the
+    /// row lapsed (`expires = now`) and nothing else; a refusal that moved nothing writes
+    /// nothing; a post rewrites only the listing, the deadline and `posted_ic`.
+    #[test]
+    fn sm5_the_drip_row_bookkeeping() {
+        let bid = crate::port::def::BidDef {
+            good: cid("metal_ore"),
+            price_major: 70,
+            intake: 240,
+            as_name: None,
+            boards: Vec::new(),
+            refresh: Some(crate::port::def::RefreshDef {
+                per_ic_day: 40,
+                cap: 240,
+            }),
+        };
+        let row = crate::port::BidRow {
+            listing: 7,
+            price_major: 70,
+            intake: 240,
+            expires: 9_000,
+            posted_ic: Some(100),
+        };
+        assert_eq!(
+            drip_row(Some(&row), &bid, DripLanded::RefusedAfterWithdraw, 500, 600),
+            Some(crate::port::BidRow {
+                expires: 500,
+                ..row.clone()
+            })
+        );
+        assert_eq!(
+            drip_row(Some(&row), &bid, DripLanded::Refused, 500, 600),
+            None
+        );
+        assert_eq!(drip_row(None, &bid, DripLanded::Refused, 500, 600), None);
+        assert_eq!(
+            drip_row(
+                Some(&row),
+                &bid,
+                DripLanded::Posted {
+                    listing: 8,
+                    expires: 20_000
+                },
+                500,
+                600
+            ),
+            Some(crate::port::BidRow {
+                listing: 8,
+                expires: 20_000,
+                posted_ic: Some(600),
+                ..row.clone()
+            })
+        );
+        // An unrecorded row is recorded whole at the authored price and intake.
+        assert_eq!(
+            drip_row(
+                None,
+                &bid,
+                DripLanded::Posted {
+                    listing: 9,
+                    expires: 20_000
+                },
+                500,
+                600
+            ),
+            Some(crate::port::BidRow {
+                listing: 9,
+                price_major: 70,
+                intake: 240,
+                expires: 20_000,
+                posted_ic: Some(600),
+            })
         );
     }
 }

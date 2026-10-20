@@ -1013,10 +1013,12 @@ fn plan_and_apply(tw: &mut TestWorld) -> (String, String) {
 fn sm2_the_lane_carries_six_sites() {
     let pack = lane();
     assert_eq!(pack.manifest().version(), LANE_VERSION);
-    // Doc 20 cut SM.3a: v10 (the refit row and Occator's rigs; no new entry).
+    // Doc 20 cut SM.3a: v10 (the refit row and Occator's rigs; no new entry). Doc 20 cut
+    // SM.5: v11 (the ore bids, the fixed references, the licence, Occator's raise; no new
+    // entry).
     assert_eq!(
-        LANE_VERSION, 10,
-        "lane v9 since doc 20 cut SM.2, v10 since SM.3a"
+        LANE_VERSION, 11,
+        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5"
     );
     assert_eq!(
         parse_pack(LANE_JSON).expect("parses").entries().len(),
@@ -2959,11 +2961,12 @@ fn sm2_a_world_on_lane_v8_takes_v9_by_the_shelf() {
     no_refused_writes(&rig.tw);
 }
 
-/// **The apply installs the lane's tables** (reviewer T2; the `PortApplier`'s part (g)): a
-/// world seeded on lane v8 alone boots with no body table (v8 authors none, and its store
-/// loads no other version for the boot pass to read); applying v9 off the shelf lays the sites
-/// up and installs Ceres's and Vesta's tables before any reboot — from the applied pack
-/// itself, since the store does not load v9 (part (g)'s decode, the builder's decision 3).
+/// **The apply installs the lane's tables** (reviewer T2; since doc 20 cut SM.5 the definition
+/// applier's, not the `PortApplier`'s part (g)): a world seeded on lane v8 alone boots with no
+/// body table (v8 authors none, and its store loads no other version for the boot pass to
+/// read); applying the shipped lane off the shelf lays the sites up and installs Ceres's and
+/// Vesta's tables before any reboot — from the applied pack itself, as the body applier
+/// creates or updates each `body` entry (`surface::body_geology_of`).
 #[test]
 fn sm2_the_apply_installs_the_lane_tables() {
     let roster = Roster {
@@ -2992,6 +2995,51 @@ fn sm2_the_apply_installs_the_lane_tables() {
     assert_eq!(
         installed_bodies(rig.tw.world()),
         vec![cid("ceres"), cid("vesta")],
-        "part (g) installs them at the apply"
+        "the body applier installs them at the apply"
     );
+}
+
+/// **Doc 20 cut SM.5 (lead ruling 9; SM.2's residual): a body table edit installs at
+/// apply.** A lane one version past the shipped one that edits only Ceres's geology table
+/// (one province weight moved, still summing to 1,000) and touches no port, planned and
+/// applied through `@atlas/pack`, leaves the edited table installed for Ceres with no reboot:
+/// the definition applier installs a body's table wherever its entry is applied.
+#[test]
+fn sm5_a_body_table_edit_installs_at_apply() {
+    let edit = |doc: &mut Value| {
+        doc["entries"]["ceres"]["def"]["geology"]["province"]["metals"] =
+            serde_json::json!({ "lean": 550, "fair": 450 });
+    };
+    let variant = lane_variant(LANE_VERSION + 1, edit);
+    let edited =
+        tacsim::surface::lane_geologies(&load_pack(&variant).expect("the variant verifies"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .find(|body| body.body == cid("ceres"))
+            .expect("Ceres's edited table builds");
+    let roster = Roster {
+        shelf: Some(vec![
+            mush_content::load_pack(&variant).expect("the variant loads"),
+        ]),
+        ..Roster::default()
+    };
+    let mut rig = boot(roster);
+    let shipped = tacsim::surface::body_geology(rig.tw.world(), &cid("ceres"))
+        .expect("the boot installs Ceres's table");
+    assert_ne!(*shipped, edited, "the variant moves the table");
+    let (plan, apply) = plan_and_apply(&mut rig.tw);
+    assert!(
+        apply.contains(&format!(
+            "Applied {LANE_PACK}@{}: 0 created, 1 updated, 0 retired,",
+            LANE_VERSION + 1
+        )),
+        "{plan}\n{apply}"
+    );
+    let installed =
+        tacsim::surface::body_geology(rig.tw.world(), &cid("ceres")).expect("Ceres's table");
+    assert_eq!(
+        *installed, edited,
+        "installed at the apply, before any reboot"
+    );
+    no_refused_writes(&rig.tw);
 }

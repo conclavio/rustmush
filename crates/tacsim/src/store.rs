@@ -15,6 +15,7 @@
 //! | `tacsim:orders:{hull}` | per-hull sailing plan (doc 18 cut IC11: `crate::port::orders`) — the queued orders, their log and the step in flight | **skipped loudly, and the key stays claimed**: that hull's `+ship/orders` and `+ship/order` refuse (its plan cannot be read), the order arm skips it and pages once a boot; staff repair the document by editing it (a deleted one restarts its order ids only past the hull's recent tickets) |
 //! | `tacsim:tvlease:{lease}` | per-lease rig record (doc 20 cut SM.3a: `crate::port::tv`) — a terrain vehicle Occator leased into a Dray-P's bay, its slot, its deposit hold and its term | **skipped loudly, and the key stays claimed**: the record reads unreadable, which bars only its own lease — its pilot's `+tv` reads dark and the recall holds the hull for staff; staff repair the document |
 //! | `tacsim:tv:{tv}` | per-rig projection (doc 20 cut SM.3b: `crate::surface::excursion::TvRec`) — where a rig is, its open excursion, the act in flight, what the tick applied and told, a sixteen-line log | **skipped loudly, read unreadable, and it bars nothing**: the projection decides nothing (every decision reads the typed `tacsim.excursion` family), and the `tacsim.surface` tick's next write replaces it |
+//! | `tacsim:licence:{account}` | per-gateway-account prospecting licence (doc 20 cut SM.5: `crate::port::licence`) — its holder, entitlement account, expiry, grace and last fee contract | **skipped loudly, and the key still bars the account**: that account's licence reads unreadable, so `+licence/buy` and every licence-gated act (`+tv/lease` now) refuse, and staff repair the document |
 //! | `tacsim:geology` | world pin (doc 20 cut SM.1; Q-20-12) — the geology key's fingerprint | **skipped loudly, and the key still bars a rewrite**: the geology layer reads disabled ("tacsim:geology cannot be read") on the readiness line; staff repair the document, after restoring the key directory |
 //! | `tacsim:meta` | allocators | tolerated field by field, floors re-derived from every **parsed key**, loaded or not (E6b's R8 finding). Losing it costs nothing |
 //!
@@ -325,6 +326,16 @@ pub struct TacsimStore {
     /// [`put_tv_rec`]; an unreadable body is [`crate::surface::excursion::TvRecState::Unreadable`]
     /// and bars nothing (the projection decides nothing; the tick's next write replaces it).
     pub(crate) tv_recs: BTreeMap<u32, crate::surface::excursion::TvRecState>,
+    /// **Doc 20 cut SM.5** (§9.1, D-20-12) — `tacsim:licence:{account}`: each
+    /// gateway account's prospecting licence ([`crate::port::licence::Licence`]),
+    /// keyed by the immutable account id (one licence an account, the enrolment
+    /// pattern). Persisted through [`put_licence`]; read at every licence-gated act,
+    /// never written by a tick.
+    pub(crate) licences: BTreeMap<mush_core::AccountId, crate::port::licence::Licence>,
+    /// **Every `tacsim:licence:` key seen at load or written**, readable or not (the
+    /// R8 rule): a claimed key with no readable body is
+    /// [`crate::port::licence::LicenceState::Unreadable`] and bars that account.
+    pub(crate) licence_keys: BTreeSet<SmolStr>,
 }
 
 impl TacsimStore {
@@ -497,6 +508,33 @@ impl TacsimStore {
             }
             crate::port::tv::TvLeaseState::Present(_) => false,
         })
+    }
+
+    /// **One gateway account's prospecting licence** (doc 20 cut SM.5): absent,
+    /// readable, or a key whose body did not read — the last bars that account's
+    /// `+licence/buy` and every licence-gated act.
+    #[must_use]
+    pub fn licence_state(
+        &self,
+        account: mush_core::AccountId,
+    ) -> crate::port::licence::LicenceState<'_> {
+        match self.licences.get(&account) {
+            Some(record) => crate::port::licence::LicenceState::Present(record),
+            None if self
+                .licence_keys
+                .contains(&crate::port::licence::licence_key(account)) =>
+            {
+                crate::port::licence::LicenceState::Unreadable
+            }
+            None => crate::port::licence::LicenceState::Absent,
+        }
+    }
+
+    /// The readable licence whose `holder` is `pilot` (a scan, bounded by the
+    /// licences): the fallback when no account oracle answers for the pilot.
+    #[must_use]
+    pub fn licence_of_holder(&self, pilot: ObjId) -> Option<&crate::port::licence::Licence> {
+        self.licences.values().find(|record| record.holder == pilot)
     }
 
     /// **One rig's projection** (doc 20 cut SM.3b; §8): `tacsim:tv:{tv}` as the store
@@ -1628,6 +1666,36 @@ pub(crate) fn put_enrolment(ctx: &mut Ctx<'_>, e: &crate::port::coop::Enrolment)
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
+/// **Install a prospecting licence into RAM and queue its document** (doc 20 cut
+/// SM.5) — the single write path, [`put_enrolment`]'s exact pattern: the RAM
+/// install (the record and its key), then one whole-document `JsonSet`. The
+/// serialize failure is structurally unreachable; if it ever happened, it logs and
+/// writes a minimal `{schema, account}` body so **the key still exists** — which
+/// loads as unreadable and bars that account until staff repair it.
+pub(crate) fn put_licence(ctx: &mut Ctx<'_>, record: &crate::port::licence::Licence) {
+    let key = crate::port::licence::licence_key(record.account);
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.licence_keys.insert(key.clone());
+        store.licences.insert(record.account, record.clone());
+    }
+    let value = match serde_json::to_value(record) {
+        Ok(value) => value,
+        Err(error) => {
+            // Never the key: its tail is the account's canonical hash.
+            tracing::error!(
+                holder = record.holder.0, %error,
+                "tacsim: a licence did not serialize; a minimal document is written so the key \
+                 still bars the account. Repair the document by hand."
+            );
+            serde_json::json!({
+                "schema": record.schema,
+                "account": record.account,
+            })
+        }
+    };
+    push_op(ctx.out, ModuleWrite::JsonSet { key, value });
+}
+
 /// **Install a rig lease record into RAM and queue its document** (doc 20 cut
 /// SM.3a) — the single write path, [`put_enrolment`]'s exact pattern: the RAM
 /// install, then one whole-document `JsonSet`. The serialize failure is
@@ -1970,6 +2038,12 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             // re-enrolment, and staff repair the document.
             store.enrolment_keys.insert(SmolStr::new(key));
             load_enrolment(&mut store, key, value);
+        } else if key.starts_with(crate::port::licence::LICENCE_PREFIX) {
+            // Doc 20 cut SM.5. The claim is the KEY's (the R8 rule): a licence that
+            // will not read still bars its account (its licence reads unreadable), and
+            // staff repair the document.
+            store.licence_keys.insert(SmolStr::new(key));
+            load_licence(&mut store, key, value);
         } else if let Some(rest) = key.strip_prefix(crate::port::tv::TV_LEASE_PREFIX) {
             // Doc 20 cut SM.3a. The claim is the KEY's (the R8 rule): a rig lease record
             // that will not read stays claimed as unreadable, which bars only its own
@@ -2210,6 +2284,34 @@ fn load_enrolment(store: &mut TacsimStore, key: &str, value: &serde_json::Value)
             %error,
             "tacsim: an enrolment document is unreadable; skipped (its key still bars that \
              account's re-enrolment; repair the document by hand)"
+        ),
+    }
+}
+
+/// One `tacsim:licence:{account}` body (doc 20 cut SM.5): decoded strictly, checked,
+/// and held to the identity rule (`licence_key(record.account)` is its key). Any
+/// failure skips it loudly; its key, already recorded, keeps that account's licence
+/// `Unreadable`. **No warning names the key or the account** (the enrolment loader's
+/// rule: the key's tail is the account's canonical hash).
+fn load_licence(store: &mut TacsimStore, key: &str, value: &serde_json::Value) {
+    let record = serde_json::from_value::<crate::port::licence::Licence>(value.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|record| record.check().map(|()| record))
+        .and_then(|record| {
+            if crate::port::licence::licence_key(record.account) == key {
+                Ok(record)
+            } else {
+                Err("the licence disagrees with its own key".to_owned())
+            }
+        });
+    match record {
+        Ok(record) => {
+            store.licences.insert(record.account, record);
+        }
+        Err(error) => tracing::warn!(
+            %error,
+            "tacsim: a licence document is unreadable; skipped (its key still bars that \
+             account; repair the document by hand)"
         ),
     }
 }

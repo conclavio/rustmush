@@ -537,7 +537,15 @@ fn compose_server_modules(
                 .with_inventory(Arc::clone(&inventory_handles))
                 // E7c4 B2: the recipe authority reaches industry by composition,
                 // not by an edge — the impl reads `TacsimStore` at the root.
-                .with_recipes(Arc::new(self::industry_recipes::TacsimRecipeAuthority)),
+                .with_recipes(Arc::new(self::industry_recipes::TacsimRecipeAuthority))
+                // Doc 20 cut SM.5 (§9.1, D-20-12): the Freeport Registry's
+                // prospecting licence, `crate::economy::LICENCE_FREEPORT`, named to
+                // the industry authority so `mush_industry::extraction_authorized`'s
+                // licence half (`crates/mush-industry/src/licence.rs`) can at last
+                // answer Ok. Wired only on the roster that composes the TacSim
+                // layer, whose sheet module registers the instrument at boot; on
+                // every other roster industry still answers `NoLicenceInstrument`.
+                .with_licence_if(tacsim_delegate),
         ),
         // E7 cut 9 (10b §3.9, D-E7-18/-19/-20/-30/-32): the campaign layer. It
         // composes **after `mush-economy`, `mush-org` and `mush-canon`** — its
@@ -691,6 +699,24 @@ impl PortMarketSeamsExt for mush_market::MarketModule {
                 .with_proceeds_policy(Arc::new(crate::port::proceeds::CoopProceeds))
         } else {
             self
+        }
+    }
+}
+
+/// **Doc 20 cut SM.5's licence wiring, composed only where the TacSim layer is**
+/// (the [`PortMarketSeamsExt`] shape): the industry authority is told the
+/// prospecting-licence instrument ([`crate::economy::LICENCE_FREEPORT`]); the
+/// account in it is opened by `+licence/buy go` (`crate::port::licence`), and the
+/// term every licence-gated act reads first lives on tacsim's own record.
+trait IndustryLicenceExt: Sized {
+    fn with_licence_if(self, on: bool) -> Self;
+}
+
+impl IndustryLicenceExt for mush_industry::IndustryModule {
+    fn with_licence_if(self, on: bool) -> Self {
+        match (on, crate::economy::licence_instrument()) {
+            (true, Some(id)) => self.with_extraction_licence(id),
+            _ => self,
         }
     }
 }

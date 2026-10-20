@@ -51,8 +51,14 @@ pub mod ground;
 /// **17b cut M5.1**: the holdings seam's test provider — Standard Doctrine and
 /// two scripted fixture minds, installed through the production seam.
 pub mod holdings;
+/// **Doc 20 cut SM.5**: a prospecting licence bought through `+licence/buy go`, for every
+/// suite whose pilots lease a rig.
+pub mod licence;
 /// **Doc 19 cut A.8**: the moon ports stripped away for the v7-shaped lane variants.
 pub mod moon;
+/// **Doc 20 cut SM.5**: the ore bids, the fixed references, the licence block and
+/// Occator's raise stripped away for the v10-shaped lane variants.
+pub mod ore;
 pub mod rig;
 pub mod scripted;
 /// **Doc 20 cut SM.2**: the mining sites stripped away for the v8-shaped lane variants.

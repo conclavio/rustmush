@@ -28,7 +28,7 @@ use crate::definitions::content::{LANE_PACK, LANE_VERSION};
 use crate::economy::CREDIT;
 use crate::pack::{PackEntry, RulesPack};
 use crate::port::apply::{room_by_key, room_references};
-use crate::port::def::{PortDef, room_key, tranches};
+use crate::port::def::{PortDef, capital_schedule, room_key};
 use crate::port::map::{PortMap, PortMapState, port_map_key};
 use crate::sky::{Sky, epoch_date};
 use crate::store::TacsimStore;
@@ -94,6 +94,9 @@ pub enum Binding {
     /// (`crate::port::vehicle::vehicles_line`, which also names a programme hull
     /// whose refit bay is not laid up).
     Vehicles,
+    /// Doc 20 cut SM.5: the prospecting licence the port's `licence` block issues;
+    /// reported, never gated (`crate::port::licence::licence_line`).
+    Licence,
 }
 
 /// **A line's state.** Only [`LineState::Ready`] counts as ready.
@@ -212,7 +215,7 @@ fn credit() -> Option<InstrumentId> {
 }
 
 /// An amount in major units, rendered on the credit's scale and symbol.
-fn money_major(w: &World, major: u64) -> String {
+pub(crate) fn money_major(w: &World, major: u64) -> String {
     let (Some(economy), Some(instrument)) = (w.module_state::<EconomyStore>(), credit()) else {
         return format!("{major}cr");
     };
@@ -602,6 +605,117 @@ fn money(w: &World, amount: Amount) -> String {
     }
 }
 
+/// **What `readiness_in` read of one refresh row** (doc 20 cut SM.5, §7.3; factored
+/// out by the lead's pre-commit round, item 3, so each line is tested without a world).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RefreshRead {
+    /// No `BidRow` is recorded: the drip's case 1 posts it.
+    Unrecorded,
+    /// The listing stands Wanted.
+    Standing {
+        /// The listing.
+        listing: u64,
+        /// Its unfilled intake.
+        quantity: u64,
+        /// Its price, rendered.
+        price: String,
+        /// Whether the house can fund one unit at that price (`board::funds_one`).
+        funded: bool,
+    },
+    /// Gone past its recorded deadline (or the market unreadable): the drip's case 4
+    /// posts one drip at its next act.
+    Lapsed {
+        /// The recorded listing.
+        listing: u64,
+    },
+    /// Gone before its recorded deadline — withdrawn by hand: the drip's case 5 waits for
+    /// that deadline.
+    Withdrawn {
+        /// The recorded listing.
+        listing: u64,
+        /// The recorded deadline, as `when::render_due` prints it.
+        due: String,
+    },
+}
+
+/// **A refresh row's Bids line** (doc 20 cut SM.5, §7.3): never Missing — mining content
+/// never closes the desk, and a Pending Bids line never shuts it (`coop::shuts`); the
+/// intake drip heals each case. Each line says what the drip will actually do (the lead's
+/// pre-commit round, item 3): an exhausted bid waits for the next IC day only while its
+/// house can fund a unit at its price, and one withdrawn by hand waits for its recorded
+/// deadline, not the next drip. Pure.
+pub(crate) fn refresh_bid_line(
+    head: &str,
+    unit: &str,
+    refresh: crate::port::def::RefreshDef,
+    read: &RefreshRead,
+) -> (LineState, String) {
+    match read {
+        RefreshRead::Unrecorded => (
+            LineState::Pending,
+            format!("{head}: no bid is posted yet; the clerk posts it at the next drip."),
+        ),
+        RefreshRead::Standing {
+            listing,
+            quantity: 0,
+            funded: true,
+            ..
+        } => (
+            LineState::Ready,
+            format!(
+                "{head}: listing #{listing} not buying until the next IC day; its intake is \
+                 taken."
+            ),
+        ),
+        RefreshRead::Standing {
+            listing,
+            quantity: 0,
+            price,
+            funded: false,
+        } => (
+            LineState::Pending,
+            format!(
+                "{head}: listing #{listing} not buying; its intake is taken, and its house \
+                 cannot fund 1 {unit} at {price}/{unit}."
+            ),
+        ),
+        RefreshRead::Standing {
+            listing,
+            quantity,
+            price,
+            funded: true,
+        } => (
+            LineState::Ready,
+            format!(
+                "{head}: listing #{listing} at {price}/{unit}, {quantity} of {} {unit} wanted; \
+                 {} {unit} more each IC day.",
+                refresh.cap, refresh.per_ic_day
+            ),
+        ),
+        RefreshRead::Standing {
+            listing,
+            funded: false,
+            ..
+        } => (
+            LineState::Pending,
+            format!("{head}: listing #{listing}; not buying until its capital settles."),
+        ),
+        RefreshRead::Lapsed { listing } => (
+            LineState::Pending,
+            format!(
+                "{head}: listing #{listing} is gone; the clerk posts it again at the next drip."
+            ),
+        ),
+        RefreshRead::Withdrawn { listing, due } => (
+            LineState::Pending,
+            format!(
+                "{head}: listing #{listing} was withdrawn; the clerk posts it again at its \
+                 deadline, {due}."
+            ),
+        ),
+    }
+}
+
 /// One vendor's stock rows for `good` (or all of them, `None`): `Ok((seeded rows,
 /// rows, receipted quantity))`, or `Err` when a receipt or a lot cannot be read.
 fn seeded_rows(
@@ -837,6 +951,42 @@ fn commerce_lines(
             let unit = unit_word(goods, good);
             let head = format!("{entry} bid {org} {good}");
             let recorded = map.vendors.get(org).and_then(|row| row.bids.get(good));
+            // Doc 20 cut SM.5 (§7.3): a refreshed intake's problems are never Missing —
+            // mining content never closes the desk, and a Pending Bids line never shuts
+            // it (`coop::shuts`); the intake drip heals each of them.
+            if let Some(refresh) = bid.refresh {
+                let read = match recorded {
+                    None => RefreshRead::Unrecorded,
+                    Some(recorded) => {
+                        let listing = mush_market::ListingId(recorded.listing);
+                        let live = market
+                            .and_then(|m| m.listing(listing).map(|l| (m, l)))
+                            .filter(|(_, l)| l.source.is_wanted());
+                        match live {
+                            Some((m, l)) => RefreshRead::Standing {
+                                listing: recorded.listing,
+                                quantity: l.quantity,
+                                price: money(w, l.price),
+                                funded: crate::port::board::funds_one(w, m, listing),
+                            },
+                            // Withdrawn by hand before its deadline: the drip's case 5
+                            // waits for that deadline (`posts_afresh`'s rule).
+                            None if market.is_some() && w.now() < recorded.expires => {
+                                RefreshRead::Withdrawn {
+                                    listing: recorded.listing,
+                                    due: crate::port::when::render_due(w, recorded.expires),
+                                }
+                            }
+                            None => RefreshRead::Lapsed {
+                                listing: recorded.listing,
+                            },
+                        }
+                    }
+                };
+                let (state, text) = refresh_bid_line(&head, &unit, refresh, &read);
+                push(Binding::Bids, state, text);
+                continue;
+            }
             let Some(recorded) = recorded else {
                 push(
                     Binding::Bids,
@@ -1191,7 +1341,9 @@ fn port_lines(
     // ---- institutions ----
     let orgs = w.module_state::<OrgStore>();
     let economy = w.module_state::<EconomyStore>();
-    // (id, name, capital_major, tranche count): authored, or from the map.
+    // (id, name, capital_major, tranche count): authored, or from the map. Doc 20
+    // cut SM.5 (§7.3): the capital is the base with every raise, and the tranches
+    // are the schedule's.
     let rows: Vec<(CanonicalId, String, u64, usize)> = match def {
         Some(def) => def
             .orgs
@@ -1200,8 +1352,8 @@ fn port_lines(
                 (
                     org.id.clone(),
                     org.name.clone(),
-                    org.capital_major,
-                    tranches(org.capital_major).len(),
+                    org.capital_total().unwrap_or(org.capital_major),
+                    capital_schedule(org.capital_major, &org.raises).len(),
                 )
             })
             .collect(),
@@ -1212,12 +1364,18 @@ fn port_lines(
                 let name = orgs
                     .and_then(|o| o.state().org(OrgId(row.org)))
                     .map_or_else(|| format!("org #{}", row.org), |o| o.name.to_string());
-                // The capital the row was created for (L4), and its tranches.
+                // The capital the row was created for (L4) with the raises it has
+                // begun (doc 20 cut SM.5), and its tranches.
+                let capital = row
+                    .raises
+                    .iter()
+                    .try_fold(row.capital_major, |total, raise| total.checked_add(*raise))
+                    .unwrap_or(row.capital_major);
                 (
                     id.clone(),
                     name,
-                    row.capital_major,
-                    tranches(row.capital_major).len(),
+                    capital,
+                    capital_schedule(row.capital_major, &row.raises).len(),
                 )
             })
             .collect(),
@@ -1389,11 +1547,90 @@ fn port_lines(
     {
         report.push(port, Binding::Vehicles, state, text);
     }
+
+    // ---- the prospecting licence (doc 20 cut SM.5), after the rig pool ----
+    if let Some((state, text)) =
+        def.and_then(|def| crate::port::licence::licence_line(w, entry, def, map))
+    {
+        report.push(port, Binding::Licence, state, text);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Doc 20 cut SM.5 (§7.3; the lead's pre-commit round, items 3(a), 3(b) and 6(c)): every
+    /// refresh row's Bids line, whole, and its state — none Missing. An exhausted bid
+    /// waits for the next IC day only while its house can fund a unit at its price; one
+    /// withdrawn by hand waits for its recorded deadline, named; one lapsed comes back at
+    /// the next drip.
+    #[test]
+    fn sm5_each_refresh_bid_line_says_what_the_drip_does() {
+        let head = "ceres_port bid freeport_exchange metal_ore";
+        let refresh = crate::port::def::RefreshDef {
+            per_ic_day: 40,
+            cap: 240,
+        };
+        let line = |read: RefreshRead| refresh_bid_line(head, "t", refresh, &read);
+        let standing = |quantity: u64, funded: bool| RefreshRead::Standing {
+            listing: 7,
+            quantity,
+            price: "70.00cr".to_owned(),
+            funded,
+        };
+        let cases = [
+            (
+                RefreshRead::Unrecorded,
+                LineState::Pending,
+                "ceres_port bid freeport_exchange metal_ore: no bid is posted yet; the clerk \
+                 posts it at the next drip.",
+            ),
+            (
+                standing(0, true),
+                LineState::Ready,
+                "ceres_port bid freeport_exchange metal_ore: listing #7 not buying until the \
+                 next IC day; its intake is taken.",
+            ),
+            (
+                standing(0, false),
+                LineState::Pending,
+                "ceres_port bid freeport_exchange metal_ore: listing #7 not buying; its intake \
+                 is taken, and its house cannot fund 1 t at 70.00cr/t.",
+            ),
+            (
+                standing(154, true),
+                LineState::Ready,
+                "ceres_port bid freeport_exchange metal_ore: listing #7 at 70.00cr/t, 154 of \
+                 240 t wanted; 40 t more each IC day.",
+            ),
+            (
+                standing(154, false),
+                LineState::Pending,
+                "ceres_port bid freeport_exchange metal_ore: listing #7; not buying until its \
+                 capital settles.",
+            ),
+            (
+                RefreshRead::Lapsed { listing: 7 },
+                LineState::Pending,
+                "ceres_port bid freeport_exchange metal_ore: listing #7 is gone; the clerk \
+                 posts it again at the next drip.",
+            ),
+            (
+                RefreshRead::Withdrawn {
+                    listing: 7,
+                    due: "14:00 UTC tomorrow (IC 2350-05-21; in 20 h 5 min)".to_owned(),
+                },
+                LineState::Pending,
+                "ceres_port bid freeport_exchange metal_ore: listing #7 was withdrawn; the \
+                 clerk posts it again at its deadline, 14:00 UTC tomorrow (IC 2350-05-21; in \
+                 20 h 5 min).",
+            ),
+        ];
+        for (read, state, text) in cases {
+            assert_eq!(line(read.clone()), (state, text.to_owned()), "{read:?}");
+        }
+    }
 
     #[test]
     fn ic3_the_summary_counts_what_is_not_ready() {

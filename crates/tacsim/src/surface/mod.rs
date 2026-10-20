@@ -16,9 +16,12 @@
 //!   sixteen, with a synchronous build door;
 //! - [`commands`](crate::surface::commands) — `@geology`, staff truth over the body-fixed lattice.
 //!
-//! **Doc 20 cut SM.2** installs the lane's Ceres and Vesta tables at boot and at apply
+//! **Doc 20 cut SM.2** installs the lane's Ceres and Vesta tables at boot
 //! ([`install_lane_geology`](crate::surface::install_lane_geology), over
-//! [`lane_geologies`](crate::surface::lane_geologies) of the lane's `BodyDef`s) and adds the
+//! [`lane_geologies`](crate::surface::lane_geologies) of the lane's `BodyDef`s) and, since cut
+//! SM.5 (lead ruling 9), wherever a body entry is applied (the definition applier, over
+//! [`body_geology_of`](crate::surface::body_geology_of)), whatever else the version changes;
+//! SM.2 adds the
 //! sites and their block shifts (`crate::port::site`); `@geology <site> <addr>` moves to SM.4,
 //! with the off-loop site driver, footing from composite cells and the instruments; SM.6
 //! reserves from the geology table; SM.7 mining.
@@ -147,7 +150,8 @@ pub fn install_geology(w: &mut World, boot: GeologyBoot) -> bool {
 }
 
 /// A body's ground for this world. Called by [`install_lane_geology`] (doc 20 cut SM.2: the
-/// lane's `BodyDef` tables, at boot and at apply) and by tests. A body already installed is
+/// lane's `BodyDef` tables, at boot and, since cut SM.5, wherever a body entry is applied) and
+/// by tests. A body already installed is
 /// replaced, and **its cached sites are dropped**: the site cache's key (`ground::site_revision`) carries the captured input and
 /// the spec, not the body's table or radius, so this writer — the only one — keeps a replaced
 /// table from serving the old ground.
@@ -184,24 +188,34 @@ pub fn lane_geologies(pack: &crate::pack::RulesPack) -> Vec<Result<BodyGeology, 
     pack.entries()
         .iter()
         .filter_map(|(id, entry)| match entry {
-            crate::pack::PackEntry::Body(def) => {
-                let (Some(radius), Some(table)) = (def.radius_km, def.geology.as_ref()) else {
-                    return None;
-                };
-                Some(
-                    BodyGeology::new(id.clone(), radius, table.clone())
-                        .map_err(|error| format!("{id}: {error}")),
-                )
-            }
+            crate::pack::PackEntry::Body(def) => body_geology_of(id, def),
             _ => None,
         })
         .collect()
 }
 
+/// **One body entry's table** (doc 20 cut SM.2; cut SM.5's lead ruling 9): `None` when
+/// the body authors no `radius_km` or no `geology`, else the built [`BodyGeology`] (or
+/// why it does not build). [`lane_geologies`] at boot and the definition applier
+/// (`crate::content`, wherever a body entry is created or updated) both read it.
+#[must_use]
+pub fn body_geology_of(
+    id: &CanonicalId,
+    def: &crate::pack::BodyDef,
+) -> Option<Result<BodyGeology, String>> {
+    let (Some(radius), Some(table)) = (def.radius_km, def.geology.as_ref()) else {
+        return None;
+    };
+    Some(
+        BodyGeology::new(id.clone(), radius, table.clone())
+            .map_err(|error| format!("{id}: {error}")),
+    )
+}
+
 /// **Install what [`lane_geologies`] built** (doc 20 cut SM.2, step two) through
 /// [`install_body_geology`]: an `Err` is warned and skipped, and **a body whose installed
-/// table is already equal is skipped**, so its site cache survives each of the six site
-/// applies and every boot. RAM only; nothing is written. Returns how many it installed.
+/// table is already equal is skipped**, so its site cache survives every re-applied body
+/// entry and every boot. RAM only; nothing is written. Returns how many it installed.
 pub fn install_lane_geology(w: &mut World, bodies: Vec<Result<BodyGeology, String>>) -> usize {
     let mut installed = 0_usize;
     for body in bodies {

@@ -802,6 +802,11 @@ fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRo
     let (pilot, row) = chartered(rig, who, seed, name);
     let out = refit(rig, pilot, "prospector");
     assert!(out.contains("as a Dray-P"), "{out}");
+    // Doc 20 cut SM.5: a lease needs a prospecting licence in force; bought once here, and
+    // its fee settled by the economy's next sweep, so no licence escrow stands among the
+    // held funds the rig tests read.
+    support::licence::buy_licence(&mut rig.tw, pilot);
+    sweep(&mut rig.tw, 31);
     (pilot, row)
 }
 
@@ -1472,8 +1477,10 @@ fn sm3a_lease_takes_two_rigs_into_the_bay() {
 }
 
 /// **The lease refuses** (A2): a standard Dray (`NO_BAY`), away from the counter, short of
-/// funds, under way and away from Ceres — each with its exact line, and nothing written. It
-/// is not refused for want of a licence (the seam is SM.5's).
+/// funds, under way and away from Ceres — each with its exact line, and nothing written. The
+/// Dray-P pilots hold a prospecting licence (`prospector` buys one through `+licence/buy go`,
+/// `support::licence`), so none of these refusals is the licence's; a lease refused for want
+/// of one is `plumbing.rs`'s `sm5_a_lease_needs_a_licence`.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn sm3a_lease_is_refused_without_a_bay_away_from_ceres_away_from_the_counter_and_short_of_funds() {

@@ -15,7 +15,8 @@
 //!   digest, never goods rows: L12) and the check against it through the one capacity
 //!   function, rendered in §4.3's sentences ([`capacity_line`]);
 //! - [`PortPartyCaps`] — `mush_economy::PartyCapSource`: the port institutions
-//!   (each vendor and the programme org) accept programmatically. It confers **no
+//!   (each vendor, the programme org and, since doc 20 cut SM.5, the licence
+//!   issuer) accept programmatically. It confers **no
 //!   money authority**: the accept still posts escrow under the org account's own
 //!   debit authority and still refuses when the account is short.
 //!
@@ -317,7 +318,8 @@ fn vendor_orgs(map: &PortMap) -> BTreeSet<OrgId> {
 /// **The port institutions' programmatic acceptance** (doc 18 §4.1/§4.7, Q-18-10;
 /// cut IC7's seam; lead ruling L13): `PartyCap::Accept` for an org a lane port map
 /// records as one of its **vendors**, or as its port's **programme org** (the Trust,
-/// for cuts IC10/IC13), and for nothing else. It confers **no money authority**: the
+/// for cuts IC10/IC13), or as the org of its port's **licence** block (the Freeport
+/// Registry, for the prospecting-licence fee; doc 20 cut SM.5), and for nothing else. It confers **no money authority**: the
 /// accept still runs `accept_core`, still posts escrow under the org account's own
 /// debit authority, and still refuses when the account is short.
 #[derive(Debug)]
@@ -340,7 +342,15 @@ impl PartyCapSource for PortPartyCaps {
                 .as_ref()
                 .and_then(|p| map.orgs.get(&p.org))
                 .map(|row| OrgId(row.org));
-            programme == Some(*org) || vendor_orgs(map).contains(org)
+            // Doc 20 cut SM.5 (§9.1): the licence issuer (the Freeport Registry)
+            // accepts its fee contract programmatically as the Trust does — no money
+            // authority; the fee still settles only through the economy.
+            let issuer = def
+                .licence
+                .as_ref()
+                .and_then(|l| map.orgs.get(&l.org))
+                .map(|row| OrgId(row.org));
+            programme == Some(*org) || issuer == Some(*org) || vendor_orgs(map).contains(org)
         })
     }
 }

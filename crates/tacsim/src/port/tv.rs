@@ -74,7 +74,7 @@ pub const TV_VERB: &str = "+tv";
 /// `+tv`'s help (doc 20 §4.3).
 pub const TV_HELP: &str = "+tv  --  Your Dray-P's rigs: each bay slot's terrain vehicle, its lease from Occator and its hopper, anywhere.
 +tv/<n>  the same for rig n.
-+tv/lease [go]  at Occator's counter in Ceres Freeport, with your Dray-P docked: lease a terrain vehicle into a free bay slot, 1400.00cr a term of 168 IC days and a 5000.00cr deposit held on your account. Without go it shows the terms and signs nothing.
++tv/lease [go]  at Occator's counter in Ceres Freeport, with your Dray-P docked: lease a terrain vehicle into a free bay slot, 1400.00cr a term of 168 IC days and a 5000.00cr deposit held on your account. A lease needs a prospecting licence in force or in its grace (+licence). Without go it shows the terms and signs nothing.
 +tv/<n> lease return [go]  at the same counter: hand rig n back, its hopper empty, and the deposit is released.
 A lease past its term is re-debited at your next +tv/lease, or the deposit is forfeit.
 +tv/<n> launch [go]  with your Dray-P settled on a site's pad and you aboard: send rig n down the stern ramp onto the site (300 IC s).
@@ -128,6 +128,9 @@ pub const TERM_RENEWED: &str =
     "Occator re-debits {fee} for {mark}: {terms} more term(s), to {days} IC days on.";
 /// The settle's forfeit: `{mark}`, `{owed}`, `{deposit}`.
 pub const TERM_FORFEIT: &str = "{mark}'s lease ran past its term and your account cannot pay {owed}: Occator keeps the {deposit} deposit.";
+/// **No licence in force** (doc 20 cut SM.5; §4.3, §9.1): the lease is the one
+/// non-mining act that reads the prospecting licence.
+pub const LEASE_LICENCE: &str = "Occator leases rigs only to a licensed prospector: +licence/buy takes the Freeport Registry's licence, from anywhere.";
 /// A step that should not fail did.
 pub const LEASE_FAILED: &str =
     "Occator could not complete it; nothing of the lease or the return was signed.";
@@ -418,16 +421,26 @@ pub enum TvLeaseState {
     },
 }
 
-/// **The licence seam** (doc 20 §4.3; cut SM.3a): a lease is refused without an
-/// Active licence; the licence instrument is SM.5's, which fills this seam. SM.3a
-/// refuses nothing here.
+/// **The licence check** (doc 20 §4.3, §9.1; SM.3a's seam, filled by cut SM.5, lead
+/// ruling 6): a lease is refused unless [`crate::port::licence::licence_gate`] answers
+/// `Ok` at the world's IC now — in force, or in its grace. Doc 20 §8's rule stands:
+/// among the rig's acts only mining, staking and renewal read the licence; **the
+/// lease is the one non-mining act that does**, and launch, recover and dump never
+/// call this. It sits at check 6 of `plan_take`, before the slot and before the term
+/// settle, so a preview or a `go` without a licence refuses before any write.
 ///
 /// # Errors
 ///
-/// None in cut SM.3a.
-pub(crate) fn licence_seam(w: &World, pilot: ObjId) -> Result<(), String> {
-    let _ = (w, pilot);
-    Ok(())
+/// [`LICENCE_BOOKS_DARK`](crate::port::licence::LICENCE_BOOKS_DARK) for an unreadable
+/// record; [`LEASE_LICENCE`] for every other standing that does not authorize.
+pub(crate) fn licence_check(w: &World, pilot: ObjId) -> Result<(), String> {
+    match crate::port::licence::licence_gate(w, pilot, w.world_ic_now().at) {
+        Ok(()) => Ok(()),
+        Err(crate::port::licence::LicenceStanding::Unreadable) => {
+            Err(crate::port::licence::LICENCE_BOOKS_DARK.to_owned())
+        }
+        Err(_) => Err(LEASE_LICENCE.to_owned()),
+    }
 }
 
 /// **A refusal after the first write** (reviewer F5; `buyout.rs`'s shape): the
@@ -1620,8 +1633,8 @@ fn plan_take(ctx: &Ctx<'_>, named: Option<u8>) -> Result<TakePlan, String> {
     if lessor.counter.is_none() || here != lessor.counter {
         return Err(where_line(LEASE_WHERE, &lessor));
     }
-    // 6. The licence seam (SM.5 fills it).
-    licence_seam(w, actor)?;
+    // 6. The licence (doc 20 cut SM.5): in force or in grace, read at the act.
+    licence_check(w, actor)?;
     // 7. The slot.
     let (bay, bay_room) = view.bay().ok_or_else(|| failed("the hull's bay"))?;
     if !crate::port::hull::bay_laid_up(w, view.row, bay) {

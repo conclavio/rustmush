@@ -717,7 +717,25 @@ pub(crate) fn put(
                     // one gone before its deadline was withdrawn by hand (cut IC10: an
                     // exhausted bid stands at 0 and is never gone).
                     if posts_afresh(ctx.w, Some(&r), bid) {
-                        post_bid(ctx, id, map, org, vendor_id, vault, bid, price)?;
+                        // Doc 20 cut SM.5 (decision 20; the lead's pre-commit round,
+                        // item 2): a lapsed REFRESH row comes back at one drip, within
+                        // the house's funds, through the drip's own rule — never at its
+                        // full authored intake — and an unfunded house's is left for the
+                        // drip, which warns. Every other bid re-posts its full intake.
+                        let quantity = match bid.refresh {
+                            Some(refresh) => {
+                                let fundable = ctx.w.module_state::<MarketStore>().map_or(0, |m| {
+                                    crate::port::board::vendor_fundable_units(
+                                        ctx.w, m, vendor_id, price,
+                                    )
+                                });
+                                crate::port::stock::lapsed_drip(refresh, fundable)
+                            }
+                            None => bid.intake,
+                        };
+                        if quantity > 0 {
+                            post_bid(ctx, id, map, org, vendor_id, vault, bid, price, quantity)?;
+                        }
                         continue;
                     }
                     // Doc 18 cut IC10 (fixer, review F2): a gone bid whose authored
@@ -740,7 +758,7 @@ pub(crate) fn put(
                     }
                 }
                 (None, _) => {
-                    post_bid(ctx, id, map, org, vendor_id, vault, bid, price)?;
+                    post_bid(ctx, id, map, org, vendor_id, vault, bid, price, bid.intake)?;
                 }
             }
         }
@@ -790,7 +808,9 @@ pub(crate) fn wanted_spec(
     }
 }
 
-/// Post one standing bid and record it.
+/// Post one standing bid of `quantity` and record it at its authored terms (the row's
+/// `intake` is always the authored one, which the applier compares; `quantity` is the
+/// full intake but for a lapsed refresh row's one drip, doc 20 cut SM.5).
 #[allow(clippy::too_many_arguments)]
 fn post_bid(
     ctx: &mut Ctx<'_>,
@@ -801,8 +821,13 @@ fn post_bid(
     vault: VaultId,
     bid: &crate::port::def::BidDef,
     price: Amount,
+    quantity: u64,
 ) -> Result<(), String> {
-    let listing = mush_market::post_wanted(ctx, wanted_spec(vendor, vault, bid, price))
+    let posted = crate::port::def::BidDef {
+        intake: quantity,
+        ..bid.clone()
+    };
+    let listing = mush_market::post_wanted(ctx, wanted_spec(vendor, vault, &posted, price))
         .map_err(|e| format!("{id}: vendor {org} bid {}: {e:?}", bid.good))?;
     let expires = ctx
         .w
@@ -821,6 +846,9 @@ fn post_bid(
                 price_major: bid.price_major,
                 intake: bid.intake,
                 expires,
+                // Doc 20 cut SM.5: the IC instant of the post (the intake drip's
+                // boundary is measured from it).
+                posted_ic: Some(ctx.w.world_ic_now().at),
             },
         );
     }

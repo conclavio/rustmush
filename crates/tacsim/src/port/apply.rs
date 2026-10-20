@@ -28,8 +28,9 @@
 //!   berth gallery and titled to the programme org ([`crate::port::hull`]);
 //! - **(g) the site** (doc 20 cut SM.2) — for an entry with a `site` block, its
 //!   sixteen block place Things and its site clerk, `DARK`, in the host room
-//!   (`crate::port::site::lay_up`), and the lane's body geology tables installed
-//!   (RAM only; [`crate::surface::install_lane_geology`]);
+//!   (`crate::port::site::lay_up`); the body geology tables are the definition
+//!   applier's since doc 20 cut SM.5 (installed wherever a body entry is applied,
+//!   and at boot; [`crate::surface::install_lane_geology`]);
 //! - **(h) the rigs** (doc 20 cut SM.3a) — for an entry with a `vehicles` block,
 //!   the lessor's shed and its terrain vehicles: each rig's unit, cab and hopper
 //!   spaces, its hopper vault (the system principal `tacsim.vehicles`'s), its
@@ -53,8 +54,12 @@
 //! **Update never re-capitalizes, renames or re-hosts** (lead ruling L4): those
 //! differences are refused as drift by [`EntryApplier::check`], before any
 //! write. Each org row records the capital it was created for, so a changed
-//! capital is refused even when its tranches merely extend the recorded ones
-//! (`capital_drift`). A new org in a later version is created and
+//! base capital is refused even when its tranches merely extend the recorded ones
+//! (`capital_drift`; D-18-27, L4). **A raise is authored as its own appended
+//! tranches** (doc 20 §7.3, cut SM.5: `PortOrgDef.raises`, minted by
+//! [`crate::port::def::capital_schedule`]), and the row records each raise once
+//! its tranches are begun; a raise edited, dropped or reordered is drift. A new
+//! org in a later version is created and
 //! capitalized; a changed `faction` word is accepted and writes nothing; a map
 //! row whose org, account or obligation is gone from its owner's store is
 //! refused, never re-created. Hulls re-apply by map row, never by name: a grown
@@ -84,7 +89,7 @@ use smol_str::SmolStr;
 
 use crate::economy::{CREDIT, CREDIT_SCALE, GameEconomyConfig};
 use crate::pack::PackEntry;
-use crate::port::def::{PortDef, room_key, tranches};
+use crate::port::def::{PortDef, capital_schedule, room_key};
 use crate::port::map::{PortMap, PortMapState, PortOrgRow, TrancheRow};
 use crate::store::{TacsimStore, put_port_map};
 
@@ -219,26 +224,41 @@ pub(crate) enum CapitalDrift {
         /// The capital the row records, major units.
         recorded: u64,
     },
+    /// The row's recorded raises are not a prefix of the authored ones: a raise
+    /// edited, dropped or reordered (doc 20 §7.3, cut SM.5). Never re-issued.
+    Raises,
 }
 
 /// **The capital rule of one present map row** (L4, D-18-27; doc 18 §4.7
-/// "Update never re-capitalizes"). The row's recorded `capital_major` must
-/// equal the authored one — a top-up is refused even when the new tranches
-/// merely extend the recorded ones (4,000,000 → 4,800,000 adds a sixth 800,000
-/// beside five that match). When they are equal, the recorded rows must be
-/// distinct indices of `tranches(capital_major)` with that tranche's amount;
-/// the indices not yet recorded are what an apply that stopped part way left
-/// to make, and the next pass completes them. `None` is no drift.
+/// "Update never re-capitalizes"; doc 20 §7.3, cut SM.5). Checked in this order:
+///
+/// 1. the row's recorded base `capital_major` must equal the authored one — a
+///    changed base is refused even when the new tranches merely extend the
+///    recorded ones (4,000,000 → 4,800,000 adds a sixth 800,000 beside five that
+///    match): [`CapitalDrift::Changed`];
+/// 2. the row's recorded raises must be a prefix of the authored ones — capital
+///    is added only by appending a raise, never by editing, dropping or
+///    reordering one: [`CapitalDrift::Raises`];
+/// 3. the recorded tranche rows must be distinct indices of
+///    `capital_schedule(capital_major, authored.raises)` with that tranche's
+///    amount: [`CapitalDrift::Inconsistent`].
+///
+/// The indices not yet recorded are what an apply that stopped part way (or a
+/// raise not yet begun) left to make, and the next pass makes them. `None` is
+/// no drift.
 pub(crate) fn capital_drift(
-    authored_major: u64,
+    authored: &crate::port::def::PortOrgDef,
     row: &PortOrgRow,
     scale: u8,
 ) -> Option<CapitalDrift> {
     let recorded = row.capital_major;
-    if recorded != authored_major {
+    if recorded != authored.capital_major {
         return Some(CapitalDrift::Changed { recorded });
     }
-    let want = tranches(recorded);
+    if !authored.raises.starts_with(&row.raises) {
+        return Some(CapitalDrift::Raises);
+    }
+    let want = capital_schedule(recorded, &authored.raises);
     let mut seen = std::collections::BTreeSet::new();
     let consistent = row.capital.iter().all(|t| {
         seen.insert(t.n)
@@ -361,7 +381,11 @@ impl PortApplier {
         let mut to_make: usize = 0;
         for org in &def.orgs {
             let made = recorded(&org.id);
-            for (n, major) in tranches(org.capital_major).into_iter().enumerate() {
+            // Doc 20 cut SM.5: the base's tranches, then each raise's, appended.
+            for (n, major) in capital_schedule(org.capital_major, &org.raises)
+                .into_iter()
+                .enumerate()
+            {
                 let n = u32::try_from(n).unwrap_or(u32::MAX);
                 if !made.iter().any(|row| row.n == n) {
                     largest = largest.max(major);
@@ -525,8 +549,16 @@ impl PortApplier {
                     live.name, authored.name
                 ));
             }
-            match capital_drift(authored.capital_major, row, scale) {
+            match capital_drift(authored, row, scale) {
                 None => {}
+                // Doc 20 cut SM.5 (§7.3): a raise is appended, never edited.
+                Some(CapitalDrift::Raises) => {
+                    return Err(format!(
+                        "{id}: org {org_id}'s raises {:?} do not extend the {:?} already issued; a \
+                         port update never re-capitalizes",
+                        authored.raises, row.raises
+                    ));
+                }
                 Some(CapitalDrift::Changed { recorded }) => {
                     return Err(format!(
                         "{id}: org {org_id} capital {} cr differs from the {recorded} cr already \
@@ -634,45 +666,25 @@ impl PortApplier {
         }
 
         // (g) Doc 20 cut SM.2 (§3.1, §3.4): a site's sixteen block place Things and its
-        // site clerk, in the host room, recorded; then the lane's body tables, built
-        // while the store is borrowed and installed after (lead ruling 6). Nothing is
-        // submitted. Parts (c)–(f) are no-ops for a site (no orgs, vendors or
-        // programme); (b) runs as for every port.
+        // site clerk, in the host room, recorded. Nothing is submitted. Parts (c)–(f)
+        // are no-ops for a site (no orgs, vendors or programme); (b) runs as for every
+        // port. The body tables are no longer installed here (doc 20 cut SM.5, lead
+        // ruling 9): the definition applier installs a body's table wherever its entry
+        // is applied, and the boot installs every table.
         if let Some(site) = &def.site {
             crate::port::site::lay_up(ctx, id, site, &mut map, host)?;
-            let version = pack.manifest().version();
-            let bodies = ctx.w.module_state::<TacsimStore>().and_then(|store| {
-                store
-                    .pack(&pack_id, version)
-                    .map(|loaded| crate::surface::lane_geologies(&loaded.pack))
-            });
-            let bodies = match bodies {
-                Some(bodies) => bodies,
-                // The store does not load the version being applied (an operator's
-                // pack): read the bodies from the applied pack itself (`rules_pack_of`, as
-                // the applier's route check does). A deviation from the SM.2 brief's
-                // item 7(b), which warned and left the tables to the next boot: this
-                // installs them now. Only this rare path decodes the pack.
-                None => match crate::pack::rules_pack_of(pack.clone()) {
-                    Ok(rules) => crate::surface::lane_geologies(&rules),
-                    Err(error) => {
-                        tracing::warn!(
-                            pack = %pack_id,
-                            version,
-                            %error,
-                            "tacsim: a site's lane pack does not decode; its body tables wait for the next boot"
-                        );
-                        Vec::new()
-                    }
-                },
-            };
-            crate::surface::install_lane_geology(ctx.w, bodies);
         }
 
         // (b) The treasury (L9: the credit first, create-only — a roster with no
         // sheet module has none).
         let instrument = crate::economy::ensure_instrument(ctx, &GameEconomyConfig::default())
             .ok_or_else(|| format!("{id}: {CREDIT} could not be registered"))?;
+        // Doc 20 cut SM.5 (§9.1): an entry that authors the licence block registers the
+        // licence instrument the same create-only way (a roster with no sheet module has
+        // none); a refusal is logged, and the readiness Licence line names it.
+        if def.licence.is_some() {
+            let _ = crate::economy::ensure_licence_instrument(ctx);
+        }
         let faucet = SystemPrincipalId::new(&def.treasury).ok_or_else(|| {
             format!(
                 "{id}: treasury `{}` is not a system principal",
@@ -781,6 +793,7 @@ impl PortApplier {
                         capital_major: org.capital_major,
                         account: None,
                         capital: Vec::new(),
+                        raises: Vec::new(),
                     },
                 );
                 put_port_map(ctx, &map);
@@ -825,7 +838,13 @@ impl PortApplier {
             };
             // Its capital: one one-shot faucet obligation per tranche not yet
             // made. A recorded tranche is skipped, so a re-apply posts nothing.
-            for (n, major) in tranches(org.capital_major).into_iter().enumerate() {
+            // Doc 20 cut SM.5 (§7.3): the schedule is the base's tranches and then
+            // each authored raise's, appended, so a raise on a kept world makes
+            // exactly its own new tranches.
+            for (n, major) in capital_schedule(org.capital_major, &org.raises)
+                .into_iter()
+                .enumerate()
+            {
                 let n = u32::try_from(n).map_err(|_| format!("{id}: too many tranches"))?;
                 let made = map
                     .orgs
@@ -864,6 +883,15 @@ impl PortApplier {
                         amount_minor,
                     });
                 }
+                put_port_map(ctx, &map);
+            }
+            // Doc 20 cut SM.5: the row records each raise once its tranches are
+            // begun (here, all made), so a later version's raises are compared
+            // against it; an apply that stopped part way completes on the next pass.
+            if let Some(row) = map.orgs.get_mut(&org.id)
+                && row.raises != org.raises
+            {
+                row.raises.clone_from(&org.raises);
                 put_port_map(ctx, &map);
             }
         }
@@ -1042,7 +1070,7 @@ mod tests {
     /// A row created for `capital_major` with the first `made` of its
     /// tranches recorded (obligation ids from 100).
     fn row(capital_major: u64, made: usize) -> PortOrgRow {
-        let capital = tranches(capital_major)
+        let capital = crate::port::def::tranches(capital_major)
             .into_iter()
             .take(made)
             .enumerate()
@@ -1058,6 +1086,19 @@ mod tests {
             capital_major,
             account: Some(1),
             capital,
+            raises: Vec::new(),
+        }
+    }
+
+    /// An authored org of `capital_major` with `raises` (doc 20 cut SM.5:
+    /// `capital_drift` reads the authored org whole).
+    fn authored(capital_major: u64, raises: &[u64]) -> crate::port::def::PortOrgDef {
+        crate::port::def::PortOrgDef {
+            id: CanonicalId::new("occator").expect("id"),
+            name: "Occator Water & Propellant".to_owned(),
+            capital_major,
+            faction: CanonicalId::new("freeport").expect("id"),
+            raises: raises.to_vec(),
         }
     }
 
@@ -1067,24 +1108,27 @@ mod tests {
     #[test]
     fn ic3_capital_drift_refuses_a_top_up_and_completes_a_partial_apply() {
         let whole = row(4_000_000, 5);
-        assert_eq!(capital_drift(4_000_000, &whole, CREDIT_SCALE), None);
-        for authored in [4_800_000, 4_500_000, 3_200_000, 800_000] {
+        assert_eq!(
+            capital_drift(&authored(4_000_000, &[]), &whole, CREDIT_SCALE),
+            None
+        );
+        for capital in [4_800_000, 4_500_000, 3_200_000, 800_000] {
             assert_eq!(
-                capital_drift(authored, &whole, CREDIT_SCALE),
+                capital_drift(&authored(capital, &[]), &whole, CREDIT_SCALE),
                 Some(CapitalDrift::Changed {
                     recorded: 4_000_000
                 }),
-                "{authored}"
+                "{capital}"
             );
         }
         // The same capital with tranches still to make: a pass that stopped
         // part way, completed by the next one.
         assert_eq!(
-            capital_drift(4_000_000, &row(4_000_000, 2), CREDIT_SCALE),
+            capital_drift(&authored(4_000_000, &[]), &row(4_000_000, 2), CREDIT_SCALE),
             None
         );
         assert_eq!(
-            capital_drift(3_100_000, &row(3_100_000, 0), CREDIT_SCALE),
+            capital_drift(&authored(3_100_000, &[]), &row(3_100_000, 0), CREDIT_SCALE),
             None
         );
         // A damaged map: an amount that is not its tranche's, an index past
@@ -1099,12 +1143,76 @@ mod tests {
         for (name, damaged) in [("wrong", wrong), ("past", past), ("twice", twice)] {
             assert!(
                 matches!(
-                    capital_drift(damaged.capital_major, &damaged, CREDIT_SCALE),
+                    capital_drift(
+                        &authored(damaged.capital_major, &[]),
+                        &damaged,
+                        CREDIT_SCALE
+                    ),
                     Some(CapitalDrift::Inconsistent { .. })
                 ),
                 "{name}"
             );
         }
+    }
+
+    /// **Doc 20 cut SM.5 (§7.3; reviewer F3)**: a raise appends tranches to the
+    /// schedule; with it unrecorded or recorded there is no drift; an edited, dropped
+    /// or reordered raise is `Raises`; only a changed base is `Changed`; a tranche row
+    /// whose amount is not its schedule slot's is `Inconsistent`.
+    #[test]
+    fn sm5_a_raise_extends_the_schedule_and_an_edited_raise_is_drift() {
+        // Occator at v10: 50,000, one tranche, no raise recorded.
+        let v10 = row(50_000, 1);
+        // v11 authors the raise: no drift, the second tranche is still to make.
+        assert_eq!(
+            capital_drift(&authored(50_000, &[250_000]), &v10, CREDIT_SCALE),
+            None
+        );
+        // The raise begun and recorded.
+        let mut v11 = row(50_000, 1);
+        v11.raises = vec![250_000];
+        v11.capital.push(TrancheRow {
+            n: 1,
+            obligation: 200,
+            amount_minor: minor_of(250_000, CREDIT_SCALE).expect("fits"),
+        });
+        assert_eq!(
+            capital_drift(&authored(50_000, &[250_000]), &v11, CREDIT_SCALE),
+            None
+        );
+        // A further raise appended: still no drift.
+        assert_eq!(
+            capital_drift(&authored(50_000, &[250_000, 100_000]), &v11, CREDIT_SCALE),
+            None
+        );
+        // Edited, dropped, reordered: `Raises`.
+        for raises in [&[200_000_u64][..], &[], &[100_000, 250_000]] {
+            assert_eq!(
+                capital_drift(&authored(50_000, raises), &v11, CREDIT_SCALE),
+                Some(CapitalDrift::Raises),
+                "{raises:?}"
+            );
+        }
+        // A changed base is `Changed`, raise or no raise.
+        assert_eq!(
+            capital_drift(&authored(60_000, &[250_000]), &v11, CREDIT_SCALE),
+            Some(CapitalDrift::Changed { recorded: 50_000 })
+        );
+        // A tranche row whose amount is not its schedule slot's.
+        let mut wrong = v11.clone();
+        wrong.capital[1].amount_minor = 1;
+        assert_eq!(
+            capital_drift(&authored(50_000, &[250_000]), &wrong, CREDIT_SCALE),
+            Some(CapitalDrift::Inconsistent { recorded: 50_000 })
+        );
+        // The raise's tranche recorded with the raise left unauthored: the index is past
+        // the base's schedule.
+        let mut orphan = row(50_000, 1);
+        orphan.capital.push(v11.capital[1].clone());
+        assert_eq!(
+            capital_drift(&authored(50_000, &[]), &orphan, CREDIT_SCALE),
+            Some(CapitalDrift::Inconsistent { recorded: 50_000 })
+        );
     }
 
     /// Doc 18 §4.7 / cut IC6: the leased-hull retire refusal names the entry

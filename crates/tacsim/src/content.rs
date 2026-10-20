@@ -742,6 +742,29 @@ impl EntryApplier for ArenaApplier {
 
 struct DefinitionApplier;
 
+/// **A body entry's geology table, installed where the entry is applied** (doc 20
+/// cut SM.5, lead ruling 9; SM.2's residual): when a `body` entry is created or
+/// updated and authors both `radius_km` and `geology`, its table is installed in
+/// RAM through [`crate::surface::install_lane_geology`] (which skips an equal
+/// table), so a version that edits only a body's table takes effect at apply,
+/// before any reboot. The boot install (`crate::lib`'s `on_all_loaded`) stays. The
+/// applier still makes no object and submits nothing; a failure is warned.
+fn install_body_table(ctx: &mut Ctx<'_>, id: &CanonicalId, entry: &RawEntry) {
+    if entry.kind().as_str() != "body" {
+        return;
+    }
+    let def = match serde_json::from_value::<BodyDef>(entry.def_value()) {
+        Ok(def) => def,
+        Err(error) => {
+            tracing::warn!(body = %id, %error, "tacsim: an applied body entry does not decode; its table was not installed");
+            return;
+        }
+    };
+    if let Some(table) = crate::surface::body_geology_of(id, &def) {
+        crate::surface::install_lane_geology(ctx.w, vec![table]);
+    }
+}
+
 impl EntryApplier for DefinitionApplier {
     fn kinds(&self) -> Vec<CanonicalId> {
         DEFINITION_KINDS.iter().filter_map(|k| kind(k)).collect()
@@ -753,24 +776,26 @@ impl EntryApplier for DefinitionApplier {
 
     fn create(
         &self,
-        _ctx: &mut Ctx<'_>,
+        ctx: &mut Ctx<'_>,
         _pack: &Pack,
-        _id: &CanonicalId,
-        _entry: &RawEntry,
+        id: &CanonicalId,
+        entry: &RawEntry,
         _placed: &BTreeMap<CanonicalId, ObjId>,
     ) -> Result<Option<ObjId>, String> {
+        install_body_table(ctx, id, entry);
         Ok(None)
     }
 
     fn update(
         &self,
-        _ctx: &mut Ctx<'_>,
+        ctx: &mut Ctx<'_>,
         _pack: &Pack,
-        _id: &CanonicalId,
-        _entry: &RawEntry,
+        id: &CanonicalId,
+        entry: &RawEntry,
         _existing: Option<ObjId>,
         _placed: &BTreeMap<CanonicalId, ObjId>,
     ) -> Result<Option<ObjId>, String> {
+        install_body_table(ctx, id, entry);
         Ok(None)
     }
 

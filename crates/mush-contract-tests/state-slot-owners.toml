@@ -134,6 +134,18 @@ precedent. The site refuses when the slot is absent.
 """
 
 [[site]]
+path = "crates/tacsim/src/port/licence.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+Doc 20 cut SM.5, for the `port/coop.rs` row's reason: `+licence/buy go` takes the
+pilot's entitlement account id from `economy`'s allocator before
+`mush_economy::open_account` writes it through the economy module's own path —
+the `port/apply.rs` precedent. The site refuses when the slot is absent.
+"""
+
+[[site]]
 path = "crates/mush-server/src/boot.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
@@ -351,6 +363,34 @@ to a site's pad, and the enrolment rule is per gateway account and fails closed
 on an unmapped character. The oracle is boot-hydrated by the host from the
 store, which a `TestWorld` has none of, so the rig installs the fixed account map
 — the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/plumbing.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.5, for the vehicles.rs row's reason: the plumbing tests buy
+prospecting licences and charter pilots per gateway account, and both rules fail
+closed on an unmapped character (`+licence/buy` answers that the Registry cannot
+match the pilot to an account). The oracle is boot-hydrated by the host from the
+store, which a `TestWorld` has none of, so the rig installs the fixed account map
+— the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/plumbing.rs"
+accessor = "World::module_state_mut"
+slot = "IndustryStore"
+owner = "industry"
+reason = """
+Doc 20 cut SM.5, the lead's pre-commit round (item 6(d)): the readiness Licence
+line's first two Missing variants — the industry layer names no extraction
+licence, or names another instrument — are states the composition root never
+builds (it names `tacsim.licence.freeport` wherever the TacSim layer composes), so
+the test sets `IndustryStore::set_licence` in RAM, reads the line, and restores
+the composed value. Test-only; production never writes the slot from tacsim.
 """
 
 [[site]]

@@ -224,6 +224,25 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         Arc::new(crate::port::tv::tv_cmd),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    // ---- Doc 20 cut SM.5 (§9.1; D-20-12, Q-20-2): `+licence`, the Freeport Registry's
+    // prospecting licence ----
+    //
+    // Under the module's `LegacyPostImage` class: `+licence` and `+licence/show` are
+    // pure reads; `/buy` previews and writes nothing; `/buy go` is ONE command through
+    // the economy's own API (the pilot's entitlement account opened when absent, one
+    // Public fee contract offered, accepted by the pilot and by the Registry) plus
+    // tacsim's one `tacsim:licence:<gateway account>` document. No authoritative
+    // submission. Accepted from anywhere.
+    reg.command(
+        CommandSpec {
+            name: crate::port::licence::LICENCE_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: ["buy", "show"].iter().copied().map(SmolStr::new).collect(),
+            help: crate::port::licence::LICENCE_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::licence::licence_cmd),
+    )?;
     // ---- Doc 18 cut IC13 (§4.1 "Losses, dormancy and release"; D-18-25; lead ruling
     // L9): `@coop/revoke`, staff ----
     //

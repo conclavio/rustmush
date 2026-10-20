@@ -57,7 +57,10 @@ use support::ground::{UNSIGNED, sign};
 /// `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim --test lane ic2_the_lane_pack_is_pinned`).
 /// Doc 20 cut SM.3a: v10, the programme's `refits` row and Occator's rig pool (was
 /// `cce73a4c…` at v9).
-const LANE_DIGEST: &str = "3f49d1764cf10ff5ac1b43f0f88b06d47ba9bd89d7633fa8808f95121b0156c1";
+/// Doc 20 cut SM.5: v11, the Ceres ore bids with their daily refresh, the programme's
+/// fixed `reference_minor`, Occator's appended raise and the Registry's licence block
+/// (was `3f49d176…` at v10).
+const LANE_DIGEST: &str = "c7239b0ae61645657e9be2bb5dab56f9041e5a608c872f15c2865efb10668744";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -230,9 +233,9 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        10,
-        "lane v10 since doc 20 cut SM.3a (v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at \
-         A.4, v4 at A.1)"
+        11,
+        "lane v11 since doc 20 cut SM.5 (v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 \
+         at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
     assert!(manifest.requires().is_empty(), "the lane requires nothing");
@@ -1408,8 +1411,9 @@ fn sm3a_a_vehicles_block_out_of_bounds_is_refused() {
             }),
         ),
         (
+            // Doc 20 cut SM.5: the sentence names the licence block too.
             "site: a site authors no orgs, rooms, programme, vendors, premium or emergency, and no \
-             vehicles block; its pad is its gallery",
+             vehicles or licence block; its pad is its gallery",
             Box::new(move |doc| {
                 let block = vehicles(doc);
                 doc["entries"]["ahuna_port"]["def"]["vehicles"] = block;

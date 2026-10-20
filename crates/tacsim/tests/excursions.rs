@@ -458,6 +458,8 @@ fn prospector(rig: &mut Rig, who: &str, seed: i64, name: &str) -> (ObjId, HullRo
         .expect("the hull's row");
     let out = run(&mut rig.tw, pilot, "+coop/refit prospector");
     assert!(out.contains("as a Dray-P"), "{out}");
+    // Doc 20 cut SM.5: a lease needs a prospecting licence in force; bought once here.
+    support::licence::buy_licence(&mut rig.tw, pilot);
     (pilot, row)
 }
 

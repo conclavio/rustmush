@@ -149,7 +149,8 @@ counter in the Exchange Hall at Ceres Freeport, with your Dray-P docked,
 `+tv/lease` shows the terms and signs nothing; `+tv/lease go` signs them:
 1400.00cr for a term of 168 IC days, paid now, and a 5000.00cr deposit held on
 your account while the rig is aboard. The rig rolls up the ramp into the lowest free
-slot; `+tv/2/lease go` names slot 2. Two leases are two rigs.
+slot; `+tv/2/lease go` names slot 2. Two leases are two rigs. A lease needs a
+prospecting licence (`+licence/buy`; `help coop`), in force or in its grace.
 
 `+tv` reads each slot anywhere: the rig, how long its lease has left and what
 its hopper holds; `+tv/1` reads rig 1 alone. A term that runs out is re-debited
