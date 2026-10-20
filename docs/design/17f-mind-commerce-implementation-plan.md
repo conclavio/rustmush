@@ -6,27 +6,27 @@
 The amount of code written is not a reliable completion percentage. New feature
 work is paused at the owner's request until the existing code passes together.
 
-The latest full integration attempt, N107, tested source tree
-`6b4ae66a7eabe07900697f417c90fabc52815464`. Of 76 planned stages, 58 passed,
-two completed with test failures, one aborted with a stack overflow, and 15 did
-not run. **This is a failed integration run, not acceptance.** It resolved the
-previous Conduct and hardware failures and exposed the next blockers.
+The latest full integration attempt, N108, tested source tree
+`dcd25ff21690ca39131f24b5ad16c935429b77e7`. Its first 61 stages passed,
+including all failures repaired after N107. The commerce-roster stage then
+encountered two stale module-order assertions and a geology boot-test stack
+overflow. The remaining 14 stages did not run. **This is a failed integration
+run, not acceptance.**
 
 | Check | Latest result |
 | --- | --- |
-| Compile all selected production and test targets | Passed in N107 |
-| Conduct, hardware, Industry and Economy | Passed in N107: 10, 5, 57 and 236 tests |
-| Roll | One claim-validation test failed; 281 passed |
-| Commerce composition | Two resale-registration tests failed; 31 passed |
-| Server submission disposition | Aborted with a test-fixture stack overflow |
-| Remaining selected checks, default workspace and separate bot suites | Not reached in N107 |
-| Genuine purchase, server recovery, Conduct and named launch stories | Not reached in N107 |
+| Compile all selected production and test targets | Passed in N108 |
+| Core, Roll, commerce composition and server submission disposition | Passed in N108: 732, 282, 33 and 13 tests |
+| Conduct, hardware, Industry and Economy | Passed in N108: 10, 5, 57 and 236 tests |
+| Commerce roster and server boot parity | Failed: two module-order assertions and a geology fixture stack overflow |
+| Remaining selected checks, default workspace and separate bot suites | Not reached in N108 |
+| Genuine purchase, server recovery, Conduct and named launch stories | Not reached in N108 |
 | Live Redis recovery on an isolated instance | Still required on the same passing candidate |
 | Lint, frontend, remaining feature-specific and cross-host final acceptance | Still required before M7 closes |
 
-N107's source and all logs were independently verified unchanged. Its evidence
+N108's source and all logs were independently verified unchanged. Its evidence
 archive SHA-256 is
-`d28c4ca9d249b1e8bfb210c6b5b9c383d828de7e50ba5a460d74b0d29cb96aa3`.
+`119ff8515e9075bcfa8ef9d7e8bf59b99914f8993f84b8d10470283416c95020`.
 Older passes cannot be combined with a newer candidate to claim acceptance.
 
 **What happens next:** verify the remaining repairs, then repeat the full run

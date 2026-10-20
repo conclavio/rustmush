@@ -132,9 +132,10 @@ fn full_roster_opt_in_preserves_order_and_default_definitions() -> TestResult {
                 .position(|actual| *actual == name)
                 .ok_or("missing owner")
         };
-        assert!(position("economy")? < position("market")?);
-        assert!(position("market")? < position("roll")?);
-        assert!(position("roll")? < position("tacsim")?);
+        // Roll's final audit opens the readiness gate for Market renewal recovery.
+        assert!(position("economy")? < position("roll")?);
+        assert!(position("roll")? < position("market")?);
+        assert!(position("market")? < position("tacsim")?);
         assert_eq!(order.last(), Some(&"content"));
         let engine = register(modules)?;
         assert!(has(&engine, "tacsim", "registry_manifest", "combat"));

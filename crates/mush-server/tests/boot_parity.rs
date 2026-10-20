@@ -249,9 +249,9 @@ fn expected_roster() -> Vec<&'static str> {
         "housing",
         "weather",
         "party",
-        "market",
-        // M6's character-owned drafts and immutable revisions have their own owner.
+        // Roll's final audit opens the readiness required by Market's recovery.
         "roll",
+        "market",
         "script",
         // The composition root's own two, after the built-ins.
         "worldgen",
@@ -557,6 +557,20 @@ fn geology_line(engine: &mush_core::Engine) -> tacsim::port::ReadinessLine {
         .expect("a geology line")
 }
 
+// Keep successive complete boot results out of the caller's async frame.
+// This remains the actual production boot, with unchanged errors and laziness.
+fn boxed_boot_engine<'a>(
+    cfg: &'a Config,
+    store: &'a Arc<dyn ObjectStore>,
+    quarantine: &'a QuarantineSpool,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<Box<BootedEngine>, String>> + 'a>> {
+    Box::pin(async move {
+        boot::build_engine(cfg, store, quarantine)
+            .await
+            .map(Box::new)
+    })
+}
+
 /// **Doc 20 cut SM.1 (Q-20-12, §16)**: the production root loads the geology key from
 /// `[tacsim.geology].key_dir`, hands it to the layer after composition, and the first boot pins
 /// its fingerprint; a second boot over the same store and directory compares it and reads Ready;
@@ -573,7 +587,7 @@ async fn sm1_the_geology_key_is_pinned_and_a_wrong_one_disables_the_layer() {
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let quarantine = spool(&cfg);
 
-    let booted = boot::build_engine(&cfg, &store, &quarantine)
+    let booted = boxed_boot_engine(&cfg, &store, &quarantine)
         .await
         .expect("a keyed world boots");
     let line = geology_line(&booted.engine);
@@ -589,7 +603,7 @@ async fn sm1_the_geology_key_is_pinned_and_a_wrong_one_disables_the_layer() {
     );
     drop(booted);
 
-    let again = boot::build_engine(&cfg, &store, &quarantine)
+    let again = boxed_boot_engine(&cfg, &store, &quarantine)
         .await
         .expect("the same store and key boot again");
     let line = geology_line(&again.engine);
@@ -598,7 +612,7 @@ async fn sm1_the_geology_key_is_pinned_and_a_wrong_one_disables_the_layer() {
 
     // A fresh key directory: a new key, not the pinned one. The boot is never refused.
     std::fs::remove_dir_all(&key_dir).expect("the key directory is removed");
-    let wrong = boot::build_engine(&cfg, &store, &quarantine)
+    let wrong = boxed_boot_engine(&cfg, &store, &quarantine)
         .await
         .expect("a wrong key disables the layer and never refuses the boot");
     let line = geology_line(&wrong.engine);
@@ -627,7 +641,7 @@ async fn sm1_the_geology_key_is_pinned_and_a_wrong_one_disables_the_layer() {
         b"not a manifest",
     )
     .expect("the manifest is overwritten");
-    let unreadable = boot::build_engine(&cfg, &store, &quarantine)
+    let unreadable = boxed_boot_engine(&cfg, &store, &quarantine)
         .await
         .expect("an unreadable key directory disables the layer and never refuses the boot");
     let line = geology_line(&unreadable.engine);
@@ -652,7 +666,7 @@ async fn sm1_the_geology_key_is_pinned_and_a_wrong_one_disables_the_layer() {
     keyless.tacsim.enabled = true;
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let quarantine = spool(&keyless);
-    let booted = boot::build_engine(&keyless, &store, &quarantine)
+    let booted = boxed_boot_engine(&keyless, &store, &quarantine)
         .await
         .expect("a keyless world boots");
     let line = geology_line(&booted.engine);
