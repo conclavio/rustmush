@@ -58,14 +58,16 @@ pub(crate) fn register_with_renewal_definitions(
         )?;
     }
     binding(reg, config)?;
-    let policy = reg.definition(config.policy_descriptor()?)?;
-    if policy != config.policy_ref()? {
-        return Err(error("entitlement policy differs"));
+    for protocol in config.protocols() {
+        let policy = reg.definition(config.policy_descriptor_for_protocol(protocol)?)?;
+        if policy != config.policy_ref_for_protocol(protocol)? {
+            return Err(error("entitlement policy differs"));
+        }
     }
     let outcome = reg.definition(config.outcome_descriptor()?)?;
     let families = Families::register(reg, config)?;
-    let guard = HouseGuard::new(config.clone(), gate)?;
-    for protocol in [HouseProtocol::HouseV1] {
+    for protocol in config.protocols() {
+        let guard = HouseGuard::for_protocol(config.clone(), gate.clone(), protocol)?;
         let [list, fund, grant, refund] = config.owner_actions(protocol)?;
         let actual = reg.definition(listing_descriptor(
             protocol,
@@ -156,17 +158,30 @@ pub(crate) fn register_with_renewal_definitions(
             )?;
         }
     }
-    reg.house_mind_purchase_capacity(
-        config.manifest.clone(),
-        config.participants.ordered(),
-        config.purchase_actions(HouseProtocol::HouseV1)?,
-    )?;
+    if config.has_two_seat_pins() {
+        reg.house_mind_purchase_capacity_with_two_seat_pins(
+            config.manifest.clone(),
+            config.participants.ordered(),
+            config.purchase_actions(HouseProtocol::HouseV1)?,
+            config.purchase_actions(HouseProtocol::HouseV2)?,
+        )?;
+    } else {
+        reg.house_mind_purchase_capacity(
+            config.manifest.clone(),
+            config.participants.ordered(),
+            config.purchase_actions(HouseProtocol::HouseV1)?,
+        )?;
+    }
     Ok(families)
 }
 fn binding(reg: &mut Registrar<'_>, config: &HouseConfig) -> Result<(), ModError> {
     let manifest = config.manifest.clone();
     let participants = config.participants.clone();
     let actions = config.owner_actions(HouseProtocol::HouseV1)?;
+    let two_seat_actions = config
+        .has_two_seat_pins()
+        .then(|| config.owner_actions(HouseProtocol::HouseV2))
+        .transpose()?;
     let writer = config.writer.clone();
     let mut references: Vec<DefinitionRef> = vec![
         manifest.clone(),
@@ -174,13 +189,18 @@ fn binding(reg: &mut Registrar<'_>, config: &HouseConfig) -> Result<(), ModError
         participants.retention().clone(),
     ];
     references.extend(actions.iter().cloned());
+    references.extend(two_seat_actions.iter().flatten().cloned());
     references.sort();
     references.dedup();
     let d = super::config::descriptor(
         "house_purchase_binding",
         "roll",
-        1,
-        serde_json::json!({"format":1,"protocols":["house_v1"]}),
+        if two_seat_actions.is_some() { 2 } else { 1 },
+        if two_seat_actions.is_some() {
+            serde_json::json!({"format":2,"protocols":["house_v1","house_v2"]})
+        } else {
+            serde_json::json!({"format":1,"protocols":["house_v1"]})
+        },
     )?
     .with_references(references.clone());
     let expected = DefinitionRegistryBuilder::new()
@@ -201,7 +221,12 @@ fn binding(reg: &mut Registrar<'_>, config: &HouseConfig) -> Result<(), ModError
                 ctx.get_exact(reference).map_err(|e| e.to_string())?;
             }
             writer
-                .validate_registration(&manifest, &participants, &actions)
+                .validate_registration_with_two_seat_pins(
+                    &manifest,
+                    &participants,
+                    &actions,
+                    two_seat_actions.as_ref(),
+                )
                 .map_err(|e| e.to_string())
         },
     )?;

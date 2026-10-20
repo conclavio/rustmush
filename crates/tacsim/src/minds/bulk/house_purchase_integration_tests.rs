@@ -525,9 +525,26 @@ fn signed(
         .engine
         .legal_action_query(principal.clone(), actor, PerceivedRef::SelfActor)?;
     let offers = w.engine.project_legal_actions(&query)?;
-    let offer = offers
-        .projected_for_action(&exact)
-        .ok_or("signed house offer")?;
+    // Use the same public single-verb selection as line +act. Selecting by
+    // the internal DefinitionRef would conceal an ambiguous caller surface.
+    let transition = match id {
+        "list_house_mind" => "list",
+        "quote_house_mind" => "quote",
+        "purchase_house_mind" => "fund",
+        "settle_house_mind" => "grant",
+        "refund_house_mind" => "refund",
+        _ => return Err("unknown House caller transition".into()),
+    };
+    let verb = format!("house-{transition}-one-seat");
+    let projected = offers.projected();
+    let mut matching = projected
+        .iter()
+        .filter(|offer| offer.presentation().verb.eq_ignore_ascii_case(&verb));
+    let offer = matching.next().ok_or("signed house public offer")?;
+    assert!(
+        matching.next().is_none(),
+        "ambiguous actual House line offer"
+    );
     let req = request(n, actor, "market", parameters.clone())?;
     let resolved = w.engine.resolve_legal_action(
         &offers,
@@ -1187,6 +1204,7 @@ pub(super) fn exercise(
         .enable_all()
         .build()?;
     runtime.block_on(async {
+        ic_tests::exercise_house_two_seats(registry, saved)?;
         resale::exercise(registry, saved)?;
         let (granted, licence, renewed) = flow(registry, saved, organization, scope)?;
         renewal::checkout(registry, &renewed, licence).await?;

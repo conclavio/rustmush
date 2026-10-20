@@ -9,7 +9,7 @@ use std::sync::Arc;
 struct Capabilities {
     original: Option<crate::mind_trade::PurchaseGuard>,
     entitlement: Option<EntitlementGuard>,
-    house: Option<crate::mind_house::HouseGuard>,
+    house: Vec<crate::mind_house::HouseGuard>,
 }
 impl AuthorityGuardValidator for Capabilities {
     fn is_current(
@@ -27,7 +27,7 @@ impl AuthorityGuardValidator for Capabilities {
                 return Ok(true);
             }
         }
-        if let Some(house) = &self.house {
+        for house in &self.house {
             if house.is_current(ctx, guard)? {
                 return Ok(true);
             }
@@ -66,9 +66,18 @@ pub(crate) fn register_with_house(
     let entitlement = entitlement
         .map(|c| EntitlementGuard::new(c.clone(), gate.clone()))
         .transpose()?;
-    let house = house
-        .map(|c| crate::mind_house::HouseGuard::new(c.clone(), gate.clone()))
-        .transpose()?;
+    let mut house_guards = Vec::new();
+    if let Some(c) = house {
+        house_guards.push(crate::mind_house::HouseGuard::new(c.clone(), gate.clone())?);
+        if c.has_two_seat_pins() {
+            house_guards.push(crate::mind_house::HouseGuard::for_protocol(
+                c.clone(),
+                gate.clone(),
+                mush_roll::commerce::house_purchase::HouseProtocol::HouseV2,
+            )?);
+        }
+    }
+    let house = house_guards;
     reg.authority_guard_validator(
         AuthorityGuardKind::Capability,
         Capabilities {

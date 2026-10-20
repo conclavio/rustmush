@@ -394,6 +394,7 @@ pub(crate) fn register_with_core_refits(
         paid_resale,
         core_refit,
         None,
+        None,
     )
 }
 pub(crate) fn register_with_coverage(
@@ -414,6 +415,7 @@ pub(crate) fn register_with_coverage(
     paid_resale: Option<&crate::managed_paid_resale::PaidResaleConfig>,
     core_refit: Option<&crate::core_refit::CoreRefitConfig>,
     coverage: Option<&crate::managed_coverage::CoverageConfig>,
+    two_seat_house_purchases: Option<&[mush_core::DefinitionRef; 3]>,
 ) -> Result<(), mush_core::ModError> {
     use mush_core::mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionValidationContext,
@@ -531,7 +533,15 @@ pub(crate) fn register_with_coverage(
             }
         }
     }
-    if let Some(references) = house_purchases {
+    if two_seat_house_purchases.is_some() && house_purchases.is_none() {
+        return Err(mush_core::ModError::msg(
+            "two-seat House purchases require the one-seat prerequisite",
+        ));
+    }
+    for (version, references) in [(1, house_purchases), (2, two_seat_house_purchases)] {
+        let Some(references) = references else {
+            continue;
+        };
         for (reference, id) in references.iter().zip([
             "purchase_house_mind",
             "settle_house_mind",
@@ -540,7 +550,7 @@ pub(crate) fn register_with_coverage(
             if reference.key().owner.as_str() != "market"
                 || reference.key().kind.as_str() != "action"
                 || reference.key().id.as_str() != id
-                || reference.version() != 1
+                || reference.version() != version
             {
                 return Err(mush_core::ModError::msg(
                     "house purchase requires the exact ordered Market actions",

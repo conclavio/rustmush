@@ -471,7 +471,7 @@ fn pair(view: &View<'_>, operation: CommitToken) -> Result<Pair, ActionStateErro
         || field(binding, "predecessor_term")?
             != &json!(digest("roll.mind.house_renewal_predecessor.v1", &prior)?)
         || field(binding, "predecessor_economics")?
-            != &json!(digest("roll.mind.house_term_economics.v1", &economics)?)
+            != &json!(digest(house::economics_domain(&economics)?, &economics)?)
         || field(&market, "offer_digest")?
             != &json!(digest("economy.house_mind_renewal_offer.v1", offer)?)
         || number(basis, "licence")? != licence
@@ -482,7 +482,7 @@ fn pair(view: &View<'_>, operation: CommitToken) -> Result<Pair, ActionStateErro
         || field(basis, "template_digest")?
             != &json!(digest("roll.mind.house_renewal_template.v1", template)?)
         || field(basis, "grant_economics_digest")?
-            != &json!(digest("roll.mind.house_grant_economics.v1", grant)?)
+            != &json!(digest(house::grant_domain(grant)?, grant)?)
         || field(terms, "buyer")? != field(binding, "holder")?
         || number(terms, "charter")? != positive_string(field(binding, "charter")?)?
         || field(terms, "instrument")? != field(template, "instrument")?
@@ -532,7 +532,8 @@ fn require_house_birth(
         || optional_family_value(view, ROLL, operation)?.is_some()
         || optional_family_value(view, MARKET, operation)?.is_some()
         || field(field(&allocation, "phase")?, "kind")? != "granted"
-        || field(&allocation, "protocol")? != "house_v1"
+        || house::allocation_version(&allocation)?
+            != house::grant_version(field(binding, "grant")?)?
         || field(&allocation, "operation")? != &json!(operation)
         || field(&allocation, "licence")? != field(binding, "licence")?
         || field(&allocation, "quote")? != field(basis, "prior_quote")?
@@ -809,7 +810,7 @@ fn outputs(
     let expected_term = json!({"format":1,"licence":field(binding,"licence")?,"generation":field(binding,"next")?,
         "terms":field(binding,"terms")?,"revision":{"kind":"pin","filed":field(binding,"filed")?,"revision":field(binding,"revision")?},
         "window":{"format":1,"eligibility_start":issued,"issued_at":issued,"term_end":end,"grace_end":grace},"operation":operation});
-    let expected_economics = json!({"format":1,"licence":field(binding,"licence")?,"generation":field(binding,"next")?,
+    let expected_economics = json!({"format":house::grant_version(field(binding,"grant")?)?,"licence":field(binding,"licence")?,"generation":field(binding,"next")?,
         "operation":operation,"product_digest":field(binding,"product_digest")?,"grant":field(binding,"grant")?});
     if term.as_ref() != Some(&expected_term)
         || economics.as_ref() != Some(&expected_economics)
@@ -1047,6 +1048,15 @@ pub(super) fn validate_changes(
     let next = pair(&after, operation)?;
     if action <= 2 {
         paid_resale::require_no_pending(&before, next.licence)?;
+        let birth = token(field(next.binding()?, "birth_operation")?)?;
+        let allocation = optional_family_value(&after, "roll_mind_house_purchase", birth)?
+            .ok_or_else(|| refused("house renewal birth unavailable"))?;
+        after
+            .registry
+            .house_purchase
+            .as_ref()
+            .ok_or_else(|| refused("house purchase recipe unavailable"))?
+            .require_product(&allocation)?;
     }
     if identity.principal != (PrincipalId::Object { id: identity.actor }) {
         return Err(refused("renewal actual principal differs"));

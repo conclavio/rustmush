@@ -1698,6 +1698,7 @@ pub struct EconomyModule {
     )>,
     original_purchases: Option<[mush_core::mechanics::DefinitionRef; 3]>,
     house_purchases: Option<[mush_core::DefinitionRef; 3]>,
+    two_seat_house_purchases: Option<[mush_core::DefinitionRef; 3]>,
     entitlement_purchases: Option<[[mush_core::mechanics::DefinitionRef; 3]; 2]>,
     mind_renewals: Option<crate::managed_renewal::bridge::Configuration>,
     house_mind_renewals: Option<crate::managed_house_renewal::bridge::Configuration>,
@@ -1830,6 +1831,13 @@ impl EconomyModule {
     #[must_use]
     pub fn with_house_mind_purchases(mut self, actions: [mush_core::DefinitionRef; 3]) -> Self {
         self.house_purchases = Some(actions);
+        self
+    }
+
+    /// Add only the separately versioned HouseV2 actions; the one-seat route remains.
+    #[must_use]
+    pub fn with_two_seat_house_pins(mut self, actions: [mush_core::DefinitionRef; 3]) -> Self {
+        self.two_seat_house_purchases = Some(actions);
         self
     }
 
@@ -2180,9 +2188,11 @@ impl GameModule for EconomyModule {
                 self.paid_resale.as_ref(),
                 self.core_refit.as_ref(),
                 self.coverage.as_ref(),
+                self.two_seat_house_purchases.as_ref(),
             )?;
         }
         if (self.house_purchases.is_some()
+            || self.two_seat_house_purchases.is_some()
             || self.original_purchases.is_some()
             || self.entitlement_purchases.is_some()
             || self.house_initial_filing.is_some()
@@ -2203,6 +2213,11 @@ impl GameModule for EconomyModule {
         if self.core_refit.is_some() && self.core_integration.is_none() {
             return Err(ModError::msg(
                 "Core refit requires native manufacture recovery",
+            ));
+        }
+        if self.two_seat_house_purchases.is_some() && self.house_purchases.is_none() {
+            return Err(ModError::msg(
+                "two-seat House purchases require the one-seat prerequisite",
             ));
         }
         if self.house_purchases.is_some() && self.house_initial_filing.is_none() {

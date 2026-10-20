@@ -61,8 +61,8 @@ pub(crate) fn verify_history(
         || actual.effect()
             != &exact_fund(
                 "purchase_house_mind",
-                1,
-                "house_mind_purchase_v1",
+                row.protocol.version(),
+                row.protocol.protocol_name(),
                 compatibility,
                 &row.participants,
             )?

@@ -102,7 +102,10 @@ impl Provider {
             &ctx.world().map_err(invalid)?.world_ic_now(),
             value.facts().predecessor_term_end(),
         )?;
-        if value.facts().binding().grant().renewal().policy() != &self.config.purchase_policy {
+        if !self
+            .config
+            .accepts_purchase_template(value.facts().binding().grant().renewal())
+        {
             return Err(super::records::invalid());
         }
         self.writer.preflight(ctx, txn, &value).map_err(invalid)?;

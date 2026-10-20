@@ -109,6 +109,11 @@ pub(super) fn binding_history(view: &View<'_>, binding: &Value) -> Result<(), Ac
             )
         };
         let economics = required(view, &key(family, term_key(licence, generation))?)?;
+        let domain = if route == "house" {
+            super::super::house::economics_domain(&economics)?
+        } else {
+            domain
+        };
         if field(&economics, "operation")? != field(term, "operation")?
             || field(binding, "economics_digest")? != &json!(digest(domain, &economics)?)
         {

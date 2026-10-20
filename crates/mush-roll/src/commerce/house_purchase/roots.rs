@@ -22,10 +22,14 @@ pub(crate) enum Transition {
 }
 pub(crate) fn action_id(protocol: HouseProtocol, transition: Transition) -> &'static str {
     match (protocol, transition) {
-        (HouseProtocol::HouseV1, Transition::List) => "list_house_mind",
-        (HouseProtocol::HouseV1, Transition::Fund) => "purchase_house_mind",
-        (HouseProtocol::HouseV1, Transition::Grant) => "settle_house_mind",
-        (HouseProtocol::HouseV1, Transition::Refund) => "refund_house_mind",
+        (HouseProtocol::HouseV1 | HouseProtocol::HouseV2, Transition::List) => "list_house_mind",
+        (HouseProtocol::HouseV1 | HouseProtocol::HouseV2, Transition::Fund) => {
+            "purchase_house_mind"
+        }
+        (HouseProtocol::HouseV1 | HouseProtocol::HouseV2, Transition::Grant) => "settle_house_mind",
+        (HouseProtocol::HouseV1 | HouseProtocol::HouseV2, Transition::Refund) => {
+            "refund_house_mind"
+        }
     }
 }
 
@@ -49,7 +53,7 @@ impl HouseFence {
         if action.key().owner.as_str() != "market"
             || action.key().kind.as_str() != "action"
             || action.key().id.as_str() != action_id(protocol, transition)
-            || action.version() != 1
+            || action.version() != protocol.version()
             || fresh.is_some() != !matches!(transition, Transition::Refund)
             || fresh.is_some_and(|facts| facts.requester() != requester)
         {
@@ -85,6 +89,7 @@ pub(crate) struct HouseRoots {
 impl HouseRoots {
     pub(crate) fn listing(
         action: &DefinitionRef,
+        protocol: HouseProtocol,
         commit: CommitToken,
         facts: &HouseSaleFacts,
     ) -> Result<Self, PublicationError> {
@@ -95,7 +100,7 @@ impl HouseRoots {
         Ok(Self {
             fence: HouseFence::new(
                 action,
-                HouseProtocol::HouseV1,
+                protocol,
                 Transition::List,
                 commit,
                 facts.requester(),
@@ -195,7 +200,7 @@ impl HouseRoots {
 }
 
 fn matches_facts(row: &HouseAllocationV1, facts: &HouseSaleFacts) -> bool {
-    row.protocol == HouseProtocol::HouseV1
+    row.validate().is_ok()
         && row.holder == facts.requester()
         && row.issuer == facts.issuer()
         && row.charter == facts.charter()

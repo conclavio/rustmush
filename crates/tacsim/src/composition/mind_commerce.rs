@@ -50,6 +50,7 @@ pub struct MindCommerce {
     house_filing_action: Option<DefinitionRef>,
     house_purchases: Option<mush_market::mind_house::HouseConfig>,
     house_purchase_actions: Option<[DefinitionRef; 3]>,
+    two_seat_house_purchase_actions: Option<[DefinitionRef; 3]>,
     house_renewals: Option<mush_market::mind_house_renewal::RenewalConfig>,
     house_renewal_actions: Option<[DefinitionRef; 5]>,
     house_renewal_service: Option<DefinitionRef>,
@@ -102,6 +103,7 @@ impl MindCommerce {
             house_filing_action: None,
             house_purchases: None,
             house_purchase_actions: None,
+            two_seat_house_purchase_actions: None,
             house_renewals: None,
             house_renewal_actions: None,
             house_renewal_service: None,
@@ -422,6 +424,34 @@ impl MindCommerce {
         Ok(self)
     }
 
+    /// Explicitly offer a second immutable two-seat House Pin. Configure this
+    /// before renewals so their current template policy set is captured exactly.
+    pub fn with_two_seat_house_pins(
+        mut self,
+        policy: mush_market::mind_house::HousePolicy,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active
+            || self.two_seat_house_purchase_actions.is_some()
+            || self.house_renewals.is_some()
+        {
+            return Err(ModError::msg(
+                "two-seat House pins require one Active purchase composition before renewals",
+            ));
+        }
+        let house = self
+            .house_purchases
+            .take()
+            .ok_or_else(|| ModError::msg("House purchases unavailable"))?
+            .with_two_seat_pins(policy)?;
+        let protocol = mush_roll::commerce::house_purchase::HouseProtocol::HouseV2;
+        self.roll = self
+            .roll
+            .with_two_seat_house_pins(house.owner_actions(protocol)?)?;
+        self.two_seat_house_purchase_actions = Some(house.purchase_actions(protocol)?);
+        self.house_purchases = Some(house);
+        Ok(self)
+    }
+
     /// Explicit personal Pin entitlement issuance. Existing original protocol
     /// remains installed for its own receipts and historical recovery.
     pub fn with_mind_entitlements(
@@ -601,8 +631,7 @@ impl MindCommerce {
                 "Tacsim already has explicit Registry or filed holdings configuration",
             ));
         }
-        let catalog = crate::definitions::Catalog::build_fielded(&layer.loaded_packs()?, crate::NS)
-            .map_err(error)?;
+        let catalog = layer.definition_catalog()?;
         self.registry.check(layer.config(), &catalog)?;
         if self.mode == CommerceMode::Active {
             layer = if self.entitlements.is_some() {
@@ -700,6 +729,10 @@ impl MindCommerce {
         };
         let module = match &self.house_purchase_actions {
             Some(actions) => module.with_house_mind_purchases(actions.clone()),
+            None => module,
+        };
+        let module = match &self.two_seat_house_purchase_actions {
+            Some(actions) => module.with_two_seat_house_pins(actions.clone()),
             None => module,
         };
         let module = match (&self.house_renewals, &self.house_renewal_actions) {

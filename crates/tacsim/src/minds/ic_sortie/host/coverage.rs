@@ -1,6 +1,7 @@
 //! A genuine withheld departure is distinct from permission to start or resume.
 //! No decoder, public constructor or ordinary Open acknowledgement creates it.
 use super::*;
+use crate::minds::ic_sortie::IcSorties;
 use crate::minds::ic_sortie::participant::HostTransition;
 use crate::minds::ic_sortie::records::Record;
 use serde::{Deserialize, Serialize};

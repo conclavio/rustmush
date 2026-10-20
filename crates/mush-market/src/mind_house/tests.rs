@@ -342,3 +342,6 @@ fn house_native_payout_identity_cannot_be_hidden_by_rounding() -> TestResult {
     );
     Ok(())
 }
+
+#[path = "two_seat_tests.rs"]
+mod two_seat;

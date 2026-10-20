@@ -13,19 +13,33 @@ pub(crate) struct HouseGuard {
     gate: Arc<dyn crate::VenueGate>,
     capability: CanonicalId,
     owner: OwnerId,
+    protocol: mush_roll::commerce::house_purchase::HouseProtocol,
 }
 impl HouseGuard {
     pub(crate) fn new(
         config: HouseConfig,
         gate: Arc<dyn crate::VenueGate>,
     ) -> Result<Self, mush_core::ModError> {
+        Self::for_protocol(
+            config,
+            gate,
+            mush_roll::commerce::house_purchase::HouseProtocol::HouseV1,
+        )
+    }
+    pub(crate) fn for_protocol(
+        config: HouseConfig,
+        gate: Arc<dyn crate::VenueGate>,
+        protocol: mush_roll::commerce::house_purchase::HouseProtocol,
+    ) -> Result<Self, mush_core::ModError> {
         let capability =
-            CanonicalId::new(config.policy_ref()?.digest().to_hex()).map_err(super::error)?;
+            CanonicalId::new(config.policy_ref_for_protocol(protocol)?.digest().to_hex())
+                .map_err(super::error)?;
         Ok(Self {
             config,
             gate,
             capability,
             owner: OwnerId::new(crate::NS).map_err(super::error)?,
+            protocol,
         })
     }
     pub(super) fn current(&self, world: &World, actor: ObjId) -> Result<(), String> {
@@ -34,7 +48,11 @@ impl HouseGuard {
         }) {
             return Err("house requester unavailable".into());
         }
-        let venue = &self.config.policy.venue_name;
+        let venue = &self
+            .config
+            .policy_for_protocol(self.protocol)
+            .map_err(|e| e.to_string())?
+            .venue_name;
         let room = world
             .containing_room(actor)
             .ok_or("house requester has no venue")?;

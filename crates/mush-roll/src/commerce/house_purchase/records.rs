@@ -176,11 +176,12 @@ impl Record for HouseAllocationV1 {
         self.phase.validate(self.operation, self.updated_by)?;
         self.economics.validate()?;
         let economics = &self.economics;
-        if self.format != 1
+        if self.format != self.protocol.format()
+            || economics.format() != self.protocol.format()
             || self.holder.0 == 0
             || self.term.get() != 1
             || self.quote == self.operation
-            || self.terms.seats().get() != 1
+            || self.terms.seats().get() != self.protocol.seats()
             || self.terms.form() != (super::super::paid::PaidForm::Sealed {})
             || economics.licence() != self.licence
             || economics.generation() != self.term

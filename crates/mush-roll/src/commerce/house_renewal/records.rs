@@ -113,7 +113,9 @@ impl RenewalBindingV1 {
         }
         if !matches!((self.format, self.holder_basis), (1, None) | (2, Some(_)))
             || self.holder.0 == 0
-            || self.terms.seats().get() != 1
+            || self.terms.seats().get()
+                != super::super::house_purchase::HouseProtocol::from_format(template.format())?
+                    .seats()
             || self.predecessor.get().checked_add(1) != Some(self.next.get())
             || !(1..=MAX_TERM_SECONDS).contains(&self.term_seconds)
             || !(0..=MAX_GRACE_SECONDS).contains(&self.grace_seconds)

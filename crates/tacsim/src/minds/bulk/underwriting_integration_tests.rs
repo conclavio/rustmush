@@ -5,7 +5,7 @@ use super::*;
 use crate::underwriting::{
     CoverageCompletion, CoverageError, CoverageHost, CoverageProductV1, CoverageTermsV1,
 };
-use mush_core::{CmdError, Ctx};
+use mush_core::{CmdError, Ctx, DefinitionDigest, IdempotencyKeyText};
 use mush_economy::{AccountId as MoneyAccount, EconomyStore};
 use mush_org::{OrgId, OrgScopeId, OrgStore};
 

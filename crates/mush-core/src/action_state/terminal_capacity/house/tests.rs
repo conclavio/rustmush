@@ -6,6 +6,177 @@ use crate::{DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegist
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 type Handle = StateFamilyHandle<String, Value>;
+
+#[test]
+fn two_seat_pin_uses_same_six_targets_and_exact_versioned_economics() -> TestResult {
+    let mut f = fixture_with_two_seats(0, 0, true)?;
+    let p = fund(&mut f, Mode::TwoSeatPin, FundFault::default())?;
+    install(&mut f, p)?;
+    let saved = f
+        .store
+        .capacity
+        .records
+        .values()
+        .next()
+        .ok_or("reservation")?;
+    assert_eq!(saved.record.targets.len(), 6);
+    assert_eq!(
+        saved
+            .record
+            .targets
+            .iter()
+            .map(|t| t.ceiling)
+            .sum::<usize>(),
+        69632
+    );
+    assert_eq!(saved.record.effect.version(), 2);
+    reboot(&f)?;
+    let p = finish(&mut f, Mode::TwoSeatPin, true, FinishFault::None)?;
+    install(&mut f, p)?;
+    assert!(f.store.capacity.is_empty());
+    reboot(&f)?;
+    let a = f.row(ALLOCATION, &Mode::TwoSeatPin.operation().to_hex())?;
+    assert_eq!(allocation_version(&a)?, 2);
+    assert_eq!(a["terms"]["seats"], json!(2));
+    let economics = f.row(ECONOMICS, "licence/0000000000000001/term/0000000000000001")?;
+    assert_eq!(
+        economics_domain(&economics)?,
+        "roll.mind.house_term_economics.v2"
+    );
+    Ok(())
+}
+
+#[test]
+fn enabling_two_seat_product_preserves_exact_old_recipe_and_pending_reservation() -> TestResult {
+    let mut old = fixture(0, 0)?;
+    let enabled = fixture_with_two_seats(0, 0, true)?;
+    let old_protocol = old
+        .store
+        .registry
+        .house_purchase
+        .as_ref()
+        .ok_or("protocol")?;
+    let enabled_protocol = enabled
+        .store
+        .registry
+        .house_purchase
+        .as_ref()
+        .ok_or("protocol")?;
+    assert_eq!(old_protocol.house, enabled_protocol.house);
+    let serialized = serde_json::to_value(old_protocol)?;
+    assert!(serialized.get("two_seat").is_none());
+    assert_eq!(serialized.as_object().ok_or("protocol")?.len(), 3);
+    assert_eq!(quote(&old, Mode::House)?, quote(&enabled, Mode::House)?);
+    let p = fund(&mut old, Mode::House, FundFault::default())?;
+    install(&mut old, p)?;
+    let saved = old
+        .store
+        .capacity
+        .records
+        .values()
+        .next()
+        .ok_or("reservation")?
+        .record
+        .clone();
+    let hydrated = hydrate(&enabled, &old.disk)?;
+    assert_eq!(
+        hydrated
+            .capacity
+            .records
+            .values()
+            .next()
+            .ok_or("reservation")?
+            .record,
+        saved
+    );
+    Ok(())
+}
+
+#[test]
+fn old_only_composition_reads_two_seat_history_but_refuses_new_admission() -> TestResult {
+    let old = fixture(0, 0)?;
+    let mut enabled = fixture_with_two_seats(0, 0, true)?;
+    let p = fund(&mut enabled, Mode::TwoSeatPin, FundFault::default())?;
+    install(&mut enabled, p)?;
+    let restored = hydrate(&old, &enabled.disk)?;
+    let saved = restored
+        .capacity
+        .records
+        .values()
+        .next()
+        .ok_or("reservation")?;
+    let view = View {
+        registry: &restored.registry,
+        records: &restored.records,
+        mutations: None,
+    };
+    verify(Phase::Retained, &saved.record, &view)?;
+    assert!(verify(Phase::Funding, &saved.record, &view).is_err());
+    let allocation = enabled.row(ALLOCATION, &Mode::TwoSeatPin.operation().to_hex())?;
+    assert!(
+        old.store
+            .registry
+            .house_purchase
+            .as_ref()
+            .ok_or("protocol")?
+            .require_product(&allocation)
+            .is_err()
+    );
+    enabled
+        .store
+        .registry
+        .house_purchase
+        .as_ref()
+        .ok_or("protocol")?
+        .require_product(&allocation)?;
+    Ok(())
+}
+
+#[test]
+fn two_seat_product_refuses_mixed_protocol_seats_policy_and_nested_formats() -> TestResult {
+    let f = fixture_with_two_seats(0, 0, true)?;
+    let q = quote(&f, Mode::TwoSeatPin)?;
+    assert_eq!(quote_kind(&q)?, Kind::TwoSeatPin);
+    for (path, value) in [
+        ("/product/terms/seats", json!(1)),
+        ("/product/protocol", json!("house_v1")),
+        ("/product/grant/format", json!(1)),
+        ("/product/grant/renewal/format", json!(1)),
+        ("/policy", json!({"fixture":"not a policy"})),
+    ] {
+        let mut changed = q.clone();
+        *changed.pointer_mut(path).ok_or("path")? = value;
+        assert!(quote_kind(&changed).is_err());
+    }
+    let mut old = quote(&f, Mode::House)?;
+    old["product"]["terms"]["seats"] = json!(2);
+    assert!(quote_kind(&old).is_err());
+    Ok(())
+}
+
+#[test]
+fn two_seat_cleanup_retains_old_terms_and_never_creates_paid_rights() -> TestResult {
+    let mut f = fixture_with_two_seats(0, 0, true)?;
+    let p = fund(&mut f, Mode::TwoSeatPin, FundFault::default())?;
+    install(&mut f, p)?;
+    let p = finish(&mut f, Mode::TwoSeatPin, false, FinishFault::None)?;
+    install(&mut f, p)?;
+    assert!(f.store.capacity.is_empty());
+    reboot(&f)?;
+    assert!(
+        f.store
+            .get(
+                handle(&f.handles, LICENCE)?,
+                &"licence/0000000000000001".into()
+            )?
+            .is_none()
+    );
+    assert_eq!(
+        f.row(ALLOCATION, &Mode::TwoSeatPin.operation().to_hex())?["terms"]["seats"],
+        json!(2)
+    );
+    Ok(())
+}
 const LEGACY_ACTIONS: [&str; 3] = [
     "purchase_original_mind",
     "settle_original_mind",
@@ -22,12 +193,14 @@ const OLD_QUOTE: &str = "market_mind_original_quote";
 enum Mode {
     Legacy,
     House,
+    TwoSeatPin,
 }
 impl Mode {
     fn kind(self) -> Option<Kind> {
         match self {
             Self::Legacy => None,
             Self::House => Some(Kind::House),
+            Self::TwoSeatPin => Some(Kind::TwoSeatPin),
         }
     }
     fn families(self) -> [&'static str; 4] {
@@ -42,6 +215,7 @@ impl Mode {
             [match self {
                 Self::Legacy => 2,
                 Self::House => 3,
+                Self::TwoSeatPin => 4,
             }; 16],
         )
     }
@@ -50,6 +224,7 @@ impl Mode {
             [match self {
                 Self::Legacy => 5,
                 Self::House => 6,
+                Self::TwoSeatPin => 7,
             }; 16],
         )
     }
@@ -86,6 +261,17 @@ impl Fixture {
     }
 }
 fn fixture(manifest_generation: u64, economy_generation: u64) -> TestResult<Fixture> {
+    fixture_with_two_seats(manifest_generation, economy_generation, false)
+}
+fn fixture_with_two_seats(
+    manifest_generation: u64,
+    economy_generation: u64,
+    two_seats: bool,
+) -> TestResult<Fixture> {
+    let modes = [Mode::Legacy, Mode::House]
+        .into_iter()
+        .chain(two_seats.then_some(Mode::TwoSeatPin))
+        .collect::<Vec<_>>();
     let market = OwnerId::new("market")?;
     let roll = OwnerId::new("roll")?;
     let owners = BTreeSet::from([
@@ -130,7 +316,7 @@ fn fixture(manifest_generation: u64, economy_generation: u64) -> TestResult<Fixt
     }
     let participants: [DefinitionRef; 2] = participants.try_into().map_err(|_| "participants")?;
     let mut actions: BTreeMap<Mode, [DefinitionRef; 3]> = BTreeMap::new();
-    for mode in [Mode::Legacy, Mode::House] {
+    for mode in modes.iter().copied() {
         let (ids, version) = mode
             .kind()
             .map_or((LEGACY_ACTIONS, 1), |k| (k.actions(), k.version()));
@@ -216,12 +402,22 @@ fn fixture(manifest_generation: u64, economy_generation: u64) -> TestResult<Fixt
         participants.clone(),
         actions.get(&Mode::Legacy).ok_or("legacy")?.clone(),
     )?;
-    builder.house_mind_purchase_capacity(
-        &market,
-        manifest,
-        participants,
-        actions.get(&Mode::House).ok_or("house")?.clone(),
-    )?;
+    if two_seats {
+        builder.house_mind_purchase_capacity_with_two_seat_pins(
+            &market,
+            manifest,
+            participants,
+            actions.get(&Mode::House).ok_or("house")?.clone(),
+            actions.get(&Mode::TwoSeatPin).ok_or("two seat")?.clone(),
+        )?;
+    } else {
+        builder.house_mind_purchase_capacity(
+            &market,
+            manifest,
+            participants,
+            actions.get(&Mode::House).ok_or("house")?.clone(),
+        )?;
+    }
     let store =
         ActionStateStore::new(builder.freeze_for_owners_with_readiness(&owners, readiness)?);
     let request = RequestUid::from_bytes([1; 16]);
@@ -252,7 +448,7 @@ fn fixture(manifest_generation: u64, economy_generation: u64) -> TestResult<Fixt
         invocation,
         disk: BTreeMap::new(),
     };
-    let quotes = [Mode::Legacy, Mode::House]
+    let quotes = modes
         .into_iter()
         .map(|m| Ok((m, quote(&f, m)?)))
         .collect::<TestResult<Vec<_>>>()?;
@@ -280,12 +476,25 @@ fn quote(f: &Fixture, mode: Mode) -> TestResult<Value> {
             json!({"format":1,"publication":mode.quote(),"buyer":7,"subject":{"charter":"1","line":"1","filed":"1","revision":revision,"rating":hash,"compatibility":protocol.manifest.digest()},"product_digest":digest("market.original_product.v1",&product)?,"product":product}),
         );
     }
-    let kind = Kind::House;
-    let terms = json!({"seats":1,"class":"II","form":{"kind":"sealed"},"transferable":true});
-    let policy = json!({"fixture":"exact-house-policy"});
+    let kind = mode.kind().ok_or("house kind")?;
+    let terms =
+        json!({"seats":kind.version(),"class":"II","form":{"kind":"sealed"},"transferable":true});
+    let policy = if kind == Kind::TwoSeatPin {
+        json!(DefinitionRegistryBuilder::new().register(
+            OwnerId::new("market")?,
+            DefinitionDescriptor::new(
+                DefinitionKind::new("entitlement_policy")?,
+                DefinitionId::new("house_personal")?,
+                2,
+                json!({"fixture":"two-seat-policy"})
+            )?
+        )?)
+    } else {
+        json!({"fixture":"exact-house-policy"})
+    };
     let instrument = json!("cr");
     let price = json!(125);
-    let grant = json!({"format":1,"downstream":{"kind":"sealed"},"renewal":{"format":1,"instrument":instrument,"price":price,"term_seconds":100,"grace_seconds":10,"terms":terms,"revision":pin,"policy":policy}});
+    let grant = json!({"format":kind.version(),"downstream":{"kind":"sealed"},"renewal":{"format":kind.version(),"instrument":instrument,"price":price,"term_seconds":100,"grace_seconds":10,"terms":terms,"revision":pin,"policy":policy}});
     let product = json!({"protocol":kind.wire(),"terms":terms,"revision":pin,"term_seconds":100,"grace_seconds":10,"grant":grant});
     Ok(
         json!({"format":1,"publication":mode.quote(),"buyer":7,"subject":{"issuer":{"format":1,"organization":0,"scope":0},"charter":"1","line":"1","filed":"1","revision":revision,"rating":hash,"compatibility":protocol.manifest.digest()},"product_digest":digest(kind.product_domain(),&product)?,"product":product,"price":price,"instrument":instrument,"policy":policy}),
@@ -310,11 +519,12 @@ fn rows(f: &Fixture, mode: Mode, licence: u64) -> TestResult<(Value, Value)> {
     if let Some(kind) = mode.kind() {
         let object = allocation.as_object_mut().ok_or("allocation")?;
         object.insert("protocol".into(), json!(kind.wire()));
+        object.insert("format".into(), json!(kind.version()));
         object.insert(
             "issuer".into(),
             field(field(&q, "subject")?, "issuer")?.clone(),
         );
-        object.insert("economics".into(),json!({"format":1,"licence":licence.to_string(),"generation":"1","operation":mode.operation(),"product_digest":field(&q,"product_digest")?,"grant":field(field(&q,"product")?,"grant")?}));
+        object.insert("economics".into(),json!({"format":kind.version(),"licence":licence.to_string(),"generation":"1","operation":mode.operation(),"product_digest":field(&q,"product_digest")?,"grant":field(field(&q,"product")?,"grant")?}));
     }
     Ok((purchase, allocation))
 }
@@ -422,6 +632,7 @@ fn finish(f: &mut Fixture, mode: Mode, grant: bool, fault: FinishFault) -> TestR
             [20 + match mode {
                 Mode::Legacy => 0,
                 Mode::House => 1,
+                Mode::TwoSeatPin => 2,
             }; 16],
         )
     };
@@ -442,7 +653,7 @@ fn finish(f: &mut Fixture, mode: Mode, grant: bool, fault: FinishFault) -> TestR
         receipt.as_object_mut().ok_or("receipt")?.insert(
             "grant_economics_digest".into(),
             json!(digest(
-                "roll.mind.house_grant_economics.v1",
+                grant_domain(field(field(&q, "product")?, "grant")?)?,
                 field(field(&q, "product")?, "grant")?
             )?),
         );

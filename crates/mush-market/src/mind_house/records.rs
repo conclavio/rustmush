@@ -68,7 +68,8 @@ data!(HouseProductV1,ProductWire,{
 impl HouseProductV1 {
     pub(super) fn validate(&self) -> Result<(), String> {
         self.grant.validate().map_err(error)?;
-        if self.terms.seats().get() != 1
+        if self.terms.seats().get() != self.protocol.seats()
+            || self.grant.format() != self.protocol.format()
             || self.terms.form() != (PaidForm::Sealed {})
             || !(1..=MAX_TERM_SECONDS).contains(&self.term_seconds)
             || !(0..=MAX_GRACE_SECONDS).contains(&self.grace_seconds)

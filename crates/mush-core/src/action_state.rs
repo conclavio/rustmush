@@ -1029,6 +1029,29 @@ impl StateFamilyRegistryBuilder {
         Ok(())
     }
 
+    pub(crate) fn house_mind_purchase_capacity_with_two_seat_pins(
+        &mut self,
+        owner: &OwnerId,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        house_v1: [crate::DefinitionRef; 3],
+        house_v2: [crate::DefinitionRef; 3],
+    ) -> Result<(), ActionStateError> {
+        if self.house_purchase.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate purchase protocol",
+            ));
+        }
+        self.house_purchase = Some(terminal_capacity::HouseProtocol::with_two_seat_pins(
+            owner,
+            manifest,
+            participants,
+            house_v1,
+            house_v2,
+        )?);
+        Ok(())
+    }
+
     pub(crate) fn mind_entitlement_purchase_capacity(
         &mut self,
         owner: &OwnerId,

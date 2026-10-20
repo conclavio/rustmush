@@ -315,19 +315,20 @@ fn renewal_rotation_visits_each_same_buyer_selection_and_preserves_generation_id
     let first = TermGeneration::new(1)?;
     let second = TermGeneration::new(2)?;
     let selections = [
-        Selection::Due(licence, first),
-        Selection::Due(licence, second),
+        Selection::Due(licence, first, 1),
+        Selection::Due(licence, second, 1),
+        Selection::Due(licence, first, 2),
         Selection::Retry(licence, first, token(9)),
         Selection::Pending(token(9)),
     ];
     for selection in selections {
         admit(&mut runtime, selection, GOD)?;
     }
-    assert_eq!(runtime.entries.len(), 4);
+    assert_eq!(runtime.entries.len(), 5);
     let mut starts = BTreeSet::new();
-    for _ in 0..4 {
+    for _ in 0..5 {
         let order = rotation_order(&mut runtime);
-        assert_eq!(order.len(), 4);
+        assert_eq!(order.len(), 5);
         starts.insert(order.first().ok_or("rotation")?.clone());
     }
     assert_eq!(
@@ -337,7 +338,7 @@ fn renewal_rotation_visits_each_same_buyer_selection_and_preserves_generation_id
     );
     assert_eq!(
         runtime.entries.len(),
-        4,
+        5,
         "rotation never discards an unresolved entry"
     );
     Ok(())

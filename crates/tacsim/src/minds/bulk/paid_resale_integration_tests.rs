@@ -754,3 +754,6 @@ pub(super) fn exercise(f: &PurchaseFixture, template: &IcWorld, saved: &Durable)
     eprintln!("M7_STORY phase=paid_resale event=complete");
     Ok(())
 }
+
+#[path = "house_two_seat_integration_tests.rs"]
+pub(super) mod two_seat;

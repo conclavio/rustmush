@@ -61,6 +61,19 @@ impl PaidTerms {
             transferable,
         })
     }
+    /// Structural consent for the explicitly versioned HouseV2 sealed Pin.
+    /// This constructs no licence, paid history, or current admission authority.
+    pub(crate) fn house_two_seat_pin(
+        class: RatingClass,
+        transferable: bool,
+    ) -> Result<Self, PublicationError> {
+        Ok(Self {
+            seats: PaidSeats::new(2).map_err(|_| PublicationError::Invalid)?,
+            class,
+            form: PaidForm::Sealed {},
+            transferable,
+        })
+    }
     #[must_use]
     pub const fn seats(self) -> PaidSeats {
         self.seats

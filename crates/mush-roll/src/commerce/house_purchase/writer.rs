@@ -56,9 +56,22 @@ impl HousePurchaseTerms {
         PaidTerms::original_personal_form(class, PaidForm::Sealed {}, transferable)
     }
 
+    pub fn personal_terms_for_protocol(
+        protocol: HouseProtocol,
+        class: super::super::rating::RatingClass,
+        transferable: bool,
+    ) -> Result<PaidTerms, PublicationError> {
+        match protocol {
+            HouseProtocol::HouseV1 => Self::personal_terms(class, transferable),
+            HouseProtocol::HouseV2 => PaidTerms::house_two_seat_pin(class, transferable),
+        }
+    }
+    fn protocol(&self) -> Result<HouseProtocol, PublicationError> {
+        HouseProtocol::from_format(self.grant.format())
+    }
     fn validate(&self) -> Result<(), PublicationError> {
         self.grant.validate()?;
-        if self.terms.seats().get() != 1
+        if self.terms.seats().get() != self.protocol()?.seats()
             || self.terms.form() != (PaidForm::Sealed {})
             || self.grant.renewal().terms() != self.terms
             || !(1..=MAX_TERM_SECONDS).contains(&self.term_seconds)
@@ -138,8 +151,8 @@ fn descriptor(
         Transition::Grant => "grant",
         Transition::Refund => "refund",
     };
-    Ok(DefinitionDescriptor::new(DefinitionKind::new("action").map_err(error)?,DefinitionId::new(action_id(protocol,transition)).map_err(error)?,1,
-        serde_json::json!({"format":1,"protocol":"house_mind_purchase_v1","transition":transition_name})).map_err(error)?
+    Ok(DefinitionDescriptor::new(DefinitionKind::new("action").map_err(error)?,DefinitionId::new(action_id(protocol,transition)).map_err(error)?,protocol.version(),
+        serde_json::json!({"format":protocol.format(),"protocol":protocol.protocol_name(),"transition":transition_name})).map_err(error)?
         .with_references(vec![manifest.clone(),participants.economy().clone(),participants.retention().clone()]))
 }
 
@@ -151,18 +164,31 @@ struct Registration {
     participants: PurchaseParticipants,
     // Exact ordered [list, fund, grant, refund] per protocol, fixed at freeze.
     actions: [DefinitionRef; 4],
+    two_seat_actions: Option<[DefinitionRef; 4]>,
 }
 impl Registration {
-    fn action(&self, protocol: HouseProtocol, transition: Transition) -> &DefinitionRef {
-        let HouseProtocol::HouseV1 = protocol;
-        let refs = &self.actions;
+    fn actions(&self, protocol: HouseProtocol) -> Result<&[DefinitionRef; 4], PublicationError> {
+        match protocol {
+            HouseProtocol::HouseV1 => Ok(&self.actions),
+            HouseProtocol::HouseV2 => self
+                .two_seat_actions
+                .as_ref()
+                .ok_or(PublicationError::Unavailable),
+        }
+    }
+    fn action(
+        &self,
+        protocol: HouseProtocol,
+        transition: Transition,
+    ) -> Result<&DefinitionRef, PublicationError> {
+        let refs = self.actions(protocol)?;
         let [list, fund, grant, refund] = refs;
-        match transition {
+        Ok(match transition {
             Transition::List => list,
             Transition::Fund => fund,
             Transition::Grant => grant,
             Transition::Refund => refund,
-        }
+        })
     }
 }
 
@@ -407,6 +433,7 @@ impl HousePurchaseWriter {
         manifest: DefinitionRef,
         participants: PurchaseParticipants,
         actions: [DefinitionRef; 4],
+        two_seat_actions: Option<[DefinitionRef; 4]>,
     ) -> Result<(), ModError> {
         if reg.module() != crate::NS || self.0.get().is_some() {
             return Err(ModError::msg(
@@ -414,6 +441,9 @@ impl HousePurchaseWriter {
             ));
         }
         validate_refs(&manifest, &participants, &actions)?;
+        if let Some(refs) = &two_seat_actions {
+            validate_refs_for_protocol(HouseProtocol::HouseV2, &manifest, &participants, refs)?;
+        }
         reg.delegate_state_family(&families.deployment, "market")?;
         reg.delegate_state_family(&families.house_allocations, "market")?;
         reg.delegate_state_family(&families.paid_licences, "market")?;
@@ -426,6 +456,7 @@ impl HousePurchaseWriter {
                 manifest,
                 participants,
                 actions,
+                two_seat_actions,
             })
             .map_err(|_| ModError::msg("entitlement writer registration conflicts"))
     }
@@ -435,7 +466,19 @@ impl HousePurchaseWriter {
         participants: &PurchaseParticipants,
         actions: &[DefinitionRef; 4],
     ) -> Result<(), ModError> {
+        self.validate_registration_with_two_seat_pins(manifest, participants, actions, None)
+    }
+    pub fn validate_registration_with_two_seat_pins(
+        &self,
+        manifest: &DefinitionRef,
+        participants: &PurchaseParticipants,
+        actions: &[DefinitionRef; 4],
+        two_seat_actions: Option<&[DefinitionRef; 4]>,
+    ) -> Result<(), ModError> {
         validate_refs(manifest, participants, actions)?;
+        if let Some(refs) = two_seat_actions {
+            validate_refs_for_protocol(HouseProtocol::HouseV2, manifest, participants, refs)?;
+        }
         let actual = self
             .0
             .get()
@@ -443,6 +486,7 @@ impl HousePurchaseWriter {
         if manifest != &actual.manifest
             || participants != &actual.participants
             || actions != &actual.actions
+            || two_seat_actions != actual.two_seat_actions.as_ref()
         {
             return Err(ModError::msg("entitlement writer composition differs"));
         }
@@ -480,7 +524,15 @@ pub(crate) fn validate_refs(
     participants: &PurchaseParticipants,
     actions: &[DefinitionRef; 4],
 ) -> Result<(), ModError> {
-    for (protocol, refs) in [(HouseProtocol::HouseV1, actions)] {
+    validate_refs_for_protocol(HouseProtocol::HouseV1, manifest, participants, actions)
+}
+pub(crate) fn validate_refs_for_protocol(
+    protocol: HouseProtocol,
+    manifest: &DefinitionRef,
+    participants: &PurchaseParticipants,
+    actions: &[DefinitionRef; 4],
+) -> Result<(), ModError> {
+    for refs in [actions] {
         for (transition, actual) in [
             Transition::List,
             Transition::Fund,
@@ -536,7 +588,11 @@ impl RegisteredHouseWriter {
             .ok_or(PublicationError::Unavailable)?;
         if self.manifest != r.manifest
             || self.participants != r.participants
-            || !r.actions.iter().any(|a| a == &self.action)
+            || !r
+                .actions
+                .iter()
+                .chain(r.two_seat_actions.iter().flatten())
+                .any(|a| a == &self.action)
         {
             return Err(PublicationError::Mismatch);
         }
@@ -547,10 +603,23 @@ impl RegisteredHouseWriter {
         protocol: HouseProtocol,
         transition: Transition,
     ) -> Result<(), PublicationError> {
-        if self.registration()?.action(protocol, transition) != &self.action {
+        if self.registration()?.action(protocol, transition)? != &self.action {
             return Err(PublicationError::Mismatch);
         }
         Ok(())
+    }
+    fn protocol(&self) -> Result<HouseProtocol, PublicationError> {
+        let r = self.registration()?;
+        if r.actions.contains(&self.action) {
+            return Ok(HouseProtocol::HouseV1);
+        }
+        if r.two_seat_actions
+            .as_ref()
+            .is_some_and(|a| a.contains(&self.action))
+        {
+            return Ok(HouseProtocol::HouseV2);
+        }
+        Err(PublicationError::Mismatch)
     }
     /// One actual preimage read, retained by the same ActionTxn. The opaque
     /// observation cannot be supplied from wire data or another preparation.
@@ -563,7 +632,7 @@ impl RegisteredHouseWriter {
         let facts = ctx
             .read_owner_preimage(txn, &self.reader, HouseSaleRequest::publication(licence))
             .map_err(invalid)?;
-        self.require_action(HouseProtocol::HouseV1, Transition::List)?;
+        self.require_action(self.protocol()?, Transition::List)?;
         Ok(PreparedHouseSale {
             action: self.action.clone(),
             commit: ctx.commit_token(),
@@ -581,8 +650,8 @@ impl RegisteredHouseWriter {
             .read_owner_preimage(txn, &self.reader, HouseSaleRequest::listed(licence, issuer))
             .map_err(invalid)?;
         let r = self.registration()?;
-        if (&self.action != r.action(HouseProtocol::HouseV1, Transition::Fund)
-            && &self.action != r.action(HouseProtocol::HouseV1, Transition::Grant))
+        if (&self.action != r.action(self.protocol()?, Transition::Fund)?
+            && &self.action != r.action(self.protocol()?, Transition::Grant)?)
         {
             return Err(PublicationError::Mismatch);
         }
@@ -614,8 +683,8 @@ impl RegisteredHouseWriter {
         observation: &PreparedHouseSale,
     ) -> Result<(), PublicationError> {
         let facts = self.observed(ctx, observation)?;
-        self.require_action(HouseProtocol::HouseV1, Transition::List)?;
-        let roots = HouseRoots::listing(&self.action, ctx.commit_token(), facts)?;
+        self.require_action(self.protocol()?, Transition::List)?;
+        let roots = HouseRoots::listing(&self.action, self.protocol()?, ctx.commit_token(), facts)?;
         ctx.prepare_owner(&self.roots, RootRequest::House(roots))
             .map_err(invalid)?;
         Ok(())
@@ -649,7 +718,7 @@ impl RegisteredHouseWriter {
         terms: &HousePurchaseTerms,
         observation: &PreparedHouseSale,
     ) -> Result<(), PublicationError> {
-        self.require_action(HouseProtocol::HouseV1, Transition::Fund)?;
+        self.require_action(terms.protocol()?, Transition::Fund)?;
         let facts = self.observed(ctx, observation)?;
         terms.matches_facts(facts)?;
         check_purchase(purchase, terms, facts)?;
@@ -678,7 +747,7 @@ impl RegisteredHouseWriter {
         observation: &PreparedHouseSale,
         output: &HouseFundingOutput,
     ) -> Result<HouseAllocationV1, PublicationError> {
-        self.require_action(HouseProtocol::HouseV1, Transition::Fund)?;
+        self.require_action(terms.protocol()?, Transition::Fund)?;
         let facts = self.observed(ctx, observation)?;
         terms.matches_facts(facts)?;
         check_purchase(purchase, terms, facts)?;
@@ -708,8 +777,8 @@ impl RegisteredHouseWriter {
             .checked_add(1)
             .ok_or(PublicationError::Capacity)?;
         let row = HouseAllocationV1 {
-            format: 1,
-            protocol: HouseProtocol::HouseV1,
+            format: terms.protocol()?.format(),
+            protocol: terms.protocol()?,
             operation: commit,
             participants: self.participants.clone(),
             licence,

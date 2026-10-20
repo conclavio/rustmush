@@ -2,7 +2,7 @@
 use super::*;
 use crate::commerce::{
     FiledRevisionId, LicenceId, MAX_GRACE_SECONDS, MAX_TERM_SECONDS, RevisionIdentity,
-    house_purchase::{HouseGrantEconomicsV1, HouseRenewalTemplateV1},
+    house_purchase::{HouseGrantEconomicsV1, HouseProtocol, HouseRenewalTemplateV1},
     paid::{PaidForm, PaidTerms},
     rating::RatingClass,
     records::RevisionPolicy,
@@ -29,22 +29,32 @@ impl GameModule for Owner {
         Ok(())
     }
 }
-fn row(length: usize, generation: u64) -> TestResult<HouseTermEconomicsV1> {
+fn row(
+    length: usize,
+    generation: u64,
+    protocol: HouseProtocol,
+) -> TestResult<HouseTermEconomicsV1> {
     let digest = DefinitionDigest::from_bytes([255; 32]);
     let revision: RevisionIdentity = serde_json::from_value(serde_json::json!({"format":1,
         "revision":{"key":{"character":u32::MAX,"mind":u64::MAX,"number":u64::MAX},"digest":digest},
         "source":digest}))?;
-    let terms = PaidTerms::original_personal_form(RatingClass::III, PaidForm::Sealed {}, true)?;
+    let terms = match protocol {
+        HouseProtocol::HouseV1 => {
+            PaidTerms::original_personal_form(RatingClass::III, PaidForm::Sealed {}, true)?
+        }
+        HouseProtocol::HouseV2 => PaidTerms::house_two_seat_pin(RatingClass::III, true)?,
+    };
     let policy = DefinitionRegistryBuilder::new().register(
         OwnerId::new("market")?,
         DefinitionDescriptor::new(
             DefinitionKind::new("entitlement_policy")?,
             DefinitionId::new("house_personal")?,
-            1,
-            serde_json::json!({"format":1}),
+            protocol.version(),
+            serde_json::json!({"format":protocol.format()}),
         )?,
     )?;
-    let renewal = HouseRenewalTemplateV1::new(
+    let renewal = HouseRenewalTemplateV1::for_protocol(
+        protocol,
         InstrumentId::new("x".repeat(length)).ok_or("instrument")?,
         Amount::from_minor(i64::MAX),
         MAX_TERM_SECONDS,
@@ -70,6 +80,13 @@ fn document(family: &Handle, row: &HouseTermEconomicsV1) -> serde_json::Value {
 }
 #[test]
 fn house_complete_envelope_reserves_future_generation_digits_before_money() -> TestResult {
+    boundary(HouseProtocol::HouseV1)
+}
+#[test]
+fn house_v2_complete_envelope_reserves_future_generation_digits_before_money() -> TestResult {
+    boundary(HouseProtocol::HouseV2)
+}
+fn boundary(protocol: HouseProtocol) -> TestResult {
     let shared = Arc::new(Mutex::new(None));
     let mut engine = Engine::with_modules(
         World::new_minimal(),
@@ -81,13 +98,13 @@ fn house_complete_envelope_reserves_future_generation_digits_before_money() -> T
         .map_err(|_| "handle lock")?
         .clone()
         .ok_or("handle")?;
-    let base = row(1, 1)?;
+    let base = row(1, 1, protocol)?;
     let base_len = canonical_json_bytes_with_limit(&document(&handle, &base), 8192)?.len();
     let width = 8192usize
         .checked_sub(base_len)
         .and_then(|n| n.checked_add(1))
         .ok_or("width")?;
-    let birth = row(width, 1)?;
+    let birth = row(width, 1, protocol)?;
     // The real old body codec accepts this row. That does not prove future
     // complete-envelope capacity, and admission must reject it now.
     assert_eq!(
@@ -109,16 +126,16 @@ fn house_complete_envelope_reserves_future_generation_digits_before_money() -> T
             "house writes require registered protocol"
         ))
     ));
-    let future = row(width, u64::MAX)?;
+    let future = row(width, u64::MAX, protocol)?;
     assert_eq!(future.key().len(), birth.key().len());
     let mut txn = engine.action_transaction(&handle)?;
     assert!(txn.insert(&handle, &future.key(), future).is_err());
     drop(txn);
     let safe_width = width.checked_sub(19).ok_or("digit reserve")?;
-    let safe = row(safe_width, 1)?;
+    let safe = row(safe_width, 1, protocol)?;
     check(&handle, &safe)?;
     for generation in [1, 9, 10, u64::MAX] {
-        let future = row(safe_width, generation)?;
+        let future = row(safe_width, generation, protocol)?;
         assert!(canonical_json_bytes_with_limit(&document(&handle, &future), 8192)?.len() <= 8192);
         let mut independent = Engine::with_modules(
             World::new_minimal(),

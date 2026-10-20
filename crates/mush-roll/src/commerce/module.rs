@@ -92,6 +92,7 @@ struct HouseRegistration {
     writer: super::house_purchase::writer::HousePurchaseWriter,
     participants: super::purchase::PurchaseParticipants,
     actions: [DefinitionRef; 4],
+    two_seat_actions: Option<[DefinitionRef; 4]>,
 }
 #[derive(Clone, Debug)]
 struct RenewalRegistration {
@@ -544,12 +545,35 @@ impl CommerceConfig {
             writer,
             participants,
             actions,
+            two_seat_actions: None,
         });
         Ok(self)
     }
 
     /// Explicit same-slot renewal composition. Exact Market and Economy
     /// providers and all final audits are required; no default activation.
+    /// Explicit second product; the existing one-seat registration stays exact.
+    pub fn with_two_seat_house_pins(
+        mut self,
+        actions: [DefinitionRef; 4],
+    ) -> Result<Self, ModError> {
+        let house = self
+            .house_purchases
+            .as_mut()
+            .ok_or_else(|| ModError::msg("House purchase prerequisite unavailable"))?;
+        if house.two_seat_actions.is_some() {
+            return Err(ModError::msg("two-seat House pins already configured"));
+        }
+        super::house_purchase::writer::validate_refs_for_protocol(
+            super::house_purchase::HouseProtocol::HouseV2,
+            &self.manifest,
+            &house.participants,
+            &actions,
+        )?;
+        house.two_seat_actions = Some(actions);
+        Ok(self)
+    }
+
     pub fn with_mind_renewals(
         mut self,
         writer: super::renewal::writer::RenewalWriter,
@@ -1311,6 +1335,7 @@ pub(crate) fn register(
             return Err(ModError::msg("house retention definition differs"));
         }
         root_actions.extend(house.actions.iter().cloned());
+        root_actions.extend(house.two_seat_actions.iter().flatten().cloned());
         house.writer.install(
             reg,
             families.clone(),
@@ -1318,6 +1343,7 @@ pub(crate) fn register(
             config.manifest.clone(),
             house.participants.clone(),
             house.actions.clone(),
+            house.two_seat_actions.clone(),
         )?;
     }
     if let Some(renewal) = &config.renewals {

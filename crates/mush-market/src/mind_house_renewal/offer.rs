@@ -72,7 +72,7 @@ pub(super) fn build(
         return Err(super::records::invalid());
     }
     let payer = personal(e.snapshot(), instrument, binding.holder())?.id;
-    if template.policy() != &config.purchase_policy {
+    if !config.accepts_purchase_template(template) {
         return Err(super::records::invalid());
     }
     let issuer = binding.issuer();

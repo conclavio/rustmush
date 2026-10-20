@@ -3413,6 +3413,35 @@ impl<'a> Registrar<'a> {
             .map_err(|e| ModError::msg(e.to_string()))
     }
 
+    /// Add the exact two-seat sealed Pin product while retaining the V1 recipe.
+    /// Both action arrays are ordered Fund/Grant/Refund; fixed targets are unchanged.
+    pub fn house_mind_purchase_capacity_with_two_seat_pins(
+        &mut self,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        house_v1: [crate::DefinitionRef; 3],
+        house_v2: [crate::DefinitionRef; 3],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "market" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "house purchase capacity requires the unfrozen Market registrar",
+            ));
+        }
+        let owner =
+            crate::OwnerId::new(self.module.as_str()).map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .house_mind_purchase_capacity_with_two_seat_pins(
+                &owner,
+                manifest,
+                participants,
+                house_v1,
+                house_v2,
+            )
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
     /// Declare the closed OriginalV3/DerivedV1 purchase protocols. Only Market may
     /// register it; action order is funding, grant and refund. Core derives all
     /// six future targets from actual acknowledged purchase/allocation rows.

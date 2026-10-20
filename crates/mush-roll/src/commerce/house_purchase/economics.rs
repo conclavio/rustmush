@@ -1,5 +1,6 @@
 //! Immutable public consent for the closed sealed personal house product.
 //! Structural values do not grant payment, source, use or renewal authority.
+use super::HouseProtocol;
 use crate::commerce::paid::{PaidForm, PaidTerms};
 use crate::commerce::records::{PublicationError, Record, RevisionPolicy};
 use crate::commerce::{LicenceId, MAX_GRACE_SECONDS, MAX_TERM_SECONDS, TermGeneration};
@@ -19,8 +20,12 @@ fn value<T: Serialize>(v: &T) -> Result<serde_json::Value, PublicationError> {
 fn digest<T: Serialize>(domain: &str, v: &T) -> Result<DefinitionDigest, PublicationError> {
     DefinitionDigest::for_canonical_value(domain, &value(v)?).map_err(|_| invalid())
 }
-fn terms(terms: PaidTerms, revision: RevisionPolicy) -> Result<(), PublicationError> {
-    if terms.seats().get() != 1
+fn terms(
+    protocol: HouseProtocol,
+    terms: PaidTerms,
+    revision: RevisionPolicy,
+) -> Result<(), PublicationError> {
+    if terms.seats().get() != protocol.seats()
         || terms.form() != (PaidForm::Sealed {})
         || !matches!(revision, RevisionPolicy::Pin { .. })
     {
@@ -57,8 +62,30 @@ impl HouseRenewalTemplateV1 {
         revision: RevisionPolicy,
         policy: DefinitionRef,
     ) -> Result<Self, PublicationError> {
+        Self::for_protocol(
+            HouseProtocol::HouseV1,
+            instrument,
+            price,
+            term_seconds,
+            grace_seconds,
+            terms,
+            revision,
+            policy,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_protocol(
+        protocol: HouseProtocol,
+        instrument: InstrumentId,
+        price: Amount,
+        term_seconds: i64,
+        grace_seconds: i64,
+        terms: PaidTerms,
+        revision: RevisionPolicy,
+        policy: DefinitionRef,
+    ) -> Result<Self, PublicationError> {
         let v = Self {
-            format: 1,
+            format: protocol.format(),
             instrument,
             price,
             term_seconds,
@@ -71,21 +98,24 @@ impl HouseRenewalTemplateV1 {
         Ok(v)
     }
     pub fn validate(&self) -> Result<(), PublicationError> {
-        terms(self.terms, self.revision)?;
-        if self.format != 1
-            || self.price.is_negative()
+        let protocol = HouseProtocol::from_format(self.format)?;
+        terms(protocol, self.terms, self.revision)?;
+        if self.price.is_negative()
             || self.price.is_zero()
             || !(1..=MAX_TERM_SECONDS).contains(&self.term_seconds)
             || !(0..=MAX_GRACE_SECONDS).contains(&self.grace_seconds)
             || self.policy.key().owner.as_str() != "market"
             || self.policy.key().kind.as_str() != "entitlement_policy"
             || self.policy.key().id.as_str() != "house_personal"
-            || self.policy.version() != 1
+            || self.policy.version() != protocol.version()
         {
             return Err(invalid());
         }
         value(self)?;
         Ok(())
+    }
+    pub const fn format(&self) -> u16 {
+        self.format
     }
     pub fn instrument(&self) -> &InstrumentId {
         &self.instrument
@@ -133,7 +163,7 @@ data!(HouseGrantEconomicsV1,GrantWire,{
 impl HouseGrantEconomicsV1 {
     pub fn new(renewal: HouseRenewalTemplateV1) -> Result<Self, PublicationError> {
         let v = Self {
-            format: 1,
+            format: renewal.format(),
             downstream: HouseDownstreamV1::Sealed {},
             renewal,
         };
@@ -141,7 +171,7 @@ impl HouseGrantEconomicsV1 {
         Ok(v)
     }
     pub fn validate(&self) -> Result<(), PublicationError> {
-        if self.format != 1 {
+        if self.format != self.renewal.format() {
             return Err(invalid());
         }
         self.renewal.validate()?;
@@ -150,7 +180,16 @@ impl HouseGrantEconomicsV1 {
     }
     pub fn digest(&self) -> Result<DefinitionDigest, PublicationError> {
         self.validate()?;
-        digest("roll.mind.house_grant_economics.v1", self)
+        digest(
+            match HouseProtocol::from_format(self.format)? {
+                HouseProtocol::HouseV1 => "roll.mind.house_grant_economics.v1",
+                HouseProtocol::HouseV2 => "roll.mind.house_grant_economics.v2",
+            },
+            self,
+        )
+    }
+    pub const fn format(&self) -> u16 {
+        self.format
     }
     pub fn renewal(&self) -> &HouseRenewalTemplateV1 {
         &self.renewal
@@ -169,7 +208,7 @@ impl HouseTermEconomicsV1 {
         grant: HouseGrantEconomicsV1,
     ) -> Result<Self, PublicationError> {
         let v = Self {
-            format: 1,
+            format: grant.format(),
             licence,
             generation,
             operation,
@@ -187,7 +226,16 @@ impl HouseTermEconomicsV1 {
     }
     pub fn digest(&self) -> Result<DefinitionDigest, PublicationError> {
         self.validate()?;
-        digest("roll.mind.house_term_economics.v1", self)
+        digest(
+            match HouseProtocol::from_format(self.format)? {
+                HouseProtocol::HouseV1 => "roll.mind.house_term_economics.v1",
+                HouseProtocol::HouseV2 => "roll.mind.house_term_economics.v2",
+            },
+            self,
+        )
+    }
+    pub const fn format(&self) -> u16 {
+        self.format
     }
     pub const fn licence(&self) -> LicenceId {
         self.licence
@@ -212,7 +260,7 @@ impl Record for HouseTermEconomicsV1 {
         format!("{}/{}", self.licence.key(), self.generation.key())
     }
     fn validate(&self) -> Result<(), PublicationError> {
-        if self.format != 1 {
+        if self.format != self.grant.format() {
             return Err(invalid());
         }
         self.grant.validate()?;

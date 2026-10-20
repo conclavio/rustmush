@@ -5,7 +5,7 @@ use mush_core::{
     ProviderOfferDraft,
 };
 fn parameters(kind: Kind) -> Result<Vec<ProjectedParameter>, String> {
-    let field = |id: &str, kind| {
+    let field = |id: &str, kind| -> Result<ProjectedParameter, String> {
         Ok(ProjectedParameter {
             id: mush_core::mechanics::CanonicalId::new(id).map_err(|e| e.to_string())?,
             required: true,

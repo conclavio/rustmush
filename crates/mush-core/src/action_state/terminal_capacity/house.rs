@@ -32,25 +32,41 @@ const FAMILIES: [(&str, &str, usize); 6] = [
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Kind {
     House,
+    TwoSeatPin,
 }
 impl Kind {
     fn version(self) -> u32 {
-        1
+        match self {
+            Self::House => 1,
+            Self::TwoSeatPin => 2,
+        }
     }
     fn wire(self) -> &'static str {
-        "house_v1"
+        match self {
+            Self::House => "house_v1",
+            Self::TwoSeatPin => "house_v2",
+        }
     }
     fn protocol(self) -> &'static str {
-        "house_mind_purchase_v1"
+        match self {
+            Self::House => "house_mind_purchase_v1",
+            Self::TwoSeatPin => "house_mind_purchase_v2",
+        }
     }
     fn actions(self) -> [&'static str; 3] {
         HOUSE_ACTIONS
     }
     fn product_domain(self) -> &'static str {
-        "market.house_product.v1"
+        match self {
+            Self::House => "market.house_product.v1",
+            Self::TwoSeatPin => "market.house_product.v2",
+        }
     }
     fn quote_domain(self) -> &'static str {
-        "market.house_quote.v1"
+        match self {
+            Self::House => "market.house_quote.v1",
+            Self::TwoSeatPin => "market.house_quote.v2",
+        }
     }
 }
 
@@ -59,6 +75,8 @@ pub(in crate::action_state) struct Protocol {
     manifest: DefinitionRef,
     participants: [DefinitionRef; 2],
     house: [DefinitionRef; 3],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    two_seat: Option<[DefinitionRef; 3]>,
 }
 impl Protocol {
     pub(in crate::action_state) fn new(
@@ -80,9 +98,10 @@ impl Protocol {
             manifest,
             participants,
             house,
+            two_seat: None,
         };
         for kind in [Kind::House] {
-            for (action, id) in result.actions(kind).iter().zip(kind.actions()) {
+            for (action, id) in result.actions(kind)?.iter().zip(kind.actions()) {
                 if action.key().owner != *owner
                     || action.key().kind.as_str() != "action"
                     || action.key().id.as_str() != id
@@ -91,7 +110,7 @@ impl Protocol {
                     return Err(refused("house action identity or order"));
                 }
             }
-            if *result.admission_action(kind)
+            if *result.admission_action(kind)?
                 != admission_reference(&result.manifest, &result.participants, kind)?
             {
                 return Err(refused("house admission definition differs"));
@@ -99,29 +118,64 @@ impl Protocol {
         }
         Ok(result)
     }
-    fn actions(&self, kind: Kind) -> &[DefinitionRef; 3] {
+    pub(in crate::action_state) fn with_two_seat_pins(
+        owner: &OwnerId,
+        manifest: DefinitionRef,
+        participants: [DefinitionRef; 2],
+        house: [DefinitionRef; 3],
+        two_seat: [DefinitionRef; 3],
+    ) -> Result<Self, ActionStateError> {
+        let mut result = Self::new(owner, manifest, participants, house)?;
+        for (index, action) in two_seat.iter().enumerate() {
+            if *action
+                != action_reference(
+                    &result.manifest,
+                    &result.participants,
+                    Kind::TwoSeatPin,
+                    index,
+                )?
+            {
+                return Err(refused("house two-seat exact action recipe"));
+            }
+        }
+        result.two_seat = Some(two_seat);
+        Ok(result)
+    }
+    fn kinds(&self) -> impl Iterator<Item = Kind> {
+        std::iter::once(Kind::House).chain(self.two_seat.iter().map(|_| Kind::TwoSeatPin))
+    }
+    fn actions(&self, kind: Kind) -> Result<&[DefinitionRef; 3], ActionStateError> {
         match kind {
-            Kind::House => &self.house,
+            Kind::House => Ok(&self.house),
+            Kind::TwoSeatPin => self
+                .two_seat
+                .as_ref()
+                .ok_or_else(|| refused("house two-seat recipe unavailable")),
         }
     }
-    fn admission_action(&self, kind: Kind) -> &DefinitionRef {
-        &self.actions(kind)[0]
+    fn admission_action(&self, kind: Kind) -> Result<&DefinitionRef, ActionStateError> {
+        Ok(&self.actions(kind)?[0])
     }
-    pub(super) fn admission_actions(&self) -> [&DefinitionRef; 1] {
-        [self.admission_action(Kind::House)]
+    pub(super) fn admission_actions(&self) -> Vec<&DefinitionRef> {
+        std::iter::once(&self.house[0])
+            .chain(self.two_seat.iter().map(|a| &a[0]))
+            .collect()
     }
     pub(super) fn recognizes_historical(&self, effect: &DefinitionRef) -> bool {
-        [Kind::House].into_iter().any(|kind| {
-            effect.key() == self.admission_action(kind).key() && effect.version() == kind.version()
-        })
+        effect.key() == self.house[0].key() && matches!(effect.version(), 1 | 2)
+    }
+    pub(super) fn require_product(&self, allocation: &Value) -> Result<(), ActionStateError> {
+        let kind = allocation_kind(allocation)?;
+        self.admission_action(kind)?;
+        Ok(())
     }
     fn action_index(
         &self,
         identity: &RegisteredTxnIdentity,
     ) -> Result<(Kind, usize), ActionStateError> {
-        for kind in [Kind::House] {
+        for kind in self.kinds() {
             if let Some(index) = self
-                .actions(kind)
+                .actions(kind)?
                 .iter()
                 .position(|action| action == &identity.action)
             {
@@ -188,8 +242,8 @@ impl Protocol {
         definitions
             .get_exact(&self.manifest)
             .map_err(|_| refused("house manifest unavailable"))?;
-        for kind in [Kind::House] {
-            for (action, transition) in self.actions(kind).iter().zip(TRANSITIONS) {
+        for kind in self.kinds() {
+            for (action, transition) in self.actions(kind)?.iter().zip(TRANSITIONS) {
                 let definition = definitions
                     .get_exact(action)
                     .map_err(|_| refused("house action unavailable"))?;
@@ -259,12 +313,31 @@ fn admission_reference(
     participants: &[DefinitionRef; 2],
     kind: Kind,
 ) -> Result<DefinitionRef, ActionStateError> {
+    action_reference(manifest, participants, kind, 0)
+}
+fn action_reference(
+    manifest: &DefinitionRef,
+    participants: &[DefinitionRef; 2],
+    kind: Kind,
+    index: usize,
+) -> Result<DefinitionRef, ActionStateError> {
     check_participants(participants)?;
     let descriptor = DefinitionDescriptor::new(
         DefinitionKind::new("action").map_err(|_| refused("purchase action kind"))?,
-        DefinitionId::new(kind.actions()[0]).map_err(|_| refused("purchase action id"))?,
+        DefinitionId::new(
+            *kind
+                .actions()
+                .get(index)
+                .ok_or_else(|| refused("house action index"))?,
+        )
+        .map_err(|_| refused("purchase action id"))?,
         kind.version(),
-        action_payload(kind, "fund"),
+        action_payload(
+            kind,
+            *TRANSITIONS
+                .get(index)
+                .ok_or_else(|| refused("house transition index"))?,
+        ),
     )
     .map_err(|_| refused("purchase action descriptor"))?
     .with_references(vec![
@@ -304,6 +377,73 @@ fn historical_admission(
     )
 }
 
+fn check_two_seat_policy(value: &Value) -> Result<(), ActionStateError> {
+    let r: DefinitionRef = serde_json::from_value(value.clone())
+        .map_err(|_| refused("house two-seat policy reference"))?;
+    if r.key().owner.as_str() != "market"
+        || r.key().kind.as_str() != "entitlement_policy"
+        || r.key().id.as_str() != "house_personal"
+        || r.version() != 2
+    {
+        return Err(refused("house two-seat policy identity"));
+    }
+    Ok(())
+}
+fn grant_kind(grant: &Value) -> Result<Kind, ActionStateError> {
+    let kind = match number(grant, "format")? {
+        1 => Kind::House,
+        2 => Kind::TwoSeatPin,
+        _ => return Err(refused("house grant format")),
+    };
+    let template = field(grant, "renewal")?;
+    if number(template, "format")? != u64::from(kind.version())
+        || number(field(template, "terms")?, "seats")? != u64::from(kind.version())
+        || field(grant, "downstream")? != &json!({"kind":"sealed"})
+        || field(field(template, "terms")?, "form")? != &json!({"kind":"sealed"})
+        || text(field(template, "revision")?, "kind")? != "pin"
+    {
+        return Err(refused("house nested product formats or seats"));
+    }
+    if kind == Kind::TwoSeatPin {
+        check_two_seat_policy(field(template, "policy")?)?;
+    }
+    Ok(kind)
+}
+fn allocation_kind(allocation: &Value) -> Result<Kind, ActionStateError> {
+    let economics = field(allocation, "economics")?;
+    let grant = field(economics, "grant")?;
+    let kind = grant_kind(grant)?;
+    if number(allocation, "format")? != u64::from(kind.version())
+        || text(allocation, "protocol")? != kind.wire()
+        || number(economics, "format")? != u64::from(kind.version())
+        || field(allocation, "terms")? != field(field(grant, "renewal")?, "terms")?
+    {
+        return Err(refused("house birth product format differs"));
+    }
+    Ok(kind)
+}
+pub(super) fn allocation_version(allocation: &Value) -> Result<u32, ActionStateError> {
+    Ok(allocation_kind(allocation)?.version())
+}
+pub(super) fn grant_version(grant: &Value) -> Result<u32, ActionStateError> {
+    Ok(grant_kind(grant)?.version())
+}
+pub(super) fn grant_domain(grant: &Value) -> Result<&'static str, ActionStateError> {
+    Ok(match grant_kind(grant)? {
+        Kind::House => "roll.mind.house_grant_economics.v1",
+        Kind::TwoSeatPin => "roll.mind.house_grant_economics.v2",
+    })
+}
+pub(super) fn economics_domain(economics: &Value) -> Result<&'static str, ActionStateError> {
+    let kind = grant_kind(field(economics, "grant")?)?;
+    if number(economics, "format")? != u64::from(kind.version()) {
+        return Err(refused("house term economics format differs"));
+    }
+    Ok(match kind {
+        Kind::House => "roll.mind.house_term_economics.v1",
+        Kind::TwoSeatPin => "roll.mind.house_term_economics.v2",
+    })
+}
 fn quote_kind(quote: &Value) -> Result<Kind, ActionStateError> {
     let product = field(quote, "product")?;
     let terms = field(product, "terms")?;
@@ -311,10 +451,17 @@ fn quote_kind(quote: &Value) -> Result<Kind, ActionStateError> {
     let pin = field(product, "revision")?;
     let subject = field(quote, "subject")?;
     let issuer = field(subject, "issuer")?;
+    let kind = match text(product, "protocol")? {
+        "house_v1" => Kind::House,
+        "house_v2" => Kind::TwoSeatPin,
+        _ => return Err(refused("house product protocol")),
+    };
+    if kind == Kind::TwoSeatPin {
+        check_two_seat_policy(field(quote, "policy")?)?;
+    }
     if number(quote, "format")? != 1
-        || text(product, "protocol")? != "house_v1"
-        || number(grant, "format")? != 1
-        || number(terms, "seats")? != 1
+        || number(grant, "format")? != u64::from(kind.version())
+        || number(terms, "seats")? != u64::from(kind.version())
         || field(terms, "form")? != &json!({"kind":"sealed"})
         || field(grant, "downstream")? != &json!({"kind":"sealed"})
         || text(pin, "kind")? != "pin"
@@ -330,7 +477,7 @@ fn quote_kind(quote: &Value) -> Result<Kind, ActionStateError> {
         return Err(refused("house sealed product or issuer shape"));
     }
     let renewal = field(grant, "renewal")?;
-    if number(renewal, "format")? != 1
+    if number(renewal, "format")? != u64::from(kind.version())
         || field(renewal, "terms")? != terms
         || field(renewal, "revision")? != pin
         || field(renewal, "instrument")? != field(quote, "instrument")?
@@ -343,7 +490,7 @@ fn quote_kind(quote: &Value) -> Result<Kind, ActionStateError> {
     {
         return Err(refused("house renewal consent differs"));
     }
-    Ok(Kind::House)
+    Ok(kind)
 }
 fn field<'a>(value: &'a Value, name: &str) -> Result<&'a Value, ActionStateError> {
     value
@@ -442,7 +589,7 @@ fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionStateError> {
         .as_ref()
         .ok_or_else(|| refused("purchase protocol unavailable"))?;
     if number(&purchase, "format")? != 1
-        || number(&allocation, "format")? != 1
+        || number(&allocation, "format")? != u64::from(kind.version())
         || text(&allocation, "protocol")? != kind.wire()
         || field(&purchase, "effect")? != &json!(historical_admission(protocol, &purchase)?)
         || token(field(&purchase, "operation")?)? != id
@@ -472,7 +619,7 @@ fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionStateError> {
     }
     let economics = field(&allocation, "economics")?;
     if economics
-        != &json!({"format":1,"licence":field(&allocation,"licence")?,"generation":field(&allocation,"term")?,"operation":id,"product_digest":field(&allocation,"product_digest")?,"grant":field(product,"grant")?})
+        != &json!({"format":kind.version(),"licence":field(&allocation,"licence")?,"generation":field(&allocation,"term")?,"operation":id,"product_digest":field(&allocation,"product_digest")?,"grant":field(product,"grant")?})
     {
         return Err(refused("house allocated economics differs"));
     }
@@ -574,7 +721,10 @@ fn outputs(view: &View<'_>, id: CommitToken, pair: &Pair) -> Result<(), ActionSt
         || field(&receipt, "product_digest")? != field(&pair.allocation, "product_digest")?
         || field(&receipt, "grant_economics_digest")?
             != &json!(digest(
-                "roll.mind.house_grant_economics.v1",
+                grant_domain(field(
+                    field(field(&pair.purchase, "quote")?, "product")?,
+                    "grant"
+                )?)?,
                 field(field(field(&pair.purchase, "quote")?, "product")?, "grant")?
             )?)
     {
@@ -662,10 +812,10 @@ pub(super) fn verify(
     let kind = quote_kind(field(&pair.purchase, "quote")?)?;
     if reservation.effect != historical_admission(protocol, &pair.purchase)?
         || (matches!(phase, Phase::Funding)
-            && reservation.effect != *protocol.admission_action(kind))
+            && reservation.effect != *protocol.admission_action(kind)?)
         || (matches!(phase, Phase::Terminal)
             && pair.phase == "granted"
-            && reservation.effect != *protocol.admission_action(kind))
+            && reservation.effect != *protocol.admission_action(kind)?)
         || field(&pair.purchase, "effect")? != &json!(reservation.effect)
         || reservation.sponsor != operation_key(PURCHASE, reservation.funding)?
         || reservation.targets != targets(reservation.funding, pair.licence)?
@@ -725,7 +875,7 @@ pub(in crate::action_state) fn house_change(
         let record = Reservation {
             format: 1,
             funding: commit,
-            effect: protocol.admission_action(kind).clone(),
+            effect: protocol.admission_action(kind)?.clone(),
             sponsor: operation_key(PURCHASE, commit)?,
             targets: targets(commit, pair.licence)?,
             protocol_fingerprint: Some(fingerprint(&pair)?),

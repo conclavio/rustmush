@@ -710,6 +710,49 @@ files are normalized to the repository's required LF line endings, preserving
 their parsed definitions. No performance exception changes these correctness
 requirements or turns an unexecuted story into acceptance.
 
+N91–N93 also stopped at compilation, with zero runtime tests executed. Each
+archive and source census was independently verified; all later stages remain
+unstarted, not passed. N91 tree
+`51939790c6c57bdf57b8b97eafc33a776de9c580` exposed one optional module-name
+comparison in the resale writer; archive SHA-256
+`6cd4fb953963f896aa6d2ca7ab5924e3b3b8258578fb803c7924507a3a93f282`
+(5,123 bytes). N92 tree `e21e40a9ae74b0a16590fc560c192a14682f6d60`
+exposed a projected-field result annotation and two stale renewal test
+constructors after holder generation was added; archive SHA-256
+`c55018551a551c6ece4bd3c23e251df033a290e38477b0f55fceb0f118d1ff6d`
+(6,816 bytes). N93 tree `e609d8a2af1f26df1e388c3705503d73f2302c4b`
+reached Tacsim and exposed missing explicit imports in the coverage history
+check and genuine coverage fixture; archive SHA-256
+`9f9651bdede7bda4098ef56d0a762cd572e4e17827ae4df7866441c82d562aac`
+(7,169 bytes). Narrow repairs retain all eligibility checks and assertions;
+the renewal identity test additionally distinguishes successive holders.
+
+Hardware now has the explicit production `GovernedHardware::compose` entry,
+one finite catalogue shared by mechanics and Registry, and three prepared
+actual-owner manufacture/delivery/refit tests. Defaults remain absent; selected
+host identities and acknowledged deployment still matter. HouseV2 now supplies
+an explicitly selected two-seat sealed Pin product, separate full @2 purchase
+actions and policy, exact Core envelope, owner persistence and transferred
+renewal. HouseV1's one-seat bytes and action references remain unchanged. Its
+genuine continuation uses the real purchase, one old IC claim, pending resale,
+deadline settlement, buyer's remaining seat, old Close freeing the other seat,
+restart and holder renewal. Those stories have not yet executed on this tree.
+Distinct House transition/product command verbs now select the actual signed
+offer, retaining the gateway's duplicate-offer refusal.
+
+The renewed closure audit distinguishes unfinished M7 code from later M8 work.
+Remaining mandatory implementation includes the complete Conduct owner/service
+and qualified discount, committed resale facts, collision-free commercial
+callers, newest-eligible Follow and explicit major/paid-Follow producers,
+promised dependent/scoped House update boundaries, and named launch composition
+and publication under real authority. These have assigned implementation work;
+an isolated source candidate is not acceptance. The historical L residual list
+is not a fresh defect list: current leader/admission/watch/record fixes still
+need exact final-tree evidence. The absent persistent region driver's actual
+departure/loss/return producer remains the specific conditional live integration;
+it does not excuse Conduct or service-composition gates. Timing remains
+report-only, while provenance, bounds, privacy and replay gates stay required.
+
 Subsequent reviewed source packages, not included in N82, add:
 
 - The actual House renewal E4/Roll/Market providers, native contract/hold inverse

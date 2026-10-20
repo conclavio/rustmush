@@ -45,6 +45,7 @@ pub struct RenewalConfig {
     pub(super) writer: RenewalWriter,
     pub(super) policy: RenewalPolicy,
     pub(super) purchase_policy: DefinitionRef,
+    pub(super) two_seat_purchase_policy: Option<DefinitionRef>,
     pub(super) service: Option<super::service::ServiceConfig>,
 }
 pub(super) fn error(e: impl std::fmt::Display) -> ModError {
@@ -74,6 +75,14 @@ impl RenewalConfig {
             manifest: house.manifest().clone(),
             participants: house.participants().clone(),
             purchase_policy: house.policy_ref()?,
+            two_seat_purchase_policy: house
+                .has_two_seat_pins()
+                .then(|| {
+                    house.policy_ref_for_protocol(
+                        mush_roll::commerce::house_purchase::HouseProtocol::HouseV2,
+                    )
+                })
+                .transpose()?,
             writer,
             policy,
             service: None,
@@ -98,6 +107,19 @@ impl RenewalConfig {
     }
     pub(crate) fn purchase_policy(&self) -> &DefinitionRef {
         &self.purchase_policy
+    }
+    pub(crate) fn two_seat_purchase_policy(&self) -> Option<&DefinitionRef> {
+        self.two_seat_purchase_policy.as_ref()
+    }
+    pub(super) fn accepts_purchase_template(
+        &self,
+        template: &mush_roll::commerce::house_purchase::HouseRenewalTemplateV1,
+    ) -> bool {
+        match template.format() {
+            1 => template.policy() == &self.purchase_policy,
+            2 => self.two_seat_purchase_policy.as_ref() == Some(template.policy()),
+            _ => false,
+        }
     }
     pub fn manifest(&self) -> &DefinitionRef {
         &self.manifest
@@ -132,7 +154,12 @@ impl RenewalConfig {
             "personal",
             serde_json::to_value(&self.policy).map_err(error)?,
         )?
-        .with_references(vec![self.manifest.clone(), self.purchase_policy.clone()]))
+        .with_references(
+            std::iter::once(self.manifest.clone())
+                .chain(std::iter::once(self.purchase_policy.clone()))
+                .chain(self.two_seat_purchase_policy.iter().cloned())
+                .collect(),
+        ))
     }
     pub(super) fn policy_ref(&self) -> Result<DefinitionRef, ModError> {
         DefinitionRegistryBuilder::new()

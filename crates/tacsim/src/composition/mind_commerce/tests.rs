@@ -914,3 +914,6 @@ fn house_renewal_service_is_optional_and_retains_exact_purchase_refs() -> TestRe
 
 #[path = "paid_resale_tests.rs"]
 mod paid_resale;
+
+#[path = "house_two_seat_tests.rs"]
+mod house_two_seat;

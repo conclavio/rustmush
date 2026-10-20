@@ -124,6 +124,57 @@ fn policy() -> TestResult<OriginalQuotePolicy> {
         OriginalDuration::new(true, TERM_SECONDS, GRACE_SECONDS, QUOTE_SECONDS)?,
     )?)
 }
+// Borrow the actual registered fixture inputs; this carries no owner evidence.
+#[derive(Clone, Copy)]
+struct IcFixture<'a> {
+    resources: &'a Resources,
+    accounts: &'a Arc<Accounts>,
+    engine: &'a Engine,
+}
+impl<'a> From<&'a PurchaseFixture> for IcFixture<'a> {
+    fn from(f: &'a PurchaseFixture) -> Self {
+        Self {
+            resources: &f.resources,
+            accounts: &f.accounts,
+            engine: &f.engine,
+        }
+    }
+}
+impl<'a> From<&'a Fixture> for IcFixture<'a> {
+    fn from(f: &'a Fixture) -> Self {
+        Self {
+            resources: &f.resources,
+            accounts: &f.accounts,
+            engine: &f.engine,
+        }
+    }
+}
+fn house_pin_policy() -> TestResult<mush_market::mind_house::HousePolicy> {
+    use mush_economy::managed_entitlement::{GrossRecipientCut, Recipient};
+    Ok(mush_market::mind_house::HousePolicy {
+        price: Amount::from_minor(400),
+        instrument: InstrumentId::new("cr").ok_or("currency")?,
+        registry: GrossRecipientCut {
+            permille: 100,
+            recipient: Some(Recipient {
+                account: WalletId(1),
+                owner: EconomicOwner::System(issuer()?),
+            }),
+        },
+        venue_name: MarketId::new("fixture").ok_or("venue")?,
+        venue: GrossRecipientCut {
+            permille: 0,
+            recipient: None,
+        },
+        transferable: true,
+        term_seconds: TERM_SECONDS,
+        grace_seconds: GRACE_SECONDS,
+        quote_seconds: QUOTE_SECONDS,
+        renewal_price: Amount::from_minor(300),
+        renewal_term_seconds: TERM_SECONDS - 60,
+        renewal_grace_seconds: GRACE_SECONDS - 60,
+    })
+}
 impl IcWorld {
     fn boot(
         f: &PurchaseFixture,
@@ -202,6 +253,36 @@ impl IcWorld {
         >,
         coverage_products: Option<Vec<crate::underwriting::CoverageProductV1>>,
     ) -> TestResult<Self> {
+        Self::boot_source(
+            f.into(),
+            saved,
+            base,
+            field,
+            hulls,
+            enabled,
+            pending_charters,
+            paid_resales,
+            registry_revocation,
+            coverage_products,
+            false,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn boot_source(
+        f: IcFixture<'_>,
+        saved: &Durable,
+        base: ObjId,
+        field: ObjId,
+        hulls: [ObjId; 2],
+        enabled: bool,
+        pending_charters: bool,
+        paid_resales: bool,
+        registry_revocation: Option<
+            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
+        >,
+        coverage_products: Option<Vec<crate::underwriting::CoverageProductV1>>,
+        two_seat_house: bool,
+    ) -> TestResult<Self> {
         let mut cfg = f.resources.config();
         cfg.enabled = true;
         let layer = crate::TacsimRuleset::with_config(cfg);
@@ -213,6 +294,21 @@ impl IcWorld {
         )?
         .with_original_purchases(policy()?)?
         .with_charter_transfers()?;
+        let composition = if two_seat_house {
+            let policy = house_pin_policy()?;
+            let renewal = mush_market::mind_house_renewal::RenewalPolicy {
+                registry: policy.registry.clone(),
+                venue: Some(policy.venue.clone()),
+                offer_ic_seconds: QUOTE_SECONDS,
+            };
+            composition
+                .with_house_filings()?
+                .with_house_minds(policy.clone())?
+                .with_two_seat_house_pins(policy)?
+                .with_house_mind_renewals(renewal)?
+        } else {
+            composition
+        };
         let composition = if let Some(policy) = &registry_revocation {
             composition.with_registry_revocation(policy.clone())?
         } else {
@@ -358,6 +454,12 @@ impl IcWorld {
         Ok(result)
     }
     fn new(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
+        Self::new_source(f.into(), saved, false)
+    }
+    fn new_house(f: &Fixture, saved: &Durable) -> TestResult<Self> {
+        Self::new_source(f.into(), saved, true)
+    }
+    fn new_source(f: IcFixture<'_>, saved: &Durable, two_seat_house: bool) -> TestResult<Self> {
         let mut world = saved.world()?;
         let field = world.create(ObjKind::Room, "IC authored ground", GOD, None)?;
         let base = world.create(ObjKind::Room, "IC authored bay", GOD, None)?;
@@ -400,7 +502,19 @@ impl IcWorld {
             ("sim".into(), format!("space:{}", base.0)),
             json!(space(base, field)),
         );
-        let mut actual = Self::boot(f, &image, base, field, [first, second], true)?;
+        let mut actual = Self::boot_source(
+            f,
+            &image,
+            base,
+            field,
+            [first, second],
+            true,
+            false,
+            two_seat_house,
+            None,
+            None,
+            two_seat_house,
+        )?;
         for hull in [first, second] {
             actual.command(&format!("@unit/create #{}=tacsim.unit.heavy_mk1", hull.0))?;
             actual.command(&format!("@asset/title #{}=#{}", hull.0, BUYER.0))?;
@@ -464,6 +578,21 @@ impl IcWorld {
             self.paid_resales,
             self.registry_revocation.clone(),
             self.coverage_products.clone(),
+        )
+    }
+    fn reboot_house(&self, f: &Fixture, saved: &Durable) -> TestResult<Self> {
+        Self::boot_source(
+            f.into(),
+            saved,
+            self.base,
+            self.field,
+            self.hulls,
+            true,
+            false,
+            true,
+            None,
+            None,
+            true,
         )
     }
     fn ticket(&self, actor: ObjId, hull: ObjId, licence: u64) -> TestResult<IcHostTicket> {
@@ -1262,3 +1391,7 @@ mod coverage;
 
 #[path = "paid_resale_integration_tests.rs"]
 mod resale;
+
+pub(super) fn exercise_house_two_seats(f: &Fixture, saved: &Durable) -> TestResult {
+    resale::two_seat::exercise(f, saved)
+}

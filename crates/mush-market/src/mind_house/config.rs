@@ -65,6 +65,7 @@ impl HousePolicy {
 #[derive(Clone, Debug)]
 pub struct HouseConfig {
     pub(super) policy: HousePolicy,
+    pub(super) two_seat_policy: Option<HousePolicy>,
     pub(super) manifest: DefinitionRef,
     pub(super) participants: PurchaseParticipants,
     pub(super) writer: HousePurchaseWriter,
@@ -97,10 +98,43 @@ impl HouseConfig {
         purchase_descriptors(HouseProtocol::HouseV1, &manifest, &participants)?;
         Ok(Self {
             policy,
+            two_seat_policy: None,
             manifest,
             participants,
             writer,
         })
+    }
+    /// Add the exact two-seat sealed Pin while retaining every one-seat route.
+    pub fn with_two_seat_pins(mut self, policy: HousePolicy) -> Result<Self, ModError> {
+        if self.two_seat_policy.is_some() {
+            return Err(error("two-seat House pins already configured"));
+        }
+        policy.validate()?;
+        self.two_seat_policy = Some(policy);
+        self.owner_actions(HouseProtocol::HouseV2)?;
+        Ok(self)
+    }
+    pub fn has_two_seat_pins(&self) -> bool {
+        self.two_seat_policy.is_some()
+    }
+    pub(super) fn protocols(&self) -> impl Iterator<Item = HouseProtocol> {
+        std::iter::once(HouseProtocol::HouseV1).chain(
+            self.two_seat_policy
+                .as_ref()
+                .map(|_| HouseProtocol::HouseV2),
+        )
+    }
+    pub(super) fn policy_for_protocol(
+        &self,
+        protocol: HouseProtocol,
+    ) -> Result<&HousePolicy, ModError> {
+        match protocol {
+            HouseProtocol::HouseV1 => Ok(&self.policy),
+            HouseProtocol::HouseV2 => self
+                .two_seat_policy
+                .as_ref()
+                .ok_or_else(|| error("two-seat House pins are not configured")),
+        }
     }
     pub fn participants(&self) -> &PurchaseParticipants {
         &self.participants
@@ -112,16 +146,33 @@ impl HouseConfig {
         &self.manifest
     }
     pub(super) fn policy_descriptor(&self) -> Result<DefinitionDescriptor, ModError> {
+        self.policy_descriptor_for_protocol(HouseProtocol::HouseV1)
+    }
+    pub(super) fn policy_descriptor_for_protocol(
+        &self,
+        protocol: HouseProtocol,
+    ) -> Result<DefinitionDescriptor, ModError> {
+        let policy = self.policy_for_protocol(protocol)?;
+        let payload = match protocol {
+            HouseProtocol::HouseV1 => serde_json::to_value(policy).map_err(error)?,
+            HouseProtocol::HouseV2 => serde_json::json!({"format":2,"seats":2,"policy":policy}),
+        };
         Ok(descriptor(
             "entitlement_policy",
             "house_personal",
-            1,
-            serde_json::to_value(&self.policy).map_err(error)?,
+            protocol.version(),
+            payload,
         )?
         .with_references(vec![self.manifest.clone()]))
     }
     pub fn policy_ref(&self) -> Result<DefinitionRef, ModError> {
-        self.reference(self.policy_descriptor()?)
+        self.policy_ref_for_protocol(HouseProtocol::HouseV1)
+    }
+    pub fn policy_ref_for_protocol(
+        &self,
+        protocol: HouseProtocol,
+    ) -> Result<DefinitionRef, ModError> {
+        self.reference(self.policy_descriptor_for_protocol(protocol)?)
     }
     fn reference(&self, d: DefinitionDescriptor) -> Result<DefinitionRef, ModError> {
         DefinitionRegistryBuilder::new()
@@ -131,6 +182,7 @@ impl HouseConfig {
     /// Exact [list,fund,grant,refund] identities passed to the private Roll
     /// writer. Quote is typed-only and receives no owner-participant grant.
     pub fn owner_actions(&self, protocol: HouseProtocol) -> Result<[DefinitionRef; 4], ModError> {
+        self.policy_for_protocol(protocol)?;
         let [fund, grant, refund] =
             purchase_descriptors(protocol, &self.manifest, &self.participants)?;
         Ok([
@@ -153,9 +205,9 @@ impl HouseConfig {
     }
     pub(super) fn quote_descriptor(
         &self,
-        _protocol: HouseProtocol,
+        protocol: HouseProtocol,
     ) -> Result<DefinitionDescriptor, ModError> {
-        Ok(descriptor("action","quote_house_mind",1,serde_json::json!({"format":1,"protocol":"house_mind_purchase_v1","transition":"quote","funding":false}))?.with_references(vec![self.manifest.clone(),self.policy_ref()?]))
+        Ok(descriptor("action","quote_house_mind",protocol.version(),serde_json::json!({"format":protocol.format(),"protocol":protocol.protocol_name(),"transition":"quote","funding":false}))?.with_references(vec![self.manifest.clone(),self.policy_ref_for_protocol(protocol)?]))
     }
     pub fn quote_action(&self, protocol: HouseProtocol) -> Result<DefinitionRef, ModError> {
         self.reference(self.quote_descriptor(protocol)?)
@@ -169,8 +221,9 @@ impl HouseConfig {
         )
     }
     pub(crate) fn declarations(&self) -> Result<Vec<DefinitionDescriptor>, ModError> {
-        let mut out = vec![self.policy_descriptor()?, self.outcome_descriptor()?];
-        for protocol in [HouseProtocol::HouseV1] {
+        let mut out = vec![self.outcome_descriptor()?];
+        for protocol in self.protocols() {
+            out.push(self.policy_descriptor_for_protocol(protocol)?);
             out.push(listing_descriptor(
                 protocol,
                 &self.manifest,
@@ -192,33 +245,46 @@ impl HouseConfig {
         &self,
         f: &mush_roll::commerce::house_catalogue::HouseSaleFacts,
     ) -> Result<super::HouseProductV1, String> {
+        self.product_for_protocol(HouseProtocol::HouseV1, f)
+    }
+    pub(super) fn product_for_protocol(
+        &self,
+        protocol: HouseProtocol,
+        f: &mush_roll::commerce::house_catalogue::HouseSaleFacts,
+    ) -> Result<super::HouseProductV1, String> {
+        let policy = self
+            .policy_for_protocol(protocol)
+            .map_err(|e| e.to_string())?;
         use mush_roll::commerce::house_purchase::{HouseGrantEconomicsV1, HouseRenewalTemplateV1};
         let terms =
-            mush_roll::commerce::house_purchase::writer::HousePurchaseTerms::personal_terms(
+            mush_roll::commerce::house_purchase::writer::HousePurchaseTerms::personal_terms_for_protocol(
+                protocol,
                 f.minimum(),
-                self.policy.transferable,
+                policy.transferable,
             )
             .map_err(|e| e.to_string())?;
         let revision = mush_roll::commerce::records::RevisionPolicy::Pin {
             filed: f.filed(),
             revision: f.revision(),
         };
-        let renewal = HouseRenewalTemplateV1::new(
-            self.policy.instrument.clone(),
-            self.policy.renewal_price,
-            self.policy.renewal_term_seconds,
-            self.policy.renewal_grace_seconds,
+        let renewal = HouseRenewalTemplateV1::for_protocol(
+            protocol,
+            policy.instrument.clone(),
+            policy.renewal_price,
+            policy.renewal_term_seconds,
+            policy.renewal_grace_seconds,
             terms,
             revision,
-            self.policy_ref().map_err(|e| e.to_string())?,
+            self.policy_ref_for_protocol(protocol)
+                .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
         let product = super::HouseProductV1 {
-            protocol: HouseProtocol::HouseV1,
+            protocol,
             terms,
             revision,
-            term_seconds: self.policy.term_seconds,
-            grace_seconds: self.policy.grace_seconds,
+            term_seconds: policy.term_seconds,
+            grace_seconds: policy.grace_seconds,
             grant: HouseGrantEconomicsV1::new(renewal).map_err(|e| e.to_string())?,
         };
         product.matches_subject(&super::HouseSubjectV1::capture(f))?;

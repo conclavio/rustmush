@@ -142,7 +142,7 @@ impl PaidResaleWriter {
         &self,
         ctx: &mush_core::ModuleCtx<'_>,
     ) -> Result<&Registration, PublicationError> {
-        if ctx.module != "market"
+        if ctx.module.as_deref() != Some("market")
             || !ctx
                 .state::<crate::RollStore>()
                 .is_some_and(|s| s.commerce_ready().is_ok())

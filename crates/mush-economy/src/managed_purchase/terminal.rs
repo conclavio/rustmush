@@ -157,7 +157,8 @@ pub(super) fn prepare_in(
         .contract(request.funding.contract)
         .ok_or_else(refused)?;
     let marker = actual.consent.managed.as_ref().ok_or_else(refused)?;
-    if marker.operation() != request.operation
+    if (subject.house().is_some() && marker.effect().version() != context.action.version())
+        || marker.operation() != request.operation
         || marker.quote() != purchase.quote
         || marker.quote_digest() != purchase.quote_digest
         || marker.product_digest() != purchase.product_digest

@@ -722,6 +722,15 @@ impl GameModule for MarketModule {
             if config.manifest() != house.manifest()
                 || config.participants() != house.participants()
                 || config.purchase_policy() != &house.policy_ref()?
+                || config.two_seat_purchase_policy().cloned()
+                    != house
+                        .has_two_seat_pins()
+                        .then(|| {
+                            house.policy_ref_for_protocol(
+                                mush_roll::commerce::house_purchase::HouseProtocol::HouseV2,
+                            )
+                        })
+                        .transpose()?
             {
                 return Err(ModError::msg("House renewal composition differs"));
             }

@@ -74,6 +74,10 @@ impl Provider {
         ctx: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, String> {
         let commit = ctx.commit_token();
+        let policy = self
+            .config
+            .policy_for_protocol(self.protocol)
+            .map_err(|e| e.to_string())?;
         let kind = match self.request(inv)? {
             Request::List(request) => {
                 let writer = self.writer.as_ref().ok_or("listing writer unavailable")?;
@@ -87,28 +91,23 @@ impl Provider {
                 let world = ctx.world().map_err(|e| e.to_string())?;
                 self.guard.current(world, inv.actor())?;
                 let economy = accounts::live(world)?;
-                accounts::treasury(economy, &self.config.policy.instrument, facts.issuer())?;
-                accounts::cut(
-                    economy,
-                    &self.config.policy.instrument,
-                    &self.config.policy.registry,
-                )?;
-                accounts::cut(
-                    economy,
-                    &self.config.policy.instrument,
-                    &self.config.policy.venue,
-                )?;
+                accounts::treasury(economy, &policy.instrument, facts.issuer())?;
+                accounts::cut(economy, &policy.instrument, &policy.registry)?;
+                accounts::cut(economy, &policy.instrument, &policy.venue)?;
                 let row = HouseListingV1 {
                     format: 1,
                     publication: commit,
                     publisher: inv.actor(),
                     subject: HouseSubjectV1::capture(facts),
-                    product: self.config.product(facts)?,
-                    price: self.config.policy.price,
-                    instrument: self.config.policy.instrument.clone(),
-                    venue: self.config.policy.venue(),
-                    registry: Cut(self.config.policy.registry.clone()),
-                    policy: self.config.policy_ref().map_err(|e| e.to_string())?,
+                    product: self.config.product_for_protocol(self.protocol, facts)?,
+                    price: policy.price,
+                    instrument: policy.instrument.clone(),
+                    venue: policy.venue(),
+                    registry: Cut(policy.registry.clone()),
+                    policy: self
+                        .config
+                        .policy_ref_for_protocol(self.protocol)
+                        .map_err(|e| e.to_string())?,
                     observed_at_utc: world.now(),
                 };
                 row.validate()?;
@@ -179,7 +178,7 @@ impl Provider {
                     quoted_at_utc: world.now(),
                     expires_at_utc: world
                         .now()
-                        .checked_add(self.config.policy.quote_seconds)
+                        .checked_add(policy.quote_seconds)
                         .ok_or("quote expiry overflow")?,
                 };
                 accounts::fill_payouts(&mut q)?;
@@ -196,7 +195,9 @@ impl Provider {
             .with_definitions(vec![
                 self.outcome.clone(),
                 self.config.manifest.clone(),
-                self.config.policy_ref().map_err(|e| e.to_string())?,
+                self.config
+                    .policy_ref_for_protocol(self.protocol)
+                    .map_err(|e| e.to_string())?,
             ])
             .with_eligible_witnesses(vec![inv.principal().clone()]))
     }
@@ -209,16 +210,22 @@ pub(super) fn current_listing(
     actor: mush_core::ObjId,
 ) -> Result<(), String> {
     l.validate()?;
-    let expected = config.product(f)?;
+    let policy = config
+        .policy_for_protocol(protocol)
+        .map_err(|e| e.to_string())?;
+    let expected = config.product_for_protocol(protocol, f)?;
     if f.requester() != actor
         || l.product.protocol != protocol
         || l.subject != HouseSubjectV1::capture(f)
         || l.product != expected
-        || l.price != config.policy.price
-        || l.instrument != config.policy.instrument
-        || l.registry.0 != config.policy.registry
-        || l.venue != config.policy.venue()
-        || l.policy != config.policy_ref().map_err(|e| e.to_string())?
+        || l.price != policy.price
+        || l.instrument != policy.instrument
+        || l.registry.0 != policy.registry
+        || l.venue != policy.venue()
+        || l.policy
+            != config
+                .policy_ref_for_protocol(protocol)
+                .map_err(|e| e.to_string())?
     {
         return Err("listing no longer matches actual current house".into());
     }

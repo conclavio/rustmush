@@ -350,6 +350,7 @@ fn requires_cycle(
 
 /// The TacSim layer (`"tacsim"`).
 pub struct TacsimRuleset {
+    governed_hardware: Option<hardware::Registration>,
     ic_minds: Option<minds::ic_sortie::registration::Registration>,
     coverage: Option<underwriting::registration::Registration>,
     coverage_families: Option<underwriting::families::Families>,
@@ -453,6 +454,7 @@ impl TacsimRuleset {
             }
         };
         TacsimRuleset {
+            governed_hardware: None,
             ic_minds: None,
             coverage: None,
             coverage_families: None,
@@ -561,6 +563,16 @@ impl TacsimRuleset {
     #[must_use]
     pub fn config(&self) -> &TacsimConfig {
         &self.cfg
+    }
+
+    /// The exact composition-selected catalogue used by both mechanics and
+    /// Registry preparation. Ordinary layers retain the existing fielded set.
+    pub(crate) fn definition_catalog(&self) -> Result<definitions::Catalog, ModError> {
+        match &self.governed_hardware {
+            Some(hardware) => Ok(hardware.family.catalog().clone()),
+            None => definitions::Catalog::build_fielded(&self.loaded_packs()?, NS)
+                .map_err(|e| ModError::msg(e.to_string())),
+        }
     }
 
     /// The verified packs, or the message naming the failing file as a
@@ -711,8 +723,7 @@ impl GameModule for TacsimRuleset {
         // **16b cut Q.8**: `build_fielded`, so the five extension items are
         // registered through the same C1 route as the stock eight and a
         // persisted unit may point at one.
-        let catalog = definitions::Catalog::build_fielded(&self.loaded_packs()?, NS)
-            .map_err(|error| ModError::msg(error.to_string()))?;
+        let catalog = self.definition_catalog()?;
         for kind in definitions::KINDS {
             let of_kind: Vec<_> = catalog
                 .descriptors
@@ -728,6 +739,9 @@ impl GameModule for TacsimRuleset {
         }
         for descriptor in &catalog.descriptors {
             reg.definition(descriptor.clone())?;
+        }
+        if let Some(hardware) = &self.governed_hardware {
+            hardware.register(reg)?;
         }
         hardware::PublishedHardware::shipped()
             .map_err(|error| ModError::msg(error.to_string()))?

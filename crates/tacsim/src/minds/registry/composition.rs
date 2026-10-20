@@ -34,8 +34,7 @@ impl Registration {
         cfg.match_.validate().map_err(error)?;
         cfg.sensors.validate().map_err(error)?;
         cfg.minds.validate().map_err(error)?;
-        let catalog =
-            Arc::new(Catalog::build_fielded(&layer.loaded_packs()?, crate::NS).map_err(error)?);
+        let catalog = Arc::new(layer.definition_catalog()?);
         let records = shipped_ground_records()?;
         let policy =
             Arc::new(FrozenPolicy::capture(catalog, &records, cfg.clone()).map_err(error)?);

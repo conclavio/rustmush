@@ -139,7 +139,7 @@ pub(crate) fn matches_action(action: &DefinitionRef, transition: &str) -> bool {
     action.key().owner.as_str() == "market"
         && action.key().kind.as_str() == "action"
         && action.key().id.as_str() == id
-        && action.version() == 1
+        && matches!(action.version(), 1 | 2)
 }
 impl HousePurchase {
     pub fn economic_digest(&self) -> Result<DefinitionDigest, ParticipantError> {
