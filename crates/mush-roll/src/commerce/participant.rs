@@ -1479,6 +1479,7 @@ impl OwnerParticipant for RootParticipant {
                     | RootAnchor::OwnerQualification(_, _)
                     | RootAnchor::OwnerAttestation(_, _)
                     | RootAnchor::OwnerAttestationParent(_, _)
+                    | RootAnchor::ConductJob(_, _)
                     | RootAnchor::RatingJob(_)
                     | RootAnchor::RatingPending(_)
                     | RootAnchor::Rating { .. })
