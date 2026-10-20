@@ -50,6 +50,8 @@ before anything is charged.
                           writes nothing.
   +ship/undock <port>     from aboard, docked: file the passage and take her
                           out now
+  +ship/lift <port>       the same as +ship/undock: the word for lifting off a
+                          pad (or out of a berth)
 
 The burn is reaction mass. A Dray flips and burns: it accelerates to the
 midpoint, turns, and decelerates, so a leg takes twice the square root of its
@@ -104,5 +106,71 @@ later hour, or while you are off watch, file a sailing plan (`help orders`).
 Docking is automatic: the ship arrives at the far port's berth gallery when it
 is due, and every room aboard hears it. Under way, `+travel/status` aboard says
 where the ship has got to.
+
+## Settling at a site
+
+A mining site is a Registry pad on open ground: five a short hop from the
+Freeport on Ceres, and Rheasilvia Commons a passage away on Vesta (`help
+travel`). A ship bound for one does not dock; it settles onto the pad, and
+`+ship` and every room aboard read "settled on the pad". A hull that cannot lift
+1.2 times its weight on a body cannot land there, so no Dray lands on Luna, Mars
+or Titan, and a hop is never free: lifting off a pad burns at least a tonne.
+
+Nothing sells reaction mass or provisions on a pad, so a departure for a site
+holds back the leg home: `+ship/undock` (and a sailing plan's departure) refuses
+unless the tank and the locker cover the passage out and the worst passage home
+in the next thirty IC days, and `+ship/plan` prints that leg home with the
+throttle it is held at — the least that lifts her. For a site the Throttle: line
+counts that leg home too: it names the highest throttle from the site's landing
+floor at which the passage out and the leg home together fit the tank, or, when
+none does today, the first day in the next IC year (the 365 days `+chart
+<port>` scans) on which the floor does (Rheasilvia fits only throttled, and
+only in its season); a refused
+`+ship/undock` for a site ends with the same line, and the sailing plan
+`+ship/plan` reads from the queue names a closed or short site's refusal as the
+departure would. On a pad the Throttle: line
+reads the tank and the locker as they stand, since nothing can be bought there:
+when the leg home overruns the tank at the throttle you asked, it names the
+highest that fits. On the pad the stores line counts down: one
+crew-day a soul for each IC day, charged when she lifts, and never below the
+stores for the leg home; once it reaches them the crew are on short rations.
+Nobody steps out onto a pad: the lock stays sealed until she docks, and
+`+ship/lift <port>` takes her home.
+
+## The Dray-P and Occator's rigs
+
+`+coop/refit prospector` turns a chartered Dray into a Dray-P (`help coop`): a
+two-slot vehicle bay aft of the hold, a stern ramp, and a hold of 86 t and 103.2
+m³ that takes bulk and ore. Her rail, tank, locker and drive are a Dray's, and a
+Dray-P with two empty rigs plans exactly as a Dray carrying the same weight.
+
+Occator Water & Propellant leases terrain vehicles into the bay. At Occator's
+counter in the Exchange Hall at Ceres Freeport, with your Dray-P docked,
+`+tv/lease` shows the terms and signs nothing; `+tv/lease go` signs them:
+1400.00cr for a term of 168 IC days, paid now, and a 5000.00cr deposit held on
+your account while the rig is aboard. The rig rolls up the ramp into the lowest free
+slot; `+tv/2/lease go` names slot 2. Two leases are two rigs.
+
+`+tv` reads each slot anywhere: the rig, how long its lease has left and what
+its hopper holds; `+tv/1` reads rig 1 alone. A term that runs out is re-debited
+at your next `+tv/lease` act; if your account cannot pay it, Occator keeps the
+deposit and the rig must go back.
+
+`+tv/1 lease return go` at the same counter hands rig 1 back: the rig must be in
+the bay and its hopper empty, and your deposit is released. Without go it says
+what would happen. A rig never sells from its hopper, and nobody takes ore out of
+a hopper by hand.
+
+With your Dray-P settled on a site's pad and you aboard, you work the rigs from
+the bridge. `+tv/1 launch` says what sending rig 1 down the stern ramp would do
+and commits nothing; `+tv/1 launch go` sends it: 300 IC s later it stands on the
+ground at the foot of the ramp. `+tv/1 recover` brings it back up when it stands
+beside the ramp, on the ramp's own cell or the next (300 IC s); a rig further off
+is told about how far it is. `+tv/1 dump go` empties its hopper onto the
+site's spoil heap, for good. Without a number, `+tv/launch` addresses the rig you
+named last, or your only rig. `+tv` shows where each rig is, its charge and any
+act it is in the middle of. The Dray-P lifts only with every rig in her bay and
+every hopper empty: `+ship/lift`, `+ship/plan` and a queued depart all say which
+rig holds her.
 
 See also: `help orders`, `help ports`, `help trade`, `help coop`.

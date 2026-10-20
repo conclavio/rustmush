@@ -1,0 +1,235 @@
+{
+  "manifest": {
+    "id": "neighborhood.freeport_commons",
+    "version": 1,
+    "kind": "neighborhood",
+    "digest": "c112498ef5d5228518434ba336bea4809b91d118a1b08c0ec6275f0ad2b63375",
+    "requires": [
+      {
+        "id": "region.freeport_commons",
+        "version": 1
+      }
+    ]
+  },
+  "brief": {
+    "prose": "Freeport Commons is the Registry's oldest working ground, five kilometres north of the Freeport on the floor of Occator: open to anyone the Registry licenses, staked by nobody, and worked over since the Outbound opened the Belt, so every block has given up a share of what it held. The pad is a cleared square of fused regolith with the Freeport's lights on the southern horizon."
+  },
+  "entries": {
+    "neighborhood": {
+      "kind": "neighborhood",
+      "def": {
+        "region": "region.freeport_commons",
+        "locality": "locality.freeport_commons",
+        "name": "Freeport Commons",
+        "setting": "surface",
+        "representation": "authored",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            0
+          ],
+          [
+            2560,
+            2560
+          ],
+          [
+            0,
+            2560
+          ]
+        ],
+        "room_budget": {
+          "target": 1,
+          "maximum": 1
+        },
+        "hydration": {
+          "enabled": false,
+          "max_player_sites": 0
+        },
+        "resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350: the sites",
+          "style_guide": "Present tense, no second person, no named NPCs in a room desc. A site is a Registry pad on open ground: a cleared landing square, tie-down rings, a painted pad number, and the body's own ground around it. Nothing is built here but the pad; the horizon is close and the light is hard. Desc length medium (60-120 words); details are one or two sentences, dry, with a fact in them.",
+          "vocabulary": [
+            "pad",
+            "tie-down",
+            "regolith",
+            "ice",
+            "crater",
+            "rim",
+            "Registry",
+            "survey stake",
+            "block",
+            "commons",
+            "claim",
+            "Ceres",
+            "Vesta",
+            "Freeport",
+            "horizon"
+          ],
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "shields",
+            "stardate",
+            "hangar bay",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "room.pad": {
+      "kind": "room",
+      "def": {
+        "name": "Freeport Commons Pad",
+        "short_desc": "A cleared landing square on the floor of Occator, the Freeport's lights low on the southern horizon.",
+        "desc": "The pad is a square of fused regolith forty metres on a side, swept clean and ringed with tie-down rings set flush in the ground. A Registry number, FR-01, is painted at each corner in faded orange. Beyond the square the crater floor is grey and trampled flat, scored with old wheel ruts and spoil heaps from the better part of a century of working, ice glinting where the ruts cut deep. The horizon is close. To the south the Freeport's mast lights blink over the curve of the ground.",
+        "surface": "ground",
+        "footprint": {
+          "rect": [
+            [
+              1260,
+              1260
+            ],
+            [
+              1300,
+              1300
+            ]
+          ]
+        },
+        "kind": "outdoor",
+        "markers": [
+          "port.dock"
+        ],
+        "details": {
+          "tie downs": "Steel rings in concrete collars, every one of them scuffed bright by cable. The Registry inspects them yearly and stamps the collar.",
+          "spoil heaps": "Low grey mounds of worked regolith, each with a Registry stake and a date. The oldest stakes have lost their paint."
+        }
+      }
+    },
+    "feature.crater_1": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            650,
+            1900
+          ],
+          [
+            633,
+            1953
+          ],
+          [
+            588,
+            1986
+          ],
+          [
+            532,
+            1986
+          ],
+          [
+            487,
+            1953
+          ],
+          [
+            470,
+            1900
+          ],
+          [
+            487,
+            1847
+          ],
+          [
+            532,
+            1814
+          ],
+          [
+            588,
+            1814
+          ],
+          [
+            633,
+            1847
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    },
+    "feature.crater_2": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            2070,
+            700
+          ],
+          [
+            2057,
+            741
+          ],
+          [
+            2022,
+            767
+          ],
+          [
+            1978,
+            767
+          ],
+          [
+            1943,
+            741
+          ],
+          [
+            1930,
+            700
+          ],
+          [
+            1943,
+            659
+          ],
+          [
+            1978,
+            633
+          ],
+          [
+            2022,
+            633
+          ],
+          [
+            2057,
+            659
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    }
+  }
+}

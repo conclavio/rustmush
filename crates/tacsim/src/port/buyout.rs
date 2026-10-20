@@ -78,6 +78,10 @@ pub const INFLIGHT_WAIT: &str =
 pub const GOODS_WAIT: &str = "Goods are still moving through the {name}'s hold; nothing changes hands until they are in or out.";
 /// Away from the desk: `{office}`, `{port}`.
 pub const BUYOUT_WHERE: &str = "The buyout is signed at the {office} in {port}.";
+/// **A rig in the bay** (doc 20 cut SM.3a; reviewer F1(a)): `{n}` (the lowest live
+/// record's slot, or `?`), `{name}`. No rig rides into a graduation.
+pub const BUYOUT_BAY: &str =
+    "Rig {n} is still in the {name}'s bay; return it to Occator before the buyout.";
 /// A step that should not fail did; nothing was bought.
 pub const BUYOUT_FAILED: &str =
     "The Registry could not enter your buyout; nothing was bought and your charter stands.";
@@ -318,6 +322,8 @@ struct BuyoutPlan {
 }
 
 /// Checks 0–8 (lead ruling L14's order), read-only. `Err` carries the refusal.
+/// Doc 20 cut SM.3a adds check 5b, after nothing in flight and before the office:
+/// a rig in the hull's bay refuses [`BUYOUT_BAY`].
 #[allow(clippy::too_many_lines)] // one ordered check list
 fn plan_buyout(ctx: &Ctx<'_>) -> Result<BuyoutPlan, String> {
     let w: &World = ctx.w;
@@ -373,6 +379,22 @@ fn plan_buyout(ctx: &Ctx<'_>) -> Result<BuyoutPlan, String> {
     // 3–5. Nothing in flight.
     if let Some((_, line)) = in_flight(w, &e) {
         return Err(line);
+    }
+    // 5b. Doc 20 cut SM.3a (reviewer F1(a)): the bay is empty and no live lease record
+    // names the hull (reviewer finding correctness/F2), so no rig rides into a
+    // graduation (the pilot returns it to Occator first). An unreadable view fails
+    // closed with the rigs' dark line (the SM.3a pre-commit round, correctness F5):
+    // with no view the bay cannot be seen, so the buyout cannot know it is empty.
+    let Some(view) = crate::port::ship::hull_view(w, e.hull) else {
+        tracing::error!(
+            hull = e.hull.0,
+            pilot = actor.0,
+            "tacsim: +coop/buyout cannot read the hull's view, so it cannot see the bay"
+        );
+        return Err(named(crate::port::tv::TV_DARK, &e));
+    };
+    if let Some(n) = crate::port::tv::bay_slot_word(w, &view) {
+        return Err(BUYOUT_BAY.replace("{n}", &n).replace("{name}", &e.name));
     }
     // 6. At the office.
     let (office, office_name, port_label) = office_of(w, &port);

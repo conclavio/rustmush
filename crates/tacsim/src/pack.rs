@@ -601,7 +601,26 @@ pub struct LocationDef {
     /// nowhere the sky knows. Skipped when unauthored, for the digest's sake.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<CanonicalId>,
+    /// **Doc 20 cut SM.2 (§3.1)** — latitude on the body, milli-degrees, south
+    /// negative, `-90_000..=90_000`. Authored with `lon_mdeg` and a `body`, or not
+    /// at all ([`PackError::PlaceCoordinates`]); skipped when unauthored, so no
+    /// pack's re-encoding moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lat_mdeg: Option<i32>,
+    /// **Doc 20 cut SM.2 (§3.1)** — east longitude on the body, milli-degrees,
+    /// `0..360_000` (Dawn's convention for Ceres and Vesta).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lon_mdeg: Option<i32>,
 }
+
+/// **Doc 20 cut SM.2 (§3.1, §3.3; the SM.2 brief's lead ruling 1)** — the role
+/// word of a mining site's pad: a location of this role is a site, and only a
+/// site's port entry carries a `site` block (`crate::port::check_ports`). The
+/// landing law and the ascent term (D-20-3) apply to a leg one of whose ends is
+/// such a place. It is the corridor fixture's own word for the same thing
+/// (`ceres_extraction`); doc 20 §17's asteroid-field ground, if it comes, takes
+/// another.
+pub const SITE_ROLE: &str = "extraction";
 
 /// **S7 (doc 10 T17)** — one body of the campaign ephemeris: a circular, coplanar
 /// orbit and where on it the body stood at its epoch.
@@ -653,7 +672,22 @@ pub struct BodyDef {
     /// its parent's position plus its own. `None` for a body about the Sun.
     /// Skipped on the wire when absent, so no fixture's re-encoding moves.
     pub parent: Option<CanonicalId>,
+    /// **Doc 20 cut SM.2 (§3.3, D-20-3)** — the body's surface gravity, milli-g,
+    /// `1..=10_000`: what the landing law weighs a hull against. Skipped when
+    /// absent; it moves no sky revision (`Sky::revision` digests the orbit only).
+    pub surface_mg: Option<u32>,
+    /// **Doc 20 cut SM.2 (§3.1, §3.2)** — the body's mean radius, km,
+    /// `1..=10_000`: the ascent term's `R` and the geology lattice's extent.
+    pub radius_km: Option<u32>,
+    /// **Doc 20 cut SM.2 (§3.2, D-20-4)** — the body's geology table (SM.1's
+    /// wire), checked at load; it needs `radius_km`. The lane's Ceres and Vesta
+    /// tables are installed at boot and at apply
+    /// (`crate::surface::install_lane_geology`).
+    pub geology: Option<crate::surface::GeologyTable>,
 }
+
+/// The surface figures' bound, both `surface_mg` and `radius_km` (doc 20 cut SM.2).
+pub const MAX_SURFACE_FIGURE: u32 = 10_000;
 
 /// The largest orbit a pack may author, micro-AU (100 000 AU).
 pub const MAX_ORBIT_UAU: u64 = 100_000_000_000;
@@ -680,6 +714,15 @@ struct BodyDefWire {
     /// Doc 19 cut A.7: the parent body of a moon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parent: Option<CanonicalId>,
+    /// Doc 20 cut SM.2: the surface gravity, milli-g.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    surface_mg: Option<u32>,
+    /// Doc 20 cut SM.2: the mean radius, km.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    radius_km: Option<u32>,
+    /// Doc 20 cut SM.2: the geology table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    geology: Option<crate::surface::GeologyTableWire>,
 }
 
 impl Serialize for BodyDef {
@@ -693,6 +736,12 @@ impl Serialize for BodyDef {
             epoch_ic: self.epoch_ic,
             elements: self.elements.iter().map(ElementRow::authored).collect(),
             parent: self.parent.clone(),
+            surface_mg: self.surface_mg,
+            radius_km: self.radius_km,
+            geology: self
+                .geology
+                .as_ref()
+                .map(crate::surface::GeologyTable::wire),
         };
         wire.serialize(serializer)
     }
@@ -709,6 +758,7 @@ impl<'de> Deserialize<'de> for BodyDef {
         )
         .and_then(|def| def.with_elements(&wire.elements))
         .map(|def| def.with_parent(wire.parent))
+        .and_then(|def| def.with_surface(wire.surface_mg, wire.radius_km, wire.geology.as_ref()))
         .map_err(serde::de::Error::custom)
     }
 }
@@ -776,7 +826,49 @@ impl BodyDef {
             epoch_ic,
             elements: Vec::new(),
             parent: None,
+            surface_mg: None,
+            radius_km: None,
+            geology: None,
         })
+    }
+
+    /// **The same body with its surface** (doc 20 cut SM.2; §3.1, §3.2, §3.3,
+    /// D-20-3, D-20-4): the surface gravity and mean radius, each `1..=`
+    /// [`MAX_SURFACE_FIGURE`], and a geology table, which needs the radius (the
+    /// lattice's extent) and is checked by SM.1's
+    /// [`crate::surface::GeologyTable::from_wire`]. All three absent is the body
+    /// unchanged.
+    ///
+    /// # Errors
+    ///
+    /// A message naming the field and the rule broken.
+    pub fn with_surface(
+        mut self,
+        surface_mg: Option<u32>,
+        radius_km: Option<u32>,
+        geology: Option<&crate::surface::GeologyTableWire>,
+    ) -> Result<BodyDef, String> {
+        if surface_mg.is_some_and(|mg| !(1..=MAX_SURFACE_FIGURE).contains(&mg)) {
+            return Err(format!(
+                "a body's surface_mg is 1 to {MAX_SURFACE_FIGURE} milli-g"
+            ));
+        }
+        if radius_km.is_some_and(|km| !(1..=MAX_SURFACE_FIGURE).contains(&km)) {
+            return Err(format!("a body's radius_km is 1 to {MAX_SURFACE_FIGURE}"));
+        }
+        let table = match geology {
+            None => None,
+            Some(_) if radius_km.is_none() => {
+                return Err("a body's geology needs its radius_km".to_owned());
+            }
+            Some(wire) => Some(
+                crate::surface::GeologyTable::from_wire(wire).map_err(|error| error.to_string())?,
+            ),
+        };
+        self.surface_mg = surface_mg;
+        self.radius_km = radius_km;
+        self.geology = table;
+        Ok(self)
     }
 
     /// **The same body about `parent`** (doc 19 cut A.7; Q-19-9): a moon, its
@@ -1087,6 +1179,28 @@ pub struct RouteEntry {
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_unbanded(value: &u8) -> bool {
     *value == 0
+}
+
+/// **Doc 20 cut SM.2 (§3.1)** — a place's coordinates' fault, if any: both or
+/// neither of `lat_mdeg`/`lon_mdeg`, a `body` when either is authored, latitude in
+/// `-90_000..=90_000`, east longitude in `0..360_000`.
+fn place_coordinates_fault(place: &LocationDef) -> Option<String> {
+    match (place.lat_mdeg, place.lon_mdeg) {
+        (None, None) => None,
+        (Some(_), None) | (None, Some(_)) => {
+            Some("a place authors both lat_mdeg and lon_mdeg, or neither".to_owned())
+        }
+        (Some(_), Some(_)) if place.body.is_none() => {
+            Some("a place with coordinates stands on a body".to_owned())
+        }
+        (Some(lat), Some(_)) if !(-90_000..=90_000).contains(&lat) => Some(format!(
+            "lat_mdeg is -90000 to 90000 milli-degrees, not {lat}"
+        )),
+        (Some(_), Some(lon)) if !(0..360_000).contains(&lon) => Some(format!(
+            "lon_mdeg is 0 to 359999 milli-degrees east, not {lon}"
+        )),
+        (Some(_), Some(_)) => None,
+    }
 }
 
 /// The entry kinds this crate decodes; any other kind in a pack is another
@@ -1419,6 +1533,16 @@ impl RulesPack {
                         body: body.to_string(),
                     });
                 }
+            }
+            // Doc 20 cut SM.2 (§3.1): a place's coordinates are both or neither,
+            // on a body, inside the latitude and east-longitude bands.
+            if let PackEntry::Location(place) = entry
+                && let Some(detail) = place_coordinates_fault(place)
+            {
+                return Err(PackError::PlaceCoordinates {
+                    place: id.to_string(),
+                    detail,
+                });
             }
             // Doc 19 cut A.7 (Q-19-9): a moon's parent is a body of this pack and
             // no moon itself — one level, so a position is a parent's plus its own.
@@ -1995,6 +2119,14 @@ pub enum PackError {
         route: String,
         /// The place it named.
         place: String,
+    },
+    /// **Doc 20 cut SM.2 (§3.1)** — a place's coordinates break their rule.
+    #[error("place {place}: {detail}")]
+    PlaceCoordinates {
+        /// The place.
+        place: String,
+        /// The rule broken.
+        detail: String,
     },
     /// **S7** — a place named a body its pack does not declare.
     #[error("place {place} stands on body {body}, which this pack does not declare")]

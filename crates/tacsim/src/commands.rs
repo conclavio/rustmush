@@ -182,7 +182,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: crate::port::coop::COOP_VERB.into(),
             shape: ArgShape::Raw,
-            switches: ["enrol", "statement", "buyout", "release"]
+            // Doc 20 cut SM.3a: `refit` re-binds a chartered hull's unit through
+            // `mush_tactics::module::refit_unit` and writes nothing else.
+            switches: ["enrol", "statement", "buyout", "release", "refit"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
@@ -192,6 +194,36 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(crate::port::coop::coop_cmd),
     )?;
+    // ---- Doc 20 cut SM.3a (§4.3, Q-20-6, Q-20-8) and cut SM.3b (§8, §10; D-20-6/7/11):
+    // `+tv`, `+tv/lease` and the rig acts, Authoritative ----
+    //
+    // `+tv` is a pure read; `/lease` at Occator's counter is economy API writes (the lease
+    // offered and accepted, one public post of the term fee and an engine-owned
+    // `tacsim.tv.deposit` hold), one `tacsim:tvlease:<lease>` document and one mush-sim
+    // placement. Doc 20 cut SM.3b (decision 20, SM.3a's own note): `+tv/<n>
+    // launch|recover|dump go` stages exactly one `tacsim_surface_act` submission as the
+    // operator, so the verb takes the `Authoritative` class by `+ship`'s ceiling rule (one
+    // primary verb takes the ceiling class of its switches; `/lease`'s economy writes ride
+    // the same lane, the `+ship/board` precedent). The class is declared before the
+    // `reg.command` and the module default restored right after. The slot switches are
+    // `/1`…`/4` (`MAX_BAY_ITEMS`), then the act switches.
+    reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
+    reg.command(
+        CommandSpec {
+            name: crate::port::tv::TV_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: crate::port::tv::SLOT_SWITCHES
+                .iter()
+                .copied()
+                .chain(["lease", "launch", "recover", "dump"])
+                .map(SmolStr::new)
+                .collect(),
+            help: crate::port::tv::TV_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::tv::tv_cmd),
+    )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     // ---- Doc 18 cut IC13 (§4.1 "Losses, dormancy and release"; D-18-25; lead ruling
     // L9): `@coop/revoke`, staff ----
     //
@@ -218,14 +250,15 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // after. `+ship/plan` is a pure read; `+ship/undock` writes the hull's one
     // `tacsim:voyage:<hull>` document and submits the burn as the actor. Doc 18 cut
     // IC11: `/orders` is a read, `/order` writes the hull's one `tacsim:orders:<hull>`
-    // document (and submits nothing; the port tick's order arm executes it).
+    // document (and submits nothing; the port tick's order arm executes it). Doc 20
+    // cut SM.2: `/lift` is `/undock`, the word for a pad.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
             name: crate::port::ship::SHIP_VERB.into(),
             shape: ArgShape::Raw,
             switches: [
-                "board", "leave", "hold", "plan", "undock", "orders", "order",
+                "board", "leave", "hold", "plan", "undock", "lift", "orders", "order",
             ]
             .iter()
             .copied()

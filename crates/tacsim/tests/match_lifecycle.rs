@@ -1642,6 +1642,37 @@ async fn ic2_sim_unit_never_offers_a_hauler() {
     assert_eq!(rig.centre().slots[0].unit_type, None, "and nothing moved");
 }
 
+/// **`SIM UNIT` never offers a terrain vehicle or a Dray-P** (doc 20 cut SM.3a;
+/// D-20-6; reviewer F7): both are in the fielded catalog — the TV a `vehicle`,
+/// the Dray-P a `hauler` — and neither is in a lobby. The bare list is
+/// byte-identical to the one `ic2_sim_unit_never_offers_a_hauler` pins, which is
+/// the proof that neither joined it, and naming either answers the
+/// unknown-type line with the slot's choice unmoved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sm3a_sim_unit_never_offers_a_vehicle() {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim unit");
+    assert!(
+        said.contains(
+            "Fieldable units: biped_mk1, biped_mk2, drone_mk1, heavy_mk1, line_tank, \
+             line_tank_eccm, line_tank_ecm, line_tank_laser, line_tank_thermal, scout_mk1, \
+             target_mk1. Yours: line_tank."
+        ),
+        "{said}"
+    );
+    assert!(!said.contains("tv_prospector"), "{said}");
+    assert!(!said.contains("dray_p"), "{said}");
+    for word in ["tv_prospector", "dray_p"] {
+        let said = rig.say(0, &format!("sim unit {word}"));
+        assert!(
+            said.contains(&format!("No such unit type: {word}. SIM UNIT lists them.")),
+            "{said}"
+        );
+        assert_eq!(rig.centre().slots[0].unit_type, None, "and nothing moved");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn q8_sim_unit_refuses_an_unknown_type_no_slot_and_a_wrong_state() {
     let mut rig = Rig::boot(2);

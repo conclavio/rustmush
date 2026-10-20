@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "measures": [
     { "id": "si.mass_kg", "unit": "kg", "word": "mass" },
     { "id": "si.volume_l", "unit": "L", "word": "packed volume" }
@@ -108,6 +108,58 @@
       "consumable": null,
       "reference_major": 250,
       "note": "Titan's tholins and paraffins pyrolysed and pressed to graphite billet at about 1.67 t to the cubic metre: the dense Titan cargo, 600 L a tonne, the partner of the lifters' overburden ice; feedstock for Luna's closed loops and Mars's soil."
+    },
+    {
+      "id": "metal_ore",
+      "label": "metal ore, run-of-mine",
+      "family": "metals",
+      "class": "trade",
+      "ledger_unit": "t",
+      "quote_unit": "t",
+      "measures": { "si.mass_kg": 1000, "si.volume_l": 500 },
+      "stowage": "stow.ore",
+      "consumable": null,
+      "reference_major": 70,
+      "note": "Drilled from a Registry site's metal blocks and bought only at Ceres, where the Exchange mills it five to two into metal concentrate. Broken rock at about 2 t to the cubic metre packs to 500 L a tonne. The reference is the Exchange's bid that cut SM.5 posts."
+    },
+    {
+      "id": "ice_ore",
+      "label": "ice ore, run-of-mine",
+      "family": "volatiles",
+      "class": "trade",
+      "ledger_unit": "t",
+      "quote_unit": "t",
+      "measures": { "si.mass_kg": 1000, "si.volume_l": 1000 },
+      "stowage": "stow.ore",
+      "consumable": null,
+      "reference_major": 35,
+      "note": "Dirty ice drilled from a Registry site's ice blocks and bought only at Ceres, where Occator mills it five to two into water ice. Lumped at about a tonne to the cubic metre, it packs to 1,000 L a tonne. The reference is Occator's bid that cut SM.5 posts."
+    },
+    {
+      "id": "carbon_ore",
+      "label": "carbon ore, run-of-mine",
+      "family": "carbon_feedstock",
+      "class": "trade",
+      "ledger_unit": "t",
+      "quote_unit": "t",
+      "measures": { "si.mass_kg": 1000, "si.volume_l": 1200 },
+      "stowage": "stow.ore",
+      "consumable": null,
+      "reference_major": 50,
+      "note": "Carbonaceous clay and organics drilled from a Registry site and bought only at Ceres; no mill takes it in phase 1, so the Exchange stocks it for a later feedstock ask. Loose at about 0.83 t to the cubic metre, it packs to 1,200 L a tonne and cubes out in a hopper. The reference is the Exchange's bid that cut SM.5 posts."
+    },
+    {
+      "id": "strategic_ore",
+      "label": "strategic ore, run-of-mine",
+      "family": "strategic_elements",
+      "class": "trade",
+      "ledger_unit": "t",
+      "quote_unit": "t",
+      "measures": { "si.mass_kg": 1000, "si.volume_l": 600 },
+      "stowage": "stow.ore",
+      "consumable": null,
+      "reference_major": 600,
+      "note": "Rare-earth and platinum-group rock drilled from a Registry site and bought only at Ceres; no mill takes it in phase 1, so it waits on the Exchange's prize shelf. Broken rock at about 1.67 t to the cubic metre packs to 600 L a tonne. The reference is the Exchange's bid that cut SM.5 posts."
     }
   ]
 }

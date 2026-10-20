@@ -153,7 +153,12 @@ fn a3_chart_window_under_a_constant_sky_says_every_day_is_today() {
         refused.contains(
             &CHART_NO_ROUTE
                 .replace("{here}", "Ceres Freeport")
-                .replace("{list}", "Aitken Highport, Stickney Yards")
+                // Doc 20 cut SM.2: the six sites in venue order beside the two ports.
+                .replace(
+                    "{list}",
+                    "Ahuna Flank, Freeport Commons, Juling Shadow, Kerwan Floor, Aitken \
+                     Highport, Occator Rim, Rheasilvia Commons, Stickney Yards"
+                )
         ),
         "{refused}"
     );
@@ -364,10 +369,17 @@ fn a3b_the_chart_frame_is_a_grid_with_the_chart_block_and_is_blessed_for_the_web
             .all(|b| b["r_au"].as_f64().is_some_and(|r| r > 0.0))
     );
     let routes = chart["routes"].as_array().expect("routes");
-    // Doc 19 cut A.8: Ceres lists Luna and Stickney, in venue order.
-    assert_eq!(routes.len(), 2);
-    assert_eq!(routes[0]["to"], "Aitken Highport");
-    assert_eq!(routes[0]["body"], "luna");
+    // Doc 19 cut A.8: Ceres lists Luna and Stickney, in venue order; doc 20 cut SM.2:
+    // and the six sites, Ahuna Flank first. A same-body site carries no direct chord.
+    assert_eq!(routes.len(), 8);
+    assert_eq!(routes[0]["to"], "Ahuna Flank");
+    assert_eq!(routes[0]["body"], "ceres");
+    assert!(routes[0]["direct"].is_null(), "{}", routes[0]);
+    let luna = routes
+        .iter()
+        .find(|r| r["to"] == "Aitken Highport")
+        .expect("the Luna route");
+    assert_eq!(luna["body"], "luna");
     let stickney = routes
         .iter()
         .find(|r| r["to"] == "Stickney Yards")
@@ -394,13 +406,29 @@ fn a3b_the_chart_frame_is_a_grid_with_the_chart_block_and_is_blessed_for_the_web
     assert!(stickney["empty"]["total_s"].as_i64().is_some_and(|s| s > 0));
     assert!(stickney["direct"]["km"].as_u64().is_some_and(|km| km > 0));
     let window = chart["window"].as_array().expect("window");
-    assert_eq!(window.len(), 2, "a window per destination");
+    assert_eq!(window.len(), 8, "a window per destination");
+    // Doc 20 cut SM.2 (reviewer T6): the cross-body window is found by name — the first
+    // window is now a same-body hop, which the sky does not move.
+    let luna_window = window
+        .iter()
+        .find(|w| w["to"] == "Aitken Highport")
+        .expect("the Luna window");
     assert!(
-        window[0]["fastest"]["offset_days"].is_number(),
-        "{}",
-        window[0]
+        luna_window["fastest"]["offset_days"].is_number(),
+        "{luna_window}"
     );
-    assert!(window[0]["worst"]["total_s"].as_i64() >= window[0]["fastest"]["total_s"].as_i64());
+    assert!(
+        luna_window["worst"]["total_s"].as_i64() > luna_window["fastest"]["total_s"].as_i64(),
+        "the moving sky spreads a cross-body window: {luna_window}"
+    );
+    let hop = window
+        .iter()
+        .find(|w| w["to"] == "Ahuna Flank")
+        .expect("the Ahuna window");
+    assert_eq!(
+        hop["worst"]["total_s"], hop["fastest"]["total_s"],
+        "a same-body hop is the same every day: {hop}"
+    );
     let sky_lines = chart["lines"]["sky"].as_array().expect("sky lines");
     assert!(
         sky_lines.len() >= 17,

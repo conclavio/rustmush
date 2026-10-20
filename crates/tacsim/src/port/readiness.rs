@@ -87,6 +87,13 @@ pub enum Binding {
     /// Doc 20 cut SM.1: the geology key's state; reported, never gated, in
     /// D-18-50's sky manner (`crate::surface::key::geology_line`).
     Geology,
+    /// Doc 20 cut SM.2: a site's block places and clerk; reported, never gated
+    /// (`crate::port::site::site_line`).
+    Site,
+    /// Doc 20 cut SM.3a: a lessor's rig pool; reported, never gated
+    /// (`crate::port::vehicle::vehicles_line`, which also names a programme hull
+    /// whose refit bay is not laid up).
+    Vehicles,
 }
 
 /// **A line's state.** Only [`LineState::Ready`] counts as ready.
@@ -134,6 +141,12 @@ pub struct ReadinessLine {
 pub struct Readiness {
     /// The lines.
     pub lines: Vec<ReadinessLine>,
+    /// **Doc 20 cut SM.2 (lead override 3)** — the port entries that are mining sites
+    /// (their `def` carries a `site` block). Their lines are reported like every port's
+    /// and **never gate `+coop/enrol`** ([`crate::port::coop::enrol_gate`]): mining
+    /// content never closes the trade run's front door; a departure **to** a site whose
+    /// lines are not all ready is refused at planning instead (`port_ready`).
+    pub sites: BTreeSet<CanonicalId>,
 }
 
 impl Readiness {
@@ -1006,6 +1019,28 @@ pub(crate) fn report_ports<'a>(
     (pack, ports)
 }
 
+/// **Whether one port's own lines are all Ready** (doc 20 cut SM.2, lead override 3):
+/// the lines [`readiness`] reports for `entry` of the report's lane pack — its map,
+/// rooms, domain, site, institutions, programme and hulls — every one Ready. A port the
+/// report's pack does not author is not ready. What a departure to a site asks before
+/// it plans ([`crate::port::voyage`]'s `SITE_CLOSED`).
+#[must_use]
+pub(crate) fn port_ready(w: &World, entry: &CanonicalId) -> bool {
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return false;
+    };
+    let Ok(lane) = CanonicalId::new(LANE_PACK) else {
+        return false;
+    };
+    let (_, ports) = report_ports(store, w);
+    let Some((_, def)) = ports.into_iter().find(|(id, _)| id == entry) else {
+        return false;
+    };
+    let mut report = Readiness::default();
+    port_lines(&mut report, w, store, &lane, entry, Some(def));
+    report.is_ready()
+}
+
 /// The lowest-id Active `tacsim.credit` account `system:<treasury>` holds.
 fn treasury_account(w: &World, treasury: &str) -> Option<AccountId> {
     let owner = PrincipalId::System(SystemPrincipalId::new(treasury)?);
@@ -1032,6 +1067,12 @@ fn port_lines(
 ) {
     let port = Some(entry);
     let key = port_map_key(pack, entry);
+    // Doc 20 cut SM.2 (lead override 3): a site port's lines never gate `+coop/enrol`,
+    // its Map line included — so the port is named a site before the map is read, and an
+    // absent or unreadable site map closes the pad (`port_ready`), never the desk.
+    if def.is_some_and(|def| def.site.is_some()) {
+        report.sites.insert(entry.clone());
+    }
     let map: &PortMap = match store.port_map(pack, entry) {
         PortMapState::Unreadable => {
             report.push(
@@ -1140,6 +1181,12 @@ fn port_lines(
         }
     };
     report.push(port, Binding::Domain, state, text);
+
+    // ---- doc 20 cut SM.2: the site's block places and clerk ----
+    if def.is_some_and(|def| def.site.is_some()) {
+        let (state, text) = crate::port::site::site_line(w, entry, map);
+        report.push(port, Binding::Site, state, text);
+    }
 
     // ---- institutions ----
     let orgs = w.module_state::<OrgStore>();
@@ -1335,6 +1382,13 @@ fn port_lines(
     {
         report.push(port, Binding::Hulls, state, text);
     }
+
+    // ---- the rig pool (doc 20 cut SM.3a), right after the hulls ----
+    if let Some((state, text)) =
+        def.and_then(|def| crate::port::vehicle::vehicles_line(w, store, entry, def, map))
+    {
+        report.push(port, Binding::Vehicles, state, text);
+    }
 }
 
 #[cfg(test)]
@@ -1401,7 +1455,10 @@ mod tests {
             )
         );
         for line in [flagged, none] {
-            let report = Readiness { lines: vec![line] };
+            let report = Readiness {
+                lines: vec![line],
+                ..Readiness::default()
+            };
             assert!(
                 crate::port::coop::enrol_gate(&report).is_ok(),
                 "reported, never gated"
@@ -1431,6 +1488,7 @@ mod tests {
         );
         let report = Readiness {
             lines: vec![incomplete],
+            ..Readiness::default()
         };
         assert!(
             crate::port::coop::enrol_gate(&report).is_err(),
@@ -1468,7 +1526,10 @@ mod tests {
         ] {
             let line = bid(LineState::Pending, text);
             assert!(!crate::port::coop::shuts(&line), "{text}");
-            let report = Readiness { lines: vec![line] };
+            let report = Readiness {
+                lines: vec![line],
+                ..Readiness::default()
+            };
             assert!(
                 crate::port::coop::enrol_gate(&report).is_ok(),
                 "a pending bid leaves the desk open: {text}"
@@ -1481,7 +1542,10 @@ mod tests {
         ] {
             let line = bid(LineState::Missing, text);
             assert!(crate::port::coop::shuts(&line), "{text}");
-            let report = Readiness { lines: vec![line] };
+            let report = Readiness {
+                lines: vec![line],
+                ..Readiness::default()
+            };
             let refused =
                 crate::port::coop::enrol_gate(&report).expect_err("a missing bid closes the desk");
             assert_eq!(

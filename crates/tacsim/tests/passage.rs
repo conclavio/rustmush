@@ -56,10 +56,15 @@ fn dray() -> HullDrive {
     let spec = catalog.specs.get(&cid(DRAY)).expect("the Dray is fielded");
     let logistics = spec.logistics.as_ref().expect("the Dray's logistics");
     let law = *catalog
-        .drive_for_class(&logistics.drive.class)
+        .drive_for_class(&logistics.drive.as_ref().expect("the Dray's drive").class)
         .expect("the Dray's class flies a law");
     HullDrive {
-        class: logistics.drive.class.clone(),
+        class: logistics
+            .drive
+            .as_ref()
+            .expect("the Dray's drive")
+            .class
+            .clone(),
         law,
         payload_ceiling_kg: logistics.payload_ceiling_kg,
         throttle_permille: tacsim::port::DEFAULT_THROTTLE_PERMILLE,
@@ -139,9 +144,22 @@ fn plan_passage_reproduces_the_slice_figures() {
         .filter(|(_, entry)| matches!(entry, PackEntry::Route(_)))
         .map(|(id, _)| id.to_string())
         .collect();
-    assert_eq!(routes.len(), 8, "the lane's routes: {routes:?}");
+    // Doc 20 cut SM.2: twenty with the twelve site routes. A same-body hop's `base_s`
+    // is authored, not a chord (§3.3): its seconds are the laden step, which at an empty
+    // hold is `base_s` itself.
+    assert_eq!(routes.len(), 20, "the lane's routes: {routes:?}");
     for route in routes.iter().map(String::as_str) {
         for (a, b, base) in body_pairs(&pack, route) {
+            if a == b {
+                let hop = plan_passage(&sky, &pack, &cid(route), &drive, DRY_KG, 0, 1, depart)
+                    .expect("the hop plans");
+                assert_eq!(
+                    secs(&hop),
+                    vec![base],
+                    "{route}: the laden step at no payload"
+                );
+                continue;
+            }
             let passes =
                 intercept_passes(&sky, &a, &b, depart, &drive, DRY_KG, 0, 1).expect("plans");
             let chord = passes.first().map(|(km, _)| *km).expect("a pass");
@@ -671,4 +689,64 @@ fn port_routes_are_a_list_and_the_planner_picks_the_fastest() {
         choose(&[LANE_ROUTE_OUT, "nowhere"], None),
         Err(PlanError::UnknownRoute { .. })
     ));
+}
+
+/// **Carried rigs weigh their dry mass and their hoppers** (doc 20 cut SM.3a;
+/// §4.3, D-20-7; pure): two rigs of 6,000 kg with empty hoppers weigh 12,000; a
+/// hopper reading 3 of `metal_ore` adds 3,000; a good the table does not weigh is
+/// `Unreadable`; an overflow is `Overflow`.
+#[test]
+fn sm3a_carried_rigs_weigh_their_dry_mass_and_their_hoppers() {
+    use tacsim::port::{CarriedRig, PlanError, carried_kg};
+    let goods = tacsim::definitions::goods::goods_table().expect("the goods table");
+    let id = |word: &str| CanonicalId::new(word).expect("a canonical id");
+    let ores: Vec<CanonicalId> = ["metal_ore", "ice_ore", "carbon_ore", "strategic_ore"]
+        .into_iter()
+        .map(id)
+        .collect();
+    let rig = |tv: u32, hopper: u64| CarriedRig {
+        tv,
+        dry_kg: 6_000,
+        hopper: Some(hopper),
+        goods: ores.clone(),
+    };
+    let rigs = vec![rig(900, 11), rig(901, 12)];
+    assert_eq!(carried_kg(&goods, &rigs, |_, _| Ok(0)), Ok(12_000));
+    let three = carried_kg(&goods, &rigs, |hopper, good| {
+        Ok(if hopper == 11 && good.as_str() == "metal_ore" {
+            3
+        } else {
+            0
+        })
+    });
+    assert_eq!(three, Ok(15_000), "3 t of metal ore adds 3,000 kg");
+    let unknown = vec![CarriedRig {
+        goods: vec![id("unobtainium")],
+        ..rig(900, 11)
+    }];
+    assert!(matches!(
+        carried_kg(&goods, &unknown, |_, _| Ok(0)),
+        Err(PlanError::Unreadable { .. })
+    ));
+    let heavy = CarriedRig {
+        dry_kg: u64::MAX,
+        hopper: None,
+        ..rig(900, 11)
+    };
+    assert_eq!(
+        carried_kg(&goods, &[heavy, rig(901, 12)], |_, _| Ok(0)),
+        Err(PlanError::Overflow)
+    );
+    // No hopper: only the dry mass.
+    assert_eq!(
+        carried_kg(
+            &goods,
+            &[CarriedRig {
+                hopper: None,
+                ..rig(900, 11)
+            }],
+            |_, _| Ok(7)
+        ),
+        Ok(6_000)
+    );
 }

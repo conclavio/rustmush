@@ -1,0 +1,292 @@
+{
+  "manifest": {
+    "id": "neighborhood.rheasilvia_commons",
+    "version": 1,
+    "kind": "neighborhood",
+    "digest": "f61a052ca48765dd22fd0d1000e5aee9853e954c5a0ebfa3db2b98fad4ec9487",
+    "requires": [
+      {
+        "id": "region.rheasilvia_commons",
+        "version": 1
+      }
+    ]
+  },
+  "brief": {
+    "prose": "Rheasilvia Commons is the Freeport Registry's only ground off Ceres: open commons on the floor of Rheasilvia, the great basin at Vesta's south pole, reached by a passage of days. The basin floor is metal-rich rock under a thin dust, ridged and broken, and nothing is built on it but the pad."
+  },
+  "entries": {
+    "neighborhood": {
+      "kind": "neighborhood",
+      "def": {
+        "region": "region.rheasilvia_commons",
+        "locality": "locality.rheasilvia_commons",
+        "name": "Rheasilvia Commons",
+        "setting": "surface",
+        "representation": "authored",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            0
+          ],
+          [
+            2560,
+            2560
+          ],
+          [
+            0,
+            2560
+          ]
+        ],
+        "room_budget": {
+          "target": 1,
+          "maximum": 1
+        },
+        "hydration": {
+          "enabled": false,
+          "max_player_sites": 0
+        },
+        "resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350: the sites",
+          "style_guide": "Present tense, no second person, no named NPCs in a room desc. A site is a Registry pad on open ground: a cleared landing square, tie-down rings, a painted pad number, and the body's own ground around it. Nothing is built here but the pad; the horizon is close and the light is hard. Desc length medium (60-120 words); details are one or two sentences, dry, with a fact in them.",
+          "vocabulary": [
+            "pad",
+            "tie-down",
+            "regolith",
+            "ice",
+            "crater",
+            "rim",
+            "Registry",
+            "survey stake",
+            "block",
+            "commons",
+            "claim",
+            "Ceres",
+            "Vesta",
+            "Freeport",
+            "horizon"
+          ],
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "shields",
+            "stardate",
+            "hangar bay",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "room.pad": {
+      "kind": "room",
+      "def": {
+        "name": "Rheasilvia Commons Pad",
+        "short_desc": "A cleared landing square on the ridged floor of Rheasilvia basin on Vesta, the ground dark and metallic.",
+        "desc": "The pad is a cleared square of fused dust with tie-down rings sunk at its edges and the Registry number FR-V1 painted in its centre. Beyond the square the floor of Rheasilvia is ridged and broken, dark rock showing through a thin dust that has a faint metallic sheen in hard light. The ground slopes so gently it reads as flat, and the horizon is close in every direction. The basin's great central peak is beyond it, out of sight.",
+        "surface": "ground",
+        "footprint": {
+          "rect": [
+            [
+              1260,
+              1260
+            ],
+            [
+              1300,
+              1300
+            ]
+          ]
+        },
+        "kind": "outdoor",
+        "markers": [
+          "port.dock"
+        ],
+        "details": {
+          "dark rock": "Basalt and metal-rich breccia from Vesta's interior, laid bare when the basin was dug. It is heavy in the hand.",
+          "ridges": "Long low ridges running across the basin floor, each a few metres high. The pad was set between two of them."
+        }
+      }
+    },
+    "feature.crater_1": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            670,
+            650
+          ],
+          [
+            647,
+            721
+          ],
+          [
+            587,
+            764
+          ],
+          [
+            513,
+            764
+          ],
+          [
+            453,
+            721
+          ],
+          [
+            430,
+            650
+          ],
+          [
+            453,
+            579
+          ],
+          [
+            513,
+            536
+          ],
+          [
+            587,
+            536
+          ],
+          [
+            647,
+            579
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    },
+    "feature.crater_2": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            2145,
+            2050
+          ],
+          [
+            2127,
+            2106
+          ],
+          [
+            2079,
+            2140
+          ],
+          [
+            2021,
+            2140
+          ],
+          [
+            1973,
+            2106
+          ],
+          [
+            1955,
+            2050
+          ],
+          [
+            1973,
+            1994
+          ],
+          [
+            2021,
+            1960
+          ],
+          [
+            2079,
+            1960
+          ],
+          [
+            2127,
+            1994
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    },
+    "feature.crater_3": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            2220,
+            600
+          ],
+          [
+            2207,
+            641
+          ],
+          [
+            2172,
+            667
+          ],
+          [
+            2128,
+            667
+          ],
+          [
+            2093,
+            641
+          ],
+          [
+            2080,
+            600
+          ],
+          [
+            2093,
+            559
+          ],
+          [
+            2128,
+            533
+          ],
+          [
+            2172,
+            533
+          ],
+          [
+            2207,
+            559
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    }
+  }
+}

@@ -389,9 +389,15 @@ fn compiled_goods() -> Option<&'static (String, GoodsTable)> {
         .as_ref()
 }
 
-/// **The hold plan of `view`**, or `None` when the goods table does not load.
+/// **The hold plan of `view`**, or `None` when the goods table does not load —
+/// and, since doc 20 cut SM.3a (reviewer F6), for a hull whose unit record boot
+/// held (`HullView::unit_held`): every capacity check then reads `Unreadable`
+/// (the existing dark path), never a standard Dray's hold.
 #[must_use]
 pub fn hold_plan(view: &HullView<'_>) -> Option<HoldPlan> {
+    if view.unit_held {
+        return None;
+    }
     plan_of(view.logistics)
 }
 

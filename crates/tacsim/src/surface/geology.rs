@@ -457,9 +457,10 @@ impl GeologyTable {
 // The body and its lattice
 // ---------------------------------------------------------------------------
 
-/// A body's ground: its id, its radius (the pocket lattice's extent) and its table. In SM.1
-/// these reach the world only through `crate::surface::install_body_geology`; SM.2 sources them
-/// from the lane's `BodyDef`.
+/// A body's ground: its id, its radius (the pocket lattice's extent) and its table. They reach
+/// the world only through `crate::surface::install_body_geology`; since doc 20 cut SM.2 they are
+/// sourced from the lane's `BodyDef` (`radius_km` and `geology`) by
+/// `crate::surface::lane_geologies` and installed by `crate::surface::install_lane_geology`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BodyGeology {
     /// The body.
@@ -532,8 +533,14 @@ impl Lattice {
         self.rows > 0 && (self.south()..self.north()).contains(&y)
     }
 
-    /// The province of a pocket: `(x · 56 / columns, (y + rows/2) · 28 / rows)`.
-    fn province_of_pocket(&self, x: i64, y: i64) -> Result<(u32, u32), GeologyError> {
+    /// The province of a pocket: `(x · 56 / columns, (y + rows/2) · 28 / rows)` — public
+    /// since doc 20 cut SM.2, which reads a site's province from its centre pocket
+    /// (`crate::port::site::site_province`).
+    ///
+    /// # Errors
+    ///
+    /// [`GeologyError::OffLattice`] past a pole.
+    pub fn province_of_pocket(&self, x: i64, y: i64) -> Result<(u32, u32), GeologyError> {
         if !self.pocket_row_on(y) {
             return Err(GeologyError::OffLattice);
         }

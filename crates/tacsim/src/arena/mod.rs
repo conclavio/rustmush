@@ -792,6 +792,18 @@ pub(crate) mod test_support {
         .sealed()
     }
 
+    /// **A terrain vehicle** (doc 20 cut SM.3a; D-20-6): [`hauler`]'s twin,
+    /// whose rules blob declares `"class": "vehicle"`, so `Arena::new` reads it
+    /// as [`crate::definitions::UnitClass::Vehicle`] and refuses it at the
+    /// custody seam.
+    pub(crate) fn vehicle(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+        CustodyUnit {
+            unit: tactical_unit_with(id, serde_json::json!({ "class": "vehicle" })),
+            ..tank(id, team, pose)
+        }
+        .sealed()
+    }
+
     /// **The shipped sensor's numbers**, as the arena carries them
     /// (`content/sensors/visual_mk1.json`).
     pub(crate) fn visual() -> SensorProfile {

@@ -23,11 +23,9 @@ use mush_atlas::{
     Access, Cell, Cells, Footprint, PointCm, RecordKey, Records, RectCm, RegionRec, RoomGeo,
     RoomKind, SurfaceRef, TerrainClass, TileRec,
 };
-use mush_core::{CanonicalId, GOD, GeologyMac, GeologySecret, ModuleBootData, ModuleWrite, ObjId};
-use mush_economy::EconomyConfig;
+use mush_core::{CanonicalId, GOD, GeologyMac, ModuleBootData, ModuleWrite, ObjId};
 use mush_testkit::{TestWorld, fold_module_ops};
 use smol_str::SmolStr;
-use tacsim::TacsimConfig;
 use tacsim::port::{Binding, LineState, ReadinessLine};
 use tacsim::surface::geology::{
     BodyGeology, FieldGround, GeologyError, GeologyTable, GeologyTableWire, Lattice, OreFamily,
@@ -43,59 +41,16 @@ use tacsim::surface::reading::{
 };
 use tacsim::surface::{GEOLOGY_PIN_KEY, GeologyBoot, GeologyDisabled, GeologyStatus};
 
+#[path = "support/geology_keyed.rs"]
+mod geology_keyed;
+use geology_keyed::{
+    CERES_RADIUS_KM, CERES_TABLE, KEY_1, KEY_2, VESTA_RADIUS_KM, VESTA_TABLE, boot_keyed, mac,
+    secret,
+};
+
 // ---------------------------------------------------------------------------
 // The fixtures
 // ---------------------------------------------------------------------------
-
-/// The fixed test key (exactly 32 bytes; version 1).
-const KEY_1: [u8; 32] = *b"rustmush-sm1-geology-test-key-01";
-/// A second key.
-const KEY_2: [u8; 32] = *b"rustmush-sm1-geology-test-key-02";
-
-const CERES_RADIUS_KM: u32 = 470;
-const VESTA_RADIUS_KM: u32 = 263;
-
-/// Doc 20 §3.2's Ceres sentences as a table (test data; SM.2 authors the lane's).
-const CERES_TABLE: &str = r#"{
-  "province": {
-    "metals": { "lean": 600, "fair": 400 },
-    "volatiles": { "lean": 50, "fair": 500, "rich": 450 },
-    "carbon_feedstock": { "lean": 1000 },
-    "strategic_elements": { "barren": 950, "lean": 50 }
-  },
-  "field": {
-    "barren": { "barren": 1000 },
-    "lean": { "barren": 250, "lean": 550, "fair": 200 },
-    "fair": { "barren": 100, "lean": 300, "fair": 450, "rich": 150 },
-    "rich": { "lean": 150, "fair": 450, "rich": 400 }
-  },
-  "pocket": {
-    "lean": { "lean": 700, "fair": 250, "rich": 50 },
-    "fair": { "lean": 350, "fair": 500, "rich": 150 },
-    "rich": { "lean": 150, "fair": 450, "rich": 400 }
-  }
-}"#;
-
-/// Doc 20 §3.2's Vesta sentences as a table (test data).
-const VESTA_TABLE: &str = r#"{
-  "province": {
-    "metals": { "fair": 550, "rich": 450 },
-    "strategic_elements": { "lean": 600, "fair": 400 },
-    "volatiles": { "lean": 1000 },
-    "carbon_feedstock": { "barren": 1000 }
-  },
-  "field": {
-    "barren": { "barren": 1000 },
-    "lean": { "barren": 250, "lean": 550, "fair": 200 },
-    "fair": { "barren": 100, "lean": 300, "fair": 450, "rich": 150 },
-    "rich": { "lean": 150, "fair": 450, "rich": 400 }
-  },
-  "pocket": {
-    "lean": { "lean": 700, "fair": 250, "rich": 50 },
-    "fair": { "lean": 350, "fair": 500, "rich": 150 },
-    "rich": { "lean": 150, "fair": 450, "rich": 400 }
-  }
-}"#;
 
 fn cid(word: &str) -> CanonicalId {
     CanonicalId::new(word).expect("a canonical id")
@@ -115,14 +70,6 @@ fn ceres() -> BodyGeology {
 
 fn vesta() -> BodyGeology {
     BodyGeology::new(cid("vesta"), VESTA_RADIUS_KM, table(VESTA_TABLE)).expect("vesta")
-}
-
-fn secret(key: [u8; 32]) -> GeologySecret {
-    GeologySecret::new(1, key).expect("a test key")
-}
-
-fn mac(key: [u8; 32]) -> GeologyMac {
-    secret(key).mac()
 }
 
 fn by<T: Copy>(values: [T; 4], family: OreFamily) -> T {
@@ -874,98 +821,6 @@ fn sm1_the_site_table_refuses_what_is_not_a_site() {
 // 4. The key at the composition root
 // ---------------------------------------------------------------------------
 
-fn config_with(enabled: bool) -> TacsimConfig {
-    TacsimConfig {
-        enabled,
-        ..TacsimConfig::default()
-    }
-}
-
-/// How a test roster is composed (`tests/hulls.rs`'s, minimal, with the layer's flag).
-#[derive(Clone)]
-struct Roster {
-    /// Whether the pilot sheet composes (production does).
-    sheet: bool,
-    /// `[tacsim].enabled`.
-    enabled: bool,
-}
-
-impl Roster {
-    /// The production roster, the sheet included, the layer on or off.
-    fn production_with(enabled: bool) -> Roster {
-        Roster {
-            sheet: true,
-            enabled,
-        }
-    }
-
-    fn modules(&self) -> Vec<Box<dyn mush_core::GameModule>> {
-        use tacsim::composition as comp;
-
-        let llm = Arc::new(
-            mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
-                .expect("a disabled LLM service composes"),
-        );
-        let onboarding = mush_core::OnboardingConfig::default();
-        let game = tacsim::GameEconomyConfig::default();
-        let cfg = config_with(self.enabled);
-        let (mut mods, inventory) = comp::server_modules_with_tacsim(
-            mush_weather::WeatherConfig::default(),
-            EconomyConfig::default(),
-            mush_atlas::AtlasConfig::default(),
-            &onboarding,
-            &game,
-            comp::recovery_policy(&cfg.recovery),
-        );
-        mods.push(comp::worldgen_module_with(
-            Arc::clone(&llm),
-            mush_worldgen::WorldgenConfig::default(),
-        ));
-        mods.push(comp::npc_module_with(
-            comp::npc_agent_adapter(),
-            &mush_config::config::NpcCfg::default(),
-        ));
-        if self.sheet {
-            mods.extend(comp::sheet_modules(&onboarding, &game));
-        }
-        mods.push(comp::tacsim_module_wired(cfg, true, inventory));
-        mods.push(comp::content_module_with(true, true).expect("the content module composes"));
-        mods
-    }
-}
-
-/// No module write was refused for its namespace.
-fn no_refused_writes(tw: &TestWorld) {
-    let refused = tw.world().refused_namespace_writes();
-    assert!(refused.is_empty(), "refused namespace writes: {refused:?}");
-}
-
-/// Every engine that needs a key — or a boot map, or the layer off — is built here: compose,
-/// hand the key in, then run the module boot pass (`build_engine`'s order).
-fn boot_keyed(
-    boot: Option<GeologyBoot>,
-    store: HashMap<SmolStr, ModuleBootData>,
-    enabled: bool,
-) -> TestWorld {
-    let (world, registry) = mush_testkit::boot_world();
-    let mut engine = mush_core::Engine::with_modules(
-        world,
-        registry,
-        Roster::production_with(enabled).modules(),
-    )
-    .expect("the roster composes");
-    if let Some(boot) = boot {
-        assert!(tacsim::surface::install_geology(&mut engine.world, boot));
-    }
-    let (mut out, mut fx) = (mush_core::Outbox::new(), mush_core::Effects::new());
-    engine
-        .modules_loaded(store, &mut out, &mut fx)
-        .expect("the world boots");
-    let tw = TestWorld::from_engine(engine);
-    no_refused_writes(&tw);
-    tw
-}
-
 /// The readiness report's geology line.
 fn geology_line(tw: &TestWorld) -> ReadinessLine {
     let report = tacsim::port::readiness(tw.world());
@@ -1297,10 +1152,12 @@ fn sm1_geology_answers_staff_with_the_truth_and_refuses_everyone_else() {
         let events = tw.run(GOD, bad);
         assert_eq!(said(&tw, &events, GOD), usage, "{bad}");
     }
-    let events = tw.run(GOD, "@geology vesta 0,0");
+    // Doc 20 cut SM.2: the boot pass installs the lane's Ceres and Vesta tables, so the
+    // body with no table is Pallas (surface figures, no geology).
+    let events = tw.run(GOD, "@geology pallas 0,0");
     assert_eq!(
         said(&tw, &events, GOD),
-        "No geology table is loaded for vesta."
+        "No geology table is loaded for pallas."
     );
     let events = tw.run(GOD, "@geology ceres 0,18456");
     assert_eq!(
@@ -1391,11 +1248,12 @@ fn sm1_the_site_door_builds_once_and_refuses_what_it_cannot_build() {
     assert_ne!(rebuilt.geology.digest(), first.geology.digest());
 
     // The refusals.
-    let mut vesta_spec = spec.clone();
-    vesta_spec.body = cid("vesta");
+    // Doc 20 cut SM.2: Vesta's table is the lane's now; Pallas has none.
+    let mut pallas_spec = spec.clone();
+    pallas_spec.body = cid("pallas");
     assert_eq!(
-        site_ground_sync(tw.world_mut(), &frame, &vesta_spec).err(),
-        Some("No geology table is loaded for vesta.".to_owned())
+        site_ground_sync(tw.world_mut(), &frame, &pallas_spec).err(),
+        Some("No geology table is loaded for pallas.".to_owned())
     );
     let mut unknown = frame.clone();
     unknown.region = RecordKey::new(cid("sm1"), cid("nowhere"));
@@ -1409,7 +1267,9 @@ fn sm1_the_site_door_builds_once_and_refuses_what_it_cannot_build() {
     assert_eq!(cached_sites(&tw), 1, "a refusal caches nothing");
 
     // At most 32 body tables: a 33rd body is refused, re-installing one is not.
-    for i in 0..31 {
+    // Doc 20 cut SM.2: counted from what the boot pass installed (the lane's tables).
+    let standing = tacsim::surface::installed_bodies(tw.world()).len();
+    for i in 0..(tacsim::surface::MAX_BODY_GEOLOGIES - standing) {
         let id = cid(&format!("body{i}"));
         tacsim::surface::install_body_geology(
             tw.world_mut(),

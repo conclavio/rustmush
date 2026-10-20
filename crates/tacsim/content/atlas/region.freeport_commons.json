@@ -1,0 +1,91 @@
+{
+  "manifest": {
+    "id": "region.freeport_commons",
+    "version": 1,
+    "kind": "region",
+    "digest": "0128a8b67e95da3dfef1c587208f249f736e79e37925a033b8ff3fd53ce4a0ff",
+    "requires": []
+  },
+  "brief": {
+    "prose": "Freeport Commons is the Registry's oldest working ground, five kilometres north of the Freeport on the floor of Occator: open to anyone the Registry licenses, staked by nobody, and worked over since the Outbound opened the Belt, so every block has given up a share of what it held. The pad is a cleared square of fused regolith with the Freeport's lights on the southern horizon."
+  },
+  "entries": {
+    "region.freeport_commons": {
+      "kind": "region",
+      "def": {
+        "name": "Freeport Commons",
+        "kind": "surface",
+        "body": "ceres",
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            2560
+          ]
+        ],
+        "datum_m": 0,
+        "background": {
+          "surface": "regolith",
+          "mix": [
+            [
+              "ice",
+              25
+            ],
+            [
+              "rock",
+              15
+            ]
+          ],
+          "relief_cm": 120,
+          "relief_period_cm": 1000,
+          "seed": 2601
+        },
+        "ground_resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350",
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "locality.freeport_commons": {
+      "kind": "locality",
+      "def": {
+        "region": "region.freeport_commons",
+        "name": "Freeport Commons",
+        "kind": "extraction",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            0
+          ],
+          [
+            2560,
+            2560
+          ],
+          [
+            0,
+            2560
+          ]
+        ]
+      }
+    }
+  }
+}

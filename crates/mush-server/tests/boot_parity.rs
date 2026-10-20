@@ -759,8 +759,8 @@ async fn the_starter_area_boots_once_and_is_durable() {
 #[tokio::test]
 async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     use tacsim::definitions::content::{
-        CERES_PACK, CERES_ROOMS, LANE_PACK, LANE_ROUTE_OUT, LANE_VERSION, STATION_SOURCES,
-        STICKNEY_PACK, STICKNEY_ROOMS,
+        CERES_PACK, CERES_ROOMS, LANE_PACK, LANE_ROUTE_OUT, LANE_VERSION, SITE_SOURCES,
+        STATION_SOURCES, STICKNEY_PACK, STICKNEY_ROOMS,
     };
 
     let mut cfg = stock_config("ic1");
@@ -816,8 +816,9 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
             .orgs()
             .count();
         assert_eq!(
-            orgs, 20,
-            "the twenty port institutions: the corridor's nine and the moons' eleven (doc 19 cut A.8)"
+            orgs, 21,
+            "the twenty-one port institutions: the corridor's nine, the moons' eleven (doc 19 cut \
+             A.8) and the Freeport Registry (doc 20 cut SM.2)"
         );
         assert!(
             !store.test_world(),
@@ -895,7 +896,15 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
         Some(LANE_VERSION),
         "{LANE_PACK}: {after:?}"
     );
-    assert_eq!(after.len(), 16, "five, ten station packs and the lane");
+    // Doc 20 cut SM.2: the twelve site packs, each at 1.
+    for (pack, _) in SITE_SOURCES {
+        assert_eq!(after.get(pack).map(|l| l.0), Some(1), "{pack}: {after:?}");
+    }
+    assert_eq!(
+        after.len(),
+        28,
+        "five, ten station packs, the twelve site packs (doc 20 cut SM.2) and the lane"
+    );
     lane_resolves(&on.engine);
     let atlas = on
         .engine
@@ -928,6 +937,53 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     assert_eq!(latches(&again.engine), after);
     lane_resolves(&again.engine);
     drop(again);
+    let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
+}
+
+/// **Doc 20 cut SM.2** (§3.1, §3.4): the production root lays up every site — six `Site`
+/// readiness lines, each Ready, and each site's port map row complete: sixteen block places
+/// and the site clerk.
+#[tokio::test]
+async fn sm2_the_production_root_lays_up_every_site() {
+    let mut cfg = stock_config("sm2_sites");
+    enable_tacsim(&mut cfg);
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let quarantine = spool(&cfg);
+    let booted = boot::build_engine(&cfg, &store, &quarantine)
+        .await
+        .expect("the production root boots");
+    let w = &booted.engine.world;
+    let report = tacsim::port::readiness(w);
+    let sites: Vec<&tacsim::port::ReadinessLine> = report
+        .lines
+        .iter()
+        .filter(|line| line.binding == tacsim::port::Binding::Site)
+        .collect();
+    assert_eq!(sites.len(), 6, "{sites:#?}");
+    for line in &sites {
+        assert_eq!(line.state, tacsim::port::LineState::Ready, "{}", line.text);
+    }
+    let tacsim_store = w
+        .module_state::<TacsimStore>()
+        .expect("the tacsim module composed");
+    let lane = CanonicalId::new(tacsim::definitions::content::LANE_PACK).expect("an id");
+    for entry in [
+        "commons_port",
+        "kerwan_port",
+        "ahuna_port",
+        "juling_port",
+        "occator_port",
+        "rheasilvia_port",
+    ] {
+        let entry = CanonicalId::new(entry).expect("an id");
+        let tacsim::port::PortMapState::Present(map) = tacsim_store.port_map(&lane, &entry) else {
+            panic!("{entry}'s port map is readable");
+        };
+        let row = map.site.as_ref().expect("a site row");
+        assert_eq!(row.blocks.len(), 16, "{entry}");
+        assert!(row.clerk.is_some(), "{entry}");
+    }
+    drop(booted);
     let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
 }
 

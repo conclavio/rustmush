@@ -1380,6 +1380,8 @@ fn vf_p5_the_entry_cap_and_the_seed_object_cap_are_separate_refusals() {
                 label: "P".to_string(),
                 role: cid("yard"),
                 body: None,
+                lat_mdeg: None,
+                lon_mdeg: None,
             }),
         );
     }

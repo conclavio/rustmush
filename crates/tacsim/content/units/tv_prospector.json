@@ -1,0 +1,137 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.tv_prospector",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "c55b9b5e30fa4ac21050f5b48bb6bfa9fa8ac2b2d2e7fca3dbfdbeca455f6c1f",
+    "requires": [
+      {
+        "id": "tacsim.pack.visual_mk1",
+        "version": 1
+      }
+    ]
+  },
+  "entries": {
+    "tacsim.unit.tv_prospector": {
+      "kind": "unit",
+      "def": {
+        "label": "Prospector terrain vehicle",
+        "class": "vehicle",
+        "sections": [
+          {
+            "id": "chassis",
+            "facets": [
+              { "id": "front", "armor": 40 },
+              { "id": "left", "armor": 30 },
+              { "id": "right", "armor": 30 },
+              { "id": "rear", "armor": 30 },
+              { "id": "top", "armor": 20 }
+            ],
+            "internals": 120,
+            "consequences": [{ "kind": "destroy_unit" }]
+          },
+          {
+            "id": "hopper",
+            "facets": [
+              { "id": "left", "armor": 20 },
+              { "id": "right", "armor": 20 },
+              { "id": "top", "armor": 20 }
+            ],
+            "internals": 80,
+            "consequences": [{ "kind": "slow", "percent": 50 }]
+          },
+          {
+            "id": "boom",
+            "facets": [],
+            "struck_through": { "section": "chassis", "facet": "top" },
+            "internals": 40,
+            "consequences": [{ "kind": "slow", "percent": 90 }]
+          }
+        ],
+        "components": [
+          {
+            "id": "power",
+            "section": "chassis",
+            "role": {
+              "kind": "power",
+              "capability": "tacsim.power",
+              "states": ["off", "starting", "online"],
+              "initial": "off"
+            }
+          },
+          {
+            "id": "visual_sensor",
+            "section": "boom",
+            "role": {
+              "kind": "sensor",
+              "sensor": "tacsim.sensor.visual_mk1"
+            }
+          }
+        ],
+        "mobility": {
+          "tracked": {
+            "max_speed_cms": 300,
+            "accel_cms2": 50,
+            "brake_cms2": 100,
+            "turn_rate_mdeg_s": 20000,
+            "reverse_factor_pct": 50
+          }
+        },
+        "facets": [
+          { "band": "front", "sections": [{ "section": "chassis", "weight": 100 }] },
+          { "band": "left", "sections": [{ "section": "chassis", "weight": 60 }, { "section": "hopper", "weight": 40 }] },
+          { "band": "right", "sections": [{ "section": "chassis", "weight": 60 }, { "section": "hopper", "weight": 40 }] },
+          { "band": "rear", "sections": [{ "section": "chassis", "weight": 60 }, { "section": "hopper", "weight": 40 }] },
+          { "band": "top", "sections": [{ "section": "chassis", "weight": 40 }, { "section": "hopper", "weight": 40 }, { "section": "boom", "weight": 20 }] }
+        ],
+        "silhouettes": [
+          { "band": "front", "width_cm": 300, "height_cm": 250 },
+          { "band": "left", "width_cm": 600, "height_cm": 250 },
+          { "band": "right", "width_cm": 600, "height_cm": 250 },
+          { "band": "rear", "width_cm": 300, "height_cm": 250 },
+          { "band": "top", "width_cm": 600, "height_cm": 300 }
+        ],
+        "sensor_height_cm": 250,
+        "logistics": {
+          "dry_mass_t": 6,
+          "stowage": {
+            "hopper": { "accepts": ["stow.ore"], "limits": { "si.mass_kg": 12000, "si.volume_l": 13200 } }
+          },
+          "berths": 1,
+          "occupant_allowance_kg": 100,
+          "payload_ceiling_kg": 12100
+        },
+        "interior": {
+          "space": "cab",
+          "store": "hopper",
+          "berths_slot": { "id": "berths", "maximum_items": 1 },
+          "rooms": [
+            {
+              "id": "cab",
+              "name": "Cab",
+              "kind": "walkable",
+              "short_desc": "One empty seat behind a scratched canopy, a repeater blinking where the hands would go.",
+              "desc": "A one-seat cab under a scratched canopy, the seat empty and its harness clipped back. Where a driver's hands would rest a teleoperation repeater blinks green, carrying the bridge's commands down the link and the rig's cameras back up it; the controls themselves are locked under a plate. A hopper gauge sits by the canopy frame, and an Occator Water & Propellant lease tag is riveted under it. The air is whatever the cab last held, thin and cold, and smells of dust and warm circuit board.",
+              "details": {
+                "seat": "Empty, its harness clipped back. A stencil on the headrest says CREW SEAT; the buckle has never been fastened, because rigs like this one are driven from the bridge, and somebody has scratched a question mark after the stencil.",
+                "repeater": "A sealed box with a green link light and a red one. Green means the bridge has the rig; red means nobody does, and the rig sits still until somebody does.",
+                "hopper gauge": "Tonnes and cubic metres of ore aboard against the hopper's two limits, 12 t and 13.2 m3, and FULL lit under whichever binds first."
+              }
+            },
+            {
+              "id": "hopper",
+              "name": "Hopper",
+              "kind": "store",
+              "desc": "The ore hopper behind the cab: a lined steel bin under a hinged lid, filled by the drill's chute and emptied by the tipping ram. Not a place anyone walks."
+            }
+          ],
+          "exits": [],
+          "gauges": {
+            "hopper": ["cab"]
+          }
+        },
+        "note": "Doc 20 section 4.1's terrain vehicle, class vehicle, never fielded in phase 1 (the promotion cut flips it). Tracked at 300 cm/s: 2.0 m/s on regolith, 1.0 on rock, 1.5 on ice by the locomotion table's tracked row. Teleoperated from the settled hull in phase 1 (Q-20-4): the cab is empty. Stowage-only logistics, no drive, so it never plans a passage; 6 t dry, a 12 t / 13.2 m3 hopper that takes ore only. Its hopper vault is owned by the system principal tacsim.vehicles (section 4.2), so no player may take from it. Its drill, mast and battery are the tools kind's (content/tools), not components. No core: Class 0, as the Dray. A broken boom slows it; the mast's loss of the scan is a later cut's, since no closed consequence names a sight."
+      }
+    }
+  }
+}

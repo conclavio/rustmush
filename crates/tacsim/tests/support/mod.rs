@@ -57,6 +57,11 @@ pub mod moon;
 pub mod rig;
 pub mod scripted;
 pub use api4_identity::Api4SealHashControl;
+/// **Doc 20 cut SM.2**: the mining sites stripped away for the v8-shaped lane variants.
+pub mod sites;
+/// **Doc 20 cut SM.3a**: Occator's rigs and the refit row stripped away for the v9-shaped
+/// lane variants.
+pub mod vehicles;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};

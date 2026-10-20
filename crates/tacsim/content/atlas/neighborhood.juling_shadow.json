@@ -1,0 +1,292 @@
+{
+  "manifest": {
+    "id": "neighborhood.juling_shadow",
+    "version": 1,
+    "kind": "neighborhood",
+    "digest": "97655785413243d6e9bac03a59d9af99a2db6bf7d0029db8cb87f969fad05c5a",
+    "requires": [
+      {
+        "id": "region.juling_shadow",
+        "version": 1
+      }
+    ]
+  },
+  "brief": {
+    "prose": "Juling Shadow lies under the shadowed wall of Juling crater, far south on Ceres, where the sun stays low and ice survives at the surface: the coldest of the Registry's open ground, its regolith frozen hard and glittering."
+  },
+  "entries": {
+    "neighborhood": {
+      "kind": "neighborhood",
+      "def": {
+        "region": "region.juling_shadow",
+        "locality": "locality.juling_shadow",
+        "name": "Juling Shadow",
+        "setting": "surface",
+        "representation": "authored",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            0
+          ],
+          [
+            2560,
+            2560
+          ],
+          [
+            0,
+            2560
+          ]
+        ],
+        "room_budget": {
+          "target": 1,
+          "maximum": 1
+        },
+        "hydration": {
+          "enabled": false,
+          "max_player_sites": 0
+        },
+        "resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350: the sites",
+          "style_guide": "Present tense, no second person, no named NPCs in a room desc. A site is a Registry pad on open ground: a cleared landing square, tie-down rings, a painted pad number, and the body's own ground around it. Nothing is built here but the pad; the horizon is close and the light is hard. Desc length medium (60-120 words); details are one or two sentences, dry, with a fact in them.",
+          "vocabulary": [
+            "pad",
+            "tie-down",
+            "regolith",
+            "ice",
+            "crater",
+            "rim",
+            "Registry",
+            "survey stake",
+            "block",
+            "commons",
+            "claim",
+            "Ceres",
+            "Vesta",
+            "Freeport",
+            "horizon"
+          ],
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "shields",
+            "stardate",
+            "hangar bay",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "room.pad": {
+      "kind": "room",
+      "def": {
+        "name": "Juling Shadow Pad",
+        "short_desc": "A cleared landing square in the long shadow of Juling's crater wall, the ground frozen and glittering.",
+        "desc": "The pad sits in shadow most of the day, a cleared square with tie-down rings and the Registry number FR-31 painted on in heat-safe orange. Ice lies in the open here: the ground around the square glitters where lamps catch it, and frost rims every rut. To the north the wall of Juling rises dark and steep between the pad and the low sun, and the pad sits at its foot. The cold is the first thing the hull's sensors log. The horizon to the south is low and grey.",
+        "surface": "ground",
+        "footprint": {
+          "rect": [
+            [
+              1260,
+              1260
+            ],
+            [
+              1300,
+              1300
+            ]
+          ]
+        },
+        "kind": "outdoor",
+        "markers": [
+          "port.dock"
+        ],
+        "details": {
+          "frost": "A thin white crust on the shaded faces of every stone. It sublimes in a lamp's beam and comes back when the lamp moves on.",
+          "crater wall": "Juling's north wall, dark and layered, its upper edge lit while its foot stays in shadow."
+        }
+      }
+    },
+    "feature.crater_1": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            685,
+            2000
+          ],
+          [
+            669,
+            2050
+          ],
+          [
+            626,
+            2081
+          ],
+          [
+            574,
+            2081
+          ],
+          [
+            531,
+            2050
+          ],
+          [
+            515,
+            2000
+          ],
+          [
+            531,
+            1950
+          ],
+          [
+            574,
+            1919
+          ],
+          [
+            626,
+            1919
+          ],
+          [
+            669,
+            1950
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    },
+    "feature.crater_2": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            2160,
+            600
+          ],
+          [
+            2139,
+            665
+          ],
+          [
+            2084,
+            705
+          ],
+          [
+            2016,
+            705
+          ],
+          [
+            1961,
+            665
+          ],
+          [
+            1940,
+            600
+          ],
+          [
+            1961,
+            535
+          ],
+          [
+            2016,
+            495
+          ],
+          [
+            2084,
+            495
+          ],
+          [
+            2139,
+            535
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    },
+    "feature.crater_3": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            2015,
+            2150
+          ],
+          [
+            2003,
+            2188
+          ],
+          [
+            1970,
+            2212
+          ],
+          [
+            1930,
+            2212
+          ],
+          [
+            1897,
+            2188
+          ],
+          [
+            1885,
+            2150
+          ],
+          [
+            1897,
+            2112
+          ],
+          [
+            1930,
+            2088
+          ],
+          [
+            1970,
+            2088
+          ],
+          [
+            2003,
+            2112
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    }
+  }
+}

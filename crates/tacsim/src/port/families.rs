@@ -1,7 +1,7 @@
 //! **The port's typed families** (doc 18 cut IC5; §4.2 "the ticket", §4.3
 //! "Finite seeded stock", §4.8 "the seams", D-18-11, D-18-33, D-18-46).
 //!
-//! Two production families, both registered unconditionally (a family is a fact
+//! Three production families, all registered unconditionally (a family is a fact
 //! about the composition, and hydrating a later cut's records must never depend
 //! on a flag):
 //!
@@ -13,6 +13,13 @@
 //!   (D-18-11 as extended by D-18-46). Written in the burn's own bundle by IC9's
 //!   `tacsim_port_burn` (`crate::port::burn`) and read by the launch arm
 //!   (`crate::port::voyage`).
+//! - **`tacsim.excursion`** (doc 20 cut SM.3b; §8, D-20-11) — one
+//!   [`crate::surface::excursion::RigRecord`] per rig, keyed by its terrain vehicle
+//!   ([`crate::surface::excursion::RigKey`]): the act in flight with the charge it
+//!   reserved, the open excursion, the lazy charge and the last finished act. Written
+//!   in the start's and the finish's own bundles (`tacsim_surface_act`,
+//!   `tacsim_surface_done`, `crate::surface::act`) and read by the `tacsim.surface`
+//!   tick, `+tv` and the departure's bay gate.
 //!
 //! The ticket carries the whole [`PassagePlan`] of §4.8, **declared here as
 //! data** (lead ruling L6): IC9's `port/passage.rs` writes it, but the ticket's
@@ -73,6 +80,18 @@ pub struct LegPlan {
     pub t0: i64,
     /// The IC second the leg ends: `t0 + secs`.
     pub t1: i64,
+    /// **Doc 20 cut SM.2 (§3.3, D-20-3)** — the ascent Δv this leg pays, m/s:
+    /// √(g·R) of the site's body at each end of the leg that is a site (a
+    /// [`crate::pack::SITE_ROLE`] location), summed; 0 for a leg with no site end.
+    /// A port end (Ceres Freeport, every station) pays none. Frozen with the plan
+    /// (T1), so the burn's prepare recomputes the same tonnes from the ticket.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub ascent_mps: u32,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 /// §4.8, D-18-44/46: what `plan_passage` (cut IC9, `port/passage.rs`) returns and what the
@@ -100,6 +119,11 @@ pub struct PassagePlan {
     /// of the hull's thrust; a plan from before the cut reads full thrust.
     #[serde(default = "full_throttle")]
     pub throttle_permille: u32,
+    /// **Doc 20 cut SM.2 (§3.3 as amended, Q-20-7; the SM.2 brief's lead ruling
+    /// 5)** — the crew-days of the stay on a site charged at this lift, included in
+    /// `crew_days`; 0 for every other passage, and then absent on the wire.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub landed_crew_days: u32,
 }
 
 /// The throttle a plan without one was flown at: full thrust.
@@ -145,6 +169,10 @@ impl PassagePlan {
             {
                 return Err("each leg of a passage plan begins where the last one ended".to_owned());
             }
+        }
+        // Doc 20 cut SM.2: the stay's charge is part of the crew-days, never more.
+        if self.landed_crew_days > self.crew_days {
+            return Err("a passage plan's landed crew-days are part of its crew-days".to_owned());
         }
         match last.t1.checked_sub(self.depart_ic) {
             Some(total) if total == self.total_s && total > 0 => Ok(()),
@@ -442,13 +470,16 @@ impl StockReceipt {
 
 // ---- the families and the handles ------------------------------------------
 
-/// The port's two production family handles.
+/// The port's three production family handles.
 #[derive(Clone, Debug)]
 pub struct PortFamilies {
     /// `tacsim.port_stock`.
     pub port_stock: StateFamilyHandle<StockIssueId, StockReceipt>,
     /// `tacsim.ticket`.
     pub tickets: StateFamilyHandle<TicketId, Ticket>,
+    /// **`tacsim.excursion`** (doc 20 cut SM.3b; §8): one rig record per terrain vehicle.
+    pub excursions:
+        StateFamilyHandle<crate::surface::excursion::RigKey, crate::surface::excursion::RigRecord>,
 }
 
 /// Published in module state by `crate::port_tick::register` — read-only capabilities, the
@@ -466,6 +497,21 @@ pub struct PortHandles {
     /// exactly when its provider registered (the inventory cell filled and the burn table
     /// built), so `+ship/undock` refuses `UNDOCK_UNWIRED` on a roster without it.
     pub burn: Option<mush_core::DefinitionRef>,
+    /// **Doc 20 cut SM.3b**: the registered `tacsim_surface_act` action (every act's start,
+    /// `crate::surface::act`); `Some` exactly when its provider registered (the inventory
+    /// cell filled and the tools table built — the burn rule), so every `+tv` act answers
+    /// `TV_UNWIRED` on a roster without it.
+    pub surface_act: Option<mush_core::DefinitionRef>,
+    /// **Doc 20 cut SM.3b**: the registered `tacsim_surface_done` action (every act's
+    /// finish, submitted by the `tacsim.surface` tick as the operator); `Some` exactly
+    /// when its provider registered.
+    pub surface_done: Option<mush_core::DefinitionRef>,
+    /// **Doc 20 cut SM.3b** (finding F5): the one tools table the surface providers, the
+    /// command's preview, `+tv` status and the departure's bay gate read — the battery
+    /// has one source. `None` when the table did not build (logged; the providers are
+    /// then unregistered and the verb answers `TV_UNWIRED`).
+    pub surface_tools:
+        Option<std::sync::Arc<BTreeMap<CanonicalId, crate::definitions::tools::ToolDef>>>,
 }
 
 pub(crate) fn canonical(text: &str) -> Result<CanonicalId, ModError> {
@@ -492,7 +538,8 @@ pub(crate) fn family_descriptor(
     .map_err(|error| ModError::msg(error.to_string()))
 }
 
-/// Register the two production families (doc 18 cut IC5), unconditionally.
+/// Register the three production families (doc 18 cut IC5; doc 20 cut SM.3b's
+/// `tacsim.excursion`), unconditionally.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError> {
     let port_stock = reg.state_family::<StockIssueId, StockReceipt, _, _, _, _>(
         family_descriptor(
@@ -512,9 +559,31 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
         |value: &Ticket| value.check(),
         |value: &Ticket| serde_json::to_value(value).map_err(|e| e.to_string()),
     )?;
+    // Doc 20 cut SM.3b (§8, D-20-11): the rigs' excursion records.
+    let excursions = reg.state_family::<
+        crate::surface::excursion::RigKey,
+        crate::surface::excursion::RigRecord,
+        _,
+        _,
+        _,
+        _,
+    >(
+        family_descriptor(
+            crate::surface::excursion::EXCURSION_FAMILY,
+            "tacsim.excursion_key.v1",
+            "tacsim.excursion",
+        )?,
+        |key: &crate::surface::excursion::RigKey| Ok(key.key_text()),
+        |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+        |value: &crate::surface::excursion::RigRecord| value.check(),
+        |value: &crate::surface::excursion::RigRecord| {
+            serde_json::to_value(value).map_err(|e| e.to_string())
+        },
+    )?;
     Ok(PortFamilies {
         port_stock,
         tickets,
+        excursions,
     })
 }
 
@@ -624,6 +693,7 @@ mod tests {
             secs,
             t0,
             t1: t0 + i64::from(secs),
+            ascent_mps: 0,
         }
     }
 
@@ -658,6 +728,7 @@ mod tests {
                 burn_t: 41,
                 crew_days: 21,
                 throttle_permille: 1_000,
+                landed_crew_days: 0,
             },
             order: Some(9),
             attempt: 1,

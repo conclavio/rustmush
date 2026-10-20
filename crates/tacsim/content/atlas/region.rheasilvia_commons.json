@@ -1,0 +1,91 @@
+{
+  "manifest": {
+    "id": "region.rheasilvia_commons",
+    "version": 1,
+    "kind": "region",
+    "digest": "2ead006147af1a5daddfdc2d86f6e43e89c911e78e8046ba0dcea3aa77b74466",
+    "requires": []
+  },
+  "brief": {
+    "prose": "Rheasilvia Commons is the Freeport Registry's only ground off Ceres: open commons on the floor of Rheasilvia, the great basin at Vesta's south pole, reached by a passage of days. The basin floor is metal-rich rock under a thin dust, ridged and broken, and nothing is built on it but the pad."
+  },
+  "entries": {
+    "region.rheasilvia_commons": {
+      "kind": "region",
+      "def": {
+        "name": "Rheasilvia Commons",
+        "kind": "surface",
+        "body": "vesta",
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            2560
+          ]
+        ],
+        "datum_m": 0,
+        "background": {
+          "surface": "regolith",
+          "mix": [
+            [
+              "ice",
+              10
+            ],
+            [
+              "rock",
+              30
+            ]
+          ],
+          "relief_cm": 150,
+          "relief_period_cm": 1000,
+          "seed": 2606
+        },
+        "ground_resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350",
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "locality.rheasilvia_commons": {
+      "kind": "locality",
+      "def": {
+        "region": "region.rheasilvia_commons",
+        "name": "Rheasilvia Commons",
+        "kind": "extraction",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            0
+          ],
+          [
+            2560,
+            2560
+          ],
+          [
+            0,
+            2560
+          ]
+        ]
+      }
+    }
+  }
+}

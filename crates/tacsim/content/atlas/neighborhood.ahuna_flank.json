@@ -1,0 +1,235 @@
+{
+  "manifest": {
+    "id": "neighborhood.ahuna_flank",
+    "version": 1,
+    "kind": "neighborhood",
+    "digest": "9540fa38dd76ba938a3a0ec8eff9908cb17a892123fdcc65df07617781d72614",
+    "requires": [
+      {
+        "id": "region.ahuna_flank",
+        "version": 1
+      }
+    ]
+  },
+  "brief": {
+    "prose": "Ahuna Flank is open ground on the lower slope of Ahuna Mons, the lone mountain of Ceres, south of the equator: streaked bright slopes above, a broken apron of rock below, and a Registry pad cut into the gentlest part of it."
+  },
+  "entries": {
+    "neighborhood": {
+      "kind": "neighborhood",
+      "def": {
+        "region": "region.ahuna_flank",
+        "locality": "locality.ahuna_flank",
+        "name": "Ahuna Flank",
+        "setting": "surface",
+        "representation": "authored",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            0
+          ],
+          [
+            2560,
+            2560
+          ],
+          [
+            0,
+            2560
+          ]
+        ],
+        "room_budget": {
+          "target": 1,
+          "maximum": 1
+        },
+        "hydration": {
+          "enabled": false,
+          "max_player_sites": 0
+        },
+        "resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350: the sites",
+          "style_guide": "Present tense, no second person, no named NPCs in a room desc. A site is a Registry pad on open ground: a cleared landing square, tie-down rings, a painted pad number, and the body's own ground around it. Nothing is built here but the pad; the horizon is close and the light is hard. Desc length medium (60-120 words); details are one or two sentences, dry, with a fact in them.",
+          "vocabulary": [
+            "pad",
+            "tie-down",
+            "regolith",
+            "ice",
+            "crater",
+            "rim",
+            "Registry",
+            "survey stake",
+            "block",
+            "commons",
+            "claim",
+            "Ceres",
+            "Vesta",
+            "Freeport",
+            "horizon"
+          ],
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "shields",
+            "stardate",
+            "hangar bay",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "room.pad": {
+      "kind": "room",
+      "def": {
+        "name": "Ahuna Flank Pad",
+        "short_desc": "A cleared landing square on the lower slope of Ahuna Mons, the mountain's bright streaks rising to the north.",
+        "desc": "The pad is cut into the slope and levelled with fused regolith, tie-down rings around its edge and the Registry number FR-22 painted in its middle. Uphill to the north the flank of Ahuna Mons climbs steeply, streaked with bright salt that runs down its sides in long fingers. Downhill the ground breaks into blocks and rubble the mountain has shed. The light off the streaks is hard and white. The horizon to the south is close and stony.",
+        "surface": "ground",
+        "footprint": {
+          "rect": [
+            [
+              1260,
+              1260
+            ],
+            [
+              1300,
+              1300
+            ]
+          ]
+        },
+        "kind": "outdoor",
+        "markers": [
+          "port.dock"
+        ],
+        "details": {
+          "bright streaks": "Salt and ice brought up from below and left on the slope. In low sun they shine like wet paint.",
+          "rubble": "Blocks shed from the mountain's flank, some the size of a cart. The Registry's survey marks the safe lanes between them with orange paint."
+        }
+      }
+    },
+    "feature.crater_1": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            550,
+            450
+          ],
+          [
+            531,
+            509
+          ],
+          [
+            481,
+            545
+          ],
+          [
+            419,
+            545
+          ],
+          [
+            369,
+            509
+          ],
+          [
+            350,
+            450
+          ],
+          [
+            369,
+            391
+          ],
+          [
+            419,
+            355
+          ],
+          [
+            481,
+            355
+          ],
+          [
+            531,
+            391
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    },
+    "feature.crater_2": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            2225,
+            1100
+          ],
+          [
+            2211,
+            1144
+          ],
+          [
+            2173,
+            1171
+          ],
+          [
+            2127,
+            1171
+          ],
+          [
+            2089,
+            1144
+          ],
+          [
+            2075,
+            1100
+          ],
+          [
+            2089,
+            1056
+          ],
+          [
+            2127,
+            1029
+          ],
+          [
+            2173,
+            1029
+          ],
+          [
+            2211,
+            1056
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    }
+  }
+}

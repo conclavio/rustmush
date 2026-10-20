@@ -56,9 +56,7 @@ use crate::port::orders::{
 use crate::port::passage::{PlanError, choose_route};
 use crate::port::ship::{Berth, HullView, berth_of, hull_view};
 use crate::port::voyage::PassageOptions;
-use crate::port::voyage::{
-    NO_ROUTE, OVERLOADED, STORES_SHORT, TANK_SHORT, narrate_hull, tonnes_one_decimal,
-};
+use crate::port::voyage::{NO_ROUTE, OVERLOADED, narrate_hull, tonnes_one_decimal};
 use crate::port::when::{plan_instant, resolve_due};
 use crate::port_tick::{Fire, PortTickState, Step, SwapRefused, gone, notify, read_pool};
 use crate::sky::Sky;
@@ -727,6 +725,11 @@ pub(crate) struct Planner<'w> {
     pub(crate) spec: HullSpec,
     pub(crate) pack: &'w RulesPack,
     pub(crate) sky: Sky,
+    /// **Doc 20 cut SM.3a**: what the rigs in the hull's bay weigh, kilograms
+    /// ([`crate::port::voyage::carried_of`]); [`Planner::plan`] adds it to every
+    /// projected payload, so the queue plans a Dray-P with its rigs as the filing
+    /// does. Zero from [`planner`]; the callers set it ([`Planner::carrying`]).
+    pub(crate) carried_kg: u64,
 }
 
 impl Planner<'_> {
@@ -746,6 +749,10 @@ impl Planner<'_> {
             .drive
             .clone()
             .at_throttle(options.throttle_permille);
+        // Doc 20 cut SM.3a: the bay's rigs ride every projected payload.
+        let payload_kg = payload_kg
+            .checked_add(self.carried_kg)
+            .ok_or(PlanError::Overflow)?;
         choose_route(
             &self.sky,
             self.pack,
@@ -777,14 +784,32 @@ pub(crate) fn planner<'w>(w: &'w World, view: &HullView<'_>) -> Result<Planner<'
     let loaded = store
         .pack(&lane, version)
         .ok_or_else(|| format!("the lane at version {version} is not loaded"))?;
-    let (_, spec) = hull_spec_of(store.definitions(), goods, &view.port.programme.unit)?;
+    // Doc 20 cut SM.3a (reviewer F6): a hull whose unit record boot held plans
+    // nothing; otherwise its own unit (the Dray-P on a refitted hull).
+    if view.unit_held {
+        return Err(PlanError::Unreadable {
+            what: format!("hull #{}'s unit record (held at boot)", view.hull().0),
+        }
+        .to_string());
+    }
+    let (_, spec) = hull_spec_of(store.definitions(), goods, &view.unit)?;
     let sky = Sky::from_pack(&loaded.pack, &store.config().time.ephemeris);
     Ok(Planner {
         goods,
         spec,
         pack: &loaded.pack,
         sky,
+        carried_kg: 0,
     })
+}
+
+impl Planner<'_> {
+    /// **The planner with the bay's rigs aboard** (doc 20 cut SM.3a): `view`'s
+    /// [`crate::port::voyage::carried_of`] weight added to every plan.
+    pub(crate) fn carrying(mut self, ctx: &Ctx<'_>, view: &HullView<'_>) -> Result<Self, String> {
+        self.carried_kg = crate::port::voyage::carried_of(ctx, view)?.1;
+        Ok(self)
+    }
 }
 
 /// **The next departure's fill targets** from queue place `from` (inclusive).
@@ -1093,7 +1118,7 @@ pub(crate) fn plan_queue(
             .replace("{name}", &name)
             .replace(crate::port::voyage::NOTHING_BURNED, ""),
     ];
-    let Ok(planner) = planner(w, view) else {
+    let Ok(planner) = planner(w, view).and_then(|planner| planner.carrying(ctx, view)) else {
         return dark;
     };
     let goods = planner.goods;
@@ -1318,40 +1343,81 @@ pub(crate) fn plan_queue(
                     ));
                     continue;
                 };
+                // Doc 20 cut SM.3a: the projected hold plus the bay's rigs, as the filing
+                // counts them.
                 let Some(payload) =
                     payload_of(goods, &readings, occupants, planner.spec.allowance_kg)
+                        .and_then(|payload| payload.checked_add(planner.carried_kg))
                 else {
                     return dark;
                 };
-                let tank = aboard_of(goods, &readings, Consumable::Propellant);
-                let locker = aboard_of(goods, &readings, Consumable::Provisions);
-                match planner.plan(routes, payload, occupants, plan_instant(w, due), &options) {
-                    Ok(plan) => {
+                // Doc 20 cut SM.2 (the SM.2 fixer, the lead's item 3): the dry run reads the
+                // filing's own checks — the site gate (`SITE_CLOSED`), the planner's
+                // refusals, the stay's charge, the leg home a site holds back, the tank and
+                // the locker (`voyage::site_gate`, `plan_refusal`, `hold_back`) — on the
+                // projected pools, so `+ship/orders` reads the refusal the fire would hold
+                // with.
+                let dest = crate::port::voyage::Destination {
+                    venue: to.clone(),
+                    port: port.clone(),
+                    routes: routes.clone(),
+                };
+                let site = match crate::port::voyage::site_gate(w, &dest) {
+                    Ok(site) => site.map(|(_, site)| site),
+                    Err(closed) => {
+                        lines.push(format!(
+                            "  Order {id}, depart for {port}: it would hold: {}.",
+                            inline_reason(&closed.line)
+                        ));
+                        continue;
+                    }
+                };
+                // Doc 20 cut SM.3b (lead ruling 7): the filing's bay gate, read now.
+                if let Err(refused) = crate::port::voyage::bay_gate(ctx, view, &name) {
+                    lines.push(format!(
+                        "  Order {id}, depart for {port}: it would hold: {}.",
+                        inline_reason(&refused.line)
+                    ));
+                    continue;
+                }
+                let Ok(basis) = crate::port::voyage::basis(ctx, view, occupants) else {
+                    return dark;
+                };
+                let mut basis = crate::port::voyage::apply_options(basis, &options);
+                basis.payload = payload;
+                basis.tank = aboard_of(goods, &readings, Consumable::Propellant);
+                basis.locker = aboard_of(goods, &readings, Consumable::Provisions);
+                basis.depart_ic = plan_instant(w, due);
+                match crate::port::voyage::plan_on(w, &basis, routes) {
+                    Ok(mut plan) => {
                         // The refusal's sentence inside the line: a dry run burns
                         // nothing, so "Nothing was burned." goes (`plan_dark`'s rule),
                         // and the line's own full stop ends it.
-                        let hold = if tank < plan.burn_t {
-                            format!(
-                                "; it would hold: {}",
-                                inline_reason(
-                                    &TANK_SHORT
-                                        .replace("{port}", &port)
-                                        .replace("{burn}", &plan.burn_t.to_string())
-                                        .replace("{tank}", &tank.to_string())
-                                )
-                            )
-                        } else if locker < u64::from(plan.crew_days) {
-                            format!(
-                                "; it would hold: {}",
-                                inline_reason(
-                                    &STORES_SHORT
-                                        .replace("{port}", &port)
-                                        .replace("{days}", &plan.crew_days.to_string())
-                                        .replace("{have}", &locker.to_string())
-                                )
-                            )
-                        } else {
-                            String::new()
+                        let held = crate::port::voyage::hold_back(
+                            w,
+                            view.hull(),
+                            &name,
+                            &basis,
+                            &port,
+                            def,
+                            site,
+                            &mut plan,
+                        );
+                        let hold = match held {
+                            Ok(_) => String::new(),
+                            Err(refused)
+                                if refused.kind
+                                    == crate::port::voyage::DepartRefusalKind::PlanDark =>
+                            {
+                                lines.push(format!(
+                                    "  Order {id}, depart for {port}: it would hold: {}",
+                                    HELD_FILL_PLAN.replace("{port}", &port)
+                                ));
+                                continue;
+                            }
+                            Err(refused) => {
+                                format!("; it would hold: {}", inline_reason(&refused.line))
+                            }
                         };
                         lines.push(format!(
                             "  Order {id}, depart for {port}: payload {} t, burn {} t, {} crew-days{hold}.",
@@ -1376,10 +1442,17 @@ pub(crate) fn plan_queue(
                                 .replace("{ceiling}", &(ceiling_kg / 1_000).to_string())
                         )
                     )),
-                    Err(_) => lines.push(format!(
-                        "  Order {id}, depart for {port}: it would hold: {}",
-                        HELD_FILL_PLAN.replace("{port}", &port)
-                    )),
+                    // Doc 20 cut SM.2 (D-20-3): the landing law, as the fire holds it.
+                    Err(error) => match crate::port::voyage::plan_refusal(w, &name, error) {
+                        Ok(refused) => lines.push(format!(
+                            "  Order {id}, depart for {port}: it would hold: {}.",
+                            inline_reason(&refused.line)
+                        )),
+                        Err(_) => lines.push(format!(
+                            "  Order {id}, depart for {port}: it would hold: {}",
+                            HELD_FILL_PLAN.replace("{port}", &port)
+                        )),
+                    },
                 }
             }
         }
@@ -2662,7 +2735,7 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
                     &HELD_FILL_PLAN.replace("{port}", &planning_port),
                 );
             };
-            let planner = match planner(w, &view) {
+            let planner = match planner(w, &view).and_then(|planner| planner.carrying(ctx, &view)) {
                 Ok(planner) => planner,
                 Err(error) => {
                     planning_hold(&mut out, &error);
@@ -2961,7 +3034,11 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
                         | K::Overloaded
                         | K::TankShort
                         | K::StoresShort
-                        | K::PortClosed => refusal.line.clone(),
+                        | K::PortClosed
+                        | K::Landing
+                        | K::SiteClosed
+                        | K::TvOut
+                        | K::HopperLoaded => refusal.line.clone(),
                         K::PlanDark | K::VoyageDark | K::Unwired => {
                             if state.depart_dark_warned.insert(hull.0) {
                                 tracing::error!(hull = hull.0, order = id, line = %refusal.line, "tacsim: a queued departure meets a dark plan; it waits");
@@ -3305,6 +3382,7 @@ mod tests {
             burn_t,
             crew_days,
             throttle_permille: 1_000,
+            landed_crew_days: 0,
         }
     }
 
@@ -3920,7 +3998,7 @@ mod tests {
     /// without a second full stop.
     #[test]
     fn ic11_a_dry_run_hold_reads_as_one_sentence() {
-        let line = TANK_SHORT
+        let line = crate::port::voyage::TANK_SHORT
             .replace("{port}", "Ceres Freeport")
             .replace("{burn}", "37")
             .replace("{tank}", "1");

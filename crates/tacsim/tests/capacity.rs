@@ -183,7 +183,12 @@ fn ic2_the_locker_limits_agree_on_crew_days() {
 fn ic2_the_catalog_rows_derive_from_the_goods_table() {
     let table = table();
     let entries = table.catalog_entries().expect("the rows derive");
-    assert_eq!(entries.len(), 8, "six rows and doc 19 cut A.8's two");
+    // Doc 20 cut SM.3a: and its four ores (was 8).
+    assert_eq!(
+        entries.len(),
+        12,
+        "six rows, doc 19 cut A.8's two and doc 20 cut SM.3a's four"
+    );
     for (entry, good) in entries.iter().zip(&table.goods) {
         mush_market::check_entry(entry).unwrap_or_else(|error| panic!("{}: {error:?}", good.id));
         assert_eq!(entry.catalog.code.as_str(), good.id.as_str());
@@ -473,18 +478,31 @@ fn lane_ports() -> BTreeMap<String, tacsim::port::PortDef> {
 #[test]
 fn ic8_the_posted_prices_make_the_both_limits_load_optimal() {
     let (goods, cargo) = (table(), compartment("cargo"));
-    let ports = lane_ports();
+    let mut ports = lane_ports();
+    // Doc 20 cut SM.2: the subject is the trade graph; a mining site trades no hold good
+    // and is no trade port, so the six site ports (and Ceres's routes to them) are left out.
+    let site_venues: Vec<CanonicalId> = ports
+        .values()
+        .filter(|def| def.site.is_some())
+        .map(|def| def.venue.clone())
+        .collect();
+    assert_eq!(site_venues.len(), 6, "the six sites");
+    ports.retain(|_, def| def.site.is_none());
+    let site_venues = &site_venues;
     let pairs: Vec<(&str, &str)> = ports
         .iter()
         .flat_map(|(from, origin)| {
             let ports = &ports;
-            origin.routes.keys().map(move |venue| {
+            origin.routes.keys().filter_map(move |venue| {
+                if site_venues.contains(venue) {
+                    return None;
+                }
                 let to = ports
                     .iter()
                     .find(|(_, def)| &def.venue == venue)
                     .map(|(id, _)| id.as_str())
                     .unwrap_or_else(|| panic!("{from} lists {venue}, which no port is"));
-                (from.as_str(), to)
+                Some((from.as_str(), to))
             })
         })
         .collect();

@@ -99,6 +99,18 @@
 //!   (dormancy after `dormancy_real_days` without a departure, L3, and the
 //!   return of a hull whose charter ended elsewhere); the hold vault is re-homed
 //!   to the Trust, never closed (L5).
+//!
+//! **Doc 20 cut SM.3a** — the terrain vehicle and its carrier (doc 20 §4.1–§4.3):
+//!
+//! - [`vehicle`] — `PortApplier` part (h): Occator's rig pool laid up in a
+//!   staff-only shed, each rig's unit, cab and hopper spaces, its hopper vault
+//!   (owned by the system principal `tacsim.vehicles`), its placement and its
+//!   title; the readiness report's (ungated) vehicles line and the bay queries;
+//! - [`tv`] — `+tv` and `+tv/lease`: the lease record (`tacsim:tvlease:{lease}`),
+//!   the lease and the return at Occator's counter, the term settle and the
+//!   repossession a charter's end makes;
+//! - [`refit`] — `+coop/refit prospector|standard`: the Co-op's yard re-binds a
+//!   chartered hull's unit, in place, between the Dray and the Dray-P.
 
 pub mod apply;
 pub mod board;
@@ -126,8 +138,14 @@ pub mod price;
 pub mod proceeds;
 pub mod readiness;
 pub mod recall;
+pub mod refit;
 pub mod ship;
+/// Doc 20 cut SM.2: a mining site's pure reads, its lay-up and its stores line
+/// (doc 20 §3.1, §3.3, §3.4).
+pub mod site;
 pub mod stock;
+pub mod tv;
+pub mod vehicle;
 pub mod vendor;
 pub mod voyage;
 pub mod when;
@@ -146,9 +164,10 @@ pub use coop::{
     charter_tenant, enrol_gate, gated, helm_holder, helm_of, live_charter, programme_port, shuts,
 };
 pub use def::{
-    AskDef, BidDef, EmergencyDef, MAX_EMERGENCY_GOODS, MAX_EMERGENCY_RATIO_PERMILLE,
-    MAX_PREMIUM_PERMILLE, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR, PORT_ROOM_ROLES, PortDef,
-    PortOrgDef, ProgrammeDef, ReachPremiumDef, StockRowDef, VendorDef, check_ports, room_key,
+    AskDef, BLOCK_LETTERS, BidDef, BlockDef, BlockTerms, EmergencyDef, MAX_EMERGENCY_GOODS,
+    MAX_EMERGENCY_RATIO_PERMILLE, MAX_PREMIUM_PERMILLE, MAX_TRANCHE_MAJOR, PORT_MINT_CAP_MAJOR,
+    PORT_ROOM_ROLES, PortDef, PortOrgDef, ProgrammeDef, ReachPremiumDef, SITE_BLOCK_COUNT, SiteDef,
+    SiteTenureDef, StockRowDef, Tenure, VehiclesDef, VendorDef, Zone, check_ports, room_key,
     tranches,
 };
 pub use executor::{
@@ -162,8 +181,8 @@ pub use families::{
     TicketId,
 };
 pub use map::{
-    BidRow, ClerkRow, HullRow, PORT_MAP_PREFIX, PortMap, PortMapState, PortOrgRow, StockRow,
-    TrancheRow, VendorRow, port_map_key,
+    BidRow, ClerkRow, HullRow, PORT_MAP_PREFIX, PortMap, PortMapState, PortOrgRow, RigRow, SiteRow,
+    StockRow, TrancheRow, VehiclesRow, VendorRow, port_map_key,
 };
 pub use market::{
     HOLD_CLEARED, HOLD_ELSEWHERE, HOLD_NOT_HERE, HOLD_PAPERS_DARK, HOLD_UNDER_WAY, HoldPlan,
@@ -177,10 +196,12 @@ pub use orders::{
     What, orders_key, orders_key_owner, orders_state,
 };
 pub use passage::{
-    DAY_SECS, DEFAULT_THROTTLE_PERMILLE, DriveLaw, FlipProfile, G0_MPS2, HullDrive,
-    INTERCEPT_PASSES, KEEP_OUT_AU, MAX_THROTTLE_PERMILLE, MIN_THROTTLE_PERMILLE, PlanError,
-    RoutePolicy, choose_route, crew_days, detour_km, flip_accel_mps2, flip_profile,
-    intercept_passes, leg_distance_km, leg_seconds, passage_burn, payload_kg, plan_passage,
+    CarriedRig, DAY_SECS, DEFAULT_THROTTLE_PERMILLE, DriveLaw, FlipProfile, G0_MPS2, HomeReserve,
+    HullDrive, INTERCEPT_PASSES, KEEP_OUT_AU, LANDING_TWR_PERMILLE, MAX_THROTTLE_PERMILLE,
+    MIN_THROTTLE_PERMILLE, PlanError, RoutePolicy, SITE_MIN_BURN_T, ascent_mps, carried_kg,
+    choose_route, crew_days, detour_km, flip_accel_mps2, flip_profile, home_reserve,
+    intercept_passes, landing_twr_permille, least_landing_throttle, leg_distance_km, leg_seconds,
+    passage_burn, payload_kg, plan_passage, route_landing_floor,
 };
 pub use price::{
     DAY_S, EMERGENCY_CHECK_SECS, EmergencyReading, MAX_SCAN_DAYS, MAX_SCAN_SAMPLES, Reach,

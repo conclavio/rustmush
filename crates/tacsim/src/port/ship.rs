@@ -46,7 +46,7 @@ use mush_sim::data::{SpatialParent, SpatialState};
 
 use crate::commands::NOT_ENABLED;
 use crate::definitions::content::LANE_PACK;
-use crate::definitions::{GoodsTable, InteriorDef, LogisticsDef};
+use crate::definitions::{BayDef, GoodsTable, InteriorDef, LogisticsDef};
 use crate::port::capacity::Compartment;
 use crate::port::coop::{
     EnrolmentStatus, NO_CHARTER, ProgrammePort, Standing, helm_of, name_of, port_name,
@@ -73,7 +73,8 @@ pub const SHIP_HELP: &str = "+ship  --  Your chartered Dray: where it is, what i
      the payload, the burn, the stores and the passage time. It writes nothing.\n+ship/undock \
      <port>  from aboard your Dray, docked, file the passage and take her out now; the burn is \
      committed when the clearance is granted; to leave at a later hour, queue +ship/order \
-     depart.\n+ship/orders  the sailing plan: each order, its state, the next one due (UTC, IC \
+     depart.\n+ship/lift <port>  the same as +ship/undock: the word for lifting off a pad (or \
+     out of a berth).\n+ship/orders  the sailing plan: each order, its state, the next one due (UTC, IC \
      and real time), any hold, and the last eight lines of its log. It reads anywhere.\n\
      +ship/order sell <good> <qty|all> [min=<cr>] [short=partial|skip|hold] | buy <good> \
      <qty|fill> [max=<cr>] [short=…] | depart <port> [at=now|HH:MM|daily HH:MM|+Nh|+Nm] \
@@ -83,6 +84,11 @@ pub const SHIP_HELP: &str = "+ship  --  Your chartered Dray: where it is, what i
 
 /// The programme's one hull class (cut IC8 may read it from the spec).
 pub const HULL_CLASS: &str = "Dray";
+
+/// **The refitted hull's class word** (doc 20 cut SM.3a; D-20-7): a programme
+/// hull bound to a refit unit reads `Dray-P` wherever `+ship` and the status
+/// lines name its class ([`HullView::class_word`]).
+pub const HULL_CLASS_PROSPECTOR: &str = "Dray-P";
 
 /// **18a §3's status line, docked** (L18: with the mark): `{name}`, `{mark}`,
 /// `{port}` replaced.
@@ -143,6 +149,20 @@ pub const LEAVE_NOT_ABOARD: &str = "You are not aboard a Dray.";
 pub const LEAVE_WHERE: &str = "You can only leave by the {airlock}.";
 /// `+ship/leave` with the hull at no berth (`{name}` replaced).
 pub const LEAVE_SEALED: &str = "The {name} is not at a berth; the lock stays sealed.";
+/// **Doc 20 cut SM.2**: `+ship`'s first line on a site's pad: `{name}`, `{class}`, `{port}`.
+pub const SHIP_SETTLED: &str = "{name} ({class}): settled on the pad at {port}.";
+/// The same with a queued departure due: `{name}`, `{class}`, `{port}`, `{hhmm}`, `{span}`.
+pub const SHIP_SETTLED_DEPARTS: &str =
+    "{name} ({class}): settled on the pad at {port}; departs {hhmm} UTC (in {span}).";
+/// The hull room's status line on a pad: `{name}`, `{mark}`, `{port}`.
+pub const STATUS_SETTLED: &str = "Aboard the {name} ({mark}), settled on the pad at {port}.";
+/// The same with a queued departure due: `{name}`, `{mark}`, `{port}`, `{hhmm}`, `{span}`.
+pub const STATUS_SETTLED_DEPARTS: &str =
+    "Aboard the {name} ({mark}), settled on the pad at {port}; departs {hhmm} UTC (in {span}).";
+/// `+ship/leave` on a pad (decision 10: a soul left on a pad with no exits and no `+ic`
+/// route would be stranded when the pilot lifts): `{name}`, `{port}`.
+pub const LEAVE_PAD: &str =
+    "The {name} is settled on the pad at {port}; the lock stays sealed until she docks.";
 
 /// **One programme hull, resolved.**
 #[derive(Clone, Debug)]
@@ -151,7 +171,21 @@ pub struct HullView<'a> {
     pub port: ProgrammePort<'a>,
     /// The hull's map row.
     pub row: &'a HullRow,
-    /// The programme unit's interior template.
+    /// **The unit the hull reads as** (doc 20 cut SM.3a; D-20-7): its live
+    /// `tactics.unit` record's definition — the programme unit, or a refit unit
+    /// `+coop/refit` bound it to — else the programme unit
+    /// (`crate::port::hull::resolve_hull_unit`).
+    pub unit: CanonicalId,
+    /// **A unit record claims the hull but boot held it** (frozen, migrating,
+    /// quarantined; doc 20 cut SM.3a, reviewer F6). The view then reads the
+    /// programme unit's rooms so `airlock`, `stowage` and `room` still work, and
+    /// is **dark** wherever the unit matters: the planner answers
+    /// `PlanError::Unreadable`, the capacity check reads `Unreadable`, `+tv`
+    /// answers `TV_DARK` and `+coop/refit` `REFIT_FAILED`. Only on a world whose
+    /// latched programme authors `refits` (lane v10): on a v9 world a held
+    /// record reads as the programme unit, as before.
+    pub unit_held: bool,
+    /// That unit's interior template.
     pub interior: &'a InteriorDef,
     /// Its logistics block.
     pub logistics: &'a LogisticsDef,
@@ -181,15 +215,56 @@ impl HullView<'_> {
     pub fn stowage(&self) -> Option<ObjId> {
         self.room(&self.interior.store)
     }
+
+    /// **The hull's vehicle bay and its room** (doc 20 cut SM.3a): the first bay
+    /// its unit declares, and the room the row records for it. `None` on a
+    /// standard Dray (its unit declares no bay) or a bay never laid up.
+    #[must_use]
+    pub fn bay(&self) -> Option<(&BayDef, ObjId)> {
+        let bay = self.interior.bay()?;
+        Some((bay, self.room(&bay.room)?))
+    }
+
+    /// **Whether the hull is bound to a refit unit** — a Dray-P (doc 20 cut
+    /// SM.3a): its unit is not the programme's.
+    #[must_use]
+    pub fn is_prospector(&self) -> bool {
+        self.unit != self.port.programme.unit
+    }
+
+    /// **The class word** `+ship` and the status lines print (doc 20 cut SM.3a):
+    /// [`HULL_CLASS`], or [`HULL_CLASS_PROSPECTOR`] for a refitted hull.
+    #[must_use]
+    pub fn class_word(&self) -> &'static str {
+        if self.is_prospector() {
+            HULL_CLASS_PROSPECTOR
+        } else {
+            HULL_CLASS
+        }
+    }
 }
 
-/// The view for a programme port, a row.
+/// The view for a programme port, a row: the hull's own unit (doc 20 cut SM.3a,
+/// D-20-7; reviewer F6) and that unit's template and logistics.
 fn view_of<'a>(w: &'a World, port: ProgrammePort<'a>, row: &'a HullRow) -> Option<HullView<'a>> {
+    use crate::port::hull::{HullUnit, live_unit_id, resolve_hull_unit, unit_record_claims};
     let store = w.module_state::<TacsimStore>()?;
-    let (interior, logistics) = crate::port::hull::hull_spec(store, port.programme)?;
+    let hull = ObjId(row.hull);
+    // The held rule is a v10 world's: a v9 programme authors no refits, so a held
+    // record reads as the programme unit there, exactly as before.
+    let refits = !port.programme.refits.is_empty();
+    let (unit, unit_held) =
+        match resolve_hull_unit(live_unit_id(w, hull), unit_record_claims(w, hull)) {
+            HullUnit::Live(id) => (id, false),
+            HullUnit::Default => (port.programme.unit.clone(), false),
+            HullUnit::Held => (port.programme.unit.clone(), refits),
+        };
+    let (interior, logistics) = crate::port::hull::spec_for(store, &unit)?;
     Some(HullView {
         port,
         row,
+        unit,
+        unit_held,
         interior,
         logistics,
     })
@@ -326,16 +401,22 @@ pub fn status_line(w: &World, view: &HullView<'_>) -> String {
     ) {
         (Some(passage), _) => crate::port::voyage::status_passage_line(w, &passage),
         (None, Berth::Docked { def, .. }) => {
+            // Doc 20 cut SM.2: on a site's pad the hull is settled, not docked.
+            let (docked, departs) = if def.site.is_some() {
+                (STATUS_SETTLED, STATUS_SETTLED_DEPARTS)
+            } else {
+                (STATUS_DOCKED, STATUS_DOCKED_DEPARTS)
+            };
             // Doc 18 cut IC11: a queued departure due names its hour.
             match crate::port::orders::departs_at(w, view.hull()) {
-                Some(due) => STATUS_DOCKED_DEPARTS
+                Some(due) => departs
                     .replace("{port}", &port_name(def))
                     .replace("{hhmm}", &crate::port::voyage::utc_hhmm(due))
                     .replace(
                         "{span}",
                         &crate::port::voyage::real_span(due.saturating_sub(w.now())),
                     ),
-                None => STATUS_DOCKED.replace("{port}", &port_name(def)),
+                None => docked.replace("{port}", &port_name(def)),
             }
         }
         (None, Berth::UnderWay) => {
@@ -354,22 +435,28 @@ fn ship_line(w: &World, view: &HullView<'_>) -> String {
     if let Some(passage) = crate::port::voyage::passage_of(w, view.hull()) {
         return crate::port::voyage::ship_passage_line(w, &passage)
             .replace("{name}", &name_of(w, view.hull()))
-            .replace("{class}", HULL_CLASS);
+            .replace("{class}", view.class_word());
     }
     let template = match berth_of(w, view.hull()) {
         Berth::Docked { map, def } => {
             let gallery = map
                 .presentation
                 .map_or_else(String::new, |g| name_of(w, ObjId(g)));
+            // Doc 20 cut SM.2: on a site's pad the hull is settled, not docked.
+            let (docked, departs) = if def.site.is_some() {
+                (SHIP_SETTLED, SHIP_SETTLED_DEPARTS)
+            } else {
+                (SHIP_DOCKED, SHIP_DOCKED_DEPARTS)
+            };
             // Doc 18 cut IC11: a queued departure due names its hour.
             let template = match crate::port::orders::departs_at(w, view.hull()) {
-                Some(due) => SHIP_DOCKED_DEPARTS
+                Some(due) => departs
                     .replace("{hhmm}", &crate::port::voyage::utc_hhmm(due))
                     .replace(
                         "{span}",
                         &crate::port::voyage::real_span(due.saturating_sub(w.now())),
                     ),
-                None => SHIP_DOCKED.to_owned(),
+                None => docked.to_owned(),
             };
             template
                 .replace("{port}", &port_name(def))
@@ -383,7 +470,7 @@ fn ship_line(w: &World, view: &HullView<'_>) -> String {
     };
     template
         .replace("{name}", &name_of(w, view.hull()))
-        .replace("{class}", HULL_CLASS)
+        .replace("{class}", view.class_word())
 }
 
 /// Say one line to the actor under the `tacsim` tag.
@@ -435,7 +522,8 @@ pub(crate) fn ship_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         board(ctx)
     } else if ctx.switches.has("plan") {
         crate::port::voyage::plan_cmd(ctx)
-    } else if ctx.switches.has("undock") {
+    } else if ctx.switches.has("undock") || ctx.switches.has("lift") {
+        // Doc 20 cut SM.2: `+ship/lift` is `+ship/undock`, the word for a pad.
         crate::port::voyage::undock_cmd(ctx)
     } else if ctx.switches.has("leave") {
         leave(ctx)
@@ -537,7 +625,12 @@ fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 }
             }
         };
-        [first, hold, programme]
+        // Doc 20 cut SM.2 (§1 beat 3): on a pad, the stores line after the hold line.
+        let stores = crate::port::voyage::settled_stores_line(ctx, &view);
+        let mut lines = vec![first, hold];
+        lines.extend(stores);
+        lines.push(programme);
+        lines
     };
     for line in lines {
         say(ctx, line);
@@ -714,6 +807,14 @@ fn leave(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let gallery = match berth_of(ctx.w, hull) {
         Berth::UnderWay => return Err(CmdError::msg(UNDER_WAY_LOCK.replace("{name}", &name))),
         Berth::Elsewhere => return Err(CmdError::msg(LEAVE_SEALED.replace("{name}", &name))),
+        // Doc 20 cut SM.2 (decision 10): nobody steps out onto a pad.
+        Berth::Docked { def, .. } if def.site.is_some() => {
+            return Err(CmdError::msg(
+                LEAVE_PAD
+                    .replace("{name}", &name)
+                    .replace("{port}", &port_name(def)),
+            ));
+        }
         Berth::Docked { map, .. } => map.presentation.map(ObjId),
     };
     let Some(gallery) = gallery else {

@@ -120,6 +120,9 @@ memory-stats.workspace = true
 # `mush-campaign`'s proxy-seat tests already use: a human driving another
 # character's cockpit is the one case where the seat's driver is not the typist.
 mush-sim = { workspace = true, features = ["testkit"] }
+# Doc 20 cut SM.3a: `tests/vehicles.rs` reads the recall arm's bay page off the log
+# (a dev-dependency is no edge of the game crate; `mush-server` already carries it).
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

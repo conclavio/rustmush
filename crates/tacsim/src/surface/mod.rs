@@ -16,21 +16,40 @@
 //!   sixteen, with a synchronous build door;
 //! - [`commands`](crate::surface::commands) — `@geology`, staff truth over the body-fixed lattice.
 //!
-//! What later cuts add: SM.2 the Ceres and Vesta tables as lane data (replacing
-//! [`install_body_geology`](crate::surface::install_body_geology)'s test-only caller), sites, their block shifts and `@geology <site>
-//! <addr>`; SM.4 the off-loop site driver, footing from composite cells and the instruments; SM.6
+//! **Doc 20 cut SM.2** installs the lane's Ceres and Vesta tables at boot and at apply
+//! ([`install_lane_geology`](crate::surface::install_lane_geology), over
+//! [`lane_geologies`](crate::surface::lane_geologies) of the lane's `BodyDef`s) and adds the
+//! sites and their block shifts (`crate::port::site`); `@geology <site> <addr>` moves to SM.4,
+//! with the off-loop site driver, footing from composite cells and the instruments; SM.6
 //! reserves from the geology table; SM.7 mining.
+//!
+//! **Doc 20 cut SM.3b** gives the terrain vehicle its clock:
+//!
+//! - [`excursion`](crate::surface::excursion) — the typed `tacsim.excursion` family (one
+//!   [`RigRecord`](crate::surface::excursion::RigRecord) per rig: the act in flight, the
+//!   charge it reserved, the open excursion, the lazy charge) and the normal-lane projection
+//!   `tacsim:tv:<tv>` ([`TvRec`](crate::surface::excursion::TvRec)), with the pure charge,
+//!   reserve, cap and ramp arithmetic;
+//! - [`act`](crate::surface::act) — the acts' world plans and the two authoritative
+//!   providers, `tacsim_surface_act` (every act's start) and `tacsim_surface_done` (every
+//!   act's finish);
+//! - [`tick`](crate::surface::tick) — `tacsim.surface`, the Coarse 1 s pull tick that writes
+//!   each act's placement and projection at its due instant and submits its finish as the
+//!   operator.
 //!
 //! The slot ([`GeologyState`](crate::surface::GeologyState)) is RAM only and never persisted: the key, its status, the bodies'
 //! tables and the site cache. Both installers write it through `World::module_state_mut` from
 //! inside this crate (the `mush_tactics::ground::configure` pattern), so the state-slot owner
 //! census needs no row.
 
+pub mod act;
 pub mod commands;
+pub mod excursion;
 pub mod geology;
 pub mod ground;
 pub mod key;
 pub mod reading;
+pub mod tick;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -46,6 +65,26 @@ pub use key::{
     GEOLOGY_PIN_KEY, GeologyBoot, GeologyDisabled, GeologyPinRecord, GeologyStatus, live,
 };
 pub use reading::{FieldReading, Footing, READING_RULE_VERSION};
+
+pub use act::{
+    MAX_PROBE_CU, MAX_PROBE_S, Refusal, RigAt, SURFACE_ACT_ACTION, SURFACE_ACT_OUTCOME,
+    SURFACE_DONE_ACTION, SURFACE_DONE_OUTCOME, SURFACE_KEY_PREFIX, Where, act_key, done_key,
+};
+pub use excursion::{
+    Act, ActKind, ActParams, ActResult, ActView, CapRefused, Charge, ChargeAfter, DUMP_S,
+    EXCURSION_FAMILY, EXCURSION_SCHEMA, Excursion, ExcursionCounts, ExcursionId, FrozenLeg,
+    IC_HOUR, LAUNCH_S, LegWaypoint, MAX_DUMP_GOODS, MAX_EXCURSIONS_PER_OPERATOR,
+    MAX_EXCURSIONS_PER_SITE, MAX_EXCURSIONS_WORLD, MAX_LEG_WAYPOINTS, MAX_TV_LOG_BYTES,
+    MAX_TV_LOG_LINES, MAX_TV_REC_BYTES, Outcome, PAD_CENTRE_CM, RECOVER_S, RefusedCode,
+    ReserveShort, RigKey, RigRecord, TV_REC_PREFIX, TV_REC_SCHEMA, TvLogLine, TvPose, TvRec,
+    TvRecState, TvState, cap_refusal, cells_apart, charge_at, needs_battery, ramp_pose,
+    reserve_check, reserved_total, settle_free, site_cell, tv_rec_key, tv_rec_key_owner,
+};
+pub use tick::{
+    DONE_BACKOFF_FIRES, MAX_DONE_ATTEMPTS, MAX_EXCURSIONS_VISITED_PER_FIRE,
+    MAX_EXCURSIONS_WORKED_PER_FIRE, MAX_RIG_RECORDS, SCAN_PAGE, SURFACE_TICK, SURFACE_TICK_PERIOD,
+    SurfaceFireStats, SurfaceTickState, last_surface_fire,
+};
 
 /// The most body tables one world holds.
 pub const MAX_BODY_GEOLOGIES: usize = 32;
@@ -107,9 +146,9 @@ pub fn install_geology(w: &mut World, boot: GeologyBoot) -> bool {
     true
 }
 
-/// A body's ground for this world. SM.1's only source (tests); SM.2 replaces the caller with
-/// the lane's `BodyDef` tables. A body already installed is replaced, and **its cached sites
-/// are dropped**: the site cache's key (`ground::site_revision`) carries the captured input and
+/// A body's ground for this world. Called by [`install_lane_geology`] (doc 20 cut SM.2: the
+/// lane's `BodyDef` tables, at boot and at apply) and by tests. A body already installed is
+/// replaced, and **its cached sites are dropped**: the site cache's key (`ground::site_revision`) carries the captured input and
 /// the spec, not the body's table or radius, so this writer — the only one — keeps a replaced
 /// table from serving the old ground.
 ///
@@ -134,4 +173,63 @@ pub fn install_body_geology(w: &mut World, geology: BodyGeology) -> Result<(), S
 #[must_use]
 pub fn body_geology(w: &World, body: &CanonicalId) -> Option<Arc<BodyGeology>> {
     w.module_state::<GeologyState>()?.tables.get(body).cloned()
+}
+
+/// **The lane's body tables** (doc 20 cut SM.2; the SM.2 brief's lead ruling 6, step one):
+/// every body of `pack` that authors both `radius_km` and `geology`, built as a
+/// [`BodyGeology`], in id order. Pure, so it runs while the store that holds `pack` is
+/// borrowed; [`install_lane_geology`] installs the result after the borrow ends.
+#[must_use]
+pub fn lane_geologies(pack: &crate::pack::RulesPack) -> Vec<Result<BodyGeology, String>> {
+    pack.entries()
+        .iter()
+        .filter_map(|(id, entry)| match entry {
+            crate::pack::PackEntry::Body(def) => {
+                let (Some(radius), Some(table)) = (def.radius_km, def.geology.as_ref()) else {
+                    return None;
+                };
+                Some(
+                    BodyGeology::new(id.clone(), radius, table.clone())
+                        .map_err(|error| format!("{id}: {error}")),
+                )
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// **Install what [`lane_geologies`] built** (doc 20 cut SM.2, step two) through
+/// [`install_body_geology`]: an `Err` is warned and skipped, and **a body whose installed
+/// table is already equal is skipped**, so its site cache survives each of the six site
+/// applies and every boot. RAM only; nothing is written. Returns how many it installed.
+pub fn install_lane_geology(w: &mut World, bodies: Vec<Result<BodyGeology, String>>) -> usize {
+    let mut installed = 0_usize;
+    for body in bodies {
+        let body = match body {
+            Ok(body) => body,
+            Err(error) => {
+                tracing::warn!(%error, "tacsim: a lane body's geology table does not build; skipped");
+                continue;
+            }
+        };
+        if body_geology(w, &body.body).is_some_and(|standing| *standing == body) {
+            continue;
+        }
+        let id = body.body.clone();
+        match install_body_geology(w, body) {
+            Ok(()) => installed = installed.saturating_add(1),
+            Err(error) => {
+                tracing::warn!(body = %id, %error, "tacsim: a lane body's geology table was not installed");
+            }
+        }
+    }
+    installed
+}
+
+/// The bodies with a table installed, in id order (for readiness and tests).
+#[must_use]
+pub fn installed_bodies(w: &World) -> Vec<CanonicalId> {
+    w.module_state::<GeologyState>()
+        .map(|state| state.tables.keys().cloned().collect())
+        .unwrap_or_default()
 }

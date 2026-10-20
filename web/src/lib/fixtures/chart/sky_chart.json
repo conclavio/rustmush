@@ -345,30 +345,160 @@
         "  jupiter r  5.452 AU  lon  188.7  lat  +1.3  8.266 AU from here, 68m 45s light",
         "  titan r 10.071 AU  lon  268.8  lat  +1.0  9.905 AU from here, 82m 23s light  moon of saturn",
         "  saturn r 10.077 AU  lon  268.8  lat  +1.0  9.910 AU from here, 82m 26s light",
-        "  Aitken Highport: 370 h 40 m at this load (0 t aboard the an empty tacsim.unit.dray: burn 42 t, 16 crew-days); empty 370 h 40 m and 42 t; the direct chord 2.808 AU would be 388 h 18 m and 44 t.",
-        "  Stickney Yards: 488 h 22 m at this load (0 t aboard the an empty tacsim.unit.dray: burn 54 t, 21 crew-days); empty 488 h 22 m and 54 t; the direct chord 3.699 AU would be 445 h 40 m and 50 t."
+        "  Ahuna Flank: 1 h 0 min at this load (0 t aboard the an empty tacsim.unit.dray: burn 1 t, 1 crew-days); empty 1 h 0 min and 1 t.",
+        "    Registry survey: unavailable.",
+        "    Tenure: 16 open.",
+        "  Freeport Commons: 1 h 0 min at this load (0 t aboard the an empty tacsim.unit.dray: burn 1 t, 1 crew-days); empty 1 h 0 min and 1 t.",
+        "    Registry survey: unavailable.",
+        "    Tenure: 16 commons.",
+        "  Juling Shadow: 1 h 0 min at this load (0 t aboard the an empty tacsim.unit.dray: burn 1 t, 1 crew-days); empty 1 h 0 min and 1 t.",
+        "    Registry survey: unavailable.",
+        "    Tenure: 16 open.",
+        "  Kerwan Floor: 1 h 0 min at this load (0 t aboard the an empty tacsim.unit.dray: burn 1 t, 1 crew-days); empty 1 h 0 min and 1 t.",
+        "    Registry survey: unavailable.",
+        "    Tenure: 16 open.",
+        "  Aitken Highport: 370 h 40 min at this load (0 t aboard the an empty tacsim.unit.dray: burn 42 t, 16 crew-days); empty 370 h 40 min and 42 t; the direct chord 2.808 AU would be 388 h 18 min and 44 t.",
+        "  Occator Rim: 1 h 0 min at this load (0 t aboard the an empty tacsim.unit.dray: burn 1 t, 1 crew-days); empty 1 h 0 min and 1 t.",
+        "    Registry survey: unavailable.",
+        "    Tenure: 12 open; 4 held by Occator Water & Propellant.",
+        "  Rheasilvia Commons: 496 h 1 min at this load (0 t aboard the an empty tacsim.unit.dray: burn 55 t, 21 crew-days); empty 496 h 1 min and 55 t; the direct chord 4.718 AU would be 503 h 22 min and 55 t.",
+        "    Registry survey: unavailable.",
+        "    Tenure: 16 commons.",
+        "  Stickney Yards: 488 h 22 min at this load (0 t aboard the an empty tacsim.unit.dray: burn 54 t, 21 crew-days); empty 488 h 22 min and 54 t; the direct chord 3.699 AU would be 445 h 40 min and 50 t."
       ],
       "window": [
+        "The window for Ahuna Flank from Ceres Freeport, the an empty tacsim.unit.dray at 0 t, scanned a day at a time over the next 365 IC days:",
+        "  now (0000-01-01): 1 h 0 min, burn 1 t, 1 crew-days.",
+        "  fastest: 0000-01-01 (in 0 IC days): 1 h 0 min, burn 1 t (+under a minute and +0 t against now).",
+        "  worst: 0001-01-01 (in 365 IC days): 1 h 0 min, burn 1 t (+under a minute and +0 t against now).",
+        "The window for Freeport Commons from Ceres Freeport, the an empty tacsim.unit.dray at 0 t, scanned a day at a time over the next 365 IC days:",
+        "  now (0000-01-01): 1 h 0 min, burn 1 t, 1 crew-days.",
+        "  fastest: 0000-01-01 (in 0 IC days): 1 h 0 min, burn 1 t (+under a minute and +0 t against now).",
+        "  worst: 0001-01-01 (in 365 IC days): 1 h 0 min, burn 1 t (+under a minute and +0 t against now).",
+        "The window for Juling Shadow from Ceres Freeport, the an empty tacsim.unit.dray at 0 t, scanned a day at a time over the next 365 IC days:",
+        "  now (0000-01-01): 1 h 0 min, burn 1 t, 1 crew-days.",
+        "  fastest: 0000-01-01 (in 0 IC days): 1 h 0 min, burn 1 t (+under a minute and +0 t against now).",
+        "  worst: 0001-01-01 (in 365 IC days): 1 h 0 min, burn 1 t (+under a minute and +0 t against now).",
+        "The window for Kerwan Floor from Ceres Freeport, the an empty tacsim.unit.dray at 0 t, scanned a day at a time over the next 365 IC days:",
+        "  now (0000-01-01): 1 h 0 min, burn 1 t, 1 crew-days.",
+        "  fastest: 0000-01-01 (in 0 IC days): 1 h 0 min, burn 1 t (+under a minute and +0 t against now).",
+        "  worst: 0001-01-01 (in 365 IC days): 1 h 0 min, burn 1 t (+under a minute and +0 t against now).",
         "The window for Aitken Highport from Ceres Freeport, the an empty tacsim.unit.dray at 0 t, scanned a day at a time over the next 365 IC days:",
-        "  now (0000-01-01): 370 h 40 m, burn 42 t, 16 crew-days.",
-        "  Cabeus Works bids metals: list 270, posts 270 (+0 permille; reach 370 h 40 m now against a median of 400 h 29 m).",
-        "  Lunar Habitat Board bids volatiles: list 195, posts 195 (+0 permille; reach 370 h 40 m now against a median of 400 h 29 m).",
-        "  Lunar Habitat Board bids carbon_feedstock: list 380, posts 380 (+0 permille; reach 705 h 15 m now against a median of 736 h 5 m).",
+        "  now (0000-01-01): 370 h 40 min, burn 42 t, 16 crew-days.",
+        "  Cabeus Works bids metals: list 270, posts 270 (+0 permille; reach 370 h 40 min now against a median of 400 h 29 min).",
+        "  Lunar Habitat Board bids volatiles: list 195, posts 195 (+0 permille; reach 370 h 40 min now against a median of 400 h 29 min).",
+        "  Lunar Habitat Board bids carbon_feedstock: list 380, posts 380 (+0 permille; reach 705 h 15 min now against a median of 736 h 5 min).",
         "  emergency bids (at 1500 permille of the median): none due; reach is 925 permille of the median.",
-        "  fastest: 0000-03-15 (in 73 IC days): 325 h 59 m, burn 38 t (-44 h 40 m and -4 t against now).",
-        "  worst: 0000-10-17 (in 289 IC days): 456 h 37 m, burn 51 t (+85 h 57 m and +9 t against now).",
+        "  fastest: 0000-03-15 (in 73 IC days): 325 h 59 min, burn 38 t (-44 h 40 min and -4 t against now).",
+        "  worst: 0000-10-17 (in 289 IC days): 456 h 37 min, burn 51 t (+85 h 57 min and +9 t against now).",
+        "The window for Occator Rim from Ceres Freeport, the an empty tacsim.unit.dray at 0 t, scanned a day at a time over the next 365 IC days:",
+        "  now (0000-01-01): 1 h 0 min, burn 1 t, 1 crew-days.",
+        "  fastest: 0000-01-01 (in 0 IC days): 1 h 0 min, burn 1 t (+under a minute and +0 t against now).",
+        "  worst: 0001-01-01 (in 365 IC days): 1 h 0 min, burn 1 t (+under a minute and +0 t against now).",
+        "The window for Rheasilvia Commons from Ceres Freeport, the an empty tacsim.unit.dray at 0 t, scanned a day at a time over the next 365 IC days:",
+        "  now (0000-01-01): 496 h 1 min, burn 55 t, 21 crew-days.",
+        "  fastest: 0001-01-01 (in 365 IC days): 422 h 33 min, burn 48 t (-73 h 27 min and -7 t against now).",
+        "  worst: 0000-01-01 (in 0 IC days): 496 h 1 min, burn 55 t (+under a minute and +0 t against now).",
         "The window for Stickney Yards from Ceres Freeport, the an empty tacsim.unit.dray at 0 t, scanned a day at a time over the next 365 IC days:",
-        "  now (0000-01-01): 488 h 22 m, burn 54 t, 21 crew-days.",
-        "  Kasei Metals bids metals: list 280, posts 281 (+4 permille; reach 488 h 22 m now against a median of 480 h 39 m).",
-        "  Kasei Metals bids volatiles: list 200, posts 200 (+4 permille; reach 488 h 22 m now against a median of 480 h 39 m).",
+        "  now (0000-01-01): 488 h 22 min, burn 54 t, 21 crew-days.",
+        "  Kasei Metals bids metals: list 280, posts 281 (+4 permille; reach 488 h 22 min now against a median of 480 h 39 min).",
+        "  Kasei Metals bids volatiles: list 200, posts 200 (+4 permille; reach 488 h 22 min now against a median of 480 h 39 min).",
         "  emergency bids (at 1500 permille of the median): none due; reach is 1016 permille of the median.",
-        "  fastest: 0000-09-06 (in 248 IC days): 341 h 4 m, burn 39 t (-147 h 18 m and -15 t against now).",
-        "  worst: 0000-01-01 (in 0 IC days): 488 h 22 m, burn 54 t (+under a minute and +0 t against now)."
+        "  fastest: 0000-09-06 (in 248 IC days): 341 h 4 min, burn 39 t (-147 h 18 min and -15 t against now).",
+        "  worst: 0000-01-01 (in 0 IC days): 488 h 22 min, burn 54 t (+under a minute and +0 t against now)."
       ]
     },
     "model": "kepler",
     "rate_permille": 1000,
     "routes": [
+      {
+        "body": "ceres",
+        "direct": null,
+        "empty": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "legs": [
+          {
+            "from": "ceres",
+            "to": "ceres"
+          }
+        ],
+        "loaded": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "to": "Ahuna Flank",
+        "venue": "ahuna"
+      },
+      {
+        "body": "ceres",
+        "direct": null,
+        "empty": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "legs": [
+          {
+            "from": "ceres",
+            "to": "ceres"
+          }
+        ],
+        "loaded": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "to": "Freeport Commons",
+        "venue": "commons"
+      },
+      {
+        "body": "ceres",
+        "direct": null,
+        "empty": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "legs": [
+          {
+            "from": "ceres",
+            "to": "ceres"
+          }
+        ],
+        "loaded": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "to": "Juling Shadow",
+        "venue": "juling"
+      },
+      {
+        "body": "ceres",
+        "direct": null,
+        "empty": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "legs": [
+          {
+            "from": "ceres",
+            "to": "ceres"
+          }
+        ],
+        "loaded": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "to": "Kerwan Floor",
+        "venue": "kerwan"
+      },
       {
         "body": "luna",
         "direct": {
@@ -394,6 +524,54 @@
         },
         "to": "Aitken Highport",
         "venue": "luna"
+      },
+      {
+        "body": "ceres",
+        "direct": null,
+        "empty": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "legs": [
+          {
+            "from": "ceres",
+            "to": "ceres"
+          }
+        ],
+        "loaded": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "to": "Occator Rim",
+        "venue": "occator"
+      },
+      {
+        "body": "vesta",
+        "direct": {
+          "burn_t": 55,
+          "km": 705854726,
+          "total_s": 1812164
+        },
+        "empty": {
+          "burn_t": 55,
+          "crew_days": 21,
+          "total_s": 1785666
+        },
+        "legs": [
+          {
+            "from": "ceres",
+            "to": "vesta"
+          }
+        ],
+        "loaded": {
+          "burn_t": 55,
+          "crew_days": 21,
+          "total_s": 1785666
+        },
+        "to": "Rheasilvia Commons",
+        "venue": "rheasilvia"
       },
       {
         "body": "phobos",
@@ -441,6 +619,98 @@
     "window": [
       {
         "cheapest": {
+          "burn_t": 1,
+          "offset_days": 0,
+          "total_s": 3601
+        },
+        "fastest": {
+          "burn_t": 1,
+          "offset_days": 0,
+          "total_s": 3601
+        },
+        "now": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "to": "Ahuna Flank",
+        "worst": {
+          "burn_t": 1,
+          "offset_days": 365,
+          "total_s": 3601
+        }
+      },
+      {
+        "cheapest": {
+          "burn_t": 1,
+          "offset_days": 0,
+          "total_s": 3601
+        },
+        "fastest": {
+          "burn_t": 1,
+          "offset_days": 0,
+          "total_s": 3601
+        },
+        "now": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "to": "Freeport Commons",
+        "worst": {
+          "burn_t": 1,
+          "offset_days": 365,
+          "total_s": 3601
+        }
+      },
+      {
+        "cheapest": {
+          "burn_t": 1,
+          "offset_days": 0,
+          "total_s": 3601
+        },
+        "fastest": {
+          "burn_t": 1,
+          "offset_days": 0,
+          "total_s": 3601
+        },
+        "now": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "to": "Juling Shadow",
+        "worst": {
+          "burn_t": 1,
+          "offset_days": 365,
+          "total_s": 3601
+        }
+      },
+      {
+        "cheapest": {
+          "burn_t": 1,
+          "offset_days": 0,
+          "total_s": 3601
+        },
+        "fastest": {
+          "burn_t": 1,
+          "offset_days": 0,
+          "total_s": 3601
+        },
+        "now": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "to": "Kerwan Floor",
+        "worst": {
+          "burn_t": 1,
+          "offset_days": 365,
+          "total_s": 3601
+        }
+      },
+      {
+        "cheapest": {
           "burn_t": 38,
           "offset_days": 73,
           "total_s": 1173587
@@ -460,6 +730,52 @@
           "burn_t": 51,
           "offset_days": 289,
           "total_s": 1643878
+        }
+      },
+      {
+        "cheapest": {
+          "burn_t": 1,
+          "offset_days": 0,
+          "total_s": 3601
+        },
+        "fastest": {
+          "burn_t": 1,
+          "offset_days": 0,
+          "total_s": 3601
+        },
+        "now": {
+          "burn_t": 1,
+          "crew_days": 1,
+          "total_s": 3601
+        },
+        "to": "Occator Rim",
+        "worst": {
+          "burn_t": 1,
+          "offset_days": 365,
+          "total_s": 3601
+        }
+      },
+      {
+        "cheapest": {
+          "burn_t": 48,
+          "offset_days": 365,
+          "total_s": 1521227
+        },
+        "fastest": {
+          "burn_t": 48,
+          "offset_days": 365,
+          "total_s": 1521227
+        },
+        "now": {
+          "burn_t": 55,
+          "crew_days": 21,
+          "total_s": 1785666
+        },
+        "to": "Rheasilvia Commons",
+        "worst": {
+          "burn_t": 55,
+          "offset_days": 0,
+          "total_s": 1785666
         }
       },
       {
@@ -1141,16 +1457,12 @@
         1
       ],
       [
-        ".",
-        3
+        ":",
+        7
       ],
       [
-        " ",
+        ".",
         2
-      ],
-      [
-        ".",
-        4
       ],
       [
         ":",
@@ -1228,35 +1540,19 @@
       ],
       [
         ".",
-        5
-      ],
-      [
-        " ",
-        1
-      ],
-      [
-        ".",
         4
+      ],
+      [
+        ":",
+        6
       ],
       [
         "m",
         1
       ],
       [
-        ".",
-        1
-      ],
-      [
-        " ",
-        1
-      ],
-      [
-        ".",
-        1
-      ],
-      [
         ":",
-        9
+        12
       ],
       [
         " ",
@@ -1349,20 +1645,8 @@
         1
       ],
       [
-        ".",
-        1
-      ],
-      [
-        " ",
-        1
-      ],
-      [
-        ".",
-        2
-      ],
-      [
         ":",
-        3
+        7
       ],
       [
         "C",

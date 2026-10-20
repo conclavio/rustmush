@@ -52,6 +52,7 @@ pub mod logistics;
 pub mod resolution;
 pub mod resources;
 pub mod sensor;
+pub mod tools;
 pub mod unit;
 pub mod weapon;
 
@@ -72,12 +73,13 @@ pub use arena::{ArenaBuildError, ArenaDef, arena_map_within_bound, from_pack};
 pub use core::CoreDef;
 pub use goods::{Consumable, GoodClass, GoodDef, GoodsTable, MeasureDef};
 pub use logistics::{
-    BerthsSlotDef, DriveDef, DriveLaw, InteriorDef, InteriorExitDef, InteriorRoomDef,
-    InteriorRoomKind, LogisticsDef, StowageDef,
+    BayDef, BaySlotDef, BerthsSlotDef, DriveDef, DriveLaw, EgressDef, InteriorDef, InteriorExitDef,
+    InteriorRoomDef, InteriorRoomKind, LogisticsDef, StowageDef,
 };
 pub use resolution::ResolutionDef;
 pub use resources::ResourceTable;
 pub use sensor::SensorDef;
+pub use tools::{ToolDef, ToolRole};
 pub use unit::{UnitBinding, UnitClass, UnitSpec, to_tactical_unit, tracked_rules};
 pub use weapon::WeaponDef;
 
@@ -778,9 +780,9 @@ fn schema_payloads() -> Vec<(&'static str, serde_json::Value)> {
     ]
 }
 
-/// **The drive table** (doc 18 cut IC2; D-18-45): every unit with `logistics`,
-/// in id order, its drive class → its law, refusing a class already flown under
-/// a different law and naming both units.
+/// **The drive table** (doc 18 cut IC2; D-18-45): every unit with `logistics`
+/// and a drive, in id order, its drive class → its law, refusing a class already
+/// flown under a different law and naming both units.
 fn drive_table(
     units: &BTreeMap<CanonicalId, Sourced<UnitSpec>>,
 ) -> Result<BTreeMap<CanonicalId, DriveLaw>, DefinitionError> {
@@ -789,7 +791,11 @@ fn drive_table(
         let Some(logistics) = &sourced.def.logistics else {
             continue;
         };
-        let drive = &logistics.drive;
+        // Doc 20 cut SM.3a: "one class, one law" ignores a drive-less
+        // (stowage-only) unit — the terrain vehicle flies no law at all.
+        let Some(drive) = &logistics.drive else {
+            continue;
+        };
         match drives.get(&drive.class) {
             Some((law, _)) if *law == drive.law => {}
             Some((law, first)) => {

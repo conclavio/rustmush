@@ -82,3 +82,16 @@ adds a Throttle: line naming the highest throttle that would (see "help
 ships"); the departure itself refuses a short tank or locker as it always has.
 A corridor the atlas draws between ports is a picture of the bodies at the
 campaign epoch, not the passage's length.
+
+## The mining sites
+
+Six of the lane's destinations are mining sites rather than ports: Registry pads
+on open ground with nothing built but the pad. Five are a short hop from Ceres
+Freeport on Ceres itself — Freeport Commons, Kerwan Floor, Ahuna Flank, Juling
+Shadow and Occator Rim, an hour empty and about an hour and a half out with a
+full tank, two hours with a full hold — and Rheasilvia Commons is a passage of
+days away on Vesta. `+ship/plan <site>` and `+ship/undock <site>`
+fly to them as to any port, a ship settles on the pad instead of docking, and
+`+ship/lift ceres` brings her home ("help ships"). `+chart` lists each site with
+its Registry survey and its tenure. Mining the ground arrives in later cuts; for
+now a site is somewhere to land and leave.

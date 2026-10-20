@@ -2899,15 +2899,19 @@ pub fn create_unit(ctx: &mut Ctx<'_>, obj: ObjId, spec: &UnitSpec) -> Result<Tac
 /// mobility settle, **encode before you mutate**, the governed document write,
 /// the RAM row.
 ///
-/// Its **only two callers** are in the game crate, and both are about the
-/// simulator centre's stock tanks:
+/// Its **only three callers** are in the game crate; the first two are about
+/// the simulator centre's stock tanks:
 ///
 /// 1. `tacsim::match_::lobby::start`, when a pilot has chosen a unit type for
 ///    their slot with `SIM UNIT`, applied before the pods lock;
 /// 2. `tacsim::match_::reset::reset_one`, which puts the pod's **authored** type
-///    back on the way into `Idle`.
+///    back on the way into `Idle`;
+/// 3. `tacsim::port::refit` (doc 20 cut SM.3a), the Co-op's yard:
+///    `+coop/refit prospector|standard` re-binds a chartered hull between the
+///    Dray and the Dray-P. The hull's unit **changes type** (the Dray-P has its
+///    own definition), so it is a re-instantiation, for the reason below.
 ///
-/// Both reach it under the tacsim module's identity through the declared
+/// All three reach it under the tacsim module's identity through the declared
 /// `tacsim → tactics` persist delegation, which is why the write is
 /// `persist_unit_document` and not `persist_encoded_unit` — the same choice
 /// [`apply_plan`] makes and for the same reason.

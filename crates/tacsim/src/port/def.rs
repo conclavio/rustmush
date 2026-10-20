@@ -84,6 +84,17 @@ pub const MAX_PROGRAMME_POOL: u32 = 16;
 pub const MAX_REGISTRY_PREFIX_BYTES: usize = 16;
 /// The longest a programme's dormancy window may be, in real days.
 pub const MAX_DORMANCY_REAL_DAYS: u32 = 365;
+/// The most refit rows one programme may author (doc 20 cut SM.3a).
+pub const MAX_PROGRAMME_REFITS: usize = 4;
+/// The refit word that always means the programme's own unit, and is never
+/// authored (doc 20 cut SM.3a).
+pub const STANDARD_REFIT: &str = "standard";
+/// The largest rig pool one lessor may author (doc 20 cut SM.3a).
+pub const MAX_VEHICLE_POOL: u32 = 16;
+/// The longest rig lease term, IC days (doc 20 cut SM.3a).
+pub const MAX_VEHICLE_TERM_IC_DAYS: u32 = 365;
+/// The most tools one rig pool may name (doc 20 cut SM.3a).
+pub const MAX_VEHICLE_TOOLS: usize = 8;
 
 /// **One `port` entry** (doc 18 §4.7, D-18-20). Strict and integer-only.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,13 +111,19 @@ pub struct PortDef {
     /// `"<area>.<entry>"`: the room the domain presents in; it must carry the
     /// `port.dock` marker.
     pub gallery: String,
-    /// Role word ([`PORT_ROOM_ROLES`]) → `"<area>.<entry>"`.
+    /// Role word ([`PORT_ROOM_ROLES`]) → `"<area>.<entry>"`. A site authors
+    /// none (doc 20 cut SM.2: its pad is its gallery); skipped when empty, and
+    /// every station authors some, so no station re-encodes differently.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub rooms: BTreeMap<CanonicalId, String>,
     /// A `SystemPrincipalId` (`tacsim.treasury`): the faucet the capital is
-    /// minted from.
+    /// minted from. Defaults to `tacsim.treasury` (doc 20 cut SM.2: a site
+    /// authors none) and is always written.
+    #[serde(default = "default_treasury")]
     pub treasury: String,
     /// The institutions, `1..=`[`MAX_PORT_ORGS`]; authored order is creation
-    /// order.
+    /// order. A site authors none (doc 20 cut SM.2, §3.1's zero-orgs rule).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub orgs: Vec<PortOrgDef>,
     /// The First Captain programme, where the port runs one (Ceres).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -130,6 +147,268 @@ pub struct PortDef {
     /// crosses the ratio. Requires `premium`. Absent, the port posts none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emergency: Option<EmergencyDef>,
+    /// **Doc 20 cut SM.2 (§3.1, D-20-2)** — this port is a mining site's pad:
+    /// its location has role [`crate::pack::SITE_ROLE`], it authors no orgs,
+    /// rooms, programme, vendors, premium or emergency, and its sixteen blocks'
+    /// tenure, prospectivity and worked share are here. Absent for a station.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<SiteDef>,
+    /// **Doc 20 cut SM.3a (§4.3, Q-20-6)** — a lessor's pool of terrain
+    /// vehicles, laid up by the applier (part h): Occator's rigs at Ceres. At
+    /// most one port of a lane authors it, and that port runs the programme
+    /// ([`check_ports`]). Absent everywhere else. Boxed, so a port entry does not
+    /// grow every `PackEntry` (clippy's `large_enum_variant`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vehicles: Option<Box<VehiclesDef>>,
+}
+
+/// **Doc 20 cut SM.3a (§4.3, Q-20-6)**: a lessor's pool of terrain vehicles,
+/// laid up by the applier (part h).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VehiclesDef {
+    /// The pool's id (`occator.rig_lease`).
+    pub id: CanonicalId,
+    /// One of this entry's orgs: the lessor and the title holder.
+    pub org: CanonicalId,
+    /// The unit every rig is bound to (`tacsim.unit.tv_prospector`).
+    pub unit: CanonicalId,
+    /// The `SystemPrincipalId` that titles them (`tacsim.registry`).
+    pub issuer: String,
+    /// A role word of this entry's `rooms`: where `+tv/lease` is signed.
+    pub counter: CanonicalId,
+    /// The name of the room the applier makes for the laid-up rigs.
+    pub shed: String,
+    /// How many rigs, `1..=`[`MAX_VEHICLE_POOL`].
+    pub pool: u32,
+    /// `[A-Z0-9-]`, 1..=16 bytes; marks are `registry_mark(prefix, n)`.
+    pub registry_prefix: String,
+    /// One term's fee, major units.
+    pub fee_major: u64,
+    /// The deposit held while leased, major units.
+    pub deposit_major: u64,
+    /// One term, IC days, `1..=`[`MAX_VEHICLE_TERM_IC_DAYS`].
+    pub term_ic_days: u32,
+    /// 1..=[`MAX_VEHICLE_TOOLS`] distinct rows of
+    /// [`crate::definitions::tools::tools_table`]: what every rig of the pool
+    /// carries.
+    pub tools: Vec<CanonicalId>,
+}
+
+/// The treasury a port that authors none capitalizes from (doc 20 cut SM.2).
+fn default_treasury() -> String {
+    "tacsim.treasury".to_owned()
+}
+
+/// Blocks on a site: 4 × 4 ([`crate::surface::ground::SITE_BLOCKS`] is the 4
+/// along one side; doc 20 §3.1).
+pub const SITE_BLOCK_COUNT: usize = 16;
+
+/// **The sixteen block letters** (doc 20 §3.1; the SM.2 brief's decision 11),
+/// read row by row from the **north-west**: `A`–`D` the northern row west to
+/// east … `M`–`P` the southern; the pad sits where `F`, `G`, `J` and `K` meet.
+pub const BLOCK_LETTERS: [char; SITE_BLOCK_COUNT] = [
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
+];
+
+/// **A site's tenure word** (doc 20 §3.1, §10): commons (anyone licensed works
+/// it, nobody stakes it), open (staked by the first claimant; SM.10) or held
+/// (an org's, named by the block's `holder`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tenure {
+    /// Worked by anyone licensed, staked by nobody.
+    Commons,
+    /// Unclaimed; workable under a licence until staked (Q-20-4 as amended).
+    Open,
+    /// An org's.
+    Held,
+}
+
+impl Tenure {
+    /// The word a player reads.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Tenure::Commons => "commons",
+            Tenure::Open => "open",
+            Tenure::Held => "held",
+        }
+    }
+}
+
+/// **A block's zone** (doc 20 §9.5, D-20-14): every phase-1 block is core;
+/// `frontier` arrives with the fight (§17) and does not parse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Zone {
+    /// The Registry's patrolled ground.
+    Core,
+}
+
+/// The tenure every block of a site takes unless its row says otherwise.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SiteTenureDef {
+    /// `commons` or `open`; a held block names its holder in its own row.
+    pub default: Tenure,
+}
+
+/// **One block's exceptions** (doc 20 §3.1): every field optional, the
+/// defaults the site's.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlockDef {
+    /// The block's tenure, when not the site's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenure: Option<Tenure>,
+    /// The holding org (an org id of some port entry of the pack), exactly when
+    /// `tenure` is `held`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder: Option<CanonicalId>,
+    /// A class shift on this block's fields, `-3..=3` (SM.1's `MAX_SHIFT`; §3.1's
+    /// "authored rich").
+    #[serde(default, skip_serializing_if = "is_zero_i8")]
+    pub prospectivity: i8,
+    /// The share of every pocket drawn into the spoil at opening, `0..=1000`
+    /// (SM.6 acts on it; §3.4's pre-worked commons).
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub worked_permille: u16,
+    /// The block's zone, when not the site's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<Zone>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_i8(value: &i8) -> bool {
+    *value == 0
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_u16(value: &u16) -> bool {
+    *value == 0
+}
+
+/// **A site block** (doc 20 §3.1, D-20-2; cut SM.2): the site's name, the
+/// Registry that rules it, its zone, its default tenure and per-block
+/// exceptions. The geology table is its **body's** (the lane's `BodyDef`), never
+/// the site's (the SM.2 brief's decision 3).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SiteDef {
+    /// The site's player-facing name; equal to its location's label (a pack
+    /// rule), so [`crate::port::coop::port_name`] names a site with no pack in hand.
+    pub name: String,
+    /// The org whose Registry rules the site (an org of some port entry of this pack).
+    pub issuer: CanonicalId,
+    /// The site's zone; every phase-1 block is core (§9.5, D-20-14).
+    pub zone: Zone,
+    /// The tenure every block takes unless its row says otherwise.
+    pub tenure: SiteTenureDef,
+    /// Block letter (`A`..=`P`) → its exceptions; absent letters take the defaults.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub blocks: BTreeMap<String, BlockDef>,
+}
+
+/// One block as the site reads it: its tenure, holder, prospectivity, worked
+/// share and zone, the row's or the defaults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockTerms<'a> {
+    /// The tenure.
+    pub tenure: Tenure,
+    /// The holder, for a held block.
+    pub holder: Option<&'a CanonicalId>,
+    /// The class shift.
+    pub prospectivity: i8,
+    /// The worked share, permille.
+    pub worked_permille: u16,
+    /// The zone.
+    pub zone: Zone,
+}
+
+impl SiteDef {
+    /// Block `letter`'s terms: its row's, or the site's defaults.
+    #[must_use]
+    pub fn block(&self, letter: char) -> BlockTerms<'_> {
+        let row = self.blocks.get(letter.to_string().as_str());
+        BlockTerms {
+            tenure: row
+                .and_then(|row| row.tenure)
+                .unwrap_or(self.tenure.default),
+            holder: row.and_then(|row| row.holder.as_ref()),
+            prospectivity: row.map_or(0, |row| row.prospectivity),
+            worked_permille: row.map_or(0, |row| row.worked_permille),
+            zone: row.and_then(|row| row.zone).unwrap_or(self.zone),
+        }
+    }
+
+    /// **The sixteen shifts in `SiteGeologySpec`'s order** (decision 11): letter
+    /// index `i` (0 for `A` … 15 for `P`, row by row from the north-west) is block
+    /// `bx = i % 4`, `by = 3 − i / 4` from the south-west, slot `by * 4 + bx`.
+    #[must_use]
+    pub fn shifts(&self) -> [i8; SITE_BLOCK_COUNT] {
+        let mut shifts = [0_i8; SITE_BLOCK_COUNT];
+        for (i, letter) in BLOCK_LETTERS.into_iter().enumerate() {
+            let (bx, by) = (i % 4, 3_usize.saturating_sub(i / 4));
+            if let Some(slot) = shifts.get_mut(by * 4 + bx) {
+                *slot = self.block(letter).prospectivity;
+            }
+        }
+        shifts
+    }
+
+    /// **The site block's own bounds** (doc 20 §3.1; cut SM.2): a label-shaped
+    /// name; every `blocks` key one letter `A`..=`P`; the default tenure
+    /// `commons` or `open`; a row `held` exactly when it names a holder;
+    /// prospectivity `-3..=3`; worked share `0..=1000`.
+    ///
+    /// # Errors
+    ///
+    /// The first rule broken, as its detail.
+    pub fn check(&self) -> Result<(), String> {
+        if !label_ok(&self.name) {
+            return Err(format!(
+                "site: name must be non-blank and at most {MAX_LABEL_BYTES} bytes"
+            ));
+        }
+        if self.tenure.default == Tenure::Held {
+            return Err(
+                "site: the default tenure is commons or open; a held block names its holder"
+                    .to_owned(),
+            );
+        }
+        for (letter, row) in &self.blocks {
+            let one = {
+                let mut chars = letter.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) if BLOCK_LETTERS.contains(&c) => Some(c),
+                    _ => None,
+                }
+            };
+            let Some(letter) = one else {
+                return Err(format!("site: block {letter} is not a block letter A to P"));
+            };
+            if (row.tenure == Some(Tenure::Held)) != row.holder.is_some() {
+                return Err(format!(
+                    "site: block {letter}: a held block names its holder, and only a held block does"
+                ));
+            }
+            let max = crate::surface::geology::MAX_SHIFT;
+            if !(-max..=max).contains(&row.prospectivity) {
+                return Err(format!(
+                    "site: block {letter}: prospectivity is -{max} to {max}, not {}",
+                    row.prospectivity
+                ));
+            }
+            if row.worked_permille > 1_000 {
+                return Err(format!(
+                    "site: block {letter}: worked_permille is 0 to 1000, not {}",
+                    row.worked_permille
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The most a premium's slope or cap may be, permille (ten times the price).
@@ -229,6 +508,12 @@ pub struct ProgrammeDef {
     pub dormancy_real_days: u32,
     /// How many enrolments one account may hold.
     pub per_account: u32,
+    /// **Doc 20 cut SM.3a (§4.3, D-20-7)**: refit word → the unit `+coop/refit
+    /// <word>` re-binds a chartered hull to; `standard` is always `unit` and is
+    /// never authored. Each refit unit is `refit_compatible` with `unit`
+    /// (checked at the apply preflight, where the catalog is).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub refits: BTreeMap<CanonicalId, CanonicalId>,
 }
 
 /// **One vendor** (doc 18 §4.7, §4.3 "Vendors and buyers"; applied by the
@@ -373,8 +658,28 @@ impl PortDef {
                 premium.k_permille, premium.cap_permille
             ));
         }
-        // The institutions.
-        if self.orgs.is_empty() || self.orgs.len() > MAX_PORT_ORGS {
+        // Doc 20 cut SM.2 (§3.1: "a validator rule letting a site entry author zero
+        // orgs and only a pad room"): a site is a pad and its block terms, nothing
+        // else; its gallery and routes are checked below as every port's are.
+        if let Some(site) = &self.site {
+            if !self.orgs.is_empty()
+                || !self.rooms.is_empty()
+                || !self.vendors.is_empty()
+                || self.programme.is_some()
+                || self.premium.is_some()
+                || self.emergency.is_some()
+                || self.vehicles.is_some()
+            {
+                // Doc 20 cut SM.3a: nor a rig pool (rigs are leased at a station).
+                return Err(
+                    "site: a site authors no orgs, rooms, programme, vendors, premium or \
+                     emergency, and no vehicles block; its pad is its gallery"
+                        .to_owned(),
+                );
+            }
+            site.check()?;
+        } else if self.orgs.is_empty() || self.orgs.len() > MAX_PORT_ORGS {
+            // The institutions.
             return Err(format!(
                 "orgs: a port authors 1..={MAX_PORT_ORGS} orgs, not {}",
                 self.orgs.len()
@@ -546,6 +851,94 @@ impl PortDef {
         // vendor's fault is named as the vendor's.
         if let Some(emergency) = &self.emergency {
             self.check_emergency(emergency)?;
+        }
+        // Doc 20 cut SM.3a: the rig pool.
+        if let Some(vehicles) = &self.vehicles {
+            self.check_vehicles(vehicles)?;
+        }
+        Ok(())
+    }
+
+    /// **The rig pool's bounds** (doc 20 cut SM.3a; §4.3, Q-20-6): its org one
+    /// of the entry's, its counter a key of `rooms`, the issuer a system
+    /// principal, the shed a label, the pool, prefix and term in bounds, the
+    /// money positive, and every tool a row of the compiled tools table, none
+    /// twice. Each sentence starts `vehicles {id}: `.
+    fn check_vehicles(&self, vehicles: &VehiclesDef) -> Result<(), String> {
+        let vid = &vehicles.id;
+        if !self.orgs.iter().any(|org| org.id == vehicles.org) {
+            return Err(format!(
+                "vehicles {vid}: org {} is not one of this port's orgs",
+                vehicles.org
+            ));
+        }
+        if !self.rooms.contains_key(&vehicles.counter) {
+            return Err(format!(
+                "vehicles {vid}: counter `{}` is not one of this port's rooms",
+                vehicles.counter
+            ));
+        }
+        if !principal_ok(&vehicles.issuer) {
+            return Err(format!(
+                "vehicles {vid}: issuer `{}` is not a system principal id",
+                vehicles.issuer
+            ));
+        }
+        if !label_ok(&vehicles.shed) {
+            return Err(format!(
+                "vehicles {vid}: shed must be non-blank and at most {MAX_LABEL_BYTES} bytes"
+            ));
+        }
+        if vehicles.pool == 0 || vehicles.pool > MAX_VEHICLE_POOL {
+            return Err(format!(
+                "vehicles {vid}: pool must be 1..={MAX_VEHICLE_POOL}, not {}",
+                vehicles.pool
+            ));
+        }
+        let prefix = &vehicles.registry_prefix;
+        if prefix.is_empty()
+            || prefix.len() > MAX_REGISTRY_PREFIX_BYTES
+            || !prefix
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(format!(
+                "vehicles {vid}: registry_prefix must be 1..={MAX_REGISTRY_PREFIX_BYTES} bytes \
+                 of [A-Z0-9-], not `{prefix}`"
+            ));
+        }
+        for (field, major) in [
+            ("fee_major", vehicles.fee_major),
+            ("deposit_major", vehicles.deposit_major),
+        ] {
+            if major == 0 || major > MAX_PORT_CAPITAL_MAJOR {
+                return Err(format!(
+                    "vehicles {vid}: {field} must be 1..={MAX_PORT_CAPITAL_MAJOR}, not {major}"
+                ));
+            }
+        }
+        if vehicles.term_ic_days == 0 || vehicles.term_ic_days > MAX_VEHICLE_TERM_IC_DAYS {
+            return Err(format!(
+                "vehicles {vid}: term_ic_days must be 1..={MAX_VEHICLE_TERM_IC_DAYS}, not {}",
+                vehicles.term_ic_days
+            ));
+        }
+        if vehicles.tools.is_empty() || vehicles.tools.len() > MAX_VEHICLE_TOOLS {
+            return Err(format!(
+                "vehicles {vid}: tools names 1..={MAX_VEHICLE_TOOLS} tools, not {}",
+                vehicles.tools.len()
+            ));
+        }
+        let table = crate::definitions::tools::tools_table()
+            .map_err(|error| format!("vehicles {vid}: the tools table does not load: {error}"))?;
+        let mut seen: BTreeSet<&CanonicalId> = BTreeSet::new();
+        for tool in &vehicles.tools {
+            if !table.contains_key(tool) {
+                return Err(format!("vehicles {vid}: tool {tool} is not a shipped tool"));
+            }
+            if !seen.insert(tool) {
+                return Err(format!("vehicles {vid}: tool {tool} is named twice"));
+            }
         }
         Ok(())
     }
@@ -745,6 +1138,27 @@ impl PortDef {
                 programme.dormancy_real_days
             ));
         }
+        // Doc 20 cut SM.3a (§4.3, D-20-7): the refit rows. `refit_compatible` is
+        // the apply preflight's, where the catalog is.
+        if programme.refits.len() > MAX_PROGRAMME_REFITS {
+            return Err(format!(
+                "programme {pid}: refits holds at most {MAX_PROGRAMME_REFITS} rows, not {}",
+                programme.refits.len()
+            ));
+        }
+        for (word, unit) in &programme.refits {
+            if word.as_str() == STANDARD_REFIT {
+                return Err(format!(
+                    "programme {pid}: refit `{STANDARD_REFIT}` is the programme's own unit and \
+                     is never authored"
+                ));
+            }
+            if *unit == programme.unit {
+                return Err(format!(
+                    "programme {pid}: refit `{word}` names the programme's own unit {unit}"
+                ));
+            }
+        }
         // Doc 18 cut IC6 (D-18-25, lead ruling L5): one `tacsim:coop:{account}`
         // document per gateway account holds one enrolment, so the programme can
         // promise exactly one.
@@ -810,8 +1224,30 @@ pub fn check_ports(
     let mut locations: BTreeSet<&CanonicalId> = BTreeSet::new();
     let mut orgs: BTreeMap<&CanonicalId, &CanonicalId> = BTreeMap::new();
     let mut agents: BTreeMap<&CanonicalId, &CanonicalId> = BTreeMap::new();
+    // Doc 20 cut SM.3a (reviewer F11): one rig lessor a lane.
+    let mut lessor: Option<&CanonicalId> = None;
     for (id, def) in &ports {
         let fail = |detail: String| Err(((*id).clone(), detail));
+        // Doc 20 cut SM.3a (reviewer F11): at most one port of the pack authors a
+        // rig pool, and that port runs the programme the rigs are leased into —
+        // so the vehicles port **is** the programme port. The one-lessor rule is
+        // checked first (entries iterate in id order).
+        if let Some(vehicles) = &def.vehicles {
+            if let Some(other) = lessor {
+                return fail(format!(
+                    "vehicles: port {id} also authors a vehicles block (port {other}'s); a lane \
+                     has one rig lessor"
+                ));
+            }
+            if def.programme.is_none() {
+                return fail(format!(
+                    "vehicles {}: port {id} authors no programme; rigs are leased into the \
+                     programme's hulls",
+                    vehicles.id
+                ));
+            }
+            lessor = Some(*id);
+        }
         // Doc 18 cut IC8 (lead ruling L2): a stock clerk is one port's.
         if let Some(vendor) = def.vendors.first()
             && let Some(other) = agents.insert(&vendor.agent, id)
@@ -839,6 +1275,76 @@ pub fn check_ports(
         for org in &def.orgs {
             if let Some(other) = orgs.insert(&org.id, id) {
                 return fail(format!("org {} is also authored by port {other}", org.id));
+            }
+        }
+    }
+    // Doc 20 cut SM.2 (§3.1, D-20-2): a site's place, body and Registry.
+    for (id, def) in &ports {
+        let fail = |detail: String| Err(((*id).clone(), detail));
+        let Some(PackEntry::Location(place)) = entries.get(&def.location) else {
+            continue;
+        };
+        let is_site_place = place.role.as_str() == crate::pack::SITE_ROLE;
+        let Some(site) = &def.site else {
+            if is_site_place {
+                return fail(format!(
+                    "location {} has role {}, which only a site's port may stand on",
+                    def.location,
+                    crate::pack::SITE_ROLE
+                ));
+            }
+            continue;
+        };
+        if !is_site_place {
+            return fail(format!(
+                "site: location {} has role {}, not {}",
+                def.location,
+                place.role,
+                crate::pack::SITE_ROLE
+            ));
+        }
+        let Some(body) = &place.body else {
+            return fail(format!("site: location {} stands on no body", def.location));
+        };
+        if place.lat_mdeg.is_none() || place.lon_mdeg.is_none() {
+            return fail(format!(
+                "site: location {} authors no lat_mdeg and lon_mdeg",
+                def.location
+            ));
+        }
+        let Some(PackEntry::Body(figures)) = entries.get(body) else {
+            return fail(format!(
+                "site: body {body} is not a body entry of this pack"
+            ));
+        };
+        for (field, missing) in [
+            ("surface_mg", figures.surface_mg.is_none()),
+            ("radius_km", figures.radius_km.is_none()),
+            ("geology", figures.geology.is_none()),
+        ] {
+            if missing {
+                return fail(format!("site: body {body} authors no {field}"));
+            }
+        }
+        if site.name != place.label {
+            return fail(format!(
+                "site: name `{}` is not its location's label `{}`",
+                site.name, place.label
+            ));
+        }
+        if !orgs.contains_key(&site.issuer) {
+            return fail(format!(
+                "site: issuer {} is not an org of any port of this pack",
+                site.issuer
+            ));
+        }
+        for (letter, row) in &site.blocks {
+            if let Some(holder) = &row.holder
+                && !orgs.contains_key(holder)
+            {
+                return fail(format!(
+                    "site: block {letter}: holder {holder} is not an org of any port of this pack"
+                ));
             }
         }
     }
@@ -1001,11 +1507,14 @@ mod tests {
                 buyout_major: 90_000,
                 dormancy_real_days: 7,
                 per_account: 1,
+                refits: BTreeMap::new(),
             }),
             vendors: Vec::new(),
             routes: BTreeMap::from([(cid("stickney"), vec![cid("out")])]),
             premium: None,
             emergency: None,
+            site: None,
+            vehicles: None,
         }
     }
 
@@ -1203,5 +1712,163 @@ mod tests {
                 crate::port::stock::MAX_CLERK_ROWS
             )
         );
+    }
+
+    /// A site's port: a pad gallery, one route, the site block.
+    fn site_port() -> PortDef {
+        PortDef {
+            location: cid("ahuna_flank"),
+            venue: cid("ahuna"),
+            area: cid("neighborhood.ahuna_flank"),
+            gallery: "neighborhood.ahuna_flank.room.pad".to_owned(),
+            rooms: BTreeMap::new(),
+            treasury: default_treasury(),
+            orgs: Vec::new(),
+            programme: None,
+            vendors: Vec::new(),
+            routes: BTreeMap::from([(cid("ceres"), vec![cid("ahuna_ceres")])]),
+            premium: None,
+            emergency: None,
+            site: Some(SiteDef {
+                name: "Ahuna Flank".to_owned(),
+                issuer: cid("freeport_registry"),
+                zone: Zone::Core,
+                tenure: SiteTenureDef {
+                    default: Tenure::Open,
+                },
+                blocks: BTreeMap::new(),
+            }),
+            vehicles: None,
+        }
+    }
+
+    /// **Doc 20 cut SM.2 (§3.1)**: the site block's own bounds — zero orgs and no
+    /// rooms are legal for a site and only for a site; each other rule refuses by
+    /// name; the letters map onto SM.1's south-west-indexed shifts from the
+    /// north-west.
+    #[test]
+    fn sm2_the_site_block_keeps_its_own_bounds() {
+        assert_eq!(refused(&site_port()), "accepted");
+        let site = |edit: &dyn Fn(&mut SiteDef)| {
+            let mut def = site_port();
+            if let Some(site) = def.site.as_mut() {
+                edit(site);
+            }
+            refused(&def)
+        };
+        let mut def = site_port();
+        def.orgs.push(org("coop", 1));
+        assert!(refused(&def).starts_with("site: a site authors no orgs"));
+        let mut def = site_port();
+        def.rooms.insert(cid("registry"), def.gallery.clone());
+        assert!(refused(&def).starts_with("site: a site authors no orgs"));
+        let mut def = site_port();
+        def.site = None;
+        assert!(
+            refused(&def).starts_with("orgs:"),
+            "a station still authors orgs"
+        );
+        assert!(site(&|s| s.tenure.default = Tenure::Held).starts_with("site: the default tenure"));
+        let row = |tenure: Option<Tenure>, holder: Option<&str>| BlockDef {
+            tenure,
+            holder: holder.map(cid),
+            ..BlockDef::default()
+        };
+        assert_eq!(
+            site(&|s| {
+                s.blocks
+                    .insert("F".to_owned(), row(Some(Tenure::Held), None));
+            }),
+            "site: block F: a held block names its holder, and only a held block does"
+        );
+        assert!(
+            site(&|s| {
+                s.blocks
+                    .insert("F".to_owned(), row(Some(Tenure::Open), Some("occator")));
+            })
+            .contains("a held block names its holder")
+        );
+        assert_eq!(
+            site(&|s| {
+                s.blocks
+                    .insert("F".to_owned(), row(Some(Tenure::Held), Some("occator")));
+            }),
+            "accepted"
+        );
+        assert!(
+            site(&|s| {
+                s.blocks.insert("Q".to_owned(), BlockDef::default());
+            })
+            .contains("is not a block letter")
+        );
+        assert!(
+            site(&|s| {
+                s.blocks.insert("AB".to_owned(), BlockDef::default());
+            })
+            .contains("is not a block letter")
+        );
+        let shifted = |p: i8| {
+            site(&|s| {
+                s.blocks.insert(
+                    "A".to_owned(),
+                    BlockDef {
+                        prospectivity: p,
+                        ..BlockDef::default()
+                    },
+                );
+            })
+        };
+        assert_eq!(shifted(3), "accepted");
+        assert_eq!(shifted(-3), "accepted");
+        assert!(shifted(4).contains("prospectivity is -3 to 3, not 4"));
+        let worked = |w: u16| {
+            site(&|s| {
+                s.blocks.insert(
+                    "A".to_owned(),
+                    BlockDef {
+                        worked_permille: w,
+                        ..BlockDef::default()
+                    },
+                );
+            })
+        };
+        assert_eq!(worked(1_000), "accepted");
+        assert!(worked(1_001).contains("worked_permille is 0 to 1000, not 1001"));
+        assert!(site(&|s| s.name = " ".to_owned()).starts_with("site: name"));
+        // `frontier` does not parse (§9.5); `core` does.
+        assert!(serde_json::from_str::<Zone>("\"frontier\"").is_err());
+        assert_eq!(
+            serde_json::from_str::<Zone>("\"core\"").ok(),
+            Some(Zone::Core)
+        );
+
+        // The letters, from the north-west, onto SM.1's south-west slots: A is
+        // the north-west block (bx 0, by 3 → slot 12), D the north-east (slot 15),
+        // M the south-west (slot 0), P the south-east (slot 3).
+        let mut def = site_port();
+        if let Some(site) = def.site.as_mut() {
+            for (letter, p) in [("A", 1), ("D", 2), ("M", -1), ("P", -2), ("F", 3)] {
+                site.blocks.insert(
+                    letter.to_owned(),
+                    BlockDef {
+                        prospectivity: p,
+                        ..BlockDef::default()
+                    },
+                );
+            }
+        }
+        let shifts = def.site.as_ref().map(SiteDef::shifts).unwrap_or_default();
+        let mut want = [0_i8; 16];
+        want[12] = 1;
+        want[15] = 2;
+        want[0] = -1;
+        want[3] = -2;
+        want[9] = 3; // F: i 5 → bx 1, by 2 → slot 9
+        assert_eq!(shifts, want);
+        // The serde defaults: a site's entry re-encodes without rooms or orgs, with
+        // the treasury.
+        let json = serde_json::to_value(site_port()).unwrap_or_default();
+        assert!(json.get("rooms").is_none() && json.get("orgs").is_none());
+        assert_eq!(json["treasury"], "tacsim.treasury");
     }
 }

@@ -1,0 +1,349 @@
+{
+  "manifest": {
+    "id": "neighborhood.occator_rim",
+    "version": 1,
+    "kind": "neighborhood",
+    "digest": "18ac2c2dabf0a50e30fa6ced16b5a6ccfaefb3ddf09d382f08860bfce316a517",
+    "requires": [
+      {
+        "id": "region.occator_rim",
+        "version": 1
+      }
+    ]
+  },
+  "brief": {
+    "prose": "Occator Rim stands on the northern rim of Occator crater, north of the Freeport at its centre. The Registry rules it; Occator Water & Propellant holds the four central blocks around the pad, and the outer ground is open to any licensed claimant. The rim ground is richer than the crater floor and has been surveyed as such since the Freeport's first decade."
+  },
+  "entries": {
+    "neighborhood": {
+      "kind": "neighborhood",
+      "def": {
+        "region": "region.occator_rim",
+        "locality": "locality.occator_rim",
+        "name": "Occator Rim",
+        "setting": "surface",
+        "representation": "authored",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            0
+          ],
+          [
+            2560,
+            2560
+          ],
+          [
+            0,
+            2560
+          ]
+        ],
+        "room_budget": {
+          "target": 1,
+          "maximum": 1
+        },
+        "hydration": {
+          "enabled": false,
+          "max_player_sites": 0
+        },
+        "resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350: the sites",
+          "style_guide": "Present tense, no second person, no named NPCs in a room desc. A site is a Registry pad on open ground: a cleared landing square, tie-down rings, a painted pad number, and the body's own ground around it. Nothing is built here but the pad; the horizon is close and the light is hard. Desc length medium (60-120 words); details are one or two sentences, dry, with a fact in them.",
+          "vocabulary": [
+            "pad",
+            "tie-down",
+            "regolith",
+            "ice",
+            "crater",
+            "rim",
+            "Registry",
+            "survey stake",
+            "block",
+            "commons",
+            "claim",
+            "Ceres",
+            "Vesta",
+            "Freeport",
+            "horizon"
+          ],
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "shields",
+            "stardate",
+            "hangar bay",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "room.pad": {
+      "kind": "room",
+      "def": {
+        "name": "Occator Rim Pad",
+        "short_desc": "A cleared landing square on the northern rim of Occator, the crater falling away to the south.",
+        "desc": "The pad is cut into the rim crest and levelled, tie-down rings around its edge and the Registry number FR-07 painted at its corners. Occator Water & Propellant's boundary posts stand on four sides of it, each with the company's blue band. To the south the ground drops away into the crater, its floor grey and wide, the bright faculae at its centre always in view, white against the grey. North of the crest the rim slopes off into broken ground under a close horizon.",
+        "surface": "ground",
+        "footprint": {
+          "rect": [
+            [
+              1260,
+              1260
+            ],
+            [
+              1300,
+              1300
+            ]
+          ]
+        },
+        "kind": "outdoor",
+        "markers": [
+          "port.dock"
+        ],
+        "details": {
+          "boundary posts": "Steel posts with a blue band and a claim plate: the holder's name, the block letters and the tenure date. The plates are bolted, not painted.",
+          "faculae": "The bright deposits at the crater's centre, where the Freeport stands. From the rim they are a white smear on the grey."
+        }
+      }
+    },
+    "feature.crater_1": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            600,
+            2100
+          ],
+          [
+            581,
+            2159
+          ],
+          [
+            531,
+            2195
+          ],
+          [
+            469,
+            2195
+          ],
+          [
+            419,
+            2159
+          ],
+          [
+            400,
+            2100
+          ],
+          [
+            419,
+            2041
+          ],
+          [
+            469,
+            2005
+          ],
+          [
+            531,
+            2005
+          ],
+          [
+            581,
+            2041
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    },
+    "feature.crater_2": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            2170,
+            2000
+          ],
+          [
+            2157,
+            2041
+          ],
+          [
+            2122,
+            2067
+          ],
+          [
+            2078,
+            2067
+          ],
+          [
+            2043,
+            2041
+          ],
+          [
+            2030,
+            2000
+          ],
+          [
+            2043,
+            1959
+          ],
+          [
+            2078,
+            1933
+          ],
+          [
+            2122,
+            1933
+          ],
+          [
+            2157,
+            1959
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    },
+    "feature.crater_3": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            2290,
+            500
+          ],
+          [
+            2273,
+            553
+          ],
+          [
+            2228,
+            586
+          ],
+          [
+            2172,
+            586
+          ],
+          [
+            2127,
+            553
+          ],
+          [
+            2110,
+            500
+          ],
+          [
+            2127,
+            447
+          ],
+          [
+            2172,
+            414
+          ],
+          [
+            2228,
+            414
+          ],
+          [
+            2273,
+            447
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    },
+    "feature.crater_4": {
+      "kind": "feature",
+      "def": {
+        "feature_kind": "crater",
+        "surface": "ground",
+        "polygon": [
+          [
+            510,
+            500
+          ],
+          [
+            499,
+            535
+          ],
+          [
+            469,
+            557
+          ],
+          [
+            431,
+            557
+          ],
+          [
+            401,
+            535
+          ],
+          [
+            390,
+            500
+          ],
+          [
+            401,
+            465
+          ],
+          [
+            431,
+            443
+          ],
+          [
+            469,
+            443
+          ],
+          [
+            499,
+            465
+          ]
+        ],
+        "z_range": [
+          0,
+          15
+        ],
+        "blocks": {
+          "movement": false,
+          "sight": true
+        }
+      }
+    }
+  }
+}

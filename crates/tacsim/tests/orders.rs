@@ -1136,7 +1136,7 @@ fn ic11_the_verbs_edit_the_plan() {
         out.contains(&format!(
             "Order 2 filed: depart for Stickney Yards at {} UTC ",
             hhmm(at)
-        )) && out.contains(", until 1 h 0 m after. The sailing plan is at revision 2."),
+        )) && out.contains(", until 1 h 0 min after. The sailing plan is at revision 2."),
         "{out}"
     );
     assert!(!out.contains("fires on the next tick"), "{out}");
@@ -1185,7 +1185,7 @@ fn ic11_the_verbs_edit_the_plan() {
             "depart stickney via=nowhere",
             VIA_UNKNOWN
                 .replace("{via}", "nowhere")
-                .replace("{list}", "Aitken Highport, Ceres Freeport, Kirkwood Depot, Ligeia Terminal, Stickney Yards, Voltaire Anchorage"),
+                .replace("{list}", "Ahuna Flank, Aitken Highport, Ceres Freeport, Freeport Commons, Juling Shadow, Kerwan Floor, Kirkwood Depot, Ligeia Terminal, Occator Rim, Rheasilvia Commons, Stickney Yards, Voltaire Anchorage"),
         ),
         (
             "depart stickney throttle=100",
@@ -1200,15 +1200,17 @@ fn ic11_the_verbs_edit_the_plan() {
             "buy unobtainium 5",
             UNKNOWN_GOOD.replace(
                 "{list}",
+                // Doc 20 cut SM.3a: goods v3's four ores close the list.
                 "metals, volatiles, structural_alloys, industrial_parts, propellant, provisions, \
-                 instrument_boards, carbon_feedstock",
+                 instrument_boards, carbon_feedstock, metal_ore, ice_ore, carbon_ore, \
+                 strategic_ore",
             ),
         ),
         (
             "depart mars",
             UNKNOWN_PORT.replace(
                 "{list}",
-                "Ceres Freeport, Voltaire Anchorage, Aitken Highport, Stickney Yards, Ligeia Terminal",
+                "Ahuna Flank, Ceres Freeport, Freeport Commons, Voltaire Anchorage, Juling Shadow, Kerwan Floor, Aitken Highport, Occator Rim, Rheasilvia Commons, Stickney Yards, Ligeia Terminal",
             ),
         ),
     ] {
@@ -1249,7 +1251,7 @@ fn ic11_the_verbs_edit_the_plan() {
         out.contains("Next due: order 2, departure for Stickney Yards, "),
         "{out}"
     );
-    assert!(out.contains("; in 2 h 0 m)"), "{out}");
+    assert!(out.contains("; in 2 h 0 min)"), "{out}");
 
     // Sixteen orders: a 17th drops the skipped one; then sixteen open refuse.
     for _ in 0..13 {
@@ -2936,7 +2938,7 @@ fn ic11_a_depart_with_no_route_holds_until_edited() {
         "{reason}",
         &NO_ROUTE
             .replace("{here}", "Ceres Freeport")
-            .replace("{list}", "Aitken Highport, Stickney Yards"),
+            .replace("{list}", "Ahuna Flank, Freeport Commons, Juling Shadow, Kerwan Floor, Aitken Highport, Occator Rim, Rheasilvia Commons, Stickney Yards"),
     );
     let doc = orders(&rig.tw, hull);
     assert_eq!(doc.state, PlanState::Held);
@@ -3014,9 +3016,14 @@ fn lane_planner(
         .expect("the Dray");
     let logistics = spec.logistics.clone().expect("logistics");
     let drive = tacsim::port::HullDrive {
-        class: logistics.drive.class.clone(),
+        class: logistics
+            .drive
+            .as_ref()
+            .expect("the Dray's drive")
+            .class
+            .clone(),
         law: *catalog
-            .drive_for_class(&logistics.drive.class)
+            .drive_for_class(&logistics.drive.as_ref().expect("the Dray's drive").class)
             .expect("a law"),
         payload_ceiling_kg: logistics.payload_ceiling_kg,
         throttle_permille: tacsim::port::DEFAULT_THROTTLE_PERMILLE,
@@ -3930,7 +3937,7 @@ fn ic11_the_status_line_names_the_departure_hour() {
     let out = run(&mut rig.tw, pilot, "look");
     assert!(
         out.contains(&format!(
-            "Aboard the Salt Moth ({mark}), docked at Ceres Freeport; departs {} UTC (in 2 h 0 m).",
+            "Aboard the Salt Moth ({mark}), docked at Ceres Freeport; departs {} UTC (in 2 h 0 min).",
             hhmm(at)
         )),
         "{out}"
@@ -3943,7 +3950,7 @@ fn ic11_the_status_line_names_the_departure_hour() {
     let out = run(&mut rig.tw, pilot, "look");
     assert!(
         out.contains(&format!(
-            "Aboard the Salt Moth ({mark}), docked at Ceres Freeport; departs {} UTC (in 2 h 0 m).",
+            "Aboard the Salt Moth ({mark}), docked at Ceres Freeport; departs {} UTC (in 2 h 0 min).",
             hhmm(at)
         )),
         "the Bridge: {out}"
@@ -3953,7 +3960,7 @@ fn ic11_the_status_line_names_the_departure_hour() {
     assert_eq!(location(&rig.tw, pilot), Some(room_of(&row, "airlock")));
     let out = run(&mut rig.tw, pilot, "+ship");
     assert!(
-        out.contains(&format!("; departs {} UTC (in 2 h 0 m).", hhmm(at))),
+        out.contains(&format!("; departs {} UTC (in 2 h 0 min).", hhmm(at))),
         "{out}"
     );
     // With the depart at the cursor, `+ship/plan`'s affordable line reserves THAT
@@ -4195,7 +4202,7 @@ fn ic14_a_queued_depart_never_resolves_by_prefix() {
         "{reason}",
         &NO_ROUTE
             .replace("{here}", "Ceres Freeport")
-            .replace("{list}", "Aitken Highport, Stickney Yards"),
+            .replace("{list}", "Ahuna Flank, Freeport Commons, Juling Shadow, Kerwan Floor, Aitken Highport, Occator Rim, Rheasilvia Commons, Stickney Yards"),
     );
     let doc = orders(&rig.tw, hull);
     assert_eq!(doc.state, PlanState::Held, "{:#?}", doc.log);

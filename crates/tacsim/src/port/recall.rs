@@ -126,6 +126,15 @@ pub const NOT_REVOKED: &str = "Not revoked: ";
 pub const REVOKED_REPLY: &str = "Charter of the {name} ({mark}) revoked from {pilot}: {why}. The Dray is back in the Co-op's pool.";
 /// The revocation whose lease end is retrying: `{name}`, `{mark}`, `{pilot}`, `{why}`.
 pub const REVOKED_RETRYING: &str = "Charter of the {name} ({mark}) revoked from {pilot}: {why}. The lease end is retrying; the Dray returns when it completes.";
+/// **A rig in the bay** (doc 20 cut SM.3a; reviewer F1): `{name}`. The pilot's own
+/// `+coop/release` refuses with it (the pilot hands the rigs back first); a revoke,
+/// the dormancy recall and the return arm repossess the rigs instead
+/// (`recall_block_clearing`).
+pub const RECALL_BAY: &str =
+    "The {name} still carries a rig in her bay; she goes back to the Co-op with an empty bay.";
+/// **The page a bay block raises** on the recall arm (doc 20 cut SM.3a; reviewer F1:
+/// the hold-and-revoke advice cannot clear a rig, so the page says what does).
+pub const BAY_PAGE: &str = "tacsim: the hull's charter is ending but a rig in its bay cannot go back to Occator (its hopper is not empty, or its lease record cannot be read, or its lease will not end, or the hull's unit is bound to a definition that is not a hull (not fielded, or fielded with no interior or no logistics) so its bay cannot be read, or a rig is out on a site or mid-act (its tacsim.excursion record holds an act or an open excursion)); staff empty the hopper (staff may take from a hopper vault), repair the tacsim:tvlease: record, or bind the hull's unit back to the Dray or the Dray-P; a rig out on a site holds until its pilot recovers it (+tv/<n> recover) or its act finishes; the recall retries";
 
 /// Why a hull goes back (maps to [`EndCause`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,6 +184,9 @@ pub(crate) enum RecallBlock {
     Unreadable,
     /// The economy frozen, the Trust or the vault unresolved.
     Economy,
+    /// **A rig in the hull's bay** (doc 20 cut SM.3a; reviewer F1). Checked last,
+    /// so a `Bay` block means every other recall check passed.
+    Bay,
 }
 
 /// What a recall did.
@@ -204,7 +216,8 @@ fn hold_of(e: &Enrolment) -> EndpointRef {
 }
 
 /// **The read-only checks, in this order** (none writes): the berth at the
-/// programme port, nothing in flight, an empty cargo pool, then the economy.
+/// programme port, nothing in flight, an empty cargo pool, the economy, and —
+/// since doc 20 cut SM.3a, last (check 7) — an empty vehicle bay.
 pub(crate) fn recall_block(ctx: &Ctx<'_>, e: &Enrolment) -> Option<(RecallBlock, String)> {
     let w: &World = ctx.w;
     let economy_block = || {
@@ -271,7 +284,61 @@ pub(crate) fn recall_block(ctx: &Ctx<'_>, e: &Enrolment) -> Option<(RecallBlock,
     {
         return economy_block();
     }
+    // 7. Doc 20 cut SM.3a (reviewer F1): the bay is empty — no placement `Interior`
+    // in the hull's bay room, and no live lease record naming the hull (reviewer
+    // finding correctness/F2: a record whose rig is out of the bay still holds the
+    // hull, so no charter ends with a live rig lease). Last, so a `Bay` block means
+    // everything else passed.
+    //
+    // **An unreadable view fails closed** (the SM.3a pre-commit round, correctness
+    // F5): `hull_view` is `None` when the hull's live unit is bound to a definition
+    // that is not a hull — one the fielded catalog does not hold, or one it fields
+    // with no interior or no logistics (a staff `@unit` re-create, say) — and then
+    // nothing here can see the bay, so the hull is treated as carrying a rig. The
+    // pilot's `+coop/release` hears the rigs' dark line; a revoke, the dormancy
+    // recall and the return arm reach `recall_block_clearing`, whose repossession
+    // refuses on the same missing view, so the hull is held and staff are paged
+    // ([`BAY_PAGE`]), exactly as for a hopper that is not empty.
+    let Some(view) = hull_view(w, e.hull) else {
+        tracing::error!(
+            hull = e.hull.0,
+            pilot = e.pilot.0,
+            "tacsim: a recall cannot read the hull's view, so it cannot see the bay; the hull is held"
+        );
+        return Some((RecallBlock::Bay, named(crate::port::tv::TV_DARK, e)));
+    };
+    if crate::port::tv::bay_slot_word(w, &view).is_some() {
+        return Some((RecallBlock::Bay, named(RECALL_BAY, e)));
+    }
     None
+}
+
+/// **`recall_block`, clearing the bay first** (doc 20 cut SM.3a; reviewer F1,
+/// decisions D14 and D16): on a `Bay` block every rig in the bay is repossessed
+/// through [`crate::port::tv::repossess`] and the checks run again — `None` now
+/// unless a rig remains; when the repossession refuses, its reason is logged and
+/// the `Bay` block stands. The three exits that end a charter **without the pilot**
+/// use it (`@coop/revoke`, the dormancy recall, [`return_hull`]); the pilot's own
+/// `+coop/release` and the buyout keep the plain block.
+pub(crate) fn recall_block_clearing(
+    ctx: &mut Ctx<'_>,
+    e: &Enrolment,
+) -> Option<(RecallBlock, String)> {
+    match recall_block(ctx, e) {
+        Some((RecallBlock::Bay, line)) => match crate::port::tv::repossess(ctx, e.hull) {
+            Ok(_) => recall_block(ctx, e),
+            Err(why) => {
+                tracing::error!(
+                    hull = e.hull.0,
+                    pilot = e.pilot.0,
+                    %why,
+                    "tacsim: a charter's end could not repossess the rigs in its bay"
+                );
+                Some((RecallBlock::Bay, line))
+            }
+        },
+        other => other,
+    }
 }
 
 /// The consumables left in the hold: (reaction mass, crew-days). A read error
@@ -449,7 +516,9 @@ pub(crate) fn return_hull(
     ctx: &mut Ctx<'_>,
     e: &Enrolment,
 ) -> Result<RecallDone, (RecallBlock, String)> {
-    if let Some(block) = recall_block(ctx, e) {
+    // Doc 20 cut SM.3a: the return arm and `end_revoked_lease` repossess the bay's
+    // rigs before the hull goes back.
+    if let Some(block) = recall_block_clearing(ctx, e) {
         return Err(block);
     }
     let Some((trust, scope)) = trust_of(ctx.w) else {
@@ -544,8 +613,9 @@ pub(crate) fn recall_outcome<E>(ended: &Result<LeaseEnd, E>) -> RecallOutcome {
 }
 
 /// The asker's own `Active` enrolment with a live charter, or the refusal
-/// (`+coop/buyout`'s check 1, shared by `+coop/release`).
-fn chartered(ctx: &Ctx<'_>) -> Result<Enrolment, String> {
+/// (`+coop/buyout`'s check 1, shared by `+coop/release`, and since doc 20 cut SM.3a
+/// by `+tv`, `+tv/lease` and `+coop/refit`).
+pub(crate) fn chartered(ctx: &Ctx<'_>) -> Result<Enrolment, String> {
     let w: &World = ctx.w;
     let actor = ctx.actor;
     let own = own_enrolment(w, actor);
@@ -674,7 +744,13 @@ pub(crate) fn revoke_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             NO_COOP_CHARTER.replace("{pilot}", &pilot_name),
         ));
     };
-    if let Some((_, line)) = recall_block(ctx, &e) {
+    // Doc 20 cut SM.3a: a revoke repossesses the rigs in the bay first; a refusal
+    // after a repossession wrote anything pins the deferred queue, so RAM and the
+    // store agree on the rigs already back in the shed.
+    if let Some((block, line)) = recall_block_clearing(ctx, &e) {
+        if block == RecallBlock::Bay {
+            ctx.out.pin_deferred();
+        }
         return Err(CmdError::msg(format!("{NOT_REVOKED}{line}")));
     }
     let by = ctx.actor;
@@ -983,7 +1059,8 @@ pub(crate) fn recall_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: Ob
         if dormant(ctx, &e, days) != Ok(true) {
             return Step::Idle;
         }
-        let blocked = match recall_block(ctx, &e) {
+        // Doc 20 cut SM.3a: the dormancy recall repossesses the bay's rigs first.
+        let blocked = match recall_block_clearing(ctx, &e) {
             None => match recall(ctx, &e, RecallCause::Dormant) {
                 Ok(_) => return Step::Worked,
                 Err(block) => block,
@@ -994,13 +1071,17 @@ pub(crate) fn recall_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: Ob
         let reason = named(HELD_DORMANT, &e).replace("{port}", &port);
         let wrote = hold_plan(ctx, &e, &reason, true, true);
         if page_once(state, hull) {
-            tracing::error!(
-                hull = hull.0,
-                pilot = e.pilot.0,
-                block = ?blocked.0,
-                "tacsim: the hull is dormant but cannot be recalled where it is; get it docked \
-                 at Ceres with an empty hold, or `@coop/revoke` once it is"
-            );
+            if blocked.0 == RecallBlock::Bay {
+                tracing::error!(hull = hull.0, pilot = e.pilot.0, block = ?blocked.0, "{BAY_PAGE}");
+            } else {
+                tracing::error!(
+                    hull = hull.0,
+                    pilot = e.pilot.0,
+                    block = ?blocked.0,
+                    "tacsim: the hull is dormant but cannot be recalled where it is; get it docked \
+                     at Ceres with an empty hold, or `@coop/revoke` once it is"
+                );
+            }
         }
         state.recall_backoff.insert(hull.0, state.fires);
         return if wrote { Step::Worked } else { Step::Idle };
@@ -1036,13 +1117,17 @@ pub(crate) fn recall_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: Ob
         Err((block, _)) => {
             let wrote = hold_plan(ctx, &e, &named(HELD_RECALLED, &e), true, true);
             if page_once(state, hull) {
-                tracing::error!(
-                    hull = hull.0,
-                    pilot = e.pilot.0,
-                    ?block,
-                    "tacsim: a revoked hull is not back in the pool: it is not docked at Ceres \
-                     with an empty hold; staff move its cargo or hull by hand"
-                );
+                if block == RecallBlock::Bay {
+                    tracing::error!(hull = hull.0, pilot = e.pilot.0, ?block, "{BAY_PAGE}");
+                } else {
+                    tracing::error!(
+                        hull = hull.0,
+                        pilot = e.pilot.0,
+                        ?block,
+                        "tacsim: a revoked hull is not back in the pool: it is not docked at Ceres \
+                         with an empty hold; staff move its cargo or hull by hand"
+                    );
+                }
             }
             state.recall_backoff.insert(hull.0, state.fires);
             if wrote { Step::Worked } else { Step::Idle }

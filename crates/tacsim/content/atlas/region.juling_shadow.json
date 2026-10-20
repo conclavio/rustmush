@@ -1,0 +1,91 @@
+{
+  "manifest": {
+    "id": "region.juling_shadow",
+    "version": 1,
+    "kind": "region",
+    "digest": "8c1b558d1e6aa3430284c7730687c8fb7a15a34a5339a7401816fcd1d1a16ec7",
+    "requires": []
+  },
+  "brief": {
+    "prose": "Juling Shadow lies under the shadowed wall of Juling crater, far south on Ceres, where the sun stays low and ice survives at the surface: the coldest of the Registry's open ground, its regolith frozen hard and glittering."
+  },
+  "entries": {
+    "region.juling_shadow": {
+      "kind": "region",
+      "def": {
+        "name": "Juling Shadow",
+        "kind": "surface",
+        "body": "ceres",
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            2560
+          ]
+        ],
+        "datum_m": 0,
+        "background": {
+          "surface": "regolith",
+          "mix": [
+            [
+              "ice",
+              40
+            ],
+            [
+              "rock",
+              12
+            ]
+          ],
+          "relief_cm": 100,
+          "relief_period_cm": 1000,
+          "seed": 2604
+        },
+        "ground_resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350",
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "locality.juling_shadow": {
+      "kind": "locality",
+      "def": {
+        "region": "region.juling_shadow",
+        "name": "Juling Shadow",
+        "kind": "extraction",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            2560,
+            0
+          ],
+          [
+            2560,
+            2560
+          ],
+          [
+            0,
+            2560
+          ]
+        ]
+      }
+    }
+  }
+}

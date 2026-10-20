@@ -570,7 +570,8 @@ fn class_caps(
     let mut caps = tacsim::config::ArenaConfig::default().max_units_by_class;
     for (word, cap) in written {
         // Doc 18 cut IC2: `hauler` is a class word `UnitClass::parse` knows and no
-        // arena fields, so it names no cap either (doc 18 §4.2, D-18-29).
+        // arena fields, so it names no cap either (doc 18 §4.2, D-18-29); doc 20
+        // cut SM.3a's `vehicle` is the second such word (D-20-6).
         let class = tacsim::definitions::UnitClass::parse(word)
             .filter(|class| class.fieldable())
             .ok_or_else(|| {
@@ -1352,6 +1353,22 @@ mod tests {
             error.to_string(),
             "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
              drone: hauler"
+        );
+    }
+
+    /// **Doc 20 cut SM.3a** (D-20-6): `vehicle` is the second class word the
+    /// enum knows and no arena fields in phase 1, so the mapper refuses a cap on
+    /// it with the same sentence as the hauler's.
+    #[test]
+    fn sm3a_class_caps_refuse_the_vehicle_word() {
+        let written = std::collections::BTreeMap::from([("vehicle".to_owned(), 1_u32)]);
+        assert_eq!(
+            super::class_caps(&written),
+            Err(
+                "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
+                 drone: vehicle"
+                    .to_owned()
+            )
         );
     }
 

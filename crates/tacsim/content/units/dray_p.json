@@ -1,0 +1,215 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.dray_p",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "67c6558731e386077d89009ad10997585b981de79285e1af990c6d57cbd9ab31",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.unit.dray_p": {
+      "kind": "unit",
+      "def": {
+        "label": "Dray-P prospecting hauler",
+        "class": "hauler",
+        "sections": [
+          {
+            "id": "hull",
+            "facets": [
+              { "id": "front", "armor": 120 },
+              { "id": "left", "armor": 80 },
+              { "id": "right", "armor": 80 },
+              { "id": "rear", "armor": 60 },
+              { "id": "top", "armor": 60 }
+            ],
+            "internals": 600,
+            "consequences": [{ "kind": "destroy_unit" }]
+          },
+          {
+            "id": "hold",
+            "facets": [
+              { "id": "left", "armor": 60 },
+              { "id": "right", "armor": 60 },
+              { "id": "top", "armor": 50 }
+            ],
+            "internals": 400,
+            "consequences": [{ "kind": "slow", "percent": 75 }]
+          },
+          {
+            "id": "drive",
+            "facets": [],
+            "struck_through": { "section": "hull", "facet": "rear" },
+            "internals": 250,
+            "consequences": [{ "kind": "disable_motion" }]
+          }
+        ],
+        "components": [
+          {
+            "id": "power",
+            "section": "hull",
+            "role": {
+              "kind": "power",
+              "capability": "tacsim.power",
+              "states": ["off", "starting", "online"],
+              "initial": "off"
+            }
+          }
+        ],
+        "mobility": {
+          "tracked": {
+            "max_speed_cms": 0,
+            "accel_cms2": 100,
+            "brake_cms2": 200,
+            "turn_rate_mdeg_s": 1000,
+            "reverse_factor_pct": 0
+          }
+        },
+        "facets": [
+          { "band": "front", "sections": [{ "section": "hull", "weight": 100 }] },
+          { "band": "left", "sections": [{ "section": "hull", "weight": 50 }, { "section": "hold", "weight": 50 }] },
+          { "band": "right", "sections": [{ "section": "hull", "weight": 50 }, { "section": "hold", "weight": 50 }] },
+          { "band": "rear", "sections": [{ "section": "hull", "weight": 50 }, { "section": "drive", "weight": 50 }] },
+          { "band": "top", "sections": [{ "section": "hull", "weight": 40 }, { "section": "hold", "weight": 60 }] }
+        ],
+        "silhouettes": [
+          { "band": "front", "width_cm": 1800, "height_cm": 1600 },
+          { "band": "left", "width_cm": 6000, "height_cm": 1600 },
+          { "band": "right", "width_cm": 6000, "height_cm": 1600 },
+          { "band": "rear", "width_cm": 1800, "height_cm": 1600 },
+          { "band": "top", "width_cm": 6000, "height_cm": 1800 }
+        ],
+        "sensor_height_cm": 1500,
+        "logistics": {
+          "dry_mass_t": 240,
+          "stowage": {
+            "cargo": { "accepts": ["stow.bulk", "stow.ore"], "limits": { "si.mass_kg": 86000, "si.volume_l": 103200 } },
+            "propellant": { "accepts": ["stow.propellant"], "limits": { "si.mass_kg": 80000 } },
+            "provisions": { "accepts": ["stow.provisions"], "limits": { "si.mass_kg": 480, "si.volume_l": 1200 } }
+          },
+          "berths": 2,
+          "occupant_allowance_kg": 100,
+          "payload_ceiling_kg": 181000,
+          "drive": { "class": "coast_hauler", "law": { "flip": { "accel_mg": 50, "exhaust_kms": 6000 } } }
+        },
+        "interior": {
+          "space": "airlock",
+          "store": "stowage",
+          "berths_slot": { "id": "berths", "maximum_items": 2 },
+          "rooms": [
+            {
+              "id": "airlock",
+              "name": "Airlock",
+              "kind": "walkable",
+              "short_desc": "A two-person lock, scuffed white, a suit locker and a pressure gauge.",
+              "desc": "A two-person lock, scuffed white, with a suit locker and a pressure gauge whose needle never quite settles. The outer door carries a Stickney Yards builder's plate and a Co-op registry mark stencilled over an older one; its seal light reads the state of the berth beyond. Grab rails are worn to bare metal at hand height. The air is the station's or the ship's depending on which door cycled last, and smells faintly of both. The inner hatch stands open on the passage.",
+              "details": {
+                "outer door": "The seal light: green when a berth gallery is on the other side and the clamps are on, red and steady under way. Beyond it, under way, there is nothing but the dark and the ship's own running lights.",
+                "builders plate": "STICKNEY YARDS, PHOBOS, DRAY-CLASS BULK HAULER, a hull number and a year. Under it a second stencil, newer, the Co-op's linked hands and a registry mark.",
+                "suit locker": "Two suits, inspected and tagged, and the space for a third.",
+                "pressure gauge": "Station-normal, ship-normal, and a hand-painted line between them that somebody labelled \"fine\"."
+              }
+            },
+            {
+              "id": "passage",
+              "name": "Central Passage",
+              "kind": "walkable",
+              "short_desc": "A low spine of grab-rails and cable trays, hatches opening off it.",
+              "desc": "The Dray's spine: a narrow pressurised run of grab-rails and cable trays, with a ladder well up to the bridge and a deck hatch down to the hold, the crew compartment's hatch aft and the lock forward. Cargo tie-points stud the deck along the whole length. The hum of the drive is felt through the handrails more than heard, and the air moves with a steady draught from the scrubbers. A manifest slate is clipped by the bridge ladder, its figures the hold's own.",
+              "details": {
+                "manifest slate": "The hold's contents by good, in tonnes and in cubic metres, two columns with the hold's two limits at their feet, and the tank and the locker under a line.",
+                "tie points": "Recessed rings every metre, for the day the passage is cargo too.",
+                "cable trays": "Power, data, air, in colour-banded runs; a tag on each says which deck plate to lift."
+              }
+            },
+            {
+              "id": "bridge",
+              "name": "Bridge",
+              "kind": "walkable",
+              "short_desc": "Two couches before a curve of displays, the drive ROM's amber pane among them.",
+              "desc": "Two acceleration couches face a curve of flat displays: course and ETA, tankage, the stores locker, the hold manifest, the berth link. The drive ROM's amber pane sits under a sealed plate and reads CLASS 0 — FLIES THE PLAN, DECIDES NOTHING. A clipboard holds a paper copy of the sailing plan, because the dockmaster likes a signature; a Co-op checklist is clipped beside the drive panel. The air is cooler here and smells of warm electronics; the only sound is the fans and, docked, the tick of the berth clamps settling.",
+              "details": {
+                "displays": "COURSE: the route, the leg, the ETA, docked or under way. TANKAGE: reaction mass aboard and the burn the plan needs. STORES: crew-days against the passage. HOLD: tonnes and cubic metres by good against both limits, FULL lit under whichever reads it, or both. BERTH: the gallery's name, or SEALED.",
+                "ROM pane": "CLASS 0. It flies a filed sailing plan to the second and contracts for nothing; the signature on the plan is the captain's, and under the Warrant so is the liability.",
+                "sailing plan": "A paper copy of the sailing plan, the orders numbered, the departure hour circled.",
+                "checklist": "BEFORE CLEARANCE: tank ≥ burn. Locker ≥ days. Payload under the rail. Crew of record aboard. Plan filed. Someone has ticked every box in pen and then added \"sleep\"."
+              }
+            },
+            {
+              "id": "crew",
+              "name": "Crew Compartment",
+              "kind": "walkable",
+              "short_desc": "Two curtained bunks, a fold-down galley, a water still that ticks as it cools.",
+              "desc": "Two bunks behind privacy curtains, a fold-down galley table with a two-ring heater, and a water still that ticks as it cools. The stores locker is set into the bulkhead, its tally card in a plastic sleeve beside the hatch. Someone has taped a Kirkwood Depot shift roster above the left bunk and never taken it down. The air is warmer and softer than the passage and smells of coffee, sealant and the vanilla note of ration bars; the only place aboard that smells of anything but metal. The passage is forward.",
+              "details": {
+                "locker tally": "Crew-days aboard, the passage's need beside it, and a line in the chandler's hand: TWO ABOARD, TWICE THE DAYS.",
+                "bunks": "The left one has a bag on it and a reading lamp; the right one is made with Co-op corners and has never been slept in.",
+                "still": "Station water in, ship water out, a tick every few seconds as the coil cools.",
+                "shift roster": "Kirkwood Depot, a month old, with one name circled and no reason given."
+              }
+            },
+            {
+              "id": "hold",
+              "name": "Cargo Hold",
+              "kind": "walkable",
+              "short_desc": "A tall, cold bay of bins and lashing rails, lit blue, the load cells glowing by the hatch.",
+              "desc": "A tall, cold bay of bulk bins, canister racks and lashing rails under blue work light, crossed by a catwalk from the deck hatch to the engineering ladder. The load cells' readout glows on the forward bulkhead: tonnes and cubic metres by good, and the hold's two limits under them. Frost forms on the ice canisters and nowhere else; the concentrate bins are dusted grey; yard crates, when there are any, take the bay the bins leave. The air is dry and tastes of metal, and every footfall on the catwalk rings down into the stowage frames below. The passage is up; engineering is down.",
+              "details": {
+                "load cells": "One line per good the hold accepts, tonnes and cubic metres side by side, a TOTAL line under them and a LIMIT line under that, with FULL lit under whichever limit reads it, or both; cubic metres to a tenth, truncated, never rounded up. The figures are the cargo's own and change with every lot that comes aboard or leaves.",
+                "bins": "Strapped bulk containers in stowage frames, numbered; behind them the racks nobody walks, where the cargo physically is.",
+                "racks": "The canister racks fill before the bins weigh out: ice runs out of room, concentrate runs out of rating.",
+                "crates": "Yard crates, mostly air and dunnage; four of them fill a bay a single bin of concentrate outweighs.",
+                "lashing rails": "Rated and stencilled; a captain who overloads the hold will not get past the rail, and the cells say so first.",
+                "frost": "On the water-ice canisters only. It is how a crew tells ice from concentrate in the dark."
+              }
+            },
+            {
+              "id": "engineering",
+              "name": "Engineering Access",
+              "kind": "walkable",
+              "short_desc": "A cramped, warm, loud crawlway of pump housings and tank gauges.",
+              "desc": "A crawlway under the hold: pump housings, the reaction-mass feed manifold and its isolation valves, the drive's service panels behind warning stencils, and a row of tank gauges along the aft bulkhead. It is warm and loud, the drive's hum a pressure in the ears, and the air smells of lubricant and hot insulation. A stencil on the reactor shield's bulkhead says not to lean on it. The hold is up the ladder; there is no other way out.",
+              "details": {
+                "tank gauges": "Reaction mass aboard against the tank's rating, and under it BURN FOR THE FILED PLAN and RESERVE AFTER. Carrying reserve costs reserve; the gauge does not say so, but the plan does.",
+                "manifold": "The feed from the tankage to the drive, with isolation valves tagged by date. The bunkering hoses connect out here, at the berth, on the schedule.",
+                "service panels": "Sealed, stencilled DRIVE — STICKNEY YARDS — NO USER-SERVICEABLE PARTS, and under it, smaller, in pen, \"ha\".",
+                "shield bulkhead": "Warm to the touch. DO NOT LEAN. Somebody has."
+              }
+            },
+            {
+              "id": "stowage",
+              "name": "Hold Stowage",
+              "kind": "store",
+              "desc": "The bulk bins, the tankage and the stores locker behind the hold's frames and the compartment bulkheads: racks, pipes and sealed cases, reached by panels and hoses, not by hatches. The frames are the volume: the rated bay behind the cells, the second limit the load cells read beside the tonnes. Not a place anyone walks."
+            },
+            {
+              "id": "bay",
+              "name": "Vehicle Bay",
+              "kind": "bay",
+              "desc": "Two cradles aft of the hold, side by side under the stern ramp's hinge, each with its charging umbilical coiled on a reel and its tie-downs stencilled RIG 1 and RIG 2. The ramp is the only way in or out, and it opens on vacuum. The deck is scored where tracks have bitten it, and regolith dust lies in the corners however often it is blown out. Not a place anyone walks."
+            }
+          ],
+          "exits": [
+            { "from": "airlock", "to": "passage", "names": ["Inner Hatch <I>;inner;in;passage", "Airlock <A>;airlock;forward"] },
+            { "from": "passage", "to": "bridge", "names": ["Bridge <U>;bridge;up;u", "Passage <D>;passage;down;d"] },
+            { "from": "passage", "to": "crew", "names": ["Crew Compartment <C>;crew;galley;bunks;aft", "Passage <P>;passage;out;forward"] },
+            { "from": "passage", "to": "hold", "names": ["Cargo Hold <H>;hold;down;d", "Passage <U>;passage;up;u"] },
+            { "from": "hold", "to": "engineering", "names": ["Engineering <E>;engineering;eng;down;d", "Hold <H>;hold;up;u"] }
+          ],
+          "gauges": {
+            "cargo": ["hold", "passage", "bridge"],
+            "propellant": ["engineering", "passage", "bridge"],
+            "provisions": ["crew", "passage", "bridge"]
+          },
+          "bays": [
+            {
+              "room": "bay",
+              "slot": { "id": "rigs", "maximum_items": 2 },
+              "egress": { "label": "stern ramp", "x_cm": 0, "y_cm": -3500, "heading_mdeg": 180000 }
+            }
+          ]
+        },
+        "note": "The Dray refitted for prospecting (doc 20 section 4.3, D-20-7): the Dray's hull, drive, tank, locker, berths, rail and combat anatomy unchanged, class hauler, never fielded. The Co-op's yard (+coop/refit prospector) re-binds a chartered Dray to this unit in place and back. A two-rig vehicle bay aft of the hold takes two terrain vehicles on a stern ramp, the rigs' egress; the bay is an exitless room holding rigs, not people. The cargo hold drops from 100 t / 120 m3 to 86 t / 103.2 m3 to carry the rigs' 12 t, and takes bulk and ore (stow.ore). The rail stands at 181,000 kg and is never re-rated: at the stowage maxima (86,000 + 80,000 + 480) with two occupants (200) and two empty rigs (12,000) the payload is 178,680 kg, 2,320 kg of headroom, since every hopper is empty at every departure. Room descs are the Dray's (18a section 3) and the bay's own."
+      }
+    }
+  }
+}

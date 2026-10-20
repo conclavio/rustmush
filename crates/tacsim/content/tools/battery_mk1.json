@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": "tacsim.tool.battery_mk1",
+  "label": "Mk1 rig battery",
+  "role": {
+    "battery": {
+      "capacity_cu": 100000,
+      "bay_recharge_cu_per_ic_hour": 50000,
+      "drive_cu_per_nominal_cell": 15,
+      "reserve_permille": 50
+    }
+  },
+  "note": "Doc 20 section 4.1's charge, as data: one cu is four watt-hours, and a full battery is 100,000 cu. The bay's umbilical puts back 50,000 cu an IC hour, so a 600 IC s unload regains 8,300 cu. Driving draws 15 cu per cell of nominal locomotion cost 100, so a regolith cell (150) is 22.5 cu and a kilometre of regolith 2,250 cu. The reserve rule is 5 %: no act may leave less than 5,000 cu after the trip home. It has no radius; every radius a tool names is per axis, a square."
+}

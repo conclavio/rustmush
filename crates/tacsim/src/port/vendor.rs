@@ -121,8 +121,9 @@ fn live(w: &World, obj: u32) -> bool {
         .is_some_and(|o| !o.flags.contains(Flags::GOING))
 }
 
-/// The room a role names in this entry, by its `RoomGeo.key`.
-fn role_room(w: &World, def: &PortDef, role: &CanonicalId) -> Option<ObjId> {
+/// The room a role names in this entry, by its `RoomGeo.key`. `pub(crate)` since doc
+/// 20 cut SM.3a (reviewer F14): `+tv/lease` finds Occator's counter through it.
+pub(crate) fn role_room(w: &World, def: &PortDef, role: &CanonicalId) -> Option<ObjId> {
     let reference = def.rooms.get(role)?;
     room_by_key(w, &room_key(&def.area, reference).ok()?)
 }
