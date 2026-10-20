@@ -94,6 +94,63 @@ impl Drop for IcWorld {
         self.tasks.signal_stop_all();
     }
 }
+/// The IC world's venue gate: the authored bay is the `fixture` venue every policy
+/// here names (the world has no port to give it one), and admission there needs real
+/// presence in the bay. Every other room and venue is the production port gate's.
+#[derive(Debug)]
+struct IcVenue {
+    base: ObjId,
+}
+impl mush_market::VenueGate for IcVenue {
+    fn venue_of_room(&self, w: &mush_core::World, room: ObjId) -> Option<MarketId> {
+        if room == self.base {
+            return MarketId::new("fixture");
+        }
+        crate::port::market::PortVenueGate.venue_of_room(w, room)
+    }
+    fn endpoint_for(
+        &self,
+        w: &mush_core::World,
+        actor: ObjId,
+        venue: &MarketId,
+        presence: mush_market::Presence,
+    ) -> Option<mush_inventory::EndpointRef> {
+        if venue.as_str() == "fixture" {
+            return None;
+        }
+        crate::port::market::PortVenueGate.endpoint_for(w, actor, venue, presence)
+    }
+    fn admit(
+        &self,
+        w: &mush_core::World,
+        actor: ObjId,
+        venue: &MarketId,
+        endpoint: Option<mush_inventory::EndpointRef>,
+        presence: mush_market::Presence,
+    ) -> Result<(), mush_market::VenueRefusal> {
+        if venue.as_str() != "fixture" {
+            return crate::port::market::PortVenueGate.admit(w, actor, venue, endpoint, presence);
+        }
+        if w.containing_room(actor) == Some(self.base) {
+            Ok(())
+        } else {
+            Err(mush_market::VenueRefusal {
+                line: "The fixture venue requires actual presence in the IC bay.".into(),
+            })
+        }
+    }
+    fn governed(&self, w: &mush_core::World, endpoint: mush_inventory::EndpointRef) -> bool {
+        crate::port::market::PortVenueGate.governed(w, endpoint)
+    }
+    fn port_seller(
+        &self,
+        w: &mush_core::World,
+        venue: &MarketId,
+        seller: &mush_org::PrincipalId,
+    ) -> bool {
+        crate::port::market::PortVenueGate.port_seller(w, venue, seller)
+    }
+}
 fn space(base: ObjId, field: ObjId) -> InteriorSpaceRecord {
     InteriorSpaceRecord {
         object: base,
@@ -547,7 +604,7 @@ impl IcWorld {
             ),
             Box::new(composition.configure_roll(RollModule::with_writers(["tacsim"]))),
             Box::new(composition.configure_market(
-                MarketModule::new().with_venue_gate(Arc::new(crate::port::market::PortVenueGate)),
+                MarketModule::new().with_venue_gate(Arc::new(IcVenue { base })),
             )),
             paid_checkout::content()?,
         ];
