@@ -225,7 +225,7 @@ fn project_owner_for(
     let identity = filed.content.revision();
     if filed.content.position().charter != charter.id
         || filed.content.position().line != line.id
-        || (filed.format != 3 && filed.operation != licence.operation)
+        || (!matches!(filed.format, 3 | 4) && filed.operation != licence.operation)
         || status.filed != filed_id
         || pin.is_some_and(|p| p != identity)
     {
@@ -246,8 +246,19 @@ fn project_owner_for(
             &families.terms,
             super::records::OwnerTerm::encoded_key(licence.id, binding.term),
         )?;
+        let birth_filed = read(ctx, &families.filed, binding.filed.key())?;
+        if filed.content.parent() != Some(binding.parent.parent) {
+            return Err(OwnerProjectionError::Integrity);
+        }
         super::dependent_owner::verify_history(
-            ctx, roll, families, ratings, binding, filed, birth_term, operation,
+            ctx,
+            roll,
+            families,
+            ratings,
+            binding,
+            birth_filed,
+            birth_term,
+            operation,
         )
         .map_err(|_| OwnerProjectionError::Integrity)?;
         Some(super::dependent_owner::require_current(
@@ -260,7 +271,7 @@ fn project_owner_for(
         }
         None
     };
-    if filed.format == 3 {
+    if matches!(filed.format, 3 | 4) {
         let birth = super::line_update::audit::birth(ctx, families, filed)
             .map_err(|_| OwnerProjectionError::Integrity)?;
         if birth.commit != licence.operation {

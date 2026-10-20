@@ -54,13 +54,20 @@ pub(crate) struct UpdateProvider {
     pub(crate) economy: ParticipantHandle<InitialFilingParticipant>,
     pub(crate) roots: ParticipantHandle<RootParticipant>,
     pub(crate) refusal: ActionError,
+    pub(crate) parent: Option<
+        mush_core::read_service::OwnerReadHandle<crate::commerce::parent_grant::ParentGrantReader>,
+    >,
 }
 fn bad<T>(_: T) -> PublicationError {
     PublicationError::Invalid
 }
 impl UpdateProvider {
     fn request(&self, inv: &ActionInvocation) -> Result<Request, PublicationError> {
-        super::check_action(&self.action)?;
+        if self.parent.is_some() {
+            super::check_derived_action(&self.action)?;
+        } else {
+            super::check_action(&self.action)?;
+        }
         if inv.principal() != &(PrincipalId::Object { id: inv.actor() })
             || inv.subject() != &PerceivedRef::SelfActor
             || !inv.targets().is_empty()
@@ -132,8 +139,20 @@ impl UpdateProvider {
             &birth,
             inv.actor(),
         )?;
-        if birth.format != 1
-            || birth.parent.is_some()
+        let parent = match &self.parent {
+            Some(reader) => Some(super::derived::prepare_parent(
+                txn,
+                ctx,
+                &self.families,
+                reader,
+                &birth,
+                &ownership,
+                inv.actor(),
+            )?),
+            None => None,
+        };
+        if (parent.is_none() && (birth.format != 1 || birth.parent.is_some()))
+            || (parent.is_some() && (birth.format != 3 || birth.parent.is_none()))
             || birth.economic.house.is_some()
             || birth.line != line.id
             || birth.charter != line.charter
@@ -144,8 +163,11 @@ impl UpdateProvider {
             || licence.line != line.id
             || term.licence != licence.id
             || term.generation != licence.term
-            || !matches!(term.format, 1 | 3)
-            || term.parent.is_some()
+            || !(if parent.is_some() {
+                matches!(term.format, 2 | 4)
+            } else {
+                matches!(term.format, 1 | 3) && term.parent.is_none()
+            })
             || term.revision != (RevisionPolicy::Follow { line: line.id })
         {
             return Err(PublicationError::Mismatch);
@@ -173,7 +195,19 @@ impl UpdateProvider {
             let revision = roll
                 .revision(inv.actor(), request.revision.key)
                 .map_err(bad)?;
-            revision.require_original_access().map_err(bad)?;
+            if let Some((evidence, _)) = &parent {
+                if revision.provenance.as_ref()
+                    != Some(&crate::DerivativeProvenance {
+                        parent: evidence.source,
+                        charter: evidence.charter,
+                        line: evidence.line,
+                    })
+                {
+                    return Err(PublicationError::Mismatch);
+                }
+            } else {
+                revision.require_original_access().map_err(bad)?;
+            }
             if revision.reference() != request.revision {
                 return Err(PublicationError::Mismatch);
             }
@@ -232,14 +266,18 @@ impl UpdateProvider {
         after.next_sequence = sequence.checked_add(1).ok_or(PublicationError::Capacity)?;
         after.validate()?;
         let economic = ctx
-            .prepare_owner(
-                &self.economy,
-                EconomyRequest::CompatibleUpdate(RegistryCompatibleUpdate {
+            .prepare_owner(&self.economy, {
+                let request = RegistryCompatibleUpdate {
                     charter: line.charter.object(),
                     title_revision,
                     payer: request.payer,
-                }),
-            )
+                };
+                if parent.is_some() {
+                    EconomyRequest::DerivedCompatibleUpdate(request)
+                } else {
+                    EconomyRequest::CompatibleUpdate(request)
+                }
+            })
             .map_err(bad)?
             .compatible_update()
             .map_err(bad)?;
@@ -247,11 +285,15 @@ impl UpdateProvider {
         if economic.action() != &self.action
             || economic.commit_token() != commit
             || economic.actor() != inv.actor()
+            || economic.subject().kind
+                != parent
+                    .as_ref()
+                    .map(|_| mush_economy::registry_filing::UpdateKind::DependentV1)
         {
             return Err(PublicationError::Mismatch);
         }
         let file = FiledRecord {
-            format: 3,
+            format: if parent.is_some() { 4 } else { 3 },
             content: FiledRevisionContent::capture(
                 filed_id,
                 FilingPosition {
@@ -261,7 +303,7 @@ impl UpdateProvider {
                 },
                 &revision,
                 WorldIcSeconds::from_stamp(&observed).map_err(bad)?,
-                None,
+                parent.as_ref().map(|(p, _)| p.source),
             )
             .map_err(bad)?,
             definition: rating.subject().definition(),
@@ -270,13 +312,16 @@ impl UpdateProvider {
             operation: commit,
         };
         let operation = UpdateOperation {
-            format: if ownership.generation > 1 {
+            format: if parent.is_some() {
+                4
+            } else if ownership.generation > 1 {
                 3
             } else if term.generation.get() == 1 {
                 1
             } else {
                 2
             },
+            parent: parent.as_ref().map(|(p, _)| p.clone()),
             charter_ownership: (ownership.generation > 1).then_some(ownership),
             commit,
             action: self.action.clone(),
@@ -371,8 +416,11 @@ impl UpdateProvider {
         {
             return Err(PublicationError::Mismatch);
         }
-        let roots = UpdateRoots::new(&operation, &previous, term.window)?
+        let mut roots = UpdateRoots::new(&operation, &previous, term.window)?
             .with_follow(&file, &rating, &previous)?;
+        if let Some((evidence, actual)) = parent {
+            roots = roots.with_parent(&evidence, actual)?;
+        }
         ctx.prepare_owner(&self.roots, RootRequest::CompatibleUpdate(roots))
             .map_err(bad)?;
         Ok(AuthoritativeActionOutput::new(
@@ -460,9 +508,17 @@ impl ActionProvider for UpdateProvider {
             required_channels: Vec::new(),
             expires: None,
             presentation: mush_core::ActionPresentation::new(
-                "roll-update-original-mind",
+                if self.parent.is_some() {
+                    "roll-update-derived-mind"
+                } else {
+                    "roll-update-original-mind"
+                },
                 "File a compatible mind update",
-                "Publish an exactly certified saved revision on your original line.",
+                if self.parent.is_some() {
+                    "Publish an exactly certified derived revision on your existing line."
+                } else {
+                    "Publish an exactly certified saved revision on your original line."
+                },
             )
             .map_err(|_| bad())?,
             guards: guards.finish().map_err(|_| bad())?,

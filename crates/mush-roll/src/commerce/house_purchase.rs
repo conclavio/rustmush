@@ -1,5 +1,7 @@
 //! Closed original-house personal paid issuance. Explicit paired composition
 //! remains mandatory; these structural records confer no payment or use rights.
+mod admission;
+pub use admission::HouseBuyerAdmission;
 mod economics;
 mod records;
 pub use economics::{

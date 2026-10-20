@@ -14,7 +14,9 @@ pub mod update;
 pub use house::{
     HOUSE_FILING_ACTION, HOUSE_PUBLICATION_CAPABILITY, HouseFilingAttribution, RegistryHouseFiling,
 };
-pub use update::{RegistryCompatibleUpdate, UpdateAuditSubject};
+pub use update::{
+    RegistryCompatibleUpdate, RegistryHouseCompatibleUpdate, UpdateAuditSubject, UpdateKind,
+};
 #[cfg(test)]
 mod tests;
 pub use receipt::{InitialFilingAuditSubject, ReceiptAudit, ReceiptAuditError};
@@ -148,6 +150,9 @@ pub struct InitialFilingParticipant {
     renewals: Option<crate::managed_renewal::bridge::Configuration>,
     house_renewals: Option<crate::managed_house_renewal::bridge::Configuration>,
     compatible_update: Option<mush_core::DefinitionRef>,
+    derived_update: Option<mush_core::DefinitionRef>,
+    original_major: Option<mush_core::DefinitionRef>,
+    house_update: Option<update::house::HouseUpdateConfig>,
     charter_transfer: Option<mush_core::DefinitionRef>,
     core_integration: Option<crate::core_integration::CoreIntegrationConfig>,
     core_refit: Option<crate::core_refit::CoreRefitConfig>,
@@ -162,6 +167,9 @@ impl InitialFilingParticipant {
             renewals: None,
             house_renewals: None,
             compatible_update: None,
+            derived_update: None,
+            original_major: None,
+            house_update: None,
             charter_transfer: None,
             core_integration: None,
             core_refit: None,
@@ -417,6 +425,141 @@ pub(crate) fn register_with_coverage(
     coverage: Option<&crate::managed_coverage::CoverageConfig>,
     two_seat_house_purchases: Option<&[mush_core::DefinitionRef; 3]>,
 ) -> Result<(), mush_core::ModError> {
+    register_with_derived_updates(
+        reg,
+        policy,
+        action,
+        purchases,
+        entitlements,
+        house_action,
+        dependent_action,
+        renewals,
+        compatible_update,
+        charter_transfer,
+        core_integration,
+        charter_pending,
+        house_purchases,
+        house_renewals,
+        paid_resale,
+        core_refit,
+        coverage,
+        two_seat_house_purchases,
+        None,
+    )
+}
+pub(crate) fn register_with_derived_updates(
+    reg: &mut mush_core::Registrar<'_>,
+    policy: InitialFilingPolicy,
+    action: mush_core::mechanics::DefinitionRef,
+    purchases: Option<&[mush_core::mechanics::DefinitionRef; 3]>,
+    entitlements: Option<&[[mush_core::mechanics::DefinitionRef; 3]; 2]>,
+    house_action: Option<&mush_core::mechanics::DefinitionRef>,
+    dependent_action: Option<&mush_core::mechanics::DefinitionRef>,
+    renewals: Option<&crate::managed_renewal::bridge::Configuration>,
+    compatible_update: Option<&mush_core::DefinitionRef>,
+    charter_transfer: Option<&mush_core::DefinitionRef>,
+    core_integration: Option<&crate::core_integration::CoreIntegrationConfig>,
+    charter_pending: Option<&crate::managed_charter_transfer::CharterPendingConfig>,
+    house_purchases: Option<&[mush_core::DefinitionRef; 3]>,
+    house_renewals: Option<&crate::managed_house_renewal::bridge::Configuration>,
+    paid_resale: Option<&crate::managed_paid_resale::PaidResaleConfig>,
+    core_refit: Option<&crate::core_refit::CoreRefitConfig>,
+    coverage: Option<&crate::managed_coverage::CoverageConfig>,
+    two_seat_house_purchases: Option<&[mush_core::DefinitionRef; 3]>,
+    derived_update: Option<&mush_core::DefinitionRef>,
+) -> Result<(), mush_core::ModError> {
+    register_with_original_majors(
+        reg,
+        policy,
+        action,
+        purchases,
+        entitlements,
+        house_action,
+        dependent_action,
+        renewals,
+        compatible_update,
+        charter_transfer,
+        core_integration,
+        charter_pending,
+        house_purchases,
+        house_renewals,
+        paid_resale,
+        core_refit,
+        coverage,
+        two_seat_house_purchases,
+        derived_update,
+        None,
+    )
+}
+pub(crate) fn register_with_original_majors(
+    reg: &mut mush_core::Registrar<'_>,
+    policy: InitialFilingPolicy,
+    action: mush_core::mechanics::DefinitionRef,
+    purchases: Option<&[mush_core::mechanics::DefinitionRef; 3]>,
+    entitlements: Option<&[[mush_core::mechanics::DefinitionRef; 3]; 2]>,
+    house_action: Option<&mush_core::mechanics::DefinitionRef>,
+    dependent_action: Option<&mush_core::mechanics::DefinitionRef>,
+    renewals: Option<&crate::managed_renewal::bridge::Configuration>,
+    compatible_update: Option<&mush_core::DefinitionRef>,
+    charter_transfer: Option<&mush_core::DefinitionRef>,
+    core_integration: Option<&crate::core_integration::CoreIntegrationConfig>,
+    charter_pending: Option<&crate::managed_charter_transfer::CharterPendingConfig>,
+    house_purchases: Option<&[mush_core::DefinitionRef; 3]>,
+    house_renewals: Option<&crate::managed_house_renewal::bridge::Configuration>,
+    paid_resale: Option<&crate::managed_paid_resale::PaidResaleConfig>,
+    core_refit: Option<&crate::core_refit::CoreRefitConfig>,
+    coverage: Option<&crate::managed_coverage::CoverageConfig>,
+    two_seat_house_purchases: Option<&[mush_core::DefinitionRef; 3]>,
+    derived_update: Option<&mush_core::DefinitionRef>,
+    original_major: Option<&mush_core::DefinitionRef>,
+) -> Result<(), mush_core::ModError> {
+    register_with_house_updates(
+        reg,
+        policy,
+        action,
+        purchases,
+        entitlements,
+        house_action,
+        dependent_action,
+        renewals,
+        compatible_update,
+        charter_transfer,
+        core_integration,
+        charter_pending,
+        house_purchases,
+        house_renewals,
+        paid_resale,
+        core_refit,
+        coverage,
+        two_seat_house_purchases,
+        derived_update,
+        original_major,
+        None,
+    )
+}
+pub(crate) fn register_with_house_updates(
+    reg: &mut mush_core::Registrar<'_>,
+    policy: InitialFilingPolicy,
+    action: mush_core::mechanics::DefinitionRef,
+    purchases: Option<&[mush_core::mechanics::DefinitionRef; 3]>,
+    entitlements: Option<&[[mush_core::mechanics::DefinitionRef; 3]; 2]>,
+    house_action: Option<&mush_core::mechanics::DefinitionRef>,
+    dependent_action: Option<&mush_core::mechanics::DefinitionRef>,
+    renewals: Option<&crate::managed_renewal::bridge::Configuration>,
+    compatible_update: Option<&mush_core::DefinitionRef>,
+    charter_transfer: Option<&mush_core::DefinitionRef>,
+    core_integration: Option<&crate::core_integration::CoreIntegrationConfig>,
+    charter_pending: Option<&crate::managed_charter_transfer::CharterPendingConfig>,
+    house_purchases: Option<&[mush_core::DefinitionRef; 3]>,
+    house_renewals: Option<&crate::managed_house_renewal::bridge::Configuration>,
+    paid_resale: Option<&crate::managed_paid_resale::PaidResaleConfig>,
+    core_refit: Option<&crate::core_refit::CoreRefitConfig>,
+    coverage: Option<&crate::managed_coverage::CoverageConfig>,
+    two_seat_house_purchases: Option<&[mush_core::DefinitionRef; 3]>,
+    derived_update: Option<&mush_core::DefinitionRef>,
+    original_major: Option<&mush_core::DefinitionRef>,
+    house_update: Option<&update::house::HouseUpdateConfig>,
+) -> Result<(), mush_core::ModError> {
     use mush_core::mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionValidationContext,
     };
@@ -582,6 +725,46 @@ pub(crate) fn register_with_coverage(
         }
         actions.insert(action.clone());
     }
+    if let Some(action) = derived_update {
+        if policy.fee.minor() <= 0
+            || action.key().owner.as_str() != "roll"
+            || action.key().kind.as_str() != "action"
+            || action.key().id.as_str() != update::DERIVED_ACTION_ID
+            || action.version() != 1
+        {
+            return Err(mush_core::ModError::msg(
+                "derived updates require the exact action and positive filing fee",
+            ));
+        }
+        actions.insert(action.clone());
+    }
+    if let Some(action) = original_major {
+        if policy.fee.minor() <= 0
+            || action.key().owner.as_str() != "roll"
+            || action.key().kind.as_str() != "action"
+            || action.key().id.as_str() != update::MAJOR_ACTION_ID
+            || action.version() != 1
+        {
+            return Err(mush_core::ModError::msg(
+                "original majors require the exact action and positive filing fee",
+            ));
+        }
+        actions.insert(action.clone());
+    }
+    if let Some(config) = house_update {
+        let action = &config.action;
+        if policy.fee.minor() <= 0
+            || action.key().owner.as_str() != "roll"
+            || action.key().kind.as_str() != "action"
+            || action.key().id.as_str() != update::HOUSE_ACTION_ID
+            || action.version() != 1
+        {
+            return Err(mush_core::ModError::msg(
+                "House updates require the exact action and positive filing fee",
+            ));
+        }
+        actions.insert(action.clone());
+    }
     if let Some(action) = charter_transfer {
         if action.key().owner.as_str() != "roll"
             || action.key().kind.as_str() != "action"
@@ -647,6 +830,9 @@ pub(crate) fn register_with_coverage(
             renewals: renewals.cloned(),
             house_renewals: house_renewals.cloned(),
             compatible_update: compatible_update.cloned(),
+            derived_update: derived_update.cloned(),
+            original_major: original_major.cloned(),
+            house_update: house_update.cloned(),
             charter_transfer: charter_transfer.cloned(),
             core_integration: core_integration.cloned(),
             core_refit: core_refit.cloned(),
@@ -1169,6 +1355,9 @@ pub enum EconomyRequest {
     RefitInstallation(crate::core_refit::RefitInstallationRequest),
     RefitCancellation(crate::core_refit::RefitCancellationRequest),
     CompatibleUpdate(update::RegistryCompatibleUpdate),
+    DerivedCompatibleUpdate(update::RegistryCompatibleUpdate),
+    OriginalMajor(update::RegistryCompatibleUpdate),
+    HouseCompatibleUpdate(update::RegistryHouseCompatibleUpdate),
     InitialFiling(RegistryInitialFiling),
     DependentInitialFiling(RegistryInitialFiling),
     HouseInitialFiling(RegistryHouseFiling),
@@ -1434,6 +1623,9 @@ pub enum EconomyPatch {
     CoreMoney(Box<crate::core_integration::CoreMoneyPatch>),
     RefitMoney(Box<crate::core_refit::RefitMoneyPatch>),
     CompatibleUpdate(Box<update::CompatibleUpdatePatch>),
+    DerivedCompatibleUpdate(Box<update::CompatibleUpdatePatch>),
+    OriginalMajor(Box<update::CompatibleUpdatePatch>),
+    HouseCompatibleUpdate(Box<update::CompatibleUpdatePatch>),
     InitialFiling(Box<InitialFilingPatch>),
     Purchase(Box<crate::managed_purchase::PurchasePatch>),
     RenewalOffer(Box<crate::managed_renewal::install::OfferPatch>),
@@ -1803,6 +1995,15 @@ impl OwnerParticipant for InitialFilingParticipant {
             EconomyRequest::CharterTransfer(request) => {
                 self.prepare_charter_transfer_request(state, context, request)
             }
+            EconomyRequest::OriginalMajor(request) => {
+                self.prepare_original_major_request(state, context, request)
+            }
+            EconomyRequest::HouseCompatibleUpdate(request) => {
+                self.prepare_house_compatible_update_request(state, context, request)
+            }
+            EconomyRequest::DerivedCompatibleUpdate(request) => {
+                self.prepare_derived_update_request(state, context, request)
+            }
             EconomyRequest::CompatibleUpdate(request) => {
                 self.prepare_compatible_update_request(state, context, request)
             }
@@ -1881,6 +2082,27 @@ impl OwnerParticipant for InitialFilingParticipant {
                 state,
                 context,
             ),
+            EconomyPatch::HouseCompatibleUpdate(patch) => update::recheck(
+                &self.policy,
+                &self.house_update.as_ref().ok_or_else(refused)?.action,
+                state,
+                context,
+                patch,
+            ),
+            EconomyPatch::OriginalMajor(patch) => update::recheck(
+                &self.policy,
+                self.original_major.as_ref().ok_or_else(refused)?,
+                state,
+                context,
+                patch,
+            ),
+            EconomyPatch::DerivedCompatibleUpdate(patch) => update::recheck(
+                &self.policy,
+                self.derived_update.as_ref().ok_or_else(refused)?,
+                state,
+                context,
+                patch,
+            ),
             EconomyPatch::CompatibleUpdate(patch) => update::recheck(
                 &self.policy,
                 self.compatible_update.as_ref().ok_or_else(refused)?,
@@ -1924,7 +2146,10 @@ impl OwnerParticipant for InitialFilingParticipant {
             }
             EconomyPatch::CoreMoney(patch) => (*patch).bind(state).map(BoundEconomy::CoreMoney),
             EconomyPatch::RefitMoney(patch) => (*patch).bind(state).map(BoundEconomy::RefitMoney),
-            EconomyPatch::CompatibleUpdate(patch) => {
+            EconomyPatch::CompatibleUpdate(patch)
+            | EconomyPatch::DerivedCompatibleUpdate(patch)
+            | EconomyPatch::OriginalMajor(patch)
+            | EconomyPatch::HouseCompatibleUpdate(patch) => {
                 update::bind(state, *patch).map(BoundEconomy::CompatibleUpdate)
             }
             EconomyPatch::InitialFiling(patch) => self

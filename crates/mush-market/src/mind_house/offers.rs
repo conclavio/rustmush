@@ -146,6 +146,10 @@ impl Provider {
                 }
                 let world = ctx.world().map_err(|e| e.to_string())?;
                 self.guard.current(world, inv.actor())?;
+                self.config
+                    .writer
+                    .check_buyer(world, facts.issuer(), inv.actor())
+                    .map_err(|e| e.to_string())?;
                 let economy = accounts::live(world)?;
                 let payer = accounts::personal(economy, &listing.instrument, inv.actor())?;
                 if payer.approval.is_some() {

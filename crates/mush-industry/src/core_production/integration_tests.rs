@@ -388,7 +388,7 @@ impl FactoryRig {
         composition: &Composition,
         mode: CoreOriginMode,
         enabled: bool,
-    ) -> Result<TestWorld> {
+    ) -> Result<Box<TestWorld>> {
         let (_, registry) = mush_testkit::boot_world();
         let mut e = Engine::with_modules(
             self.r.w.world().clone(),
@@ -417,7 +417,7 @@ impl FactoryRig {
             &mut Outbox::new(),
             &mut mush_core::engine::Effects::new(),
         )?;
-        Ok(TestWorld::from_engine(e))
+        Ok(Box::new(TestWorld::from_engine(e)))
     }
     fn restart(&mut self, mode: CoreOriginMode) -> Result {
         self.r.w = self.cold(self.r.boot.clone(), &self.composition, mode, true)?;

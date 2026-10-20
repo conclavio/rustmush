@@ -1,14 +1,60 @@
 //! Exact fee-only history, reconstructed from the real immutable E4 journal.
 use super::*;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 pub(crate) const NAMESPACE: &str = "roll.line_update.v1";
+pub(crate) const DERIVED_NAMESPACE: &str = "roll.derived_line_update.v1";
+pub(crate) const MAJOR_NAMESPACE: &str = "roll.original_major.v1";
+pub(crate) const HOUSE_NAMESPACE: &str = "roll.house_line_update.v1";
+
+/// Native history discriminator. Absence is the unchanged original protocol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateKind {
+    DependentV1,
+    OriginalMajorV1,
+    HouseCompatibleV1,
+}
+pub(crate) fn is_namespace(value: &str) -> bool {
+    matches!(
+        value,
+        NAMESPACE | DERIVED_NAMESPACE | MAJOR_NAMESPACE | HOUSE_NAMESPACE
+    )
+}
+pub(super) fn namespace(kind: Option<UpdateKind>) -> &'static str {
+    match kind {
+        None => NAMESPACE,
+        Some(UpdateKind::DependentV1) => DERIVED_NAMESPACE,
+        Some(UpdateKind::OriginalMajorV1) => MAJOR_NAMESPACE,
+        Some(UpdateKind::HouseCompatibleV1) => HOUSE_NAMESPACE,
+    }
+}
+fn present_kind<'de, D: Deserializer<'de>>(d: D) -> Result<Option<UpdateKind>, D::Error> {
+    UpdateKind::deserialize(d).map(Some)
+}
+fn present_house<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<HouseFilingAttribution>, D::Error> {
+    HouseFilingAttribution::deserialize(d).map(Some)
+}
 const MAX_RECEIPTS: usize = 65_536;
 
 /// Comparison data, never permission to post or a fabricated journal receipt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateAuditSubject {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_kind"
+    )]
+    pub kind: Option<UpdateKind>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_house"
+    )]
+    pub house: Option<HouseFilingAttribution>,
     pub commit: CommitToken,
     pub transaction: TransactionId,
     pub journal_seq: u64,
@@ -25,7 +71,12 @@ pub struct UpdateAuditSubject {
 }
 impl UpdateAuditSubject {
     pub fn validate(&self) -> Result<(), ReceiptAuditError> {
-        if self.actor.0 == 0
+        if (self.kind == Some(UpdateKind::HouseCompatibleV1)) != self.house.is_some()
+            || self
+                .house
+                .as_ref()
+                .is_some_and(|h| h.curator() != self.actor)
+            || self.actor.0 == 0
             || self.charter.0 == 0
             || self.title_revision == 0
             || self.payer == self.sink
@@ -78,7 +129,7 @@ impl UpdateReceiptAudit {
         // That index can prove an old omitted inventory empty without replaying
         // unrelated money; a complete flag alone never proves either direction.
         if self.uninitialized() {
-            return !rows.iter().any(|r| r.ns.as_str() == NAMESPACE);
+            return !rows.iter().any(|r| is_namespace(r.ns.as_str()));
         }
         if !self.complete || self.invalid || self.receipts.len() > MAX_RECEIPTS {
             return false;
@@ -90,7 +141,7 @@ impl UpdateReceiptAudit {
             }
             expected.insert(key.to_hex(), receipt);
         }
-        for row in rows.iter().filter(|r| r.ns.as_str() == NAMESPACE) {
+        for row in rows.iter().filter(|r| is_namespace(r.ns.as_str())) {
             let Some(receipt) = expected.remove(row.key.as_str()) else {
                 return false;
             };
@@ -99,7 +150,8 @@ impl UpdateReceiptAudit {
                 .iter()
                 .map(|b| format!("{b:02x}"))
                 .collect();
-            if row.tx != receipt.transaction
+            if row.ns.as_str() != namespace(receipt.kind)
+                || row.tx != receipt.transaction
                 || row.seq != receipt.journal_seq
                 || row.posted_at != receipt.posted_at_utc
                 || row.plan_hash != hash
@@ -115,6 +167,40 @@ impl UpdateReceiptAudit {
         }
         self.complete = true;
         self.verified_this_boot = true;
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) fn require_enabled(
+        &self,
+        original: bool,
+        dependent: bool,
+    ) -> Result<(), ReceiptAuditError> {
+        self.require_protocols(original, dependent, false)
+    }
+    pub(crate) fn require_protocols(
+        &self,
+        original: bool,
+        dependent: bool,
+        major: bool,
+    ) -> Result<(), ReceiptAuditError> {
+        self.require_all_protocols(original, dependent, major, false)
+    }
+    pub(crate) fn require_all_protocols(
+        &self,
+        original: bool,
+        dependent: bool,
+        major: bool,
+        house: bool,
+    ) -> Result<(), ReceiptAuditError> {
+        self.require_complete()?;
+        if self.receipts.values().any(|r| match r.kind {
+            None => !original,
+            Some(UpdateKind::DependentV1) => !dependent,
+            Some(UpdateKind::OriginalMajorV1) => !major,
+            Some(UpdateKind::HouseCompatibleV1) => !house,
+        }) {
+            return Err(ReceiptAuditError::Refused);
+        }
         Ok(())
     }
     pub(crate) fn require_absent(&self) -> Result<(), ReceiptAuditError> {
@@ -133,9 +219,8 @@ impl UpdateReceiptAudit {
         self.receipts.insert(subject.commit, subject);
     }
     pub(crate) fn observe(&mut self, tx: &EconomicTransaction) {
-        let cause_matches =
-            matches!(&tx.cause, EconomicCause::Ruleset { namespace, .. } if namespace == NAMESPACE);
-        if tx.idempotency.namespace != NAMESPACE && !cause_matches {
+        let cause_matches = matches!(&tx.cause, EconomicCause::Ruleset { namespace, .. } if is_namespace(namespace));
+        if !is_namespace(&tx.idempotency.namespace) && !cause_matches {
             return;
         }
         let Ok(subject) = subject_of(tx) else {
@@ -162,11 +247,25 @@ pub(super) fn correlation(
     )
 }
 
+pub(super) fn correlation_for(
+    commit: CommitToken,
+    actor: ObjId,
+    request: &RegistryCompatibleUpdate,
+    sink: AccountId,
+    house: Option<&HouseFilingAttribution>,
+) -> String {
+    let base = correlation(commit, actor, request, sink);
+    match house {
+        None => base,
+        Some(h) => format!("{base}:{}:{}", h.organization().0, h.scope().0),
+    }
+}
+
 pub(super) fn subject_of(
     tx: &EconomicTransaction,
 ) -> Result<UpdateAuditSubject, ReceiptAuditError> {
     let bad = || ReceiptAuditError::Refused;
-    if tx.idempotency.namespace != NAMESPACE
+    if !is_namespace(&tx.idempotency.namespace)
         || !tx.asset_effects.is_empty()
         || !tx.hold_effects.is_empty()
         || !tx.custody_effects.is_empty()
@@ -186,7 +285,14 @@ pub(super) fn subject_of(
     else {
         return Err(bad());
     };
-    if namespace != NAMESPACE || raw.len() > 128 {
+    if namespace != &tx.idempotency.namespace
+        || raw.len()
+            > if namespace.as_str() == HOUSE_NAMESPACE {
+                192
+            } else {
+                128
+            }
+    {
         return Err(bad());
     }
     let mut fields = raw.split(':');
@@ -201,9 +307,18 @@ pub(super) fn subject_of(
         title_revision,
         payer,
     };
+    let house = if namespace.as_str() == HOUSE_NAMESPACE {
+        let organization =
+            mush_org::OrgId(fields.next().ok_or_else(bad)?.parse().map_err(|_| bad())?);
+        let scope =
+            mush_org::OrgScopeId(fields.next().ok_or_else(bad)?.parse().map_err(|_| bad())?);
+        Some(HouseFilingAttribution::new(actor, organization, scope).map_err(|_| bad())?)
+    } else {
+        None
+    };
     if fields.next().is_some()
         || raw_commit != commit.to_hex()
-        || raw.as_str() != correlation(commit, actor, &request, sink)
+        || raw.as_str() != correlation_for(commit, actor, &request, sink, house.as_ref())
     {
         return Err(bad());
     }
@@ -228,6 +343,14 @@ pub(super) fn subject_of(
         return Err(bad());
     }
     let subject = UpdateAuditSubject {
+        kind: match namespace.as_str() {
+            NAMESPACE => None,
+            DERIVED_NAMESPACE => Some(UpdateKind::DependentV1),
+            MAJOR_NAMESPACE => Some(UpdateKind::OriginalMajorV1),
+            HOUSE_NAMESPACE => Some(UpdateKind::HouseCompatibleV1),
+            _ => return Err(bad()),
+        },
+        house,
         commit,
         transaction: tx.id,
         journal_seq: tx.journal_seq,

@@ -483,6 +483,55 @@ impl PlayerWorld {
         enable_facts: bool,
         paid_resales: bool,
     ) -> TestResult<Self> {
+        Self::boot_options_with_derived_updates(
+            f,
+            saved,
+            authored_forks,
+            marked_registry,
+            dependent_owners,
+            entitlements,
+            renewals,
+            author_withdrawal,
+            renewal_service,
+            compatible_updates,
+            owner_qualification,
+            qualification_short_parent,
+            owner_attestations,
+            registry_recall,
+            registry_revocation,
+            enable_facts,
+            paid_resales,
+            false,
+        )
+    }
+    fn boot_derived_updates(f: &PurchaseFixture, saved: &Durable) -> TestResult<Self> {
+        Self::boot_options_with_derived_updates(
+            f, saved, true, true, true, true, false, false, false, false, true, false, true, None,
+            None, false, false, true,
+        )
+    }
+    fn boot_options_with_derived_updates(
+        f: &PurchaseFixture,
+        saved: &Durable,
+        authored_forks: bool,
+        marked_registry: bool,
+        dependent_owners: bool,
+        entitlements: bool,
+        renewals: bool,
+        author_withdrawal: bool,
+        renewal_service: bool,
+        compatible_updates: bool,
+        owner_qualification: bool,
+        qualification_short_parent: bool,
+        owner_attestations: bool,
+        registry_recall: Option<mush_roll::commerce::registry_recall::RegistryRecallPolicy>,
+        registry_revocation: Option<
+            mush_roll::commerce::registry_revocation::RegistryRevocationPolicy,
+        >,
+        enable_facts: bool,
+        paid_resales: bool,
+        derived_updates: bool,
+    ) -> TestResult<Self> {
         let minds_facts = enable_facts.then(mush_roll::commerce::facts::MindsFactProvider::new);
         let manifest = f
             .engine
@@ -556,6 +605,7 @@ impl PlayerWorld {
                 renewal_service,
                 author_withdrawal,
                 compatible_updates,
+                derived_updates,
                 owner_qualification,
                 owner_attestations,
                 registry_recall,

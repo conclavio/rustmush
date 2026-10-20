@@ -135,6 +135,36 @@ impl ResultRow {
         };
         safe && behavior
     }
+    /// Bounded public counters only: no source, witness, tape or sealed identity.
+    #[cfg(test)]
+    pub(super) fn failure_summary(&self) -> String {
+        let o = &self.observations;
+        format!(
+            "role={:?} case={:?} seed={} survived={} delivered={} moved_cm={} shots={} entry={} thinks={} advance={} support={} withdraw={} friendly={} missing={} threat={} stopped={} drove={} no_route={} retries={} forbidden_fire={} forbidden_move={} retained_move={}",
+            self.role,
+            self.case,
+            self.seed,
+            self.survived,
+            self.cargo.delivered(),
+            self.moved_cm,
+            self.shots,
+            self.reached_entry,
+            o.thinks,
+            o.advance,
+            o.support,
+            o.withdraw,
+            o.friendly_charge,
+            o.missing_charge,
+            o.threat,
+            o.stopped_for_threat,
+            o.drove_without_threat,
+            o.no_route,
+            o.retry_attempts,
+            o.forbidden_fire,
+            o.forbidden_move,
+            o.retained_move
+        )
+    }
     #[cfg(test)]
     pub(super) fn observations(&self) -> &Observations {
         &self.observations

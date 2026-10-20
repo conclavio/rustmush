@@ -194,6 +194,7 @@ enum Mode {
     Legacy,
     House,
     TwoSeatPin,
+    TwoSeatFollow,
 }
 impl Mode {
     fn kind(self) -> Option<Kind> {
@@ -201,6 +202,7 @@ impl Mode {
             Self::Legacy => None,
             Self::House => Some(Kind::House),
             Self::TwoSeatPin => Some(Kind::TwoSeatPin),
+            Self::TwoSeatFollow => Some(Kind::TwoSeatFollow),
         }
     }
     fn families(self) -> [&'static str; 4] {
@@ -216,6 +218,7 @@ impl Mode {
                 Self::Legacy => 2,
                 Self::House => 3,
                 Self::TwoSeatPin => 4,
+                Self::TwoSeatFollow => 12,
             }; 16],
         )
     }
@@ -225,6 +228,7 @@ impl Mode {
                 Self::Legacy => 5,
                 Self::House => 6,
                 Self::TwoSeatPin => 7,
+                Self::TwoSeatFollow => 13,
             }; 16],
         )
     }
@@ -268,9 +272,19 @@ fn fixture_with_two_seats(
     economy_generation: u64,
     two_seats: bool,
 ) -> TestResult<Fixture> {
+    fixture_with_follow(manifest_generation, economy_generation, two_seats, false)
+}
+fn fixture_with_follow(
+    manifest_generation: u64,
+    economy_generation: u64,
+    two_seats: bool,
+    follow: bool,
+) -> TestResult<Fixture> {
+    assert!(!follow || two_seats);
     let modes = [Mode::Legacy, Mode::House]
         .into_iter()
         .chain(two_seats.then_some(Mode::TwoSeatPin))
+        .chain(follow.then_some(Mode::TwoSeatFollow))
         .collect::<Vec<_>>();
     let market = OwnerId::new("market")?;
     let roll = OwnerId::new("roll")?;
@@ -402,7 +416,16 @@ fn fixture_with_two_seats(
         participants.clone(),
         actions.get(&Mode::Legacy).ok_or("legacy")?.clone(),
     )?;
-    if two_seats {
+    if follow {
+        builder.house_mind_purchase_capacity_with_follow(
+            &market,
+            manifest,
+            participants,
+            actions[&Mode::House].clone(),
+            actions[&Mode::TwoSeatPin].clone(),
+            actions[&Mode::TwoSeatFollow].clone(),
+        )?;
+    } else if two_seats {
         builder.house_mind_purchase_capacity_with_two_seat_pins(
             &market,
             manifest,
@@ -477,15 +500,20 @@ fn quote(f: &Fixture, mode: Mode) -> TestResult<Value> {
         );
     }
     let kind = mode.kind().ok_or("house kind")?;
+    let pin = if kind.follow() {
+        json!({"kind":"follow","line":"1"})
+    } else {
+        pin
+    };
     let terms =
-        json!({"seats":kind.version(),"class":"II","form":{"kind":"sealed"},"transferable":true});
-    let policy = if kind == Kind::TwoSeatPin {
+        json!({"seats":kind.seats(),"class":"II","form":{"kind":"sealed"},"transferable":true});
+    let policy = if kind != Kind::House {
         json!(DefinitionRegistryBuilder::new().register(
             OwnerId::new("market")?,
             DefinitionDescriptor::new(
                 DefinitionKind::new("entitlement_policy")?,
                 DefinitionId::new("house_personal")?,
-                2,
+                kind.version(),
                 json!({"fixture":"two-seat-policy"})
             )?
         )?)
@@ -633,6 +661,7 @@ fn finish(f: &mut Fixture, mode: Mode, grant: bool, fault: FinishFault) -> TestR
                 Mode::Legacy => 0,
                 Mode::House => 1,
                 Mode::TwoSeatPin => 2,
+                Mode::TwoSeatFollow => 3,
             }; 16],
         )
     };
@@ -1155,4 +1184,104 @@ fn terminal_is_buyer_or_refund_service_only() -> TestResult {
         }
     }
     Ok(())
+}
+
+#[test]
+fn paid_follow_house_uses_six_targets_two_seats_and_exact_cold_inverse() -> TestResult {
+    let mode = Mode::TwoSeatFollow;
+    for granted in [true, false] {
+        let mut f = fixture_with_follow(0, 0, true, true)?;
+        let p = fund(&mut f, mode, FundFault::default())?;
+        install(&mut f, p)?;
+        let r = f
+            .store
+            .capacity
+            .records
+            .values()
+            .next()
+            .ok_or("reservation")?;
+        assert_eq!(r.record.targets.len(), 6);
+        assert_eq!(
+            r.record.targets.iter().map(|t| t.ceiling).sum::<usize>(),
+            69632
+        );
+        reboot(&f)?;
+        let old = fixture_with_two_seats(0, 0, true)?;
+        assert!(hydrate(&old, &f.disk).is_err());
+        let p = finish(&mut f, mode, granted, FinishFault::None)?;
+        install(&mut f, p)?;
+        reboot(&f)?;
+        assert!(f.store.capacity.is_empty());
+        assert!(hydrate(&old, &f.disk).is_err());
+        if granted {
+            let t = f.row(TERM, "licence/0000000000000001/term/0000000000000001")?;
+            assert_eq!(t["terms"]["seats"], json!(2));
+            assert_eq!(t["revision"], json!({"kind":"follow","line":"1"}));
+            for family in [PURCHASE, RECEIPT, ALLOCATION, LICENCE, TERM, ECONOMICS] {
+                let mut disk = f.disk.clone();
+                let encoded = match family {
+                    LICENCE => "licence/0000000000000001".into(),
+                    TERM | ECONOMICS => "licence/0000000000000001/term/0000000000000001".into(),
+                    _ => mode.operation().to_hex(),
+                };
+                let owner = if matches!(family, PURCHASE | RECEIPT) {
+                    "market"
+                } else {
+                    "roll"
+                };
+                let k = key(owner, family, encoded)?
+                    .resolve(&f.store.registry)?
+                    .persistence_key();
+                assert!(disk.remove(&(owner.into(), k)).is_some());
+                assert!(hydrate(&f, &disk).is_err());
+            }
+        }
+    }
+    Ok(())
+}
+#[test]
+fn paid_follow_house_cannot_reinterpret_pin_or_change_acquisition_line() -> TestResult {
+    let f = fixture_with_follow(0, 0, true, true)?;
+    let old = fixture_with_two_seats(0, 0, true)?;
+    for mode in [Mode::House, Mode::TwoSeatPin] {
+        assert_eq!(quote(&f, mode)?, quote(&old, mode)?);
+        assert_eq!(f.action(mode, 0)?, old.action(mode, 0)?);
+    }
+    assert!(
+        serde_json::to_value(
+            old.store
+                .registry
+                .house_purchase
+                .as_ref()
+                .ok_or("protocol")?
+        )?
+        .get("follow")
+        .is_none()
+    );
+    let q = quote(&f, Mode::TwoSeatFollow)?;
+    for (pointer, value) in [
+        ("/product/revision/line", json!("2")),
+        ("/product/terms/seats", json!(3)),
+        ("/product/grant/format", json!(2)),
+        ("/product/grant/renewal/format", json!(2)),
+    ] {
+        let mut broken = q.clone();
+        *broken.pointer_mut(pointer).ok_or("pointer")? = value;
+        assert!(quote_kind(&broken).is_err());
+    }
+    Ok(())
+}
+
+pub(in crate::action_state::terminal_capacity) fn follow_renewal_birth_seed() -> TestResult<(
+    ActionStateStore,
+    BTreeMap<String, Handle>,
+    BTreeMap<(SmolStr, SmolStr), Value>,
+)> {
+    let mut f = fixture_with_follow(1, 1, true, true)?;
+    let p = fund(&mut f, Mode::TwoSeatFollow, FundFault::default())?;
+    install(&mut f, p)?;
+    let p = finish(&mut f, Mode::TwoSeatFollow, true, FinishFault::None)?;
+    install(&mut f, p)?;
+    reboot(&f)?;
+    Ok((f.store, f.handles, f.disk))
 }

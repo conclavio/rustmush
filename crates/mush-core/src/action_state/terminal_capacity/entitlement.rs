@@ -37,42 +37,64 @@ const FAMILIES: [(&str, &str, usize); 6] = [
 enum Kind {
     Original,
     Derived,
+    OriginalFollow,
+    DerivedFollow,
 }
 impl Kind {
+    fn follow(self) -> bool {
+        matches!(self, Self::OriginalFollow | Self::DerivedFollow)
+    }
+    fn original(self) -> bool {
+        matches!(self, Self::Original | Self::OriginalFollow)
+    }
+    fn economics_version(self) -> u64 {
+        if self.follow() { 2 } else { 1 }
+    }
+
     fn version(self) -> u32 {
         match self {
             Self::Original => 3,
             Self::Derived => 1,
+            Self::OriginalFollow => 4,
+            Self::DerivedFollow => 2,
         }
     }
     fn wire(self) -> &'static str {
         match self {
             Self::Original => "original_v3",
             Self::Derived => "derived_v1",
+            Self::OriginalFollow => "original_v4",
+            Self::DerivedFollow => "derived_v2",
         }
     }
     fn protocol(self) -> &'static str {
         match self {
             Self::Original => "original_mind_purchase_v3",
             Self::Derived => "derived_mind_purchase_v1",
+            Self::OriginalFollow => "original_mind_purchase_v4",
+            Self::DerivedFollow => "derived_mind_purchase_v2",
         }
     }
     fn actions(self) -> [&'static str; 3] {
         match self {
-            Self::Original => ORIGINAL_ACTIONS,
-            Self::Derived => DERIVED_ACTIONS,
+            Self::Original | Self::OriginalFollow => ORIGINAL_ACTIONS,
+            Self::Derived | Self::DerivedFollow => DERIVED_ACTIONS,
         }
     }
     fn product_domain(self) -> &'static str {
         match self {
             Self::Original => "market.original_product.v3",
             Self::Derived => "market.derived_product.v1",
+            Self::OriginalFollow => "market.original_product.v4",
+            Self::DerivedFollow => "market.derived_product.v2",
         }
     }
     fn quote_domain(self) -> &'static str {
         match self {
             Self::Original => "market.original_quote.v3",
             Self::Derived => "market.derived_quote.v1",
+            Self::OriginalFollow => "market.original_quote.v4",
+            Self::DerivedFollow => "market.derived_quote.v2",
         }
     }
 }
@@ -83,6 +105,8 @@ pub(in crate::action_state) struct Protocol {
     participants: [DefinitionRef; 2],
     original: [DefinitionRef; 3],
     derived: [DefinitionRef; 3],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    follow: Option<[[DefinitionRef; 3]; 2]>,
 }
 impl Protocol {
     pub(in crate::action_state) fn new(
@@ -106,9 +130,10 @@ impl Protocol {
             participants,
             original,
             derived,
+            follow: None,
         };
         for kind in [Kind::Original, Kind::Derived] {
-            for (action, id) in result.actions(kind).iter().zip(kind.actions()) {
+            for (action, id) in result.actions(kind)?.iter().zip(kind.actions()) {
                 if action.key().owner != *owner
                     || action.key().kind.as_str() != "action"
                     || action.key().id.as_str() != id
@@ -117,7 +142,7 @@ impl Protocol {
                     return Err(refused("entitlement action identity or order"));
                 }
             }
-            if *result.admission_action(kind)
+            if *result.admission_action(kind)?
                 != admission_reference(&result.manifest, &result.participants, kind)?
             {
                 return Err(refused("entitlement admission definition differs"));
@@ -125,33 +150,78 @@ impl Protocol {
         }
         Ok(result)
     }
-    fn actions(&self, kind: Kind) -> &[DefinitionRef; 3] {
+    pub(in crate::action_state) fn with_follow(
+        owner: &OwnerId,
+        manifest: DefinitionRef,
+        participants: [DefinitionRef; 2],
+        original: [DefinitionRef; 3],
+        derived: [DefinitionRef; 3],
+        original_follow: [DefinitionRef; 3],
+        derived_follow: [DefinitionRef; 3],
+    ) -> Result<Self, ActionStateError> {
+        let mut result = Self::new(owner, manifest, participants, original, derived)?;
+        for (kind, actions) in [
+            (Kind::OriginalFollow, &original_follow),
+            (Kind::DerivedFollow, &derived_follow),
+        ] {
+            for (index, action) in actions.iter().enumerate() {
+                if *action != action_reference(&result.manifest, &result.participants, kind, index)?
+                {
+                    return Err(refused("entitlement Follow exact action recipe"));
+                }
+            }
+        }
+        result.follow = Some([original_follow, derived_follow]);
+        Ok(result)
+    }
+    fn kinds(&self) -> impl Iterator<Item = Kind> {
+        [Kind::Original, Kind::Derived].into_iter().chain(
+            self.follow
+                .iter()
+                .flat_map(|_| [Kind::OriginalFollow, Kind::DerivedFollow]),
+        )
+    }
+    fn actions(&self, kind: Kind) -> Result<&[DefinitionRef; 3], ActionStateError> {
         match kind {
-            Kind::Original => &self.original,
-            Kind::Derived => &self.derived,
+            Kind::Original => Ok(&self.original),
+            Kind::Derived => Ok(&self.derived),
+            Kind::OriginalFollow => self
+                .follow
+                .as_ref()
+                .map(|a| &a[0])
+                .ok_or_else(|| refused("entitlement Follow recipe unavailable")),
+            Kind::DerivedFollow => self
+                .follow
+                .as_ref()
+                .map(|a| &a[1])
+                .ok_or_else(|| refused("entitlement Follow recipe unavailable")),
         }
     }
-    fn admission_action(&self, kind: Kind) -> &DefinitionRef {
-        &self.actions(kind)[0]
+    fn admission_action(&self, kind: Kind) -> Result<&DefinitionRef, ActionStateError> {
+        Ok(&self.actions(kind)?[0])
     }
-    pub(super) fn admission_actions(&self) -> [&DefinitionRef; 2] {
-        [
-            self.admission_action(Kind::Original),
-            self.admission_action(Kind::Derived),
-        ]
+    pub(super) fn admission_actions(&self) -> Vec<&DefinitionRef> {
+        [&self.original[0], &self.derived[0]]
+            .into_iter()
+            .chain(self.follow.iter().flat_map(|a| [&a[0][0], &a[1][0]]))
+            .collect()
     }
     pub(super) fn recognizes_historical(&self, effect: &DefinitionRef) -> bool {
-        [Kind::Original, Kind::Derived].into_iter().any(|kind| {
-            effect.key() == self.admission_action(kind).key() && effect.version() == kind.version()
-        })
+        (effect.key() == self.original[0].key() && matches!(effect.version(), 3 | 4))
+            || (effect.key() == self.derived[0].key() && matches!(effect.version(), 1 | 2))
+    }
+    pub(super) fn require_product(&self, allocation: &Value) -> Result<(), ActionStateError> {
+        let kind = allocation_kind(allocation)?;
+        self.admission_action(kind)?;
+        Ok(())
     }
     fn action_index(
         &self,
         identity: &RegisteredTxnIdentity,
     ) -> Result<(Kind, usize), ActionStateError> {
-        for kind in [Kind::Original, Kind::Derived] {
+        for kind in self.kinds() {
             if let Some(index) = self
-                .actions(kind)
+                .actions(kind)?
                 .iter()
                 .position(|action| action == &identity.action)
             {
@@ -218,8 +288,8 @@ impl Protocol {
         definitions
             .get_exact(&self.manifest)
             .map_err(|_| refused("entitlement manifest unavailable"))?;
-        for kind in [Kind::Original, Kind::Derived] {
-            for (action, transition) in self.actions(kind).iter().zip(TRANSITIONS) {
+        for kind in self.kinds() {
+            for (action, transition) in self.actions(kind)?.iter().zip(TRANSITIONS) {
                 let definition = definitions
                     .get_exact(action)
                     .map_err(|_| refused("entitlement action unavailable"))?;
@@ -289,12 +359,20 @@ fn admission_reference(
     participants: &[DefinitionRef; 2],
     kind: Kind,
 ) -> Result<DefinitionRef, ActionStateError> {
+    action_reference(manifest, participants, kind, 0)
+}
+fn action_reference(
+    manifest: &DefinitionRef,
+    participants: &[DefinitionRef; 2],
+    kind: Kind,
+    index: usize,
+) -> Result<DefinitionRef, ActionStateError> {
     check_participants(participants)?;
     let descriptor = DefinitionDescriptor::new(
         DefinitionKind::new("action").map_err(|_| refused("purchase action kind"))?,
-        DefinitionId::new(kind.actions()[0]).map_err(|_| refused("purchase action id"))?,
+        DefinitionId::new(kind.actions()[index]).map_err(|_| refused("purchase action id"))?,
         kind.version(),
-        action_payload(kind, "fund"),
+        action_payload(kind, TRANSITIONS[index]),
     )
     .map_err(|_| refused("purchase action descriptor"))?
     .with_references(vec![
@@ -339,6 +417,8 @@ fn quote_kind(quote: &Value) -> Result<Kind, ActionStateError> {
     let kind = match text(product, "protocol")? {
         "original_v3" => Kind::Original,
         "derived_v1" => Kind::Derived,
+        "original_v4" => Kind::OriginalFollow,
+        "derived_v2" => Kind::DerivedFollow,
         _ => return Err(refused("unknown entitlement protocol")),
     };
     let terms = field(product, "terms")?;
@@ -361,16 +441,14 @@ fn quote_kind(quote: &Value) -> Result<Kind, ActionStateError> {
         _ => false,
     };
     if number(quote, "format")? != 1
-        || number(grant, "format")? != 1
+        || grant_version(grant)? != kind.economics_version()
         || number(terms, "seats")? != 1
         || form.as_object().is_none_or(|f| f.len() != 1)
-        || text(field(product, "revision")?, "kind")? != "pin"
-        || field(pin, "filed")? != field(subject, "filed")?
-        || field(pin, "revision")? != field(subject, "revision")?
+        || !revision_matches(pin, subject, kind.follow())?
         || !source
         || edges.len() > 3
-        || (kind == Kind::Original && (!edges.is_empty() || !parent.is_null()))
-        || (kind == Kind::Derived && (edges.is_empty() || parent.is_null()))
+        || (kind.original() && (!edges.is_empty() || !parent.is_null()))
+        || (!kind.original() && (edges.is_empty() || parent.is_null()))
     {
         return Err(refused("entitlement product or ancestry shape"));
     }
@@ -401,13 +479,143 @@ fn quote_kind(quote: &Value) -> Result<Kind, ActionStateError> {
         return Err(refused("entitlement royalty content differs"));
     }
     let renewal = field(grant, "renewal")?;
-    if number(renewal, "format")? != 1
+    if number(renewal, "format")? != kind.economics_version()
         || field(renewal, "terms")? != terms
         || field(renewal, "revision")? != field(product, "revision")?
         || field(renewal, "instrument")? != field(quote, "instrument")?
         || field(renewal, "policy")? != field(quote, "policy")?
     {
         return Err(refused("entitlement renewal consent differs"));
+    }
+    Ok(kind)
+}
+
+/// A Follow policy names the purchased line; acquisition fields remain immutable.
+pub(super) fn revision_matches(
+    policy: &Value,
+    subject: &Value,
+    follow: bool,
+) -> Result<bool, ActionStateError> {
+    Ok(if follow {
+        policy == &json!({"kind":"follow", "line":field(subject,"line")?})
+    } else {
+        policy
+            == &json!({"kind":"pin", "filed":field(subject,"filed")?, "revision":field(subject,"revision")?})
+    })
+}
+pub(super) fn require_follow_birth(
+    view: &View<'_>,
+    binding: &Value,
+) -> Result<(), ActionStateError> {
+    if !matches!(number(binding, "format")?, 3 | 4) {
+        return Ok(());
+    }
+    let operation = token(field(binding, "birth_operation")?)?;
+    let allocation = required(view, &operation_key(ALLOCATION, operation)?)?;
+    let protocol = view
+        .registry
+        .entitlement_purchase
+        .as_ref()
+        .ok_or_else(|| refused("renewal Follow birth protocol absent"))?;
+    protocol.require_product(&allocation)?;
+    if !allocation_kind(&allocation)?.follow()
+        || text(field(&allocation, "phase")?, "kind")? != "granted"
+        || field(&allocation, "operation")? != &json!(operation)
+        || field(field(&allocation, "economics")?, "grant")? != field(binding, "grant")?
+    {
+        return Err(refused("renewal Follow immutable birth differs"));
+    }
+    for name in [
+        "licence",
+        "charter",
+        "line",
+        "filed",
+        "revision",
+        "product_digest",
+        "terms",
+    ] {
+        if field(&allocation, name)? != field(binding, name)? {
+            return Err(refused("renewal Follow acquisition changed"));
+        }
+    }
+    Ok(())
+}
+pub(super) fn binding_revision(binding: &Value) -> Result<Value, ActionStateError> {
+    match number(binding, "format")? {
+        1 | 2 if binding.get("revision_policy").is_none() => Ok(
+            json!({"kind":"pin", "filed":field(binding,"filed")?, "revision":field(binding,"revision")?}),
+        ),
+        3 | 4 => {
+            let policy = field(binding, "revision_policy")?;
+            if !revision_matches(policy, binding, true)? {
+                return Err(refused("renewal Follow line differs"));
+            }
+            Ok(policy.clone())
+        }
+        _ => Err(refused("renewal revision policy format differs")),
+    }
+}
+pub(super) fn grant_version(grant: &Value) -> Result<u64, ActionStateError> {
+    let version = number(grant, "format")?;
+    let template = field(grant, "renewal")?;
+    let policy = field(template, "revision")?;
+    let kind = text(policy, "kind")?;
+    if !matches!((version, kind), (1, "pin") | (2, "follow"))
+        || number(template, "format")? != version
+    {
+        return Err(refused("personal grant and renewal policy format differ"));
+    }
+    if version == 2 {
+        let r: DefinitionRef = serde_json::from_value(field(template, "policy")?.clone())
+            .map_err(|_| refused("personal Follow policy reference"))?;
+        if r.key().owner.as_str() != "market"
+            || r.key().kind.as_str() != "entitlement_policy"
+            || r.key().id.as_str() != "personal"
+            || r.version() != 2
+        {
+            return Err(refused("personal Follow policy identity"));
+        }
+    }
+    Ok(version)
+}
+pub(super) fn grant_domain(grant: &Value) -> Result<&'static str, ActionStateError> {
+    Ok(if grant_version(grant)? == 1 {
+        "roll.mind.grant_economics.v1"
+    } else {
+        "roll.mind.grant_economics.v2"
+    })
+}
+pub(super) fn economics_domain(economics: &Value) -> Result<&'static str, ActionStateError> {
+    let version = grant_version(field(economics, "grant")?)?;
+    if number(economics, "format")? != version {
+        return Err(refused("personal economics format differs"));
+    }
+    Ok(if version == 1 {
+        "roll.mind.paid_term_economics.v1"
+    } else {
+        "roll.mind.paid_term_economics.v2"
+    })
+}
+fn allocation_kind(allocation: &Value) -> Result<Kind, ActionStateError> {
+    let kind = match text(allocation, "protocol")? {
+        "original_v3" => Kind::Original,
+        "derived_v1" => Kind::Derived,
+        "original_v4" => Kind::OriginalFollow,
+        "derived_v2" => Kind::DerivedFollow,
+        _ => return Err(refused("personal allocation protocol")),
+    };
+    let economics = field(allocation, "economics")?;
+    let grant = field(economics, "grant")?;
+    if number(allocation, "format")? != 1
+        || number(economics, "format")? != kind.economics_version()
+        || grant_version(grant)? != kind.economics_version()
+        || !revision_matches(
+            field(field(grant, "renewal")?, "revision")?,
+            allocation,
+            kind.follow(),
+        )?
+    {
+        return Err(refused("personal allocation economics differs"));
     }
     Ok(kind)
 }
@@ -507,6 +715,7 @@ fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionStateError> {
         .entitlement_purchase
         .as_ref()
         .ok_or_else(|| refused("purchase protocol unavailable"))?;
+    protocol.require_product(&allocation)?;
     if number(&purchase, "format")? != 1
         || number(&allocation, "format")? != 1
         || text(&allocation, "protocol")? != kind.wire()
@@ -538,7 +747,7 @@ fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionStateError> {
     }
     let economics = field(&allocation, "economics")?;
     if economics
-        != &json!({"format":1,"licence":field(&allocation,"licence")?,"generation":field(&allocation,"term")?,"operation":id,"product_digest":field(&allocation,"product_digest")?,"grant":field(product,"grant")?})
+        != &json!({"format":kind.economics_version(),"licence":field(&allocation,"licence")?,"generation":field(&allocation,"term")?,"operation":id,"product_digest":field(&allocation,"product_digest")?,"grant":field(product,"grant")?})
     {
         return Err(refused("entitlement allocated economics differs"));
     }
@@ -640,7 +849,10 @@ fn outputs(view: &View<'_>, id: CommitToken, pair: &Pair) -> Result<(), ActionSt
         || field(&receipt, "product_digest")? != field(&pair.allocation, "product_digest")?
         || field(&receipt, "grant_economics_digest")?
             != &json!(digest(
-                "roll.mind.grant_economics.v1",
+                grant_domain(field(
+                    field(field(&pair.purchase, "quote")?, "product")?,
+                    "grant"
+                )?)?,
                 field(field(field(&pair.purchase, "quote")?, "product")?, "grant")?
             )?)
     {
@@ -725,10 +937,10 @@ pub(super) fn verify(
     let kind = quote_kind(field(&pair.purchase, "quote")?)?;
     if reservation.effect != historical_admission(protocol, &pair.purchase)?
         || (matches!(phase, Phase::Funding)
-            && reservation.effect != *protocol.admission_action(kind))
+            && reservation.effect != *protocol.admission_action(kind)?)
         || (matches!(phase, Phase::Terminal)
             && pair.phase == "granted"
-            && reservation.effect != *protocol.admission_action(kind))
+            && reservation.effect != *protocol.admission_action(kind)?)
         || field(&pair.purchase, "effect")? != &json!(reservation.effect)
         || reservation.sponsor != operation_key(PURCHASE, reservation.funding)?
         || reservation.targets != targets(reservation.funding, pair.licence)?
@@ -788,7 +1000,7 @@ pub(in crate::action_state) fn entitlement_change(
         let record = Reservation {
             format: 1,
             funding: commit,
-            effect: protocol.admission_action(kind).clone(),
+            effect: protocol.admission_action(kind)?.clone(),
             sponsor: operation_key(PURCHASE, commit)?,
             targets: targets(commit, pair.licence)?,
             protocol_fingerprint: Some(fingerprint(&pair)?),

@@ -131,6 +131,24 @@ impl Provider {
         charter.validate()?;
         line.validate()?;
         binding.check_rows(&filed, &term, &birth)?;
+        // Qualification retains its immutable acquisition row even when the
+        // line now selects a later compatible derived revision.
+        let current_filed = txn
+            .get(&self.families.filed, &line.head.key())
+            .map_err(invalid)?
+            .cloned()
+            .ok_or(PublicationError::Missing)?;
+        let current_birth = super::super::line_update::audit::birth_in_txn(
+            txn,
+            ctx.world().map_err(invalid)?,
+            &self.families,
+            &current_filed,
+        )?;
+        if current_birth.commit != birth.commit
+            || current_filed.content.parent() != Some(binding.parent.parent)
+        {
+            return Err(PublicationError::Mismatch);
+        }
         if licence.id != owner_licence
             || licence.charter != binding.charter
             || licence.line != birth.line
@@ -144,7 +162,7 @@ impl Provider {
             || line.id != licence.line
             || line.charter != licence.charter
             || line.operation != birth.commit
-            || line.head != filed.content.id()
+            || line.head != current_filed.content.id()
         {
             return Err(PublicationError::Mismatch);
         }

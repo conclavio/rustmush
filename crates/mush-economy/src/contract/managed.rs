@@ -395,7 +395,7 @@ fn closed_money_namespace(namespace: &str) -> bool {
         || crate::managed_purchase::closed_namespace(namespace)
         || namespace == crate::managed_renewal::NAMESPACE
         || namespace == crate::managed_house_renewal::NAMESPACE
-        || namespace == crate::registry_filing::update::receipt::NAMESPACE
+        || crate::registry_filing::update::receipt::is_namespace(namespace)
         || namespace == crate::registry_filing::charter_transfer::receipt::NAMESPACE
         || namespace == crate::core_integration::NAMESPACE
         || namespace == crate::core_refit::NAMESPACE

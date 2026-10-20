@@ -323,7 +323,8 @@ fn real_native_role_cases_repeat_complete_measured_evidence() -> TestResult {
             );
             assert!(
                 a.passed(),
-                "actual source must pass its complete native role scenario"
+                "actual source must pass its complete native role scenario: {}",
+                a.failure_summary()
             );
         }
     }
@@ -414,7 +415,11 @@ fn complete_actual_paired_worker_returns_only_its_measured_output() -> TestResul
             .checked_add(progress.charged_unit_ms)
             .ok_or("charged overflow")?;
         if let Some(result) = progress.completed {
-            assert!(result.passed());
+            assert!(
+                result.passed(),
+                "actual paired Conduct failure: {}",
+                result.first_failure_summary()
+            );
             assert_eq!(result.measured_unit_ms(), charged);
             assert!(serde_json::to_vec(&result)?.len() < 256 * 1024);
             assert!(run.advance(u64::MAX).is_err());

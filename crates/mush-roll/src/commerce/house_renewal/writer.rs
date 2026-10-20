@@ -46,7 +46,10 @@ struct Registration {
 /// Shared trusted composition cell. Only Roll installs its real families and
 /// fixed grants; no public state/image or current-rights constructor exists.
 #[derive(Clone, Default)]
-pub struct RenewalWriter(Arc<OnceLock<Registration>>);
+pub struct RenewalWriter(
+    Arc<OnceLock<Registration>>,
+    Option<Arc<dyn super::super::house_purchase::HouseBuyerAdmission>>,
+);
 impl std::fmt::Debug for RenewalWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RenewalWriter")
@@ -58,6 +61,19 @@ impl RenewalWriter {
     pub fn new() -> Self {
         Self::default()
     }
+    /// Carry the actual purchase composition's refusal-only policy into fresh
+    /// next-term admission. Refund/Close never evaluate current buyer eligibility.
+    pub fn with_purchase_admission(
+        mut self,
+        purchase: &super::super::house_purchase::writer::HousePurchaseWriter,
+    ) -> Result<Self, ModError> {
+        if self.0.get().is_some() || self.1.is_some() {
+            return Err(error("renewal buyer policy already configured"));
+        }
+        self.1 = purchase.buyer_admission();
+        Ok(self)
+    }
+
     /// Market's mandatory final paired audit reads actual retained Roll rows.
     /// No caller list substitutes for reverse completeness, and the Roll gate
     /// must already have proved the complete generation/attempt/E4/root graph.
@@ -256,6 +272,13 @@ impl RegisteredRenewalWriter {
             .read_owner_preimage(txn, &self.reader, RenewalRequest::own(licence))
             .and_then(|v| v.into_facts())
             .map_err(invalid)?;
+        if let Some(policy) = &self.registration.1 {
+            policy.check(
+                ctx.world().map_err(invalid)?,
+                facts.sale().issuer(),
+                facts.binding().holder(),
+            )?;
+        }
         let account = ctx.personal_account().map_err(invalid)?;
         if account.requester() != facts.binding().holder() {
             return Err(PublicationError::Mismatch);
@@ -448,6 +471,7 @@ impl RegisteredRenewalWriter {
             &row,
             prior_retry,
             Some(facts),
+            self.registration.1.clone(),
         )?;
         txn.insert(&f.house_renewal_operations, &row.key(), row.clone())
             .map_err(invalid)?;
@@ -641,6 +665,7 @@ impl RegisteredRenewalWriter {
             &after,
             None,
             facts,
+            self.registration.1.clone(),
         )?;
         if transition == Publication::Ordinary(Transition::Grant) {
             let (expected_licence, term, economics) = after.granted_rows()?;

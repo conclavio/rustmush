@@ -40,6 +40,7 @@ pub(crate) struct HouseFence {
     requester: ObjId,
     fresh: Option<HouseSaleFacts>,
     publication: bool,
+    buyer_admission: Option<std::sync::Arc<dyn super::HouseBuyerAdmission>>,
 }
 impl HouseFence {
     fn new(
@@ -65,6 +66,7 @@ impl HouseFence {
             requester,
             fresh: fresh.cloned(),
             publication: matches!(transition, Transition::List),
+            buyer_admission: None,
         })
     }
     pub(crate) fn check(&self, context: &OwnerPrepareContext<'_>) -> Result<(), PublicationError> {
@@ -76,6 +78,11 @@ impl HouseFence {
         }
         if let Some(facts) = &self.fresh {
             facts.check_fresh(context, self.publication)?;
+            if !self.publication {
+                if let Some(policy) = &self.buyer_admission {
+                    policy.check(context.world(), facts.issuer(), self.requester)?;
+                }
+            }
         }
         Ok(())
     }
@@ -118,6 +125,7 @@ impl HouseRoots {
         row: &HouseAllocationV1,
         commit: CommitToken,
         facts: &HouseSaleFacts,
+        buyer_admission: Option<std::sync::Arc<dyn super::HouseBuyerAdmission>>,
     ) -> Result<Self, PublicationError> {
         if row.operation != commit
             || row.phase != (PurchasePhase::Funded {})
@@ -125,15 +133,17 @@ impl HouseRoots {
         {
             return Err(PublicationError::Mismatch);
         }
+        let mut fence = HouseFence::new(
+            action,
+            row.protocol,
+            Transition::Fund,
+            commit,
+            facts.requester(),
+            Some(facts),
+        )?;
+        fence.buyer_admission = buyer_admission;
         Ok(Self {
-            fence: HouseFence::new(
-                action,
-                row.protocol,
-                Transition::Fund,
-                commit,
-                facts.requester(),
-                Some(facts),
-            )?,
+            fence,
             before: Vec::new(),
             after: super::audit::required(row)?,
         })
@@ -145,6 +155,7 @@ impl HouseRoots {
         after: &HouseAllocationV1,
         output: &HouseTerminalOutput,
         facts: Option<&HouseSaleFacts>,
+        buyer_admission: Option<std::sync::Arc<dyn super::HouseBuyerAdmission>>,
     ) -> Result<Self, PublicationError> {
         before.validate()?;
         after.validate()?;
@@ -172,15 +183,19 @@ impl HouseRoots {
         if &expected != after || facts.is_some_and(|facts| !matches_facts(before, facts)) {
             return Err(PublicationError::Mismatch);
         }
+        let mut fence = HouseFence::new(
+            action,
+            before.protocol,
+            transition,
+            output.commit(),
+            requester,
+            facts,
+        )?;
+        if matches!(transition, Transition::Grant) {
+            fence.buyer_admission = buyer_admission;
+        }
         Ok(Self {
-            fence: HouseFence::new(
-                action,
-                before.protocol,
-                transition,
-                output.commit(),
-                requester,
-                facts,
-            )?,
+            fence,
             before: super::audit::required(before)?,
             after: super::audit::required(after)?,
         })

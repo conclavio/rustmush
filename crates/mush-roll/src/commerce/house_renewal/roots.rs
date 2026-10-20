@@ -34,6 +34,7 @@ pub(crate) struct RenewalFence {
     holder: ObjId,
     transition: Publication,
     fresh: Option<RenewalFacts>,
+    buyer_admission: Option<std::sync::Arc<dyn super::super::house_purchase::HouseBuyerAdmission>>,
 }
 impl RenewalFence {
     pub(crate) fn check(&self, ctx: &OwnerPrepareContext<'_>) -> Result<(), PublicationError> {
@@ -52,6 +53,9 @@ impl RenewalFence {
         }
         if let Some(facts) = &self.fresh {
             facts.check_fresh(ctx)?;
+            if let Some(policy) = &self.buyer_admission {
+                policy.check(ctx.world(), facts.sale().issuer(), self.holder)?;
+            }
         }
         Ok(())
     }
@@ -64,6 +68,7 @@ pub(crate) struct RenewalRoots {
 impl RenewalRoots {
     /// Private writer already consumed the matching actual opaque E4 output
     /// and checked all typed before/post-images. No caller can supply roots.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare(
         action: &DefinitionRef,
         commit: CommitToken,
@@ -72,6 +77,9 @@ impl RenewalRoots {
         after: &RenewalOperationV1,
         prior_attempt: Option<&RenewalOperationV1>,
         fresh: Option<&RenewalFacts>,
+        buyer_admission: Option<
+            std::sync::Arc<dyn super::super::house_purchase::HouseBuyerAdmission>,
+        >,
     ) -> Result<Self, PublicationError> {
         after.validate()?;
         if action.key().owner.as_str() != "market"
@@ -192,6 +200,7 @@ impl RenewalRoots {
                 },
                 transition,
                 fresh: fresh.cloned(),
+                buyer_admission: transition.fresh().then_some(buyer_admission).flatten(),
             },
             before: before_roots,
             after: after_roots,

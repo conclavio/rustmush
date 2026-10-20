@@ -32,6 +32,10 @@ struct Rules {
     declarations: Vec<DefinitionDescriptor>,
     initial: DefinitionRef,
     update: DefinitionRef,
+    derived: Option<DefinitionRef>,
+    major: Option<DefinitionRef>,
+    house_initial: Option<DefinitionRef>,
+    house_update: Option<DefinitionRef>,
     wrong: DefinitionRef,
     outcome: DefinitionRef,
 }
@@ -61,9 +65,21 @@ fn rules() -> Result<Rules> {
         declarations,
         initial,
         update,
+        derived: None,
+        major: None,
+        house_initial: None,
+        house_update: None,
         wrong,
         outcome,
     })
+}
+fn derived_rules() -> Result<Rules> {
+    let mut r = rules()?;
+    let d = descriptor("action", DERIVED_ACTION_ID)?;
+    let actual = DefinitionRegistryBuilder::new().register(OwnerId::new("roll")?, d.clone())?;
+    r.declarations.push(d);
+    r.derived = Some(actual);
+    Ok(r)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +87,10 @@ struct Input {
     charter: ObjId,
     payer: AccountId,
     title_revision: u64,
+    #[serde(default)]
+    organization: Option<mush_org::OrgId>,
+    #[serde(default)]
+    scope: Option<mush_org::OrgScopeId>,
 }
 // Strict test-only typed evidence derived from each actual prepared Economy
 // output. It is not a production Roll filing/update record or an authority.
@@ -100,6 +120,10 @@ impl FixtureReceipt {
         &self,
         initial: &DefinitionRef,
         update: &DefinitionRef,
+        derived: Option<&DefinitionRef>,
+        major: Option<&DefinitionRef>,
+        house_initial: Option<&DefinitionRef>,
+        house_update: Option<&DefinitionRef>,
     ) -> std::result::Result<(), String> {
         if self.format != 1 || self.actor.0 == 0 {
             return Err("fixture receipt shape".into());
@@ -111,8 +135,23 @@ impl FixtureReceipt {
                     return Err("initial actor differs".into());
                 }
             }
+            FixtureEffect::Initial(s)
+                if house_initial == Some(&self.action) && s.commit() == self.commit =>
+            {
+                if s.house().is_none_or(|h| h.curator() != self.actor) {
+                    return Err("House curator differs".into());
+                }
+            }
             FixtureEffect::Update(s)
-                if &self.action == update && s.commit == self.commit && s.actor == self.actor =>
+                if ((&self.action == update && s.kind.is_none())
+                    || (derived == Some(&self.action)
+                        && s.kind == Some(UpdateKind::DependentV1))
+                    || (major == Some(&self.action)
+                        && s.kind == Some(UpdateKind::OriginalMajorV1))
+                    || (house_update == Some(&self.action)
+                        && s.kind == Some(UpdateKind::HouseCompatibleV1)))
+                    && s.commit == self.commit
+                    && s.actor == self.actor =>
             {
                 s.validate().map_err(|_| "update shape")?;
             }
@@ -135,6 +174,10 @@ fn receipts(
     let bad = |e: &dyn std::fmt::Display| ModError::msg(e.to_string());
     let initial = rules.initial.clone();
     let update = rules.update.clone();
+    let derived = rules.derived.clone();
+    let major = rules.major.clone();
+    let house_initial = rules.house_initial.clone();
+    let house_update = rules.house_update.clone();
     reg.state_family(
         StateFamilyDescriptor::new(
             StateFamilyId::new(RECEIPT_FAMILY).map_err(|e| bad(&e))?,
@@ -159,7 +202,16 @@ fn receipts(
             }
             Ok(row)
         },
-        move |row: &FixtureReceipt| row.validate(&initial, &update),
+        move |row: &FixtureReceipt| {
+            row.validate(
+                &initial,
+                &update,
+                derived.as_ref(),
+                major.as_ref(),
+                house_initial.as_ref(),
+                house_update.as_ref(),
+            )
+        },
         |row: &FixtureReceipt| {
             serde_json::to_value(row).map_err(|_| "fixture receipt encoding".into())
         },
@@ -187,7 +239,14 @@ fn prepared_receipt(
         }
         let receipt: FixtureReceipt =
             serde_json::from_value(value.get("value").ok_or("typed fixture value")?.clone())?;
-        receipt.validate(&rules.initial, &rules.update)?;
+        receipt.validate(
+            &rules.initial,
+            &rules.update,
+            rules.derived.as_ref(),
+            rules.major.as_ref(),
+            rules.house_initial.as_ref(),
+            rules.house_update.as_ref(),
+        )?;
         let expected = json!({"family":{"owner":"roll","id":RECEIPT_FAMILY},"key":receipt.commit.to_hex(),"schema":{"id":"fee_update_fixture_receipt.value.v1","version":1},"value":receipt});
         if value != &expected
             || key.as_str() != format!("action-state/v1/{RECEIPT_FAMILY}/{}", commit.to_hex())
@@ -228,12 +287,39 @@ impl ActionProvider for Provider {
         ctx: &mut PrepareCtx<'_>,
     ) -> std::result::Result<AuthoritativeActionOutput, ActionError> {
         let r: Input = serde_json::from_value(inv.parameters().clone()).map_err(|_| error())?;
-        let request = if self.initial {
+        let request = if self.action.key().id.as_str() == HOUSE_ACTION_ID {
+            EconomyRequest::HouseCompatibleUpdate(RegistryHouseCompatibleUpdate {
+                charter: r.charter,
+                payer: r.payer,
+                title_revision: r.title_revision,
+                organization: r.organization.ok_or_else(error)?,
+                scope: r.scope.ok_or_else(error)?,
+            })
+        } else if self.action.key().id.as_str() == HOUSE_FILING_ACTION {
+            EconomyRequest::HouseInitialFiling(RegistryHouseFiling {
+                shell: r.charter,
+                payer: r.payer,
+                organization: r.organization.ok_or_else(error)?,
+                scope: r.scope.ok_or_else(error)?,
+            })
+        } else if self.initial {
             EconomyRequest::InitialFiling(RegistryInitialFiling {
                 shell: r.charter,
                 payer: r.payer,
                 owner: PrincipalId::Object(inv.actor()),
                 scope: None,
+            })
+        } else if self.action.key().id.as_str() == MAJOR_ACTION_ID {
+            EconomyRequest::OriginalMajor(RegistryCompatibleUpdate {
+                charter: r.charter,
+                payer: r.payer,
+                title_revision: r.title_revision,
+            })
+        } else if self.action.key().id.as_str() == DERIVED_ACTION_ID {
+            EconomyRequest::DerivedCompatibleUpdate(RegistryCompatibleUpdate {
+                charter: r.charter,
+                payer: r.payer,
+                title_revision: r.title_revision,
             })
         } else {
             EconomyRequest::CompatibleUpdate(RegistryCompatibleUpdate {
@@ -248,7 +334,22 @@ impl ActionProvider for Provider {
         let effect = if self.initial {
             let output = output.initial_filing().map_err(|_| error())?;
             let title = output.title();
-            FixtureEffect::Initial(
+            let subject = if let Some(house) = output.house() {
+                super::super::receipt::InitialFilingAuditSubject::new_house(
+                    output.commit_token(),
+                    output.transaction(),
+                    output.journal_seq(),
+                    title.object,
+                    title.revision,
+                    output.payer(),
+                    output.sink(),
+                    output.fee(),
+                    output.issuer().clone(),
+                    title.catalog.clone().ok_or_else(error)?,
+                    house.clone(),
+                )
+                .map_err(|_| error())?
+            } else {
                 super::super::receipt::InitialFilingAuditSubject::new(
                     output.commit_token(),
                     output.transaction(),
@@ -262,8 +363,9 @@ impl ActionProvider for Provider {
                     output.issuer().clone(),
                     title.catalog.clone().ok_or_else(error)?,
                 )
-                .map_err(|_| error())?,
-            )
+                .map_err(|_| error())?
+            };
+            FixtureEffect::Initial(subject)
         } else {
             FixtureEffect::Update(
                 output
@@ -326,11 +428,27 @@ impl GameModule for Rules {
             reg.request_owner_participant::<InitialFilingParticipant>(self.initial.clone())?;
         let update =
             reg.request_owner_participant::<InitialFilingParticipant>(self.update.clone())?;
-        for (action, handle, is_initial) in [
+        let mut providers = vec![
             (self.initial.clone(), initial, true),
             (self.update.clone(), update.clone(), false),
             (self.wrong.clone(), update, false),
-        ] {
+        ];
+        for action in self
+            .derived
+            .iter()
+            .chain(self.major.iter())
+            .chain(self.house_update.iter())
+        {
+            let handle =
+                reg.request_owner_participant::<InitialFilingParticipant>(action.clone())?;
+            providers.push((action.clone(), handle, false));
+        }
+        if let Some(action) = &self.house_initial {
+            let handle =
+                reg.request_owner_participant::<InitialFilingParticipant>(action.clone())?;
+            providers.push((action.clone(), handle, true));
+        }
+        for (action, handle, is_initial) in providers {
             reg.action_provider(
                 action.clone(),
                 Provider {
@@ -358,18 +476,30 @@ fn policy(fee: i64) -> InitialFilingPolicy {
     .expect("policy")
 }
 fn modules(r: &Rules, fee: i64) -> Vec<Box<dyn GameModule>> {
-    vec![
-        Box::new(mush_org::OrgModule::new()),
-        Box::new(r.clone()),
-        Box::new(
-            crate::EconomyModule::new()
-                .with_title_issuers(vec![
-                    SystemPrincipalId::new("roll.registry").expect("issuer"),
-                ])
-                .with_initial_filing(policy(fee), r.initial.clone())
-                .with_compatible_mind_updates(r.update.clone()),
-        ),
-    ]
+    let mut economy = crate::EconomyModule::new()
+        .with_title_issuers(vec![
+            SystemPrincipalId::new("roll.registry").expect("issuer"),
+        ])
+        .with_initial_filing(policy(fee), r.initial.clone())
+        .with_compatible_mind_updates(r.update.clone());
+    if let Some(action) = &r.derived {
+        economy = economy.with_derived_mind_updates(action.clone());
+    }
+    if let Some(action) = &r.major {
+        economy = economy.with_original_mind_majors(action.clone());
+    }
+    if let Some(action) = &r.house_initial {
+        economy = economy.with_house_initial_filing(action.clone());
+    }
+    if let Some(action) = &r.house_update {
+        economy = economy.with_house_mind_updates(action.clone());
+    }
+    let org: Box<dyn GameModule> = if r.house_initial.is_some() {
+        Box::new(house::PolicyOrg(mush_org::OrgModule::new()))
+    } else {
+        Box::new(mush_org::OrgModule::new())
+    };
+    vec![org, Box::new(r.clone()), Box::new(economy)]
 }
 struct Fixture {
     world: TestWorld,
@@ -381,7 +511,9 @@ struct Fixture {
 }
 impl Fixture {
     fn empty() -> Result<Self> {
-        let rules = rules()?;
+        Self::empty_rules(rules()?)
+    }
+    fn empty_rules(rules: Rules) -> Result<Self> {
         let mut world = TestWorld::with_modules(modules(&rules, 100));
         let actor = world.spawn_player("Updater");
         let shell =
@@ -398,7 +530,12 @@ impl Fixture {
         })
     }
     fn new() -> Result<Self> {
-        let mut f = Self::empty()?;
+        Self::initialize(Self::empty()?)
+    }
+    fn new_derived() -> Result<Self> {
+        Self::initialize(Self::empty_rules(derived_rules()?)?)
+    }
+    fn initialize(mut f: Self) -> Result<Self> {
         for command in [
             "@instrument/register cr=0".to_owned(),
             "@account/system faucet=cr".to_owned(),
@@ -429,6 +566,16 @@ impl Fixture {
             .expect("actual economy")
     }
     fn prepare(&mut self, action: &DefinitionRef, actor: ObjId, n: u8) -> Result<PreparedAction> {
+        let parameters = json!({"charter":self.shell,"payer":AccountId(1),"title_revision":self.state().snapshot.asset(self.shell).map_or(0,|a|a.revision)});
+        self.prepare_parameters(action, actor, n, parameters)
+    }
+    fn prepare_parameters(
+        &mut self,
+        action: &DefinitionRef,
+        actor: ObjId,
+        n: u8,
+        parameters: Value,
+    ) -> Result<PreparedAction> {
         let token = token(n);
         let request = RequestUid::from_bytes([n; 16]);
         let principal = ActionPrincipal::Object { id: actor };
@@ -439,7 +586,7 @@ impl Fixture {
             offered_action: ActionOfferId(CanonicalHash::from_bytes([2; 32])),
             subject: PerceivedRef::SelfActor,
             targets: vec![],
-            parameters: json!({"charter":self.shell,"payer":AccountId(1),"title_revision":self.state().snapshot.asset(self.shell).map_or(0,|a|a.revision)}),
+            parameters,
             idempotency: ScopedIdempotencyKey::new(
                 IdempotencyScope {
                     principal,
@@ -840,7 +987,7 @@ fn approval_and_ordinary_post_routes_cannot_bypass_the_closed_fee_owner() -> Res
             title_revision: 1,
             payer: AccountId(1),
         };
-        let plan = plan(&policy(100), f.actor, token(2), &request);
+        let plan = plan(None, &policy(100), f.actor, token(2), &request);
         let gate = f.state().key_gate();
         let env = ValidateEnv {
             auth: &Permit,
@@ -875,3 +1022,309 @@ fn approval_and_ordinary_post_routes_cannot_bypass_the_closed_fee_owner() -> Res
     }
     Ok(())
 }
+
+#[test]
+fn derived_fee_has_distinct_native_history_and_preserves_original_receipt_bytes() -> Result {
+    let mut f = Fixture::new_derived()?;
+    let title = f.state().snapshot.asset(f.shell).ok_or("title")?.clone();
+    let initial = serde_json::to_value(f.state().filing_receipt_audit())?;
+    let original_action = f.rules.update.clone();
+    let original = f.prepare(&original_action, f.actor, 2)?;
+    f.publish(original_action, 2, original)?;
+    let original_subject = f
+        .state()
+        .update_receipt_audit()
+        .receipts()?
+        .next()
+        .ok_or("original receipt")?
+        .clone();
+    let original_json = serde_json::to_value(&original_subject)?;
+    assert!(original_json.get("kind").is_none());
+    assert_eq!(
+        serde_json::from_value::<UpdateAuditSubject>(original_json.clone())?,
+        original_subject
+    );
+
+    let action = f.rules.derived.clone().ok_or("derived action")?;
+    let prepared = f.prepare(&action, f.actor, 3)?;
+    let before = f.state().snapshot.clone();
+    let writes = f.stage(action.clone(), 3, prepared)?;
+    assert_eq!(f.state().snapshot, before);
+    let prepared = prepared_receipt(&writes, &f.rules, &action, token(3), f.actor)?;
+    let FixtureEffect::Update(subject) = prepared.effect else {
+        return Err("actual derived output".into());
+    };
+    assert_eq!(subject.kind, Some(UpdateKind::DependentV1));
+    assert_eq!(subject.commit, token(3));
+    f.take_install()?;
+    f.state().update_receipt_audit().verify(&subject)?;
+    let tx = f
+        .state()
+        .transaction(subject.transaction)
+        .ok_or("derived native transaction")?;
+    assert_eq!(
+        tx.idempotency.namespace.as_str(),
+        receipt::DERIVED_NAMESPACE
+    );
+    assert_eq!(receipt::subject_of(tx)?, subject);
+    assert_eq!(
+        crate::contract::managed::require_legacy_transaction(tx, &f.state().snapshot),
+        Err(crate::EconomyError::ManagedContract)
+    );
+    assert_eq!(f.state().snapshot.asset(f.shell), Some(&title));
+    assert_eq!(
+        serde_json::to_value(f.state().filing_receipt_audit())?,
+        initial
+    );
+    assert_eq!(
+        serde_json::to_value(
+            f.state()
+                .update_receipt_audit()
+                .receipts()?
+                .find(|s| s.commit == token(2))
+                .ok_or("retained original")?
+        )?,
+        original_json
+    );
+    assert_eq!(
+        f.state()
+            .snapshot
+            .account(AccountId(1))
+            .ok_or("payer")?
+            .posted_balance,
+        Amount::from_minor(9700)
+    );
+    assert_eq!(
+        f.state()
+            .snapshot
+            .account(AccountId(2))
+            .ok_or("sink")?
+            .posted_balance,
+        Amount::from_minor(300)
+    );
+
+    let mut replay = UpdateReceiptAudit::default();
+    let mut transactions: Vec<_> = f.state().transactions.values().collect();
+    transactions.sort_by_key(|tx| tx.journal_seq);
+    for tx in transactions {
+        replay.observe(tx);
+    }
+    replay.finish_replay()?;
+    assert_eq!(replay, *f.state().update_receipt_audit());
+    let mut crossed = subject.clone();
+    crossed.kind = None;
+    assert!(replay.verify(&crossed).is_err());
+    for kind in [Value::Null, json!("original"), json!({"dependent_v1":{}})] {
+        let mut malformed = serde_json::to_value(&subject)?;
+        malformed["kind"] = kind;
+        assert!(serde_json::from_value::<UpdateAuditSubject>(malformed).is_err());
+    }
+    // A caller-supplied ordinary plan cannot use the new namespace, even with
+    // an authorizer that would permit every monetary line.
+    struct Permit;
+    impl AuthEval for Permit {
+        fn authorize(&self, _: &PrincipalId, _: &Account, _: Amount) -> bool {
+            true
+        }
+    }
+    let request = RegistryCompatibleUpdate {
+        charter: f.shell,
+        payer: AccountId(1),
+        title_revision: title.revision,
+    };
+    let ordinary = plan(
+        Some(UpdateKind::DependentV1),
+        &policy(100),
+        f.actor,
+        token(4),
+        &request,
+    );
+    let gate = f.state().key_gate();
+    let env = ValidateEnv {
+        auth: &Permit,
+        custody: &NoCustody,
+        facts: &NoFacts,
+        now: f.world.world().now(),
+        ic_now: f.world.world().game_now_unix(),
+        next_hold_id: f.state().next_hold,
+        spent: BTreeMap::new(),
+        keys: &gate,
+    };
+    assert!(matches!(
+        crate::engine::validate(&ordinary, &f.state().snapshot, &env),
+        PlanResult::Refused(crate::EconomyError::ManagedContract)
+    ));
+    Ok(())
+}
+
+#[test]
+fn derived_fee_cold_boot_requires_its_exact_enabled_protocol_and_checkpoint_namespace() -> Result {
+    let mut f = Fixture::new_derived()?;
+    let original = f.update(2)?;
+    f.publish(f.rules.update.clone(), 2, original)?;
+    let action = f.rules.derived.clone().ok_or("derived action")?;
+    let prepared = f.prepare(&action, f.actor, 3)?;
+    f.publish(action, 3, prepared)?;
+    let mut cold = Fixture::empty_rules(derived_rules()?)?;
+    cold.world.try_modules_loaded(f.boot.clone())?;
+    assert_eq!(cold.state().snapshot, f.state().snapshot);
+    assert_eq!(
+        cold.state().update_receipt_audit(),
+        f.state().update_receipt_audit()
+    );
+    assert_eq!(cold.state().filing_receipt_audit().receipts()?.len(), 1);
+    let mut old_only = Fixture::empty()?;
+    let error = old_only
+        .world
+        .try_modules_loaded(f.boot.clone())
+        .err()
+        .ok_or("derived history accepted with original-only configuration")?;
+    assert!(
+        error
+            .to_string()
+            .contains("compatible-update protocol requires exact paired composition")
+    );
+
+    let audit = f.state().update_receipt_audit();
+    let rows: Vec<_> = audit
+        .receipts()?
+        .map(|subject| crate::checkpoint::IdemRow {
+            ns: receipt::namespace(subject.kind).into(),
+            key: subject.commit.to_hex().into(),
+            plan_hash: subject
+                .plan_hash
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            tx: subject.transaction,
+            posted_at: subject.posted_at_utc,
+            seq: subject.journal_seq,
+        })
+        .collect();
+    assert!(audit.checkpoint_complete(&rows));
+    for i in 0..rows.len() {
+        let mut missing = rows.clone();
+        missing.remove(i);
+        assert!(!audit.checkpoint_complete(&missing));
+        let mut crossed = rows.clone();
+        let row = crossed.get_mut(i).ok_or("checkpoint row")?;
+        row.ns = if row.ns.as_str() == receipt::NAMESPACE {
+            receipt::DERIVED_NAMESPACE
+        } else {
+            receipt::NAMESPACE
+        }
+        .into();
+        assert!(!audit.checkpoint_complete(&crossed));
+    }
+    assert!(audit.require_enabled(true, false).is_err());
+    assert!(audit.require_enabled(false, true).is_err());
+    audit.require_enabled(true, true)?;
+    Ok(())
+}
+
+#[test]
+fn derived_fee_repeats_live_actor_title_and_account_checks_at_every_custody_boundary() -> Result {
+    for phase in 0..3 {
+        for drift in 0..3 {
+            let mut f = Fixture::new_derived()?;
+            let action = f.rules.derived.clone().ok_or("derived action")?;
+            let mut prepared = if phase > 0 {
+                Some(f.prepare(&action, f.actor, 2)?)
+            } else {
+                None
+            };
+            if phase == 2 {
+                f.stage(action.clone(), 2, prepared.take().ok_or("prepared")?)?;
+            }
+            let shell = f.shell;
+            let actor = f.actor;
+            match drift {
+                0 => {
+                    f.state_mut()
+                        .snapshot
+                        .asset_mut(shell)
+                        .ok_or("title")?
+                        .frozen = true
+                }
+                1 => {
+                    f.state_mut()
+                        .snapshot
+                        .account_mut(AccountId(1))
+                        .ok_or("payer")?
+                        .owner = PrincipalId::Object(GOD)
+                }
+                _ => {
+                    f.world
+                        .world_mut()
+                        .get_mut(actor)
+                        .ok_or("actor")?
+                        .flags
+                        .insert(mush_core::Flags::GOING);
+                    let _ = f.world.world_mut().take_dirty();
+                }
+            }
+            let before = f.state().snapshot.clone();
+            let next = f.state().next_transaction;
+            match phase {
+                0 => assert!(f.prepare(&action, actor, 2).is_err()),
+                1 => assert!(
+                    f.stage(action, 2, prepared.take().ok_or("prepared")?)
+                        .is_err()
+                ),
+                _ => assert!(f.world.engine_mut().take_staged_action().is_err()),
+            }
+            assert_eq!(f.state().snapshot, before);
+            assert_eq!(f.state().next_transaction, next);
+            assert_eq!(f.state().update_receipt_audit().receipts()?.len(), 0);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn derived_fee_registration_requires_initial_policy_positive_fee_and_exact_action() -> Result {
+    let r = derived_rules()?;
+    let action = r.derived.clone().ok_or("derived action")?;
+    assert!(
+        mush_core::Engine::with_modules(
+            World::new_minimal(),
+            mush_core::Registry::new(),
+            modules(&r, 0)
+        )
+        .is_err()
+    );
+    assert!(
+        mush_core::Engine::with_modules(
+            World::new_minimal(),
+            mush_core::Registry::new(),
+            vec![Box::new(
+                crate::EconomyModule::new().with_derived_mind_updates(action)
+            )]
+        )
+        .is_err()
+    );
+    assert!(
+        mush_core::Engine::with_modules(
+            World::new_minimal(),
+            mush_core::Registry::new(),
+            vec![
+                Box::new(mush_org::OrgModule::new()),
+                Box::new(r.clone()),
+                Box::new(
+                    crate::EconomyModule::new()
+                        .with_initial_filing(policy(100), r.initial.clone())
+                        .with_compatible_mind_updates(r.update.clone())
+                        .with_derived_mind_updates(r.update.clone())
+                ),
+            ]
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[path = "tests/major.rs"]
+mod major;
+
+#[path = "tests/house.rs"]
+mod house;

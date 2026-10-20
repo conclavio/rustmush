@@ -242,9 +242,9 @@ fn offer_row(f: &Fixture, id: CommitToken, buyer: u32) -> Value {
         .map(|e| {
             hash(
                 if route == "house" {
-                    "roll.mind.house_term_economics.v1"
+                    house::economics_domain(e).expect("house economics")
                 } else {
-                    "roll.mind.paid_term_economics.v1"
+                    entitlement::economics_domain(e).expect("personal economics")
                 },
                 e,
             )
@@ -1215,6 +1215,29 @@ fn pending_resale_blocks_the_current_transferred_holders_fresh_renewal() -> Test
         } else {
             renewal::tests::refuse_holder_seed(seed)?;
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn paid_follow_survives_two_actual_holder_transfers_and_new_renewal_consents() -> TestResult {
+    for house in [false, true] {
+        let seed = if house {
+            house::tests::follow_renewal_birth_seed()?
+        } else {
+            entitlement::tests::follow_renewal_birth_seed()?
+        };
+        let seed = transfer_seed(seed, 80, 8)?;
+        let seed = renew_seed(house, seed, 100, None, 2)?;
+        let seed = transfer_seed(seed, 120, 9)?;
+        let seed = renew_seed(house, seed, 130, None, 2)?;
+        let f = from_seed(seed)?;
+        reboot(&f, None)?;
+        let current = read(&f, LICENCE, LK);
+        assert_eq!(current["holder"], json!(9));
+        assert_eq!(current["ownership"]["generation"], json!(3));
+        let term = read(&f, TERM, &format!("{LK}/term/0000000000000003"));
+        assert_eq!(term["revision"], json!({"kind":"follow","line":"1"}));
     }
     Ok(())
 }

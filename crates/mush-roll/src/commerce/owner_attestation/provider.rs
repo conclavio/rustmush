@@ -151,6 +151,15 @@ impl Provider {
         {
             return Err(PublicationError::Unavailable);
         }
+        let current_birth = super::super::line_update::audit::birth_in_txn(
+            txn,
+            ctx.world().map_err(invalid)?,
+            &self.families,
+            &filed,
+        )?;
+        if current_birth.commit != birth.commit {
+            return Err(PublicationError::Mismatch);
+        }
         let parent = if let Some(initial) = &birth.parent {
             let handle = self.parent.as_ref().ok_or(PublicationError::Unavailable)?;
             let binding = txn
@@ -169,7 +178,15 @@ impl Provider {
                 .map_err(invalid)?
                 .cloned()
                 .ok_or(PublicationError::Missing)?;
-            binding.check_rows(&filed, &birth_term, &birth)?;
+            let birth_filed = txn
+                .get(&self.families.filed, &binding.filed.key())
+                .map_err(invalid)?
+                .cloned()
+                .ok_or(PublicationError::Missing)?;
+            binding.check_rows(&birth_filed, &birth_term, &birth)?;
+            if filed.content.parent() != Some(binding.parent.parent) {
+                return Err(PublicationError::Mismatch);
+            }
             let source = txn
                 .get(&self.families.filed, &initial.parent.filed.key())
                 .map_err(invalid)?
@@ -210,7 +227,7 @@ impl Provider {
                         .cloned()
                         .ok_or(PublicationError::Missing)?;
                     head.matches(&op)?;
-                    op.matches_birth(&binding, &filed, &birth_term, &birth)?;
+                    op.matches_birth(&binding, &birth_filed, &birth_term, &birth)?;
                     super::super::charter_transfer::history::require_captured_in_txn(
                         txn,
                         ctx.world().map_err(invalid)?,

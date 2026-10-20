@@ -418,7 +418,7 @@ fn pair(view: &View<'_>, operation: CommitToken) -> Result<Pair, ActionStateErro
     let phase = text(field(&market, "state")?, "kind")?.to_owned();
     if number(&market, "format")? != 1
         || number(&roll, "format")? != 1
-        || !matches!(number(binding, "format")?, 1 | 2)
+        || !matches!(number(binding, "format")?, 1 | 2 | 3 | 4)
         || token(field(&market, "operation")?)? != operation
         || predecessor.checked_add(1) != Some(next)
         || !matches!(
@@ -455,6 +455,8 @@ fn pair(view: &View<'_>, operation: CommitToken) -> Result<Pair, ActionStateErro
     let terms = field(offer, "terms")?;
     let grant = field(binding, "grant")?;
     let template = field(grant, "renewal")?;
+    let revision_policy = entitlement::binding_revision(binding)?;
+    entitlement::require_follow_birth(view, binding)?;
     let prior = required(view, &term_key(TERM, licence, predecessor)?)?;
     let economics = required(view, &term_key(ECONOMICS, licence, predecessor)?)?;
     let prior_operation = token(field(&prior, "operation")?)?;
@@ -471,7 +473,10 @@ fn pair(view: &View<'_>, operation: CommitToken) -> Result<Pair, ActionStateErro
         || field(binding, "predecessor_term")?
             != &json!(digest("roll.mind.renewal_predecessor.v1", &prior)?)
         || field(binding, "predecessor_economics")?
-            != &json!(digest("roll.mind.paid_term_economics.v1", &economics)?)
+            != &json!(digest(
+                entitlement::economics_domain(&economics)?,
+                &economics
+            )?)
         || field(&market, "offer_digest")?
             != &json!(digest("economy.mind_renewal_offer.v1", offer)?)
         || number(basis, "licence")? != licence
@@ -482,7 +487,7 @@ fn pair(view: &View<'_>, operation: CommitToken) -> Result<Pair, ActionStateErro
         || field(basis, "template_digest")?
             != &json!(digest("roll.mind.renewal_template.v1", template)?)
         || field(basis, "grant_economics_digest")?
-            != &json!(digest("roll.mind.grant_economics.v1", grant)?)
+            != &json!(digest(entitlement::grant_domain(grant)?, grant)?)
         || field(basis, "royalty_chain_digest")? != field(field(grant, "royalty_chain")?, "digest")?
         || field(terms, "buyer")? != field(binding, "holder")?
         || number(terms, "charter")? != positive_string(field(binding, "charter")?)?
@@ -491,8 +496,7 @@ fn pair(view: &View<'_>, operation: CommitToken) -> Result<Pair, ActionStateErro
         || field(template, "terms")? != field(binding, "terms")?
         || field(template, "term_seconds")? != field(binding, "term_seconds")?
         || field(template, "grace_seconds")? != field(binding, "grace_seconds")?
-        || field(template, "revision")?
-            != &json!({"kind":"pin","filed":field(binding,"filed")?,"revision":field(binding,"revision")?})
+        || field(template, "revision")? != &revision_policy
         || field(&prior, "terms")? != field(binding, "terms")?
         || field(&prior, "revision")? != field(template, "revision")?
     {
@@ -753,9 +757,9 @@ fn outputs(
         .checked_add(signed(binding, "grace_seconds")?)
         .ok_or_else(|| refused("renewal grace overflow"))?;
     let expected_term = json!({"format":1,"licence":field(binding,"licence")?,"generation":field(binding,"next")?,
-        "terms":field(binding,"terms")?,"revision":{"kind":"pin","filed":field(binding,"filed")?,"revision":field(binding,"revision")?},
+        "terms":field(binding,"terms")?,"revision":entitlement::binding_revision(binding)?,
         "window":{"format":1,"eligibility_start":issued,"issued_at":issued,"term_end":end,"grace_end":grace},"operation":operation});
-    let expected_economics = json!({"format":1,"licence":field(binding,"licence")?,"generation":field(binding,"next")?,
+    let expected_economics = json!({"format":entitlement::grant_version(field(binding,"grant")?)?,"licence":field(binding,"licence")?,"generation":field(binding,"next")?,
         "operation":operation,"product_digest":field(binding,"product_digest")?,"grant":field(binding,"grant")?});
     if term.as_ref() != Some(&expected_term)
         || economics.as_ref() != Some(&expected_economics)

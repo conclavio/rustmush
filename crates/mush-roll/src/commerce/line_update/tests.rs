@@ -67,6 +67,12 @@ fn compatible_rows_reject_crossed_identity_and_unknown_authority() -> TestResult
         *wire.get_mut("sequence").ok_or("sequence")? = json!(seq);
         assert!(serde_json::from_value::<UpdateOperation>(wire).is_err());
     }
+    // The additive native derived protocol cannot be relabeled as an old
+    // original update merely by retaining the old action and outer format.
+    let mut derived = row.clone();
+    derived.economic.kind = Some(mush_economy::registry_filing::UpdateKind::DependentV1);
+    assert!(derived.validate().is_err());
+    assert!(serde_json::from_value::<UpdateOperation>(serde_json::to_value(derived)?).is_err());
     let mut same = row.clone();
     same.previous = same.filed;
     assert!(same.validate().is_err());
@@ -417,3 +423,6 @@ fn charter_ownership_capture_is_versioned_and_legacy_bytes_remain_exact() -> Tes
     assert!(serde_json::from_value::<UpdateOperation>(extra).is_err());
     Ok(())
 }
+
+#[path = "tests/derived.rs"]
+mod derived;

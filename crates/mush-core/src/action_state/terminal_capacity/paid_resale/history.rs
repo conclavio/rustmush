@@ -27,6 +27,28 @@ pub(super) fn birth_allocation(
             {
                 return Err(refused("resale birth not granted by configured protocol"));
             }
+            match route {
+                "entitlement"
+                    if matches!(
+                        row.get("protocol").and_then(Value::as_str),
+                        Some("original_v4" | "derived_v2")
+                    ) =>
+                {
+                    view.registry
+                        .entitlement_purchase
+                        .as_ref()
+                        .ok_or_else(|| refused("Follow birth protocol absent"))?
+                        .require_product(&row)?;
+                }
+                "house" if row.get("protocol").and_then(Value::as_str) == Some("house_v3") => {
+                    view.registry
+                        .house_purchase
+                        .as_ref()
+                        .ok_or_else(|| refused("House Follow birth protocol absent"))?
+                        .require_product(&row)?;
+                }
+                _ => {}
+            }
             found = Some((route.to_owned(), row));
         }
     }
@@ -97,22 +119,16 @@ pub(super) fn binding_history(view: &View<'_>, binding: &Value) -> Result<(), Ac
         return Err(refused("resale accepted term clock differs"));
     }
     if route == "house" || route == "entitlement" || generation > 1 {
-        let (family, domain) = if route == "house" {
-            (
-                "roll_mind_house_term_economics",
-                "roll.mind.house_term_economics.v1",
-            )
+        let family = if route == "house" {
+            "roll_mind_house_term_economics"
         } else {
-            (
-                "roll_mind_paid_term_economics",
-                "roll.mind.paid_term_economics.v1",
-            )
+            "roll_mind_paid_term_economics"
         };
         let economics = required(view, &key(family, term_key(licence, generation))?)?;
         let domain = if route == "house" {
             super::super::house::economics_domain(&economics)?
         } else {
-            domain
+            super::super::entitlement::economics_domain(&economics)?
         };
         if field(&economics, "operation")? != field(term, "operation")?
             || field(binding, "economics_digest")? != &json!(digest(domain, &economics)?)

@@ -16,10 +16,16 @@ pub(crate) struct UpdateFence {
     observed: ClockStamp,
     window: TermWindow,
     revision: crate::commerce::RevisionIdentity,
+    derived: Option<super::derived::DerivedParent>,
+    parent: Option<crate::commerce::parent_grant::CurrentParentGrant>,
 }
 impl UpdateFence {
     pub(crate) fn check(&self, ctx: &OwnerPrepareContext<'_>) -> Result<(), PublicationError> {
-        super::check_action(ctx.action())?;
+        if self.derived.is_some() {
+            super::check_derived_action(ctx.action())?;
+        } else {
+            super::check_action(ctx.action())?;
+        }
         let world = ctx.world();
         let now = world.world_ic_now();
         if ctx.action() != &self.action
@@ -54,9 +60,24 @@ impl UpdateFence {
         let revision = roll
             .revision(self.actor, reference.key)
             .map_err(|_| PublicationError::Unavailable)?;
-        revision
-            .require_original_access()
-            .map_err(|_| PublicationError::Unavailable)?;
+        match (&self.derived, &self.parent) {
+            (None, None) => revision
+                .require_original_access()
+                .map_err(|_| PublicationError::Unavailable)?,
+            (Some(evidence), Some(parent)) => {
+                parent.check_fresh(self.actor, world)?;
+                if revision.provenance.as_ref()
+                    != Some(&crate::DerivativeProvenance {
+                        parent: evidence.source,
+                        charter: evidence.charter,
+                        line: evidence.line,
+                    })
+                {
+                    return Err(PublicationError::Mismatch);
+                }
+            }
+            _ => return Err(PublicationError::Mismatch),
+        }
         if !self
             .revision
             .matches(revision)
@@ -71,7 +92,7 @@ pub(crate) struct UpdateRoots {
     follow: Option<crate::commerce::follow::Change>,
     commit: CommitToken,
     fence: UpdateFence,
-    before: [RequiredRoot; 2],
+    before: Vec<RequiredRoot>,
     after: [RequiredRoot; 2],
 }
 impl UpdateRoots {
@@ -101,8 +122,10 @@ impl UpdateRoots {
                 observed: op.at_ic.clone(),
                 window,
                 revision: op.revision,
+                derived: op.parent.clone(),
+                parent: None,
             },
-            before: [
+            before: vec![
                 RequiredRoot {
                     anchor: RootAnchor::Filed(op.previous),
                     identity: previous.content.revision(),
@@ -118,6 +141,29 @@ impl UpdateRoots {
             after: super::audit::required(op),
         })
     }
+    pub(super) fn with_parent(
+        mut self,
+        evidence: &super::derived::DerivedParent,
+        actual: crate::commerce::parent_grant::CurrentParentGrant,
+    ) -> Result<Self, PublicationError> {
+        if self.fence.derived.as_ref() != Some(evidence)
+            || self.fence.parent.is_some()
+            || crate::commerce::owner_qualification::records::SelectedParent::capture(
+                actual.holding(),
+            ) != evidence.selected
+            || actual.actor() != self.fence.actor
+            || actual.holding().charter() != evidence.charter
+            || actual.holding().line() != evidence.line
+        {
+            return Err(PublicationError::Mismatch);
+        }
+        self.before.push(RequiredRoot {
+            anchor: RootAnchor::Filed(evidence.source.filed),
+            identity: evidence.source.revision,
+        });
+        self.fence.parent = Some(actual);
+        Ok(self)
+    }
     pub(super) fn with_follow(
         mut self,
         filed: &FiledRecord,
@@ -126,7 +172,10 @@ impl UpdateRoots {
     ) -> Result<Self, PublicationError> {
         if filed.operation != self.commit
             || self.after[0].anchor != RootAnchor::Filed(filed.content.id())
-            || self.before[0].anchor != RootAnchor::Filed(previous.content.id())
+            || self
+                .before
+                .first()
+                .is_none_or(|root| root.anchor != RootAnchor::Filed(previous.content.id()))
         {
             return Err(PublicationError::Mismatch);
         }

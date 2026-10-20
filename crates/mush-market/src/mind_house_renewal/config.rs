@@ -83,7 +83,7 @@ impl RenewalConfig {
                     )
                 })
                 .transpose()?,
-            writer,
+            writer: writer.with_purchase_admission(&house.writer())?,
             policy,
             service: None,
         };

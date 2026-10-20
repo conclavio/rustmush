@@ -54,6 +54,13 @@ fn conduct_requires_actual_carrier_active_mode_and_exact_captured_catalogue() ->
     let configured = config(&with, CommerceMode::Active)?.with_conduct_trials(&with)?;
     assert!(configured.conduct_manifest().is_some());
     assert!(configured.configure_tacsim(layer()).is_err());
+    // Host timing drift still refuses even though the fixed proving manifest
+    // normalizes these values to its own trial policy.
+    let mut changed = with.config().clone();
+    changed.match_.startup_ms += 1;
+    let changed = TacsimRuleset::with_config(changed).with_conduct_carrier()?;
+    assert!(configured.configure_tacsim(changed).is_err());
+    assert!(configured.configure_tacsim(with).is_ok());
     assert!(
         layer()
             .with_conduct_carrier()?

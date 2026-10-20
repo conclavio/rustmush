@@ -7,6 +7,23 @@ use crate::managed_purchase::{PurchaseOutcome, install};
 
 impl InitialFilingParticipant {
     #[inline(never)]
+    pub(super) fn prepare_house_compatible_update_request(
+        &self,
+        state: &EconomyStore,
+        context: &OwnerPrepareContext<'_>,
+        request: update::RegistryHouseCompatibleUpdate,
+    ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
+        let config = self.house_update.as_ref().ok_or_else(refused)?;
+        let (output, patch, writes) =
+            update::prepare_house(&self.policy, config, state, context, request)?;
+        Ok(OwnerPreparation::new(
+            EconomyOutput::CompatibleUpdate(output),
+            EconomyPatch::HouseCompatibleUpdate(Box::new(patch)),
+            writes,
+        ))
+    }
+
+    #[inline(never)]
     pub(super) fn prepare_coverage_bind_request(
         &self,
         state: &EconomyStore,
@@ -570,6 +587,38 @@ impl InitialFilingParticipant {
                 writes,
             ))
         }
+    }
+    #[inline(never)]
+    pub(super) fn prepare_original_major_request(
+        &self,
+        state: &EconomyStore,
+        context: &OwnerPrepareContext<'_>,
+        request: update::RegistryCompatibleUpdate,
+    ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
+        let action = self.original_major.as_ref().ok_or_else(refused)?;
+        let (output, patch, writes) =
+            update::prepare(&self.policy, action, state, context, request)?;
+        Ok(OwnerPreparation::new(
+            EconomyOutput::CompatibleUpdate(output),
+            EconomyPatch::OriginalMajor(Box::new(patch)),
+            writes,
+        ))
+    }
+    #[inline(never)]
+    pub(super) fn prepare_derived_update_request(
+        &self,
+        state: &EconomyStore,
+        context: &OwnerPrepareContext<'_>,
+        request: update::RegistryCompatibleUpdate,
+    ) -> Result<OwnerPreparation<EconomyOutput, EconomyPatch>, ParticipantError> {
+        let action = self.derived_update.as_ref().ok_or_else(refused)?;
+        let (output, patch, writes) =
+            update::prepare(&self.policy, action, state, context, request)?;
+        Ok(OwnerPreparation::new(
+            EconomyOutput::CompatibleUpdate(output),
+            EconomyPatch::DerivedCompatibleUpdate(Box::new(patch)),
+            writes,
+        ))
     }
     #[inline(never)]
     pub(super) fn prepare_compatible_update_request(

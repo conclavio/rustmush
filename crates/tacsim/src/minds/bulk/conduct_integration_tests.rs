@@ -138,7 +138,7 @@ pub(super) fn proof(w: &mut IcWorld, operation: CommitToken) -> TestResult<Condu
 
 fn install_submission(
     w: &mut IcWorld,
-    submission: mush_core::AuthoritativeSubmit,
+    submission: Box<mush_core::AuthoritativeSubmit>,
     n: u128,
 ) -> TestResult {
     assert_eq!(submission.actor, GOD);
@@ -209,7 +209,7 @@ fn pulse(w: &mut IcWorld) -> TestResult {
 }
 fn next_submission(
     w: &mut IcWorld,
-) -> TestResult<mush_core::submission_observation::ObservedSubmission> {
+) -> TestResult<mush_core::submission_observation::DrivenSubmission> {
     let deadline = Instant::now() + Duration::from_secs(120);
     while Instant::now() < deadline {
         pulse(w)?;
@@ -229,8 +229,8 @@ fn execution(w: &IcWorld, operation: CommitToken) -> TestResult<ConductExecution
 }
 fn disposition_retry(
     w: &mut IcWorld,
-    submitted: mush_core::submission_observation::ObservedSubmission,
-) -> TestResult<mush_core::AuthoritativeSubmit> {
+    submitted: mush_core::submission_observation::DrivenSubmission,
+) -> TestResult<Box<mush_core::AuthoritativeSubmit>> {
     let (original, runtime) = submitted.into_parts();
     let absence = *runtime
         .ok_or("actual Conduct observation")?

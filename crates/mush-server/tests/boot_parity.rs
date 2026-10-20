@@ -60,6 +60,7 @@
 //! | `[atlas].pack_paths` | `game_modules` -> `build_engine` / `check_config` | `check_config_finds_the_world_half_refusals_without_booting` |
 //! | `[tacsim].enabled` / `.pack_paths` | `game_modules` -> `build_engine` | `split_build_engine_composes_the_tacsim_layer`, the matrix |
 //! | `[tacsim].seed_paths` | `build_engine` + an applied seed | `a_seeded_pack_resolves_a_route` |
+//! | `[tacsim.minds].launch_path` | `game_modules` / `check_config` | `check_config_preflights_the_bounded_named_launch_document` |
 //! | `[tacsim].recovery` | `game_modules` (into the built-ins) | `the_split_boot_carries_the_operator_recovery_policy` |
 //! | `[tacsim].ground_pulse_ms` / `.space_pulse_ms` | `build_engine` post-composition | `the_engine_knobs_reach_the_booted_world` |
 //! | `[llm].decision_workers` | `build_engine` -> `BootedEngine` | `the_engine_knobs_reach_the_booted_world` |
@@ -1243,6 +1244,45 @@ fn check_config_finds_the_world_half_refusals_without_booting() {
 }
 
 // ---- 7: the config-read coverage table -------------------------------------
+
+#[test]
+fn check_config_preflights_the_bounded_named_launch_document() {
+    let mut cfg = stock_config("check-launch");
+    let path = cfg.server.data_dir.join("named-launch.json");
+    cfg.tacsim.minds.launch_path = Some(path.display().to_string());
+    assert!(
+        boot::check_config(&cfg)
+            .iter()
+            .any(|r| r.contains("launch deployment requires enabled Tacsim"))
+    );
+    enable_tacsim(&mut cfg);
+    assert!(
+        boot::check_config(&cfg)
+            .iter()
+            .any(|r| r.contains("named-launch.json"))
+    );
+    for bytes in [
+        Vec::new(),
+        b"{\"format\":1,\"eligible\":true}".to_vec(),
+        vec![b' '; tacsim::launch::MAX_DEPLOYMENT_BYTES + 1],
+    ] {
+        std::fs::write(&path, bytes).unwrap();
+        assert!(
+            boot::check_config(&cfg)
+                .iter()
+                .any(|r| r.contains("named-launch.json") && r.contains("launch deployment"))
+        );
+    }
+    cfg.tacsim.minds.launch_path = Some(String::new());
+    assert!(
+        boot::check_config(&cfg)
+            .iter()
+            .any(|r| r.contains("launch deployment path is empty"))
+    );
+    cfg.tacsim.minds.launch_path = None;
+    assert!(boot::check_config(&cfg).is_empty());
+    let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
+}
 
 /// Every boot-relevant knob the ENGINE half owns, set to a non-default value in
 /// one boot, each with an observable asserted.

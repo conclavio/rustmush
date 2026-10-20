@@ -30,6 +30,9 @@ mod owner_qualification;
 #[path = "renewal_integration_tests.rs"]
 mod renewal;
 
+#[path = "derived_update_integration_tests.rs"]
+mod derived_update;
+
 const FIRST: u128 = 8_000_000;
 type Events = Vec<(mush_core::Audience, mush_proto::OutputEvent)>;
 fn action(world: &PlayerWorld, owner: &str, id: &str, version: u32) -> TestResult<DefinitionRef> {
@@ -923,6 +926,10 @@ pub(super) async fn exercise(
         64_000_000,
         |saved| PlayerWorld::boot_paid_resales(f, saved),
     )?;
+    story_phase("derived.compatible_update", || {
+        derived_update::exercise(f, &granted, owner, &allocation)
+    })?
+    .await?;
     story_phase("owner.qualification", || {
         owner_qualification::exercise(f, &granted, owner, &allocation)
     })?

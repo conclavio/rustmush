@@ -1174,3 +1174,22 @@ revocation through mush_org::submit. This tests publication-authority loss while
 retaining the actual house issuer; it does not manufacture title, money, filing,
 rating, paid rights or readiness state.
 """
+
+[[site]]
+path = "crates/tacsim/src/hardware/flow/launch.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = "Test-only named launch boot restores the same actual fixture account identity map after a fresh shared production composition. It supplies host login wiring, never source, certificate, paid rights or readiness."
+
+[[site]]
+path = "crates/mush-economy/src/registry_filing/update/tests/house.rs"
+accessor = "World::module_state_mut"
+slot = "OrgStore"
+owner = "org"
+reason = """
+The cfg(test) scoped House update Org command uses the actual policy allocator
+and audited mush_org::submit to install, replace and revoke scoped Allow/Deny
+policy. It is registered under the real Org owner and constructs no title,
+fee receipt, certificate or readiness state. Production reads remain read-only.
+"""

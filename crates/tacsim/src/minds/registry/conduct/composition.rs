@@ -19,6 +19,9 @@ fn error(e: impl std::fmt::Display) -> ModError {
 #[derive(Clone)]
 pub(crate) struct Registration {
     policy: Arc<Policy>,
+    // Registry physics normalizes its trial clock. Registration must compare
+    // the actual host configuration captured before that normalization.
+    original_config: TacsimConfig,
     reference: DefinitionRef,
 }
 impl Registration {
@@ -38,7 +41,11 @@ impl Registration {
             return Err(error("Conduct and Registry captured policies disagree"));
         }
         let reference = policy.definition_ref().map_err(error)?;
-        Ok(Self { policy, reference })
+        Ok(Self {
+            policy,
+            original_config: layer.config().clone(),
+            reference,
+        })
     }
     pub(crate) fn reference(&self) -> &DefinitionRef {
         &self.reference
@@ -47,7 +54,7 @@ impl Registration {
         ConductConfig::new::<QuotaParticipant, ArtifactParticipant>(self.reference.clone())
     }
     pub(crate) fn check(&self, cfg: &TacsimConfig, catalog: &Catalog) -> Result<(), ModError> {
-        if cfg != &self.policy.physics.cfg
+        if cfg != &self.original_config
             || catalog.references != self.policy.physics.catalog.references
         {
             return Err(error("Conduct configured resources changed"));

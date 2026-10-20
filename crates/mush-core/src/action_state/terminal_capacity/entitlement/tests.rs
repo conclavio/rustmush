@@ -18,6 +18,8 @@ enum Mode {
     Legacy,
     Original,
     Derived,
+    OriginalFollow,
+    DerivedFollow,
 }
 impl Mode {
     fn kind(self) -> Option<Kind> {
@@ -25,6 +27,8 @@ impl Mode {
             Self::Legacy => None,
             Self::Original => Some(Kind::Original),
             Self::Derived => Some(Kind::Derived),
+            Self::OriginalFollow => Some(Kind::OriginalFollow),
+            Self::DerivedFollow => Some(Kind::DerivedFollow),
         }
     }
     fn families(self) -> [&'static str; 4] {
@@ -40,6 +44,8 @@ impl Mode {
                 Self::Legacy => 2,
                 Self::Original => 3,
                 Self::Derived => 4,
+                Self::OriginalFollow => 12,
+                Self::DerivedFollow => 13,
             }; 16],
         )
     }
@@ -49,6 +55,8 @@ impl Mode {
                 Self::Legacy => 5,
                 Self::Original => 6,
                 Self::Derived => 7,
+                Self::OriginalFollow => 14,
+                Self::DerivedFollow => 15,
             }; 16],
         )
     }
@@ -85,6 +93,22 @@ impl Fixture {
     }
 }
 fn fixture(manifest_generation: u64, economy_generation: u64) -> TestResult<Fixture> {
+    fixture_with_follow(manifest_generation, economy_generation, false)
+}
+fn fixture_with_follow(
+    manifest_generation: u64,
+    economy_generation: u64,
+    follow: bool,
+) -> TestResult<Fixture> {
+    let modes = [Mode::Legacy, Mode::Original, Mode::Derived]
+        .into_iter()
+        .chain(
+            follow
+                .then_some([Mode::OriginalFollow, Mode::DerivedFollow])
+                .into_iter()
+                .flatten(),
+        )
+        .collect::<Vec<_>>();
     let market = OwnerId::new("market")?;
     let roll = OwnerId::new("roll")?;
     let owners = BTreeSet::from([
@@ -129,7 +153,7 @@ fn fixture(manifest_generation: u64, economy_generation: u64) -> TestResult<Fixt
     }
     let participants: [DefinitionRef; 2] = participants.try_into().map_err(|_| "participants")?;
     let mut actions: BTreeMap<Mode, [DefinitionRef; 3]> = BTreeMap::new();
-    for mode in [Mode::Legacy, Mode::Original, Mode::Derived] {
+    for mode in modes.iter().copied() {
         let (ids, version) = mode
             .kind()
             .map_or((ORIGINAL_ACTIONS, 1), |k| (k.actions(), k.version()));
@@ -214,13 +238,25 @@ fn fixture(manifest_generation: u64, economy_generation: u64) -> TestResult<Fixt
         participants.clone(),
         actions.get(&Mode::Legacy).ok_or("legacy")?.clone(),
     )?;
-    builder.mind_entitlement_purchase_capacity(
-        &market,
-        manifest,
-        participants,
-        actions.get(&Mode::Original).ok_or("original")?.clone(),
-        actions.get(&Mode::Derived).ok_or("derived")?.clone(),
-    )?;
+    if follow {
+        builder.mind_entitlement_purchase_capacity_with_follow(
+            &market,
+            manifest,
+            participants,
+            actions[&Mode::Original].clone(),
+            actions[&Mode::Derived].clone(),
+            actions[&Mode::OriginalFollow].clone(),
+            actions[&Mode::DerivedFollow].clone(),
+        )?;
+    } else {
+        builder.mind_entitlement_purchase_capacity(
+            &market,
+            manifest,
+            participants,
+            actions.get(&Mode::Original).ok_or("original")?.clone(),
+            actions.get(&Mode::Derived).ok_or("derived")?.clone(),
+        )?;
+    }
     let store =
         ActionStateStore::new(builder.freeze_for_owners_with_readiness(&owners, readiness)?);
     let request = RequestUid::from_bytes([1; 16]);
@@ -251,7 +287,7 @@ fn fixture(manifest_generation: u64, economy_generation: u64) -> TestResult<Fixt
         invocation,
         disk: BTreeMap::new(),
     };
-    let quotes = [Mode::Legacy, Mode::Original, Mode::Derived]
+    let quotes = modes
         .into_iter()
         .map(|m| Ok((m, quote(&f, m)?)))
         .collect::<TestResult<Vec<_>>>()?;
@@ -285,21 +321,38 @@ fn quote(f: &Fixture, mode: Mode) -> TestResult<Value> {
         );
     }
     let kind = mode.kind().ok_or("kind")?;
-    let parent = if mode == Mode::Derived {
+    let pin = if kind.follow() {
+        json!({"kind":"follow","line":"1"})
+    } else {
+        pin
+    };
+    let parent = if !kind.original() {
         json!({"filed":"9","revision":{"fixture":"actual-parent-identity"}})
     } else {
         Value::Null
     };
-    let edges = if mode == Mode::Derived {
+    let edges = if !kind.original() {
         json!([{"parent":parent,"charter":"9","line":"9","acquisition":{"licence":"9","term":"1","operation":CommitToken::from_bytes([11;16]),"product_digest":hash},"royalty_permille":100,"basis":{"kind":"explicit_term_economics_v1","digest":hash}}])
     } else {
         json!([])
     };
     let royalty = json!({"format":1,"filed":"1","revision":revision,"publication":CommitToken::from_bytes([10;16]),"edges":edges});
     let terms = json!({"seats":1,"class":"II","form":{"kind":"open_resale"},"transferable":true});
-    let policy = json!({"fixture":"exact-policy"});
+    let policy = if kind.follow() {
+        json!(DefinitionRegistryBuilder::new().register(
+            OwnerId::new("market")?,
+            DefinitionDescriptor::new(
+                DefinitionKind::new("entitlement_policy")?,
+                DefinitionId::new("personal")?,
+                2,
+                json!({"fixture":"exact-policy"})
+            )?
+        )?)
+    } else {
+        json!({"fixture":"exact-policy"})
+    };
     let instrument = json!("cr");
-    let grant = json!({"format":1,"downstream":{"kind":"source","royalty_permille":50},"renewal":{"format":1,"instrument":instrument,"price":125,"term_seconds":100,"grace_seconds":10,"terms":terms,"revision":pin,"policy":policy},"royalty_chain":{"filed":"1","digest":digest("roll.mind.filed_royalties.v1",&royalty)?}});
+    let grant = json!({"format":kind.economics_version(),"downstream":{"kind":"source","royalty_permille":50},"renewal":{"format":kind.economics_version(),"instrument":instrument,"price":125,"term_seconds":100,"grace_seconds":10,"terms":terms,"revision":pin,"policy":policy},"royalty_chain":{"filed":"1","digest":digest("roll.mind.filed_royalties.v1",&royalty)?}});
     let product = json!({"protocol":kind.wire(),"terms":terms,"revision":pin,"term_seconds":100,"grace_seconds":10,"grant":grant});
     Ok(
         json!({"format":1,"publication":mode.quote(),"buyer":7,"subject":{"charter":"1","line":"1","filed":"1","revision":revision,"rating":hash,"compatibility":protocol.manifest.digest(),"parent":parent},"product_digest":digest(kind.product_domain(),&product)?,"product":product,"royalty":royalty,"instrument":instrument,"policy":policy}),
@@ -328,7 +381,7 @@ fn rows(f: &Fixture, mode: Mode, licence: u64) -> TestResult<(Value, Value)> {
     if let Some(kind) = mode.kind() {
         let object = allocation.as_object_mut().ok_or("allocation")?;
         object.insert("protocol".into(), json!(kind.wire()));
-        object.insert("economics".into(),json!({"format":1,"licence":licence.to_string(),"generation":"1","operation":mode.operation(),"product_digest":field(&q,"product_digest")?,"grant":field(field(&q,"product")?,"grant")?}));
+        object.insert("economics".into(),json!({"format":kind.economics_version(),"licence":licence.to_string(),"generation":"1","operation":mode.operation(),"product_digest":field(&q,"product_digest")?,"grant":field(field(&q,"product")?,"grant")?}));
     }
     Ok((purchase, allocation))
 }
@@ -436,6 +489,8 @@ fn finish(f: &mut Fixture, mode: Mode, grant: bool, fault: FinishFault) -> TestR
                 Mode::Legacy => 0,
                 Mode::Original => 1,
                 Mode::Derived => 2,
+                Mode::OriginalFollow => 3,
+                Mode::DerivedFollow => 4,
             }; 16],
         )
     };
@@ -456,7 +511,7 @@ fn finish(f: &mut Fixture, mode: Mode, grant: bool, fault: FinishFault) -> TestR
         receipt.as_object_mut().ok_or("receipt")?.insert(
             "grant_economics_digest".into(),
             json!(digest(
-                "roll.mind.grant_economics.v1",
+                grant_domain(field(field(&q, "product")?, "grant")?)?,
                 field(field(&q, "product")?, "grant")?
             )?),
         );
@@ -1005,4 +1060,130 @@ fn acknowledged_quote_pin_cannot_cross_its_exact_subject() -> TestResult {
         }
     }
     Ok(())
+}
+
+#[test]
+fn paid_follow_personal_reserves_six_targets_grants_and_cold_checks_every_output() -> TestResult {
+    for mode in [Mode::OriginalFollow, Mode::DerivedFollow] {
+        let mut f = fixture_with_follow(0, 0, true)?;
+        let prepared = fund(&mut f, mode, FundFault::default())?;
+        install(&mut f, prepared)?;
+        let reservation = f
+            .store
+            .capacity
+            .records
+            .values()
+            .next()
+            .ok_or("reservation")?;
+        assert_eq!(reservation.record.targets.len(), 6);
+        assert_eq!(
+            reservation
+                .record
+                .targets
+                .iter()
+                .map(|t| t.ceiling)
+                .sum::<usize>(),
+            69632
+        );
+        reboot(&f)?;
+        let prepared = finish(&mut f, mode, true, FinishFault::None)?;
+        install(&mut f, prepared)?;
+        assert!(f.store.capacity.is_empty());
+        reboot(&f)?;
+        assert_eq!(
+            f.row(TERM, "licence/0000000000000001/term/0000000000000001")?["revision"],
+            json!({"kind":"follow","line":"1"})
+        );
+        for family in [PURCHASE, RECEIPT, ALLOCATION, LICENCE, TERM, ECONOMICS] {
+            let mut disk = f.disk.clone();
+            let encoded = match family {
+                LICENCE => "licence/0000000000000001".into(),
+                TERM | ECONOMICS => "licence/0000000000000001/term/0000000000000001".into(),
+                _ => mode.operation().to_hex(),
+            };
+            let owner = if matches!(family, PURCHASE | RECEIPT) {
+                "market"
+            } else {
+                "roll"
+            };
+            let k = key(owner, family, encoded)?
+                .resolve(&f.store.registry)?
+                .persistence_key();
+            assert!(disk.remove(&(owner.into(), k)).is_some());
+            assert!(hydrate(&f, &disk).is_err());
+        }
+    }
+    Ok(())
+}
+#[test]
+fn paid_follow_personal_refund_and_disabled_recipe_are_distinct() -> TestResult {
+    for mode in [Mode::OriginalFollow, Mode::DerivedFollow] {
+        let mut f = fixture_with_follow(0, 0, true)?;
+        let p = fund(&mut f, mode, FundFault::default())?;
+        install(&mut f, p)?;
+        let old = fixture(0, 0)?;
+        assert!(hydrate(&old, &f.disk).is_err());
+        let p = finish(&mut f, mode, false, FinishFault::None)?;
+        install(&mut f, p)?;
+        reboot(&f)?;
+        assert!(f.store.capacity.is_empty());
+        assert!(
+            f.store
+                .get(
+                    handle(&f.handles, TERM)?,
+                    &"licence/0000000000000001/term/0000000000000001".to_owned()
+                )?
+                .is_none()
+        );
+        assert!(hydrate(&old, &f.disk).is_err());
+    }
+    Ok(())
+}
+#[test]
+fn paid_follow_personal_cannot_cross_line_format_or_old_pin_policy() -> TestResult {
+    let f = fixture_with_follow(0, 0, true)?;
+    for mode in [Mode::OriginalFollow, Mode::DerivedFollow] {
+        let q = quote(&f, mode)?;
+        for (pointer, value) in [
+            ("/product/revision/line", json!("2")),
+            ("/product/grant/format", json!(1)),
+            ("/product/grant/renewal/format", json!(1)),
+            (
+                "/product/revision",
+                json!({"kind":"pin","filed":"1","revision":{"fixture":"exact-revision"}}),
+            ),
+        ] {
+            let mut broken = q.clone();
+            *broken.pointer_mut(pointer).ok_or("pointer")? = value;
+            assert!(quote_kind(&broken).is_err());
+        }
+    }
+    let old = fixture(0, 0)?;
+    let encoded = serde_json::to_value(
+        old.store
+            .registry
+            .entitlement_purchase
+            .as_ref()
+            .ok_or("protocol")?,
+    )?;
+    assert!(encoded.get("follow").is_none());
+    for mode in [Mode::Original, Mode::Derived] {
+        assert_eq!(quote(&old, mode)?, quote(&f, mode)?);
+        assert_eq!(old.action(mode, 0)?, f.action(mode, 0)?);
+    }
+    Ok(())
+}
+
+pub(in crate::action_state::terminal_capacity) fn follow_renewal_birth_seed() -> TestResult<(
+    ActionStateStore,
+    BTreeMap<String, Handle>,
+    BTreeMap<(SmolStr, SmolStr), Value>,
+)> {
+    let mut f = fixture_with_follow(1, 1, true)?;
+    let p = fund(&mut f, Mode::OriginalFollow, FundFault::default())?;
+    install(&mut f, p)?;
+    let p = finish(&mut f, Mode::OriginalFollow, true, FinishFault::None)?;
+    install(&mut f, p)?;
+    reboot(&f)?;
+    Ok((f.store, f.handles, f.disk))
 }

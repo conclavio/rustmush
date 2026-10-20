@@ -416,6 +416,53 @@ pub(crate) fn audit_and_open_coverage_configured(
     paid_resales: bool,
     coverage: bool,
 ) -> Result<(), PublicationError> {
+    audit_and_open_derived_configured(
+        ctx,
+        families,
+        ratings,
+        shells,
+        paid,
+        forks,
+        dependent_owners,
+        entitlements,
+        renewals,
+        update,
+        owner_qualification,
+        owner_attestations,
+        ic,
+        houses,
+        house_renewals,
+        registry,
+        pending_charters,
+        paid_resales,
+        coverage,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn audit_and_open_derived_configured(
+    ctx: &mut ModuleCtx<'_>,
+    families: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    shells: &ShellReservations,
+    paid: bool,
+    forks: bool,
+    dependent_owners: bool,
+    entitlements: bool,
+    renewals: bool,
+    update: Option<&mush_core::DefinitionRef>,
+    owner_qualification: bool,
+    owner_attestations: bool,
+    ic: Option<&dyn super::ic_claims::registration::Installer>,
+    houses: bool,
+    house_renewals: bool,
+    registry: Option<&dyn super::rating::registration::Installer>,
+    pending_charters: bool,
+    paid_resales: bool,
+    coverage: bool,
+    derived_update: Option<&mush_core::DefinitionRef>,
+) -> Result<(), PublicationError> {
     ctx.state_mut::<RollStore>()
         .ok_or(PublicationError::Unavailable)?
         .close_commerce_for_audit()
@@ -441,6 +488,7 @@ pub(crate) fn audit_and_open_coverage_configured(
             owner_attestations,
             houses,
             house_renewals,
+            derived_update,
         )?;
         super::owner_qualification::history::audit(
             ctx,
@@ -604,6 +652,7 @@ fn audit(
     owner_attestations: bool,
     houses: bool,
     house_renewals: bool,
+    derived_update: Option<&mush_core::DefinitionRef>,
 ) -> Result<(), PublicationError> {
     let deployment = read(ctx, &f.deployment, "registry".into())?;
     if scan(ctx, &f.deployment, |_| Ok(()))? != 1 {
@@ -700,7 +749,14 @@ fn audit(
             Ok(())
         })
         .map_err(|_| PublicationError::Mismatch)?;
-    let update_count = super::line_update::audit::audit(ctx, roll, f, ratings, update)?;
+    let update_count = super::line_update::audit::audit_with_derived(
+        ctx,
+        roll,
+        f,
+        ratings,
+        update,
+        derived_update,
+    )?;
     let attestation_count =
         super::owner_attestation::history::audit(ctx, roll, f, ratings, owner_attestations)?;
     let mut lines = Allocated::default();
@@ -721,7 +777,7 @@ fn audit(
         lines.observe(row.id.get())
     })?;
     scan(ctx, &f.filed, |row| {
-        if row.format == 3 {
+        if matches!(row.format, 3 | 4) {
             read(ctx, &f.line_updates, row.operation.to_string())?.check_filed(row)?;
         } else {
             let op = read(ctx, &f.operations, row.operation.to_string())?;

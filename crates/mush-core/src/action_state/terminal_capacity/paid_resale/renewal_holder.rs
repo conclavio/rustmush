@@ -5,9 +5,16 @@ use super::*;
 pub(in crate::action_state::terminal_capacity) fn renewal_holder_generation(
     binding: &Value,
 ) -> Result<u64, ActionStateError> {
-    match num(binding, "format")? {
-        1 if binding.get("holder_basis").is_none() => Ok(1),
-        2 => {
+    let format = num(binding, "format")?;
+    if matches!(format, 1 | 2) && binding.get("revision_policy").is_some() {
+        return Err(refused("Pin renewal cannot carry Follow policy"));
+    }
+    if matches!(format, 3 | 4) {
+        super::super::entitlement::binding_revision(binding)?;
+    }
+    match format {
+        1 | 3 if binding.get("holder_basis").is_none() => Ok(1),
+        2 | 4 => {
             let basis = field(binding, "holder_basis")?;
             shape(basis, &["acceptance", "ownership"])?;
             token(field(basis, "acceptance")?)?;
@@ -142,4 +149,33 @@ pub(in crate::action_state::terminal_capacity) fn renewal_current_holder(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod follow_tests {
+    use super::*;
+    #[test]
+    fn explicit_follow_binding_rejects_null_crossed_line_and_pin_aliases() {
+        let valid = json!({"format":3,"line":"1","revision_policy":{"kind":"follow","line":"1"}});
+        assert_eq!(renewal_holder_generation(&valid).unwrap(), 1);
+        for (field, value) in [
+            ("revision_policy", Value::Null),
+            ("revision_policy", json!({"kind":"follow","line":"2"})),
+            (
+                "revision_policy",
+                json!({"kind":"pin","filed":"1","revision":{}}),
+            ),
+            ("format", json!(1)),
+            ("holder_basis", Value::Null),
+        ] {
+            let mut broken = valid.clone();
+            broken[field] = value;
+            assert!(renewal_holder_generation(&broken).is_err());
+        }
+        let mut moved = valid;
+        moved["format"] = json!(4);
+        assert!(renewal_holder_generation(&moved).is_err());
+        moved["holder_basis"] = json!({"acceptance":CommitToken::from_bytes([1;16]),"ownership":{"generation":2,"operation":CommitToken::from_bytes([2;16]),"digest":DefinitionDigest::from_bytes([3;32])}});
+        assert_eq!(renewal_holder_generation(&moved).unwrap(), 2);
+    }
 }

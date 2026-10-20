@@ -20,6 +20,7 @@ use crate::store::TacsimStore;
 
 const SWITCHES: &[&str] = &[
     "doctrine",
+    "launch",
     "live",
     "new",
     "rename",
@@ -53,7 +54,7 @@ const SWITCHES: &[&str] = &[
     "forget",
     "trace",
 ];
-const HELP: &str = "@mind/doctrine [Line|Sentry|Sniper|Skirmisher|Hunter|Rearguard] (free teaching pages)\n@mind/new <name> [FROM Standard|<owned mind>]\n@mind/list; @mind/info <name>; @mind/source <name>[@rev] [from-to]\n@mind/rename <name>=<new name>; @mind/remove <name>\n@mind/version-name <name>@<old>=<new>; @mind/version-forget <name>@<version>\n@mind/prune [1..128] (unreferenced owned revisions; sources retained)\n@mind/paste <name>; @mind/line|insert <name> <line>=<text>; @mind/delete <name> <from-to>\n@mind/check <name>; @mind/save <name>=<note>\n@mind/card <name>[/<profile>]; @mind/set <name>/<profile> <key>=<stored value>\n@mind/profile <name> add <profile> [FROM <profile>] | del <profile> | rename <old>=<new>\n@mind/preset <name>/<profile> save|apply <preset>; @mind/preset <name> del <preset>\n@mind/rule <name>/<profile> <n>=<rule>|OFF (canonical weapon IDs; ALL binds at seal)\n@mind/localcopy <owned mind>[@rev]=<new name>; @mind/diff <owned mind>[@rev]=<owned mind>[@rev]\n@mind/prove <owned mind[@revision][/profile]|Standard[/preset]> VS <same|mirror> [10..100 even] [DUEL|MUSTER|HOLD] [1v1..6v6] [SEED <u64>] (JSON-quote references containing spaces)\n@mind/proves; @mind/proving <run>; @mind/report <run> [page]; @mind/cancel|forget <run>\n@mind/trace #<unit> [1..64] [FOLLOW|ONCE]\n@mind/live <unit>[=<preset> | =<slider> <value>] (staff) reads the card as checked out or stages a live edit.";
+const HELP: &str = "@mind/doctrine [Line|Sentry|Sniper|Skirmisher|Hunter|Rearguard] (free teaching pages)\n@mind/launch <meridiani|coprates|safe_conduct>=<configured name> (private draft only)\n@mind/new <name> [FROM Standard|<owned mind>]\n@mind/list; @mind/info <name>; @mind/source <name>[@rev] [from-to]\n@mind/rename <name>=<new name>; @mind/remove <name>\n@mind/version-name <name>@<old>=<new>; @mind/version-forget <name>@<version>\n@mind/prune [1..128] (unreferenced owned revisions; sources retained)\n@mind/paste <name>; @mind/line|insert <name> <line>=<text>; @mind/delete <name> <from-to>\n@mind/check <name>; @mind/save <name>=<note>\n@mind/card <name>[/<profile>]; @mind/set <name>/<profile> <key>=<stored value>\n@mind/profile <name> add <profile> [FROM <profile>] | del <profile> | rename <old>=<new>\n@mind/preset <name>/<profile> save|apply <preset>; @mind/preset <name> del <preset>\n@mind/rule <name>/<profile> <n>=<rule>|OFF (canonical weapon IDs; ALL binds at seal)\n@mind/localcopy <owned mind>[@rev]=<new name>; @mind/diff <owned mind>[@rev]=<owned mind>[@rev]\n@mind/prove <owned mind[@revision][/profile]|Standard[/preset]> VS <same|mirror> [10..100 even] [DUEL|MUSTER|HOLD] [1v1..6v6] [SEED <u64>] (JSON-quote references containing spaces)\n@mind/proves; @mind/proving <run>; @mind/report <run> [page]; @mind/cancel|forget <run>\n@mind/trace #<unit> [1..64] [FOLLOW|ONCE]\n@mind/live <unit>[=<preset> | =<slider> <value>] (staff) reads the card as checked out or stages a live edit.";
 
 #[derive(Clone)]
 pub(crate) struct WorkshopCommands {
@@ -125,6 +126,10 @@ impl WorkshopCommands {
         let [switch] = switches.as_slice() else {
             return Err(CmdError::msg(HELP));
         };
+        if switch == "launch" && ctx.args.raw().trim().is_empty() {
+            ctx.out.info(ctx.actor, crate::launch::HELP);
+            return Ok(());
+        }
         if switch == "doctrine" {
             let page = crate::minds::doctrine_library::page(ctx.args.raw(), &self.cfg.reflex)?;
             ctx.out.info(ctx.actor, page);
@@ -162,6 +167,28 @@ impl WorkshopCommands {
     ) -> Result<(), RollError> {
         let actor = principal.actor();
         match switch {
+            "launch" => {
+                let (recipe, name) = text.split_once('=').ok_or(RollError::Missing)?;
+                let recipe =
+                    crate::launch::LaunchRecipe::parse(recipe.trim()).ok_or(RollError::Missing)?;
+                if ctx
+                    .w
+                    .module_state_owner(std::any::TypeId::of::<
+                        crate::launch::registration::LaunchService,
+                    >())
+                    .map(|o| o.as_str())
+                    != Some(crate::NS)
+                {
+                    return Err(RollError::Missing);
+                }
+                let launch = ctx
+                    .w
+                    .module_state::<crate::launch::registration::LaunchService>()
+                    .ok_or(RollError::Missing)?;
+                let prepared = launch.0.import(ctx.w, actor, recipe, name.trim())?;
+                publish(ctx, prepared)?;
+                ctx.out.info(actor, "Launch draft imported. Check and save it, then request actual Registry rating; import grants no filing or licence.");
+            }
             "list" => {
                 let names = roll(ctx)?
                     .names(actor)

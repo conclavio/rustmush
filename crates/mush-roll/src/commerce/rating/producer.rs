@@ -491,8 +491,22 @@ where
                     .map_err(invalid)?
                     .cloned()
                     .ok_or(RatingError::Incomplete)?;
-                let change = crate::commerce::follow::Change::certificate(&filed, &job, &execution)
-                    .map_err(invalid)?;
+                let receipt = match job.state() {
+                    RatingJobState::Completed { receipt } => Some(
+                        txn.get(&self.ratings.receipts, &receipt.job())
+                            .map_err(invalid)?
+                            .cloned()
+                            .ok_or(RatingError::Incomplete)?,
+                    ),
+                    _ => None,
+                };
+                let change = crate::commerce::follow::Change::certificate(
+                    &filed,
+                    &job,
+                    &execution,
+                    receipt.as_ref(),
+                )
+                .map_err(invalid)?;
                 roots = roots.with_follow(change);
             }
             stage = "root-owner";

@@ -24,7 +24,13 @@ fn entry() -> Entry {
         identity: RevisionIdentity::capture(&revision).unwrap(),
         birth_rating: rating,
         blocked: false,
-        certificates: BTreeMap::from([(compatibility(5).digest(), Some(rating))]),
+        certificates: BTreeMap::from([(
+            compatibility(5).digest(),
+            Some(Certificate {
+                reference: rating,
+                minimum: RatingClass::I,
+            }),
+        )]),
     }
 }
 fn line(entry: &Entry) -> LineRecord {
@@ -120,7 +126,7 @@ fn follow_does_not_spend_owner_reads_walking_a_long_withdrawn_suffix() {
     assert_eq!(
         index
             .eligible
-            .get(&(first.line, compatibility(5).digest()))
+            .get(&(first.line, compatibility(5).digest(), RatingClass::I))
             .unwrap()
             .len(),
         1
@@ -172,7 +178,13 @@ fn follow_current_plan_pending_overrides_birth_and_new_completion_does_not_unwit
             .is_err()
     );
     let complete = index
-        .prepare(&change(compatibility(6).digest(), Some(first.birth_rating)))
+        .prepare(&change(
+            compatibility(6).digest(),
+            Some(Certificate {
+                reference: first.birth_rating,
+                minimum: RatingClass::I,
+            }),
+        ))
         .unwrap();
     index.apply(complete);
     assert_eq!(
@@ -188,7 +200,13 @@ fn follow_current_plan_pending_overrides_birth_and_new_completion_does_not_unwit
     );
     block(&mut index, first.filed);
     let complete = index
-        .prepare(&change(compatibility(5).digest(), Some(first.birth_rating)))
+        .prepare(&change(
+            compatibility(5).digest(),
+            Some(Certificate {
+                reference: first.birth_rating,
+                minimum: RatingClass::I,
+            }),
+        ))
         .unwrap();
     index.apply(complete);
     assert!(
@@ -285,7 +303,10 @@ fn follow_entry_and_current_certificate_inventory_keep_existing_family_bounds() 
                 identity: first.identity,
                 birth_rating: first.birth_rating,
                 compatibility: compatibility(9).digest(),
-                rating: Some(first.birth_rating)
+                rating: Some(Certificate {
+                    reference: first.birth_rating,
+                    minimum: RatingClass::I
+                })
             }))
             .is_err()
     );
@@ -300,4 +321,141 @@ fn follow_entry_and_current_certificate_inventory_keep_existing_family_bounds() 
         .unwrap();
     index.apply(prepared);
     assert_eq!(index.certificate_count, crate::MAX_RECORDS * 2);
+}
+
+#[test]
+fn follow_class_ceiling_skips_a_long_expensive_suffix_without_scanning() {
+    let first = entry();
+    let mut index = Index::default();
+    insert(&mut index, first.clone());
+    let mut last = first.clone();
+    for sequence in 2..=1024 {
+        last = first.clone();
+        last.filed = FiledRevisionId::new(sequence).unwrap();
+        last.sequence = sequence;
+        last.at = 100 + sequence as i64;
+        last.certificates
+            .get_mut(&compatibility(5).digest())
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .minimum = RatingClass::III;
+        insert(&mut index, last.clone());
+    }
+    assert_eq!(index.eligible.len(), 2);
+    let line = line(&last);
+    for ceiling in [RatingClass::I, RatingClass::II] {
+        assert_eq!(
+            index
+                .select_for_class(&line, &compatibility(5), WorldIcSeconds(2000), ceiling)
+                .unwrap(),
+            first.filed
+        );
+    }
+    assert_eq!(
+        index
+            .select(&line, &compatibility(5), WorldIcSeconds(2000))
+            .unwrap(),
+        last.filed
+    );
+    block(&mut index, first.filed);
+    assert!(
+        index
+            .select_for_class(
+                &line,
+                &compatibility(5),
+                WorldIcSeconds(2000),
+                RatingClass::II
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn follow_reconformance_moves_the_candidate_between_class_partitions_only_on_apply() {
+    let first = entry();
+    let mut index = Index::default();
+    insert(&mut index, first.clone());
+    let mut second = first.clone();
+    second.filed = FiledRevisionId::new(2).unwrap();
+    second.sequence = 2;
+    second.at = 101;
+    insert(&mut index, second.clone());
+    let line = line(&second);
+    let change = |minimum| {
+        Change(Kind::Certificate {
+            filed: second.filed,
+            identity: second.identity,
+            birth_rating: second.birth_rating,
+            compatibility: compatibility(5).digest(),
+            rating: Some(Certificate {
+                reference: second.birth_rating,
+                minimum,
+            }),
+        })
+    };
+    let prepared = index.prepare(&change(RatingClass::II)).unwrap();
+    assert_eq!(
+        index
+            .select_for_class(
+                &line,
+                &compatibility(5),
+                WorldIcSeconds(101),
+                RatingClass::I
+            )
+            .unwrap(),
+        second.filed
+    );
+    index.apply(prepared);
+    assert_eq!(
+        index
+            .select_for_class(
+                &line,
+                &compatibility(5),
+                WorldIcSeconds(101),
+                RatingClass::I
+            )
+            .unwrap(),
+        first.filed
+    );
+    assert_eq!(
+        index
+            .select_for_class(
+                &line,
+                &compatibility(5),
+                WorldIcSeconds(101),
+                RatingClass::II
+            )
+            .unwrap(),
+        second.filed
+    );
+    let prepared = index.prepare(&change(RatingClass::I)).unwrap();
+    index.apply(prepared);
+    assert!(!index.eligible.contains_key(&(
+        first.line,
+        compatibility(5).digest(),
+        RatingClass::II
+    )));
+    assert_eq!(
+        index
+            .select_for_class(
+                &line,
+                &compatibility(5),
+                WorldIcSeconds(100),
+                RatingClass::I
+            )
+            .unwrap(),
+        first.filed
+    );
+    assert_eq!(
+        index
+            .select_for_class(
+                &line,
+                &compatibility(5),
+                WorldIcSeconds(101),
+                RatingClass::I
+            )
+            .unwrap(),
+        second.filed
+    );
 }

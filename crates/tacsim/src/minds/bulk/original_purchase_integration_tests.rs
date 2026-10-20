@@ -274,6 +274,7 @@ struct PurchaseConfiguration {
     writer: OriginalPurchaseWriter,
     dependent: Option<DefinitionRef>,
     compatible_update: Option<DefinitionRef>,
+    derived_update: Option<DefinitionRef>,
     charter_transfer: Option<DefinitionRef>,
     entitlements: Option<mush_market::mind_entitlement::EntitlementConfig>,
     renewals: Option<mush_market::mind_renewal::RenewalConfig>,
@@ -340,6 +341,7 @@ fn configuration(manifest: DefinitionRef, source_forms: bool) -> TestResult<Purc
         writer,
         dependent: None,
         compatible_update: None,
+        derived_update: None,
         charter_transfer: None,
         entitlements: None,
         renewals: None,
@@ -431,6 +433,7 @@ struct PurchaseRoll {
     qualification_short_parent: bool,
     author_withdrawal: bool,
     compatible_updates: bool,
+    derived_updates: bool,
     shared: Shared,
     purchase: PurchaseShared,
     inner: Option<RollModule>,
@@ -552,6 +555,13 @@ impl GameModule for PurchaseRoll {
         } else {
             config
         };
+        let config = if self.derived_updates {
+            let config = config.with_derived_updates()?;
+            purchase.derived_update = Some(config.derived_update_action()?);
+            config
+        } else {
+            config
+        };
         let config = if let Some(policy) = &self.registry_recall {
             config.with_registry_recall(policy.clone())?
         } else {
@@ -655,6 +665,9 @@ impl GameModule for PurchaseEconomy {
         }
         if let Some(action) = purchase.compatible_update {
             module = module.with_compatible_mind_updates(action);
+        }
+        if let Some(action) = purchase.derived_update {
+            module = module.with_derived_mind_updates(action);
         }
         if let Some(action) = purchase.dependent {
             module = module.with_dependent_initial_filing(action);
@@ -921,6 +934,7 @@ impl PurchaseFixture {
                     qualification_short_parent: false,
                     author_withdrawal: false,
                     compatible_updates,
+                    derived_updates: false,
                     shared: shared.clone(),
                     purchase: purchase.clone(),
                     inner: None,

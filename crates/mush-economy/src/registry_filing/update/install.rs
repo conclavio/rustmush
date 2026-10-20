@@ -73,6 +73,7 @@ pub struct CompatibleUpdatePatch {
     commit: CommitToken,
     clock: mush_core::ClockRef,
     request: RegistryCompatibleUpdate,
+    authority: UpdateAuthority,
     before_title: EconomicAsset,
     plan: EconomyPlan,
     validated: Prepared,
@@ -106,16 +107,85 @@ pub(crate) fn prepare(
     ),
     ParticipantError,
 > {
+    prepare_inner(
+        policy,
+        action,
+        state,
+        context,
+        request,
+        UpdateAuthority::Personal,
+    )
+}
+pub(crate) fn prepare_house(
+    policy: &InitialFilingPolicy,
+    config: &house::HouseUpdateConfig,
+    state: &EconomyStore,
+    context: &OwnerPrepareContext<'_>,
+    request: RegistryHouseCompatibleUpdate,
+) -> Result<
+    (
+        CompatibleUpdateOutput,
+        CompatibleUpdatePatch,
+        Vec<ReplayWrite>,
+    ),
+    ParticipantError,
+> {
+    let attribution = HouseFilingAttribution::new(
+        context.invocation().actor(),
+        request.organization,
+        request.scope,
+    )?;
+    prepare_inner(
+        policy,
+        &config.action,
+        state,
+        context,
+        RegistryCompatibleUpdate {
+            charter: request.charter,
+            title_revision: request.title_revision,
+            payer: request.payer,
+        },
+        UpdateAuthority::House {
+            config: config.clone(),
+            attribution,
+        },
+    )
+}
+fn prepare_inner(
+    policy: &InitialFilingPolicy,
+    action: &DefinitionRef,
+    state: &EconomyStore,
+    context: &OwnerPrepareContext<'_>,
+    request: RegistryCompatibleUpdate,
+    authority: UpdateAuthority,
+) -> Result<
+    (
+        CompatibleUpdateOutput,
+        CompatibleUpdatePatch,
+        Vec<ReplayWrite>,
+    ),
+    ParticipantError,
+> {
     require_action(action, context)?;
     let world = context.world();
     let filer = context.invocation().actor();
     let commit = context.commit_token();
-    let before_title = title(state, world, filer, &request, policy)?.clone();
+    let before_title = title(state, world, filer, &request, policy, &authority)?.clone();
     if !state.fold.update_receipts.may_add(commit) {
         return Err(refused());
     }
-    let plan = plan(policy, filer, commit, &request);
-    let validated = validate(policy, state, world, filer, &request, &plan)?;
+    let kind = match action.key().id.as_str() {
+        ACTION_ID => None,
+        DERIVED_ACTION_ID => Some(UpdateKind::DependentV1),
+        MAJOR_ACTION_ID => Some(UpdateKind::OriginalMajorV1),
+        HOUSE_ACTION_ID => Some(UpdateKind::HouseCompatibleV1),
+        _ => return Err(refused()),
+    };
+    if (kind == Some(UpdateKind::HouseCompatibleV1)) != authority.house().is_some() {
+        return Err(refused());
+    }
+    let plan = plan_for(kind, policy, filer, commit, &request, authority.house());
+    let validated = validate(policy, state, world, filer, &request, &plan, &authority)?;
     let id = TransactionId(state.next_transaction);
     let next_transaction = state.next_transaction.checked_add(1).ok_or_else(refused)?;
     let next_posts = state.posts_since_boot.checked_add(1).ok_or_else(refused)?;
@@ -200,6 +270,7 @@ pub(crate) fn prepare(
         commit,
         clock: world.world_ic_now().clock,
         request,
+        authority,
         before_title,
         plan,
         validated,
@@ -244,6 +315,7 @@ pub(crate) fn recheck(
         patch.actor,
         &patch.request,
         &patch.plan,
+        &patch.authority,
     )? != patch.validated
     {
         return Err(refused());

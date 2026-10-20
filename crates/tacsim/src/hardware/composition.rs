@@ -81,7 +81,75 @@ pub struct HardwareOwners {
     pub economy: EconomyModule,
     pub tactics: TacticsModule,
 }
+
+/// Prevalidated configuration used by the shared server roster. Building it can
+/// fail; applying it to the ordinary owner modules is infallible and makes no
+/// state. This keeps the ordinary roster's API and owner order unchanged.
+pub(crate) struct RosterPolicy {
+    hardware: GovernedHardware,
+    input: mush_inventory::core_input::CoreInputBinding,
+    economy: mush_economy::core_integration::CoreIntegrationConfig,
+    fitting: mush_economy::core_refit::CoreRefitConfig,
+    install: mush_core::DefinitionRef,
+}
+impl RosterPolicy {
+    pub(crate) fn inventory(&self, module: InventoryModule) -> InventoryModule {
+        module.with_core_inputs(self.input.clone())
+    }
+    pub(crate) fn industry(&self, module: IndustryModule) -> IndustryModule {
+        self.hardware.configure_industry(module)
+    }
+    pub(crate) fn economy(&self, module: EconomyModule) -> EconomyModule {
+        module
+            .with_core_integration(self.economy.clone())
+            .with_core_refit(self.fitting.clone())
+    }
+    pub(crate) fn tactics(&self) -> TacticsModule {
+        TacticsModule::with_catalog(self.hardware.registration.family.catalog().units.clone())
+            .with_component_replacement(
+                self.hardware.refit.replacement_policy(),
+                self.install.clone(),
+                self.hardware.refit.component().clone(),
+                self.hardware
+                    .refit
+                    .payment()
+                    .fitted_units
+                    .iter()
+                    .cloned()
+                    .collect(),
+            )
+    }
+}
 impl GovernedHardware {
+    pub(crate) fn roster_policy(&self) -> Result<RosterPolicy, ModError> {
+        Ok(RosterPolicy {
+            hardware: self.clone(),
+            input: mush_inventory::core_input::CoreInputBinding::new(
+                self.factory
+                    .action("accept_core_integration")
+                    .map_err(bad)?,
+                self.factory
+                    .action("complete_core_integration")
+                    .map_err(bad)?,
+                self.factory
+                    .action("cancel_core_integration")
+                    .map_err(bad)?,
+            )
+            .map_err(bad)?,
+            economy: self
+                .factory
+                .economy_config(self.origin.policy())
+                .map_err(bad)?,
+            fitting: self
+                .factory
+                .economy_refit_config(self.origin.policy())
+                .map_err(bad)?,
+            install: self
+                .refit
+                .action(mush_economy::core_refit::INSTALL_ACTION)
+                .map_err(bad)?,
+        })
+    }
     pub fn prepare(
         layer: &TacsimRuleset,
         mode: CoreOriginMode,

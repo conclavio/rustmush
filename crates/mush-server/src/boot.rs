@@ -308,6 +308,31 @@ pub fn game_modules_with_mind_commerce(
     game_modules_with_optional_commerce(config, llm, Some(commerce))
 }
 
+/// Shared host-only preflight. World owner identities and readiness are checked
+/// later by actual composition; this never opens the store or creates owners.
+fn load_launch_deployment(
+    config: &Config,
+) -> Result<Option<tacsim::launch::LaunchDeployment>, String> {
+    use std::io::Read;
+    let Some(path) = config.tacsim.minds.launch_path.as_ref() else {
+        return Ok(None);
+    };
+    if !config.tacsim.enabled {
+        return Err("launch deployment requires enabled Tacsim".to_owned());
+    }
+    if path.is_empty() {
+        return Err("launch deployment path is empty".to_owned());
+    }
+    let file = std::fs::File::open(path).map_err(|e| format!("launch deployment {path}: {e}"))?;
+    let mut bytes = Vec::new();
+    file.take((tacsim::launch::MAX_DEPLOYMENT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("launch deployment {path}: {e}"))?;
+    tacsim::launch::LaunchDeployment::decode(&bytes)
+        .map(Some)
+        .map_err(|e| format!("launch deployment {path}: {e}"))
+}
+
 fn game_modules_with_optional_commerce(
     config: &Config,
     llm: &Arc<LlmService>,
@@ -316,6 +341,18 @@ fn game_modules_with_optional_commerce(
     // E7 cut 1: the TacSim layer's frozen block, read **host-side** and BEFORE the
     // module list, because `[tacsim.recovery]` is mapped into the built-ins below.
     let tacsim = config_ext::tacsim_config(&config.tacsim)?;
+    if commerce.is_some() && config.tacsim.minds.launch_path.is_some() {
+        return Err("choose one explicit mind commerce composition".into());
+    }
+    let launch = load_launch_deployment(config)?
+        .map(|deployment| {
+            let layer = tacsim::TacsimRuleset::with_game_content(tacsim.clone(), tacsim.enabled)
+                .with_conduct_carrier()
+                .map_err(|e| e.to_string())?;
+            tacsim::launch::LaunchComposition::prepare(&layer, deployment)
+                .map_err(|e| e.to_string())
+        })
+        .transpose()?;
     // S1: `[atlas]` likewise — its `pack_paths` are read host-side so a bad pack file
     // fails the boot naming the file, and the typed config reaches the atlas inside
     // the built-ins.
@@ -332,8 +369,17 @@ fn game_modules_with_optional_commerce(
     let economy = config_ext::economy_config_with(&config.economy, &contributed)?;
     // The ordinary operator recovery policy reaches both roster choices.
     let recovery = modules::recovery_policy(&tacsim.recovery);
-    let (mut mods, inventory) = match commerce {
-        Some(commerce) => modules::server_modules_with_tacsim_and_mind_commerce(
+    let (mut mods, inventory) = match (launch.as_ref(), commerce) {
+        (Some(launch), None) => modules::server_modules_with_launch(
+            weather,
+            economy,
+            atlas,
+            &onboarding,
+            &game,
+            recovery,
+            launch,
+        ),
+        (_, Some(commerce)) => modules::server_modules_with_tacsim_and_mind_commerce(
             weather,
             economy,
             atlas,
@@ -342,7 +388,7 @@ fn game_modules_with_optional_commerce(
             recovery,
             commerce,
         ),
-        None => modules::server_modules_with_tacsim(
+        (None, None) => modules::server_modules_with_tacsim(
             weather,
             economy,
             atlas,
@@ -385,15 +431,25 @@ fn game_modules_with_optional_commerce(
     // content latch's boot list below move together.
     // Doc 18 cut IC5: handed the inventory cell (`tacsim_module_wired`, which takes
     // no test-world flag: production is never a test world, IC3 L15).
-    mods.push(match commerce {
-        Some(commerce) => modules::tacsim_module_wired_with_mind_commerce(
+    mods.push(match (launch.as_ref(), commerce) {
+        (Some(launch), None) => Box::new(
+            launch
+                .configure_tacsim(
+                    tacsim::TacsimRuleset::with_game_content(tacsim, tacsim_enabled)
+                        .with_conduct_carrier()
+                        .map_err(|e| e.to_string())?
+                        .with_inventory(inventory),
+                )
+                .map_err(|e| e.to_string())?,
+        ) as Box<dyn GameModule>,
+        (_, Some(commerce)) => modules::tacsim_module_wired_with_mind_commerce(
             tacsim,
             tacsim_enabled,
             inventory,
             commerce,
         )
         .map_err(|error| error.to_string())?,
-        None => modules::tacsim_module_wired(tacsim, tacsim_enabled, inventory),
+        (None, None) => modules::tacsim_module_wired(tacsim, tacsim_enabled, inventory),
     });
     // S1: the content module LAST of all — its boot pass applies the starter packs
     // through the atlas's and the NPC module's appliers, which must have hydrated
@@ -732,6 +788,9 @@ async fn build_engine_inner(
 pub fn check_config(config: &Config) -> Vec<String> {
     let mut refusals = mush_config::preflight::check(config);
     if let Err(error) = config_ext::tacsim_config(&config.tacsim) {
+        refusals.push(error);
+    }
+    if let Err(error) = load_launch_deployment(config) {
         refusals.push(error);
     }
     // S1: `[atlas].pack_paths` are read host-side and are boot-fatal for the same

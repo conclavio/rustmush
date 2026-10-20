@@ -12,11 +12,19 @@ use std::collections::BTreeMap;
 
 use mush_core::DefinitionDigest;
 
-use super::rating::{RatingCompatibility, RatingReceipt, RatingRef};
+use super::rating::{RatingClass, RatingCompatibility, RatingReceipt, RatingRef};
 use super::records::{FiledRecord, LineRecord, PublicationError, Record};
 use super::{CharterId, FiledRevisionId, LineId, RevisionIdentity, WorldIcSeconds};
 
 pub(crate) use audit::rebuild;
+
+/// The class is copied only from the same complete certificate as its reference.
+/// This locator never grants use; consumers still read the actual selected row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Certificate {
+    reference: RatingRef,
+    minimum: RatingClass,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Entry {
@@ -30,7 +38,7 @@ struct Entry {
     blocked: bool,
     // None records an actual unsuccessful/pending current-plan head. It must
     // override a historical birth certificate of the same compatibility.
-    certificates: BTreeMap<DefinitionDigest, Option<RatingRef>>,
+    certificates: BTreeMap<DefinitionDigest, Option<Certificate>>,
 }
 
 impl Entry {
@@ -52,7 +60,13 @@ impl Entry {
             identity: filed.content.revision(),
             birth_rating: filed.rating,
             blocked: false,
-            certificates: BTreeMap::from([(rating.compatibility().digest(), Some(filed.rating))]),
+            certificates: BTreeMap::from([(
+                rating.compatibility().digest(),
+                Some(Certificate {
+                    reference: filed.rating,
+                    minimum: rating.minimum(),
+                }),
+            )]),
         })
     }
 
@@ -89,7 +103,7 @@ enum Kind {
         identity: RevisionIdentity,
         birth_rating: RatingRef,
         compatibility: DefinitionDigest,
-        rating: Option<RatingRef>,
+        rating: Option<Certificate>,
     },
 }
 
@@ -116,6 +130,7 @@ impl Change {
         filed: &FiledRecord,
         job: &super::rating::RatingJob,
         execution: &super::rating::execution::RatingExecution,
+        receipt: Option<&RatingReceipt>,
     ) -> Result<Self, PublicationError> {
         filed.validate()?;
         execution
@@ -133,9 +148,28 @@ impl Change {
         {
             return Err(PublicationError::Mismatch);
         }
-        let rating = match job.state() {
-            super::rating::RatingJobState::Completed { receipt } => Some(*receipt),
-            _ => None,
+        let rating = match (job.state(), receipt) {
+            (super::rating::RatingJobState::Completed { receipt: reference }, Some(receipt)) => {
+                receipt.validate().map_err(|_| PublicationError::Mismatch)?;
+                if !job
+                    .matches_receipt(receipt)
+                    .map_err(|_| PublicationError::Mismatch)?
+                    || receipt
+                        .reference()
+                        .map_err(|_| PublicationError::Mismatch)?
+                        != *reference
+                {
+                    return Err(PublicationError::Mismatch);
+                }
+                Some(Certificate {
+                    reference: *reference,
+                    minimum: receipt.minimum(),
+                })
+            }
+            (super::rating::RatingJobState::Completed { .. }, None) | (_, Some(_)) => {
+                return Err(PublicationError::Mismatch);
+            }
+            (_, None) => None,
         };
         Ok(Self(Kind::Certificate {
             filed: filed.content.id(),
@@ -160,7 +194,8 @@ struct Head {
 pub(crate) struct Index {
     entries: BTreeMap<FiledRevisionId, Entry>,
     heads: BTreeMap<LineId, Head>,
-    eligible: BTreeMap<(LineId, DefinitionDigest), BTreeMap<(i64, u64), FiledRevisionId>>,
+    eligible:
+        BTreeMap<(LineId, DefinitionDigest, RatingClass), BTreeMap<(i64, u64), FiledRevisionId>>,
     certificate_count: usize,
 }
 
@@ -238,8 +273,11 @@ impl Index {
 
     pub(crate) fn apply(&mut self, prepared: Prepared) {
         if let Some(old) = prepared.before {
-            for compatibility in old.certificates.keys() {
-                let key = (old.line, *compatibility);
+            for (compatibility, certificate) in &old.certificates {
+                let Some(certificate) = certificate else {
+                    continue;
+                };
+                let key = (old.line, *compatibility, certificate.minimum);
                 if let Some(candidates) = self.eligible.get_mut(&key) {
                     candidates.remove(&(old.at, old.sequence));
                     if candidates.is_empty() {
@@ -251,9 +289,9 @@ impl Index {
         let next = prepared.after;
         if !next.blocked {
             for (compatibility, rating) in &next.certificates {
-                if rating.is_some() {
+                if let Some(certificate) = rating {
                     self.eligible
-                        .entry((next.line, *compatibility))
+                        .entry((next.line, *compatibility, certificate.minimum))
                         .or_default()
                         .insert((next.at, next.sequence), next.filed);
                 }
@@ -272,6 +310,18 @@ impl Index {
         compatibility: &RatingCompatibility,
         now: WorldIcSeconds,
     ) -> Result<FiledRevisionId, PublicationError> {
+        self.select_for_class(line, compatibility, now, RatingClass::III)
+    }
+
+    /// At most three indexed predecessor lookups. A long suffix of revisions
+    /// above the purchased class never consumes an owner-read scan budget.
+    pub(crate) fn select_for_class(
+        &self,
+        line: &LineRecord,
+        compatibility: &RatingCompatibility,
+        now: WorldIcSeconds,
+        ceiling: RatingClass,
+    ) -> Result<FiledRevisionId, PublicationError> {
         line.validate()?;
         let head = self.heads.get(&line.id).ok_or(PublicationError::Missing)?;
         if head.filed != line.head
@@ -285,9 +335,15 @@ impl Index {
         }
         // Persisted FiledRevision times predate versioned ClockStamp. Preserve
         // their existing absolute IC ordering; never compare invented epochs.
-        self.eligible
-            .get(&(line.id, compatibility.digest()))
-            .and_then(|rows| rows.range(..=(now.get(), u64::MAX)).next_back())
+        [RatingClass::I, RatingClass::II, RatingClass::III]
+            .into_iter()
+            .filter(|class| *class <= ceiling)
+            .filter_map(|class| {
+                self.eligible
+                    .get(&(line.id, compatibility.digest(), class))
+                    .and_then(|rows| rows.range(..=(now.get(), u64::MAX)).next_back())
+            })
+            .max_by_key(|(position, _)| **position)
             .map(|(_, filed)| *filed)
             .ok_or(PublicationError::Unavailable)
     }
@@ -303,7 +359,12 @@ impl Index {
             .get(&filed.content.id())
             .ok_or(PublicationError::Missing)?;
         entry.matches(filed)?;
-        if entry.blocked || entry.certificates.get(&compatibility.digest()) != Some(&Some(*rating))
+        if entry.blocked
+            || entry
+                .certificates
+                .get(&compatibility.digest())
+                .and_then(Option::as_ref)
+                .is_none_or(|certificate| certificate.reference != *rating)
         {
             return Err(PublicationError::Mismatch);
         }

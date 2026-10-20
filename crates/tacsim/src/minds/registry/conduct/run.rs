@@ -62,6 +62,14 @@ impl CompletedRun {
         )
         .map_err(|_| RatingError::Identity)
     }
+    #[cfg(test)]
+    pub(super) fn first_failure_summary(&self) -> String {
+        self.results
+            .iter()
+            .find(|row| !row.passed())
+            .map(ResultRow::failure_summary)
+            .unwrap_or_else(|| "no failed row".into())
+    }
     pub(super) fn passed(&self) -> bool {
         self.passed
     }

@@ -418,7 +418,7 @@ fn pair(view: &View<'_>, operation: CommitToken) -> Result<Pair, ActionStateErro
     let phase = text(field(&market, "state")?, "kind")?.to_owned();
     if number(&market, "format")? != 1
         || number(&roll, "format")? != 1
-        || !matches!(number(binding, "format")?, 1 | 2)
+        || !matches!(number(binding, "format")?, 1 | 2 | 3 | 4)
         || token(field(&market, "operation")?)? != operation
         || predecessor.checked_add(1) != Some(next)
         || !matches!(
@@ -455,6 +455,7 @@ fn pair(view: &View<'_>, operation: CommitToken) -> Result<Pair, ActionStateErro
     let terms = field(offer, "terms")?;
     let grant = field(binding, "grant")?;
     let template = field(grant, "renewal")?;
+    let revision_policy = entitlement::binding_revision(binding)?;
     let prior = required(view, &term_key(TERM, licence, predecessor)?)?;
     let economics = required(view, &term_key(ECONOMICS, licence, predecessor)?)?;
     let prior_operation = token(field(&prior, "operation")?)?;
@@ -490,8 +491,7 @@ fn pair(view: &View<'_>, operation: CommitToken) -> Result<Pair, ActionStateErro
         || field(template, "terms")? != field(binding, "terms")?
         || field(template, "term_seconds")? != field(binding, "term_seconds")?
         || field(template, "grace_seconds")? != field(binding, "grace_seconds")?
-        || field(template, "revision")?
-            != &json!({"kind":"pin","filed":field(binding,"filed")?,"revision":field(binding,"revision")?})
+        || field(template, "revision")? != &revision_policy
         || field(&prior, "terms")? != field(binding, "terms")?
         || field(&prior, "revision")? != field(template, "revision")?
     {
@@ -542,12 +542,23 @@ fn require_house_birth(
     {
         return Err(refused("house renewal birth route differs"));
     }
+    if matches!(number(binding, "format")?, 3 | 4) {
+        view.registry
+            .house_purchase
+            .as_ref()
+            .ok_or_else(|| refused("house Follow birth protocol absent"))?
+            .require_product(&allocation)?;
+        if house::grant_version(field(binding, "grant")?)? != 3 {
+            return Err(refused("house Follow binding requires Follow acquisition"));
+        }
+    }
     for name in ["issuer", "charter", "line", "filed", "revision", "terms"] {
         if field(&allocation, name)? != field(binding, name)? {
             return Err(refused("house renewal birth subject differs"));
         }
     }
-    if number(binding, "format")? == 1 && field(&allocation, "holder")? != field(binding, "holder")?
+    if matches!(number(binding, "format")?, 1 | 3)
+        && field(&allocation, "holder")? != field(binding, "holder")?
     {
         return Err(refused("house renewal original holder differs"));
     }
@@ -808,7 +819,7 @@ fn outputs(
         .checked_add(signed(binding, "grace_seconds")?)
         .ok_or_else(|| refused("renewal grace overflow"))?;
     let expected_term = json!({"format":1,"licence":field(binding,"licence")?,"generation":field(binding,"next")?,
-        "terms":field(binding,"terms")?,"revision":{"kind":"pin","filed":field(binding,"filed")?,"revision":field(binding,"revision")?},
+        "terms":field(binding,"terms")?,"revision":entitlement::binding_revision(binding)?,
         "window":{"format":1,"eligibility_start":issued,"issued_at":issued,"term_end":end,"grace_end":grace},"operation":operation});
     let expected_economics = json!({"format":house::grant_version(field(binding,"grant")?)?,"licence":field(binding,"licence")?,"generation":field(binding,"next")?,
         "operation":operation,"product_digest":field(binding,"product_digest")?,"grant":field(binding,"grant")?});

@@ -33,24 +33,35 @@ const FAMILIES: [(&str, &str, usize); 6] = [
 enum Kind {
     House,
     TwoSeatPin,
+    TwoSeatFollow,
 }
 impl Kind {
+    fn seats(self) -> u64 {
+        if self == Self::House { 1 } else { 2 }
+    }
+    fn follow(self) -> bool {
+        self == Self::TwoSeatFollow
+    }
+
     fn version(self) -> u32 {
         match self {
             Self::House => 1,
             Self::TwoSeatPin => 2,
+            Self::TwoSeatFollow => 3,
         }
     }
     fn wire(self) -> &'static str {
         match self {
             Self::House => "house_v1",
             Self::TwoSeatPin => "house_v2",
+            Self::TwoSeatFollow => "house_v3",
         }
     }
     fn protocol(self) -> &'static str {
         match self {
             Self::House => "house_mind_purchase_v1",
             Self::TwoSeatPin => "house_mind_purchase_v2",
+            Self::TwoSeatFollow => "house_mind_purchase_v3",
         }
     }
     fn actions(self) -> [&'static str; 3] {
@@ -60,12 +71,14 @@ impl Kind {
         match self {
             Self::House => "market.house_product.v1",
             Self::TwoSeatPin => "market.house_product.v2",
+            Self::TwoSeatFollow => "market.house_product.v3",
         }
     }
     fn quote_domain(self) -> &'static str {
         match self {
             Self::House => "market.house_quote.v1",
             Self::TwoSeatPin => "market.house_quote.v2",
+            Self::TwoSeatFollow => "market.house_quote.v3",
         }
     }
 }
@@ -77,6 +90,8 @@ pub(in crate::action_state) struct Protocol {
     house: [DefinitionRef; 3],
     #[serde(skip_serializing_if = "Option::is_none")]
     two_seat: Option<[DefinitionRef; 3]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    follow: Option<[DefinitionRef; 3]>,
 }
 impl Protocol {
     pub(in crate::action_state) fn new(
@@ -99,6 +114,7 @@ impl Protocol {
             participants,
             house,
             two_seat: None,
+            follow: None,
         };
         for kind in [Kind::House] {
             for (action, id) in result.actions(kind)?.iter().zip(kind.actions()) {
@@ -141,8 +157,34 @@ impl Protocol {
         result.two_seat = Some(two_seat);
         Ok(result)
     }
+    pub(in crate::action_state) fn with_follow(
+        owner: &OwnerId,
+        manifest: DefinitionRef,
+        participants: [DefinitionRef; 2],
+        house: [DefinitionRef; 3],
+        two_seat: [DefinitionRef; 3],
+        follow: [DefinitionRef; 3],
+    ) -> Result<Self, ActionStateError> {
+        let mut result = Self::with_two_seat_pins(owner, manifest, participants, house, two_seat)?;
+        for (index, action) in follow.iter().enumerate() {
+            if *action
+                != action_reference(
+                    &result.manifest,
+                    &result.participants,
+                    Kind::TwoSeatFollow,
+                    index,
+                )?
+            {
+                return Err(refused("house Follow exact action recipe"));
+            }
+        }
+        result.follow = Some(follow);
+        Ok(result)
+    }
     fn kinds(&self) -> impl Iterator<Item = Kind> {
-        std::iter::once(Kind::House).chain(self.two_seat.iter().map(|_| Kind::TwoSeatPin))
+        std::iter::once(Kind::House)
+            .chain(self.two_seat.iter().map(|_| Kind::TwoSeatPin))
+            .chain(self.follow.iter().map(|_| Kind::TwoSeatFollow))
     }
     fn actions(&self, kind: Kind) -> Result<&[DefinitionRef; 3], ActionStateError> {
         match kind {
@@ -151,6 +193,10 @@ impl Protocol {
                 .two_seat
                 .as_ref()
                 .ok_or_else(|| refused("house two-seat recipe unavailable")),
+            Kind::TwoSeatFollow => self
+                .follow
+                .as_ref()
+                .ok_or_else(|| refused("house Follow recipe unavailable")),
         }
     }
     fn admission_action(&self, kind: Kind) -> Result<&DefinitionRef, ActionStateError> {
@@ -159,10 +205,11 @@ impl Protocol {
     pub(super) fn admission_actions(&self) -> Vec<&DefinitionRef> {
         std::iter::once(&self.house[0])
             .chain(self.two_seat.iter().map(|a| &a[0]))
+            .chain(self.follow.iter().map(|a| &a[0]))
             .collect()
     }
     pub(super) fn recognizes_historical(&self, effect: &DefinitionRef) -> bool {
-        effect.key() == self.house[0].key() && matches!(effect.version(), 1 | 2)
+        effect.key() == self.house[0].key() && matches!(effect.version(), 1 | 2 | 3)
     }
     pub(super) fn require_product(&self, allocation: &Value) -> Result<(), ActionStateError> {
         let kind = allocation_kind(allocation)?;
@@ -377,13 +424,13 @@ fn historical_admission(
     )
 }
 
-fn check_two_seat_policy(value: &Value) -> Result<(), ActionStateError> {
+fn check_two_seat_policy(value: &Value, kind: Kind) -> Result<(), ActionStateError> {
     let r: DefinitionRef = serde_json::from_value(value.clone())
         .map_err(|_| refused("house two-seat policy reference"))?;
     if r.key().owner.as_str() != "market"
         || r.key().kind.as_str() != "entitlement_policy"
         || r.key().id.as_str() != "house_personal"
-        || r.version() != 2
+        || r.version() != kind.version()
     {
         return Err(refused("house two-seat policy identity"));
     }
@@ -393,19 +440,21 @@ fn grant_kind(grant: &Value) -> Result<Kind, ActionStateError> {
     let kind = match number(grant, "format")? {
         1 => Kind::House,
         2 => Kind::TwoSeatPin,
+        3 => Kind::TwoSeatFollow,
         _ => return Err(refused("house grant format")),
     };
     let template = field(grant, "renewal")?;
     if number(template, "format")? != u64::from(kind.version())
-        || number(field(template, "terms")?, "seats")? != u64::from(kind.version())
+        || number(field(template, "terms")?, "seats")? != kind.seats()
         || field(grant, "downstream")? != &json!({"kind":"sealed"})
         || field(field(template, "terms")?, "form")? != &json!({"kind":"sealed"})
-        || text(field(template, "revision")?, "kind")? != "pin"
+        || text(field(template, "revision")?, "kind")?
+            != if kind.follow() { "follow" } else { "pin" }
     {
         return Err(refused("house nested product formats or seats"));
     }
-    if kind == Kind::TwoSeatPin {
-        check_two_seat_policy(field(template, "policy")?)?;
+    if kind != Kind::House {
+        check_two_seat_policy(field(template, "policy")?, kind)?;
     }
     Ok(kind)
 }
@@ -417,6 +466,11 @@ fn allocation_kind(allocation: &Value) -> Result<Kind, ActionStateError> {
         || text(allocation, "protocol")? != kind.wire()
         || number(economics, "format")? != u64::from(kind.version())
         || field(allocation, "terms")? != field(field(grant, "renewal")?, "terms")?
+        || !entitlement::revision_matches(
+            field(field(grant, "renewal")?, "revision")?,
+            allocation,
+            kind.follow(),
+        )?
     {
         return Err(refused("house birth product format differs"));
     }
@@ -432,6 +486,7 @@ pub(super) fn grant_domain(grant: &Value) -> Result<&'static str, ActionStateErr
     Ok(match grant_kind(grant)? {
         Kind::House => "roll.mind.house_grant_economics.v1",
         Kind::TwoSeatPin => "roll.mind.house_grant_economics.v2",
+        Kind::TwoSeatFollow => "roll.mind.house_grant_economics.v3",
     })
 }
 pub(super) fn economics_domain(economics: &Value) -> Result<&'static str, ActionStateError> {
@@ -442,6 +497,7 @@ pub(super) fn economics_domain(economics: &Value) -> Result<&'static str, Action
     Ok(match kind {
         Kind::House => "roll.mind.house_term_economics.v1",
         Kind::TwoSeatPin => "roll.mind.house_term_economics.v2",
+        Kind::TwoSeatFollow => "roll.mind.house_term_economics.v3",
     })
 }
 fn quote_kind(quote: &Value) -> Result<Kind, ActionStateError> {
@@ -454,19 +510,18 @@ fn quote_kind(quote: &Value) -> Result<Kind, ActionStateError> {
     let kind = match text(product, "protocol")? {
         "house_v1" => Kind::House,
         "house_v2" => Kind::TwoSeatPin,
+        "house_v3" => Kind::TwoSeatFollow,
         _ => return Err(refused("house product protocol")),
     };
-    if kind == Kind::TwoSeatPin {
-        check_two_seat_policy(field(quote, "policy")?)?;
+    if kind != Kind::House {
+        check_two_seat_policy(field(quote, "policy")?, kind)?;
     }
     if number(quote, "format")? != 1
         || number(grant, "format")? != u64::from(kind.version())
-        || number(terms, "seats")? != u64::from(kind.version())
+        || number(terms, "seats")? != kind.seats()
         || field(terms, "form")? != &json!({"kind":"sealed"})
         || field(grant, "downstream")? != &json!({"kind":"sealed"})
-        || text(pin, "kind")? != "pin"
-        || field(pin, "filed")? != field(subject, "filed")?
-        || field(pin, "revision")? != field(subject, "revision")?
+        || !entitlement::revision_matches(pin, subject, kind.follow())?
         || issuer.as_object().is_none_or(|v| v.len() != 3)
         || number(issuer, "format")? != 1
         || field(issuer, "organization")?.as_u64().is_none()
@@ -588,6 +643,9 @@ fn pair(view: &View<'_>, id: CommitToken) -> Result<Pair, ActionStateError> {
         .house_purchase
         .as_ref()
         .ok_or_else(|| refused("purchase protocol unavailable"))?;
+    if kind.follow() {
+        protocol.require_product(&allocation)?;
+    }
     if number(&purchase, "format")? != 1
         || number(&allocation, "format")? != u64::from(kind.version())
         || text(&allocation, "protocol")? != kind.wire()

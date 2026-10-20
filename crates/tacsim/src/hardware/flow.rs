@@ -27,6 +27,8 @@ use smol_str::SmolStr;
 use std::{collections::HashMap, sync::Arc};
 #[path = "flow/driver.rs"]
 mod driver;
+#[path = "flow/launch.rs"]
+mod launch;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Boot = HashMap<SmolStr, ModuleBootData>;
 fn layer() -> TacsimRuleset {
@@ -132,18 +134,53 @@ impl Rig {
             r.tasks().signal_stop_all();
         }
         let modules = modules(&self.deployment, mode)?;
-        self.w = Some(
-            self.w
-                .take()
-                .ok_or("world owned")?
-                .reboot_into(modules, self.boot.clone())?,
-        );
+        self.restart(modules)?;
         self.flush();
         Ok(())
     }
-    fn new() -> Result<Self> {
+    #[inline(never)]
+    fn restart(&mut self, modules: Vec<Box<dyn GameModule>>) -> Result {
+        let mut world = self.w.take().ok_or("world owned")?.into_engine().world;
+        let connected: Vec<_> = world
+            .iter()
+            .map(|o| o.id)
+            .filter(|id| world.is_connected(*id))
+            .collect();
+        for actor in connected {
+            world.set_connected(actor, false);
+        }
+        let (_, registry) = mush_testkit::boot_world();
+        let mut engine = mush_core::Engine::with_modules(world, registry, modules)?;
+        let mut boot = self.boot.clone();
+        let mut typed = Vec::new();
+        // Match the production store loader: authoritative typed envelopes are
+        // hydrated before independent owner documents reach their boot hooks.
+        for (namespace, data) in &mut boot {
+            data.kv.retain(|(key, value)| {
+                if mush_core::is_action_state_persistence_key(key) {
+                    typed.push(mush_core::ActionStateBootRecord::new(
+                        namespace.clone(),
+                        key.clone(),
+                        value.clone(),
+                    ));
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        engine.hydrate_action_state(typed)?;
+        engine.modules_loaded(
+            boot,
+            &mut mush_core::Outbox::new(),
+            &mut mush_core::engine::Effects::new(),
+        )?;
+        self.w = Some(TestWorld::from_engine(engine));
+        Ok(())
+    }
+    fn provision(extra: Vec<Box<dyn GameModule>>) -> Result<Self> {
         let handles: InventoryHandleCell = Arc::default();
-        let mut w = TestWorld::with_modules(vec![
+        let mut modules: Vec<Box<dyn GameModule>> = vec![
             Box::new(OrgModule::new()),
             Box::new(mush_sim::SimulationModule::new()),
             Box::new(EconomyModule::new()),
@@ -154,7 +191,9 @@ impl Rig {
             ),
             Box::new(IndustryModule::new().with_inventory(handles.clone())),
             Box::new(layer().with_inventory(handles)),
-        ]);
+        ];
+        modules.extend(extra);
+        let mut w = TestWorld::with_modules(modules);
         w.world_mut().set_now(1000);
         w.world_mut().set_game_clock(mush_core::clock::GameClock {
             ic_ratio: 1,
@@ -351,14 +390,18 @@ impl Rig {
         };
         let boot = fold_module_ops(w.take_module_ops());
         w.world_mut().take_dirty();
-        let mut r = Self {
+        Ok(Self {
             w: Some(w),
             boot,
             deployment,
             buyer,
             payer,
             serial: 100,
-        };
+        })
+    }
+    fn new() -> Result<Self> {
+        let mut r = Self::provision(Vec::new())?;
+        let agent = r.deployment.agents[1].actor;
         r.reboot(CoreOriginMode::Initialize)?;
         r.initialize_roll()?;
         for action in [

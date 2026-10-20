@@ -28,6 +28,40 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  mind-commerce-acceptance:
+    name: M7 ${{ matrix.name }}
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - name: author and buyer lifecycle
+            package: tacsim
+            test: minds::bulk::registry_integration_tests::original_purchase::genuine_registry_original_purchase_grant_refund_and_paired_recovery
+          - name: server persistence and uncertain acknowledgement
+            package: mush-server
+            test: world_task::submission_disposition::tests::paid_purchase::genuine_registry_purchase_writer_unknown_expiry_and_recovery
+          - name: Conduct and qualified coverage
+            package: tacsim
+            test: minds::bulk::registry_integration_tests::original_purchase::ic_tests::conduct::genuine_safe_conduct_service_result_and_complete_cold_inverse
+          - name: named launch catalogue
+            package: tacsim
+            test: hardware::flow::launch::story::named_coprates_real_save_rate_house_sale_and_membership_fences
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pinned Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      # Real Registry schedules make these unsuitable for the ordinary fast
+      # workspace run. Each exact ignored case owns its actual service, native
+      # receipt, cold recovery and failure assertions; no synthetic certificate
+      # or timing waiver replaces those correctness checks.
+      - name: Execute the exact M7 story
+        run: cargo test --locked -p ${{ matrix.package }} --lib ${{ matrix.test }} -j 2 -- --ignored --exact --test-threads=1
+
   mind-author-acceptance:
     name: M6 author story and fresh external pilot comparison
     if: github.event_name == 'workflow_dispatch'

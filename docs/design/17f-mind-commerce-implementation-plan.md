@@ -16,6 +16,53 @@ the five design/acceptance documents. No M7 implementation was in that merge.
 records the archive and exact provenance. Both implementation prerequisites are
 complete. The owner has authorized progress through M7 and progressive pushes.
 
+## Current status — N97 validation, 2026-10-19
+
+M7 remains in progress. The latest fetched main is
+`6f79797409f6792447d0fb1ed2d15335d2214387`, already included by merge
+`2feaf6cced628c4254119b0912d592caf2846151`. The latest pushed implementation
+checkpoint is `7de3f023e63fd54f49ee721069d7e0513cc9cfc8`; newer reviewed source
+is being integrated for the next Linux run. Historical runs below are retained
+for provenance and must not be combined into an acceptance result.
+
+N97 tested tree `b2a740ae7d5d8c37a228ca9f6d0adc273ff5cdb6` (428 integrated
+packages). Compilation passed. Its 32 completed stages contain 1,517 passing
+test observations and six failed tests; overlapping filters mean this is not a
+unique-test count. Conduct composition failed one test, hardware composition
+failed three, and the actual Conduct worker failed two qualification tests.
+Industry then aborted with a stack overflow, so later stages and genuine
+commerce stories did not run. The earlier measured-rejection stack case passed.
+The 33-file terminal evidence archive is 92,000 bytes, SHA-256
+`a3ed8ce7bce3f29f6080922e5315d49fec6d326dc79aee840449897380c4ba03`;
+status SHA-256 is
+`4151a50924e3968152762f4b4d12f1c9e18c87ac57c762143e57fe26d7e99095`.
+Exact source and all log hashes were independently verified unchanged.
+
+Reviewed repairs distinguish the original host configuration from normalized
+Conduct trial rules and restore typed action-state hydration in hardware test
+reboots. The industry debugger identified nested inline test-world copies;
+its repair keeps the fixture world on the heap without increasing the test
+stack or weakening assertions. Conduct now has bounded numeric failure counters
+for diagnosis; its actual qualification failure is still unresolved.
+
+The next source candidate also contains class-bounded Follow selection, the
+closed Core paid-Follow purchase/renewal/resale formats, native original-major
+fees, a real derived-compatible-update producer, named launch composition and
+its Coprates membership story, and explicit manual CI inventory for the genuine
+stories. These additions have static review; their integrated runtime validation
+is pending. Paid Follow's Market/Roll/native consumers, the original-major
+producer, scoped House author updates/attestation/source access, and the remaining
+House/dependent major variants are still being completed.
+
+Completion requires passing the repaired integrated run, the actual paid/native
+and saved-source lifecycle stories, restart/inverse/privacy checks, and the
+remaining workspace, contract, lint, documentation, determinism and bound checks.
+Only the persistent-host IC journey may remain conditional when that host is
+absent; Conduct and coverage are mandatory. Timing and launch-scale misses remain
+report-only under the owner's waiver. No M7 acceptance or deployment is claimed.
+
+## Historical integration evidence
+
 This note promotes the reviewed isolated design into the programme's tracked
 implementation plan. The substantial prepared code remains under active
 integration and testing; it is not M7 acceptance or deployment. N35 passed

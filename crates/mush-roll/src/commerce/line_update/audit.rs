@@ -47,7 +47,7 @@ pub(crate) fn birth<'a>(
     filed: &FiledRecord,
 ) -> Result<&'a InitialFilingOperation, PublicationError> {
     filed.validate()?;
-    if filed.format != 3 {
+    if !matches!(filed.format, 3 | 4) {
         let initial = get(ctx, &f.operations, filed.operation.to_string())?;
         if initial.filed != filed.content.id() || initial.revision != filed.content.revision() {
             return Err(PublicationError::Mismatch);
@@ -112,6 +112,16 @@ pub(crate) fn audit(
     ratings: &RatingFamilies,
     action: Option<&DefinitionRef>,
 ) -> Result<u64, PublicationError> {
+    audit_with_derived(ctx, roll, f, ratings, action, None)
+}
+pub(crate) fn audit_with_derived(
+    ctx: &ModuleCtx<'_>,
+    roll: &RollStore,
+    f: &CommerceFamilies,
+    ratings: &RatingFamilies,
+    action: Option<&DefinitionRef>,
+    derived: Option<&DefinitionRef>,
+) -> Result<u64, PublicationError> {
     let economy = ctx
         .state::<mush_economy::EconomyStore>()
         .ok_or(PublicationError::Unavailable)?;
@@ -120,7 +130,7 @@ pub(crate) fn audit(
         .require_complete()
         .map_err(|_| PublicationError::Unavailable)?;
     let count = scan(ctx, &f.line_updates, |op| {
-        if action.is_none() {
+        if (if op.parent.is_some() { derived } else { action }).is_none() {
             return Err(PublicationError::Unavailable);
         }
         let initial = read(ctx, &f.operations, op.initial.to_string())?;
@@ -141,9 +151,13 @@ pub(crate) fn audit(
         let revision = roll
             .revision(reference.key.character, reference.key)
             .map_err(|_| PublicationError::Unavailable)?;
-        revision
-            .require_original_access()
-            .map_err(|_| PublicationError::Mismatch)?;
+        if op.parent.is_some() {
+            super::derived::historical(ctx, roll, f, ratings, op, initial)?;
+        } else {
+            revision
+                .require_original_access()
+                .map_err(|_| PublicationError::Mismatch)?;
+        }
         if !op
             .revision
             .matches(revision)
@@ -156,9 +170,13 @@ pub(crate) fn audit(
         let rating = ratings
             .resolve_receipt(ctx, &op.rating)
             .map_err(|_| PublicationError::Unavailable)?;
-        if super::registration::historical_action(rating.compatibility())
-            .map_err(|_| PublicationError::Invalid)?
-            != op.action
+        let historical_action = if op.parent.is_some() {
+            super::registration::historical_derived_action(rating.compatibility())
+        } else {
+            super::registration::historical_action(rating.compatibility())
+        }
+        .map_err(|_| PublicationError::Invalid)?;
+        if historical_action != op.action
             || rating.reference().map_err(|_| PublicationError::Invalid)? != op.rating
             || rating.subject().revision() != op.revision
             || rating.subject().schema() != op.schema
@@ -190,7 +208,8 @@ pub(crate) fn audit(
     {
         fee_count = fee_count.checked_add(1).ok_or(PublicationError::Capacity)?;
         let op = read(ctx, &f.line_updates, receipt.commit.to_string())?;
-        if &op.economic != receipt || action.is_none() {
+        if &op.economic != receipt || (if op.parent.is_some() { derived } else { action }).is_none()
+        {
             return Err(PublicationError::Mismatch);
         }
     }
@@ -245,7 +264,7 @@ pub(crate) fn birth_in_txn(
     filed: &FiledRecord,
 ) -> Result<InitialFilingOperation, PublicationError> {
     filed.validate()?;
-    let initial_key = if filed.format == 3 {
+    let initial_key = if matches!(filed.format, 3 | 4) {
         let op = txn
             .get(&f.line_updates, &filed.operation.to_string())
             .map_err(|_| PublicationError::Unavailable)?
@@ -301,7 +320,7 @@ pub(crate) fn birth_in_txn(
         .cloned()
         .ok_or(PublicationError::Missing)?;
     initial.validate()?;
-    if filed.format != 3
+    if !matches!(filed.format, 3 | 4)
         && (initial.filed != filed.content.id() || initial.revision != filed.content.revision())
     {
         return Err(PublicationError::Mismatch);

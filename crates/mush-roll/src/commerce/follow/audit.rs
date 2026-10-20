@@ -105,10 +105,18 @@ pub(crate) fn rebuild(
             Ok(_) | Err(crate::commerce::rating::RatingError::Unavailable) => {}
             Err(_) => return Err(PublicationError::Mismatch),
         }
-        let mut change = Change::certificate(filed, job, execution)?;
+        let receipt = match job.state() {
+            crate::commerce::rating::RatingJobState::Completed { receipt } => Some(
+                ratings
+                    .resolve_receipt(ctx, receipt)
+                    .map_err(|_| PublicationError::Mismatch)?,
+            ),
+            _ => None,
+        };
+        let mut change = Change::certificate(filed, job, execution, receipt)?;
         if let Kind::Certificate { rating, .. } = &mut change.0 {
             if let Some(reference) = rating {
-                if !active(ctx, ratings, reference)? {
+                if !active(ctx, ratings, &reference.reference)? {
                     *rating = None;
                 }
             }

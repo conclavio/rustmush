@@ -1008,6 +1008,31 @@ impl StateFamilyRegistryBuilder {
         Ok(())
     }
 
+    pub(crate) fn house_mind_purchase_capacity_with_follow(
+        &mut self,
+        owner: &OwnerId,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        house_v1: [crate::DefinitionRef; 3],
+        house_v2: [crate::DefinitionRef; 3],
+        house_v3: [crate::DefinitionRef; 3],
+    ) -> Result<(), ActionStateError> {
+        if self.house_purchase.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate purchase protocol",
+            ));
+        }
+        self.house_purchase = Some(terminal_capacity::HouseProtocol::with_follow(
+            owner,
+            manifest,
+            participants,
+            house_v1,
+            house_v2,
+            house_v3,
+        )?);
+        Ok(())
+    }
+
     pub(crate) fn house_mind_purchase_capacity(
         &mut self,
         owner: &OwnerId,
@@ -1048,6 +1073,33 @@ impl StateFamilyRegistryBuilder {
             participants,
             house_v1,
             house_v2,
+        )?);
+        Ok(())
+    }
+
+    pub(crate) fn mind_entitlement_purchase_capacity_with_follow(
+        &mut self,
+        owner: &OwnerId,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        original_v3: [crate::DefinitionRef; 3],
+        derived_v1: [crate::DefinitionRef; 3],
+        original_v4: [crate::DefinitionRef; 3],
+        derived_v2: [crate::DefinitionRef; 3],
+    ) -> Result<(), ActionStateError> {
+        if self.entitlement_purchase.is_some() {
+            return Err(ActionStateError::TerminalCapacity(
+                "duplicate purchase protocol",
+            ));
+        }
+        self.entitlement_purchase = Some(terminal_capacity::EntitlementProtocol::with_follow(
+            owner,
+            manifest,
+            participants,
+            original_v3,
+            derived_v1,
+            original_v4,
+            derived_v2,
         )?);
         Ok(())
     }

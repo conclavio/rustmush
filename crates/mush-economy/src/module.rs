@@ -1705,6 +1705,9 @@ pub struct EconomyModule {
     house_initial_filing: Option<mush_core::mechanics::DefinitionRef>,
     dependent_initial_filing: Option<mush_core::mechanics::DefinitionRef>,
     compatible_update: Option<mush_core::mechanics::DefinitionRef>,
+    derived_update: Option<mush_core::mechanics::DefinitionRef>,
+    original_major: Option<mush_core::mechanics::DefinitionRef>,
+    house_update: Option<crate::registry_filing::update::house::HouseUpdateConfig>,
     charter_transfer: Option<mush_core::mechanics::DefinitionRef>,
     providers: CustodyTable,
     config: EconomyConfig,
@@ -1807,6 +1810,27 @@ impl EconomyModule {
         action: mush_core::mechanics::DefinitionRef,
     ) -> Self {
         self.compatible_update = Some(action);
+        self
+    }
+    /// Enable the distinct dependent fee protocol; parent authority remains
+    /// with the actual paired Roll producer and its complete historical audit.
+    #[must_use]
+    pub fn with_derived_mind_updates(mut self, action: mush_core::DefinitionRef) -> Self {
+        self.derived_update = Some(action);
+        self
+    }
+    /// Enables only the exact scoped House-compatible fee action.
+    #[must_use]
+    pub fn with_house_mind_updates(mut self, action: mush_core::DefinitionRef) -> Self {
+        self.house_update =
+            Some(crate::registry_filing::update::house::HouseUpdateConfig::new(action));
+        self
+    }
+    /// Enable the exact fee-only original major protocol. The paired Roll
+    /// producer owns the new line, certification and independent owner term.
+    #[must_use]
+    pub fn with_original_mind_majors(mut self, action: mush_core::DefinitionRef) -> Self {
+        self.original_major = Some(action);
         self
     }
     /// Enable one exact native charter transfer action. Roll must provide the
@@ -2170,7 +2194,7 @@ impl GameModule for EconomyModule {
                     "initial filing issuer is not in the composition title-issuer table",
                 ));
             }
-            crate::registry_filing::register_with_coverage(
+            crate::registry_filing::register_with_house_updates(
                 reg,
                 policy.clone(),
                 action.clone(),
@@ -2189,6 +2213,9 @@ impl GameModule for EconomyModule {
                 self.core_refit.as_ref(),
                 self.coverage.as_ref(),
                 self.two_seat_house_purchases.as_ref(),
+                self.derived_update.as_ref(),
+                self.original_major.as_ref(),
+                self.house_update.as_ref(),
             )?;
         }
         if (self.house_purchases.is_some()
@@ -2198,6 +2225,9 @@ impl GameModule for EconomyModule {
             || self.house_initial_filing.is_some()
             || self.dependent_initial_filing.is_some()
             || self.compatible_update.is_some()
+            || self.derived_update.is_some()
+            || self.original_major.is_some()
+            || self.house_update.is_some()
             || self.charter_transfer.is_some()
             || self.core_integration.is_some()
             || self.core_refit.is_some()
@@ -2303,6 +2333,17 @@ impl GameModule for EconomyModule {
         ctx: &mut ModuleCtx<'_>,
         data: ModuleBootData,
     ) -> Result<(), ModError> {
+        if let Some(config) = &self.house_update {
+            let defs = ctx
+                .reg
+                .definitions()
+                .ok_or_else(|| ModError::msg("House update definitions unavailable"))?
+                .clone();
+            config
+                .definitions
+                .set(defs)
+                .map_err(|_| ModError::msg("House update definitions already captured"))?;
+        }
         if let Some(config) = &self.core_integration {
             let defs = ctx
                 .reg
@@ -2344,7 +2385,10 @@ impl GameModule for EconomyModule {
                 || self.entitlement_purchases.is_some()
                 || self.house_purchases.is_some(),
             self.mind_renewals.is_some(),
-            self.compatible_update.is_some(),
+            self.compatible_update.is_some()
+                || self.derived_update.is_some()
+                || self.original_major.is_some()
+                || self.house_update.is_some(),
             self.charter_transfer.is_some(),
             self.core_integration.is_some(),
             self.charter_pending.is_some(),
@@ -2353,6 +2397,18 @@ impl GameModule for EconomyModule {
             self.core_refit.is_some(),
             self.coverage.is_some(),
         )?;
+        store
+            .fold
+            .update_receipts
+            .require_all_protocols(
+                self.compatible_update.is_some(),
+                self.derived_update.is_some(),
+                self.original_major.is_some(),
+                self.house_update.is_some(),
+            )
+            .map_err(|_| {
+                ModError::msg("compatible-update protocol requires exact paired composition")
+            })?;
         // C17 (08g §12.1 item 5): the cold replay is the whole boot cost until a
         // durability checkpoint exists. Say what it cost, every boot, and say loudly
         // when it crosses the line the owner drew.

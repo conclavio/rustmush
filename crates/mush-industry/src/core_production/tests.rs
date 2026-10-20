@@ -203,7 +203,8 @@ fn fold_writes(boot: &mut Boot, writes: Vec<ReplayWrite>) {
     fold_module_ops_into(boot, ops);
 }
 struct Rig {
-    w: TestWorld,
+    // Keep the composed engine out of each nested factory/refit fixture frame.
+    w: Box<TestWorld>,
     runtime: Runtime,
     policy: OriginPolicy,
     boot: Boot,
@@ -321,7 +322,7 @@ impl Rig {
             .0
             .clone();
         let mut r = Self {
-            w,
+            w: Box::new(w),
             runtime,
             policy,
             boot,
@@ -436,7 +437,7 @@ impl Rig {
     fn flush(&mut self) {
         fold_module_ops_into(&mut self.boot, self.w.take_module_ops());
     }
-    fn cold(&self, boot: Boot, mode: Option<CoreOriginMode>) -> Result<TestWorld> {
+    fn cold(&self, boot: Boot, mode: Option<CoreOriginMode>) -> Result<Box<TestWorld>> {
         let config = mode
             .map(|m| CoreOriginConfig::new(self.policy.clone(), m))
             .transpose()?;
@@ -466,7 +467,7 @@ impl Rig {
             &mut Outbox::new(),
             &mut mush_core::engine::Effects::new(),
         )?;
-        Ok(TestWorld::from_engine(e))
+        Ok(Box::new(TestWorld::from_engine(e)))
     }
     fn deny(&mut self, actor: ObjId) -> Result {
         command(

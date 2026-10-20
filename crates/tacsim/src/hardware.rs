@@ -6,6 +6,7 @@ mod composition;
 mod content;
 mod recipes;
 pub(crate) use composition::Registration;
+pub(crate) use composition::RosterPolicy;
 pub use composition::{GovernedHardware, HardwareDeployment, HardwareOwners};
 pub use content::{
     CATALOGUE, HardwareCatalogueDef, HardwareProcess, HardwareRecipeDef, PACK, VERSION,

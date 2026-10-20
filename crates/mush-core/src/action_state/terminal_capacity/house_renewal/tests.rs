@@ -353,18 +353,22 @@ fn draft(f: &mut Fixture, byte: u8, previous: Option<CommitToken>) -> TestResult
     let mut binding = json!({"format":1,"licence":"1","holder":holder,"issuer":field(&birth,"issuer")?,"charter":"1","line":"1",
         "birth_operation":field(&licence,"operation")?,"predecessor":predecessor.to_string(),"next":next.to_string(),
         "predecessor_operation":field(&term,"operation")?,"predecessor_term":digest("roll.mind.house_renewal_predecessor.v1",&term)?,
-        "predecessor_economics":digest("roll.mind.house_term_economics.v1",&economics)?,"filed":"1",
-        "revision":field(field(&term,"revision")?,"revision")?,"terms":field(&term,"terms")?,
+        "predecessor_economics":digest(house::economics_domain(&economics)?,&economics)?,"filed":"1",
+        "revision":field(&birth,"revision")?,"terms":field(&term,"terms")?,
         "term_seconds":100,"grace_seconds":10,"grant":grant,"product_digest":field(&economics,"product_digest")?});
     if let Some(basis) = &holder_basis {
         binding["format"] = json!(2);
         binding["holder_basis"] = basis.clone();
     }
+    if text(field(renewal, "revision")?, "kind")? == "follow" {
+        binding["format"] = json!(if holder_basis.is_some() { 4 } else { 3 });
+        binding["revision_policy"] = field(renewal, "revision")?.clone();
+    }
     let at = 1000 + i64::from(byte);
     let offer = json!({"format":1,"basis":{"format":1,"licence":1,"predecessor_generation":predecessor,"next_generation":next,
         "predecessor_operation":field(&term,"operation")?,"prior_quote":field(&birth,"quote")?,
         "prior_quote_digest":field(&birth,"quote_digest")?,"product_digest":field(&economics,"product_digest")?,
-        "template_digest":digest("roll.mind.house_renewal_template.v1",renewal)?,"grant_economics_digest":digest("roll.mind.house_grant_economics.v1",grant)?},
+        "template_digest":digest("roll.mind.house_renewal_template.v1",renewal)?,"grant_economics_digest":digest(house::grant_domain(grant)?,grant)?},
         "terms":{"format":1,"buyer":holder,"organization":0,"scope":0,"charter":1,"title_revision":1,"payer":1,
         "instrument":field(renewal,"instrument")?,"price":field(renewal,"price")?,"registry":{"permille":0,"recipient":null},"venue":null,
         "remainder":{"account":2,"owner":{"kind":"organization","id":0}},
@@ -460,9 +464,9 @@ fn advance_with_service(
     let receipt = json!({"format":1,"operation":operation,"licence":"1","predecessor":pair.predecessor.to_string(),"next":pair.next.to_string(),
         "contract":field(&pair.market,"contract")?,"consent_hash":field(&pair.market,"consent_hash")?,"state":state});
     let term = json!({"format":1,"licence":"1","generation":pair.next.to_string(),"operation":operation,
-        "terms":field(binding,"terms")?,"revision":{"kind":"pin","filed":field(binding,"filed")?,"revision":field(binding,"revision")?},
+        "terms":field(binding,"terms")?,"revision":entitlement::binding_revision(binding)?,
         "window":{"format":1,"eligibility_start":at,"issued_at":at,"term_end":at+100,"grace_end":at+110}});
-    let economics = json!({"format":1,"licence":"1","generation":pair.next.to_string(),"operation":operation,
+    let economics = json!({"format":house::grant_version(field(binding,"grant")?)?,"licence":"1","generation":pair.next.to_string(),"operation":operation,
         "product_digest":field(binding,"product_digest")?,"grant":field(binding,"grant")?});
     let mut licence = current_licence(&view(f), &pair)?;
     licence["term"] = json!(pair.next.to_string());
@@ -1045,5 +1049,54 @@ pub(in crate::action_state::terminal_capacity) fn refuse_holder_seed(
     assert!(draft(&mut f, 100, None).is_err());
     assert!(f.disk == before, "failed holder renewal changed custody");
     hydrate(&f, &f.disk)?;
+    Ok(())
+}
+
+#[test]
+fn paid_follow_renewal_reserves_seven_targets_and_preserves_acquisition_through_retry() -> TestResult
+{
+    let mut f = fixture_from_seed(1, false, false, house::tests::follow_renewal_birth_seed()?)?;
+    let first = CommitToken::from_bytes([31; 16]);
+    let p = draft(&mut f, 31, None)?;
+    install(&mut f, p)?;
+    let r = f
+        .store
+        .capacity
+        .records
+        .values()
+        .next()
+        .ok_or("reservation")?;
+    assert_eq!(r.record.targets.len(), 7);
+    assert_eq!(
+        r.record.targets.iter().map(|t| t.ceiling).sum::<usize>(),
+        81920
+    );
+    let p = advance(&mut f, first, 1, 32)?;
+    install(&mut f, p)?;
+    let p = advance(&mut f, first, 3, 33)?;
+    install(&mut f, p)?;
+    hydrate(&f, &f.disk)?;
+    let second = CommitToken::from_bytes([34; 16]);
+    let p = draft(&mut f, 34, Some(first))?;
+    install(&mut f, p)?;
+    let p = advance(&mut f, second, 1, 35)?;
+    install(&mut f, p)?;
+    let p = advance(&mut f, second, 2, 36)?;
+    install(&mut f, p)?;
+    hydrate(&f, &f.disk)?;
+    let term = required(&view(&f), &term_key(TERM, 1, 2)?)?;
+    assert_eq!(term["revision"], json!({"kind":"follow","line":"1"}));
+    let pair = pair(&view(&f), second)?;
+    assert_eq!(pair.binding()?["format"], json!(3));
+    assert_eq!(pair.binding()?["filed"], json!("1"));
+    let mut broken = f.disk.clone();
+    for ((_, _), row) in &mut broken {
+        if row["family"]["id"] == json!(MARKET) || row["family"]["id"] == json!(ROLL) {
+            if row["value"]["operation"] == json!(second) {
+                row["value"]["binding"]["revision_policy"]["line"] = json!("2");
+            }
+        }
+    }
+    assert!(hydrate(&f, &broken).is_err());
     Ok(())
 }

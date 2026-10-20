@@ -360,7 +360,7 @@ impl OwnerReadService for RenewalReader {
             .map_err(integrity)?;
         if filed.content.revision() != binding.revision
             || filed.content.position().charter != binding.charter
-            || (filed.format != 3 && filing.filed != binding.filed)
+            || (!matches!(filed.format, 3 | 4) && filing.filed != binding.filed)
             || filing.charter != binding.charter
         {
             return Err(OwnerReadError::Integrity);

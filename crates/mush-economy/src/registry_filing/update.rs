@@ -1,14 +1,20 @@
-//! Closed fee-only owner leg for a compatible revision of an existing charter.
+//! Closed fee-only owner leg for revisions and explicit majors of an existing charter.
 //! The registered Roll producer owns certification and sequence publication.
+pub(crate) mod house;
 mod install;
+pub use house::RegistryHouseCompatibleUpdate;
+use house::UpdateAuthority;
 pub(crate) mod receipt;
 use super::*;
 use crate::record::{AccountStatus, AssetLifecycle, InstrumentStatus};
 pub use install::{BoundCompatibleUpdate, CompatibleUpdatePatch};
 use mush_core::mechanics::DefinitionRef;
-pub use receipt::{UpdateAuditSubject, UpdateReceiptAudit};
+pub use receipt::{UpdateAuditSubject, UpdateKind, UpdateReceiptAudit};
 
 pub const ACTION_ID: &str = "update_original_mind";
+pub const DERIVED_ACTION_ID: &str = "update_derived_mind";
+pub const MAJOR_ACTION_ID: &str = "file_original_major";
+pub const HOUSE_ACTION_ID: &str = "update_house_mind";
 
 /// Internal same-slot request. No plan, fee, issuer, actor or postimage input.
 pub struct RegistryCompatibleUpdate {
@@ -44,7 +50,10 @@ fn require_action(
     if context.action() != expected
         || expected.key().owner.as_str() != "roll"
         || expected.key().kind.as_str() != "action"
-        || expected.key().id.as_str() != ACTION_ID
+        || !matches!(
+            expected.key().id.as_str(),
+            ACTION_ID | DERIVED_ACTION_ID | MAJOR_ACTION_ID | HOUSE_ACTION_ID
+        )
         || expected.version() != 1
         || context.invocation().principal()
             != &(mush_core::action::PrincipalId::Object { id: actor })
@@ -62,7 +71,9 @@ fn title<'a>(
     actor: ObjId,
     request: &RegistryCompatibleUpdate,
     policy: &InitialFilingPolicy,
+    authority: &UpdateAuthority,
 ) -> Result<&'a EconomicAsset, ParticipantError> {
+    authority.require(world, state, actor, request, policy.fee)?;
     if state.frozen
         || policy.fee.minor() <= 0
         || !state.is_title_issuer(&policy.issuer)
@@ -80,8 +91,8 @@ fn title<'a>(
     let title = state.snapshot.asset(request.charter).ok_or_else(refused)?;
     if title.object != request.charter
         || title.revision != request.title_revision
-        || title.title_owner != PrincipalId::Object(actor)
-        || title.scope.is_some()
+        || title.title_owner != authority.owner(actor)
+        || title.scope != authority.scope()
         || title.frozen
         || title.stolen.is_some()
         || title.lifecycle != AssetLifecycle::Active
@@ -91,8 +102,8 @@ fn title<'a>(
     }
     let payer = state.snapshot.account(request.payer).ok_or_else(refused)?;
     let sink = state.snapshot.account(policy.sink).ok_or_else(refused)?;
-    if payer.owner != PrincipalId::Object(actor)
-        || payer.scope.is_some()
+    if payer.owner != authority.owner(actor)
+        || payer.scope != authority.scope()
         || payer.status != AccountStatus::Active
         || sink.status != AccountStatus::Active
         || payer.instrument != sink.instrument
@@ -123,32 +134,54 @@ impl AuthEval for UpdateAuth<'_> {
     }
 }
 fn plan(
+    kind: Option<UpdateKind>,
     policy: &InitialFilingPolicy,
     actor: ObjId,
     commit: CommitToken,
     request: &RegistryCompatibleUpdate,
 ) -> EconomyPlan {
+    plan_for(kind, policy, actor, commit, request, None)
+}
+fn plan_for(
+    kind: Option<UpdateKind>,
+    policy: &InitialFilingPolicy,
+    actor: ObjId,
+    commit: CommitToken,
+    request: &RegistryCompatibleUpdate,
+    house: Option<&HouseFilingAttribution>,
+) -> EconomyPlan {
+    let memo = match kind {
+        Some(UpdateKind::OriginalMajorV1) => "original mind major",
+        _ => "compatible mind revision",
+    };
     let mut plan = EconomyPlan::new(
-        IdempotencyKey::new(receipt::NAMESPACE, commit.to_hex()),
+        IdempotencyKey::new(receipt::namespace(kind), commit.to_hex()),
         PrincipalId::System(policy.issuer.clone()),
         EconomicCause::Ruleset {
-            namespace: receipt::NAMESPACE.into(),
-            correlation: receipt::correlation(commit, actor, request, policy.sink).into(),
+            namespace: receipt::namespace(kind).into(),
+            correlation: receipt::correlation_for(commit, actor, request, policy.sink, house)
+                .into(),
         },
         vec![
             RequestedLine {
                 account: request.payer,
                 delta: Amount::from_minor(-policy.fee.minor()),
-                memo: "compatible mind revision".into(),
+                memo: memo.into(),
             },
             RequestedLine {
                 account: policy.sink,
                 delta: policy.fee,
-                memo: "compatible mind revision".into(),
+                memo: memo.into(),
             },
         ],
     );
-    plan.description = "Compatible original mind revision filing".into();
+    plan.description = match kind {
+        None => "Compatible original mind revision filing",
+        Some(UpdateKind::DependentV1) => "Compatible derived mind revision filing",
+        Some(UpdateKind::OriginalMajorV1) => "Original mind major filing",
+        Some(UpdateKind::HouseCompatibleV1) => "Compatible House mind revision filing",
+    }
+    .into();
     plan
 }
 fn validate(
@@ -158,8 +191,9 @@ fn validate(
     actor: ObjId,
     request: &RegistryCompatibleUpdate,
     plan: &EconomyPlan,
+    authority: &UpdateAuthority,
 ) -> Result<Prepared, ParticipantError> {
-    title(state, world, actor, request, policy)?;
+    title(state, world, actor, request, policy, authority)?;
     let auth = UpdateAuth {
         world: WorldAuth { w: world },
         actor: PrincipalId::Object(actor),
@@ -193,7 +227,7 @@ fn validate(
     };
     let proof = ClosedUpdatePlan {
         plan: plan.clone(),
-        before_title: title(state, world, actor, request, policy)?.clone(),
+        before_title: title(state, world, actor, request, policy, authority)?.clone(),
     };
     match crate::engine::validate_compatible_update(&proof, &state.snapshot, &env) {
         PlanResult::Post(prepared) => Ok(*prepared),
@@ -203,7 +237,7 @@ fn validate(
     }
 }
 
-pub(super) use install::{bind, prepare, recheck};
+pub(super) use install::{bind, prepare, prepare_house, recheck};
 
 /// Minted only after this closed owner validated current title and exact fee plan.
 pub(crate) struct ClosedUpdatePlan {
@@ -220,8 +254,8 @@ impl ClosedUpdatePlan {
         snapshot: &EconomySnapshot,
     ) -> Result<(), crate::EconomyError> {
         if plan != &self.plan
-            || plan.idempotency.namespace != receipt::NAMESPACE
-            || !matches!(&plan.cause, EconomicCause::Ruleset { namespace, .. } if namespace == receipt::NAMESPACE)
+            || !receipt::is_namespace(&plan.idempotency.namespace)
+            || !matches!(&plan.cause, EconomicCause::Ruleset { namespace, .. } if namespace == &plan.idempotency.namespace)
             || snapshot.asset(self.before_title.object) != Some(&self.before_title)
             || !plan.asset_ops.is_empty()
             || !plan.hold_ops.is_empty()

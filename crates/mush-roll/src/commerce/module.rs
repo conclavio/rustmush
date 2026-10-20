@@ -46,6 +46,7 @@ pub struct CommerceConfig {
     owner_qualification: bool,
     owner_attestations: bool,
     compatible_updates: bool,
+    derived_updates: bool,
     authored_forks: bool,
     marked_registry: bool,
     reconformance: bool,
@@ -144,6 +145,7 @@ impl CommerceConfig {
             owner_qualification: false,
             owner_attestations: false,
             compatible_updates: false,
+            derived_updates: false,
             authored_forks: false,
             marked_registry: false,
             reconformance: false,
@@ -303,6 +305,29 @@ impl CommerceConfig {
         }
         self.compatible_updates = true;
         Ok(self)
+    }
+    /// Optional compatible updates on an existing dependent line. It does not
+    /// create or extend an owner term, source acquisition, or paid entitlement.
+    pub fn with_derived_updates(mut self) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active || !self.dependent_owners || self.derived_updates {
+            return Err(error(
+                "derived updates require one Active dependent-owner composition",
+            ));
+        }
+        self.derived_updates = true;
+        Ok(self)
+    }
+    pub fn derived_update_action(&self) -> Result<DefinitionRef, ModError> {
+        if !self.derived_updates {
+            return Err(error("derived updates are not enabled"));
+        }
+        let [action, _] = super::line_update::registration::derived_definitions(&self.manifest)?;
+        mush_core::mechanics::DefinitionRegistryBuilder::new()
+            .register(
+                mush_core::mechanics::OwnerId::new(crate::NS).map_err(error)?,
+                action,
+            )
+            .map_err(error)
     }
     /// Exact configured reference for the existing Economy participant grant.
     pub fn compatible_update_action(&self) -> Result<DefinitionRef, ModError> {
@@ -778,6 +803,11 @@ impl CommerceConfig {
                 &self.manifest,
             )?);
         }
+        if self.derived_updates {
+            definitions.extend(super::line_update::registration::derived_definitions(
+                &self.manifest,
+            )?);
+        }
         if self.compatible_updates {
             definitions.extend(super::line_update::registration::definitions(
                 &self.manifest,
@@ -897,6 +927,7 @@ pub(crate) struct CommerceRegistration {
     owner_qualification: bool,
     owner_attestations: bool,
     update: Option<DefinitionRef>,
+    derived_update: Option<DefinitionRef>,
     pub(crate) families: CommerceFamilies,
     pub(crate) ratings: RatingFamilies,
     pub(crate) shells: ShellReservations,
@@ -1294,6 +1325,15 @@ pub(crate) fn register(
         None
     };
     let update = update_registration.as_ref().map(|pair| pair[0].clone());
+    let derived_registration = if config.derived_updates {
+        let [action, outcome] =
+            super::line_update::registration::derived_definitions(&config.manifest)?;
+        Some([reg.definition(action)?, reg.definition(outcome)?])
+    } else {
+        None
+    };
+    let derived_update = derived_registration.as_ref().map(|pair| pair[0].clone());
+
     let root_definition = reg.definition(commercial_roots_descriptor()?)?;
     let mut root_actions = BTreeSet::from([action.clone()]);
     if let Some(ic) = &config.ic {
@@ -1309,6 +1349,9 @@ pub(crate) fn register(
         )?;
     }
     if let Some(action) = &update {
+        root_actions.insert(action.clone());
+    }
+    if let Some(action) = &derived_update {
         root_actions.insert(action.clone());
     }
     if let Some((house_action, _)) = &house_filing {
@@ -1669,6 +1712,19 @@ pub(crate) fn register(
             config.compatibility.clone(),
         )?;
     }
+    if let Some(definitions) = derived_registration {
+        super::line_update::registration::register_derived(
+            reg,
+            families.clone(),
+            ratings.clone(),
+            config.manifest.clone(),
+            config.compatibility.clone(),
+            definitions,
+            attestation_parent
+                .clone()
+                .ok_or_else(|| error("derived update parent reader absent"))?,
+        )?;
+    }
     let attestation_readiness = if let Some(definitions) = attestation_registration {
         Some(super::owner_attestation::register(
             reg,
@@ -1846,6 +1902,7 @@ pub(crate) fn register(
         owner_qualification: config.owner_qualification,
         owner_attestations: config.owner_attestations,
         update,
+        derived_update,
         families,
         ratings,
         shells,
@@ -1916,7 +1973,7 @@ impl CommerceRegistration {
             .map_err(error)?;
         }
         match self.mode {
-            CommerceMode::Active => super::audit::audit_and_open_coverage_configured(
+            CommerceMode::Active => super::audit::audit_and_open_derived_configured(
                 ctx,
                 &self.families,
                 &self.ratings,
@@ -1936,6 +1993,7 @@ impl CommerceRegistration {
                 self.pending_charters.is_some(),
                 self.paid_resales.is_some(),
                 self.coverage,
+                self.derived_update.as_ref(),
             )
             .map_err(error),
             // Explicit setup remains Closed. The operator provider repeats its

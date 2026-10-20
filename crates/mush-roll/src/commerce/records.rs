@@ -276,9 +276,10 @@ impl Record for FiledRecord {
         if !matches!(
             (self.format, self.content.parent().is_some(), sequence),
             (1, false, 1) | (2, true, 1)
-        ) && !(self.format == 3
-            && self.content.parent().is_none()
-            && (2..=crate::MAX_RECORDS as u64 + 1).contains(&sequence))
+        ) && !(matches!(
+            (self.format, self.content.parent().is_some()),
+            (3, false) | (4, true)
+        ) && (2..=crate::MAX_RECORDS as u64 + 1).contains(&sequence))
         {
             return Err(PublicationError::Invalid);
         }

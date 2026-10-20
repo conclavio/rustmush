@@ -122,6 +122,7 @@ pub mod ic_return;
 /// Doc 19 cut A.1: **the Kepler propagation** behind the moving sky — element
 /// tables, the calendar's Julian Day, the two-body solver (D-19-2 … D-19-4).
 pub mod kepler;
+pub mod launch;
 /// 16b cut T.3: **the match** — doc 16 §3.8's lifecycle, the persisted match-id
 /// counter, the RAM record of a match while it runs, the two custody transitions
 /// (`Boarding → Running` and the one check-in at `Ended | Aborted | Void`), the
@@ -354,6 +355,7 @@ fn requires_cycle(
 /// The TacSim layer (`"tacsim"`).
 pub struct TacsimRuleset {
     governed_hardware: Option<hardware::Registration>,
+    launch: Option<launch::Registration>,
     ic_minds: Option<minds::ic_sortie::registration::Registration>,
     coverage: Option<underwriting::registration::Registration>,
     coverage_families: Option<underwriting::families::Families>,
@@ -483,6 +485,7 @@ impl TacsimRuleset {
         };
         TacsimRuleset {
             governed_hardware: None,
+            launch: None,
             ic_minds: None,
             coverage: None,
             coverage_families: None,
@@ -775,6 +778,9 @@ impl GameModule for TacsimRuleset {
         for descriptor in &catalog.descriptors {
             reg.definition(descriptor.clone())?;
         }
+        if let Some(launch) = &self.launch {
+            launch.register(reg)?;
+        }
         if let Some(hardware) = &self.governed_hardware {
             hardware.register(reg)?;
         }
@@ -1025,6 +1031,9 @@ impl GameModule for TacsimRuleset {
         Ok(())
     }
     fn finalize_owner_composition(&mut self, ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+        if let Some(launch) = &self.launch {
+            launch.finalize(ctx)?;
+        }
         minds::bulk::conduct_service::finalize(ctx, self.conduct_trials.is_some())?;
         underwriting::boot::finalize(
             ctx,

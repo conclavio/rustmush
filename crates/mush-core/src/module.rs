@@ -3393,6 +3393,36 @@ impl<'a> Registrar<'a> {
 
     /// Reserve the closed house purchase's six future rows. References are
     /// the exact manifest, Economy/retention participants, then Fund/Grant/Refund.
+    /// Register explicit paid Follow consent alongside all prior Pin recipes.
+    pub fn house_mind_purchase_capacity_with_follow(
+        &mut self,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        house_v1: [crate::DefinitionRef; 3],
+        house_v2: [crate::DefinitionRef; 3],
+        house_v3: [crate::DefinitionRef; 3],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "market" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "Follow purchase capacity requires the unfrozen Market registrar",
+            ));
+        }
+        let owner =
+            crate::OwnerId::new(self.module.as_str()).map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .house_mind_purchase_capacity_with_follow(
+                &owner,
+                manifest,
+                participants,
+                house_v1,
+                house_v2,
+                house_v3,
+            )
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
     pub fn house_mind_purchase_capacity(
         &mut self,
         manifest: crate::DefinitionRef,
@@ -3445,6 +3475,38 @@ impl<'a> Registrar<'a> {
     /// Declare the closed OriginalV3/DerivedV1 purchase protocols. Only Market may
     /// register it; action order is funding, grant and refund. Core derives all
     /// six future targets from actual acknowledged purchase/allocation rows.
+    /// Register explicit paid Follow consent alongside all prior Pin recipes.
+    pub fn mind_entitlement_purchase_capacity_with_follow(
+        &mut self,
+        manifest: crate::DefinitionRef,
+        participants: [crate::DefinitionRef; 2],
+        original_v3: [crate::DefinitionRef; 3],
+        derived_v1: [crate::DefinitionRef; 3],
+        original_v4: [crate::DefinitionRef; 3],
+        derived_v2: [crate::DefinitionRef; 3],
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.module != "market" || self.reg.state_families.is_some() {
+            return Err(ModError::msg(
+                "Follow purchase capacity requires the unfrozen Market registrar",
+            ));
+        }
+        let owner =
+            crate::OwnerId::new(self.module.as_str()).map_err(|e| ModError::msg(e.to_string()))?;
+        self.reg
+            .state_family_builder
+            .mind_entitlement_purchase_capacity_with_follow(
+                &owner,
+                manifest,
+                participants,
+                original_v3,
+                derived_v1,
+                original_v4,
+                derived_v2,
+            )
+            .map_err(|e| ModError::msg(e.to_string()))
+    }
+
     pub fn mind_entitlement_purchase_capacity(
         &mut self,
         manifest: crate::DefinitionRef,

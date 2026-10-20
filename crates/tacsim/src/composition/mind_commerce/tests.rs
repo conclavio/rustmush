@@ -917,3 +917,63 @@ mod paid_resale;
 
 #[path = "house_two_seat_tests.rs"]
 mod house_two_seat;
+
+#[test]
+fn derived_updates_require_real_dependent_services_and_the_distinct_fee_action() -> TestResult {
+    assert!(
+        prepare(CommerceMode::Initialize)?
+            .with_derived_updates()
+            .is_err()
+    );
+    assert!(
+        prepare(CommerceMode::Active)?
+            .with_derived_updates()
+            .is_err()
+    );
+    let configured = || -> Result<MindCommerce, ModError> {
+        prepare(CommerceMode::Active)?
+            .with_original_source_purchases(quotes()?)?
+            .with_authored_forks()?
+            .with_marked_registry()?
+            .with_dependent_owner_filings()?
+            .with_derived_updates()
+    };
+    assert!(configured()?.with_derived_updates().is_err());
+    for fee_owner in [false, true] {
+        let prepared = configured()?;
+        let action = prepared.roll.derived_update_action()?;
+        let mut modules: Vec<Box<dyn GameModule>> = vec![
+            Box::new(prepared.configure_roll(RollModule::with_writers([crate::NS]))),
+            Box::new(
+                prepared.configure_market(
+                    MarketModule::new()
+                        .with_venue_gate(std::sync::Arc::new(crate::port::market::PortVenueGate)),
+                ),
+            ),
+            Box::new(prepared.configure_tacsim(layer())?),
+        ];
+        if fee_owner {
+            modules.push(Box::new(prepared.configure_economy(
+                EconomyModule::new().with_title_issuers(vec![issuer()?]),
+            )));
+        }
+        let result = Engine::with_modules(World::new_minimal(), Registry::new(), modules);
+        if !fee_owner {
+            assert!(result.is_err());
+            continue;
+        }
+        let actual = result?;
+        assert!(
+            actual
+                .registry
+                .definitions()
+                .ok_or("definitions")?
+                .get_exact(&action)
+                .is_ok()
+        );
+        assert!(has(&actual, "roll", "action", "update_derived_mind"));
+        assert!(!has(&actual, "roll", "action", "update_original_mind"));
+        assert!(has(&actual, "roll", "owner_read", "authored_fork_parent"));
+    }
+    Ok(())
+}

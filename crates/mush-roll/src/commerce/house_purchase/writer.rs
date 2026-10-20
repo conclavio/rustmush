@@ -193,7 +193,10 @@ impl Registration {
 }
 
 #[derive(Clone, Default)]
-pub struct HousePurchaseWriter(Arc<OnceLock<Registration>>);
+pub struct HousePurchaseWriter(
+    Arc<OnceLock<Registration>>,
+    Option<Arc<dyn super::HouseBuyerAdmission>>,
+);
 impl std::fmt::Debug for HousePurchaseWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HousePurchaseWriter")
@@ -318,6 +321,34 @@ impl HousePurchaseWriter {
     }
     pub fn new() -> Self {
         Self::default()
+    }
+    /// Trusted host configuration only. This check cannot add any authority and
+    /// is retained by the actual Root participant for new Fund/Grant custody.
+    pub(crate) fn buyer_admission(&self) -> Option<Arc<dyn super::HouseBuyerAdmission>> {
+        self.1.clone()
+    }
+    pub fn with_buyer_admission(
+        mut self,
+        policy: Arc<dyn super::HouseBuyerAdmission>,
+    ) -> Result<Self, ModError> {
+        if self.0.get().is_some() || self.1.is_some() {
+            return Err(error(
+                "House buyer policy must be configured once before registration",
+            ));
+        }
+        self.1 = Some(policy);
+        Ok(self)
+    }
+    pub fn check_buyer(
+        &self,
+        world: &mush_core::World,
+        issuer: HouseIssuer,
+        buyer: ObjId,
+    ) -> Result<(), PublicationError> {
+        if let Some(policy) = &self.1 {
+            policy.check(world, issuer, buyer)?;
+        }
+        Ok(())
     }
 
     /// Historical Market join over actual private Roll rows. Current seller or
@@ -655,6 +686,11 @@ impl RegisteredHouseWriter {
         {
             return Err(PublicationError::Mismatch);
         }
+        self.registration.check_buyer(
+            ctx.world().map_err(invalid)?,
+            facts.issuer(),
+            facts.requester(),
+        )?;
         let account = ctx.personal_account().map_err(invalid)?;
         if account.requester() != facts.requester() {
             return Err(PublicationError::Mismatch);
@@ -816,7 +852,13 @@ impl RegisteredHouseWriter {
         }
         ctx.prepare_owner(
             &self.roots,
-            RootRequest::House(HouseRoots::funding(&self.action, &row, commit, facts)?),
+            RootRequest::House(HouseRoots::funding(
+                &self.action,
+                &row,
+                commit,
+                facts,
+                self.registration.1.clone(),
+            )?),
         )
         .map_err(invalid)?;
         Ok(row)
@@ -873,7 +915,15 @@ impl RegisteredHouseWriter {
                 commit: output.commit(),
             },
         };
-        let roots = HouseRoots::terminal(&self.action, requester, before, &after, output, facts)?;
+        let roots = HouseRoots::terminal(
+            &self.action,
+            requester,
+            before,
+            &after,
+            output,
+            facts,
+            self.registration.1.clone(),
+        )?;
         let f = &self.registration()?.families;
         let licence_key = before.licence.key();
         let term_key = format!("{}/{}", licence_key, before.term.key());

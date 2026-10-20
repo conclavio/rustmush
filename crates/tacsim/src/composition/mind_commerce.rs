@@ -45,6 +45,7 @@ pub struct MindCommerce {
     filing: InitialFilingPolicy,
     filing_action: DefinitionRef,
     compatible_update_action: Option<DefinitionRef>,
+    derived_update_action: Option<DefinitionRef>,
     charter_transfer_action: Option<DefinitionRef>,
     registry_revocation_action: Option<DefinitionRef>,
     paid_resales: Option<mush_market::mind_paid_resale::PaidResaleConfig>,
@@ -123,6 +124,7 @@ impl MindCommerce {
             filing,
             filing_action,
             compatible_update_action: None,
+            derived_update_action: None,
             charter_transfer_action: None,
             registry_revocation_action: None,
             pending_charters: None,
@@ -398,6 +400,14 @@ impl MindCommerce {
         Ok(self)
     }
 
+    /// Explicit compatible revisions for an already filed personal derivative.
+    /// Reuses the real parent-reader and fee/root owner slots.
+    pub fn with_derived_updates(mut self) -> Result<Self, ModError> {
+        self.roll = self.roll.with_derived_updates()?;
+        self.derived_update_action = Some(self.roll.derived_update_action()?);
+        Ok(self)
+    }
+
     /// Explicit scoped filing only. The real curator must independently hold
     /// every required current scoped authorization. House sales/use stay closed.
     pub fn with_house_filings(mut self) -> Result<Self, ModError> {
@@ -449,8 +459,18 @@ impl MindCommerce {
     /// and the organization's title/treasury remain distinct from buyer rights.
     /// No default catalogue, account, grant or renewal activation is created.
     pub fn with_house_minds(
+        self,
+        policy: mush_market::mind_house::HousePolicy,
+    ) -> Result<Self, ModError> {
+        self.with_house_minds_and_admission(policy, None)
+    }
+    /// Trusted refusal-only launch policy; all owner authority remains unchanged.
+    pub fn with_house_minds_and_admission(
         mut self,
         policy: mush_market::mind_house::HousePolicy,
+        admission: Option<
+            std::sync::Arc<dyn mush_roll::commerce::house_purchase::HouseBuyerAdmission>,
+        >,
     ) -> Result<Self, ModError> {
         if self.mode != CommerceMode::Active
             || self.house_filing_action.is_none()
@@ -480,6 +500,10 @@ impl MindCommerce {
             .map_err(error)?;
         let participants = PurchaseParticipants::new(economy, retention).map_err(error)?;
         let writer = mush_roll::commerce::house_purchase::writer::HousePurchaseWriter::new();
+        let writer = match admission {
+            Some(policy) => writer.with_buyer_admission(policy)?,
+            None => writer,
+        };
         let config = mush_market::mind_house::HouseConfig::new(
             policy,
             self.manifest().clone(),
@@ -785,6 +809,10 @@ impl MindCommerce {
         };
         let module = match &self.compatible_update_action {
             Some(action) => module.with_compatible_mind_updates(action.clone()),
+            None => module,
+        };
+        let module = match &self.derived_update_action {
+            Some(action) => module.with_derived_mind_updates(action.clone()),
             None => module,
         };
         let module = match &self.house_filing_action {

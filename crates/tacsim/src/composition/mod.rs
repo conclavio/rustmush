@@ -193,10 +193,36 @@ pub fn server_modules_with_tacsim_and_mind_commerce(
     )
 }
 
+/// Explicit named M7 host entry using the same ordinary roster and owner order.
+#[must_use]
+pub fn server_modules_with_launch(
+    weather: mush_weather::WeatherConfig,
+    economy: mush_economy::EconomyConfig,
+    atlas: mush_atlas::AtlasConfig,
+    onboarding: &mush_core::OnboardingConfig,
+    game: &crate::economy::GameEconomyConfig,
+    recovery: mush_campaign::RecoveryConfig,
+    launch: &crate::launch::LaunchComposition,
+) -> (
+    Vec<Box<dyn GameModule>>,
+    mush_inventory::InventoryHandleCell,
+) {
+    compose_server_modules(
+        weather,
+        economy,
+        atlas,
+        onboarding,
+        game,
+        recovery,
+        TacsimComposition::Launch(launch),
+    )
+}
+
 enum TacsimComposition<'a> {
     Absent,
     Standard,
     Commerce(&'a mind_commerce::MindCommerce),
+    Launch(&'a crate::launch::LaunchComposition),
 }
 
 /// The one body of [`server_modules_with`] and [`server_modules_with_tacsim`] (doc 18 cut
@@ -215,10 +241,11 @@ fn compose_server_modules(
     Vec<Box<dyn GameModule>>,
     mush_inventory::InventoryHandleCell,
 ) {
-    let (tacsim_delegate, commerce) = match composition {
-        TacsimComposition::Absent => (false, None),
-        TacsimComposition::Standard => (true, None),
-        TacsimComposition::Commerce(commerce) => (true, Some(commerce)),
+    let (tacsim_delegate, commerce, launch) = match composition {
+        TacsimComposition::Absent => (false, None, None),
+        TacsimComposition::Standard => (true, None, None),
+        TacsimComposition::Commerce(commerce) => (true, Some(commerce), None),
+        TacsimComposition::Launch(launch) => (true, Some(launch.commerce()), Some(launch)),
     };
     // Doc 18 cut IC3 (D-18-14; §4.7 "Config flips"): the corridor's ports
     // capitalize their institutions by one-shot treasury obligations of at most
@@ -311,8 +338,11 @@ fn compose_server_modules(
     let simulation = mush_sim::SimulationModule::new()
         .with_route_catalog(Arc::new(self::sim_routes::TacsimRouteCatalog))
         .with_carrier_hooks(Arc::new(self::sim_routes::TacsimCarrierHooks));
-    let tactics = mush_tactics::TacticsModule::with_catalog(tactics_catalog())
-        .with_sensor_policy(Arc::new(mush_propagation::PropagationSensorPolicy));
+    let tactics = match launch {
+        Some(launch) => launch.roster.tactics(),
+        None => mush_tactics::TacticsModule::with_catalog(tactics_catalog()),
+    }
+    .with_sensor_policy(Arc::new(mush_propagation::PropagationSensorPolicy));
     let (tactics, simulation) = match commerce {
         Some(c) => c.configure_ic_physical(tactics, simulation),
         None => (tactics, simulation),
@@ -533,8 +563,12 @@ fn compose_server_modules(
             // every roster — game-neutral, it refuses only a seller disputing their
             // own sale into a bid and answers nothing with no market store.
             .with_dispute_guard(Arc::new(mush_market::SaleDisputeGuard));
-            match commerce {
+            let module = match commerce {
                 Some(commerce) => commerce.configure_economy(module),
+                None => module,
+            };
+            match launch {
+                Some(launch) => launch.roster.economy(module),
                 None => module,
             }
         }),
@@ -560,8 +594,8 @@ fn compose_server_modules(
         //
         // `mush-inventory -> {core, economy}` is unchanged and is pinned by
         // `mush-inventory/tests/e7c2.rs`: the new edge runs the other way.
-        Box::new(
-            mush_inventory::InventoryModule::new()
+        Box::new({
+            let module = mush_inventory::InventoryModule::new()
                 // E7 cut 3 B1: the cross-owner write bridge cut 2's own handoff
                 // named as cut 3's. `mush-inventory` delegates its typed
                 // families to `"industry"` so an extraction cycle debits the
@@ -599,20 +633,28 @@ fn compose_server_modules(
                 // registers no salvage action and refuses byte-identically to a
                 // wreck that does not exist.
                 .with_salvage_source(Arc::new(self::salvage_source::SimSalvageSource))
-                .with_handle_cell(Arc::clone(&inventory_handles)),
-        ),
+                .with_handle_cell(Arc::clone(&inventory_handles));
+            match launch {
+                Some(launch) => launch.roster.inventory(module),
+                None => module,
+            }
+        }),
         // E7 cut 3 (10b §3.3, D-E7-3, doc 10 §14): the neutral industry
         // authority. It composes **immediately after `mush-inventory`** — whose
         // handles and delegation it needs — and **before `mush-market`**, which
         // it does not touch at all: a `Representation::Lot` listing is still
         // refused at creation and lifting that refusal is cut 11's.
-        Box::new(
-            mush_industry::IndustryModule::new()
+        Box::new({
+            let module = mush_industry::IndustryModule::new()
                 .with_inventory(Arc::clone(&inventory_handles))
                 // E7c4 B2: the recipe authority reaches industry by composition,
                 // not by an edge — the impl reads `TacsimStore` at the root.
-                .with_recipes(Arc::new(self::industry_recipes::TacsimRecipeAuthority)),
-        ),
+                .with_recipes(Arc::new(self::industry_recipes::TacsimRecipeAuthority));
+            match launch {
+                Some(launch) => launch.roster.industry(module),
+                None => module,
+            }
+        }),
         // E7 cut 9 (10b §3.9, D-E7-18/-19/-20/-30/-32): the campaign layer. It
         // composes **after `mush-economy`, `mush-org` and `mush-canon`** — its
         // bond is an E4 hold on the economy's own carve-out lane, its `force.*`
@@ -720,8 +762,12 @@ fn compose_server_modules(
                 Some(i) => m.with_issuer(i),
                 None => m,
             };
-            match commerce {
+            let m = match commerce {
                 Some(commerce) => commerce.configure_market(m),
+                None => m,
+            };
+            match launch {
+                Some(launch) => launch.configure_market(m),
                 None => m,
             }
         }),
