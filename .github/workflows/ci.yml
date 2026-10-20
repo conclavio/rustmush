@@ -30,7 +30,9 @@ env:
 jobs:
   mind-commerce-acceptance:
     name: M7 ${{ matrix.name }}
-    if: github.event_name == 'workflow_dispatch'
+    # Weekly with the scale job, or by hand: the server story alone paces about
+    # 3 s a Registry lease through real maintenance ticks (roughly three hours).
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
