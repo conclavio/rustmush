@@ -1731,6 +1731,20 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
                 pool = programme.pool
             ));
         }
+        // Doc 20 cut SM.3a: the rig pool's (ungated) line follows the hulls line.
+        if let Some(vehicles) = &def.vehicles {
+            let lessor = def
+                .orgs
+                .iter()
+                .find(|o| o.id == vehicles.org)
+                .expect("the lessor org");
+            want.push(format!(
+                "  {entry} vehicles: {pool} of {pool} made and titled to {}; {pool} in the shed, \
+                 0 leased. [ready]",
+                lessor.name,
+                pool = vehicles.pool
+            ));
+        }
         // Doc 18 cut IC8: before any tick, per vendor its pools line (nothing seeded),
         // per ask its listings line (not seeded yet), per bid its bids line (posted,
         // but its capital has not settled) — 3 + 4 + 2 at each port.

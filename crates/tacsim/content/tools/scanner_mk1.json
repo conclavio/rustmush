@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "id": "tacsim.tool.scanner_mk1",
+  "label": "Mk1 survey mast",
+  "role": {
+    "scanner": {
+      "scan_s": 600,
+      "scan_radius_cells": 48,
+      "mast_cm": 250,
+      "scan_cu": 1000,
+      "sound_s": 1200,
+      "sound_radius_cells": 16,
+      "quiet_radius_cells": 8,
+      "sound_cu": 2000
+    }
+  },
+  "note": "Doc 20 section 4.1's mast: a scan takes ten minutes and 1,000 cu and reads the ground 48 cells out from a 250 cm mast, the nine fields around the rig's own from its middle; a sounding takes twenty minutes and 2,000 cu and reads 16 cells out, a whole field, and the quiet sounding 8, a quarter. Every radius is per axis, a square of 2r + 1 cells a side, the site grid's own metric."
+}

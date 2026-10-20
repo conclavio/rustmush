@@ -326,6 +326,20 @@ rig installs the fixed account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
+path = "crates/tacsim/tests/vehicles.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.3a, for the sites.rs row's reason: the vehicle tests charter their
+pilots through `+coop/enrol` before the refit and the rig leases, and the
+enrolment rule is per gateway account and fails closed on an unmapped character.
+The oracle is boot-hydrated by the host from the store, which a `TestWorld` has
+none of, so the rig installs the fixed account map — the `match_lifecycle.rs`
+precedent.
+"""
+
+[[site]]
 path = "crates/tacsim/tests/sale.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

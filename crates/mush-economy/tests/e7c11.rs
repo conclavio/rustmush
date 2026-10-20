@@ -32,12 +32,18 @@ fn vf_g2_engine_owned_reservations_is_a_money_table() {
     // on `WorkOrder::budget_account`, which is a MONEY hold and so belongs here.
     // The tripwire's point is unchanged: every entry must be a money hold, and a
     // lot reservation may never be named.
+    // Doc 20 cut SM.3a added the third — the terrain vehicle's deposit on the
+    // pilot's own account, a MONEY hold.
     assert_eq!(
         mush_economy::ENGINE_OWNED_RESERVATIONS,
-        ["campaign.operation", "industry.workorder"],
-        "two entries, both MONEY holds: the campaign operation's bond and the work \
-         order's budget. A lot reservation is a K4b `ReservationRecord` and cannot \
-         be named here (10b §15.5, fold G2)"
+        [
+            "campaign.operation",
+            "industry.workorder",
+            "tacsim.tv.deposit"
+        ],
+        "three entries, all MONEY holds: the campaign operation's bond, the work \
+         order's budget and the terrain vehicle's deposit. A lot reservation is a K4b \
+         `ReservationRecord` and cannot be named here (10b §15.5, fold G2)"
     );
     for kind in mush_economy::ENGINE_OWNED_RESERVATIONS {
         assert!(

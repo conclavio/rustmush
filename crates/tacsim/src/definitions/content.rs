@@ -103,6 +103,20 @@
 //! |---|---|---|---|
 //! | `units/dray.json` | `tacsim.pack.dray` | rules | never |
 //!
+//! **Doc 20 cut SM.3a** adds the terrain vehicle — class `vehicle`, stowage-only
+//! logistics, no drive — and its carrier, the Dray-P (the Dray with a two-rig
+//! vehicle bay), as [`EXTENSIONS_VEHICLES`], an eleventh, fielded after the
+//! Dray and never fielded in an arena:
+//!
+//! | file | pack | kind | applied |
+//! |---|---|---|---|
+//! | `units/tv_prospector.json` | `tacsim.pack.tv_prospector` | rules | never |
+//! | `units/dray_p.json` | `tacsim.pack.dray_p` | rules | never |
+//!
+//! and, beside them and not packs at all, the three tools of doc 20 §4.1
+//! ([`TOOL_SOURCES`]; see [`crate::definitions::tools`]): `tools/drill_core_mk1.json`,
+//! `tools/scanner_mk1.json`, `tools/battery_mk1.json`.
+//!
 //! # The trade run's lane (doc 18 cut IC2)
 //!
 //! [`LANE_SOURCES`] is the 2350 game's one campaign-seed pack of its own:
@@ -664,6 +678,83 @@ pub const DRAY: &str = "tacsim.unit.dray";
 /// refuses the word.
 pub const EXTENSIONS_HAULER: [(&str, &str); 1] = [("tacsim/content/units/dray.json", DRAY_JSON)];
 
+/// `crates/tacsim/content/units/tv_prospector.json` (doc 20 cut SM.3a).
+pub const TV_PROSPECTOR_JSON: &str = include_str!("../../content/units/tv_prospector.json");
+
+/// The terrain vehicle's pack id.
+pub const TV_PROSPECTOR_PACK: &str = "tacsim.pack.tv_prospector";
+
+/// **The prospector terrain vehicle** (doc 20 cut SM.3a; doc 20 §4.1, D-20-6): a
+/// 6 t tracked rig with a 12 t / 13.2 m³ ore hopper, a mast on a boom and an
+/// empty cab — teleoperated in phase 1 (Q-20-4) — stowage-only logistics and no
+/// drive, class `vehicle`, so never fielded in an arena. Occator leases it into
+/// a Dray-P's bay (`+tv/lease`).
+pub const TV_PROSPECTOR: &str = "tacsim.unit.tv_prospector";
+
+/// `crates/tacsim/content/units/dray_p.json` (doc 20 cut SM.3a).
+pub const DRAY_P_JSON: &str = include_str!("../../content/units/dray_p.json");
+
+/// The Dray-P's pack id.
+pub const DRAY_P_PACK: &str = "tacsim.pack.dray_p";
+
+/// **The Dray-P** (doc 20 cut SM.3a; doc 20 §4.3, D-20-7): the Dray with a
+/// two-rig vehicle bay aft of the hold and an 86 t / 103.2 m³ hold that takes
+/// bulk and ore; tank, locker, berths, rail and drive the Dray's own. Class
+/// `hauler`, never fielded in an arena. `+coop/refit prospector` re-binds a
+/// chartered Dray to it in place (`crate::port::refit`).
+pub const DRAY_P: &str = "tacsim.unit.dray_p";
+
+/// **The terrain vehicle and its carrier, two unit schemas and no weapon,
+/// ammunition or sensor row of their own** (doc 20 cut SM.3a; §4.1, §4.3).
+///
+/// A table of its **own**, for the reason [`EXTENSIONS_BIPED`] gives: its
+/// acceptance states the whole of what it adds (the TV, class `vehicle`, and
+/// the Dray-P, class `hauler`) and no earlier table's count moves. The TV
+/// requires the stock sight, the Dray-P nothing; it is fielded **after**
+/// [`EXTENSIONS_HAULER`], an eleventh table, so every earlier table keeps its
+/// place. Both are fielded into the catalog (each binds and mints a
+/// `DefinitionRef`; the Dray-P has a burn-table row, the drive-less TV none) and
+/// **neither is ever fielded in an arena**: `UnitClass::fieldable` is false for
+/// both classes.
+pub const EXTENSIONS_VEHICLES: [(&str, &str); 2] = [
+    (
+        "tacsim/content/units/tv_prospector.json",
+        TV_PROSPECTOR_JSON,
+    ),
+    ("tacsim/content/units/dray_p.json", DRAY_P_JSON),
+];
+
+// ---------------------------------------------------------------------------
+// The terrain vehicle's tools (doc 20 cut SM.3a; §4.1)
+// ---------------------------------------------------------------------------
+
+/// `crates/tacsim/content/tools/drill_core_mk1.json` (doc 20 cut SM.3a).
+pub const DRILL_CORE_MK1_JSON: &str = include_str!("../../content/tools/drill_core_mk1.json");
+/// `crates/tacsim/content/tools/scanner_mk1.json` (doc 20 cut SM.3a).
+pub const SCANNER_MK1_JSON: &str = include_str!("../../content/tools/scanner_mk1.json");
+/// `crates/tacsim/content/tools/battery_mk1.json` (doc 20 cut SM.3a).
+pub const BATTERY_MK1_JSON: &str = include_str!("../../content/tools/battery_mk1.json");
+
+/// The Mk1 core drill's id (doc 20 §4.1).
+pub const DRILL_CORE_MK1: &str = "tacsim.tool.drill_core_mk1";
+/// The Mk1 survey mast's id (doc 20 §4.1).
+pub const SCANNER_MK1: &str = "tacsim.tool.scanner_mk1";
+/// The Mk1 rig battery's id (doc 20 §4.1 "Charge", as data).
+pub const BATTERY_MK1: &str = "tacsim.tool.battery_mk1";
+
+/// **The tools, compiled in** (doc 20 cut SM.3a): three typed documents, not
+/// packs ([`super::tools`] says why), read by
+/// [`super::tools::tools_table`] and pinned by digest in
+/// `crates/tacsim/tests/content.rs`.
+pub const TOOL_SOURCES: [(&str, &str); 3] = [
+    (
+        "tacsim/content/tools/drill_core_mk1.json",
+        DRILL_CORE_MK1_JSON,
+    ),
+    ("tacsim/content/tools/scanner_mk1.json", SCANNER_MK1_JSON),
+    ("tacsim/content/tools/battery_mk1.json", BATTERY_MK1_JSON),
+];
+
 // ---------------------------------------------------------------------------
 // The trade run's lane (doc 18 §4.4, §4.8; cut IC2)
 // ---------------------------------------------------------------------------
@@ -704,10 +795,13 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// role `extraction` with their coordinates, six vendor-less site ports, twelve routes
 /// (five same-body hops and the Rheasilvia passage, each both ways), the eight bodies'
 /// surface figures, Ceres's and Vesta's geology tables, the Freeport's coordinates,
-/// the Freeport Registry org and Ceres's six site routes keys). The port readiness
-/// report (`crate::port::readiness`) reads the latched version against it, and every
-/// test that names the lane's version reads it here.
-pub const LANE_VERSION: u32 = 9;
+/// the Freeport Registry org and Ceres's six site routes keys); **v10 since doc 20 cut
+/// SM.3a**: the programme's `refits` row (`prospector` → the Dray-P) and Occator's rig
+/// pool (`ceres_port.vehicles`: eight terrain vehicles laid up in Occator's shed, leased
+/// at the Exchange). The port readiness report (`crate::port::readiness`) reads the
+/// latched version against it, and every test that names the lane's version reads it
+/// here.
+pub const LANE_VERSION: u32 = 10;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.
@@ -832,8 +926,13 @@ pub fn sources() -> Vec<PackSource> {
 /// requires nothing, and last moves no earlier table. It is in the catalog and
 /// never in an arena (class `hauler`; doc 18 §4.2, D-18-29).
 ///
+/// **Doc 20 cut SM.3a** appends an eleventh, [`EXTENSIONS_VEHICLES`], after it:
+/// the terrain vehicle requires the stock sight (in [`SOURCES`]), the Dray-P
+/// nothing, and last moves no earlier table. Both are in the catalog and never
+/// in an arena (classes `vehicle` and `hauler`; D-20-6, D-20-7).
+///
 /// Named `<built-in …>` like [`sources`], and not `<extension …>` like
-/// [`extension_sources_of`]: through this route the ten are shipped content
+/// [`extension_sources_of`]: through this route the eleven are shipped content
 /// and not an operator's file, and the name is what a refusal quotes.
 #[must_use]
 pub fn fielded_sources() -> Vec<PackSource> {
@@ -849,6 +948,7 @@ pub fn fielded_sources() -> Vec<PackSource> {
         EXTENSIONS_CHASSIS.as_slice(),
         EXTENSIONS_DRONE.as_slice(),
         EXTENSIONS_HAULER.as_slice(),
+        EXTENSIONS_VEHICLES.as_slice(),
     ] {
         out.extend(table.iter().map(|(name, bytes)| PackSource {
             name: format!("<built-in {name}>"),

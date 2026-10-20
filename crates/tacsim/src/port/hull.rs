@@ -26,6 +26,16 @@
 //!    hold vault's backing, cut IC6);
 //! 6. **the airlock** — the interior space whose `Transition::Members` are the
 //!    six walkable rooms, with the `berths` compartment;
+//!
+//!    **6b. the bays** (doc 20 cut SM.3a; §4.3, D-20-7) — every pass, for each
+//!    refit unit the programme authors (`refits`, word order) and each of its
+//!    `bays`: the bay's room (made when the row lacks it, recorded under the bay
+//!    room's id, the map written after), dressed, declared an interior space
+//!    riding the hull, and its rigs compartment declared at the bay's maximum.
+//!    Every programme hull, Dray or Dray-P, carries the same bay room, empty and
+//!    unreachable (no exit touches it, and a bay is never a member of the
+//!    airlock); `+coop/refit` only re-binds the unit. A world whose latched
+//!    programme authors no refits (lane v9) lays no bays;
 //! 7. **the placement** — `Direct` on the port's passive domain, laid up at
 //!    `(0, n × HULL_SPACING_CM)`, only for a hull with no placement record
 //!    (a held, unreadable one included);
@@ -38,7 +48,14 @@
 //! grows the pool creates only the new hulls; a shrunk pool, a changed prefix,
 //! a recorded object gone or an exit the template no longer authors is refused
 //! by `preflight` before any write (L10). `hull_line` is the readiness
-//! report's hulls line (L17).
+//! report's hulls line (L17); it never reads a bay (doc 20 cut SM.3a, reviewer
+//! F13: bay completeness is the ungated vehicles line's,
+//! `crate::port::vehicle::vehicles_line`).
+//!
+//! Doc 20 cut SM.3a also gives a hull **its own unit** (`resolve_hull_unit`):
+//! the live `tactics.unit` record's definition, which `+coop/refit` moves
+//! between the programme unit and a refit unit, so the planner, the capacity
+//! check and the gauges read the Dray-P's hold on a refitted hull.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -50,7 +67,7 @@ use mush_economy::EconomyStore;
 use mush_org::{OrgId, OrgScopeId, PrincipalId, SystemPrincipalId};
 use mush_sim::data::{DomainId, SpaceAnchor, SpatialParent, SpatialState};
 
-use crate::definitions::{InteriorDef, InteriorRoomDef, InteriorRoomKind};
+use crate::definitions::{BayDef, InteriorDef, InteriorRoomDef, InteriorRoomKind, LogisticsDef};
 use crate::port::def::{PortDef, ProgrammeDef};
 use crate::port::map::{HullRow, PortMap};
 use crate::port::readiness::LineState;
@@ -83,9 +100,188 @@ pub fn registry_mark(prefix: &str, n: u32) -> String {
 }
 
 /// Whether `obj` is live: present and not `GOING`.
-fn live(w: &World, obj: u32) -> bool {
+pub(crate) fn live(w: &World, obj: u32) -> bool {
     w.get(ObjId(obj))
         .is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING))
+}
+
+/// **Whether a refit unit may re-bind a hull of the base unit in place** (doc 20
+/// cut SM.3a; §4.3, D-20-7). Both carry logistics and an interior, and the base
+/// declares no bays. The refit's interior equals the base's once its
+/// [`InteriorRoomKind::Bay`] rooms and its `bays` are removed — the same rooms in
+/// order, the same exits, `space`, `store`, `berths_slot` and `gauges` — and its
+/// logistics equal the base's in `dry_mass_t`, `berths`, `occupant_allowance_kg`,
+/// `payload_ceiling_kg`, `drive` and the stowage **keys**: only compartment
+/// limits and accepts may differ. So a hull keeps every room, exit, space and
+/// vault it was laid up with, whichever of the two it is bound to.
+///
+/// # Errors
+///
+/// A sentence naming what differs.
+pub fn refit_compatible(
+    base: &crate::definitions::UnitSpec,
+    refit: &crate::definitions::UnitSpec,
+) -> Result<(), String> {
+    let (Some(base_logistics), Some(base_interior)) = (&base.logistics, &base.interior) else {
+        return Err("the base unit carries no logistics or no interior".to_owned());
+    };
+    let (Some(logistics), Some(interior)) = (&refit.logistics, &refit.interior) else {
+        return Err("the refit unit carries no logistics or no interior".to_owned());
+    };
+    if !base_interior.bays.is_empty() {
+        return Err("the base unit already declares a bay".to_owned());
+    }
+    let rooms: Vec<&InteriorRoomDef> = interior
+        .rooms
+        .iter()
+        .filter(|room| room.kind != InteriorRoomKind::Bay)
+        .collect();
+    let base_rooms: Vec<&InteriorRoomDef> = base_interior.rooms.iter().collect();
+    if rooms != base_rooms {
+        return Err(
+            "its rooms (bays aside) are not the base unit's rooms, in order and word for word"
+                .to_owned(),
+        );
+    }
+    for (field, same) in [
+        ("exits", interior.exits == base_interior.exits),
+        ("space", interior.space == base_interior.space),
+        ("store", interior.store == base_interior.store),
+        (
+            "berths_slot",
+            interior.berths_slot == base_interior.berths_slot,
+        ),
+        ("gauges", interior.gauges == base_interior.gauges),
+        (
+            "dry_mass_t",
+            logistics.dry_mass_t == base_logistics.dry_mass_t,
+        ),
+        ("berths", logistics.berths == base_logistics.berths),
+        (
+            "occupant_allowance_kg",
+            logistics.occupant_allowance_kg == base_logistics.occupant_allowance_kg,
+        ),
+        (
+            "payload_ceiling_kg",
+            logistics.payload_ceiling_kg == base_logistics.payload_ceiling_kg,
+        ),
+        ("drive", logistics.drive == base_logistics.drive),
+        (
+            "stowage compartments",
+            logistics.stowage.keys().eq(base_logistics.stowage.keys()),
+        ),
+    ] {
+        if !same {
+            return Err(format!("its {field} differ from the base unit's"));
+        }
+    }
+    Ok(())
+}
+
+/// **Which unit a programme hull reads as** (doc 20 cut SM.3a, D-20-7; reviewer
+/// F6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HullUnit {
+    /// The hull's live `tactics.unit` record names this definition.
+    Live(CanonicalId),
+    /// No unit record claims the hull at all: it reads as the programme unit.
+    Default,
+    /// A record claims the hull but boot held it (frozen, migrating,
+    /// quarantined): it reads as the programme unit for its rooms, and **dark**
+    /// wherever the unit matters (the planner, the capacity, `+tv`, the refit).
+    Held,
+}
+
+/// **Resolve a hull's unit** (pure; reviewer F6): `live` is the live record's
+/// definition id, `claimed` [`unit_record_claims`]'s answer.
+#[must_use]
+pub(crate) fn resolve_hull_unit(live: Option<CanonicalId>, claimed: bool) -> HullUnit {
+    match (live, claimed) {
+        (Some(id), _) => HullUnit::Live(id),
+        (None, false) => HullUnit::Default,
+        (None, true) => HullUnit::Held,
+    }
+}
+
+/// **Whether a unit record claims `hull`** (the hull step-2 rule, doc 18 cut IC4
+/// L10): a live unit, or any record — a held one included (frozen, migrating or
+/// quarantined: a document that did not decode as a live unit) — keyed on it.
+/// Such a record is staff's to repair and is never shadowed by a second unit.
+#[must_use]
+pub(crate) fn unit_record_claims(w: &World, hull: ObjId) -> bool {
+    w.module_state::<mush_tactics::UnitStore>()
+        .is_some_and(|store| {
+            store.units.contains_key(&hull)
+                || store
+                    .records
+                    .iter()
+                    .any(|record| record.key_object == Some(hull) || record.object == Some(hull))
+        })
+}
+
+/// **The live unit definition a hull is bound to**, as a canonical id (`None`
+/// when no live record holds it).
+#[must_use]
+pub(crate) fn live_unit_id(w: &World, hull: ObjId) -> Option<CanonicalId> {
+    mush_tactics::module::unit_of(w, hull)
+        .and_then(|unit| CanonicalId::new(unit.schema().key().id.as_str()).ok())
+}
+
+/// **One fielded unit's interior and logistics**, both present (doc 20 cut
+/// SM.3a): what a hull bound to `unit` reads. `None` when the unit is not in
+/// the catalog or carries either block no longer.
+pub(crate) fn spec_for<'a>(
+    store: &'a TacsimStore,
+    unit: &CanonicalId,
+) -> Option<(&'a InteriorDef, &'a LogisticsDef)> {
+    let spec = store.definitions().specs.get(unit)?;
+    Some((spec.interior.as_ref()?, spec.logistics.as_ref()?))
+}
+
+/// **The bays a programme's refit units author** (doc 20 cut SM.3a), in refit
+/// word order, each with the room template it is made from; a room two refit
+/// units both author is listed once.
+pub(crate) fn refit_bays<'a>(
+    store: &'a TacsimStore,
+    programme: &ProgrammeDef,
+) -> Vec<(&'a BayDef, &'a InteriorRoomDef)> {
+    let mut out: Vec<(&'a BayDef, &'a InteriorRoomDef)> = Vec::new();
+    for unit in programme.refits.values() {
+        let Some((interior, _)) = spec_for(store, unit) else {
+            continue;
+        };
+        for bay in &interior.bays {
+            if out.iter().any(|(seen, _)| seen.room == bay.room) {
+                continue;
+            }
+            if let Some(room) = interior.room(&bay.room) {
+                out.push((bay, room));
+            }
+        }
+    }
+    out
+}
+
+/// **Whether a hull's bay is laid up** (doc 20 cut SM.3a; D-20): the bay's room
+/// is recorded on the row and live, it is an interior space that is not
+/// quarantined, and its rigs compartment is declared at the bay's maximum.
+#[must_use]
+pub(crate) fn bay_laid_up(w: &World, row: &HullRow, bay: &BayDef) -> bool {
+    let Some(room) = row.rooms.get(&bay.room).map(|obj| ObjId(*obj)) else {
+        return false;
+    };
+    let Some(slot) = mush_sim::SlotId::new(bay.slot.id.as_str()) else {
+        return false;
+    };
+    live(w, room.0)
+        && w.module_state::<SpatialState>().is_some_and(|st| {
+            !st.is_quarantined(room)
+                && st.spaces.get(&room).is_some_and(|rec| {
+                    rec.compartments
+                        .get(&slot)
+                        .is_some_and(|cap| cap.maximum_items == Some(bay.slot.maximum_items))
+                })
+        })
 }
 
 /// The programme unit's interior template and its binding's instantiation
@@ -197,6 +393,35 @@ pub(crate) fn preflight(
         }
     }
     berths_slot(programme, interior).map_err(|e| format!("{id}: {e}"))?;
+    // Doc 20 cut SM.3a (§4.3, D-20-7): each refit unit resolves in the catalog,
+    // carries logistics and an interior, and may re-bind a programme hull in
+    // place; its bay slots are simulation slot ids. The rooms they author are
+    // rooms a hull row may record.
+    let mut refit_rooms: BTreeSet<&CanonicalId> = BTreeSet::new();
+    let base = store.definitions().specs.get(&programme.unit);
+    for (word, unit) in &programme.refits {
+        let refused = |why: String| format!("{id}: programme {pid}: refit {word}: {why}");
+        let refit = store
+            .definitions()
+            .specs
+            .get(unit)
+            .ok_or_else(|| refused(format!("unit {unit} is not fielded")))?;
+        let base =
+            base.ok_or_else(|| refused(format!("unit {} is not fielded", programme.unit)))?;
+        refit_compatible(base, refit).map_err(&refused)?;
+        if !store.definitions().bindings.contains_key(unit) {
+            return Err(refused(format!("no unit schema {unit} is bound")));
+        }
+        for bay in refit.interior.iter().flat_map(|interior| &interior.bays) {
+            if mush_sim::SlotId::new(bay.slot.id.as_str()).is_none() {
+                return Err(refused(format!(
+                    "bay {}'s compartment '{}' is not a simulation slot id",
+                    bay.room, bay.slot.id
+                )));
+            }
+            refit_rooms.insert(&bay.room);
+        }
+    }
     // Drift against the recorded rows (L10).
     let authored_exits = interior.exits.len().saturating_mul(2);
     let mut to_title = 0_usize;
@@ -227,7 +452,11 @@ pub(crate) fn preflight(
                 ));
             }
         }
-        if let Some(room) = row.rooms.keys().find(|room| interior.room(room).is_none()) {
+        if let Some(room) = row
+            .rooms
+            .keys()
+            .find(|room| interior.room(room).is_none() && !refit_rooms.contains(room))
+        {
             return Err(format!(
                 "{id}: hull {mark} in the port map {key} records room {room}, which the template \
                  does not author"
@@ -268,13 +497,18 @@ pub(crate) fn lay_up(
     domain: DomainId,
     gallery: ObjId,
 ) -> Result<(), String> {
-    let (interior, spec) = {
+    let (interior, spec, bays) = {
         let store = ctx
             .w
             .module_state::<TacsimStore>()
             .ok_or_else(|| format!("{id}: the TacSim layer is not composed"))?;
         let (interior, spec) = template(store, programme).map_err(|e| format!("{id}: {e}"))?;
-        (interior.clone(), spec.clone())
+        // Doc 20 cut SM.3a: the refit units' bays, for step 6b.
+        let bays: Vec<(BayDef, InteriorRoomDef)> = refit_bays(store, programme)
+            .into_iter()
+            .map(|(bay, room)| (bay.clone(), room.clone()))
+            .collect();
+        (interior.clone(), spec.clone(), bays)
     };
     let slot = berths_slot(programme, &interior).map_err(|e| format!("{id}: {e}"))?;
     let issuer = SystemPrincipalId::new(&programme.issuer).ok_or_else(|| {
@@ -299,6 +533,7 @@ pub(crate) fn lay_up(
                 interior: &interior,
                 spec: &spec,
                 slot: &slot,
+                bays: &bays,
                 n,
             },
             gallery,
@@ -318,11 +553,14 @@ struct HullPlan<'a> {
     interior: &'a InteriorDef,
     spec: &'a mush_tactics::UnitSpec,
     slot: &'a mush_sim::SlotId,
+    /// Doc 20 cut SM.3a: the refit units' bays and their room templates.
+    bays: &'a [(BayDef, InteriorRoomDef)],
     n: u32,
 }
 
 /// Steps 1–6 for hull `plan.n`: the Thing, the unit, the rooms (dressed), the
-/// exits, the store space and the airlock space with its members and berths.
+/// exits, the store space and the airlock space with its members and berths;
+/// then step 6b, the bays (doc 20 cut SM.3a).
 fn lay_up_one(
     ctx: &mut Ctx<'_>,
     id: &CanonicalId,
@@ -335,6 +573,7 @@ fn lay_up_one(
         interior,
         spec,
         slot,
+        bays,
         n,
     } = *plan;
     let mark = registry_mark(&programme.registry_prefix, n);
@@ -371,16 +610,7 @@ fn lay_up_one(
     // decode as a live unit) is still the hull's record: it is staff's to
     // repair, never shadowed by a second unit, and it never stops the pass
     // for the other hulls (L10, the held-placement rule of step 7).
-    let has_unit =
-        ctx.w
-            .module_state::<mush_tactics::UnitStore>()
-            .is_some_and(|store| {
-                store.units.contains_key(&hull)
-                    || store.records.iter().any(|record| {
-                        record.key_object == Some(hull) || record.object == Some(hull)
-                    })
-            });
-    if !has_unit {
+    if !unit_record_claims(ctx.w, hull) {
         mush_tactics::module::create_unit(ctx, hull, spec)
             .map_err(|e| format!("{id}: hull {mark}: {e}"))?;
     }
@@ -467,8 +697,10 @@ fn lay_up_one(
     let space = *rooms
         .get(&interior.space)
         .ok_or_else(|| format!("{id}: hull {mark} has no airlock room"))?;
-    declare_space(ctx, store, hull).map_err(|e| format!("{id}: hull {mark} store: {e}"))?;
-    declare_space(ctx, space, hull).map_err(|e| format!("{id}: hull {mark} airlock: {e}"))?;
+    let riding = SpaceAnchor::MovingObject { host: hull };
+    declare_space(ctx, store, riding.clone())
+        .map_err(|e| format!("{id}: hull {mark} store: {e}"))?;
+    declare_space(ctx, space, riding).map_err(|e| format!("{id}: hull {mark} airlock: {e}"))?;
     let walkable: BTreeSet<ObjId> = interior
         .rooms
         .iter()
@@ -505,6 +737,62 @@ fn lay_up_one(
             Some(interior.berths_slot.maximum_items),
         )
         .map_err(|e| format!("{id}: hull {mark} berths: {e}"))?;
+    }
+    // 6b. The bays (doc 20 cut SM.3a; §4.3, D-20-7), every pass, idempotent.
+    for (bay, template) in bays {
+        lay_up_bay(ctx, id, map, index, hull, bay, template)
+            .map_err(|e| format!("{id}: hull {mark} bay {}: {e}", bay.room))?;
+    }
+    Ok(())
+}
+
+/// **Step 6b for one bay** (doc 20 cut SM.3a): the room made when the row lacks
+/// it (the room loop's shape, the map written after), dressed, declared an
+/// interior space riding the hull, and its rigs compartment declared when it is
+/// not already declared at the bay's maximum (the berths shape).
+fn lay_up_bay(
+    ctx: &mut Ctx<'_>,
+    id: &CanonicalId,
+    map: &mut PortMap,
+    index: usize,
+    hull: ObjId,
+    bay: &BayDef,
+    template: &InteriorRoomDef,
+) -> Result<(), String> {
+    let recorded = map
+        .hulls
+        .get(index)
+        .and_then(|row| row.rooms.get(&bay.room))
+        .map(|obj| ObjId(*obj));
+    let room = match recorded {
+        Some(room) => room,
+        None => {
+            let room = ctx
+                .w
+                .create(ObjKind::Room, &template.name, ctx.actor, None)
+                .map_err(|e| e.to_string())?;
+            if let Some(row) = map.hulls.get_mut(index) {
+                row.rooms.insert(bay.room.clone(), room.0);
+            }
+            put_port_map(ctx, map);
+            room
+        }
+    };
+    dress(ctx, room, template)?;
+    declare_space(ctx, room, SpaceAnchor::MovingObject { host: hull })?;
+    let slot = mush_sim::SlotId::new(bay.slot.id.as_str())
+        .ok_or_else(|| format!("{id}: the bay slot '{}' is not a slot id", bay.slot.id))?;
+    let declared = ctx
+        .w
+        .module_state::<SpatialState>()
+        .and_then(|st| st.spaces.get(&room))
+        .is_some_and(|rec| {
+            rec.compartments
+                .get(&slot)
+                .is_some_and(|cap| cap.maximum_items == Some(bay.slot.maximum_items))
+        });
+    if !declared {
+        mush_sim::declare_compartment(ctx, room, slot, Some(bay.slot.maximum_items))?;
     }
     Ok(())
 }
@@ -564,9 +852,10 @@ fn place_and_title(
 }
 
 /// Write a hull room's source-owned fields (L14): the name when it differs,
+/// (since doc 20 cut SM.3a also a rig's cab and hopper),
 /// `desc` and `short_desc` (removed when blank), and exactly the template's
 /// details on [`HULL_DETAIL_PREFIX`] under `look`'s keyword fold.
-fn dress(ctx: &mut Ctx<'_>, room: ObjId, def: &InteriorRoomDef) -> Result<(), String> {
+pub(crate) fn dress(ctx: &mut Ctx<'_>, room: ObjId, def: &InteriorRoomDef) -> Result<(), String> {
     if ctx.w.get(room).is_some_and(|o| o.name != def.name) {
         ctx.w.set_name(room, &def.name).map_err(|e| e.to_string())?;
     }
@@ -678,11 +967,17 @@ fn open_exit(ctx: &mut Ctx<'_>, src: ObjId, spec: &str, dest: ObjId) -> Result<O
     Ok(exit)
 }
 
-/// Declare `room` an interior space riding `hull`, the way
-/// `mush-atlas::apply::make_interior` declares one (L1): attach `sim.interior`
-/// when absent, then `Transition::Space` — only when the space has no record,
-/// so a re-apply writes nothing.
-fn declare_space(ctx: &mut Ctx<'_>, room: ObjId, hull: ObjId) -> Result<(), String> {
+/// Declare `room` an interior space under `anchor` — riding a hull
+/// (`MovingObject { host }`), or, since doc 20 cut SM.3a, a rig riding its TV or
+/// Occator's unanchored shed — the way `mush-atlas::apply::make_interior`
+/// declares one (L1): attach `sim.interior` when absent, then
+/// `Transition::Space` — only when the space has no record, so a re-apply writes
+/// nothing.
+pub(crate) fn declare_space(
+    ctx: &mut Ctx<'_>,
+    room: ObjId,
+    anchor: SpaceAnchor,
+) -> Result<(), String> {
     let recorded = ctx
         .w
         .module_state::<SpatialState>()
@@ -707,7 +1002,7 @@ fn declare_space(ctx: &mut Ctx<'_>, room: ObjId, hull: ObjId) -> Result<(), Stri
         ctx,
         &mush_sim::Transition::Space {
             space: room,
-            anchor: SpaceAnchor::MovingObject { host: hull },
+            anchor,
         },
     )
     .map_err(|e| e.to_string())
@@ -763,10 +1058,23 @@ pub(crate) fn hull_line(
     let mut graduated: Vec<String> = Vec::new();
     let mut buying: Vec<String> = Vec::new();
     let mut recalled: Vec<String> = Vec::new();
+    // Doc 20 cut SM.3a (D20; reviewer F13 and finding conformance/F1): the refit bay
+    // rooms step 6b records on every row are mining content, reported on the ungated
+    // Vehicles line (`vehicle::vehicles_line`'s `bay_laid_up`), never here — a lost bay
+    // room never closes `+coop/enrol`.
+    let bay_rooms: BTreeSet<&CanonicalId> = refit_bays(store, programme)
+        .into_iter()
+        .map(|(bay, _)| &bay.room)
+        .collect();
     for row in &map.hulls {
         let mark = &row.mark;
         let gone = std::iter::once(row.hull)
-            .chain(row.rooms.values().copied())
+            .chain(
+                row.rooms
+                    .iter()
+                    .filter(|(id, _)| !bay_rooms.contains(id))
+                    .map(|(_, obj)| *obj),
+            )
             .chain(row.exits.iter().copied())
             .find(|obj| !live(w, *obj));
         if let Some(obj) = gone {
@@ -932,6 +1240,21 @@ fn held(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Doc 20 cut SM.3a (reviewer F6)**: a hull whose live record names a unit
+    /// reads as that unit; no record at all reads as the programme unit; a
+    /// record boot held reads `Held` — dark wherever the unit matters, never
+    /// silently a standard Dray.
+    #[test]
+    fn sm3a_a_held_unit_record_reads_dark_not_as_a_dray() {
+        let dray_p = CanonicalId::new(crate::definitions::content::DRAY_P).expect("id");
+        assert_eq!(
+            resolve_hull_unit(Some(dray_p.clone()), true),
+            HullUnit::Live(dray_p)
+        );
+        assert_eq!(resolve_hull_unit(None, false), HullUnit::Default);
+        assert_eq!(resolve_hull_unit(None, true), HullUnit::Held);
+    }
 
     #[test]
     fn ic4_registry_marks_are_the_prefix_and_two_digits() {

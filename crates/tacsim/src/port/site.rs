@@ -44,6 +44,13 @@ use crate::surface::ground::{SITE_POCKETS, SiteGeologySpec};
 /// applying actor as the stock clerk is.
 pub const SITES_PRINCIPAL: &str = "tacsim.sites";
 
+/// **The system principal that owns every hopper vault** (doc 20 §4.2; cut SM.3a):
+/// a terrain vehicle's hopper is a vault on its hopper store, owned by this principal
+/// with no scope — never a pilot and never a hull's titled owner — so no player
+/// passes `may_take` on a hopper, `live_endpoints` never offers one, and only the
+/// server-authenticated acts (the drill's cycle, the unload) write it.
+pub const VEHICLES_PRINCIPAL: &str = "tacsim.vehicles";
+
 /// The stores line while the stay can still be charged in full (§1 beat 3): `{stores}`
 /// the effective crew-days (what a lift now would leave), `{span}` the real time left.
 pub const STORES_HERE: &str = "Stores {stores} crew-days: {span} here before short rations.";

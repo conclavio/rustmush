@@ -137,4 +137,28 @@ stores for the leg home; once it reaches them the crew are on short rations.
 Nobody steps out onto a pad: the lock stays sealed until she docks, and
 `+ship/lift <port>` takes her home.
 
+## The Dray-P and Occator's rigs
+
+`+coop/refit prospector` turns a chartered Dray into a Dray-P (`help coop`): a
+two-slot vehicle bay aft of the hold, a stern ramp, and a hold of 86 t and 103.2
+m³ that takes bulk and ore. Her rail, tank, locker and drive are a Dray's, and a
+Dray-P with two empty rigs plans exactly as a Dray carrying the same weight.
+
+Occator Water & Propellant leases terrain vehicles into the bay. At Occator's
+counter in the Exchange Hall at Ceres Freeport, with your Dray-P docked,
+`+tv/lease` shows the terms and signs nothing; `+tv/lease go` signs them:
+1400.00cr for a term of 168 IC days, paid now, and a 5000.00cr deposit held on
+your account while the rig is aboard. The rig rolls up the ramp into the lowest free
+slot; `+tv/2/lease go` names slot 2. Two leases are two rigs.
+
+`+tv` reads each slot anywhere: the rig, how long its lease has left and what
+its hopper holds; `+tv/1` reads rig 1 alone. A term that runs out is re-debited
+at your next `+tv/lease` act; if your account cannot pay it, Occator keeps the
+deposit and the rig must go back.
+
+`+tv/1 lease return go` at the same counter hands rig 1 back: the rig must be in
+the bay and its hopper empty, and your deposit is released. Without go it says
+what would happen. A rig never sells from its hopper, and nobody takes ore out of
+a hopper by hand.
+
 See also: `help orders`, `help ports`, `help trade`, `help coop`.

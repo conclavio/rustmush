@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 9,
+    "version": 10,
     "kind": "campaign_seed",
-    "digest": "cce73a4c60ed6213caaeed321d61926be526cb36c6794ee09e2b60891531402c",
+    "digest": "3f49d1764cf10ff5ac1b43f0f88b06d47ba9bd89d7633fa8808f95121b0156c1",
     "requires": []
   },
   "entries": {
@@ -2582,7 +2582,8 @@
           },
           "buyout_major": 90000,
           "dormancy_real_days": 7,
-          "per_account": 1
+          "per_account": 1,
+          "refits": { "prospector": "tacsim.unit.dray_p" }
         },
         "vendors": [
           { "org": "freeport_exchange", "storefront": "neighborhood.ceres_freeport.item.exchange_manifold",
@@ -2606,7 +2607,11 @@
                     "kerwan": [ "ceres_kerwan" ], "luna": [ "ceres_aitken" ], "occator": [ "ceres_occator" ],
                     "rheasilvia": [ "ceres_rheasilvia" ], "stickney": [ "ceres_stickney" ] },
         "premium": { "k_permille": 300, "cap_permille": 500 },
-        "emergency": { "org": "freeport_exchange", "ratio_permille": 1500, "goods": ["provisions", "volatiles", "propellant"], "intake": 100 }
+        "emergency": { "org": "freeport_exchange", "ratio_permille": 1500, "goods": ["provisions", "volatiles", "propellant"], "intake": 100 },
+        "vehicles": { "id": "occator.rig_lease", "org": "occator", "unit": "tacsim.unit.tv_prospector",
+          "issuer": "tacsim.registry", "counter": "exchange", "shed": "Occator Vehicle Shed", "pool": 8,
+          "registry_prefix": "OWP-TV-", "fee_major": 1400, "deposit_major": 5000, "term_ic_days": 168,
+          "tools": [ "tacsim.tool.drill_core_mk1", "tacsim.tool.scanner_mk1", "tacsim.tool.battery_mk1" ] }
       }
     },
     "stickney_port": {

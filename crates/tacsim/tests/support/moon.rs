@@ -22,8 +22,10 @@ pub const MOON_PLACES: [&str; 3] = ["aitken_highport", "voltaire_anchorage", "li
 
 /// Remove everything cut A.8 added to the lane's trade — the three ports, the six
 /// routes, Ceres's `luna` routes key and the programme's two reference rows for
-/// goods v2 — leaving the three places (and the bodies, which cut A.7 added).
+/// goods v2 — leaving the three places (and the bodies, which cut A.7 added). Since lane
+/// v10 it strips cut SM.3a's blocks too (`super::vehicles::strip_vehicles`, idempotent).
 pub fn strip_moon_trade(doc: &mut Value) {
+    super::vehicles::strip_vehicles(doc);
     let entries = doc["entries"].as_object_mut().expect("the lane's entries");
     for id in MOON_PORTS.iter().chain(MOON_ROUTES.iter()) {
         entries.remove(*id);

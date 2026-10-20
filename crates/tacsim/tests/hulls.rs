@@ -402,9 +402,15 @@ fn ic4_boot_lays_up_eight_drays_at_ceres() {
                 .units
                 .contains_key(&hull)
         );
-        // Seven rooms named as the template.
+        // Seven rooms named as the template, and since doc 20 cut SM.3a (lane v10,
+        // step 6b) the refit's bay room on every hull (was 7).
         let rooms = hull_rooms(row);
-        assert_eq!(rooms.len(), 7);
+        assert_eq!(rooms.len(), 8);
+        let bay = rooms["bay"];
+        assert_eq!(
+            tw.world().get(bay).map(|o| o.name.clone()),
+            Some("Vehicle Bay".to_owned())
+        );
         for room in &template.rooms {
             let obj = rooms[room.id.as_str()];
             let o = tw.world().get(obj).expect("a room");
@@ -458,6 +464,13 @@ fn ic4_boot_lays_up_eight_drays_at_ceres() {
         let store = &st.spaces[&stowage];
         assert_eq!(store.anchor, SpaceAnchor::MovingObject { host: hull });
         assert_eq!(store.rooms, std::iter::once(stowage).collect());
+        // Doc 20 cut SM.3a: the bay is a space riding the hull, never a member of the
+        // airlock, with its rigs compartment at two.
+        let bay_space = &st.spaces[&bay];
+        assert_eq!(bay_space.anchor, SpaceAnchor::MovingObject { host: hull });
+        assert!(!lock.rooms.contains(&bay));
+        let rigs = mush_sim::SlotId::new("rigs").expect("a slot");
+        assert_eq!(bay_space.compartments[&rigs].maximum_items, Some(2));
         // The title.
         let asset = economy(&tw)
             .snapshot()
@@ -848,7 +861,8 @@ fn ic4_an_update_creates_only_the_new_hull() {
     let ninth = &after.hulls[8];
     assert_eq!(ninth.n, 8);
     assert_eq!(ninth.mark, "FPC-D-0409");
-    assert_eq!(ninth.rooms.len(), 7);
+    // Doc 20 cut SM.3a: the bay room too (was 7).
+    assert_eq!(ninth.rooms.len(), 8);
     assert_eq!(ninth.exits.len(), 10);
     assert_eq!(
         tw.world().get(ObjId(ninth.hull)).map(|o| o.name.clone()),
@@ -856,8 +870,8 @@ fn ic4_an_update_creates_only_the_new_hull() {
     );
     assert_eq!(
         tw.world().iter().count(),
-        objects + 18,
-        "one Thing, 7 rooms, 10 exits"
+        objects + 19,
+        "one Thing, 8 rooms (the bay among them since doc 20 cut SM.3a), 10 exits"
     );
     assert_eq!(
         economy(&tw).snapshot().assets().count(),

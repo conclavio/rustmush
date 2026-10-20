@@ -2702,7 +2702,21 @@ pub(crate) fn contract_principal() -> PrincipalId {
 /// out structurally by the `(OwnerId, AuthorityGuardKind::Reservation)` registry and
 /// never belongs here. Without the entry, an order's own owner could `@hold/release`
 /// the reservation out from under a running order and produce for free.
-pub const ENGINE_OWNED_RESERVATIONS: &[&str] = &["campaign.operation", "industry.workorder"];
+///
+/// **Doc 20 cut SM.3a** adds `"tacsim.tv.deposit"` — the terrain vehicle's deposit,
+/// a money hold the game places on the pilot's own account when Occator leases them
+/// a rig. Only `settle_engine_reservation` may release or capture it, so the pilot
+/// cannot `@hold/release` the deposit with the rig still aboard. It is the first
+/// game-namespace string compiled into this platform crate, and that is deliberate:
+/// this table is frozen in code and is not registrable at runtime (so no module can
+/// widen what `authorize_hold` refuses after boot), and the platform runs one game
+/// (the single-game direction), so the game's namespace sits beside the engine
+/// crates' namespaces rather than behind a registration seam that does not exist.
+pub const ENGINE_OWNED_RESERVATIONS: &[&str] = &[
+    "campaign.operation",
+    "industry.workorder",
+    "tacsim.tv.deposit",
+];
 
 /// Whether `purpose` is a reservation in an [`ENGINE_OWNED_RESERVATIONS`] namespace.
 #[must_use]
@@ -3165,9 +3179,15 @@ mod engine_reservation_tests {
         // E7 residue pass 1, R1: `"industry.workorder"` joined the table in the same
         // commit that first places a work-order budget hold. The table is a money
         // table (10b §15.5, G2) — a lot reservation never enters it.
+        // Doc 20 cut SM.3a: `"tacsim.tv.deposit"`, the terrain vehicle's deposit,
+        // joined it in the commit that first places one; it is a money hold too.
         assert_eq!(
             ENGINE_OWNED_RESERVATIONS,
-            ["campaign.operation", "industry.workorder"]
+            [
+                "campaign.operation",
+                "industry.workorder",
+                "tacsim.tv.deposit"
+            ]
         );
         for kind in ENGINE_OWNED_RESERVATIONS {
             assert!(is_engine_owned_reservation(

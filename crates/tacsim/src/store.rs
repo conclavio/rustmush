@@ -13,6 +13,7 @@
 //! | `tacsim:coop:{account}` | per-gateway-account enrolment (doc 18 cut IC6: `crate::port::coop`) | **skipped loudly, and the key still bars re-enrolment**: that account's `+coop/enrol` refuses, and staff repair the document; the operate gate never reads it (it reads the live lease) |
 //! | `tacsim:voyage:{hull}` | per-hull sailing plan (doc 18 cut IC9: `crate::port::voyage`) — the filed passage and the hull's burn sequence | **skipped loudly, and the key stays claimed**: that hull's `+ship/undock` refuses (its papers cannot be read) and the launch arm skips it, logged once; staff repair the document |
 //! | `tacsim:orders:{hull}` | per-hull sailing plan (doc 18 cut IC11: `crate::port::orders`) — the queued orders, their log and the step in flight | **skipped loudly, and the key stays claimed**: that hull's `+ship/orders` and `+ship/order` refuse (its plan cannot be read), the order arm skips it and pages once a boot; staff repair the document by editing it (a deleted one restarts its order ids only past the hull's recent tickets) |
+//! | `tacsim:tvlease:{lease}` | per-lease rig record (doc 20 cut SM.3a: `crate::port::tv`) — a terrain vehicle Occator leased into a Dray-P's bay, its slot, its deposit hold and its term | **skipped loudly, and the key stays claimed**: the record reads unreadable, which bars only its own lease — its pilot's `+tv` reads dark and the recall holds the hull for staff; staff repair the document |
 //! | `tacsim:geology` | world pin (doc 20 cut SM.1; Q-20-12) — the geology key's fingerprint | **skipped loudly, and the key still bars a rewrite**: the geology layer reads disabled ("tacsim:geology cannot be read") on the readiness line; staff repair the document, after restoring the key directory |
 //! | `tacsim:meta` | allocators | tolerated field by field, floors re-derived from every **parsed key**, loaded or not (E6b's R8 finding). Losing it costs nothing |
 //!
@@ -312,6 +313,11 @@ pub struct TacsimStore {
     /// keyed boot pins it; an unreadable body is still a claimed key (the R8
     /// rule): the boot never rewrites it and the layer reads disabled.
     pub(crate) geology_pin: crate::surface::key::GeologyPinState,
+    /// **Doc 20 cut SM.3a** (§4.3, Q-20-6) — `tacsim:tvlease:{lease}`: each rig
+    /// lease's record ([`crate::port::tv::TvLease`]), keyed by the lease contract.
+    /// Persisted on the enrolment pattern: one whole-document post-image per lease
+    /// through [`put_tv_lease`]; an unreadable one bars only its own lease.
+    pub(crate) tv_leases: BTreeMap<u64, crate::port::tv::TvLeaseState>,
 }
 
 impl TacsimStore {
@@ -437,6 +443,53 @@ impl TacsimStore {
     /// Every readable enrolment, in account order.
     pub fn enrolments(&self) -> impl Iterator<Item = &crate::port::coop::Enrolment> {
         self.enrolments.values()
+    }
+
+    /// **One rig lease's record** (doc 20 cut SM.3a), as the store holds it;
+    /// `None` when no key claims the lease.
+    #[must_use]
+    pub fn tv_lease(&self, lease: u64) -> Option<&crate::port::tv::TvLeaseState> {
+        self.tv_leases.get(&lease)
+    }
+
+    /// **Every readable rig lease record of `pilot`** (doc 20 cut SM.3a), in lease
+    /// order, any status.
+    pub fn tv_leases_of(&self, pilot: ObjId) -> impl Iterator<Item = &crate::port::tv::TvLease> {
+        self.tv_leases
+            .values()
+            .filter_map(move |state| match state {
+                crate::port::tv::TvLeaseState::Present(record) if record.pilot == pilot => {
+                    Some(record)
+                }
+                crate::port::tv::TvLeaseState::Present(_)
+                | crate::port::tv::TvLeaseState::Unreadable { .. } => None,
+            })
+    }
+
+    /// **The live rig lease record on `tv`** (doc 20 cut SM.3a; reviewer F2): the
+    /// readable record naming the TV whose status is not `Returned` (Active or
+    /// Forfeit). At most one by construction: a take refuses a rig with one.
+    #[must_use]
+    pub fn tv_lease_on(&self, tv: ObjId) -> Option<&crate::port::tv::TvLease> {
+        self.tv_leases.values().find_map(|state| match state {
+            crate::port::tv::TvLeaseState::Present(record) if record.tv == tv && record.live() => {
+                Some(record)
+            }
+            crate::port::tv::TvLeaseState::Present(_)
+            | crate::port::tv::TvLeaseState::Unreadable { .. } => None,
+        })
+    }
+
+    /// **Whether an unreadable rig lease record names `who`** (doc 20 cut SM.3a)
+    /// as its pilot, its hull or its TV, so far as its body could be read.
+    #[must_use]
+    pub fn tv_lease_unreadable_for(&self, who: ObjId) -> bool {
+        self.tv_leases.values().any(|state| match state {
+            crate::port::tv::TvLeaseState::Unreadable { pilot, hull, tv } => {
+                [pilot, hull, tv].iter().any(|obj| **obj == Some(who))
+            }
+            crate::port::tv::TvLeaseState::Present(_) => false,
+        })
     }
 
     /// **One hull's sailing plan** (doc 18 cut IC9): absent, readable, or a key
@@ -1561,6 +1614,37 @@ pub(crate) fn put_enrolment(ctx: &mut Ctx<'_>, e: &crate::port::coop::Enrolment)
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
+/// **Install a rig lease record into RAM and queue its document** (doc 20 cut
+/// SM.3a) — the single write path, [`put_enrolment`]'s exact pattern: the RAM
+/// install, then one whole-document `JsonSet`. The serialize failure is
+/// structurally unreachable; if it ever happened, it logs and writes a minimal
+/// `{schema, lease}` body so **the key still exists** — which loads as unreadable
+/// and bars only that lease until staff repair it.
+pub(crate) fn put_tv_lease(ctx: &mut Ctx<'_>, record: &crate::port::tv::TvLease) {
+    let key = crate::port::tv::tv_lease_key(record.lease);
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.tv_leases.insert(
+            record.lease,
+            crate::port::tv::TvLeaseState::Present(record.clone()),
+        );
+    }
+    let value = match serde_json::to_value(record) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                lease = record.lease, %error,
+                "tacsim: a rig lease record did not serialize; a minimal document is written so \
+                 the key stays claimed. Repair the document by hand."
+            );
+            serde_json::json!({
+                "schema": record.schema,
+                "lease": record.lease,
+            })
+        }
+    };
+    push_op(ctx.out, ModuleWrite::JsonSet { key, value });
+}
+
 /// **Install a sailing plan into RAM and queue its document** (doc 18 cut IC9) —
 /// the single write path, [`put_enrolment`]'s exact pattern: the RAM install (the
 /// record and its key), then one whole-document `JsonSet`. The serialize failure
@@ -1840,6 +1924,15 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
             // re-enrolment, and staff repair the document.
             store.enrolment_keys.insert(SmolStr::new(key));
             load_enrolment(&mut store, key, value);
+        } else if let Some(rest) = key.strip_prefix(crate::port::tv::TV_LEASE_PREFIX) {
+            // Doc 20 cut SM.3a. The claim is the KEY's (the R8 rule): a rig lease record
+            // that will not read stays claimed as unreadable, which bars only its own
+            // lease, until staff repair the document.
+            let Ok(lease) = rest.parse::<u64>() else {
+                tracing::warn!(%key, "tacsim: a rig lease record has an unreadable key; skipped");
+                continue;
+            };
+            load_tv_lease(&mut store, key, lease, value);
         } else if key.starts_with(crate::port_tick::NOTICE_PREFIX) {
             // Doc 18 cut IC5 (lead ruling L10). A queue that will not read costs
             // that character its queued notices and nothing else: the key bars
@@ -2062,6 +2155,52 @@ fn load_enrolment(store: &mut TacsimStore, key: &str, value: &serde_json::Value)
             "tacsim: an enrolment document is unreadable; skipped (its key still bars that \
              account's re-enrolment; repair the document by hand)"
         ),
+    }
+}
+
+/// One `tacsim:tvlease:{lease}` body (doc 20 cut SM.3a): decoded strictly, checked,
+/// and held to the identity rule (`record.lease` is its key's). Any failure keeps the
+/// key claimed as unreadable, with whatever of its pilot, hull and TV the raw body
+/// still names (so the right pilot's `+tv` reads dark and the right hull is held).
+fn load_tv_lease(store: &mut TacsimStore, key: &str, lease: u64, value: &serde_json::Value) {
+    let record = serde_json::from_value::<crate::port::tv::TvLease>(value.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|record| record.check().map(|()| record))
+        .and_then(|record| {
+            if record.lease == lease {
+                Ok(record)
+            } else {
+                Err("the record disagrees with its own key".to_owned())
+            }
+        });
+    match record {
+        Ok(record) => {
+            store
+                .tv_leases
+                .insert(lease, crate::port::tv::TvLeaseState::Present(record));
+        }
+        Err(error) => {
+            tracing::error!(
+                %key, %error,
+                "tacsim: a rig lease record is unreadable; skipped (the key stays claimed and bars \
+                 only its own lease; repair the document by hand)"
+            );
+            let obj = |field: &str| {
+                value
+                    .get(field)
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|n| u32::try_from(n).ok())
+                    .map(ObjId)
+            };
+            store.tv_leases.insert(
+                lease,
+                crate::port::tv::TvLeaseState::Unreadable {
+                    pilot: obj("pilot"),
+                    hull: obj("hull"),
+                    tv: obj("tv"),
+                },
+            );
+        }
     }
 }
 

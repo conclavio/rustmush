@@ -87,10 +87,15 @@ fn dray(throttle: u32) -> HullDrive {
     let spec = catalog.specs.get(&cid(DRAY)).expect("the Dray is fielded");
     let logistics = spec.logistics.as_ref().expect("the Dray's logistics");
     let law = *catalog
-        .drive_for_class(&logistics.drive.class)
+        .drive_for_class(&logistics.drive.as_ref().expect("the Dray's drive").class)
         .expect("the Dray's class flies a law");
     HullDrive {
-        class: logistics.drive.class.clone(),
+        class: logistics
+            .drive
+            .as_ref()
+            .expect("the Dray's drive")
+            .class
+            .clone(),
         law,
         payload_ceiling_kg: logistics.payload_ceiling_kg,
         throttle_permille: throttle,

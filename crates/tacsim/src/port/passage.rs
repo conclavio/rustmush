@@ -46,6 +46,7 @@
 
 use mush_core::CanonicalId;
 use mush_sim::{DistanceLaw, DriveProfile, RouteDefError};
+use serde::{Deserialize, Serialize};
 
 use crate::definitions::GoodsTable;
 use crate::ephemeris::AU_KM;
@@ -1067,6 +1068,65 @@ pub fn payload_kg(
             .checked_mul(per_unit)
             .and_then(|kg| total.checked_add(kg))
             .ok_or(PlanError::Overflow)?;
+    }
+    Ok(total)
+}
+
+/// **One rig in a hull's bay, as the payload counts it** (doc 20 §4.3, D-20-7;
+/// cut SM.3a): the terrain vehicle, its dry mass (its spec's `dry_mass_t` ×
+/// 1,000), its hopper vault and every good its hopper accepts. Frozen into the
+/// filed passage (`PendingVoyage.carried`) because the burn's prepare cannot
+/// read a placement, which is a legacy slot an `ActionTxn` cannot reach
+/// (`mush-sim/src/journey.rs`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CarriedRig {
+    /// The terrain vehicle, `ObjId.0`.
+    pub tv: u32,
+    /// Its dry mass, kilograms.
+    pub dry_kg: u64,
+    /// Its hopper vault, `VaultId.0`; `None` reads as an empty hopper.
+    pub hopper: Option<u64>,
+    /// The goods its hopper accepts, in goods-table order.
+    pub goods: Vec<CanonicalId>,
+}
+
+/// **What a bay's rigs weigh** (doc 20 §4.3, D-20-7; cut SM.3a): Σ of every
+/// rig's `dry_kg`, plus — for a rig with a hopper — Σ over its `goods` of
+/// `read(hopper, good) × mass_kg_per_unit`, checked. Added to [`payload_kg`] by
+/// `+ship/plan`, `+ship/undock` and the burn's prepare, so a Dray-P with two
+/// rigs aboard plans exactly as a Dray at equal total payload. A rig is placed
+/// in the bay space, never the airlock, so it is never counted among the souls
+/// aboard.
+///
+/// # Errors
+///
+/// [`PlanError::Unreadable`] for a good the table does not weigh, `read`'s own
+/// refusal, and [`PlanError::Overflow`].
+pub fn carried_kg(
+    goods: &GoodsTable,
+    rigs: &[CarriedRig],
+    mut read: impl FnMut(u64, &CanonicalId) -> Result<u64, PlanError>,
+) -> Result<u64, PlanError> {
+    let mut total: u64 = 0;
+    for rig in rigs {
+        total = total.checked_add(rig.dry_kg).ok_or(PlanError::Overflow)?;
+        let Some(hopper) = rig.hopper else {
+            continue;
+        };
+        for good in &rig.goods {
+            let per_unit = goods
+                .good(good)
+                .and_then(crate::definitions::GoodDef::mass_kg_per_unit)
+                .ok_or_else(|| PlanError::Unreadable {
+                    what: format!("the mass of {good}"),
+                })?;
+            let qty = read(hopper, good)?;
+            total = qty
+                .checked_mul(per_unit)
+                .and_then(|kg| total.checked_add(kg))
+                .ok_or(PlanError::Overflow)?;
+        }
     }
     Ok(total)
 }

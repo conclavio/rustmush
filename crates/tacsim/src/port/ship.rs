@@ -46,7 +46,7 @@ use mush_sim::data::{SpatialParent, SpatialState};
 
 use crate::commands::NOT_ENABLED;
 use crate::definitions::content::LANE_PACK;
-use crate::definitions::{GoodsTable, InteriorDef, LogisticsDef};
+use crate::definitions::{BayDef, GoodsTable, InteriorDef, LogisticsDef};
 use crate::port::capacity::Compartment;
 use crate::port::coop::{
     EnrolmentStatus, NO_CHARTER, ProgrammePort, Standing, helm_of, name_of, port_name,
@@ -84,6 +84,11 @@ pub const SHIP_HELP: &str = "+ship  --  Your chartered Dray: where it is, what i
 
 /// The programme's one hull class (cut IC8 may read it from the spec).
 pub const HULL_CLASS: &str = "Dray";
+
+/// **The refitted hull's class word** (doc 20 cut SM.3a; D-20-7): a programme
+/// hull bound to a refit unit reads `Dray-P` wherever `+ship` and the status
+/// lines name its class ([`HullView::class_word`]).
+pub const HULL_CLASS_PROSPECTOR: &str = "Dray-P";
 
 /// **18a §3's status line, docked** (L18: with the mark): `{name}`, `{mark}`,
 /// `{port}` replaced.
@@ -166,7 +171,21 @@ pub struct HullView<'a> {
     pub port: ProgrammePort<'a>,
     /// The hull's map row.
     pub row: &'a HullRow,
-    /// The programme unit's interior template.
+    /// **The unit the hull reads as** (doc 20 cut SM.3a; D-20-7): its live
+    /// `tactics.unit` record's definition — the programme unit, or a refit unit
+    /// `+coop/refit` bound it to — else the programme unit
+    /// (`crate::port::hull::resolve_hull_unit`).
+    pub unit: CanonicalId,
+    /// **A unit record claims the hull but boot held it** (frozen, migrating,
+    /// quarantined; doc 20 cut SM.3a, reviewer F6). The view then reads the
+    /// programme unit's rooms so `airlock`, `stowage` and `room` still work, and
+    /// is **dark** wherever the unit matters: the planner answers
+    /// `PlanError::Unreadable`, the capacity check reads `Unreadable`, `+tv`
+    /// answers `TV_DARK` and `+coop/refit` `REFIT_FAILED`. Only on a world whose
+    /// latched programme authors `refits` (lane v10): on a v9 world a held
+    /// record reads as the programme unit, as before.
+    pub unit_held: bool,
+    /// That unit's interior template.
     pub interior: &'a InteriorDef,
     /// Its logistics block.
     pub logistics: &'a LogisticsDef,
@@ -196,15 +215,56 @@ impl HullView<'_> {
     pub fn stowage(&self) -> Option<ObjId> {
         self.room(&self.interior.store)
     }
+
+    /// **The hull's vehicle bay and its room** (doc 20 cut SM.3a): the first bay
+    /// its unit declares, and the room the row records for it. `None` on a
+    /// standard Dray (its unit declares no bay) or a bay never laid up.
+    #[must_use]
+    pub fn bay(&self) -> Option<(&BayDef, ObjId)> {
+        let bay = self.interior.bay()?;
+        Some((bay, self.room(&bay.room)?))
+    }
+
+    /// **Whether the hull is bound to a refit unit** — a Dray-P (doc 20 cut
+    /// SM.3a): its unit is not the programme's.
+    #[must_use]
+    pub fn is_prospector(&self) -> bool {
+        self.unit != self.port.programme.unit
+    }
+
+    /// **The class word** `+ship` and the status lines print (doc 20 cut SM.3a):
+    /// [`HULL_CLASS`], or [`HULL_CLASS_PROSPECTOR`] for a refitted hull.
+    #[must_use]
+    pub fn class_word(&self) -> &'static str {
+        if self.is_prospector() {
+            HULL_CLASS_PROSPECTOR
+        } else {
+            HULL_CLASS
+        }
+    }
 }
 
-/// The view for a programme port, a row.
+/// The view for a programme port, a row: the hull's own unit (doc 20 cut SM.3a,
+/// D-20-7; reviewer F6) and that unit's template and logistics.
 fn view_of<'a>(w: &'a World, port: ProgrammePort<'a>, row: &'a HullRow) -> Option<HullView<'a>> {
+    use crate::port::hull::{HullUnit, live_unit_id, resolve_hull_unit, unit_record_claims};
     let store = w.module_state::<TacsimStore>()?;
-    let (interior, logistics) = crate::port::hull::hull_spec(store, port.programme)?;
+    let hull = ObjId(row.hull);
+    // The held rule is a v10 world's: a v9 programme authors no refits, so a held
+    // record reads as the programme unit there, exactly as before.
+    let refits = !port.programme.refits.is_empty();
+    let (unit, unit_held) =
+        match resolve_hull_unit(live_unit_id(w, hull), unit_record_claims(w, hull)) {
+            HullUnit::Live(id) => (id, false),
+            HullUnit::Default => (port.programme.unit.clone(), false),
+            HullUnit::Held => (port.programme.unit.clone(), refits),
+        };
+    let (interior, logistics) = crate::port::hull::spec_for(store, &unit)?;
     Some(HullView {
         port,
         row,
+        unit,
+        unit_held,
         interior,
         logistics,
     })
@@ -375,7 +435,7 @@ fn ship_line(w: &World, view: &HullView<'_>) -> String {
     if let Some(passage) = crate::port::voyage::passage_of(w, view.hull()) {
         return crate::port::voyage::ship_passage_line(w, &passage)
             .replace("{name}", &name_of(w, view.hull()))
-            .replace("{class}", HULL_CLASS);
+            .replace("{class}", view.class_word());
     }
     let template = match berth_of(w, view.hull()) {
         Berth::Docked { map, def } => {
@@ -410,7 +470,7 @@ fn ship_line(w: &World, view: &HullView<'_>) -> String {
     };
     template
         .replace("{name}", &name_of(w, view.hull()))
-        .replace("{class}", HULL_CLASS)
+        .replace("{class}", view.class_word())
 }
 
 /// Say one line to the actor under the `tacsim` tag.

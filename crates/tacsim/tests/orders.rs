@@ -1200,8 +1200,10 @@ fn ic11_the_verbs_edit_the_plan() {
             "buy unobtainium 5",
             UNKNOWN_GOOD.replace(
                 "{list}",
+                // Doc 20 cut SM.3a: goods v3's four ores close the list.
                 "metals, volatiles, structural_alloys, industrial_parts, propellant, provisions, \
-                 instrument_boards, carbon_feedstock",
+                 instrument_boards, carbon_feedstock, metal_ore, ice_ore, carbon_ore, \
+                 strategic_ore",
             ),
         ),
         (
@@ -3014,9 +3016,14 @@ fn lane_planner(
         .expect("the Dray");
     let logistics = spec.logistics.clone().expect("logistics");
     let drive = tacsim::port::HullDrive {
-        class: logistics.drive.class.clone(),
+        class: logistics
+            .drive
+            .as_ref()
+            .expect("the Dray's drive")
+            .class
+            .clone(),
         law: *catalog
-            .drive_for_class(&logistics.drive.class)
+            .drive_for_class(&logistics.drive.as_ref().expect("the Dray's drive").class)
             .expect("a law"),
         payload_ceiling_kg: logistics.payload_ceiling_kg,
         throttle_permille: tacsim::port::DEFAULT_THROTTLE_PERMILLE,

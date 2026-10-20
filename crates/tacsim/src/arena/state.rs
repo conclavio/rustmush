@@ -7377,6 +7377,39 @@ mod tests {
         );
     }
 
+    /// **Doc 20 cut SM.3a** (D-20-6; reviewer F7): the hauler test's twin — a
+    /// terrain vehicle at the custody seam is refused before anything is
+    /// built. The sentence reads the class word (`UnitClass::as_str`), not the
+    /// noun, so it prints `a vehicle`.
+    #[test]
+    fn sm3a_arena_new_refuses_a_vehicle() {
+        use crate::arena::test_support::vehicle;
+        let default_caps: Vec<(UnitClass, u32)> = ArenaConfig::default()
+            .max_units_by_class
+            .into_iter()
+            .collect();
+        let Err(error) = capped(
+            vec![
+                vehicle(ObjId(4), Team::Red, pose(500, 500)),
+                tank(ObjId(9), Team::Blue, pose(7_500, 7_500)),
+            ],
+            &default_caps,
+        ) else {
+            panic!("a terrain vehicle opened an arena");
+        };
+        assert_eq!(
+            error,
+            ArenaError::UnfieldableClass {
+                team: "red",
+                class: "vehicle",
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "the red side fields a vehicle, which no arena fields"
+        );
+    }
+
     /// **16b cut AE.3**: `ArenaConfig::validate` bounds every cap `0..=24` by
     /// name — 25 is refused with its sentence, and 0 (the class forbidden) and
     /// 24 (every unit an arena places) are accepted.

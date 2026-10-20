@@ -52,8 +52,10 @@ pub const SURFACE_BODIES: [&str; 8] = [
     "ceres", "vesta", "pallas", "luna", "mars", "titan", "phobos", "deimos",
 ];
 
-/// Remove everything cut SM.2 added to the lane — the v8 shape (the manifest is the caller's).
+/// Remove everything cut SM.2 added to the lane — the v8 shape (the manifest is the caller's) —
+/// and, since lane v10, cut SM.3a's blocks (`super::vehicles::strip_vehicles`, first).
 pub fn strip_sites(doc: &mut Value) {
+    super::vehicles::strip_vehicles(doc);
     let entries = doc["entries"].as_object_mut().expect("the lane's entries");
     for id in SITE_PORTS
         .iter()

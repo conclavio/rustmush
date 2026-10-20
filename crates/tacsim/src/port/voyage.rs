@@ -180,6 +180,14 @@ pub struct PendingVoyage {
     /// with ([`SiteArrival`]); `None` otherwise. Skipped when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrival: Option<SiteArrival>,
+    /// **Doc 20 cut SM.3a (§4.3, D-20-7)** — the rigs in the hull's bay at filing,
+    /// each its dry mass, hopper vault and hopper goods: `payload_kg` counts them,
+    /// and the burn's prepare re-reads their hoppers through its own transaction
+    /// (a placement is a legacy slot it cannot read, so the list is frozen here).
+    /// It cannot go stale: `+tv/lease` refuses while a clearance is filed. Skipped
+    /// when empty, so no pending filed before the cut re-encodes differently.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carried: Vec<crate::port::passage::CarriedRig>,
 }
 
 impl Voyage {
@@ -1239,8 +1247,11 @@ pub(crate) struct Basis {
     pub(crate) vault: VaultId,
     /// Souls aboard.
     pub(crate) occupants: u32,
-    /// The payload, kilograms.
+    /// The payload, kilograms: the hold's and, since doc 20 cut SM.3a, the bay's
+    /// rigs ([`Basis::carried`]).
     pub(crate) payload: u64,
+    /// **Doc 20 cut SM.3a**: the rigs in the hull's bay, as the payload counts them.
+    pub(crate) carried: Vec<crate::port::passage::CarriedRig>,
     /// The propellant pool, tonnes.
     pub(crate) tank: u64,
     /// The provisions pool, crew-days.
@@ -1253,8 +1264,46 @@ pub(crate) struct Basis {
     pub(crate) via: Option<CanonicalId>,
 }
 
+/// **What the rigs in `view`'s bay weigh** (doc 20 cut SM.3a; §4.3, D-20-7): the
+/// rows [`crate::port::vehicle::carried_rigs`] lists and their weight through
+/// [`crate::port::passage::carried_kg`], each hopper read through
+/// [`read_pool`]. A hull with no bay carries nothing.
+///
+/// # Errors
+///
+/// A rig that cannot be described, or a hopper that will not read.
+pub(crate) fn carried_of(
+    ctx: &Ctx<'_>,
+    view: &HullView<'_>,
+) -> Result<(Vec<crate::port::passage::CarriedRig>, u64), String> {
+    let w: &World = ctx.w;
+    let goods = w
+        .module_state::<TacsimStore>()
+        .and_then(TacsimStore::goods)
+        .ok_or_else(|| "the goods table is not loaded".to_owned())?;
+    let rigs = crate::port::vehicle::carried_rigs(w, view, goods)?;
+    let kg = crate::port::passage::carried_kg(goods, &rigs, |hopper, good| {
+        read_pool(ctx, EndpointRef(VaultId(hopper)), good).map_err(|error| PlanError::Unreadable {
+            what: format!("a hopper's {good} ({error:?})"),
+        })
+    })
+    .map_err(|e| e.to_string())?;
+    Ok((rigs, kg))
+}
+
 /// Read the basis of a passage for `view`'s hull, `occupants` souls aboard.
+///
+/// Doc 20 cut SM.3a: the hull's **own** unit (`HullView::unit`, the Dray-P on a
+/// refitted hull) is planned, and the payload adds the rigs in its bay
+/// ([`carried_of`]). A hull whose unit record boot held plans nothing
+/// (`PlanError::Unreadable`; reviewer F6).
 pub(crate) fn basis(ctx: &Ctx<'_>, view: &HullView<'_>, occupants: u32) -> Result<Basis, String> {
+    if view.unit_held {
+        return Err(PlanError::Unreadable {
+            what: format!("hull #{}'s unit record (held at boot)", view.hull().0),
+        }
+        .to_string());
+    }
     let w: &World = ctx.w;
     let store = w
         .module_state::<TacsimStore>()
@@ -1266,15 +1315,18 @@ pub(crate) fn basis(ctx: &Ctx<'_>, view: &HullView<'_>, occupants: u32) -> Resul
     let version = store
         .applied_in(w, &lane)
         .ok_or_else(|| "the lane is not latched".to_owned())?;
-    let (digest, spec) = hull_spec_of(store.definitions(), goods, &view.port.programme.unit)?;
+    let (digest, spec) = hull_spec_of(store.definitions(), goods, &view.unit)?;
     let vault = hold_vault(w, view).ok_or_else(|| "the hull has no hold vault".to_owned())?;
     let read = |good: &CanonicalId| {
         read_pool(ctx, EndpointRef(vault), good).map_err(|error| PlanError::Unreadable {
             what: format!("the hold's {good} ({error:?})"),
         })
     };
+    let (carried, carried_weight) = carried_of(ctx, view)?;
     let payload = payload_kg(goods, &spec.accepted, read, occupants, spec.allowance_kg)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .checked_add(carried_weight)
+        .ok_or_else(|| PlanError::Overflow.to_string())?;
     let pool_of = |kind: Consumable| -> Result<u64, String> {
         match consumable_good(goods, kind) {
             Some(good) => read(&good).map_err(|e| e.to_string()),
@@ -1288,6 +1340,7 @@ pub(crate) fn basis(ctx: &Ctx<'_>, view: &HullView<'_>, occupants: u32) -> Resul
         vault,
         occupants,
         payload,
+        carried,
         tank: pool_of(Consumable::Propellant)?,
         locker: pool_of(Consumable::Provisions)?,
         depart_ic: w.world_ic_now().at,
@@ -2708,6 +2761,7 @@ pub(crate) fn prepare_departure(
         filed_ic: basis.depart_ic,
         filed_at: w.now(),
         arrival,
+        carried: basis.carried.clone(),
     };
     let voyage = Voyage {
         schema: VOYAGE_SCHEMA,
@@ -3390,6 +3444,7 @@ mod tests {
             filed_ic: depart,
             filed_at: 1_700_000_000,
             arrival: None,
+            carried: Vec::new(),
         }
     }
 

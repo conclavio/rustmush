@@ -90,6 +90,10 @@ pub enum Binding {
     /// Doc 20 cut SM.2: a site's block places and clerk; reported, never gated
     /// (`crate::port::site::site_line`).
     Site,
+    /// Doc 20 cut SM.3a: a lessor's rig pool; reported, never gated
+    /// (`crate::port::vehicle::vehicles_line`, which also names a programme hull
+    /// whose refit bay is not laid up).
+    Vehicles,
 }
 
 /// **A line's state.** Only [`LineState::Ready`] counts as ready.
@@ -1377,6 +1381,13 @@ fn port_lines(
         def.and_then(|def| crate::port::hull::hull_line(w, store, entry, def, map))
     {
         report.push(port, Binding::Hulls, state, text);
+    }
+
+    // ---- the rig pool (doc 20 cut SM.3a), right after the hulls ----
+    if let Some((state, text)) =
+        def.and_then(|def| crate::port::vehicle::vehicles_line(w, store, entry, def, map))
+    {
+        report.push(port, Binding::Vehicles, state, text);
     }
 }
 

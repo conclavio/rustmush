@@ -737,19 +737,25 @@ pub enum UnitClass {
     /// `Arena::new` refuses one at the custody seam and the class-cap config
     /// refuses the word. [`UnitClass::read`] still knows it.
     Hauler,
+    /// **A terrain vehicle** (doc 20 cut SM.3a; doc 20 §4.1, D-20-6): the
+    /// prospector rig a Dray-P carries in its bay. Excluded from arena class
+    /// caps and never fielded in phase 1, exactly as [`UnitClass::Hauler`];
+    /// the promotion cut (doc 20 §17) flips [`UnitClass::fieldable`] for it.
+    Vehicle,
 }
 
 impl UnitClass {
     /// Every class, in the enum's (and the `BTreeMap`'s) order.
     ///
-    /// Doc 18 cut IC2 appends [`UnitClass::Hauler`], so [`UnitClass::parse`]
-    /// and [`UnitClass::read`] know the word; the arena's doors ask
-    /// [`UnitClass::fieldable`].
-    pub const ALL: [UnitClass; 4] = [
+    /// Doc 18 cut IC2 appends [`UnitClass::Hauler`] and doc 20 cut SM.3a
+    /// [`UnitClass::Vehicle`], so [`UnitClass::parse`] and [`UnitClass::read`]
+    /// know the words; the arena's doors ask [`UnitClass::fieldable`].
+    pub const ALL: [UnitClass; 5] = [
         UnitClass::Armour,
         UnitClass::Walker,
         UnitClass::Drone,
         UnitClass::Hauler,
+        UnitClass::Vehicle,
     ];
 
     /// The class word, as content and the operator's config write it.
@@ -760,17 +766,19 @@ impl UnitClass {
             UnitClass::Walker => "walker",
             UnitClass::Drone => "drone",
             UnitClass::Hauler => "hauler",
+            UnitClass::Vehicle => "vehicle",
         }
     }
 
     /// **Whether an arena may field this class** (doc 18 cut IC2; doc 18 §4.2
-    /// schema addition (1), D-18-29): false for [`UnitClass::Hauler`] only —
-    /// excluded from arena class caps; never fielded.
+    /// schema addition (1), D-18-29): false for [`UnitClass::Hauler`] and, since
+    /// doc 20 cut SM.3a (D-20-6), [`UnitClass::Vehicle`] — excluded from arena
+    /// class caps; never fielded in phase 1.
     #[must_use]
     pub const fn fieldable(self) -> bool {
         match self {
             UnitClass::Armour | UnitClass::Walker | UnitClass::Drone => true,
-            UnitClass::Hauler => false,
+            UnitClass::Hauler | UnitClass::Vehicle => false,
         }
     }
 
@@ -797,6 +805,8 @@ impl UnitClass {
             (UnitClass::Drone, false) => "drones",
             (UnitClass::Hauler, true) => "hauler",
             (UnitClass::Hauler, false) => "haulers",
+            (UnitClass::Vehicle, true) => "terrain vehicle",
+            (UnitClass::Vehicle, false) => "terrain vehicles",
         }
     }
 
@@ -1241,8 +1251,9 @@ impl UnitSpec {
     }
 
     /// **The logistics and the interior** (doc 18 cut IC2; doc 18 §4.2; lead
-    /// ruling R15): a hauler declares its logistics, an interior requires them,
-    /// and each block re-runs its own bounds.
+    /// ruling R15): a hauler declares its logistics (and, since doc 20 cut
+    /// SM.3a, so does a vehicle), an interior requires them, and each block
+    /// re-runs its own bounds.
     fn check_logistics(&self, entry: &str) -> Result<(), DefinitionError> {
         match (&self.logistics, &self.interior) {
             (Some(logistics), interior) => {
@@ -1263,6 +1274,14 @@ impl UnitSpec {
             return Err(DefinitionError::value(
                 entry,
                 "a hauler declares its logistics",
+            ));
+        }
+        // Doc 20 cut SM.3a (§4.1): a terrain vehicle carries a hopper, so it
+        // declares its (stowage-only) logistics too.
+        if self.class == Some(UnitClass::Vehicle) && self.logistics.is_none() {
+            return Err(DefinitionError::value(
+                entry,
+                "a vehicle declares its logistics",
             ));
         }
         Ok(())

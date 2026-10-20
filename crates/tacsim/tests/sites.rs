@@ -935,10 +935,15 @@ fn dray(throttle: u32) -> HullDrive {
         .expect("the Dray is fielded");
     let logistics = spec.logistics.as_ref().expect("the Dray's logistics");
     let law = *catalog
-        .drive_for_class(&logistics.drive.class)
+        .drive_for_class(&logistics.drive.as_ref().expect("the Dray's drive").class)
         .expect("the Dray's class flies a law");
     HullDrive {
-        class: logistics.drive.class.clone(),
+        class: logistics
+            .drive
+            .as_ref()
+            .expect("the Dray's drive")
+            .class
+            .clone(),
         law,
         payload_ceiling_kg: logistics.payload_ceiling_kg,
         throttle_permille: throttle,
@@ -1008,7 +1013,11 @@ fn plan_and_apply(tw: &mut TestWorld) -> (String, String) {
 fn sm2_the_lane_carries_six_sites() {
     let pack = lane();
     assert_eq!(pack.manifest().version(), LANE_VERSION);
-    assert_eq!(LANE_VERSION, 9, "lane v9 since doc 20 cut SM.2");
+    // Doc 20 cut SM.3a: v10 (the refit row and Occator's rigs; no new entry).
+    assert_eq!(
+        LANE_VERSION, 10,
+        "lane v9 since doc 20 cut SM.2, v10 since SM.3a"
+    );
     assert_eq!(
         parse_pack(LANE_JSON).expect("parses").entries().len(),
         60,

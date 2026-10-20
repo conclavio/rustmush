@@ -182,7 +182,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: crate::port::coop::COOP_VERB.into(),
             shape: ArgShape::Raw,
-            switches: ["enrol", "statement", "buyout", "release"]
+            // Doc 20 cut SM.3a: `refit` re-binds a chartered hull's unit through
+            // `mush_tactics::module::refit_unit` and writes nothing else.
+            switches: ["enrol", "statement", "buyout", "release", "refit"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
@@ -191,6 +193,29 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             ..CommandSpec::default()
         },
         Arc::new(crate::port::coop::coop_cmd),
+    )?;
+    // ---- Doc 20 cut SM.3a (§4.3, Q-20-6, Q-20-8): `+tv` and `+tv/lease` ----
+    //
+    // Under the module's `LegacyPostImage` class, `+coop/enrol`'s reason: `+tv` is a
+    // pure read; `/lease` at Occator's counter is economy API writes (the lease
+    // offered and accepted, one public post of the term fee and an engine-owned
+    // `tacsim.tv.deposit` hold), one `tacsim:tvlease:<lease>` document and one
+    // mush-sim placement — no authoritative submission. The slot switches name a
+    // rig (`/1`, `/2`); cut SM.3b moves the verb to the authoritative class with
+    // its act switches.
+    reg.command(
+        CommandSpec {
+            name: crate::port::tv::TV_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: ["1", "2", "lease"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: crate::port::tv::TV_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::tv::tv_cmd),
     )?;
     // ---- Doc 18 cut IC13 (§4.1 "Losses, dormancy and release"; D-18-25; lead ruling
     // L9): `@coop/revoke`, staff ----

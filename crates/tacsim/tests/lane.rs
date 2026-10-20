@@ -55,7 +55,9 @@ use support::ground::{UNSIGNED, sign};
 ///
 /// Doc 20 cut SM.2: v9, the six mining sites (re-signed with
 /// `TACSIM_WRITE_CONTENT=1 cargo test -p tacsim --test lane ic2_the_lane_pack_is_pinned`).
-const LANE_DIGEST: &str = "cce73a4c60ed6213caaeed321d61926be526cb36c6794ee09e2b60891531402c";
+/// Doc 20 cut SM.3a: v10, the programme's `refits` row and Occator's rig pool (was
+/// `cce73a4c…` at v9).
+const LANE_DIGEST: &str = "3f49d1764cf10ff5ac1b43f0f88b06d47ba9bd89d7633fa8808f95121b0156c1";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -228,8 +230,9 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        9,
-        "lane v9 since doc 20 cut SM.2 (v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
+        10,
+        "lane v10 since doc 20 cut SM.3a (v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at \
+         A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
     assert!(manifest.requires().is_empty(), "the lane requires nothing");
@@ -1285,4 +1288,169 @@ fn ic14_a_staff_seed_survives_a_fold_and_reboot() {
         "{:?}",
         tw.world().refused_namespace_writes()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Doc 20 cut SM.3a — the refit row and Occator's rigs (lane v10)
+// ---------------------------------------------------------------------------
+
+/// The shipped lane with `edit`, re-signed and decoded through `rules_pack_of`: the
+/// refusal's text, or "accepted".
+fn decoded_variant(edit: impl FnOnce(&mut serde_json::Value)) -> String {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["digest"] = serde_json::json!(UNSIGNED);
+    edit(&mut doc);
+    let json = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    match mush_content::parse_pack(&json) {
+        Err(error) => error.to_string(),
+        Ok(pack) => match tacsim::pack::rules_pack_of(pack) {
+            Ok(_) => "accepted".to_owned(),
+            Err(error) => error.to_string(),
+        },
+    }
+}
+
+/// **The lane carries the refit row and Occator's rigs** (doc 20 cut SM.3a; §4.3,
+/// Q-20-6): the two blocks decode with the shipped numbers, and the Dray-P is
+/// `refit_compatible` with the fielded Dray.
+#[test]
+fn sm3a_the_lane_carries_the_refit_row_and_occators_rigs() {
+    let pack = lane();
+    let Some(PackEntry::Port(ceres)) = pack.entry(&cid("ceres_port")) else {
+        panic!("ceres_port is a port entry");
+    };
+    let programme = ceres.programme.as_ref().expect("the programme");
+    assert_eq!(
+        programme.refits,
+        BTreeMap::from([(cid("prospector"), cid("tacsim.unit.dray_p"))])
+    );
+    let vehicles = ceres.vehicles.as_ref().expect("Occator's rig pool");
+    assert_eq!(vehicles.id.as_str(), "occator.rig_lease");
+    assert_eq!(
+        vehicles.org.as_str(),
+        "occator",
+        "one lessor, Occator (D17)"
+    );
+    assert_eq!(vehicles.unit.as_str(), "tacsim.unit.tv_prospector");
+    assert_eq!(vehicles.issuer, "tacsim.registry");
+    assert_eq!(vehicles.counter.as_str(), "exchange");
+    assert_eq!(vehicles.shed, "Occator Vehicle Shed");
+    assert_eq!(vehicles.pool, 8);
+    assert_eq!(vehicles.registry_prefix, "OWP-TV-");
+    assert_eq!(
+        (
+            vehicles.fee_major,
+            vehicles.deposit_major,
+            vehicles.term_ic_days
+        ),
+        (1_400, 5_000, 168)
+    );
+    assert_eq!(
+        vehicles.tools,
+        vec![
+            cid("tacsim.tool.drill_core_mk1"),
+            cid("tacsim.tool.scanner_mk1"),
+            cid("tacsim.tool.battery_mk1"),
+        ]
+    );
+    // Occator's capital is untouched: SM.5's tranche raise is lane v11's.
+    let occator = ceres
+        .orgs
+        .iter()
+        .find(|org| org.id.as_str() == "occator")
+        .expect("Occator");
+    assert_eq!(occator.capital_major, 50_000);
+    let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let spec = |id: &str| fielded.specs.get(&cid(id)).expect("a fielded unit");
+    assert_eq!(
+        tacsim::port::hull::refit_compatible(spec("tacsim.unit.dray"), spec("tacsim.unit.dray_p")),
+        Ok(())
+    );
+}
+
+/// An edit to the lane's JSON.
+type Edit = Box<dyn FnOnce(&mut serde_json::Value)>;
+
+/// **A vehicles block out of bounds is refused** (doc 20 cut SM.3a; reviewer F11):
+/// mutated lane JSON through `rules_pack_of`, each refused with its sentence.
+#[test]
+fn sm3a_a_vehicles_block_out_of_bounds_is_refused() {
+    use serde_json::json;
+    assert_eq!(decoded_variant(|_| {}), "accepted");
+    let vehicles =
+        |doc: &serde_json::Value| doc["entries"]["ceres_port"]["def"]["vehicles"].clone();
+    let cases: Vec<(&str, Edit)> = vec![
+        (
+            "vehicles occator.rig_lease: org kasei is not one of this port's orgs",
+            Box::new(|doc| doc["entries"]["ceres_port"]["def"]["vehicles"]["org"] = json!("kasei")),
+        ),
+        (
+            "vehicles occator.rig_lease: counter `yard` is not one of this port's rooms",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vehicles"]["counter"] = json!("yard");
+            }),
+        ),
+        (
+            "vehicles occator.rig_lease: tool tacsim.tool.laser_mk9 is not a shipped tool",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vehicles"]["tools"][0] =
+                    json!("tacsim.tool.laser_mk9");
+            }),
+        ),
+        (
+            "vehicles occator.rig_lease: pool must be 1..=16, not 0",
+            Box::new(|doc| doc["entries"]["ceres_port"]["def"]["vehicles"]["pool"] = json!(0)),
+        ),
+        (
+            "vehicles occator.rig_lease: registry_prefix must be 1..=16 bytes of [A-Z0-9-], not `owp`",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["vehicles"]["registry_prefix"] = json!("owp");
+            }),
+        ),
+        (
+            "site: a site authors no orgs, rooms, programme, vendors, premium or emergency, and no \
+             vehicles block; its pad is its gallery",
+            Box::new(move |doc| {
+                let block = vehicles(doc);
+                doc["entries"]["ahuna_port"]["def"]["vehicles"] = block;
+            }),
+        ),
+        (
+            "programme coop.first_captain: refit `standard` is the programme's own unit and is \
+             never authored",
+            Box::new(|doc| {
+                doc["entries"]["ceres_port"]["def"]["programme"]["refits"] =
+                    json!({ "standard": "tacsim.unit.dray_p" });
+            }),
+        ),
+        (
+            "vehicles: port stickney_port also authors a vehicles block (port ceres_port's); a \
+             lane has one rig lessor",
+            Box::new(move |doc| {
+                let mut block = vehicles(doc);
+                block["id"] = json!("kasei.rig_lease");
+                block["org"] = json!("kasei");
+                block["counter"] = json!("exchange");
+                doc["entries"]["stickney_port"]["def"]["vehicles"] = block;
+            }),
+        ),
+        (
+            "vehicles kasei.rig_lease: port stickney_port authors no programme; rigs are leased \
+             into the programme's hulls",
+            Box::new(move |doc| {
+                let mut block = vehicles(doc);
+                block["id"] = json!("kasei.rig_lease");
+                block["org"] = json!("kasei");
+                block["counter"] = json!("exchange");
+                if let Some(def) = doc["entries"]["ceres_port"]["def"].as_object_mut() {
+                    def.remove("vehicles");
+                }
+                doc["entries"]["stickney_port"]["def"]["vehicles"] = block;
+            }),
+        ),
+    ];
+    for (want, edit) in cases {
+        let got = decoded_variant(edit);
+        assert!(got.contains(want), "want {want:?}, got {got:?}");
+    }
 }

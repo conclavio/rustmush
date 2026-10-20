@@ -630,3 +630,512 @@ refused departure for a site print a **reserve-aware throttle hint** (the highes
 the landing floor at which the outbound burn plus the leg-home reserve fit, else the first later IC
 day in +chart's 365-day window on which the floor fits); the queue's sailing-plan dry run reads the
 same site refusals the fire holds with.
+
+## SM.3a
+
+**The vehicle and its carrier** (doc 20 §13's SM.3 row, split by the lead into SM.3a and SM.3b; this
+is the first half): **goods v3** (the four ore goods under `stow.ore`, moved here from SM.5 because the
+hopper and the Dray-P cargo need the tag), `UnitClass::Vehicle`, optional drive, the tools kind
+(drill, scanner, battery), the `tv_prospector` and `dray_p` units, the bay counted in the payload, the
+hopper vault owned by `tacsim.vehicles`, `+coop/refit` (re-dressing the chartered hull in place through
+`mush_tactics::module::refit_unit`; every programme hull gains a hidden empty bay at lane **v10**) and
+Occator's lease `+tv/lease` (1400.00cr a term, a 5000.00cr deposit held as the engine-owned reservation
+`tacsim.tv.deposit`; no licence check until SM.5). Built 2026-10-20 on main from `bd718fb2`. Judged
+**ship-with-notes**; the lead accepted the four owner-critical defaults (repossession at a charter's
+end, the hidden bay on every hull, Occator's counter in the Exchange Hall with rigs OWP-TV-01..08, the
+battery row and the engine-owned deposit table) and ran a fix round before the commit. One commit,
+pushed.
+
+### What landed
+
+1. **Goods v3** (`crates/tacsim/content/market/goods.json`; header in `src/definitions/goods.rs`):
+   - four run-of-mine ores, all class `trade`, unit `t`, stowage `stow.ore`:
+
+     | id | family | kg / L a tonne | reference_major |
+     |---|---|---|---|
+     | `metal_ore` | metals | 1000 / 500 | 70 |
+     | `ice_ore` | volatiles | 1000 / 1000 | 35 |
+     | `carbon_ore` | carbon_feedstock | 1000 / 1200 | 50 |
+     | `strategic_ore` | strategic_elements | 1000 / 600 | 600 |
+
+   - twelve rows; digest `e046e0ab504c…`;
+   - no listing, vendor or bid (those are SM.5's);
+   - the Dray's accepted set is unchanged, so every trade-run payload pin stands.
+2. **`UnitClass::Vehicle`** (`src/definitions/unit.rs`):
+   - `ALL: [_; 5]`, the word `vehicle`, `fieldable()` false for `Hauler | Vehicle`, the noun `terrain vehicle(s)`;
+   - `check_logistics` refuses "a vehicle declares its logistics";
+   - the door comments in `src/config.rs` and `mush-server/src/config_ext.rs`, whose sentence is byte-identical;
+   - `arena::test_support::vehicle` (`src/arena/mod.rs`).
+3. **An optional drive** (`src/definitions/logistics.rs`, `mod.rs`):
+   - `LogisticsDef.drive: Option<DriveDef>`, with the law checks under `if let`;
+   - `drive_table` skips a drive-less unit;
+   - `burn::NO_DRIVE` ("unit {unit} carries no drive; it never plans a passage") in `hull_spec_of`;
+   - `burn_table` skips a drive-less spec silently (`src/port/burn.rs`).
+4. **The tools kind** (`src/definitions/tools.rs`, new):
+   - `ToolDef`, `ToolRole::{Drill, Scanner, Battery}` and the bound checks;
+   - `tool_digest`, `tools_table`, `TOOLS_DIGEST_DOMAIN = "tacsim.tools.v1"`, `MAX_TOOL_CU`;
+   - three typed documents (`content/tools/drill_core_mk1.json`, `scanner_mk1.json`, `battery_mk1.json`) with §4.1's figures verbatim; the battery carries §4.1's charge as data;
+   - `TOOL_SOURCES` and the three ids in `content.rs`;
+   - not packs: nothing binds a tool until promotion.
+5. **Bays** (`logistics.rs`):
+   - `InteriorRoomKind::Bay`, `InteriorDef.bays` (last field, skipped when empty), `BayDef`, `BaySlotDef`, `EgressDef`;
+   - `MAX_BAYS` 2, `MAX_BAY_ITEMS` 4, `MAX_EGRESS_OFFSET_CM` 10,000, `InteriorDef::bay()`;
+   - a sentence for every rule, including "the exit `{from}` -> `{to}` touches the bay `{bay}`; a bay has no exits".
+6. **Two unit packs**, both fielded as `EXTENSIONS_VEHICLES`, the eleventh table (`content.rs`):
+   - **`content/units/tv_prospector.json`** (`tacsim.pack.tv_prospector@1`, `b2bdc88e4834…`):
+     - class `vehicle`;
+     - chassis, hopper and boom sections; power and visual_sensor components;
+     - tracked 300 cm/s;
+     - stowage-only logistics: 6 t dry, a 12 t / 13.2 m³ `stow.ore` hopper, no drive;
+     - a cab and hopper interior.
+   - **`content/units/dray_p.json`** (`tacsim.pack.dray_p@1`, `67c6558731e3…`):
+     - the Dray's def byte for byte except the label, the 86 t / 103.2 m³ bulk+ore cargo, the `bay` room, `bays` (slot `rigs` max 2, egress "stern ramp" 0 / −3500 / 180000) and the note;
+     - `dray.json` is untouched.
+   - `hull::refit_compatible` (pub) names what differs.
+7. **The hull's own unit** (`src/port/hull.rs`, `src/port/ship.rs`):
+   - `HullView.unit` and `unit_held`;
+   - `HullUnit { Live, Default, Held }`, `resolve_hull_unit`, `unit_record_claims` (lifted from step 2), `live_unit_id`, `spec_for`;
+   - held reads dark on v10 worlds only: the planner/basis answer Unreadable, `market::hold_plan` answers None, and +tv and the refit refuse;
+   - `HullView::bay()`, `is_prospector()`, `class_word()`, `HULL_CLASS_PROSPECTOR = "Dray-P"`;
+   - `+ship` prints the class word.
+8. **The payload counts the bay** (`src/port/passage.rs`, `voyage.rs`, `executor.rs`, `burn.rs`):
+   - `CarriedRig`, `carried_kg`;
+   - `PendingVoyage.carried` (skipped when empty);
+   - `Basis.carried` and `voyage::carried_of`;
+   - basis plans `view.unit` and adds the rigs;
+   - the burn prepare re-reads each frozen rig's hopper in its own transaction;
+   - beyond the brief, declared: `Planner.carried_kg`/`carrying` for the queue's dry run and fill sizing.
+9. **Lane v10** (`content/lane/ceres_phobos.json`, `3f49d1764cf1…`; `LANE_VERSION` 10):
+   - `ceres_port.programme.refits {prospector: tacsim.unit.dray_p}`;
+   - `ceres_port.vehicles` (`occator.rig_lease`: pool 8, `OWP-TV-`, 1,400 / 5,000 / 168 IC days, counter `exchange`, shed "Occator Vehicle Shed", three tools);
+   - `src/port/def.rs`:
+     - `ProgrammeDef.refits` (≤ 4 rows, never `standard`, never the unit);
+     - `PortDef.vehicles: Option<Box<VehiclesDef>>`;
+     - `check_vehicles`, and the site sentence extended;
+     - `check_ports`: one rig lessor a lane, on a port with a programme;
+   - `PortMap.vehicles`/`VehiclesRow`/`RigRow` (`map.rs`).
+10. **The applier** (`src/port/hull.rs`, `src/port/vehicle.rs` new, `src/port/apply.rs`):
+    - part (f) step 6b lays a hidden bay room, its space and its `rigs` compartment on every programme hull;
+    - the preflight checks the refits, and accepts refit bay rooms on a row;
+    - `declare_space(ctx, room, anchor)` is generalised;
+    - part (h): Occator's unanchored shed, then eight rigs, each a Thing, a unit, a cab and a hopper space, a hopper vault owned by `System(tacsim.vehicles)` with scope None, placed in the shed and titled to Occator;
+    - `vehicle::preflight` folds into the frozen-economy check ("…nor {n} rig title(s)…");
+    - `VEHICLES_PRINCIPAL` (`site.rs`);
+    - the bay queries: `rigs_in_bay`, `hopper_of`, `rig_row`, `occator_lease_on`, `RigInBay`.
+11. **Readiness** (`readiness.rs`, `coop.rs`):
+    - `Binding::Vehicles` after the hulls line, ungated;
+    - Ready reads "ceres_port vehicles: 8 of 8 made and titled to Occator Water & Propellant; 8 in the shed, 0 leased.";
+    - the unlaid-bay Missing line;
+    - `hull_line` skips the refit bay rooms (D20: a lost bay never closes +coop/enrol).
+12. **The lease record** (`src/port/tv.rs` new, `src/store.rs`):
+    - the `tacsim:tvlease:{lease}` family: `TvLease` (strict; `check` adds mark, terms_paid and ended_at rules), `TvLeaseStatus`, `TvLeaseState::Unreadable{pilot,hull,tv}`;
+    - `put_tv_lease`, the load arm (an unreadable record bars only its own lease);
+    - the accessors `tv_lease`, `tv_leases_of`, `tv_lease_on` (live means status ≠ Returned) and `tv_lease_unreadable_for`.
+13. **The engine-owned deposit** (`mush-economy/src/api.rs`):
+    - `ENGINE_OWNED_RESERVATIONS` gains `tacsim.tv.deposit`, with the layering paragraph (D18);
+    - the token count stays 5.
+14. **`+tv` and `+tv/lease`** (`src/commands.rs`, `tv.rs`):
+    - LegacyPostImage; switches 1, 2, lease;
+    - status, a pure read with the stores line on a pad;
+    - take: checks 1–10, a bare preview, then on go the settle (its own unit), `offer_lease` with a 1-minor Manual rent, `accept_contract`, ONE public post (the fee plus the deposit `HoldOp::Place`), `place_interior` into the bay, the record;
+    - return: keyed on the lessee's live record; `end_lease` with AlreadyEnded taken as success; the idempotent deposit settle before the record goes Returned; the rig back in the shed;
+    - the term settle: renew whole terms, or capture the whole deposit and mark Forfeit;
+    - `licence_seam` (always Ok, for SM.5).
+15. **Charter ends with rigs aboard** (`recall.rs`, `buyout.rs`, `tv.rs`):
+    - `RecallBlock::Bay` is check 7, last; it counts placements and live records;
+    - `RECALL_BAY`, `BAY_PAGE`, `BUYOUT_BAY` (check 5b);
+    - `tv::repossess`: every check first; per rig the deposit settles by the term (D16) before `end_lease`; the rig goes back to the shed, the record is written Returned with repossessed, and the pilot is notified;
+    - `recall_block_clearing` in `revoke_cmd` (pinning on a Bay block), the dormant path and `return_hull`.
+16. **`+coop/refit prospector|standard`** (`src/port/refit.rs` new; the `coop.rs` route and help line):
+    - checks 1–10, then ONE write: `mush_tactics::module::refit_unit`, whose doc names its third caller.
+17. **Help and gates:**
+    - `docs/help/coop.md` gains "The yard's refit" and the release and recall paragraphs;
+    - `docs/help/ships.md` gains "The Dray-P and Occator's rigs";
+    - `legacy-handlers.toml` gains the `+tv` stanza and the `+coop`/`@coop` refreshes;
+    - `state-slot-owners.toml` gains the `tests/vehicles.rs` AccountOracle row;
+    - `tests/support/vehicles.rs` `strip_vehicles` is called from `strip_sites` and `strip_moon_trade`;
+    - the tacsim dev-dependency `tracing-subscriber`.
+18. **Tests:**
+    - `tests/vehicles.rs`: 28 world tests (applier, A4, refit, lease, return, revoked return, staff-ended lease, forfeit slots, /3, buyout, revoke, return arm, dormancy, release, v9→v10, term, A1, filed burn with a loaded hopper, queue, restart plus apply, stores line, unresolved deposit, unreadable-record dark, live record out of the bay, the unlisted /n, lost bay);
+    - new tests in `content.rs`, `lane.rs`, `passage.rs` and `match_lifecycle.rs`;
+    - unit tests in `burn.rs`, `hull.rs`, `tv.rs`, `config.rs`, `arena/state.rs` and `config_ext.rs`.
+
+### Deferred, and why
+
+**SM.3b, by the lead's split (lead ruling 0):**
+- the excursion state family and `tacsim:tv`;
+- the `tacsim.surface` tick;
+- authoritative act starts with the charge reserved;
+- `+tv/launch` (and the implied launch), `+tv/recover`'s placement half, `+tv/dump`;
+- the go rule on the act verbs and the last-addressed selector;
+- `TV_OUT` and `HOPPER_LOADED`;
+- the egress record;
+- the operate gate that refuses a Forfeit or ended lease (R7);
+- moving `+tv` to the authoritative class.
+
+**SM.5:** filling `licence_seam` (doc 20 §4.3's licence refusal), the ore bids and drips, Occator's tranche, the reference_minor rows and lane v11.
+
+**Named residuals:**
+- R1: the term re-debit or forfeit at the next dock; it runs at the next `+tv/lease` act today.
+- R2: a graduate's refit or lease.
+- R3: a recalled Dray-P re-lent as a Dray-P (it stays a Dray-P).
+- R4: the desk's `look` listing the `+tv` verbs.
+- R5: Occator's own counter room.
+- R6: a world test of a held unit record.
+- R8: a second rig lessor.
+
+**Lead rulings the planner took:**
+1. The refit re-dresses in place through `refit_unit`, with the bay laid on every programme hull at apply (D1).
+2. Tools are typed documents, not packs, with a third `battery_mk1` row (D3, D4).
+3. The deposit is an engine-owned reservation (D6).
+4. The lease is an economy lease with the Trust's 1-minor Manual rent, a public fee post, and the settle on the next `+tv/lease` act (D7, D8).
+5. Charter ends: `RECALL_BAY` and `BUYOUT_BAY` refuse; revoke, dormancy and the return arm repossess (D14, D16).
+6. "Live" means status ≠ Returned.
+7. A held unit reads dark, on v10 worlds only (D19).
+8. Bay completeness sits on the ungated Vehicles line (D20).
+9. The counter is the Exchange Hall, and `role_room` is `pub(crate)` (D11).
+10. `strip_vehicles` keeps the older-lane digests.
+11. A bare `+tv/lease` previews and `go` commits (D9).
+
+**Owner-critical defaults, for the owner's word:**
+- D16, the repossession's money: within the paid term the deposit is released; past it the deposit is captured whole; the engine never debits a fee. The alternatives are always capture or always release.
+- D1: every programme hull, standard Drays included, gains a hidden, empty, exitless bay room at v10.
+- D11/D17: the counter in the Exchange Hall, the rigs OWP-TV-01..08, "Occator Vehicle Shed", and texts that name Occator literally.
+- D18: `tacsim.tv.deposit` is the first game-namespace string compiled into mush-economy's frozen engine-owned table.
+- D8/R1: the term settle runs at the next `+tv/lease` act, where doc 20 says the next dock.
+
+**Fixer departures from the brief, kept:**
+- `repossess` settles each deposit before `end_lease`, and a deposit that will not settle stops that rig with nothing written. The brief's "the repossession goes on, the hold stays Held" would strand an engine-owned hold that even staff cannot move. This serves D14; D16 is unchanged.
+- `give_back` refuses `LEASE_FAILED` before writing Returned when the deposit will not settle.
+- The bay guards (recall check 7, `BUYOUT_BAY`, `REFIT_BAY`) also count live records whose rig is out of the bay.
+
+**Builder deviations, kept:**
+- `PortDef.vehicles` is boxed (clippy `large_enum_variant`).
+- The arena's display reads "a vehicle", not "a terrain vehicle".
+- The upgrade test's enrolled half seeds a v10-stripped world and updates it to v11, because a v9-latched world's Lane line gates `+coop/enrol`.
+- The return-arm test asserts that posted and held each fall by 5,000.00 with available unchanged, since a capture necessarily lowers posted.
+- `+ship`'s hold gauge prints 103 m³.
+
+**Not fixed, small (judge's notes):**
+- the preview/go divergence on a suspended account (correctness F8);
+- the bay guards fail open when `hull_view` is None (F5);
+- `+tv` switches stop at /2 while `MAX_BAY_ITEMS` is 4 (F10);
+- the shed-gone Missing line names a rig's mark;
+- the stale "Both reach it" in mush-tactics;
+- the "NOT FITTED FOR PHASE ONE" seat stencil;
+- the ore notes say "a Ceres site" (Vesta's commons also yields ore);
+- `TV_HELP`'s comma money spelling;
+- the `tracing-subscriber` dev-dependency;
+- the test gaps T5–T10 (the grammar refusals, `vehicle::preflight`'s refusals, the TV pin's per-value asserts).
+
+### Residual risks the judge named
+
+- A return on a pilot whose credit account is not Active diverges from its preview (correctness F8, unfixed). plan_return plans the settle against 0 available, so a past-term rig previews TERM_FORFEIT and RETURN_PREVIEW_FORFEIT. On go, run_settle is skipped when pilot_account is None, so the deposit is released and RETURNED is printed. This fails generous; it only happens when staff suspend an account with a rig past term.
+- The bay guards fail open when hull_view is None (correctness F5). recall_block check 7 and buyout 5b sit under `if let Some(view)`, and view_of now returns None when the hull's live unit names a definition missing from the fielded catalog (for example a staff @unit re-create). Release, revoke or buyout could then pass with a rig aboard. Only reachable through staff action.
+- The apply preflight still refuses a recorded bay room that is gone (by design: never re-create). A destroyed bay room no longer closes +coop/enrol (fixed), but it does block every later ceres_port content apply until staff repair the map.
+- give_back can answer LEASE_FAILED ('nothing ... was signed') after end_lease has already ended the economy lease. This happens only on an economy fault at the deposit step. The record stays live and the return re-runs cleanly (AlreadyEnded plus an idempotent settle), but the reply over-promises.
+- The take's post-settle refusal path (refuse_after_writes after step 0) and its hold-0 breach are reachable only through an economy fault; no test reaches the former. The hold-0 record is now caught fail-closed by deposit_hold and has a test.
+- +tv addresses only /1 and /2 while MAX_BAY_ITEMS is 4 (correctness F10). A later unit authoring 3 or 4 rigs a bay leaves slots 3 and 4 unaddressable until SM.3b generalises the selector.
+- Test coverage gaps (tests T5–T10):
+- no positive control that a hopper is a live endpoint for staff, in A4;
+- the revoked-pilot status line is matched by its shared prefix;
+- the TV pin test does not assert mobility, facets, bands or silhouettes value by value (the digest locks them);
+- no grammar test for LEASE_USAGE, NO_RIG, NO_RIG_FREE, REFIT_USAGE or REFIT_NOT_OFFERED;
+- no test for vehicle::preflight's refusals or the Vehicles line's other Missing texts;
+- no world test of a held unit record (R6).
+- Fiction and doc nits left as shipped:
+- tv_prospector.json's cab detail says 'NOT FITTED FOR PHASE ONE', design jargon (fixing it re-signs TV_DIGEST);
+- the four ore notes say 'drilled from a Ceres site', but Rheasilvia Commons is on Vesta;
+- mush-tactics refit_unit's doc still opens its next paragraph 'Both reach it' after naming three callers;
+- when the shed is gone, the Vehicles line names a rig's mark with the shed's object id.
+- TV_HELP spells money '1,400.00cr' / '5,000.00cr' (the brief's verbatim text), while the house format and docs/help/ships.md use '1400.00cr'.
+- A new tacsim dev-dependency on tracing-subscriber (a workspace crate already, not a composition edge; the gates passed). match_lifecycle.rs already shows a hand-rolled capture that would avoid it.
+- The upgrade proof for an enrolled hull goes through a proxy: the world is seeded as v10-stripped and updated to v11, because a v9-latched world cannot enrol. It is the same applier path, but no test lifts a v9 world that has a live charter.
+
+### The lead's fix round (before the commit)
+
+the TV cab's world text lost its design jargon, the ore notes name a Registry site, the lease help prints money in the house format, the bay guards fail closed on a dark hull view, and grammar, preflight, readiness and held-record tests were added.
+
+1. **1. Design jargon in the TV cab's seat detail** — fixed: The seat detail in C:/Users/faeni/cc/rustmush/crates/tacsim/content/units/tv_prospector.json now reads, in world: 'Empty, its harness clipped back. A stencil on the headrest says CREW SEAT; the buckle has never been fastened, because rigs like this one are driven from the bridge, and somebody has scratched a question mark after the stencil.' I re-signed the pack in place with TACSIM_WRITE_CONTENT=1 (sm3a_the_terrain_vehicle_is_pinned_and_checks), so the manifest digest is now c55b9b5e30fa4ac21050f5b48bb6bfa9fa8ac2b2d2e7fca3dbfdbeca455f6c1f. TV_DIGEST in crates/tacsim/tests/content.rs moved from b2bdc88e… to that value. Nothing else reads this digest: a repo-wide grep finds no other copy, dray_p.json only requires the pack by id and version (DRAY_P_DIGEST unchanged), and the lane, sites table, chart fixture and geology pins do not move.
+2. **2. The ore notes named only Ceres** — fixed: In crates/tacsim/content/market/goods.json, the four ore rows (metal, ice, carbon and strategic ore) now say 'drilled from a Registry site' (doc 20: every site is the Registry's, Vesta included) instead of 'a Ceres site'. Re-pin: GOODS_DIGEST in crates/tacsim/tests/content.rs moved from e046e0ab… to d8e79a2cfdd8468eb1555673babea71cb27847604b6251f991581720b68f088e (printed by ic2_the_goods_table_is_pinned under TACSIM_WRITE_CONTENT=1). market.rs computes the digest at runtime, the web fixtures do not carry it (grep), and no other pin moved.
+3. **3. Money spelled with thousands separators** — fixed: Only one literal was wrong: TV_HELP in crates/tacsim/src/port/tv.rs said '1,400.00cr' and '5,000.00cr'. It now says '1400.00cr' and '5000.00cr'. Every lease preview, receipt and settle line already goes through coop::money_minor (the house renderer), as the existing tests' FEE and DEPOSIT constants show. docs/help/ships.md already printed 1400.00cr and 5000.00cr, and grep finds no thousands-separated cr amount in docs/help or in tacsim's src. New test vehicles.rs sm3a_the_lease_help_names_money_as_the_receipts_do checks that both TV_HELP and docs/help/ships.md name FEE and DEPOSIT in the house form and spell neither 1,400.00cr nor 5,000.00cr.
+4. **4. Bay guards passed when the hull view could not be read (correctness F5)** — fixed: crates/tacsim/src/port/recall.rs, recall_block check 7: when hull_view returns None, it now logs an error and returns (RecallBlock::Bay, TV_DARK with the name filled in). The pilot's +coop/release therefore hears the rigs' dark line ('The {name}'s rigs cannot be read right now; nothing changes.'). @coop/revoke, the dormancy recall and the return arm go through recall_block_clearing. There, repossess refuses on the same missing view, so the Bay block stands: the revoke answers NOT_REVOKED plus the dark line and writes nothing, and the tick holds the hull and pages BAY_PAGE, as it already did for a non-empty hopper. BAY_PAGE now also names this cause and its fix: '…or the hull's unit names a definition the catalog does not field so its bay cannot be read); staff empty the hopper (…), repair the tacsim:tvlease: record, or bind the hull's unit back to a fielded definition; the recall retries'. crates/tacsim/src/port/buyout.rs, check 5b: a None view now logs and refuses with TV_DARK (name filled in). A test each, in vehicles.rs: sm3a_a_dark_hull_view_refuses_the_release, _refuses_the_buyout, _holds_the_revoke, and _holds_the_dormancy_recall_and_pages. Each uses the dark_view helper, which leases rig 1, has staff run '@unit/remove' then '@unit/create #hull=tacsim.unit.line_tank', and asserts that hull_view is None. Each test then asserts the exact reply (or BAY_PAGE in the captured log), the record still Active, the lease live, the deposit Held, the rig in the bay, and the charter and enrolment Active.
+5. **5. refit_unit's doc comment said 'Both' after naming three callers** — fixed: In crates/mush-tactics/src/module.rs, 'Both reach it under the tacsim module's identity…' now reads 'All three reach it…'. All three callers (lobby::start, reset::reset_one, port::refit) are tacsim code.
+6. **6. Test gaps** — fixed: All new tests are in crates/tacsim/tests/vehicles.rs (section 11) and drive the real verbs on the composition root. Each grammar test asserts the whole reply.
+- sm3a_the_tv_grammar_answers_lease_usage: LEASE_USAGE for /1/2, /1/2/lease, a stray word, an unknown act, a word after go, and 'lease return go twice'.
+- sm3a_a_return_names_no_rig_that_is_not_there: NO_RIG for rig 1 with an empty bay, and for rig 2 with rig 1 leased (rig 1 stays Active and in the bay).
+- sm3a_an_empty_shed_answers_no_rig_free: four Dray-Ps take all eight rigs, then a fifth pilot hears NO_RIG_FREE on both the preview and go; nothing is written and the balance is unchanged.
+- sm3a_the_refit_grammar_answers_refit_usage: no word, two words, and an unauthored word.
+- sm3a_a_programme_without_refits_answers_refit_not_offered: the shipped lane with SM.3a's blocks stripped at the shipped version, both words, and the hull stays a Dray.
+- sm3a_the_rig_pools_preflight_refuses_each_recorded_breach: each vehicle::preflight refusal through a real @atlas/pack plan and apply of the next lane version from the shelf, with the exact sentence, no 'Applied', and the rig rows unchanged. The cases: the block dropped, pool 4, prefix re-marked, an unregistered issuer, a unit with no interior, and (with a fee edit so the update reaches the preflight) a destroyed rig and a destroyed shed.
+- sm3a_the_vehicles_line_names_what_is_missing: the other Missing texts. A destroyed rig and '@asset/transfer' to GOD are real staff acts. '6 of 8 are made', interior incomplete and no hopper vault come from editing the stored port map before a reboot. The hulls line stays Ready.
+- sm3a_a_held_unit_record_reads_dark: the world test the lead asked for if it cost under an hour. The unit:<hull> document gets record_version 99 and the world reboots, so the record is quarantined and HullView.unit_held is true. +tv answers TV_DARK and +ship/plan answers PLAN_DARK (from PlanError::Unreadable). With a rig aboard, +coop/refit answers REFIT_BAY, because the refit's bay check comes before its held check by design. A second world with an empty bay gets REFIT_FAILED and no re-bind.
+The new reboot_editing(key) helper sits beside reboot_editing_lease.
+
+**The round's review.** I reviewed the delta from the judged tree c4074cbc to the new working tree 0d0992f973cf18113828928263eb31b90eafae0f, computed with a scratch index. The only other difference is Cargo.lock: the working lock hashes to 1a4dd7a7, the same blob as the judged tree's, and the scratch-index diff shows it only because the real index holds HEAD's lock. Nothing was run with cargo. The fixer's logs in scratchpad/fix-sm3a show all 13 new vehicles tests passing (41 in that file), and the tacsim, mush-tactics, mush-economy and server suites green.
+
+Item by item:
+1. Done. The seat detail is in-world. The TV pack was re-signed at version 1 (unpublished) and TV_DIGEST moved to c55b9b5e…. Neither the old digest nor the old text appears anywhere else in the tree.
+2. Done. All four ore notes say 'a Registry site', which matches doc 20 ('every site is the Registry's'). GOODS_DIGEST moved to d8e79a2c…. Goods notes are authoring notes and are never rendered (check_note only), so nothing reaches players.
+3. Done. TV_HELP now prints 1400.00cr and 5000.00cr. Every lease line goes through money_minor, and docs/help/ships.md already matched. There are no thousands-separated cr amounts left in tacsim src or docs/help. A static test pins both texts.
+4. Done and correct. recall_block check 7 and buyout check 5b now fail closed with TV_DARK when the hull view is None. Revoke, dormancy and the return arm go through recall_block_clearing. Its repossess refuses on the missing view before any write, so the Bay block stands: the revoke answers NOT_REVOKED plus the dark line, and the tick holds the hull and pages BAY_PAGE. Every other bay reader was already fail-closed or required a view (the refit, the take, the return and the payload). recall_block already returns early when programme_port is None, so the only new None cases are a hull row missing from the map (a store fault) and a unit spec with no interior or no logistics. The four regression tests would fail on the judged tree, which let the release, buyout and revoke through with a rig aboard.
+5. Done. The comment now says 'All three reach it', after naming three callers.
+6. Mostly done. The grammar tests cover LEASE_USAGE, NO_RIG (both branches), NO_RIG_FREE, REFIT_USAGE and REFIT_NOT_OFFERED, each through the real verb with the whole reply. The Vehicles line's other Missing texts are covered. The held-record world test covers TV_DARK, PLAN_DARK and REFIT_BAY, and REFIT_FAILED in a second world; the bay-before-held order is justified as fail-safe. The preflight test leaves the hopper-vault and unauthored-room refusals untested (R2).
+
+No assertion was weakened: the only changed lines in existing tests are the two digest constants, each moved with its reason. There is no RNG, no truth leak, and every new refusal reuses an existing line.
+
+There is no must-fix. Two should-fix items:
+- R1: BAY_PAGE and the recall comment describe the dark cause as an unfielded definition, but the tested trigger, line_tank, is fielded and has no interior. A paged staff member would be sent the wrong way.
+- R2: the two missing preflight refusals.
+
+The rest are notes: the RecallBlock::Bay doc, the untested return arm, TV_DARK's 'rigs' wording on a no-vehicles world, a misnumbered test section, and a prose nit.
+
+- **R1** (should-fix): BAY_PAGE (recall.rs:137) now says the hull's unit 'names a definition the catalog does not field' and tells staff to 'bind the hull's unit back to a fielded definition'. The comment at recall.rs:294-296 says the same. But view_of goes dark through spec_for (hull.rs:237-238: `spec.interior.as_ref()?, spec.logistics.as_ref()?`), so a fielded definition with no interior or no logistics also reads None. That is exactly the case all four new F5 tests use: dark_view binds tacsim.unit.line_tank, its own doc comment (vehicles.rs:3112) says 'a definition with no interior', and the preflight case at vehicles.rs:3402 shows line_tank is fielded ('carries no interior', not vehicle.rs:77's 'is not fielded'). A staff member paged for the tested case is sent looking for an unfielded definition, and is told to rebind to 'a fielded definition', which the line tank already is.
+- **R2** (should-fix): Item 6 asked for tests of vehicle::preflight's refusals, and the return says each one is covered. sm3a_the_rig_pools_preflight_refuses_each_recorded_breach (vehicles.rs:3349) covers seven: block dropped, pool shrunk, mark changed, issuer, no-interior unit, destroyed rig, destroyed shed. Two data-driven refusals have no test anywhere under crates/tacsim/tests (grep for 'names hopper vault' and 'does not author' finds nothing). The first is the hopper-vault refusal at vehicle.rs:201-212 (vault gone or not owned by tacsim.vehicles), which guards doc 20 section 4.2's rule that no player owns a hopper. The second is the recorded-room-the-template-does-not-author refusal at vehicle.rs:195-200.
+- **R3** (note): The RecallBlock::Bay doc (recall.rs:187-189) still reads 'A rig in the hull's bay ... Checked last'. Since this round, Bay also means the hull's view could not be read (recall.rs:301-308), and the callers rely on that to fall into their hold-and-page handling.
+- **R4** (note): return_hull (recall.rs:514-527), the tick's return arm for a Revoked charter whose Trust lease is terminal, is a third path into the dark Bay block through recall_block_clearing, and it pages BAY_PAGE at recall.rs:1119-1120. The new tests cover release, buyout, revoke and dormancy but not this arm. Its behaviour follows from the same shared function, so the risk is low.
+- **R5** (note): The dark refusal on release, buyout and revoke is TV_DARK, 'The {name}'s rigs cannot be read right now; nothing changes.' (recall.rs:307, buyout.rs:394). This is now reachable on a standard Dray, or on a world whose programme authors no vehicles (pre-v10), if staff re-bind its unit to a non-hull definition. Such a pilot hears about rigs they never had. Two other dark-view paths a Dray-P pilot can reach are unchanged and answer LEASE_FAILED rather than TV_DARK: the take (tv.rs:1154) and the return (tv.rs:1599). These predate this round.
+- **R6** (note): The new section header at vehicles.rs:2972 reads '// 11. The lead's pre-commit round'. It follows section 13 (line 2738) and repeats section 11 ('Equal payload, equal plan', line 2362). The new `destroy` helper (vehicles.rs:3319) duplicates the inline destroy-and-emit block in sm3a_a_lost_bay_room_never_closes_the_desk (vehicles.rs:2937-2945). The return also says a destroyed rig is 'a real staff act', but it is the test rig's world-level destroy plus an emitted ObjDestroyed, not a staff command.
+- **R7** (note): The rewritten seat detail (line 116) is in-world and the jargon is gone. Its clause order makes the scratched question mark read as part of the 'because' reason: '...; the buckle has never been fastened, because rigs like this one are driven from the bridge, and somebody has scratched a question mark after the stencil.'
+
+**Re-fixed after the review:**
+
+- **R1** — fixed: BAY_PAGE in crates/tacsim/src/port/recall.rs:137 now gives the dark-view cause as 'the hull's unit is bound to a definition that is not a hull (not fielded, or fielded with no interior or no logistics) so its bay cannot be read', and the remedy is now 'bind the hull's unit back to the Dray or the Dray-P'. This matches spec_for in hull.rs, which returns None for a missing spec or a missing interior or logistics block. I reworded the matching recall_block comment at recall.rs:293-301 the same way. buyout.rs:385-389 only says that an unreadable view fails closed and that the bay cannot be seen, which is accurate, so I left it unchanged. The tests read the constant, so no pins moved.
+- **R2** — fixed: Added two cases to sm3a_the_rig_pools_preflight_refuses_each_recorded_breach in crates/tacsim/tests/vehicles.rs and extended its doc comment. Both use the existing assert_apply_refused helper, which asserts that each sentence appears, that 'Applied ' does not, and that the rig rows are unchanged. (a) reboot_editing_map(with_next(fee)) renames rigs[0].rooms 'hopper' to 'galley'. It asserts the exact sentence 'ceres_port: rig OWP-TV-01 in the port map {key} records room galley, which the template does not author'. (b) On with_next(fee), a pilot charters the Salt Moth, and the test reads that hull's hold vault through hold_vault. It first asserts that the vault is live and is not owned by tacsim.vehicles. reboot_editing_map then sets rigs[0].vault to that vault id. The test asserts the exact sentence 'ceres_port: rig OWP-TV-01 in the port map {key} names hopper vault #{hold}, which is gone or not owned by tacsim.vehicles; it is never re-created — repair the map by hand'.
+
+**Pins the round moved.** Two pins moved, both re-blessed. TV_DIGEST in crates/tacsim/tests/content.rs: b2bdc88e483450268040abff8f52e7d279ff29bc20a7707f9bddc4ea8113a827 -> c55b9b5e30fa4ac21050f5b48bb6bfa9fa8ac2b2d2e7fca3dbfdbeca455f6c1f, because the seat detail's prose changed. The pack's manifest digest in crates/tacsim/content/units/tv_prospector.json was re-signed in place with TACSIM_WRITE_CONTENT=1, still at version 1. GOODS_DIGEST in the same file: e046e0ab504cb46948c3a15f6ac2d87471e7cdd13ec381880786beda90bdc1ca -> d8e79a2cfdd8468eb1555673babea71cb27847604b6251f991581720b68f088e, because the four ore notes changed; goods.json is still version 3. Unmoved, with grep evidence that none of them embeds either digest or the changed text: DRAY_P_DIGEST, the tool digests, the lane digest and signatures (lane v10), the sites table, the geology pins, and the chart fixture web/src/lib/fixtures/chart/sky_chart.json. No existing assertion was changed apart from those two constants.
+
+### Pins re-blessed
+
+**Content digests:**
+- `GOODS_DIGEST`: `50cb8d9f…` → `e046e0ab504c…`. Goods v3 adds four ore rows. `ic2_the_goods_table_is_pinned` now pins version 3 and 12 rows.
+- New pins:
+  - `TV_DIGEST` `b2bdc88e4834…`
+  - `DRAY_P_DIGEST` `67c6558731e3…`
+  - `TOOL_DIGESTS`: drill `8120813eafbf…`, scanner `e25ff198480f…`, battery `198bf543540c…`
+- `DRAY_DIGEST` is unchanged: `dray.json` is untouched.
+- `LANE_DIGEST`: `cce73a4c…` → `3f49d1764cf1…`, version 9 → 10, for the refits row and the vehicles block (`tests/lane.rs`; the `LANE_VERSION` assertion in `tests/sites.rs`). The entry counts and the a8 spelling guard stand unedited.
+
+**Older-lane digests (not re-pinned):**
+- The rebuilt v9 lane is pinned at `cce73a4c…` in `vehicles.rs`.
+- `LANE_V8_DIGEST` and commerce's published v2 do not move: `strip_sites` and `strip_moon_trade` now call `strip_vehicles`.
+
+**Counts:**
+- Catalog rows in `capacity.rs`: 8 → 12 (goods v3).
+- `orders.rs` UNKNOWN_GOOD list: 8 → 12 goods (goods v3).
+- Two fielded units moved these counts:
+  - fielded specs 12 → 14 (`content.rs` m3 and e1; `extensions.rs` ae1, ae2 and ae3);
+  - `+1` → `+3` (`ic2_the_dray_is_a_hauler…`);
+  - `stock + 20` → `+ 22` (q8);
+  - `FIELDED_EXTRAS` 11 → 13 (`definitions.rs`).
+- Class buckets: Hauler is now `[dray, dray_p]`, and a new Vehicle bucket holds `[tv_prospector]`. The class-word clause now names four units.
+- `hulls.rs`: rooms per hull 7 → 8 and objects `+18` → `+19`, because step 6b lays a bay on every hull. The test also asserts the bay's space, that the bay is not an airlock member, and that `rigs` holds at most 2.
+- `ports.rs`: the readiness listing gains the Vehicles line after the hulls line.
+- `coop.rs`: `EVERY` 18 → 19, with Vehicles ungated.
+
+**Code-level pins:**
+- `mush-economy`'s `vf_c2` and `tests/e7c11.rs` `vf_g2`: the three-entry engine-owned table. The message now reads "three entries, all MONEY holds: …"; the token count of 5 does not move.
+- Changed refusal orders, with no existing pin moved: recall check 7 (the bay) and buyout check 5b.
+- The bay pages are new text. The other pages are byte-identical.
+
+**Compiler-required edits (no assertion changed):**
+- `drive.as_ref()`/`as_mut()` in `tests/{content,landing,moon_ports,orders,passage,sites}.rs` and in `ic_slice_loop.rs`.
+- The literals in the `def.rs` tests.
+- The `PendingVoyage` fixture's `carried` field.
+- The Dray test's exhaustive `Bay` arm.
+
+**Gate files:**
+- `legacy-handlers.toml`: the `+tv` stanza and the `+coop`/`@coop` refresh. `PINNED_BASELINE` does not move.
+- `state-slot-owners.toml`: a `tests/vehicles.rs` AccountOracle row, named by the gate's first run.
+
+**Unmoved:**
+- the panic budget, the restriction census, module-ns owners and the composition edge;
+- the boot-parity tallies and feed manifest;
+- the TUI counts;
+- the `+chart` fixture;
+- `provider_rng_policy` and `truth_serialization_policy`.
+
+### How it was verified
+
+**Builder, fixer, final gate.** The builder built and ran the brief's suites. Three reviewers followed: correctness, conformance and tests, with ten findings each and no must-fix. A fixer then closed every should-fix: correctness F1/F2/F3, conformance F1–F5 and tests T1–T4. The final gate ran on the fixed tree at HEAD bd718fb2, and `git status` was identical before and after the sweep (65 entries, all this cut's, no peer edits). Gate results:
+- `cargo fmt --all -- --check`: exit 0.
+- `cargo clippy --workspace --all-targets -j 8 -- -D warnings`: Finished, exit 0.
+- `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items -j 8`: exit 0, no warnings.
+- `cargo test -j 8 -p tacsim --test content --test lane --test capacity --test passage --test extensions`: content 35, lane 13, capacity 17, passage 6, extensions 89 passed.
+- `cargo test -j 8 -p tacsim --test vehicles`: test result: ok. 28 passed; 0 failed.
+- hulls 15, coop 23, ports 21, commerce 26, voyage 25, orders 33, sale 18, sites 24, landing 7, moon_ports 5, price 8, stations 21, chart 7: all ok.
+- `--test match_lifecycle sim_unit_never_offers`: ok. 2 passed.
+- `cargo test -j 8 -p tacsim --lib`: ok. 1275 passed; 0 failed; 1 ignored.
+- `cargo test -j 8 -p tacsim --no-fail-fast`: 54 result lines, all ok; 2,794 passed, 0 failed.
+- `cargo test -j 8 -p mush-economy`: 540 passed, 0 failed (e7c11 ok).
+- `mush-tactics --lib`: 5 passed.
+- `mush-server --lib config_ext`: 15 passed.
+- `mush-server` integration: boot_parity 21, ic_slice_loop 6, ic_buyout_dormancy 14, provisioning_smoke 4.
+- `cargo test -j 8 -p mush-contract-tests`: 130 passed, 0 failed. This includes legacy_handler_allowlist, state_slot_owners, panic_budget, provider_rng_policy, truth_serialization_policy, restriction_lints and module_ns_owners.
+- `cargo test --workspace --exclude mush-bot --no-fail-fast -j 8`: 412 result lines, all ok; 8,182 passed, 0 failed.
+- `cargo test -p mush-bot -j 8`: 717 passed, 0 failed.
+
+**Lenses, as judge.** I read the whole diff and every new file myself. Checked:
+- each fix against its finding, with a test that would fail on the old code;
+- no existing assertion weakened;
+- the builder's surface against the code;
+- no RNG: the gate's `rand` grep hits only "strand"; `grep -nw` is empty;
+- no applier submission: part (h) issues only `create_unit`, `create_vault`, `place_interior` and `issue_title`;
+- no truth leak: `+tv` reads only the actor's own records and hull.
+
+**Flakes:** none identified. Nothing was re-run for LNK1104 or load, and nothing is peer-attributed.
+
+**Gate notes.** All 17 commands passed on the first run. Nothing needed a rerun: no LNK1104, no hung binary, and no load flake.
+
+- **Base:** HEAD stayed at bd718fb2 for the whole run.
+- **Working tree:** `git status --short` was identical before and after the workspace sweep (65 entries). There were no new peer (astronomy session) edits during the run, and nothing had to be attributed to the peer.
+- **Uncommitted files:** all of them are the cut's own. These are the modified tacsim, mush-economy, mush-server, mush-tactics and mush-contract-tests files plus docs/help/coop.md and docs/help/ships.md. The untracked files are content/tools/, units/dray_p.json, units/tv_prospector.json, definitions/tools.rs, port/refit.rs, port/tv.rs, port/vehicle.rs, tests/support/vehicles.rs and tests/vehicles.rs.
+- **Clippy and docs were cache hits:** clippy (step 2) finished in 0.90s and the strict rustdoc build (step 3) in 0.73s, because the builder had already run them on this tree. Cargo checks source modification times, so the cached passes still count for the current tree. Neither log has a warning or error line.
+- **The brief's rand grep:** the plain substring grep over port/{vehicle,tv,refit}.rs and definitions/tools.rs prints three lines, but every hit is the word "strand"/"stranded" in a comment (tv.rs:1005, tv.rs:1761, refit.rs:168). A whole-word grep (`grep -nw rand`) prints nothing (exit 1), so there is no RNG use. The brief's literal command is not silent, though, and the reviewer may want to know.
+- **Logs:** every log is in C:/Users/faeni/AppData/Local/Temp/claude/C--Users-faeni-cc-rustmush/0afc2ac2-d687-46e8-b233-de9758bdcbf4/scratchpad/cuts/SM.3a/gate1/ (01-fmt.log through 17-mush-bot.log, plus status-before-sweep.txt and status-after.txt).
+
+**The lead round's gate, all first run unless noted:**
+
+- pass: `cargo fmt --all -- --check` — exit 0, no output (01-fmt.log empty)
+- pass: `cargo clippy --workspace --all-targets -j 8 -- -D warnings` — Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.67s; exit=0; 0 warning/error lines (cache hit: the lead had already run it on this content)
+- pass: `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items -j 8` — Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.65s; Generated C:\Users\faeni\cc\rustmush\target\doc\mush_ansi\index.html and 45 other files; exit=0; 0 warning/error lines (cache hit: target/doc/tacsim/index.html is stamped 03:07:38, after the last source edit, vehicles.rs at 03:02:49)
+- pass: `cargo test -j 8 -p tacsim --test vehicles --test content --test coop --test capacity --test hulls --test lane --test sites` — capacity: test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+content: test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.74s
+coop: test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.25s
+hulls: test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.08s
+lane: test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.50s
+sites: test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.04s
+vehicles: test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.26s
+exit=0
+- pass: `cargo test -j 8 -p tacsim --no-fail-fast` — 54 'test result:' lines, all ok; summed 2,807 passed, 0 failed. Highlights: unittests test result: ok. 1275 passed; 0 failed; 1 ignored; vehicles ok. 41 passed; content ok. 35; extensions ok. 89; match_lifecycle ok. 143; passage ok. 6; hulls ok. 15; coop ok. 23; ports ok. 21; orders ok. 33; voyage ok. 25; sites ok. 24; landing ok. 7; moon_ports ok. 5; stations ok. 21; commerce ok. 26; sale ok. 18; price ok. 8; chart ok. 7; harness ok. 24 passed; 9 ignored; doc-tests ok. 0 passed. exit=0
+- pass: `cargo test -j 8 -p mush-tactics` — unittests: test result: ok. 5 passed; 0 failed
+e7c11 ok. 1; ground ok. 4; mobility ok. 12; module ok. 75; review_ground ok. 1; s8_ground_npc ok. 1; seams ok. 7; unit ok. 28; window ok. 2; Doc-tests ok. 0
+exit=0
+- pass: `cargo test -j 8 -p mush-economy` — 13 result lines, all ok; summed 540 passed, 0 failed. unittests ok. 37; e2a 12; e2b 33; e3_verify 12; e3a 46; e3b 37; e3b2 33; e4a 83; e4b1 85; e4b2 117; e4c 44; e7c11: test result: ok. 1 passed; 0 failed; Doc-tests ok. 0. exit=0
+- pass: `cargo test -j 8 -p mush-server --test boot_parity --test ic_slice_loop --test ic_buyout_dormancy` — boot_parity: test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.31s
+ic_buyout_dormancy: test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.86s
+ic_slice_loop: test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.68s
+exit=0
+- pass: `cargo test -p mush-contract-tests -j 8` — 30 result lines, all ok; summed 130 passed, 0 failed (scale_harness 6 passed; 8 ignored). legacy_handler_allowlist ok. 4; state_slot_owners ok. 5; panic_budget ok. 8; provider_rng_policy ok. 1; truth_serialization_policy ok. 1; restriction_lints ok. 11; module_ns_owners ok. 4; help_commands ok. 4; unittests ok. 31. exit=0
+- pass: `cargo test --workspace --exclude mush-bot --no-fail-fast -j 8` — 412 'test result:' lines, every one ok; summed 8,195 passed, 0 failed, 93 ignored. exit=0. The one 'panicked' line in the log is the armed fault in ws01_s8_server_worker: "panicked at crates\mush-server\src\process_fault.rs:197:9: WS01-S8 armed world-turn fault on \"@ws01s8-fault\"". It is deliberate, and its suite passed.
+- pass: `cargo test -p mush-bot -j 8` — 25 result lines, all ok; summed 717 passed, 0 failed, 7 ignored. unittests ok. 469 passed; arena_lane ok. 87; e2e ok. 49; arena_contract ok. 19; arena_e2e ok. 10. exit=0. adversarial_reduction_final_rerun_and_blind_packet printed 'running for over 60 seconds' and then finished ok.
+
+All 11 commands passed on their first run. No reruns, LNK1104 errors, hung binaries, load flakes or peer-attributed failures.
+
+**What was tested.** The scratch-index tree, built with the brief's pathspec (crates docs deploy web mushd.toml.example), is 623ebc110934d10aee86eba45126cb73526827a0. It was the same before and after the run. HEAD stayed at bd718fb2. `git status --short` had 65 entries and did not change across three snapshots: before, before the sweep and after. All 65 are this cut's files, so no peer edits were seen.
+
+**Pathspec caveat.** The brief's pathspec leaves out the root Cargo.lock. Because of that, `git diff c4074cbc… 623ebc11…` falsely shows Cargo.lock losing the tacsim 'tracing-subscriber' line. In fact the working-tree Cargo.lock hashes to 1a4dd7a7, the judge tree's own blob, and crates/tacsim/Cargo.toml still declares the dev-dependency. The tree with Cargo.lock and Cargo.toml added is 1e896e67decd9721b16e3a02a616f78656a9932a.
+
+**Lead-round changes since the judge's tree.** Eight files changed (saved as lead-diff.patch and lead-diff-stat.txt):
+- buyout.rs and recall.rs: the bay guards now fail closed when hull_view is None. They answer TV_DARK, and BAY_PAGE is extended (correctness F5).
+- tv.rs: TV_HELP money is spelled 1400.00cr / 5000.00cr.
+- goods.json: the ore notes say "a Registry site", so GOODS_DIGEST is re-pinned to d8e79a2c….
+- tv_prospector.json: the seat stencil text is reworded, so TV_DIGEST is re-pinned to c55b9b5e….
+- mush-tactics module.rs: the doc now reads "All three reach it".
+- tests/vehicles.rs: +608 lines, taking vehicles from 28 to 41 tests.
+
+The full tacsim count is 2,807, up from 2,794 at the judge's gate. The workspace sweep is 8,195, up from 8,182.
+
+**Cache hits.** Clippy and rustdoc were cache hits. Cargo fingerprints by mtime, and target/doc/tacsim/index.html is stamped 03:07:38, after the newest source edit (vehicles.rs, 03:02:49). So both cached passes cover the current content.
+
+Logs are in C:/Users/faeni/AppData/Local/Temp/claude/C--Users-faeni-cc-rustmush/0afc2ac2-d687-46e8-b233-de9758bdcbf4/scratchpad/cuts/SM.3a/leadgate1/: 01-fmt.log through 11-mush-bot.log, plus status-before.txt, status-before-sweep.txt, status-after-sweep.txt and status-after.txt. Nothing was staged, committed or stashed, and the real index was not touched (the scratch index copies were deleted).
+
+### Surface for the next cuts
+
+**Hull view** (`crates/tacsim/src/port/ship.rs`)
+- `HullView.unit: CanonicalId`.
+- `HullView.unit_held: bool`, only on worlds whose programme authors `refits`.
+- `HullView::bay() -> Option<(&BayDef, ObjId)>`, `is_prospector()`, `class_word()`.
+- `HULL_CLASS_PROSPECTOR = "Dray-P"`.
+
+**Hull helpers** (`crates/tacsim/src/port/hull.rs`)
+- `pub fn refit_compatible(&UnitSpec, &UnitSpec) -> Result<(), String>`.
+- `pub(crate)`: `HullUnit {Live, Default, Held}`, `resolve_hull_unit`, `unit_record_claims`, `live_unit_id`, `spec_for`, `refit_bays`, `bay_laid_up`.
+- Also `pub(crate)`: `declare_space(ctx, room, SpaceAnchor)`, `dress`, `live`.
+
+**Bay queries** (`crates/tacsim/src/port/vehicle.rs`)
+- `pub fn template(store, &VehiclesDef)`.
+- `pub struct RigInBay {slot: u8, tv, mark, hopper: Option<VaultId>, lease: Option<u64>}`.
+- `pub fn rigs_in_bay(w, &HullView) -> Vec<RigInBay>`: the numbered rigs first; slot 0 means unlisted.
+- `pub fn hopper_of`, `pub fn rig_row`, `pub fn occator_lease_on(w, lessor, tv)`.
+- `pub(crate)`: `preflight`, `lay_up`, `vehicles_line`, `bay_rooms`, `carried_rigs`.
+
+**Principal:** `site::VEHICLES_PRINCIPAL = "tacsim.vehicles"`.
+
+**Lease record** (`crates/tacsim/src/port/tv.rs`, `crates/tacsim/src/store.rs`)
+- `TvLease` fields: `schema`, `lease`, `tv`, `mark`, `pilot`, `hull`, `slot: u8`, `hold`, `fee_minor`, `deposit_minor`, `term_secs`, `leased_at_ic`, `term_ends_ic`, `terms_paid`, `status`, `ended_at_ic?`, `repossessed`.
+- `TvLeaseStatus {Active, Forfeit, Returned}`; `TvLease::check`; `TvLease::live` (status != Returned).
+- `TvLeaseState {Present, Unreadable{pilot, hull, tv}}`.
+- `TV_LEASE_PREFIX`, `TV_LEASE_SCHEMA = 1`, `tv_lease_key`.
+- Store accessors: `tv_lease`, `tv_leases_of`, `tv_lease_on` (the live one), `tv_lease_unreadable_for`.
+- Writer: `put_tv_lease` (`pub(crate)`).
+
+**Lease seams and namespaces** (`tv.rs`)
+- `pub(crate)`: `licence_seam(w, pilot)` (always Ok; SM.5 fills it), `repossess(ctx, hull) -> Result<usize, String>`, `bay_slot_word`.
+- Namespaces: `DEPOSIT_KIND`, `LEASE_KEY_NAMESPACE`, `FEE_KEY_NAMESPACE`, `FORFEIT_KEY_NAMESPACE`.
+- Every text constant, `TV_VERB` and `TV_HELP`.
+
+**Recall and buyout**
+- `recall::recall_block_clearing`, `RecallBlock::Bay`, `RECALL_BAY`, `BAY_PAGE`; `recall::chartered` is now `pub(crate)`.
+- `buyout::BUYOUT_BAY`.
+
+**Refit** (`crates/tacsim/src/port/refit.rs`): `REFIT_*` texts and `REFITTED_*`.
+
+**Payload**
+- `port::{CarriedRig {tv, dry_kg, hopper: Option<u64>, goods}, carried_kg}`.
+- `PendingVoyage.carried`.
+- `voyage::carried_of(ctx, view)` (`pub(crate)`).
+- `executor::Planner.carried_kg` and `Planner::carrying`.
+- `burn::NO_DRIVE`.
+
+**Definitions**
+- `definitions::tools::{ToolDef, ToolRole::{Drill, Scanner, Battery}, DrillDef, YieldDef, ScannerDef, BatteryDef, tool_digest, tools_table, TOOLS_DIGEST_DOMAIN, MAX_TOOL_CU}`.
+- `content::{DRILL_CORE_MK1, SCANNER_MK1, BATTERY_MK1, TOOL_SOURCES, TV_PROSPECTOR, DRAY_P, EXTENSIONS_VEHICLES}`; `LANE_VERSION = 10`.
+- `BayDef {room, slot: BaySlotDef {id, maximum_items}, egress: EgressDef {label, x_cm, y_cm, heading_mdeg}}`.
+- `InteriorDef.bays`, `InteriorDef::bay()`, `InteriorRoomKind::Bay`, `MAX_BAYS`, `MAX_BAY_ITEMS`.
+- `UnitClass::Vehicle`; `LogisticsDef.drive: Option<DriveDef>`.
+
+**Port definitions**
+- `port::def::{VehiclesDef, STANDARD_REFIT, MAX_VEHICLE_POOL, ...}`.
+- `PortDef.vehicles: Option<Box<VehiclesDef>>`.
+- `ProgrammeDef.refits: BTreeMap<word, unit>`.
+- `PortMap.vehicles: Option<VehiclesRow {shed, rigs: Vec<RigRow {n, mark, tv, rooms, vault}>}>`.
+- `readiness::Binding::Vehicles` (ungated).
+- `vendor::role_room` (`pub(crate)`).
+
+**Verb:** `+tv` with switches `1`, `2`, `lease` under `LegacyPostImage`. SM.3b moves it to the authoritative class.
+
+**Tests:** `tests/support/vehicles.rs` `strip_vehicles(doc)`, idempotent. SM.5's v11 strip goes beside it.
+
+### Doc 20 amendments owed
+
+- **§13, the SM.3 row.** SM.3 is split by the lead into SM.3a (definitions and assets: goods v3, `UnitClass::Vehicle`, the optional drive, tools, the two packs, the bay, the payload, lane v10, the refit, Occator's lease, the charter-end repossession) and SM.3b (the excursion family, the tick, act starts with charge, launch, recover, dump, the go and selector rules, `TV_OUT`, `HOPPER_LOADED`). The acceptance's "lease refused without a licence" becomes a seam SM.5 fills. **SM.5 row:** "lane v9 … goods v2 (four ore rows, `stow.ore`)" becomes lane **v11** with no goods change. Goods v3 landed in SM.3a.
+- **§7.3.** "Goods table version 2 adds four rows" becomes "version 3 (doc 20 cut SM.3a)". The ore notes say "drilled from a Ceres site", which should also cover Rheasilvia (Vesta).
+- **§4.1.**
+  - Tools are strict typed documents pinned by digest (`tacsim.tools.v1`), not packs, read only by their tests until SM.4/SM.7. A third row, `battery_mk1`, carries the charge figures as data.
+  - "read by the surface engine now" is not yet true.
+  - The TV is fielded into the catalog (it binds and mints a `DefinitionRef`) but has no burn row. A drive-less unit refuses with `NO_DRIVE`.
+- **§4.2.** The hopper vault is laid up by the applier's part (h) in Occator's unanchored shed, not by "the hull recipe" or "`create_vault` as `+coop/enrol` does". Its id comes from the applier's allocator, and it is owned by `System(tacsim.vehicles)` with scope None.
+- **§4.3 and D-20-7.**
+  - `+coop/refit` re-binds the chartered hull's tactics unit in place (`refit_unit`). It is not a swap "as lane data". The lane carries a `refits` row.
+  - The bay room, its space and its `rigs` compartment are laid on **every** programme hull at apply, standard Drays included: hidden, empty, exitless.
+  - The egress is definition data only (`EgressDef`); no `EgressSpec` is written until SM.3b.
+  - Occator's counter is the Ceres Exchange Hall. The rigs are `OWP-TV-01..08`, in "Occator Vehicle Shed".
+  - Refit refusals also cover provisions in the hold, a rig in the bay (or a live lease record) and being away from the desk.
+  - The lease mechanics:
+    - an economy lease with a 1-minor Manual rent;
+    - one public post carrying the term fee and an engine-owned `tacsim.tv.deposit` hold;
+    - "re-debited at the next dock" is as built "at the pilot's next `+tv/lease` act" (the at-dock hook is residual R1);
+    - a forfeit captures the whole deposit, and the rig waits to be returned;
+    - the return is keyed on the lessee's own record, so a Revoked pilot can still hand a rig back.
+- **§1 beat 1.** "at Occator's counter" is the Exchange Hall. "+coop/refit … refused under way or with cargo aboard" also refuses with provisions aboard and with a rig in the bay.
+- **§11, the Dray-P row.** "2.3 t of headroom" is exactly 2,320 kg (178,680 of 181,000 with two occupants; 178,580 with one).
+- **New text owed (§4.3 or §9, plus doc 18 §4.1's recall and buyout paragraphs): a charter's end with rigs aboard.**
+  - `+coop/buyout` refuses with `BUYOUT_BAY` and `+coop/release` with `RECALL_BAY`.
+  - `@coop/revoke`, the dormancy recall and the return arm repossess every rig first.
+  - Deposits follow D16: released within the paid term, captured whole past it, and the engine never debits a fee. Each deposit settles before the lease ends.
+  - A non-empty hopper, an unreadable or unlisted record, or a deposit that will not settle holds the hull, and staff are paged with `BAY_PAGE`.
+- **Doc 10b §15.5 (or wherever the engine-owned table's rule lives).** D18: `tacsim.tv.deposit` is the first game namespace in mush-economy's frozen `ENGINE_OWNED_RESERVATIONS`, for the reasons the `api.rs` paragraph gives.
+- **§18 amendments owed.**
+  - Doc 18 §4.1/§4.2: the Dray-P beside the Dray, `+coop/refit`, `RECALL_BAY`/`BUYOUT_BAY`, every hull's bay room.
+  - Doc 11 §7: Occator's terrain-vehicle lease, eight rigs `OWP-TV-01..08`, 1,400 a term and 5,000 deposit.

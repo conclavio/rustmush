@@ -65,7 +65,10 @@ pub const COOP_HELP: &str = "+coop  --  The Belt Carriers' Cooperative's First C
      so far, and your cash against the buyout, anywhere.\n+coop/buyout  at the Registry & Co-op \
      desk with your Dray docked at Ceres: pay the buyout on your papers and the Registry enters \
      the hull in your name.\n+coop/release  at the desk with your Dray docked at Ceres and her \
-     cargo hold empty: hand the charter back; the stake stays yours.";
+     cargo hold empty: hand the charter back; the stake stays yours.\n+coop/refit \
+     prospector|standard  at the Registry & Co-op desk with your Dray docked at Ceres, her hold \
+     empty but for her tank and her bay empty: the Co-op's yard refits her as a Dray-P, a two-rig \
+     vehicle bay and an 86 t hold that takes bulk and ore, or back to a standard Dray.";
 
 /// The prefix of every enrolment document (`tacsim:coop:{account}`).
 pub const COOP_PREFIX: &str = "tacsim:coop:";
@@ -729,6 +732,10 @@ pub const fn gated(binding: Binding) -> bool {
         // gated (the geology precedent); and every line of a site's port is
         // ungated by `enrol_gate` (lead override 3).
         Binding::Site => false,
+        // Doc 20 cut SM.3a: a lessor's rig pool (and every programme hull's refit
+        // bay) is reported, never gated — mining content never closes the trade-run
+        // desk (the SM.1/SM.2 rule).
+        Binding::Vehicles => false,
     }
 }
 
@@ -948,6 +955,9 @@ pub(crate) fn coop_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         crate::port::buyout::buyout_cmd(ctx)
     } else if ctx.switches.has("release") {
         crate::port::recall::release_cmd(ctx)
+    } else if ctx.switches.has("refit") {
+        // Doc 20 cut SM.3a: the Co-op's yard.
+        crate::port::refit::refit_cmd(ctx)
     } else {
         terms(ctx)
     }
@@ -1991,7 +2001,7 @@ mod tests {
     /// this walk pins state by state.
     #[test]
     fn ic12_the_gate_refuses_on_every_gated_line_and_never_on_the_sky() {
-        const EVERY: [Binding; 18] = [
+        const EVERY: [Binding; 19] = [
             Binding::Lane,
             Binding::Sky,
             Binding::Rate,
@@ -2010,6 +2020,8 @@ mod tests {
             Binding::Markers,
             Binding::Geology,
             Binding::Site,
+            // Doc 20 cut SM.3a: reported, never gated.
+            Binding::Vehicles,
         ];
         let port = CanonicalId::new("ceres_port").ok();
         let line = |binding, state| ReadinessLine {
@@ -2029,7 +2041,11 @@ mod tests {
         for binding in EVERY {
             let ungated = matches!(
                 binding,
-                Binding::Sky | Binding::Markers | Binding::Geology | Binding::Site
+                Binding::Sky
+                    | Binding::Markers
+                    | Binding::Geology
+                    | Binding::Site
+                    | Binding::Vehicles
             );
             assert_eq!(gated(binding), !ungated, "{binding:?}");
             for state in [LineState::Pending, LineState::Missing, LineState::Flagged] {

@@ -42,7 +42,7 @@ use crate::definitions::goods::Consumable;
 use crate::definitions::{Catalog, GoodsTable};
 use crate::port::coop::helm_of;
 use crate::port::families::{Manifest, Ticket, TicketId};
-use crate::port::passage::{HullDrive, PlanError, crew_days, passage_burn, payload_kg};
+use crate::port::passage::{HullDrive, PlanError, carried_kg, crew_days, passage_burn, payload_kg};
 use crate::port::ship::{Berth, berth_of};
 use crate::port::voyage::{PendingVoyage, VoyageState, aboard};
 use crate::port_tick::port_error;
@@ -99,10 +99,16 @@ pub(crate) fn consumable_good(goods: &GoodsTable, kind: Consumable) -> Option<Ca
         .map(|good| good.id.clone())
 }
 
+/// **A drive-less unit's refusal** (doc 20 cut SM.3a; §4.1 "stowage-only"):
+/// `{unit}` is replaced by the unit's id. The terrain vehicle carries a hopper
+/// and no drive, so it never plans a passage.
+pub const NO_DRIVE: &str = "unit {unit} carries no drive; it never plans a passage";
+
 /// **One fielded unit's hull spec and digest** (`burn_table`'s row, and what
-/// `+ship/plan`/`+ship/undock` plan with): the spec must carry `logistics`, the
-/// drive class must have a law in the drive table, and the unit must have a
-/// minted reference. The refusal names what is missing.
+/// `+ship/plan`/`+ship/undock` plan with): the spec must carry `logistics` and a
+/// drive ([`NO_DRIVE`] otherwise, doc 20 cut SM.3a), the drive class must have a
+/// law in the drive table, and the unit must have a minted reference. The
+/// refusal names what is missing.
 pub(crate) fn hull_spec_of(
     catalog: &Catalog,
     goods: &GoodsTable,
@@ -116,15 +122,14 @@ pub(crate) fn hull_spec_of(
         .logistics
         .as_ref()
         .ok_or_else(|| format!("unit {unit} carries no logistics"))?;
+    let drive = logistics
+        .drive
+        .as_ref()
+        .ok_or_else(|| NO_DRIVE.replace("{unit}", unit.as_str()))?;
     let law = catalog
-        .drive_for_class(&logistics.drive.class)
+        .drive_for_class(&drive.class)
         .copied()
-        .ok_or_else(|| {
-            format!(
-                "drive class {} of unit {unit} has no law",
-                logistics.drive.class
-            )
-        })?;
+        .ok_or_else(|| format!("drive class {} of unit {unit} has no law", drive.class))?;
     let digest = catalog
         .references
         .get(unit)
@@ -148,7 +153,7 @@ pub(crate) fn hull_spec_of(
         digest,
         HullSpec {
             drive: HullDrive {
-                class: logistics.drive.class.clone(),
+                class: drive.class.clone(),
                 law,
                 payload_ceiling_kg: logistics.payload_ceiling_kg,
                 throttle_permille: crate::port::passage::DEFAULT_THROTTLE_PERMILLE,
@@ -161,7 +166,9 @@ pub(crate) fn hull_spec_of(
 }
 
 /// **Build the table** (D-18-11): every fielded spec with `logistics`, keyed by
-/// its `references[entry]` digest; a class with no law is left out (logged).
+/// its `references[entry]` digest; a class with no law is left out (logged), and
+/// a drive-less (stowage-only) spec is left out silently — doc 20 cut SM.3a's
+/// terrain vehicle never plans a passage, so it has no row to miss.
 /// `None` without a goods table, and — logged — when the table's propellant good
 /// is absent or not counted at exactly [`PROPELLANT_KG_PER_UNIT`] kilograms a
 /// unit (the burn debits whole tonnes, lead ruling L19).
@@ -180,7 +187,11 @@ pub(crate) fn burn_table(catalog: &Catalog, goods: Option<Arc<GoodsTable>>) -> O
     }
     let mut hulls: BTreeMap<DefinitionDigest, HullSpec> = BTreeMap::new();
     for (unit, spec) in &catalog.specs {
-        if spec.logistics.is_none() {
+        if spec
+            .logistics
+            .as_ref()
+            .is_none_or(|logistics| logistics.drive.is_none())
+        {
             continue;
         }
         match hull_spec_of(catalog, &goods, unit) {
@@ -415,7 +426,7 @@ impl ActionProvider for BurnProvider {
             let reading = pool_of(&self.inventory, txn, vault, good).map_err(unreadable)?;
             contents.insert(good.clone(), reading);
         }
-        let payload = payload_kg(
+        let hold = payload_kg(
             &self.table.goods,
             &spec.accepted,
             |good| Ok(contents.get(good).map_or(0, |(quantity, _)| *quantity)),
@@ -423,6 +434,16 @@ impl ActionProvider for BurnProvider {
             spec.allowance_kg,
         )
         .map_err(unreadable)?;
+        // Doc 20 cut SM.3a (§4.3, D-20-7): the rigs frozen into the filing, each
+        // hopper re-read in this same transaction (a placement is a legacy slot
+        // the prepare cannot read, so the list is the filing's).
+        let carried = carried_kg(&self.table.goods, &pending.carried, |hopper, good| {
+            pool_of(&self.inventory, txn, VaultId(hopper), good).map(|(quantity, _)| quantity)
+        })
+        .map_err(unreadable)?;
+        let payload = hold
+            .checked_add(carried)
+            .ok_or_else(|| port_error(ActionErrorCode::Integrity, "the payload overflows"))?;
         if payload != pending.payload_kg {
             return Err(port_error(
                 ActionErrorCode::Conflict,
@@ -593,6 +614,48 @@ mod tests {
         assert!(spec.accepted.iter().any(|g| g.as_str() == "propellant"));
         assert!(spec.accepted.iter().any(|g| g.as_str() == "provisions"));
         assert!(burn_table(&catalog, None).is_none(), "no goods, no table");
+    }
+
+    /// **Doc 20 cut SM.3a** (§4.1 "stowage-only"): the terrain vehicle carries no
+    /// drive, so `hull_spec_of` refuses it with [`NO_DRIVE`]'s sentence and the
+    /// burn table has no row for it — while the Dray and the Dray-P each have
+    /// one, and the drive table still answers `coast_hauler`.
+    #[test]
+    fn sm3a_a_driveless_unit_names_its_refusal_and_has_no_burn_row() {
+        use crate::definitions::content::{DRAY, DRAY_P, TV_PROSPECTOR};
+        let catalog = fielded();
+        let goods = Arc::new(crate::definitions::goods::goods_table().expect("the goods table"));
+        let tv = CanonicalId::new(TV_PROSPECTOR).expect("id");
+        assert_eq!(
+            hull_spec_of(&catalog, &goods, &tv).map(|_| ()),
+            Err(
+                "unit tacsim.unit.tv_prospector carries no drive; it never plans a passage"
+                    .to_owned()
+            )
+        );
+        let table = burn_table(&catalog, Some(goods)).expect("the table builds");
+        let digest = |unit: &str| {
+            catalog
+                .references
+                .get(&CanonicalId::new(unit).expect("id"))
+                .expect("a minted reference")
+                .digest()
+        };
+        assert!(table.hulls.contains_key(&digest(DRAY)), "the Dray's row");
+        assert!(
+            table.hulls.contains_key(&digest(DRAY_P)),
+            "the Dray-P's row"
+        );
+        assert!(
+            !table.hulls.contains_key(&digest(TV_PROSPECTOR)),
+            "no row for the terrain vehicle"
+        );
+        assert!(
+            catalog
+                .drive_for_class(&CanonicalId::new("coast_hauler").expect("id"))
+                .is_some(),
+            "the drive table still answers coast_hauler"
+        );
     }
 
     #[test]

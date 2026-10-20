@@ -103,6 +103,42 @@ pub struct PortMap {
     /// stays 1 (the IC4 L9 precedent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<SiteRow>,
+    /// **Doc 20 cut SM.3a (§4.3, Q-20-6)**: the rig lessor's shed and its laid-up
+    /// rigs (part h, `crate::port::vehicle::lay_up`). Skipped when absent, so a
+    /// map without a rig pool encodes as before and [`PORT_MAP_SCHEMA`] stays 1
+    /// (the IC4 L9 precedent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vehicles: Option<VehiclesRow>,
+}
+
+/// **A rig lessor's row** (doc 20 cut SM.3a; part h): the shed room the applier
+/// made and one row per rig, in pool order. Objects only: each rig's unit,
+/// spaces, placement, title and lease are their owners' records.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VehiclesRow {
+    /// The shed room, `ObjId.0`, once made.
+    pub shed: Option<u32>,
+    /// The rigs made so far, in pool order.
+    pub rigs: Vec<RigRow>,
+}
+
+/// **One laid-up rig** (doc 20 cut SM.3a; part h): the terrain vehicle Thing,
+/// its interior rooms and its hopper vault.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RigRow {
+    /// The pool index, from 0 (`registry_mark(prefix, n)`).
+    pub n: u32,
+    /// The registry mark (`OWP-TV-01`), the Thing's name; never re-issued.
+    pub mark: String,
+    /// The terrain vehicle Thing, `ObjId.0`.
+    pub tv: u32,
+    /// Interior room id (`cab`, `hopper`) → `ObjId.0`.
+    pub rooms: BTreeMap<CanonicalId, u32>,
+    /// The hopper vault, `VaultId.0`, once made: owned by the system principal
+    /// `tacsim.vehicles`, never a player (doc 20 §4.2).
+    pub vault: Option<u64>,
 }
 
 /// **A site's row** (doc 20 cut SM.2; §3.1, §3.4): the sixteen block place
@@ -211,6 +247,7 @@ impl PortMap {
             boards: BTreeMap::new(),
             emergencies: BTreeMap::new(),
             site: None,
+            vehicles: None,
         }
     }
 

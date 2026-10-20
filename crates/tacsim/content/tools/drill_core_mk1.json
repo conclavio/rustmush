@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": "tacsim.tool.drill_core_mk1",
+  "label": "Mk1 core drill",
+  "role": {
+    "drill": {
+      "cycle_s": 1800,
+      "rock_factor": 2,
+      "energy_cu": 2000,
+      "yield_t": { "lean": 1, "fair": 2, "rich": 3 }
+    }
+  },
+  "note": "Doc 20 section 4.1's drill: one cycle is half an hour on the block under the rig and draws 2,000 cu from the battery; rock_factor 2 is the bit's rating, which the mining cut (SM.7) reads against the ground. A cycle lifts whole tonnes by the block's richness, 1 lean, 2 fair, 3 rich, into the hopper; a barren block lifts nothing. It works only the cell it stands on, so it has no radius; every radius a tool names is per axis, a square."
+}

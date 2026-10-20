@@ -84,6 +84,17 @@ pub const MAX_PROGRAMME_POOL: u32 = 16;
 pub const MAX_REGISTRY_PREFIX_BYTES: usize = 16;
 /// The longest a programme's dormancy window may be, in real days.
 pub const MAX_DORMANCY_REAL_DAYS: u32 = 365;
+/// The most refit rows one programme may author (doc 20 cut SM.3a).
+pub const MAX_PROGRAMME_REFITS: usize = 4;
+/// The refit word that always means the programme's own unit, and is never
+/// authored (doc 20 cut SM.3a).
+pub const STANDARD_REFIT: &str = "standard";
+/// The largest rig pool one lessor may author (doc 20 cut SM.3a).
+pub const MAX_VEHICLE_POOL: u32 = 16;
+/// The longest rig lease term, IC days (doc 20 cut SM.3a).
+pub const MAX_VEHICLE_TERM_IC_DAYS: u32 = 365;
+/// The most tools one rig pool may name (doc 20 cut SM.3a).
+pub const MAX_VEHICLE_TOOLS: usize = 8;
 
 /// **One `port` entry** (doc 18 §4.7, D-18-20). Strict and integer-only.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +153,46 @@ pub struct PortDef {
     /// tenure, prospectivity and worked share are here. Absent for a station.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<SiteDef>,
+    /// **Doc 20 cut SM.3a (§4.3, Q-20-6)** — a lessor's pool of terrain
+    /// vehicles, laid up by the applier (part h): Occator's rigs at Ceres. At
+    /// most one port of a lane authors it, and that port runs the programme
+    /// ([`check_ports`]). Absent everywhere else. Boxed, so a port entry does not
+    /// grow every `PackEntry` (clippy's `large_enum_variant`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vehicles: Option<Box<VehiclesDef>>,
+}
+
+/// **Doc 20 cut SM.3a (§4.3, Q-20-6)**: a lessor's pool of terrain vehicles,
+/// laid up by the applier (part h).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VehiclesDef {
+    /// The pool's id (`occator.rig_lease`).
+    pub id: CanonicalId,
+    /// One of this entry's orgs: the lessor and the title holder.
+    pub org: CanonicalId,
+    /// The unit every rig is bound to (`tacsim.unit.tv_prospector`).
+    pub unit: CanonicalId,
+    /// The `SystemPrincipalId` that titles them (`tacsim.registry`).
+    pub issuer: String,
+    /// A role word of this entry's `rooms`: where `+tv/lease` is signed.
+    pub counter: CanonicalId,
+    /// The name of the room the applier makes for the laid-up rigs.
+    pub shed: String,
+    /// How many rigs, `1..=`[`MAX_VEHICLE_POOL`].
+    pub pool: u32,
+    /// `[A-Z0-9-]`, 1..=16 bytes; marks are `registry_mark(prefix, n)`.
+    pub registry_prefix: String,
+    /// One term's fee, major units.
+    pub fee_major: u64,
+    /// The deposit held while leased, major units.
+    pub deposit_major: u64,
+    /// One term, IC days, `1..=`[`MAX_VEHICLE_TERM_IC_DAYS`].
+    pub term_ic_days: u32,
+    /// 1..=[`MAX_VEHICLE_TOOLS`] distinct rows of
+    /// [`crate::definitions::tools::tools_table`]: what every rig of the pool
+    /// carries.
+    pub tools: Vec<CanonicalId>,
 }
 
 /// The treasury a port that authors none capitalizes from (doc 20 cut SM.2).
@@ -457,6 +508,12 @@ pub struct ProgrammeDef {
     pub dormancy_real_days: u32,
     /// How many enrolments one account may hold.
     pub per_account: u32,
+    /// **Doc 20 cut SM.3a (§4.3, D-20-7)**: refit word → the unit `+coop/refit
+    /// <word>` re-binds a chartered hull to; `standard` is always `unit` and is
+    /// never authored. Each refit unit is `refit_compatible` with `unit`
+    /// (checked at the apply preflight, where the catalog is).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub refits: BTreeMap<CanonicalId, CanonicalId>,
 }
 
 /// **One vendor** (doc 18 §4.7, §4.3 "Vendors and buyers"; applied by the
@@ -611,10 +668,12 @@ impl PortDef {
                 || self.programme.is_some()
                 || self.premium.is_some()
                 || self.emergency.is_some()
+                || self.vehicles.is_some()
             {
+                // Doc 20 cut SM.3a: nor a rig pool (rigs are leased at a station).
                 return Err(
                     "site: a site authors no orgs, rooms, programme, vendors, premium or \
-                     emergency; its pad is its gallery"
+                     emergency, and no vehicles block; its pad is its gallery"
                         .to_owned(),
                 );
             }
@@ -792,6 +851,94 @@ impl PortDef {
         // vendor's fault is named as the vendor's.
         if let Some(emergency) = &self.emergency {
             self.check_emergency(emergency)?;
+        }
+        // Doc 20 cut SM.3a: the rig pool.
+        if let Some(vehicles) = &self.vehicles {
+            self.check_vehicles(vehicles)?;
+        }
+        Ok(())
+    }
+
+    /// **The rig pool's bounds** (doc 20 cut SM.3a; §4.3, Q-20-6): its org one
+    /// of the entry's, its counter a key of `rooms`, the issuer a system
+    /// principal, the shed a label, the pool, prefix and term in bounds, the
+    /// money positive, and every tool a row of the compiled tools table, none
+    /// twice. Each sentence starts `vehicles {id}: `.
+    fn check_vehicles(&self, vehicles: &VehiclesDef) -> Result<(), String> {
+        let vid = &vehicles.id;
+        if !self.orgs.iter().any(|org| org.id == vehicles.org) {
+            return Err(format!(
+                "vehicles {vid}: org {} is not one of this port's orgs",
+                vehicles.org
+            ));
+        }
+        if !self.rooms.contains_key(&vehicles.counter) {
+            return Err(format!(
+                "vehicles {vid}: counter `{}` is not one of this port's rooms",
+                vehicles.counter
+            ));
+        }
+        if !principal_ok(&vehicles.issuer) {
+            return Err(format!(
+                "vehicles {vid}: issuer `{}` is not a system principal id",
+                vehicles.issuer
+            ));
+        }
+        if !label_ok(&vehicles.shed) {
+            return Err(format!(
+                "vehicles {vid}: shed must be non-blank and at most {MAX_LABEL_BYTES} bytes"
+            ));
+        }
+        if vehicles.pool == 0 || vehicles.pool > MAX_VEHICLE_POOL {
+            return Err(format!(
+                "vehicles {vid}: pool must be 1..={MAX_VEHICLE_POOL}, not {}",
+                vehicles.pool
+            ));
+        }
+        let prefix = &vehicles.registry_prefix;
+        if prefix.is_empty()
+            || prefix.len() > MAX_REGISTRY_PREFIX_BYTES
+            || !prefix
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(format!(
+                "vehicles {vid}: registry_prefix must be 1..={MAX_REGISTRY_PREFIX_BYTES} bytes \
+                 of [A-Z0-9-], not `{prefix}`"
+            ));
+        }
+        for (field, major) in [
+            ("fee_major", vehicles.fee_major),
+            ("deposit_major", vehicles.deposit_major),
+        ] {
+            if major == 0 || major > MAX_PORT_CAPITAL_MAJOR {
+                return Err(format!(
+                    "vehicles {vid}: {field} must be 1..={MAX_PORT_CAPITAL_MAJOR}, not {major}"
+                ));
+            }
+        }
+        if vehicles.term_ic_days == 0 || vehicles.term_ic_days > MAX_VEHICLE_TERM_IC_DAYS {
+            return Err(format!(
+                "vehicles {vid}: term_ic_days must be 1..={MAX_VEHICLE_TERM_IC_DAYS}, not {}",
+                vehicles.term_ic_days
+            ));
+        }
+        if vehicles.tools.is_empty() || vehicles.tools.len() > MAX_VEHICLE_TOOLS {
+            return Err(format!(
+                "vehicles {vid}: tools names 1..={MAX_VEHICLE_TOOLS} tools, not {}",
+                vehicles.tools.len()
+            ));
+        }
+        let table = crate::definitions::tools::tools_table()
+            .map_err(|error| format!("vehicles {vid}: the tools table does not load: {error}"))?;
+        let mut seen: BTreeSet<&CanonicalId> = BTreeSet::new();
+        for tool in &vehicles.tools {
+            if !table.contains_key(tool) {
+                return Err(format!("vehicles {vid}: tool {tool} is not a shipped tool"));
+            }
+            if !seen.insert(tool) {
+                return Err(format!("vehicles {vid}: tool {tool} is named twice"));
+            }
         }
         Ok(())
     }
@@ -991,6 +1138,27 @@ impl PortDef {
                 programme.dormancy_real_days
             ));
         }
+        // Doc 20 cut SM.3a (§4.3, D-20-7): the refit rows. `refit_compatible` is
+        // the apply preflight's, where the catalog is.
+        if programme.refits.len() > MAX_PROGRAMME_REFITS {
+            return Err(format!(
+                "programme {pid}: refits holds at most {MAX_PROGRAMME_REFITS} rows, not {}",
+                programme.refits.len()
+            ));
+        }
+        for (word, unit) in &programme.refits {
+            if word.as_str() == STANDARD_REFIT {
+                return Err(format!(
+                    "programme {pid}: refit `{STANDARD_REFIT}` is the programme's own unit and \
+                     is never authored"
+                ));
+            }
+            if *unit == programme.unit {
+                return Err(format!(
+                    "programme {pid}: refit `{word}` names the programme's own unit {unit}"
+                ));
+            }
+        }
         // Doc 18 cut IC6 (D-18-25, lead ruling L5): one `tacsim:coop:{account}`
         // document per gateway account holds one enrolment, so the programme can
         // promise exactly one.
@@ -1056,8 +1224,30 @@ pub fn check_ports(
     let mut locations: BTreeSet<&CanonicalId> = BTreeSet::new();
     let mut orgs: BTreeMap<&CanonicalId, &CanonicalId> = BTreeMap::new();
     let mut agents: BTreeMap<&CanonicalId, &CanonicalId> = BTreeMap::new();
+    // Doc 20 cut SM.3a (reviewer F11): one rig lessor a lane.
+    let mut lessor: Option<&CanonicalId> = None;
     for (id, def) in &ports {
         let fail = |detail: String| Err(((*id).clone(), detail));
+        // Doc 20 cut SM.3a (reviewer F11): at most one port of the pack authors a
+        // rig pool, and that port runs the programme the rigs are leased into —
+        // so the vehicles port **is** the programme port. The one-lessor rule is
+        // checked first (entries iterate in id order).
+        if let Some(vehicles) = &def.vehicles {
+            if let Some(other) = lessor {
+                return fail(format!(
+                    "vehicles: port {id} also authors a vehicles block (port {other}'s); a lane \
+                     has one rig lessor"
+                ));
+            }
+            if def.programme.is_none() {
+                return fail(format!(
+                    "vehicles {}: port {id} authors no programme; rigs are leased into the \
+                     programme's hulls",
+                    vehicles.id
+                ));
+            }
+            lessor = Some(*id);
+        }
         // Doc 18 cut IC8 (lead ruling L2): a stock clerk is one port's.
         if let Some(vendor) = def.vendors.first()
             && let Some(other) = agents.insert(&vendor.agent, id)
@@ -1317,12 +1507,14 @@ mod tests {
                 buyout_major: 90_000,
                 dormancy_real_days: 7,
                 per_account: 1,
+                refits: BTreeMap::new(),
             }),
             vendors: Vec::new(),
             routes: BTreeMap::from([(cid("stickney"), vec![cid("out")])]),
             premium: None,
             emergency: None,
             site: None,
+            vehicles: None,
         }
     }
 
@@ -1546,6 +1738,7 @@ mod tests {
                 },
                 blocks: BTreeMap::new(),
             }),
+            vehicles: None,
         }
     }
 

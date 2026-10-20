@@ -1488,7 +1488,9 @@ impl ArenaConfig {
         for (class, cap) in &self.max_units_by_class {
             // **Doc 18 cut IC2** (reviewer F10): a class no arena fields has no
             // cap to set — the typed path fixtures build by hand gets the same
-            // door, and the same sentence, as the host's word parser.
+            // door, and the same sentence, as the host's word parser. Doc 20
+            // cut SM.3a's terrain vehicle is the second such class (the
+            // hauler the first); the sentence names the fieldable three.
             if !class.fieldable() {
                 return Err(format!(
                     "[tacsim.arena.max_units_by_class] names a class that is not armour, \
@@ -1887,6 +1889,24 @@ mod tests {
             Err(
                 "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
                  drone: hauler"
+                    .to_owned()
+            )
+        );
+    }
+
+    /// **Doc 20 cut SM.3a** (D-20-6): the hauler test's twin — a cap on the
+    /// terrain vehicle, a class no arena fields in phase 1, is refused by the
+    /// typed path with the same sentence.
+    #[test]
+    fn sm3a_arena_config_refuses_a_vehicle_cap() {
+        use crate::definitions::UnitClass;
+        let mut cfg = ArenaConfig::default();
+        cfg.max_units_by_class.insert(UnitClass::Vehicle, 1);
+        assert_eq!(
+            cfg.validate(),
+            Err(
+                "[tacsim.arena.max_units_by_class] names a class that is not armour, walker or \
+                 drone: vehicle"
                     .to_owned()
             )
         );

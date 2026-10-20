@@ -8545,13 +8545,15 @@ fn ae1_the_three_chassis_load_beside_the_stock_game_without_moving_it() {
     assert_eq!(stock.arenas.len(), 1, "one arena");
 
     // The fielded catalog: eleven unit schemas since 16b cut AE.3's drone (ten
-    // at AE.1), twelve since doc 18 cut IC2's Dray, and no stock identity moved.
+    // at AE.1), twelve since doc 18 cut IC2's Dray, fourteen since doc 20 cut SM.3a's
+    // terrain vehicle and Dray-P, and no stock identity moved.
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     assert_eq!(
         fielded.specs.len(),
-        12,
+        14,
         "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
-         16b cut AE.3's drone and doc 18 cut IC2's Dray"
+         16b cut AE.3's drone, doc 18 cut IC2's Dray and doc 20 cut SM.3a's terrain vehicle \
+         and Dray-P"
     );
     for (id, reference) in &stock.references {
         assert_eq!(
@@ -10051,12 +10053,13 @@ fn ae2_the_ordnance_loads_beside_the_stock_game_without_moving_it() {
             "tacsim.ammunition.missile_round".to_owned(),
         ]
     );
-    // Doc 18 cut IC2: twelve with the Dray (was eleven).
+    // Doc 18 cut IC2: twelve with the Dray (was eleven). Doc 20 cut SM.3a: fourteen
+    // with the terrain vehicle and the Dray-P (was twelve).
     assert_eq!(
         fielded.specs.len(),
-        12,
-        "no unit schema of its own: the ten AE.1 left, 16b cut AE.3's drone and doc 18 cut \
-         IC2's Dray"
+        14,
+        "no unit schema of its own: the ten AE.1 left, 16b cut AE.3's drone, doc 18 cut \
+         IC2's Dray and doc 20 cut SM.3a's terrain vehicle and Dray-P"
     );
     for (id, reference) in &stock.references {
         assert_eq!(
@@ -10866,13 +10869,14 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
 
     // The fielded catalog: eleven unit schemas, and nothing fielded before the
     // drone moved — the same references as the eight earlier tables give alone.
-    // Doc 18 cut IC2: twelve with the Dray (was eleven).
+    // Doc 18 cut IC2: twelve with the Dray (was eleven). Doc 20 cut SM.3a: fourteen
+    // with the terrain vehicle and the Dray-P (was twelve).
     let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
     assert_eq!(
         fielded.specs.len(),
-        12,
+        14,
         "the line tank, doc 16 section 9's five, the range's target, the three chassis, \
-         the drone and the Dray"
+         the drone, the Dray, the terrain vehicle and the Dray-P"
     );
     let earlier: Vec<(&str, &str)> = [
         content::EXTENSIONS.as_slice(),
@@ -10933,18 +10937,33 @@ fn ae3_the_drone_loads_beside_the_stock_game_without_moving_it() {
         vec!["drone_mk1"],
         "the drone alone declares its class"
     );
-    // Doc 18 cut IC2: the Dray declares `hauler`, a bucket of its own.
+    // Doc 18 cut IC2: the Dray declares `hauler`, a bucket of its own. Doc 20 cut
+    // SM.3a: the Dray-P joins it (was the Dray alone), and the terrain vehicle
+    // declares `vehicle`, a bucket of its own.
+    let mut haulers = classes.get(&UnitClass::Hauler).cloned().unwrap_or_default();
+    haulers.sort();
     assert_eq!(
-        classes.get(&UnitClass::Hauler).cloned().unwrap_or_default(),
-        vec!["dray"],
-        "the Dray alone is a hauler"
+        haulers,
+        vec!["dray", "dray_p"],
+        "the Dray and the Dray-P are the haulers"
+    );
+    assert_eq!(
+        classes
+            .get(&UnitClass::Vehicle)
+            .cloned()
+            .unwrap_or_default(),
+        vec!["tv_prospector"],
+        "the terrain vehicle alone is a vehicle"
     );
     let dray_key = CanonicalId::new(content::DRAY).expect("a canonical id");
+    let dray_p_key = CanonicalId::new(content::DRAY_P).expect("a canonical id");
+    let tv_key = CanonicalId::new(content::TV_PROSPECTOR).expect("a canonical id");
     for (id, spec) in &fielded.specs {
         assert_eq!(
             spec.class.is_some(),
-            *id == drone_key || *id == dray_key,
-            "{id}: only the drone and the Dray write a class word"
+            *id == drone_key || *id == dray_key || *id == dray_p_key || *id == tv_key,
+            "{id}: only the drone, the Dray, the Dray-P and the terrain vehicle write a class \
+             word"
         );
     }
 

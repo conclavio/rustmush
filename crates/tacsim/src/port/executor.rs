@@ -725,6 +725,11 @@ pub(crate) struct Planner<'w> {
     pub(crate) spec: HullSpec,
     pub(crate) pack: &'w RulesPack,
     pub(crate) sky: Sky,
+    /// **Doc 20 cut SM.3a**: what the rigs in the hull's bay weigh, kilograms
+    /// ([`crate::port::voyage::carried_of`]); [`Planner::plan`] adds it to every
+    /// projected payload, so the queue plans a Dray-P with its rigs as the filing
+    /// does. Zero from [`planner`]; the callers set it ([`Planner::carrying`]).
+    pub(crate) carried_kg: u64,
 }
 
 impl Planner<'_> {
@@ -744,6 +749,10 @@ impl Planner<'_> {
             .drive
             .clone()
             .at_throttle(options.throttle_permille);
+        // Doc 20 cut SM.3a: the bay's rigs ride every projected payload.
+        let payload_kg = payload_kg
+            .checked_add(self.carried_kg)
+            .ok_or(PlanError::Overflow)?;
         choose_route(
             &self.sky,
             self.pack,
@@ -775,14 +784,32 @@ pub(crate) fn planner<'w>(w: &'w World, view: &HullView<'_>) -> Result<Planner<'
     let loaded = store
         .pack(&lane, version)
         .ok_or_else(|| format!("the lane at version {version} is not loaded"))?;
-    let (_, spec) = hull_spec_of(store.definitions(), goods, &view.port.programme.unit)?;
+    // Doc 20 cut SM.3a (reviewer F6): a hull whose unit record boot held plans
+    // nothing; otherwise its own unit (the Dray-P on a refitted hull).
+    if view.unit_held {
+        return Err(PlanError::Unreadable {
+            what: format!("hull #{}'s unit record (held at boot)", view.hull().0),
+        }
+        .to_string());
+    }
+    let (_, spec) = hull_spec_of(store.definitions(), goods, &view.unit)?;
     let sky = Sky::from_pack(&loaded.pack, &store.config().time.ephemeris);
     Ok(Planner {
         goods,
         spec,
         pack: &loaded.pack,
         sky,
+        carried_kg: 0,
     })
+}
+
+impl Planner<'_> {
+    /// **The planner with the bay's rigs aboard** (doc 20 cut SM.3a): `view`'s
+    /// [`crate::port::voyage::carried_of`] weight added to every plan.
+    pub(crate) fn carrying(mut self, ctx: &Ctx<'_>, view: &HullView<'_>) -> Result<Self, String> {
+        self.carried_kg = crate::port::voyage::carried_of(ctx, view)?.1;
+        Ok(self)
+    }
 }
 
 /// **The next departure's fill targets** from queue place `from` (inclusive).
@@ -1091,7 +1118,7 @@ pub(crate) fn plan_queue(
             .replace("{name}", &name)
             .replace(crate::port::voyage::NOTHING_BURNED, ""),
     ];
-    let Ok(planner) = planner(w, view) else {
+    let Ok(planner) = planner(w, view).and_then(|planner| planner.carrying(ctx, view)) else {
         return dark;
     };
     let goods = planner.goods;
@@ -1316,8 +1343,11 @@ pub(crate) fn plan_queue(
                     ));
                     continue;
                 };
+                // Doc 20 cut SM.3a: the projected hold plus the bay's rigs, as the filing
+                // counts them.
                 let Some(payload) =
                     payload_of(goods, &readings, occupants, planner.spec.allowance_kg)
+                        .and_then(|payload| payload.checked_add(planner.carried_kg))
                 else {
                     return dark;
                 };
@@ -2697,7 +2727,7 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
                     &HELD_FILL_PLAN.replace("{port}", &planning_port),
                 );
             };
-            let planner = match planner(w, &view) {
+            let planner = match planner(w, &view).and_then(|planner| planner.carrying(ctx, &view)) {
                 Ok(planner) => planner,
                 Err(error) => {
                     planning_hold(&mut out, &error);
