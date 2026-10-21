@@ -41,13 +41,26 @@
 //! **Doc 20 cut SM.4b** adds the **drive** on the same two actions (`act` word `drive`): the
 //! command (`drive_cmd`) runs the cheap gates first, then ONE A* (`drive_plan`, through
 //! `crate::surface::drive`) and the reserve with the real trip home, writes the drive's order to
-//! a RAM slot (`DriveOrders`: the legal-action query carries no parameters, so a typed target
-//! cannot reach the offer, and a player-supplied leg cannot be trusted) and submits; the start's
-//! offer fixes that order after re-running the stand gate, and the prepare binds it to the
-//! invocation's ordinal. A **recover** from farther than beside the ramp carries its leg home in
-//! the same one act (`recover_plan`), checked by `leg_affordable` — never the 5 % floor — and the
-//! scan's and the sounding's reserve now carry the real trip home from their stand (`home_here`).
-//! No act reads a licence or a tenure (lead ruling 9).
+//! a RAM slot (`ActOrders`, SM.4b's `DriveOrders`: the legal-action query carries no
+//! parameters, so a typed target cannot reach the offer, and a player-supplied leg cannot be
+//! trusted) and submits; the start's offer fixes that order after re-running the stand gate, and
+//! the prepare binds it to the invocation's ordinal. A **recover** from farther than beside the
+//! ramp carries its leg home in the same one act (`recover_plan`), checked by `leg_affordable` —
+//! never the 5 % floor — and the scan's and the sounding's reserve now carry the real trip home
+//! from their stand (`home_here`). No act reads a licence or a tenure (lead ruling 9).
+//!
+//! **Doc 20 cut SM.7** adds **mining** on the same two actions (`act` words `mine` and
+//! `mine_stop`; no third action, SM.3b's decision 25): `mine_cmd` plans the run from the
+//! operator's own reading (`mine_plan`: the stand, the lease, the ground, **the licence and the
+//! tenure** — mining is the act that reads rights, §8 — the record, the pocket's locks, the
+//! reading and the family, the truth server-side, the fit, the body caps), writes the order to
+//! `ActOrders` and submits; the start's offer re-plans and requires it equal; the prepare writes
+//! the run into the record's **cycle slot** (`RigRecord::run`) and locks the pocket's cursor rows
+//! in one bundle. Each cycle's finish is `tacsim_surface_done` with a `cycle` parameter (keyed
+//! `tacsim.surface/{tv}/{ordinal}/cycle/{k}`): the family's ore moved by
+//! `InventoryFamilies::transfer` from the block vault to the hopper, the cursor's `drawn_t`
+//! raised by the same tonnes, the charge spent, the operator's core written to the chart, and the
+//! run re-armed or closed — one bundle. While a run drills only a scan or a sounding may start.
 //!
 //! Neither provider ever reads `World::now`: `now` is the offer's IC instant.
 
@@ -69,12 +82,14 @@ use mush_sim::{DomainId, SlotId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::definitions::tools::{BatteryDef, ScannerDef, ToolDef};
+use crate::definitions::tools::{BatteryDef, DrillDef, ScannerDef, ToolDef};
+use crate::port::capacity::Load;
 use crate::port::coop::{name_of, port_name};
 use crate::port::def::PortDef;
 use crate::port::families::PortHandles;
 use crate::port::map::PortMap;
 use crate::port::ship::{Berth, HullView, berth_of, hull_view};
+use crate::port::site_map::SurfaceReads;
 use crate::port::tv::{self, TvLease, TvLeaseStatus};
 use crate::port_tick::port_error;
 use crate::store::TacsimStore;
@@ -83,12 +98,20 @@ use crate::surface::chart::{
     self, ChartKey, ChartRecord, SitePeek, body_admits, heard_line_due, repeat_refused, scan_adds,
     sound_adds, write_scan, write_sound,
 };
+use crate::surface::cursor::{PocketCursor, PocketLock};
 use crate::surface::drive::{self, DriveRates, Leg, LegRefused, Target};
 use crate::surface::excursion::{
     Act, ActKind, ActParams, ActResult, CapRefused, Charge, DUMP_S, Excursion, ExcursionCounts,
     ExcursionId, LAUNCH_S, MAX_DUMP_GOODS, Outcome, RECOVER_S, ReadSpan, RefusedCode, RigKey,
     RigRecord, cap_refusal, cells_apart, charge_at, charge_for_act, leg_affordable, needs_battery,
     ramp_pose, reserve_check, reserved_total, settle_free, settle_spent_out_of_bay, site_cell,
+};
+use crate::surface::excursion::{DarkCause, LicenceEnd, LockRow, MAX_LOCK_ROWS, Mined, Run};
+use crate::surface::geology::{OreFamily, Word, by_family};
+use crate::surface::mine::{
+    Bound, MineChoice, MinePlan, RightsVerdict, TenureRead, blind_room_t, class_yield,
+    cursor_after, cursor_locked, cursor_released, cycle_secs, cycle_yield, fit, lock_live,
+    pocket_yields, run_end,
 };
 use crate::surface::reading::Footing;
 use crate::surface::{HomePeek, Peeks};
@@ -107,11 +130,13 @@ pub const SURFACE_DONE_OUTCOME: &str = "tacsim_surface_done_result";
 /// the finish `tacsim.surface/{tv}/{ordinal}/done`.
 pub const SURFACE_KEY_PREFIX: &str = "tacsim.surface/";
 /// **The start's `act` words** (doc 20 cut SM.4a, D23): the offer's Choice and the plans' keys,
-/// sorted.
-pub const ACT_WIRE_WORDS: [&str; 7] = [
+/// sorted. Doc 20 cut SM.7 adds `mine` and `mine_stop`.
+pub const ACT_WIRE_WORDS: [&str; 9] = [
     "drive",
     "dump",
     "launch",
+    "mine",
+    "mine_stop",
     "recover",
     "scan",
     "sound",
@@ -120,17 +145,42 @@ pub const ACT_WIRE_WORDS: [&str; 7] = [
 
 /// **The start's `act` parameter** (doc 20 cut SM.4a; the brief's reviewer finding F6, D23):
 /// `launch`, `recover`, `dump`, `scan`, `sound` and `sound_quiet` — the kind and the sounding's
-/// quiet flag — and since doc 20 cut SM.4b `drive`. Both the start's `validate_invocation` and
-/// its prepare read it, never `ActKind::from_word`.
+/// quiet flag — and since doc 20 cut SM.4b `drive`, since SM.7 `mine`. `mine_stop` is no act
+/// ([`start_word`]).
 #[must_use]
 pub(crate) fn act_of_word(word: &str) -> Option<(ActKind, bool)> {
     match word {
         "sound_quiet" => Some((ActKind::Sound, true)),
-        "launch" | "recover" | "dump" | "scan" | "sound" | "drive" => {
+        "launch" | "recover" | "dump" | "scan" | "sound" | "drive" | "mine" => {
             ActKind::from_word(word).map(|kind| (kind, false))
         }
         _ => None,
     }
+}
+
+/// **What a start's `act` word asks** (doc 20 cut SM.7; the brief's 3.4): an act (its kind and a
+/// sounding's quiet flag), or `mine_stop` — a control on a committed run, no act.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartWord {
+    /// An act.
+    Act {
+        /// What it is.
+        kind: ActKind,
+        /// A quiet sounding.
+        quiet: bool,
+    },
+    /// `+tv/mine stop`.
+    MineStop,
+}
+
+/// **The start's word** (doc 20 cut SM.7): [`act_of_word`]'s acts, and `mine_stop`. Both the
+/// start's `validate_invocation` and its prepare read it.
+#[must_use]
+pub(crate) fn start_word(word: &str) -> Option<StartWord> {
+    if word == "mine_stop" {
+        return Some(StartWord::MineStop);
+    }
+    act_of_word(word).map(|(kind, quiet)| StartWord::Act { kind, quiet })
 }
 
 /// The inverse of [`act_of_word`]: a quiet sounding is `sound_quiet`; the quiet flag means
@@ -153,6 +203,23 @@ pub fn act_key(tv: ObjId, ordinal: u32) -> Option<IdempotencyKeyText> {
 #[must_use]
 pub fn done_key(tv: ObjId, ordinal: u32) -> Option<IdempotencyKeyText> {
     IdempotencyKeyText::parse_canonical(format!("{SURFACE_KEY_PREFIX}{}/{ordinal}/done", tv.0)).ok()
+}
+
+/// **A mining cycle's finish key** (doc 20 cut SM.7; the brief's decision R2: the receipt
+/// `(deposit, pocket, k)` as the replay guard, over `(tv, run ordinal, k)` — the run froze its
+/// deposit and pocket, and a second run of the same pocket restarts `k`):
+/// `tacsim.surface/{tv}/{ordinal}/cycle/{k}`.
+#[must_use]
+pub fn cycle_key(tv: ObjId, ordinal: u32, k: u8) -> Option<IdempotencyKeyText> {
+    IdempotencyKeyText::parse_canonical(format!("{SURFACE_KEY_PREFIX}{}/{ordinal}/cycle/{k}", tv.0))
+        .ok()
+}
+
+/// **`+tv/mine stop`'s key** (doc 20 cut SM.7): `tacsim.surface/{tv}/{ordinal}/stop`, the run's
+/// ordinal — one stop a run.
+#[must_use]
+pub fn stop_key(tv: ObjId, ordinal: u32) -> Option<IdempotencyKeyText> {
+    IdempotencyKeyText::parse_canonical(format!("{SURFACE_KEY_PREFIX}{}/{ordinal}/stop", tv.0)).ok()
 }
 
 // ---- the actor's rigs and where a rig is ----------------------------------------------
@@ -557,11 +624,126 @@ pub enum Refusal {
         /// The egress's label.
         ramp: String,
     },
+    /// `MINE_IN_BAY` (doc 20 cut SM.7; the brief's decision R11): the drill works only a pocket it
+    /// stands on — no implied launch.
+    MineInBay {
+        /// The slot.
+        n: u8,
+    },
+    /// `MINE_RUNNING` (doc 20 cut SM.7; decision R1): a run holds the rig; only a scan or a
+    /// sounding may start beside it.
+    MineRunning {
+        /// The slot.
+        n: u8,
+        /// The run's pocket.
+        addr: String,
+        /// The cycle in flight.
+        k: u8,
+        /// The run's cycles.
+        cycles: u8,
+        /// When the cycle in flight is due, in words.
+        when: String,
+    },
+    /// `MINE_NO_FOOTING` (doc 20 cut SM.7): the rig stands where the drill bites nothing.
+    MineNoFooting {
+        /// The slot.
+        n: u8,
+        /// The terrain's word.
+        terrain: String,
+    },
+    /// **The licence** (doc 20 cut SM.7; lead ruling 5, reviewer F21): `MINE_NO_LICENCE` for no
+    /// licence at all, else `+licence`'s own line for the standing
+    /// (`crate::port::licence::standing_line`), formatted when the plan is made.
+    Licence {
+        /// The line.
+        line: String,
+    },
+    /// `MINE_CLAIMED` (doc 20 §5, verbatim; lead ruling 5).
+    Claimed,
+    /// `MINE_LOCKED` (doc 20 §6, verbatim; lead ruling 3, decision R4).
+    Locked,
+    /// `MINE_HOPPER_FULL`: no cycle fits the hopper.
+    HopperFull {
+        /// The slot.
+        n: u8,
+        /// The hopper's words.
+        hopper: String,
+    },
+    /// `MINE_HOLD_FULL`: no cycle fits the hold's unreserved room.
+    HoldFull {
+        /// The hull's name.
+        name: String,
+    },
+    /// `MINE_WORKED_OUT`: the pocket's tonnes of the family are drawn.
+    WorkedOut {
+        /// The pocket's address.
+        addr: String,
+        /// The ore's words.
+        ore: String,
+    },
+    /// `MINE_NO_FIT` (§6's line, with the slot): a named count that does not fit.
+    NoFit {
+        /// The slot.
+        n: u8,
+        /// The count named.
+        m: u8,
+        /// The count that fits.
+        fit: u8,
+        /// What bound it.
+        bound: crate::surface::mine::Bound,
+        /// The family word as typed, with a leading space, or empty.
+        fam: String,
+    },
+    /// `MINE_BLIND_ROOM` (lead ruling 2): the only room line for an unread pocket.
+    BlindRoom {
+        /// The blind room, whole tonnes.
+        room: u32,
+    },
+    /// `MINE_BLIND_COUNT`: a count named on an unread pocket.
+    BlindCount {
+        /// The slot.
+        n: u8,
+        /// The family word as typed, with a leading space, or empty.
+        fam: String,
+    },
+    /// `MINE_NO_ORE`: the operator's reading shows none of the family named.
+    NoOre {
+        /// The pocket's address.
+        addr: String,
+        /// The ore's words.
+        ore: String,
+    },
+    /// `MINE_ALL_BARREN`: the operator's reading shows the pocket barren.
+    AllBarren {
+        /// The pocket's address.
+        addr: String,
+    },
+    /// `MINE_FORFEIT` (doc 20 cut SM.7; the brief's decision R15): the rig's deposit is forfeit.
+    MineForfeit {
+        /// The slot.
+        n: u8,
+        /// Occator's counter.
+        counter: String,
+        /// Its port.
+        port: String,
+    },
+    /// `MINE_ENDED` (decision R15): the rig's economy lease ended.
+    MineEnded {
+        /// The slot.
+        n: u8,
+        /// Occator's counter.
+        counter: String,
+        /// Its port.
+        port: String,
+    },
+    /// `MINE_CHANGED` (the brief's 3.4): the start's re-plan differs from the order's — `go`
+    /// commits exactly the preview or nothing.
+    MineChanged,
 }
 
 /// The offer-wire words and the start's messages, in one table (the prepare's
 /// `port_error` needs a `&'static str`).
-const REFUSAL_CODES: [(&str, &str); 33] = [
+const REFUSAL_CODES: [(&str, &str); 49] = [
     ("tv_dark", "that rig cannot be read"),
     ("tv_unwired", "rigs cannot be worked on this server"),
     ("not_aboard", "the operator is not aboard the hull"),
@@ -594,12 +776,43 @@ const REFUSAL_CODES: [(&str, &str); 33] = [
         "no_way_home",
         "the rig could not get back to the ramp from there",
     ),
-    ("unplanned", "that drive was not planned; preview it again"),
+    // Doc 20 cut SM.7 (reviewer F7): a mine order lost to a restart, or replaced by the rig's
+    // newer drive order, must not be told about a drive.
+    ("unplanned", "that act was not planned; preview it again"),
     ("moved", "that rig has moved since the drive was planned"),
     ("leg_short", "the rig's charge cannot cover the drive"),
     (
         "recover_dark",
         "the rig's way back cannot be mapped just now",
+    ),
+    // Doc 20 cut SM.7: mining's sixteen.
+    ("mine_in_bay", "the rig is in the bay"),
+    ("mine_running", "that rig is drilling"),
+    (
+        "mine_no_footing",
+        "the rig stands where the drill bites nothing",
+    ),
+    ("unlicensed", "the operator holds no licence in force"),
+    ("claimed", "that block is under claim"),
+    ("locked", "another rig is working that pocket"),
+    ("hopper_full", "the hopper has no room for another cycle"),
+    (
+        "hold_full",
+        "the hold has no unreserved room for another cycle",
+    ),
+    ("worked_out", "that pocket is worked out"),
+    ("no_fit", "those cycles do not fit"),
+    (
+        "blind_room",
+        "an unread pocket needs room for the richest cycle",
+    ),
+    ("blind_count", "an unread pocket is cored one cycle"),
+    ("no_ore", "the reading shows no ore to mine"),
+    ("mine_forfeit", "the rig's deposit is forfeit"),
+    ("mine_ended", "the rig's lease has ended"),
+    (
+        "mine_changed",
+        "that run changed since its preview; preview it again",
     ),
 ];
 
@@ -650,6 +863,22 @@ impl Refusal {
             Refusal::Moved => "moved",
             Refusal::LegShort { .. } => "leg_short",
             Refusal::RecoverDark { .. } => "recover_dark",
+            Refusal::MineInBay { .. } => "mine_in_bay",
+            Refusal::MineRunning { .. } => "mine_running",
+            Refusal::MineNoFooting { .. } => "mine_no_footing",
+            Refusal::Licence { .. } => "unlicensed",
+            Refusal::Claimed => "claimed",
+            Refusal::Locked => "locked",
+            Refusal::HopperFull { .. } => "hopper_full",
+            Refusal::HoldFull { .. } => "hold_full",
+            Refusal::WorkedOut { .. } => "worked_out",
+            Refusal::NoFit { .. } => "no_fit",
+            Refusal::BlindRoom { .. } => "blind_room",
+            Refusal::BlindCount { .. } => "blind_count",
+            Refusal::NoOre { .. } | Refusal::AllBarren { .. } => "no_ore",
+            Refusal::MineForfeit { .. } => "mine_forfeit",
+            Refusal::MineEnded { .. } => "mine_ended",
+            Refusal::MineChanged => "mine_changed",
         }
     }
 
@@ -747,6 +976,70 @@ impl Refusal {
             Refusal::RecoverDark { n, ramp } => tv::RECOVER_DARK
                 .replace("{n}", &n.to_string())
                 .replace("{ramp}", ramp),
+            Refusal::MineInBay { n } => tv::MINE_IN_BAY.replace("{n}", &n.to_string()),
+            Refusal::MineRunning {
+                n,
+                addr,
+                k,
+                cycles,
+                when,
+            } => tv::MINE_RUNNING
+                .replace("{n}", &n.to_string())
+                .replace("{addr}", addr)
+                .replace("{k}", &k.to_string())
+                .replace("{cycles}", &cycles.to_string())
+                .replace("{when}", when),
+            Refusal::MineNoFooting { n, terrain } => tv::MINE_NO_FOOTING
+                .replace("{n}", &n.to_string())
+                .replace("{terrain}", terrain),
+            Refusal::Licence { line } => line.clone(),
+            Refusal::Claimed => tv::MINE_CLAIMED.to_owned(),
+            Refusal::Locked => tv::MINE_LOCKED.to_owned(),
+            Refusal::HopperFull { n, hopper } => tv::MINE_HOPPER_FULL
+                .replace("{n}", &n.to_string())
+                .replace("{hopper}", hopper),
+            Refusal::HoldFull { name } => tv::MINE_HOLD_FULL.replace("{name}", name),
+            Refusal::WorkedOut { addr, ore } => tv::MINE_WORKED_OUT
+                .replace("{addr}", addr)
+                .replace("{ore}", ore),
+            Refusal::NoFit {
+                n,
+                m,
+                fit,
+                bound,
+                fam,
+            } => {
+                let ord = crate::surface::mine::ordinal_word(*fit);
+                let why = match bound {
+                    crate::surface::mine::Bound::Hopper => tv::FIT_HOPPER.replace("{ord}", ord),
+                    crate::surface::mine::Bound::Hold => tv::FIT_HOLD.replace("{ord}", ord),
+                    crate::surface::mine::Bound::WorkedOut => tv::FIT_POCKET.replace("{ord}", ord),
+                    crate::surface::mine::Bound::Cap => tv::FIT_CAP.to_owned(),
+                };
+                tv::MINE_NO_FIT
+                    .replace("{m}", &m.to_string())
+                    .replace("{why}", &why)
+                    .replace("{n}", &n.to_string())
+                    .replace("{fam}", fam)
+                    .replace("{fit}", &fit.to_string())
+            }
+            Refusal::BlindRoom { room } => tv::MINE_BLIND_ROOM.replace("{room}", &room.to_string()),
+            Refusal::BlindCount { n, fam } => tv::MINE_BLIND_COUNT
+                .replace("{n}", &n.to_string())
+                .replace("{fam}", fam),
+            Refusal::NoOre { addr, ore } => tv::MINE_NO_ORE
+                .replace("{addr}", addr)
+                .replace("{ore}", ore),
+            Refusal::AllBarren { addr } => tv::MINE_ALL_BARREN.replace("{addr}", addr),
+            Refusal::MineForfeit { n, counter, port } => tv::MINE_FORFEIT
+                .replace("{n}", &n.to_string())
+                .replace("{counter}", counter)
+                .replace("{port}", port),
+            Refusal::MineEnded { n, counter, port } => tv::MINE_ENDED
+                .replace("{n}", &n.to_string())
+                .replace("{counter}", counter)
+                .replace("{port}", port),
+            Refusal::MineChanged => tv::MINE_CHANGED.to_owned(),
         }
     }
 }
@@ -838,19 +1131,19 @@ pub(crate) fn launch_plan(w: &World, actor: ObjId, rig: &RigAt) -> Result<ActPla
     if !crate::port::voyage::aboard(w, rig.hull, actor) {
         return Err(Refusal::NotAboard { name });
     }
-    let (counter, port) = tv::counter_words(w);
-    if rig.record.status == TvLeaseStatus::Forfeit {
-        return Err(Refusal::Forfeit {
-            n: rig.slot,
-            counter,
-            port,
-        });
-    }
-    if !tv::rig_lease_live(w, &rig.record) {
-        return Err(Refusal::Ended {
-            n: rig.slot,
-            counter,
-            port,
+    if let Err(bar) = lease_gate(w, &rig.record) {
+        let (counter, port) = tv::counter_words(w);
+        return Err(match bar {
+            LeaseBar::Forfeit => Refusal::Forfeit {
+                n: rig.slot,
+                counter,
+                port,
+            },
+            LeaseBar::Ended => Refusal::Ended {
+                n: rig.slot,
+                counter,
+                port,
+            },
         });
     }
     if where_is(w, rig.tv) != (Where::Bay { hull: rig.hull }) {
@@ -864,6 +1157,33 @@ pub(crate) fn launch_plan(w: &World, actor: ObjId, rig: &RigAt) -> Result<ActPla
         params: ActParams::None {},
         from_bay: true,
     })
+}
+
+/// **Why a rig's lease bars it** (doc 20 cut SM.7; the brief's 3.3 item 1, reviewer F11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LeaseBar {
+    /// The lease record is `Forfeit`.
+    Forfeit,
+    /// Its economy lease is not live.
+    Ended,
+}
+
+/// **The lease gate** (SM.3a's operate gate R7, factored by doc 20 cut SM.7 so the launch and the
+/// mining run read one rule — the brief's decision R15): the lease record `Forfeit`, then its
+/// economy lease not live. **Recover, dump and drive never read it**: the way home is never
+/// barred (§8, §19 item 3).
+///
+/// # Errors
+///
+/// The [`LeaseBar`], in that order.
+pub(crate) fn lease_gate(w: &World, record: &TvLease) -> Result<(), LeaseBar> {
+    if record.status == TvLeaseStatus::Forfeit {
+        return Err(LeaseBar::Forfeit);
+    }
+    if !tv::rig_lease_live(w, record) {
+        return Err(LeaseBar::Ended);
+    }
+    Ok(())
 }
 
 /// **The recover's world-side gate, in order** (the brief's 3.3; §7.1's placement half): the
@@ -1507,7 +1827,18 @@ pub(crate) fn doing_words(kind: ActKind, params: &ActParams, ramp: &str) -> Stri
         (ActKind::Dump, _) => "dumping its hopper".to_owned(),
         (ActKind::Scan, _) => "scanning".to_owned(),
         (ActKind::Sound, _) => "sounding".to_owned(),
+        // Doc 20 cut SM.7: a run never sits in the act slot; the word is the status's.
+        (ActKind::Mine, _) => "drilling".to_owned(),
     }
+}
+
+/// **`{doing}` for a run in flight** (doc 20 cut SM.7; the SM.7 lead's pre-commit round, item 2):
+/// `drilling C117` — [`doing_words`]' word for the cycle slot, which holds a run rather than an
+/// act, with the pocket it works. The departure's `TV_BUSY` and the lease return's `RIG_BUSY`
+/// read it, each followed by `crate::port::tv::RUN_STOP_REMEDY`.
+#[must_use]
+pub(crate) fn drilling_words(pocket: &str) -> String {
+    format!("drilling {pocket}")
 }
 
 // ---- the command: preview and go ------------------------------------------------------------
@@ -1599,6 +1930,19 @@ fn busy_refusal(w: &World, rig: &RigAt, record: &RigRecord) -> Option<Refusal> {
     })
 }
 
+/// **The record's run refusal** (doc 20 cut SM.7; decision R1): a run in the cycle slot holds the
+/// rig to its pocket — `MINE_RUNNING`, naming the pocket, the cycle and its due.
+pub(crate) fn run_refusal(w: &World, rig: &RigAt, record: &RigRecord) -> Option<Refusal> {
+    let run = record.run.as_ref()?;
+    Some(Refusal::MineRunning {
+        n: rig.slot,
+        addr: address::pocket_address(run.pocket[0], run.pocket[1]).unwrap_or_default(),
+        k: run.k,
+        cycles: run.cycles,
+        when: tv::due_words(w, run.due_ic),
+    })
+}
+
 /// **The launch half's gates** (a launch, or a scan, a sounding or a drive that implies one;
 /// lead ruling 2): an excursion still open (`LAUNCH_OPEN`), then the caps (§8; lead ruling 8),
 /// counted over the world's rig records.
@@ -1649,19 +1993,13 @@ fn reserve_words(
     record: &RigRecord,
     now_ic: i64,
     launches: bool,
-    plan: &ActPlan,
+    (cost_cu, home_cu): (u32, u32),
     battery: &BatteryDef,
     n: u8,
 ) -> Result<(u32, u32, u32), CmdError> {
     let shown = charge_at(&record.charge, now_ic, battery);
     let from = charge_for_act(&record.charge, now_ic, launches, battery);
-    match reserve_check(
-        from,
-        reserved_total(record),
-        plan.cost_cu,
-        plan.home_cu,
-        battery,
-    ) {
+    match reserve_check(from, reserved_total(record), cost_cu, home_cu, battery) {
         Ok(after) => Ok((
             percent(shown, battery),
             percent(after.after_act, battery),
@@ -1799,8 +2137,8 @@ pub(crate) fn act_cmd(
                 )
             }
         }
-        // A drive names its target: `drive_cmd`.
-        ActKind::Drive => return Err(dark()),
+        // A drive names its target: `drive_cmd`; a run is `mine_cmd`'s.
+        ActKind::Drive | ActKind::Mine => return Err(dark()),
     };
     let plan = match planned {
         Ok(plan) => plan,
@@ -1823,6 +2161,12 @@ pub(crate) fn act_cmd(
     let ramp = ramp_label(w, rig.hull);
     if let Some(busy) = busy_refusal(w, rig, &record) {
         return Err(CmdError::msg(busy.line()));
+    }
+    // Doc 20 cut SM.7 (decision R1): while a run drills, only a scan or a sounding may start.
+    if !matches!(kind, ActKind::Scan | ActKind::Sound)
+        && let Some(running) = run_refusal(w, rig, &record)
+    {
+        return Err(CmdError::msg(running.line()));
     }
     // The launch's half: a launch, or a scan or a sounding that implies one (lead ruling 2).
     let launches = kind == ActKind::Launch || plan.params.launches();
@@ -1896,7 +2240,7 @@ pub(crate) fn act_cmd(
                     &record,
                     now_ic,
                     plan.params.launches(),
-                    &plan,
+                    (plan.cost_cu, plan.home_cu),
                     battery,
                     rig.slot,
                 )?;
@@ -2006,7 +2350,7 @@ pub(crate) fn act_cmd(
                 )
                 .ok_or_else(dark)?
             }
-            ActKind::Drive => return Err(dark()),
+            ActKind::Drive | ActKind::Mine => return Err(dark()),
         };
         crate::port::coop::say(ctx, line);
         return Ok(());
@@ -2059,7 +2403,7 @@ pub(crate) fn act_cmd(
                 .replace("{ramp}", &ramp)
                 .replace("{when}", &when)
         }
-        ActKind::Drive => return Err(dark()),
+        ActKind::Drive | ActKind::Mine => return Err(dark()),
     };
     crate::port::coop::say(ctx, line);
     Ok(())
@@ -2094,16 +2438,46 @@ pub(crate) struct DriveOrder {
     pub from_bay: bool,
 }
 
-/// **The drive orders** (doc 20 cut SM.4b; the `RigPointer` precedent): tacsim's own RAM module
-/// slot, registered by `crate::surface::tick::register`, keyed by the rig, bounded at
-/// `crate::port::tv::MAX_POINTERS` (the smallest key dropped past it). A convenience for the
-/// offer, never a fact: it decides nothing the prepare does not re-check.
+/// **One planned mining run, waiting for its start** (doc 20 cut SM.7; the brief's decision R10,
+/// SM.4b's P2 precedent): the command plans the run and writes this order; the start's offer
+/// re-plans with the same choice and requires the plan equal (`mine_changed` otherwise), so `go`
+/// commits exactly the preview or nothing. RAM only: a restart loses an unlanded order ("not
+/// planned; preview it again").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MineOrder {
+    /// Who planned it.
+    pub actor: ObjId,
+    /// The ordinal its start carries.
+    pub ordinal: u32,
+    /// The site entry.
+    pub site: CanonicalId,
+    /// What was asked.
+    pub choice: crate::surface::mine::MineChoice,
+    /// The plan previewed.
+    pub plan: crate::surface::mine::MinePlan,
+}
+
+/// **One rig's order** (doc 20 cut SM.7): a drive's or a mining run's; the newer of a rig's orders
+/// replaces the older (one slot).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ActOrder {
+    /// `+tv/drive … go`.
+    Drive(DriveOrder),
+    /// `+tv/mine … go` (boxed: the plan is large beside a drive's order).
+    Mine(Box<MineOrder>),
+}
+
+/// **The act orders** (doc 20 cut SM.4b's `DriveOrders`, generalised by cut SM.7 to every act
+/// whose plan the legal-action query cannot carry — the brief's decision R10; the `RigPointer`
+/// precedent): tacsim's own RAM module slot, registered by `crate::surface::tick::register`, keyed
+/// by the rig, bounded at `crate::port::tv::MAX_POINTERS` (the smallest key dropped past it). A
+/// convenience for the offer, never a fact: it decides nothing the prepare does not re-check.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct DriveOrders(BTreeMap<ObjId, DriveOrder>);
+pub(crate) struct ActOrders(BTreeMap<ObjId, ActOrder>);
 
 /// Write `order` for `tv`.
-fn put_order(ctx: &mut Ctx<'_>, tv: ObjId, order: DriveOrder) {
-    if let Some(orders) = ctx.w.module_state_mut::<DriveOrders>() {
+fn put_order(ctx: &mut Ctx<'_>, tv: ObjId, order: ActOrder) {
+    if let Some(orders) = ctx.w.module_state_mut::<ActOrders>() {
         orders.0.insert(tv, order);
         while orders.0.len() > tv::MAX_POINTERS {
             if orders.0.pop_first().is_none() {
@@ -2128,10 +2502,58 @@ fn order_to_word(params: &ActParams) -> Option<u32> {
     u32::try_from(y.checked_mul(side)?.checked_add(x)?).ok()
 }
 
-/// The order planned for `tv`, if any.
+/// The drive order planned for `tv`, if its slot holds one.
 fn order_of(w: &World, tv: ObjId) -> Option<DriveOrder> {
-    w.module_state::<DriveOrders>()
-        .and_then(|orders| orders.0.get(&tv).cloned())
+    match w
+        .module_state::<ActOrders>()
+        .and_then(|orders| orders.0.get(&tv))
+    {
+        Some(ActOrder::Drive(order)) => Some(order.clone()),
+        Some(ActOrder::Mine(_)) | None => None,
+    }
+}
+
+/// **Landed mining orders leave the slot** (doc 20 cut SM.7; the SM.7 lead's pre-commit round,
+/// item 5): every mining order whose ordinal is not its rig's next (`record.ordinal + 1`; 1 for a
+/// rig with no record in `records`) — its start landed, or another act overtook it — is dropped,
+/// so no later offer re-plans it. The surface tick calls it with a **complete** scan of the
+/// family (a capped scan prunes nothing). A drive's order is kept as SM.4b left it: its stale
+/// start answers "that rig's orders moved on" at the prepare (`tests/driving.rs` D9). The number
+/// of orders dropped.
+pub(crate) fn prune_mine_orders(w: &mut World, records: &[RigRecord]) -> usize {
+    let next: BTreeMap<ObjId, u32> = records
+        .iter()
+        .map(|record| (record.tv, record.ordinal.saturating_add(1)))
+        .collect();
+    let Some(orders) = w.module_state_mut::<ActOrders>() else {
+        return 0;
+    };
+    let before = orders.0.len();
+    orders.0.retain(|tv, order| match order {
+        ActOrder::Drive(_) => true,
+        ActOrder::Mine(mine) => next.get(tv).copied().unwrap_or(1) == mine.ordinal,
+    });
+    before.saturating_sub(orders.0.len())
+}
+
+/// **Test hook** (doc 20 cut SM.7; the SM.7 lead's pre-commit round, item 5): the ordinal of the
+/// mining order `tv`'s RAM slot holds, if any — so a test can prove a landed order leaves the
+/// slot. Reads only; nothing in the shipped lane calls it.
+#[doc(hidden)]
+#[must_use]
+pub fn mine_order_for_tests(w: &World, tv: ObjId) -> Option<u32> {
+    mine_order_of(w, tv).map(|order| order.ordinal)
+}
+
+/// The mining order planned for `tv`, if its slot holds one.
+fn mine_order_of(w: &World, tv: ObjId) -> Option<MineOrder> {
+    match w
+        .module_state::<ActOrders>()
+        .and_then(|orders| orders.0.get(&tv))
+    {
+        Some(ActOrder::Mine(order)) => Some(MineOrder::clone(order)),
+        Some(ActOrder::Drive(_)) | None => None,
+    }
 }
 
 /// **`+tv/<n> drive <target> [go]`** (doc 20 §1 beat 7, §8, §10; cut SM.4b, the brief's 3.5;
@@ -2141,7 +2563,7 @@ fn order_of(w: &World, tv: ObjId) -> Option<DriveOrder> {
 /// half's open excursion and the caps) — **then** the plan (`drive_plan`: the peeks, a cold site or
 /// home wanted and refused `GROUND_COLD`; the target; ONE A*; no way home); then the reserve with
 /// the real trip home (`RESERVE_LOW`); then the preview (`DRIVE_PREVIEW`) or, with `go`, the order
-/// written ([`DriveOrders`]) and ONE `tacsim_surface_act` submission with `act: drive` keyed
+/// written ([`ActOrders`]) and ONE `tacsim_surface_act` submission with `act: drive` keyed
 /// `tacsim.surface/{tv}/{ordinal}/act`. No licence and no tenure is read (lead ruling 9): a rig
 /// may drive onto any block.
 ///
@@ -2185,6 +2607,11 @@ pub(crate) fn drive_cmd(
     if let Some(busy) = busy_refusal(ctx.w, rig, &record) {
         return Err(CmdError::msg(busy.line()));
     }
+    // Doc 20 cut SM.7 (§6 "the next drive's preview" is legal during a run; decision R1): a run
+    // holds the rig to its pocket, so the preview prints and `go` refuses.
+    if go && let Some(running) = run_refusal(ctx.w, rig, &record) {
+        return Err(CmdError::msg(running.line()));
+    }
     if stand.from_bay {
         launch_half(ctx, &handles, rig, &record, &stand.site, &dark)?;
     }
@@ -2200,8 +2627,14 @@ pub(crate) fn drive_cmd(
     let w: &World = ctx.w;
     // 5. The reserve, with the real trip home.
     let now_ic = w.world_ic_now().at;
-    let (now, after, home) =
-        reserve_words(&record, now_ic, stand.from_bay, &plan, &battery, rig.slot)?;
+    let (now, after, home) = reserve_words(
+        &record,
+        now_ic,
+        stand.from_bay,
+        (plan.cost_cu, plan.home_cu),
+        &battery,
+        rig.slot,
+    )?;
     let target_text = drive::target_words(&target);
     let ramp = stand.ramp_label.clone();
     if !go {
@@ -2253,7 +2686,7 @@ pub(crate) fn drive_cmd(
     put_order(
         ctx,
         rig.tv,
-        DriveOrder {
+        ActOrder::Drive(DriveOrder {
             actor,
             ordinal,
             site: plan.site.clone(),
@@ -2262,7 +2695,7 @@ pub(crate) fn drive_cmd(
             home_cu: plan.home_cu,
             params: plan.params.clone(),
             from_bay: plan.from_bay,
-        },
+        }),
     );
     // The review's correctness/F5: the start names the end cell this command planned, and the
     // prepare holds it to the order the offer fixed — so a second `go` before the first lands
@@ -2419,6 +2852,1030 @@ fn reading_preview(
     }
 }
 
+// ---- doc 20 cut SM.7: mining ---------------------------------------------------------------------
+
+/// **Which drill a rig carries** (doc 20 cut SM.7; `rig_scanner_id`'s rule): the lessor pool's
+/// tools whose row in the one tools table is a drill.
+#[must_use]
+pub(crate) fn rig_drill_id(w: &World, rig_tv: ObjId) -> Option<CanonicalId> {
+    crate::port::vehicle::rig_row(w, rig_tv)?;
+    let tools = w.module_state::<PortHandles>()?.surface_tools.clone()?;
+    let port = crate::port::coop::programme_port(w)?;
+    let pool = port.def.vehicles.as_deref()?;
+    pool.tools
+        .iter()
+        .find(|id| tools.get(*id).and_then(ToolDef::drill).is_some())
+        .cloned()
+}
+
+/// **A drill's figures** by its id, from a tools table (`ToolDef::drill`).
+#[must_use]
+pub(crate) fn drill_of<'t>(
+    tools: &'t BTreeMap<CanonicalId, ToolDef>,
+    id: &CanonicalId,
+) -> Option<&'t DrillDef> {
+    tools.get(id).and_then(ToolDef::drill)
+}
+
+/// **A family's word on the verb** (`+tv/mine ice`): the first word `geology::family_of_word`
+/// reads for it.
+#[must_use]
+pub(crate) fn family_word(family: OreFamily) -> &'static str {
+    match family {
+        OreFamily::Metals => "metal",
+        OreFamily::Volatiles => "ice",
+        OreFamily::CarbonFeedstock => "carbon",
+        OreFamily::StrategicElements => "strategic",
+    }
+}
+
+/// **The block's authored tenure, as mining reads it** (the brief's 3.3 item 5, reviewer F5):
+/// `port::site::block_tenure`'s rule exactly — `(Commons, _)` commons; `(Held, Some(_))` held;
+/// `(Open, _)` and `(Held, None)` open (a holder-less held block reads open, as the status line
+/// and `tenure_parts` count it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Authored {
+    /// Commons: no claim is read.
+    Commons,
+    /// Open ground.
+    Open,
+    /// An org's (until SM.10 seeds its claims).
+    Held,
+}
+
+/// The authored word of `letter` on `site`.
+#[must_use]
+pub(crate) fn authored_of(site: &crate::port::def::SiteDef, letter: char) -> Authored {
+    use crate::port::def::Tenure;
+    let block = site.block(letter);
+    match (block.tenure, block.holder) {
+        (Tenure::Commons, _) => Authored::Commons,
+        (Tenure::Held, Some(_)) => Authored::Held,
+        (Tenure::Open, _) | (Tenure::Held, None) => Authored::Open,
+    }
+}
+
+/// **Why tenure bars a block** (doc 20 cut SM.7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TenureBar {
+    /// `MINE_CLAIMED`.
+    Claimed,
+    /// The claims or the issuer cannot be read: fail closed. Which read failed (the SM.7 lead's
+    /// pre-commit round, item 3: a run's landing pages it and ends `RunEnd::Dark`).
+    Dark(DarkCause),
+}
+
+/// **A live claim** (the brief's decision R20, reviewer F5): not lapsed, and a term not before
+/// `now`; an uncomparable term (another clock generation, K4a) counts as **live** — a claim we
+/// cannot date bars the block (fail closed). A claim past its term that nothing has lapsed is not
+/// live (SM.10 lapses such claims; before it a staff-filed claim can outlive its term).
+#[must_use]
+pub(crate) fn claim_live(claim: &mush_industry::ClaimRecord, now: &mush_core::ClockStamp) -> bool {
+    !claim.is_lapsed() && !matches!(claim.term().checked_cmp(now), Ok(std::cmp::Ordering::Less))
+}
+
+/// **The tenure verdict, pure** (doc 20 §6 "tenure allows it"; the brief's 3.3 item 5, decision
+/// R5): commons → Ok with no claim read; then the **live** claims of the site's issuer over the
+/// block's opened deposits (`claims`, filtered by the caller to the issuer): none live → an
+/// authored held block refuses `Claimed` (SM.10 replaces the authored word with its seeded
+/// claims), open ground is Ok; some live → Ok iff `authorizes` one of them — **whatever its
+/// contest state** (a suspended or seized claim authorizes nobody, so it bars its holder too:
+/// industry's rule), else `Claimed`. Block-level: it answers the same whatever family a run names.
+///
+/// # Errors
+///
+/// [`TenureBar::Claimed`].
+pub(crate) fn tenure_verdict(
+    authored: Authored,
+    claims: &[mush_industry::ClaimRecord],
+    now: &mush_core::ClockStamp,
+    authorizes: &dyn Fn(&mush_industry::ClaimRecord) -> bool,
+) -> Result<(), TenureBar> {
+    if authored == Authored::Commons {
+        return Ok(());
+    }
+    let live: Vec<&mush_industry::ClaimRecord> = claims
+        .iter()
+        .filter(|claim| claim_live(claim, now))
+        .collect();
+    if live.is_empty() {
+        return if authored == Authored::Held {
+            Err(TenureBar::Claimed)
+        } else {
+            Ok(())
+        };
+    }
+    if live.iter().any(|claim| authorizes(claim)) {
+        Ok(())
+    } else {
+        Err(TenureBar::Claimed)
+    }
+}
+
+/// **The tenure of a block, for `actor`** (doc 20 §6; the brief's 3.3 item 5 and decision R5):
+/// the block's authored word read directly ([`authored_of`]; never `port::site::block_tenure`'s
+/// display string); commons answers at once; else the claims over every opened deposit of the
+/// block (the four families' receipt-derived ids that `reads.deposit` finds) whose issuer is the
+/// site's issuer principal (`port::site::org_principal`), judged by [`tenure_verdict`] with
+/// `mush_industry::extraction_authorized` over that claim's own deposit (`remaining` its initial
+/// reserve: the cursor, not the pool, sets the tonnes, §3.4) and industry's licence instrument.
+/// **Read only**: no industry family is written (SM.6's D10 tripwire).
+///
+/// # Errors
+///
+/// [`TenureBar`]: claimed, or the issuer, a deposit or a claim cannot be read.
+pub(crate) fn mine_tenure(
+    w: &World,
+    reads: &dyn SurfaceReads,
+    actor: ObjId,
+    (entry, site): (&CanonicalId, &crate::port::def::SiteDef),
+    letter: char,
+    now: &mush_core::ClockStamp,
+) -> Result<(), TenureBar> {
+    let authored = authored_of(site, letter);
+    if authored == Authored::Commons {
+        return Ok(());
+    }
+    let Some(issuer) = crate::port::site::org_principal(w, &site.issuer) else {
+        tracing::error!(
+            site = %entry,
+            issuer = %site.issuer,
+            "tacsim: a mining site's issuer does not resolve; its blocks refuse mining (fail closed)"
+        );
+        return Err(TenureBar::Dark(DarkCause::Issuer));
+    };
+    let instrument = w
+        .module_state::<mush_industry::IndustryStore>()
+        .and_then(|store| store.licence().cloned());
+    let mut claims: Vec<mush_industry::ClaimRecord> = Vec::new();
+    let mut bodies: BTreeMap<mush_industry::ClaimId, mush_industry::OreDeposit> = BTreeMap::new();
+    for family in OreFamily::ALL {
+        let Ok(id) = mush_industry::derive_system_deposit_id(&crate::surface::opening::receipt(
+            entry, letter, family,
+        )) else {
+            continue;
+        };
+        let Some(body) = reads
+            .deposit(id)
+            .map_err(|_| TenureBar::Dark(DarkCause::Deposit))?
+        else {
+            continue;
+        };
+        for claim in reads
+            .claims(id)
+            .map_err(|_| TenureBar::Dark(DarkCause::Claims))?
+        {
+            if claim.issuer() == &issuer {
+                bodies.insert(claim.id(), body.clone());
+                claims.push(claim);
+            }
+        }
+    }
+    let operator = mush_org::PrincipalId::Object(actor);
+    tenure_verdict(authored, &claims, now, &|claim| {
+        bodies.get(&claim.id()).is_some_and(|body| {
+            mush_industry::extraction_authorized(
+                w,
+                actor,
+                &operator,
+                body,
+                body.initial_reserve(),
+                std::slice::from_ref(claim),
+                instrument.as_ref(),
+                now,
+            )
+            .is_ok()
+        })
+    })
+}
+
+/// The live lease's bar as a mining refusal.
+fn mine_lease_refusal(w: &World, rig: &RigAt, bar: LeaseBar) -> Refusal {
+    let (counter, port) = tv::counter_words(w);
+    match bar {
+        LeaseBar::Forfeit => Refusal::MineForfeit {
+            n: rig.slot,
+            counter,
+            port,
+        },
+        LeaseBar::Ended => Refusal::MineEnded {
+            n: rig.slot,
+            counter,
+            port,
+        },
+    }
+}
+
+/// **The licence, as mining reads it** (lead ruling 5; reviewer F21): in force or in its grace →
+/// its lapse; no licence → `MINE_NO_LICENCE`; every other standing → `+licence`'s own line
+/// (`crate::port::licence::standing_line`).
+fn mine_licence(w: &World, actor: ObjId, now_ic: i64) -> Result<i64, Refusal> {
+    use crate::port::licence::LicenceStanding;
+    match crate::port::licence::licence_standing(w, actor, now_ic) {
+        LicenceStanding::InForce { lapses_ic, .. } | LicenceStanding::Grace { lapses_ic, .. } => {
+            Ok(lapses_ic)
+        }
+        LicenceStanding::Unlicensed => Err(Refusal::Licence {
+            line: tv::MINE_NO_LICENCE.to_owned(),
+        }),
+        other => Err(Refusal::Licence {
+            line: crate::port::licence::standing_line(w, actor, &other)
+                .unwrap_or_else(|| tv::MINE_NO_LICENCE.to_owned()),
+        }),
+    }
+}
+
+/// **The licence's verdict for the next cycle** (the brief's 3.7): `Ok(lapses_ic)` in force or
+/// in its grace, else the standing. A `Lapsed { at_ic }` read at a late landing is still judged
+/// against the next cycle's start, never against now (`RightsVerdict::stops_next`, R9).
+pub(crate) fn licence_verdict(w: &World, actor: ObjId, now_ic: i64) -> Result<i64, LicenceEnd> {
+    use crate::port::licence::LicenceStanding;
+    match crate::port::licence::licence_standing(w, actor, now_ic) {
+        LicenceStanding::InForce { lapses_ic, .. } | LicenceStanding::Grace { lapses_ic, .. } => {
+            Ok(lapses_ic)
+        }
+        LicenceStanding::Lapsed { at_ic } => Err(LicenceEnd::Lapsed { at_ic }),
+        LicenceStanding::Unlicensed => Err(LicenceEnd::Unlicensed),
+        LicenceStanding::Suspended => Err(LicenceEnd::Suspended),
+        LicenceStanding::Other => Err(LicenceEnd::Other),
+        LicenceStanding::Unreadable => Err(LicenceEnd::Unreadable),
+    }
+}
+
+/// **A stored licence end as `+licence`'s line** (the tell's; reviewer F1: formatted at the tell,
+/// never stored): `MINE_NO_LICENCE` for no licence, else `standing_line`'s.
+#[must_use]
+pub(crate) fn licence_end_line(w: &World, operator: ObjId, why: LicenceEnd) -> String {
+    use crate::port::licence::LicenceStanding;
+    let standing = match why {
+        LicenceEnd::Lapsed { at_ic } => LicenceStanding::Lapsed { at_ic },
+        LicenceEnd::Unlicensed => return tv::MINE_NO_LICENCE.to_owned(),
+        LicenceEnd::Suspended => LicenceStanding::Suspended,
+        LicenceEnd::Other => LicenceStanding::Other,
+        LicenceEnd::Unreadable => LicenceStanding::Unreadable,
+    };
+    crate::port::licence::standing_line(w, operator, &standing)
+        .unwrap_or_else(|| tv::MINE_NO_LICENCE.to_owned())
+}
+
+/// The lane site definition of `entry` (cloned), when the latched lane authors one.
+pub(crate) fn site_def_of(w: &World, entry: &CanonicalId) -> Option<crate::port::def::SiteDef> {
+    let store = w.module_state::<TacsimStore>()?;
+    let (_, ports) = crate::port::readiness::report_ports(store, w);
+    ports
+        .into_iter()
+        .find(|(id, _)| id == entry)
+        .and_then(|(_, def)| def.site.clone())
+}
+
+/// **One measure-wise room less `units` of a good** (saturating), for the preview's hold room
+/// after the run.
+fn room_less(room: &Load, per_unit: &[(CanonicalId, u64)], units: u64) -> Load {
+    room.iter()
+        .map(|(measure, left)| {
+            let per = per_unit
+                .iter()
+                .find(|(m, _)| m == measure)
+                .map_or(0, |(_, per)| *per);
+            (
+                measure.clone(),
+                left.saturating_sub(units.saturating_mul(per)),
+            )
+        })
+        .collect()
+}
+
+/// **The R1-richest family of the operator's own row of a field** (the brief's decision R6): each
+/// family's reading ranked by its upper word then its lower (`Exact(w)` is `(w, w)`, a band
+/// `(high, low)`), ties to `OreFamily::ALL`'s order; `None` when the row does not cover the field,
+/// reads ice, or reads barren in every family.
+fn richest_read(
+    site: &chart::SiteContext,
+    row: Option<&ChartRecord>,
+    field: (i64, i64),
+) -> Option<OreFamily> {
+    use crate::surface::reading::FieldReading;
+    let footing = chart::row_reads_field(row, field)?;
+    let ground = chart::field_ground_at(site, field).ok()?;
+    let readings = crate::surface::reading::read_r1(&site.mac, &site.body, &ground, footing);
+    let mut best: Option<((u8, u8), OreFamily)> = None;
+    for (family, reading) in OreFamily::ALL.into_iter().zip(readings) {
+        let rank = match reading {
+            FieldReading::Exact(word) => (word.code(), word.code()),
+            FieldReading::Band(low, high) => (high.code(), low.code()),
+            FieldReading::NoReturn => continue,
+        };
+        if best.is_none_or(|(kept, _)| rank > kept) {
+            best = Some((rank, family));
+        }
+    }
+    best.filter(|((high, _), _)| *high > 0)
+        .map(|(_, family)| family)
+}
+
+/// **The mining plan, against the world** (doc 20 §6; the SM.7 brief's 3.3; lead rulings 2–5,
+/// decisions R4–R6, R8, R11, R15, R16), called by `+tv/mine` (`reads` the command's `Ctx`) and by
+/// the start's offer (`reads` the engine's snapshot) — one function, so the offer's re-plan equals
+/// the preview's unless the world moved. **The gates, cheap first**:
+///
+/// 1. **the stand** — the layer and the view; under way; a rig in the bay → `MINE_IN_BAY` (no
+///    implied launch: the drill works only a pocket it stands on); the ground half of `stand_of`
+///    (`RECOVER_ELSEWHERE`); **then the lease** ([`lease_gate`]: `MINE_FORFEIT`, `MINE_ENDED`);
+/// 2. **the pocket** under the stand: its address, block letter and number;
+/// 3. **the site's ground** — resolved (`INSTRUMENTS_DARK`), the composite and the home field
+///    peeked (`GROUND_COLD`, `INSTRUMENTS_DARK`), the footing (`MINE_NO_FOOTING`);
+/// 4. **the licence** (`MINE_NO_LICENCE`, else `+licence`'s line);
+/// 5. **the tenure** ([`mine_tenure`]: `MINE_CLAIMED`);
+/// 6. **the record**: an act in flight → `RIG_BUSY`; a run → `MINE_RUNNING`;
+/// 7. **the lock**: another rig's live lock on any family's row of the pocket, or another rig's
+///    run on this pocket (decision R4: a barren pocket has no row) → `MINE_LOCKED`;
+/// 8. **the reading and the family** — the operator's OWN row: read → the classes of their R2
+///    (the named family barren → `MINE_NO_ORE`; every family barren → `MINE_ALL_BARREN`; the
+///    default the family with most tonnes left, ties to the richer class); unread → a blind core:
+///    the family named, else the operator's R1-richest, else metals (decision R6); a count past one
+///    → `MINE_BLIND_COUNT`; **8b** the public pit (`site_map::pit_at`) shapes the blind preview by
+///    one clause and never refuses (decision R16);
+/// 9. **the truth, server-side** (never printed for a blind core): the class's yield, the pocket's
+///    tonnes, the cursor's drawn, the lock rows (≤ [`MAX_LOCK_ROWS`]), the block vault;
+/// 10. **the yields and the fit** — read: `pocket_yields` (empty → `MINE_WORKED_OUT`) and
+///     `mine::fit` against the hopper's and the hold's unreserved room in every measure (a named
+///     count that fits; past the fit `MINE_NO_FIT` naming the count that does; nothing fits → the
+///     bound's line); blind: one cycle needing the blind room in both (`MINE_BLIND_ROOM`, the only
+///     room line);
+/// 11. **the chart's body caps** (blind only: the core adds the block to the row) → `CHART_FULL`.
+///
+/// The reserve is the caller's (the command's words, the prepare's rule), over the plan's run
+/// cost and its trip home.
+///
+/// # Errors
+///
+/// The first [`Refusal`] in that order.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // one ordered gate list
+pub(crate) fn mine_plan(
+    w: &World,
+    reads: &dyn SurfaceReads,
+    actor: ObjId,
+    rig: &RigAt,
+    choice: &MineChoice,
+    drill: &DrillDef,
+    rates: Option<&DriveRates>,
+    peeks: &mut Peeks,
+) -> Result<MinePlan, Refusal> {
+    let n = rig.slot;
+    // 1. The stand, then the lease.
+    let (view, name) = view_of(w, rig)?;
+    if matches!(berth_of(w, rig.hull), Berth::UnderWay) {
+        return Err(Refusal::UnderWay { name });
+    }
+    if where_is(w, rig.tv) == (Where::Bay { hull: rig.hull }) {
+        return Err(Refusal::MineInBay { n });
+    }
+    let stand = stand_of(w, actor, rig)?;
+    let berth = site_berth(w, &view)?;
+    if let Err(bar) = lease_gate(w, &rig.record) {
+        return Err(mine_lease_refusal(w, rig, bar));
+    }
+    let dark = || Refusal::Dark { name: name.clone() };
+    // 2. The pocket.
+    let (px, py) = address::pocket_of_cell(stand.cell).ok_or_else(dark)?;
+    let addr = address::pocket_address(px, py).ok_or_else(dark)?;
+    let letter = address::block_letter(px, py).ok_or_else(dark)?;
+    let number = address::pocket_number(px, py).ok_or_else(dark)?;
+    // 3. The site's ground: resolved, peeked, the way home, the footing.
+    let site = chart::site_context(w, &stand.site).map_err(|_| Refusal::InstrumentsDark)?;
+    let ground = match chart::peek_site(w, &stand.site, peeks) {
+        SitePeek::Warm(ground) => ground,
+        SitePeek::Cold => {
+            return Err(Refusal::GroundCold {
+                site: stand.site_name.clone(),
+                entry: stand.site.clone(),
+            });
+        }
+        SitePeek::Dark => return Err(Refusal::InstrumentsDark),
+    };
+    let home_cu = home_here(w, &stand, rates, &name, peeks)?;
+    let surface = chart::ground_surface(&ground).ok_or(Refusal::InstrumentsDark)?;
+    let footing =
+        chart::footing_at(surface, stand.cell).map_err(|terrain| Refusal::MineNoFooting {
+            n,
+            terrain: terrain.label().replace('_', " "),
+        })?;
+    // 4. The licence.
+    let now = w.world_ic_now();
+    let lapses_ic = mine_licence(w, actor, now.at)?;
+    // 5. The tenure, block-level.
+    let site_def = berth.def.site.as_ref().ok_or_else(dark)?;
+    mine_tenure(w, reads, actor, (&stand.site, site_def), letter, &now).map_err(
+        |bar| match bar {
+            TenureBar::Claimed => Refusal::Claimed,
+            TenureBar::Dark(_) => dark(),
+        },
+    )?;
+    // 6. The record: busy, or drilling.
+    let record = reads.rig(rig.tv).map_err(|error| {
+        tracing::warn!(tv = rig.tv.0, %error, "tacsim: a rig's excursion record does not read");
+        dark()
+    })?;
+    if let Some(record) = &record {
+        if let Some(busy) = busy_refusal(w, rig, record) {
+            return Err(busy);
+        }
+        if let Some(running) = run_refusal(w, rig, record) {
+            return Err(running);
+        }
+    }
+    // 7. The lock: the cursor rows (one home a family), then every other rig's run.
+    let mut deposits: Vec<(OreFamily, mush_industry::OreDepositId)> = Vec::new();
+    let mut cursors: BTreeMap<u8, PocketCursor> = BTreeMap::new();
+    for family in OreFamily::ALL {
+        let receipt = crate::surface::opening::receipt(&stand.site, letter, family);
+        let id = mush_industry::derive_system_deposit_id(&receipt).map_err(|_| dark())?;
+        deposits.push((family, id));
+        if let Some(cursor) = reads.cursor(id).map_err(|_| dark())? {
+            if let Some(lock) = cursor.row(number).and_then(|row| row.lock.as_ref())
+                && lock.tv != rig.tv
+            {
+                let holder = reads.rig(lock.tv).map_err(|_| dark())?;
+                let row = LockRow {
+                    deposit: id,
+                    pocket: number,
+                };
+                if lock_live(lock, holder.as_ref(), &stand.site, &row) {
+                    return Err(Refusal::Locked);
+                }
+            }
+            cursors.insert(family.code(), cursor);
+        }
+    }
+    for other in world_rigs(w).into_iter().filter(|other| *other != rig.tv) {
+        let found = reads.rig(other).map_err(|_| dark())?;
+        if found
+            .and_then(|record| record.run)
+            .is_some_and(|run| run.site == stand.site && run.pocket == [px, py])
+        {
+            return Err(Refusal::Locked);
+        }
+    }
+    let drawn_of = |family: OreFamily| {
+        cursors
+            .get(&family.code())
+            .and_then(|cursor| cursor.row(number))
+            .map_or(0, |row| row.drawn_t)
+    };
+    // 8. The reading and the family — the operator's own row, never the ground.
+    let row = reads.chart(actor, &stand.site).map_err(|_| dark())?;
+    let read = chart::row_reads_pocket(row.as_ref(), (px, py));
+    let truth = chart::pocket_at(&site, (px, py)).map_err(|_| Refusal::InstrumentsDark)?;
+    let fam = choice
+        .word
+        .as_ref()
+        .map_or_else(String::new, |word| format!(" {word}"));
+    let ore_of = |family: OreFamily| tv::ore_words(crate::surface::opening::ore_good(family));
+    let classes = crate::surface::reading::read_r2(&truth);
+    let family = if read {
+        if let Some(named) = choice.family {
+            if by_family(classes, named) == Word::Barren {
+                return Err(Refusal::NoOre {
+                    addr,
+                    ore: ore_of(named),
+                });
+            }
+            named
+        } else {
+            let mut best: Option<((u32, u8), OreFamily)> = None;
+            for family in OreFamily::ALL {
+                let class = by_family(classes, family);
+                if class == Word::Barren {
+                    continue;
+                }
+                let left =
+                    u32::from(by_family(truth.tonnes, family)).saturating_sub(drawn_of(family));
+                let rank = (left, class.code());
+                if best.is_none_or(|(kept, _)| rank > kept) {
+                    best = Some((rank, family));
+                }
+            }
+            let Some((_, family)) = best else {
+                return Err(Refusal::AllBarren { addr });
+            };
+            family
+        }
+    } else {
+        if choice.cycles.is_some_and(|m| m > 1) {
+            return Err(Refusal::BlindCount { n, fam });
+        }
+        choice
+            .family
+            .or_else(|| {
+                address::field_of_pocket((px, py))
+                    .and_then(|field| richest_read(&site, row.as_ref(), field))
+            })
+            .unwrap_or(OreFamily::Metals)
+    };
+    let blind = !read;
+    let also: Vec<(OreFamily, Word)> = if blind {
+        Vec::new()
+    } else {
+        OreFamily::ALL
+            .into_iter()
+            .filter(|other| *other != family)
+            .map(|other| (other, by_family(classes, other)))
+            .filter(|(_, class)| *class != Word::Barren)
+            .collect()
+    };
+    // 8b. The public pit (blind only): one clause, never a refusal.
+    let pit = if blind {
+        crate::port::site_map::pit_at(reads, &stand.site, &ground, (px, py))
+    } else {
+        None
+    };
+    // 9. The truth, server-side.
+    let class = by_family(classes, family);
+    let pocket_t = by_family(truth.tonnes, family);
+    let class_t = u8::try_from(class_yield(drill, class)).map_err(|_| dark())?;
+    let drawn = drawn_of(family);
+    let deposit = deposits
+        .iter()
+        .find(|(f, _)| *f == family)
+        .map(|(_, id)| *id)
+        .ok_or_else(dark)?;
+    let mut lock_rows: Vec<LockRow> = Vec::new();
+    for (other, id) in &deposits {
+        if by_family(truth.tonnes, *other) > 0 && reads.deposit(*id).map_err(|_| dark())?.is_some()
+        {
+            lock_rows.push(LockRow {
+                deposit: *id,
+                pocket: number,
+            });
+        }
+    }
+    if lock_rows.len() > MAX_LOCK_ROWS {
+        tracing::error!(
+            site = %stand.site,
+            %addr,
+            rows = lock_rows.len(),
+            "tacsim: a pocket carries more ore families than the geology allows (SM.1's two); \
+             mining it is refused"
+        );
+        return Err(dark());
+    }
+    let source = if class_t > 0 && pocket_t > 0 {
+        let Some(vault) = crate::port::site::block_vault(w, berth.map, letter) else {
+            tracing::error!(
+                site = %stand.site,
+                block = %letter,
+                "tacsim: an ore-bearing block's vault is gone; mining it is refused (staff repair \
+                 the site map)"
+            );
+            return Err(dark());
+        };
+        Some(vault.0)
+    } else {
+        None
+    };
+    // 10. The yields and the fit.
+    let good = CanonicalId::new(crate::surface::opening::ore_good(family)).map_err(|_| dark())?;
+    let goods = w
+        .module_state::<TacsimStore>()
+        .and_then(TacsimStore::goods)
+        .ok_or_else(dark)?;
+    let good_def = goods.good(&good).ok_or_else(dark)?;
+    let pool_unit = tv::pool_unit(w);
+    let hopper = crate::port::vehicle::hopper_of(w, rig.tv).ok_or_else(dark)?;
+    let read_pool = |endpoint: EndpointRef, good: &CanonicalId| reads.pool(endpoint, good);
+    let contents = tv::hopper_contents_with(w, rig.tv, pool_unit.as_ref(), &read_pool).map_err(
+        |error| {
+            tracing::warn!(tv = rig.tv.0, %error, "tacsim: a mining plan could not read the hopper");
+            dark()
+        },
+    )?;
+    let hopper_room = {
+        let comps = tv::hopper_compartments(w, rig.tv, pool_unit.as_ref()).ok_or_else(dark)?;
+        let mut merged = crate::port::capacity::Compartment {
+            id: CanonicalId::new("hopper").map_err(|_| dark())?,
+            accepts: std::collections::BTreeSet::new(),
+            limits: BTreeMap::new(),
+        };
+        for comp in comps {
+            merged.accepts.extend(comp.accepts);
+            for (measure, limit) in comp.limits {
+                let slot = merged.limits.entry(measure).or_insert(0);
+                *slot = slot.saturating_add(limit);
+            }
+        }
+        let load = crate::port::capacity::load(goods, &merged, &contents).map_err(|_| dark())?;
+        merged
+            .limits
+            .iter()
+            .map(|(measure, limit)| {
+                (
+                    measure.clone(),
+                    limit.saturating_sub(load.get(measure).copied().unwrap_or(0)),
+                )
+            })
+            .collect::<Load>()
+    };
+    let mass = CanonicalId::new(crate::definitions::logistics::MASS_KG).map_err(|_| dark())?;
+    let hopper_cap_kg = tv::hopper_compartments(w, rig.tv, pool_unit.as_ref())
+        .map(|comps| {
+            comps
+                .iter()
+                .filter_map(|comp| comp.limits.get(&mass).copied())
+                .sum::<u64>()
+        })
+        .unwrap_or(0);
+    let hopper_before_kg =
+        hopper_cap_kg.saturating_sub(hopper_room.get(&mass).copied().unwrap_or(0));
+    let hull_rigs: Vec<ObjId> = tv::live_on_hull(w, rig.hull)
+        .iter()
+        .map(|lease| lease.tv)
+        .collect();
+    let hold_room =
+        crate::port::ship::hold_unreserved(w, &view, &hull_rigs, &read_pool, &|tv| reads.rig(tv))
+            .ok_or_else(dark)?;
+    let mut per_unit: Vec<(CanonicalId, u64)> = Vec::new();
+    for measure in hopper_room.keys().chain(hold_room.keys()) {
+        if per_unit.iter().any(|(m, _)| m == measure) {
+            continue;
+        }
+        per_unit.push((
+            measure.clone(),
+            good_def.per_unit(measure).ok_or_else(dark)?,
+        ));
+    }
+    let (yields, reserve_t, cycles): (Vec<u32>, Vec<u32>, u8) = if blind {
+        let room = blind_room_t(drill);
+        if fit(&[room], &per_unit, &hopper_room, &hold_room).0 == 0 {
+            return Err(Refusal::BlindRoom { room });
+        }
+        (Vec::new(), vec![room], 1)
+    } else {
+        let all = pocket_yields(
+            u32::from(class_t),
+            u32::from(pocket_t).saturating_sub(drawn),
+        );
+        let ore = ore_of(family);
+        if all.is_empty() {
+            return Err(Refusal::WorkedOut { addr, ore });
+        }
+        let (n_fit, bound) = fit(&all, &per_unit, &hopper_room, &hold_room);
+        let zero = |bound: Bound| match bound {
+            Bound::Hopper => Refusal::HopperFull {
+                n,
+                hopper: tv::hopper_text(hopper_before_kg, hopper_cap_kg),
+            },
+            Bound::Hold => Refusal::HoldFull { name: name.clone() },
+            Bound::WorkedOut | Bound::Cap => Refusal::WorkedOut {
+                addr: addr.clone(),
+                ore: ore.clone(),
+            },
+        };
+        let cycles = match choice.cycles {
+            Some(m) if m <= n_fit => m,
+            Some(_) | None if n_fit == 0 => return Err(zero(bound)),
+            Some(m) => {
+                return Err(Refusal::NoFit {
+                    n,
+                    m,
+                    fit: n_fit,
+                    bound,
+                    fam,
+                });
+            }
+            None => n_fit,
+        };
+        let taken: Vec<u32> = all.into_iter().take(usize::from(cycles)).collect();
+        (taken.clone(), taken, cycles)
+    };
+    let reserve_t: Vec<u8> = reserve_t
+        .into_iter()
+        .map(u8::try_from)
+        .collect::<Result<_, _>>()
+        .map_err(|_| dark())?;
+    let run_t: u64 = reserve_t.iter().map(|t| u64::from(*t)).sum();
+    let hold_after = room_less(&hold_room, &per_unit, run_t);
+    let mass_per = good_def.per_unit(&mass).unwrap_or(0);
+    let shown_t: u64 = yields.iter().map(|t| u64::from(*t)).sum();
+    let hopper_after_kg = hopper_before_kg.saturating_add(shown_t.saturating_mul(mass_per));
+    let mut outstanding: Vec<(ObjId, Option<(u32, u64)>)> = Vec::new();
+    for tv in &hull_rigs {
+        let found = reads.rig(*tv).map_err(|_| dark())?;
+        outstanding.push((
+            *tv,
+            found
+                .and_then(|record| record.run)
+                .map(|run| (run.ordinal, run.outstanding_t())),
+        ));
+    }
+    // 11. The chart's body caps (blind: the core adds the block to the row).
+    if blind {
+        let mut rows = Vec::new();
+        for other in chart::body_sites(w, &site.spec.body) {
+            if let Some(found) = reads.chart(actor, &other).map_err(|_| dark())? {
+                rows.push(found);
+            }
+        }
+        if !body_admits(&rows, &stand.site, &[], &[letter.to_string()]) {
+            return Err(Refusal::ChartFull {
+                body: crate::port::site::body_name(&site.spec.body),
+            });
+        }
+    }
+    let secs = cycle_secs(drill, footing).ok_or_else(dark)?;
+    Ok(MinePlan {
+        site: stand.site.clone(),
+        body: site.spec.body.clone(),
+        stand: [stand.cell.0, stand.cell.1],
+        pocket: [px, py],
+        number,
+        letter,
+        addr,
+        family,
+        good,
+        deposit,
+        source,
+        hopper: hopper.0,
+        cycles,
+        yields,
+        reserve_t,
+        class_t,
+        pocket_t,
+        drawn,
+        class: if blind { Word::Barren } else { class },
+        also,
+        blind,
+        pit,
+        secs,
+        cost_cu: drill.energy_cu,
+        home_cu,
+        lock_rows,
+        lapses_ic: Some(lapses_ic),
+        hold_after,
+        hopper_before_kg,
+        hopper_after_kg,
+        hopper_cap_kg,
+        outstanding,
+    })
+}
+
+/// **`+tv/<n> mine [family] [cycles] [go]`** (alias `drill`; doc 20 §1 beat 8, §6, §10; cut SM.7,
+/// the brief's 3.4; D-20-9's `go` rule): the drill and the battery (a run spends: `TV_DARK`
+/// without either), the rig's rates; [`mine_plan`] (a cold site or home asked for and refused
+/// `GROUND_COLD`); the reserve over the run's cost and the trip home (`RESERVE_LOW`); then the
+/// preview — `MINE_PREVIEW` from the operator's own reading, or `MINE_PREVIEW_BLIND` — or, with
+/// `go`, the order written ([`ActOrders`]) and ONE `tacsim_surface_act` submission with `act:
+/// mine` keyed `tacsim.surface/{tv}/{ordinal}/act`, and `MINE_FILED` (`CORE_FILED` blind).
+/// `words` are the family and count as typed (the preview's `{arg}`).
+///
+/// # Errors
+///
+/// Every refusal is a [`CmdError`] line.
+#[allow(clippy::too_many_lines)] // the plan, the reserve, then the preview or the go
+pub(crate) fn mine_cmd(
+    ctx: &mut Ctx<'_>,
+    rig: &RigAt,
+    choice: &MineChoice,
+    words: &str,
+    go: bool,
+) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let handles = ctx
+        .w
+        .module_state::<PortHandles>()
+        .cloned()
+        .ok_or_else(|| CmdError::msg(tv::TV_UNWIRED))?;
+    let Some(action) = handles.surface_act.clone() else {
+        return Err(CmdError::msg(tv::TV_UNWIRED));
+    };
+    let name = name_of(ctx.w, rig.hull);
+    let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
+    let tools = handles.surface_tools.clone().ok_or_else(dark)?;
+    let Some(drill) = rig_drill_id(ctx.w, rig.tv).and_then(|id| drill_of(&tools, &id).copied())
+    else {
+        tracing::warn!(tv = rig.tv.0, "tacsim: a rig carries no readable drill");
+        return Err(dark());
+    };
+    // A run spends (`needs_battery(Mine, …)`): no battery row, no run.
+    let Some(battery) = rig_battery(ctx.w, &handles, rig) else {
+        return Err(dark());
+    };
+    let rates = rig_rates(ctx.w, rig.tv, Some(&battery));
+    let mut peeks = Peeks::default();
+    let planned = mine_plan(
+        ctx.w,
+        &*ctx,
+        actor,
+        rig,
+        choice,
+        &drill,
+        rates.as_ref(),
+        &mut peeks,
+    );
+    let plan = match planned {
+        Ok(plan) => plan,
+        Err(refusal) => {
+            want_cold(ctx, rig, &refusal);
+            return Err(CmdError::msg(refusal.line()));
+        }
+    };
+    let w: &World = ctx.w;
+    let record = record_of(ctx, &handles, rig.tv, Some(&battery)).map_err(|()| dark())?;
+    let now_ic = w.world_ic_now().at;
+    let run_cost = plan.run_cost_cu().ok_or_else(dark)?;
+    let run_secs = plan.run_secs().ok_or_else(dark)?;
+    let (now, after, home) = reserve_words(
+        &record,
+        now_ic,
+        false,
+        (run_cost, plan.home_cu),
+        &battery,
+        rig.slot,
+    )?;
+    let n = rig.slot.to_string();
+    let ore = tv::ore_words(plan.good.as_str());
+    let arg = if words.is_empty() {
+        String::new()
+    } else {
+        format!(" {words}")
+    };
+    if !go {
+        let real =
+            match crate::port::voyage::real_until(w, now_ic.saturating_add(i64::from(run_secs))) {
+                Some(real) => format!(", about {}", tv::span_words(real)),
+                None => String::new(),
+            };
+        let line = if plan.blind {
+            let pit = match plan.pit {
+                Some('v') => tv::PIT_WORKED,
+                Some(_) => tv::PIT_WORKED_OUT,
+                None => "",
+            };
+            tv::MINE_PREVIEW_BLIND
+                .replace("{n}", &n)
+                .replace("{mark}", &rig.mark)
+                .replace("{addr}", &plan.addr)
+                .replace("{ore}", &ore)
+                .replace("{secs}", &run_secs.to_string())
+                .replace("{real}", &real)
+                .replace(
+                    "{room}",
+                    &plan.reserve_t.first().copied().unwrap_or(0).to_string(),
+                )
+                .replace("{now}", &now.to_string())
+                .replace("{after}", &after.to_string())
+                .replace("{home}", &home.to_string())
+                .replace("{pit}", pit)
+                .replace("{arg}", &arg)
+        } else {
+            let cycles = if plan.cycles == 1 {
+                tv::ONE_CYCLE.to_owned()
+            } else {
+                tv::SOME_CYCLES.replace("{c}", &plan.cycles.to_string())
+            };
+            let yields: Vec<String> = plan.yields.iter().map(u32::to_string).collect();
+            let total: u32 = plan.yields.iter().sum();
+            let mass = CanonicalId::new(crate::definitions::logistics::MASS_KG).ok();
+            let room_kg = mass
+                .and_then(|mass| plan.hold_after.get(&mass).copied())
+                .unwrap_or(0);
+            let also: String = plan
+                .also
+                .iter()
+                .map(|(family, class)| {
+                    tv::MINE_ALSO
+                        .replace("{class}", class.name())
+                        .replace(
+                            "{ore}",
+                            &tv::ore_words(crate::surface::opening::ore_good(*family)),
+                        )
+                        .replace("{n}", &n)
+                        .replace("{word}", family_word(*family))
+                })
+                .collect();
+            tv::MINE_PREVIEW
+                .replace("{n}", &n)
+                .replace("{mark}", &rig.mark)
+                .replace("{addr}", &plan.addr)
+                .replace("{class}", plan.class.name())
+                .replace("{ore}", &ore)
+                .replace("{cycles}", &cycles)
+                .replace("{yields}", &yields.join("/"))
+                .replace("{total}", &total.to_string())
+                .replace("{secs}", &run_secs.to_string())
+                .replace("{real}", &real)
+                .replace("{hop0}", &(plan.hopper_before_kg / 1_000).to_string())
+                .replace("{hop1}", &(plan.hopper_after_kg / 1_000).to_string())
+                .replace("{cap}", &(plan.hopper_cap_kg / 1_000).to_string())
+                .replace("{room}", &(room_kg / 1_000).to_string())
+                .replace("{now}", &now.to_string())
+                .replace("{after}", &after.to_string())
+                .replace("{home}", &home.to_string())
+                .replace("{also}", &also)
+                .replace("{arg}", &arg)
+        };
+        crate::port::coop::say(ctx, line);
+        return Ok(());
+    }
+    // `go`: the order, then ONE submission as the actor.
+    let Some(ordinal) = record.ordinal.checked_add(1) else {
+        tracing::error!(tv = rig.tv.0, "tacsim: a rig's act ordinal is exhausted");
+        return Err(dark());
+    };
+    let Some(key) = act_key(rig.tv, ordinal) else {
+        tracing::error!(tv = rig.tv.0, "tacsim: a rig act's key did not form");
+        return Err(dark());
+    };
+    let when = tv::due_words(w, now_ic.saturating_add(i64::from(plan.secs)));
+    let line = if plan.blind {
+        tv::CORE_FILED
+    } else {
+        tv::MINE_FILED
+    }
+    .replace("{n}", &n)
+    .replace("{addr}", &plan.addr)
+    .replace("{when}", &when);
+    put_order(
+        ctx,
+        rig.tv,
+        ActOrder::Mine(Box::new(MineOrder {
+            actor,
+            ordinal,
+            site: plan.site.clone(),
+            choice: choice.clone(),
+            plan,
+        })),
+    );
+    ctx.submit_authoritative(
+        action,
+        PerceivedRef::SelfActor,
+        Vec::new(),
+        json!({
+            "tv": rig.tv.0.to_string(),
+            "act": wire_word(ActKind::Mine, false),
+            "ordinal": ordinal,
+        }),
+        key,
+    );
+    crate::port::coop::say(ctx, line);
+    Ok(())
+}
+
+/// **`+tv/<n> mine stop`** (doc 20 §6: "lets the running cycle complete and yield and drops the
+/// cycles after it at no cost"; cut SM.7, the brief's 3.4 and decision R7): committed at once, with
+/// no `go` — a control on a committed run that only drops future cycles. The record's run: none →
+/// `MINE_NOT_RUNNING`; already stopping → `MINE_STOPPING_ALREADY` (nothing queued); else ONE
+/// `tacsim_surface_act` with `act: mine_stop` and the run's ordinal, keyed
+/// `tacsim.surface/{tv}/{ordinal}/stop`, and `MINE_STOPPING`. Never a refund of the running cycle.
+///
+/// # Errors
+///
+/// Every refusal is a [`CmdError`] line.
+pub(crate) fn mine_stop_cmd(ctx: &mut Ctx<'_>, rig: &RigAt) -> Result<(), CmdError> {
+    let handles = ctx
+        .w
+        .module_state::<PortHandles>()
+        .cloned()
+        .ok_or_else(|| CmdError::msg(tv::TV_UNWIRED))?;
+    let Some(action) = handles.surface_act.clone() else {
+        return Err(CmdError::msg(tv::TV_UNWIRED));
+    };
+    let name = name_of(ctx.w, rig.hull);
+    let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
+    let battery = rig_battery(ctx.w, &handles, rig);
+    let record = record_of(ctx, &handles, rig.tv, battery.as_ref()).map_err(|()| dark())?;
+    let n = rig.slot.to_string();
+    let Some(run) = record.run else {
+        return Err(CmdError::msg(tv::MINE_NOT_RUNNING.replace("{n}", &n)));
+    };
+    if run.stop {
+        return Err(CmdError::msg(tv::MINE_STOPPING_ALREADY.replace("{n}", &n)));
+    }
+    let Some(key) = stop_key(rig.tv, run.ordinal) else {
+        tracing::error!(tv = rig.tv.0, "tacsim: a run's stop key did not form");
+        return Err(dark());
+    };
+    let line = tv::MINE_STOPPING
+        .replace("{n}", &n)
+        .replace(
+            "{addr}",
+            &address::pocket_address(run.pocket[0], run.pocket[1]).unwrap_or_default(),
+        )
+        .replace("{when}", &tv::due_words(ctx.w, run.due_ic));
+    ctx.submit_authoritative(
+        action,
+        PerceivedRef::SelfActor,
+        Vec::new(),
+        json!({
+            "tv": rig.tv.0.to_string(),
+            "act": "mine_stop",
+            "ordinal": run.ordinal,
+        }),
+        key,
+    );
+    crate::port::coop::say(ctx, line);
+    Ok(())
+}
+
 // ---- the offers' fixed parameters ------------------------------------------------------------
 
 /// One act's plan as the start's offer fixes it.
@@ -2448,9 +3905,76 @@ struct FixedPlan {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     body_sites: Vec<CanonicalId>,
     /// **Doc 20 cut SM.4b** (the brief's decision P2): a drive's order's ordinal, which the
-    /// prepare binds to the invocation's (`Conflict` otherwise).
+    /// prepare binds to the invocation's (`Conflict` otherwise). Doc 20 cut SM.7: a run's too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ordinal: Option<u32>,
+    /// **Doc 20 cut SM.7**: a run's server facts (truth among them — fixed parameters are
+    /// server-only, never projected to a player).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mine: Option<MineFixed>,
+}
+
+/// **A run's server facts, as the start's offer fixes them** (doc 20 cut SM.7; the brief's 3.4):
+/// everything the prepare writes into the run (so the finish needs no geology and no site read)
+/// and checks against the transaction. Serialises because fixed parameters must; they are
+/// server-only (`InternalOffer` is not serializable to a player), the cursor's precedent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MineFixed {
+    body: CanonicalId,
+    stand: [i64; 2],
+    pocket: [i64; 2],
+    number: u16,
+    letter: char,
+    family: OreFamily,
+    good: CanonicalId,
+    deposit: mush_industry::OreDepositId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<u64>,
+    hopper: u64,
+    cycles: u8,
+    yields: Vec<u32>,
+    reserve_t: Vec<u8>,
+    class_t: u8,
+    pocket_t: u8,
+    blind: bool,
+    secs: u32,
+    cost_cu: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    lock_rows: Vec<LockRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lapses_ic: Option<i64>,
+    drawn: u32,
+    outstanding: Vec<(ObjId, Option<(u32, u64)>)>,
+}
+
+impl MineFixed {
+    fn of(plan: &MinePlan) -> MineFixed {
+        MineFixed {
+            body: plan.body.clone(),
+            stand: plan.stand,
+            pocket: plan.pocket,
+            number: plan.number,
+            letter: plan.letter,
+            family: plan.family,
+            good: plan.good.clone(),
+            deposit: plan.deposit,
+            source: plan.source,
+            hopper: plan.hopper,
+            cycles: plan.cycles,
+            yields: plan.yields.clone(),
+            reserve_t: plan.reserve_t.clone(),
+            class_t: plan.class_t,
+            pocket_t: plan.pocket_t,
+            blind: plan.blind,
+            secs: plan.secs,
+            cost_cu: plan.cost_cu,
+            lock_rows: plan.lock_rows.clone(),
+            lapses_ic: plan.lapses_ic,
+            drawn: plan.drawn,
+            outstanding: plan.outstanding.clone(),
+        }
+    }
 }
 
 impl FixedPlan {
@@ -2476,6 +4000,7 @@ impl FixedPlan {
                 goods: Vec::new(),
                 body_sites: Vec::new(),
                 ordinal: None,
+                mine: None,
             },
             Err(refusal) => FixedPlan::refused(refusal.word()),
         }
@@ -2516,6 +4041,68 @@ fn drive_fixed(w: &World, actor: ObjId, rig: &RigAt) -> FixedPlan {
         goods: Vec::new(),
         body_sites: Vec::new(),
         ordinal: Some(order.ordinal),
+        mine: None,
+    }
+}
+
+/// **The start's fixed plan of a run** (doc 20 cut SM.7; the brief's 3.4, decision R10): the
+/// rig's [`MineOrder`] — none for this rig and actor → `unplanned`; nor one whose ordinal is not
+/// the rig's next (`next_ordinal`, read from its record by the offer: the order's start landed, or
+/// another act overtook it), dropped quietly **without a re-plan** (the SM.7 lead's pre-commit
+/// round, item 5; the tick's `prune_mine_orders` then clears it) — then [`mine_plan`] re-run
+/// with the order's choice over the engine's own snapshot (the offer's peeks) and **required equal
+/// to the order's plan**, else `mine_changed`: `go` commits exactly what was previewed or nothing.
+/// The run's charge and its trip home ride the plan's figures; its server facts ride
+/// [`MineFixed`]; a blind core names the body's site entries for the prepare's body caps.
+#[allow(clippy::too_many_arguments)]
+fn mine_fixed(
+    engine: &mush_core::Engine,
+    actor: ObjId,
+    rig: &RigAt,
+    drill: Option<&DrillDef>,
+    has_battery: bool,
+    rates: Option<&DriveRates>,
+    peeks: &mut Peeks,
+    next_ordinal: Option<u32>,
+) -> FixedPlan {
+    let w: &World = &engine.world;
+    let Some(order) = mine_order_of(w, rig.tv)
+        .filter(|order| order.actor == actor)
+        .filter(|order| next_ordinal.is_none_or(|next| next == order.ordinal))
+    else {
+        return FixedPlan::refused(Refusal::Unplanned.word());
+    };
+    let (Some(drill), true) = (drill, has_battery) else {
+        return FixedPlan::refused("tv_dark");
+    };
+    let reads = crate::port::site_map::EngineReads(engine);
+    let plan = match mine_plan(w, &reads, actor, rig, &order.choice, drill, rates, peeks) {
+        Ok(plan) => plan,
+        Err(refusal) => return FixedPlan::refused(refusal.word()),
+    };
+    if plan != order.plan {
+        return FixedPlan::refused(Refusal::MineChanged.word());
+    }
+    let (Some(cost_cu), Some(secs)) = (plan.run_cost_cu(), plan.run_secs()) else {
+        return FixedPlan::refused("tv_dark");
+    };
+    FixedPlan {
+        ok: true,
+        code: None,
+        site: Some(plan.site.clone()),
+        secs,
+        cost_cu,
+        home_cu: plan.home_cu,
+        params: None,
+        from_bay: false,
+        goods: Vec::new(),
+        body_sites: if plan.blind {
+            chart::body_sites(w, &plan.body)
+        } else {
+            Vec::new()
+        },
+        ordinal: Some(order.ordinal),
+        mine: Some(MineFixed::of(&plan)),
     }
 }
 
@@ -2573,9 +4160,15 @@ struct DoneRig {
     /// one key, so the debit it staged would commit — so its next finish records `SpoilGone`
     /// and moves nothing (the fixer round's item 4: a failed dump transfer records a refusal,
     /// it never wedges the act). Keyed by the act (review finding F1): only the finishing act's
-    /// own ordinal counts, never a stale attempt of an earlier act of the rig.
+    /// own ordinal counts, never a stale attempt of an earlier act of the rig. **Doc 20 cut SM.7**:
+    /// `(ordinal, cycle)` pairs — cycle 0 an act's, `k` a run's cycle — so a cycle whose transfer
+    /// refused mid-bundle records `Unworked` on its next finish.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    failed: Vec<u32>,
+    failed: Vec<(u32, u8)>,
+    /// **The rights of the run's next cycle, read at landing** (doc 20 cut SM.7; §8 "rights are per
+    /// act"; the brief's 3.7): `Some` for a rig whose record holds a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rights: Option<RightsVerdict>,
 }
 
 /// The live spoil vault of the site `hull` is settled on (`crate::port::site::spoil_vault`).
@@ -2719,15 +4312,33 @@ fn ordinal_of(parameters: &Map<String, Value>) -> Result<u32, ActionError> {
         .ok_or_else(|| invalid("a surface act names its ordinal"))
 }
 
-/// The `act` parameter through [`act_of_word`] (D23): the kind and the sounding's quiet flag.
-fn act_param(parameters: &Map<String, Value>) -> Result<(ActKind, bool), ActionError> {
+/// The `act` parameter through [`start_word`] (D23; doc 20 cut SM.7): an act's kind and the
+/// sounding's quiet flag, or `mine_stop`.
+fn act_param(parameters: &Map<String, Value>) -> Result<StartWord, ActionError> {
     parameters
         .get("act")
         .and_then(Value::as_str)
-        .and_then(act_of_word)
+        .and_then(start_word)
         .ok_or_else(|| {
-            invalid("a surface act names launch, recover, dump, scan, sound, sound_quiet or drive")
+            invalid(
+                "a surface act names launch, recover, dump, scan, sound, sound_quiet, drive, mine \
+                 or mine_stop",
+            )
         })
+}
+
+/// **The finish's `cycle` parameter** (doc 20 cut SM.7): absent for an act's finish, else a run's
+/// cycle `1..=`[`crate::surface::excursion::MAX_RUN_CYCLES`].
+fn cycle_param(parameters: &Map<String, Value>) -> Result<Option<u8>, ActionError> {
+    match parameters.get("cycle") {
+        None => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .and_then(|k| u8::try_from(k).ok())
+            .filter(|k| (1..=crate::surface::excursion::MAX_RUN_CYCLES).contains(k))
+            .map(Some)
+            .ok_or_else(|| invalid("a run's finish names its cycle, 1 to 8")),
+    }
 }
 
 /// **A drive start's `to` parameter** (the review's correctness/F5): the planned end cell's
@@ -2806,6 +4417,8 @@ pub(crate) struct SurfaceActProvider {
     pub outcome: DefinitionRef,
     pub excursions: StateFamilyHandle<RigKey, RigRecord>,
     pub charts: StateFamilyHandle<ChartKey, ChartRecord>,
+    /// Doc 20 cut SM.7: the pocket cursors (`tacsim.pockets`) a run locks and draws.
+    pub pockets: StateFamilyHandle<mush_industry::OreDepositId, PocketCursor>,
     pub inventory: InventoryFamilies,
     pub tools: Arc<BTreeMap<CanonicalId, ToolDef>>,
 }
@@ -2922,6 +4535,36 @@ impl ActionProvider for SurfaceActProvider {
                     reading_fixed(w, sound, has_battery),
                 );
             }
+            // Doc 20 cut SM.7 (the brief's 3.4, decision R10): the run's order, re-planned and
+            // required equal; `mine_stop` is the prepare's to decide.
+            let drill = rig_drill_id(w, rig.tv).and_then(|id| drill_of(&self.tools, &id));
+            // The rig's next ordinal, from its record (absent: 1); unreadable → `None`, and the
+            // re-plan refuses as the record's read does.
+            let next_ordinal = engine
+                .action_state()
+                .get(&self.excursions, &RigKey(rig.tv))
+                .ok()
+                .map(|found| found.map_or(1, |record| record.ordinal.saturating_add(1)));
+            plans.insert(
+                wire_word(ActKind::Mine, false).to_owned(),
+                mine_fixed(
+                    engine,
+                    actor,
+                    rig,
+                    drill,
+                    has_battery,
+                    rates.as_ref(),
+                    &mut peeks,
+                    next_ordinal,
+                ),
+            );
+            plans.insert(
+                "mine_stop".to_owned(),
+                FixedPlan {
+                    ok: true,
+                    ..FixedPlan::default()
+                },
+            );
             fixed_rigs.insert(
                 rig.tv.0.to_string(),
                 FixedRig {
@@ -2982,8 +4625,8 @@ impl ActionProvider for SurfaceActProvider {
             (
                 "tacsim-surface-act",
                 "Work a rig",
-                "Send a rig down the ramp, scan or sound the ground, bring it in, or empty its \
-                 hopper onto the spoil.",
+                "Send a rig down the ramp, scan, sound or mine the ground, bring it in, or empty \
+                 its hopper onto the spoil.",
             ),
         )
         .map(Some)
@@ -3001,7 +4644,7 @@ impl ActionProvider for SurfaceActProvider {
         let tv = tv_of(parameters)?;
         let ordinal = ordinal_of(parameters)?;
         let now = now_of(parameters)?;
-        let (kind, quiet) = act_param(parameters)?;
+        let word = act_param(parameters)?;
         // 1. The rig is the actor's and the act's fixed plan is ok.
         let rigs: BTreeMap<String, FixedRig> = parameters
             .get("rigs")
@@ -3019,6 +4662,13 @@ impl ActionProvider for SurfaceActProvider {
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok())
             .ok_or_else(|| invalid("a surface act's offer fixes the world's rigs"))?;
+        // Doc 20 cut SM.7: `mine_stop` is a control on a committed run, no act.
+        let (kind, quiet) = match word {
+            StartWord::Act { kind, quiet } => (kind, quiet),
+            StartWord::MineStop => {
+                return self.stop_run(invocation, txn, (actor, tv, ordinal));
+            }
+        };
         let plan = rig
             .plans
             .get(wire_word(kind, quiet))
@@ -3029,6 +4679,17 @@ impl ActionProvider for SurfaceActProvider {
                 ActionErrorCode::ProviderRejected,
                 code_of_word(plan.code.as_deref().unwrap_or("tv_dark")),
             ));
+        }
+        // Doc 20 cut SM.7: a run starts on its own path (one start action, SM.3b's decision 25).
+        if kind == ActKind::Mine {
+            return self.start_run(
+                invocation,
+                txn,
+                (actor, tv, ordinal, now),
+                rig,
+                &plan,
+                &world,
+            );
         }
         let site = plan
             .site
@@ -3074,9 +4735,16 @@ impl ActionProvider for SurfaceActProvider {
                 "that rig's orders moved on",
             ));
         }
-        // 3. One act at a time.
+        // 3. One act at a time — and (doc 20 cut SM.7, decision R1) only a scan or a sounding
+        // beside a run.
         if record.act.is_some() {
             return Err(port_error(ActionErrorCode::Conflict, "that rig is busy"));
+        }
+        if record.run.is_some() && !matches!(kind, ActKind::Scan | ActKind::Sound) {
+            return Err(port_error(
+                ActionErrorCode::ProviderRejected,
+                code_of_word("mine_running"),
+            ));
         }
         // 4. The launch's open excursion and the caps — a launch's, and a scan's, a sounding's
         // or (doc 20 cut SM.4b) a drive's that implies one (doc 20 cut SM.4a, lead ruling 2); a
@@ -3283,6 +4951,363 @@ impl ActionProvider for SurfaceActProvider {
     }
 }
 
+/// A pocket cursor read in the transaction, its key re-checked (the families rule).
+fn read_cursor(
+    txn: &mut ActionTxn<'_>,
+    family: &StateFamilyHandle<mush_industry::OreDepositId, PocketCursor>,
+    deposit: mush_industry::OreDepositId,
+) -> Result<Option<PocketCursor>, ActionError> {
+    let found = txn
+        .get(family, &deposit)
+        .map_err(|_| {
+            port_error(
+                ActionErrorCode::Integrity,
+                "the pocket cursors are unavailable",
+            )
+        })?
+        .cloned();
+    if let Some(cursor) = &found
+        && cursor.deposit != deposit
+    {
+        return Err(port_error(
+            ActionErrorCode::Integrity,
+            "a pocket cursor disagrees with its own key",
+        ));
+    }
+    Ok(found)
+}
+
+/// **Stage a cursor's new state** (insert, replace or remove; `before` is whether one stood):
+/// `None` removes it (an emptied cursor), and nothing is staged when none stood and none is due.
+fn write_cursor(
+    txn: &mut ActionTxn<'_>,
+    family: &StateFamilyHandle<mush_industry::OreDepositId, PocketCursor>,
+    deposit: mush_industry::OreDepositId,
+    before: bool,
+    after: Option<PocketCursor>,
+) -> Result<(), ActionError> {
+    let integrity = || {
+        port_error(
+            ActionErrorCode::Integrity,
+            "the pocket cursor did not stage",
+        )
+    };
+    match (before, after) {
+        (_, Some(cursor)) => {
+            cursor.check().map_err(|_| integrity())?;
+            if cursor.deposit != deposit {
+                return Err(integrity());
+            }
+            let staged = if before {
+                txn.replace(family, &deposit, cursor)
+            } else {
+                txn.insert(family, &deposit, cursor)
+            };
+            staged.map(|_| ()).map_err(|_| integrity())
+        }
+        (true, None) => txn
+            .remove(family, &deposit)
+            .map(|_| ())
+            .map_err(|_| integrity()),
+        (false, None) => Ok(()),
+    }
+}
+
+/// **The pocket's occupancy, in the transaction** (doc 20 cut SM.7; lead ruling 3, decision R4):
+/// another rig's live lock on any of `lock_rows` (`lock_live` over the holder's record read here,
+/// matched by the row itself: the SM.7 lead's pre-commit round, item 1),
+/// or another of the world's rigs whose run stands on `(site, pocket)` — the record check makes an
+/// all-barren pocket, which has no row, refuse alike.
+fn pocket_taken(
+    txn: &mut ActionTxn<'_>,
+    (excursions, pockets): (
+        &StateFamilyHandle<RigKey, RigRecord>,
+        &StateFamilyHandle<mush_industry::OreDepositId, PocketCursor>,
+    ),
+    tv: ObjId,
+    (site, pocket): (&CanonicalId, [i64; 2]),
+    lock_rows: &[LockRow],
+    world: &[u32],
+) -> Result<bool, ActionError> {
+    for row in lock_rows {
+        let lock = read_cursor(txn, pockets, row.deposit)?
+            .and_then(|cursor| cursor.row(row.pocket).and_then(|r| r.lock.clone()));
+        if let Some(lock) = lock
+            && lock.tv != tv
+        {
+            let holder = read_record(txn, excursions, lock.tv)?;
+            if lock_live(&lock, holder.as_ref(), site, row) {
+                return Ok(true);
+            }
+        }
+    }
+    for other in world
+        .iter()
+        .copied()
+        .map(ObjId)
+        .filter(|other| *other != tv)
+    {
+        if read_record(txn, excursions, other)?
+            .and_then(|record| record.run)
+            .is_some_and(|run| &run.site == site && run.pocket == pocket)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+impl SurfaceActProvider {
+    /// **A run's start** (doc 20 cut SM.7; the brief's 3.4; lead rulings 1–6): the order's
+    /// ordinal (`Conflict` "that rig's orders moved on"), the rig idle — no act, no run
+    /// (`Conflict` "that rig is busy") — the licence's lapse after `now` (the offer re-read the
+    /// standing at landing; `unlicensed`), the pocket free in the transaction (`locked`), the
+    /// family's cursor row drawn exactly as the preview saw it (`Conflict` "that pocket changed;
+    /// preview it again"), the hull's runs exactly as the hold's room counted them (`Conflict` "the
+    /// hold's room changed; preview it again"), a blind core's body caps (`chart_full`), and the
+    /// reserve over the run's whole cost and the trip home; then **one bundle**: the record's
+    /// ordinal and its run (cycle 1, due `now + secs`, the whole reservation), each lock row
+    /// written on its cursor. The lease, the tenure and the plan itself are the offer's re-plan at
+    /// landing (`mine_fixed`: the prepare holds no world). The outcome is the start's own shape,
+    /// identical for a barren and an ore blind core.
+    #[allow(clippy::too_many_lines)] // one ordered refusal list, then one bundle
+    fn start_run(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        (actor, tv, ordinal, now): (ObjId, ObjId, u32, i64),
+        rig: &FixedRig,
+        plan: &FixedPlan,
+        world: &[u32],
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
+        let conflict = |message: &'static str| port_error(ActionErrorCode::Conflict, message);
+        let rejected =
+            |word: &str| port_error(ActionErrorCode::ProviderRejected, code_of_word(word));
+        let fixed = plan
+            .mine
+            .clone()
+            .ok_or_else(|| invalid("a run's plan names its pocket"))?;
+        let site = plan
+            .site
+            .clone()
+            .ok_or_else(|| invalid("an act's plan names its site"))?;
+        let battery = rig
+            .battery_id
+            .as_ref()
+            .and_then(|id| battery_of(&self.tools, id))
+            .ok_or_else(|| rejected("tv_dark"))?;
+        // 2. The record and the ordinal.
+        let existing = read_record(txn, &self.excursions, tv)?;
+        let existed = existing.is_some();
+        let mut record = existing.unwrap_or_else(|| RigRecord::fresh(tv, battery));
+        if record.ordinal.checked_add(1) != Some(ordinal) || plan.ordinal != Some(ordinal) {
+            return Err(conflict("that rig's orders moved on"));
+        }
+        // 3. Idle: no act and no run.
+        if record.act.is_some() || record.run.is_some() {
+            return Err(conflict("that rig is busy"));
+        }
+        // 4. The licence: in force at landing.
+        if !fixed.lapses_ic.is_some_and(|lapses| now < lapses) {
+            return Err(rejected("unlicensed"));
+        }
+        // 5. The lock.
+        if pocket_taken(
+            txn,
+            (&self.excursions, &self.pockets),
+            tv,
+            (&site, fixed.pocket),
+            &fixed.lock_rows,
+            world,
+        )? {
+            return Err(rejected("locked"));
+        }
+        // 6. The cursor's drawn, as previewed.
+        let drawn = read_cursor(txn, &self.pockets, fixed.deposit)?
+            .and_then(|cursor| cursor.row(fixed.number).map(|row| row.drawn_t))
+            .unwrap_or(0);
+        if drawn != fixed.drawn {
+            return Err(conflict("that pocket changed; preview it again"));
+        }
+        // 7. The hold's room, as counted: every hull rig's run as the plan saw it.
+        if fixed.outstanding.len()
+            > usize::try_from(crate::definitions::logistics::MAX_BAY_ITEMS).unwrap_or(usize::MAX)
+        {
+            return Err(invalid("a run's plan names a bounded set of hull rigs"));
+        }
+        for (other, seen) in &fixed.outstanding {
+            let now_seen = read_record(txn, &self.excursions, *other)?
+                .and_then(|record| record.run)
+                .map(|run| (run.ordinal, run.outstanding_t()));
+            if now_seen != *seen {
+                return Err(conflict("the hold's room changed; preview it again"));
+            }
+        }
+        // 8. A blind core's body caps (the core adds the block to the row).
+        if fixed.blind {
+            if plan.body_sites.len() > chart::MAX_CHART_SITES_PER_BODY {
+                return Err(invalid(
+                    "a reading act's offer names a bounded set of sites",
+                ));
+            }
+            let mut rows = Vec::new();
+            for other in &plan.body_sites {
+                if let Some(found) = read_chart(txn, &self.charts, actor, other)? {
+                    rows.push(found);
+                }
+            }
+            if !plan.body_sites.contains(&site)
+                && let Some(found) = read_chart(txn, &self.charts, actor, &site)?
+            {
+                rows.push(found);
+            }
+            if !body_admits(&rows, &site, &[], &[fixed.letter.to_string()]) {
+                return Err(rejected("chart_full"));
+            }
+        }
+        // 9. The reserve: the run's whole cost and the trip home (§4.1; lead ruling 1).
+        if reserve_check(
+            charge_at(&record.charge, now, battery),
+            reserved_total(&record),
+            plan.cost_cu,
+            plan.home_cu,
+            battery,
+        )
+        .is_err()
+        {
+            return Err(port_error(
+                ActionErrorCode::ProviderRejected,
+                "the rig's charge is under the reserve",
+            ));
+        }
+        // 10. The write. A rig on the ground whose charge still reads the bay's (a staff
+        // placement) leaves the umbilical now, so each cycle settles out of the bay without the
+        // battery (the brief's 3.7 step 5).
+        if record.charge.in_bay {
+            record.charge = Charge {
+                value_cu: charge_at(&record.charge, now, battery),
+                at_ic: now,
+                in_bay: false,
+            };
+        }
+        let due_ic = now
+            .checked_add(i64::from(fixed.secs))
+            .ok_or_else(|| integrity("the cycle's due instant overflows"))?;
+        record.ordinal = ordinal;
+        record.run = Some(Run {
+            ordinal,
+            operator: actor,
+            hull: rig.hull,
+            slot: rig.slot,
+            site: site.clone(),
+            body: fixed.body.clone(),
+            stand: fixed.stand,
+            pocket: fixed.pocket,
+            number: fixed.number,
+            letter: fixed.letter,
+            family: fixed.family,
+            deposit: fixed.deposit,
+            good: fixed.good.clone(),
+            source: fixed.source,
+            hopper: fixed.hopper,
+            cycles: fixed.cycles,
+            k: 1,
+            secs: fixed.secs,
+            cost_cu: fixed.cost_cu,
+            reserve_t: fixed.reserve_t.clone(),
+            class_t: fixed.class_t,
+            pocket_t: fixed.pocket_t,
+            blind: fixed.blind,
+            stop: false,
+            lapses_ic: fixed.lapses_ic,
+            lock_rows: fixed.lock_rows.clone(),
+            due_ic,
+            reserved_cu: plan.cost_cu,
+        });
+        let lock = PocketLock { tv, ordinal };
+        for row in &fixed.lock_rows {
+            let before = read_cursor(txn, &self.pockets, row.deposit)?;
+            let after = cursor_locked(before.as_ref(), row.deposit, row.pocket, lock.clone())
+                .ok_or_else(|| integrity("the pocket's cursor cannot take the lock"))?;
+            write_cursor(
+                txn,
+                &self.pockets,
+                row.deposit,
+                before.is_some(),
+                Some(after),
+            )?;
+        }
+        write_record(txn, &self.excursions, record, existed)?;
+        let outcome = RulesValue::new(
+            self.outcome.clone(),
+            json!({
+                "act": wire_word(ActKind::Mine, false),
+                "actor": actor.0,
+                "due_ic": due_ic,
+                "ordinal": ordinal,
+                "tv": tv.0,
+            }),
+        )
+        .map_err(|_| {
+            port_error(
+                ActionErrorCode::BoundsExceeded,
+                "the surface act's outcome exceeds canonical bounds",
+            )
+        })?;
+        Ok(AuthoritativeActionOutput::new(outcome)
+            .with_eligible_witnesses(vec![invocation.principal().clone()]))
+    }
+
+    /// **`+tv/mine stop`'s prepare** (doc 20 cut SM.7; the brief's 3.4, decision R7): the record's
+    /// run of the invocation's ordinal, the actor's (`Conflict` "that rig is not drilling"
+    /// otherwise), marked to close after the cycle in flight — one write; already marked, nothing
+    /// changes. No ordinal advance; never a refund.
+    fn stop_run(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        (actor, tv, ordinal): (ObjId, ObjId, u32),
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        let not_drilling = || port_error(ActionErrorCode::Conflict, "that rig is not drilling");
+        let Some(mut record) = read_record(txn, &self.excursions, tv)? else {
+            return Err(not_drilling());
+        };
+        let Some((due_ic, stopping)) = record
+            .run
+            .as_ref()
+            .filter(|run| run.ordinal == ordinal && run.operator == actor)
+            .map(|run| (run.due_ic, run.stop))
+        else {
+            return Err(not_drilling());
+        };
+        if !stopping {
+            if let Some(run) = record.run.as_mut() {
+                run.stop = true;
+            }
+            write_record(txn, &self.excursions, record, true)?;
+        }
+        let outcome = RulesValue::new(
+            self.outcome.clone(),
+            json!({
+                "act": "mine_stop",
+                "actor": actor.0,
+                "due_ic": due_ic,
+                "ordinal": ordinal,
+                "tv": tv.0,
+            }),
+        )
+        .map_err(|_| {
+            port_error(
+                ActionErrorCode::BoundsExceeded,
+                "the surface act's outcome exceeds canonical bounds",
+            )
+        })?;
+        Ok(AuthoritativeActionOutput::new(outcome)
+            .with_eligible_witnesses(vec![invocation.principal().clone()]))
+    }
+}
+
 /// A principal's chart row for a site, cloned; `None` when absent. A row under another key
 /// fails closed (the families rule: readers re-check the key).
 fn read_chart(
@@ -3318,6 +5343,8 @@ pub(crate) struct SurfaceDoneProvider {
     pub outcome: DefinitionRef,
     pub excursions: StateFamilyHandle<RigKey, RigRecord>,
     pub charts: StateFamilyHandle<ChartKey, ChartRecord>,
+    /// Doc 20 cut SM.7: the pocket cursors (`tacsim.pockets`) a run locks and draws.
+    pub pockets: StateFamilyHandle<mush_industry::OreDepositId, PocketCursor>,
     pub inventory: InventoryFamilies,
     pub tools: Arc<BTreeMap<CanonicalId, ToolDef>>,
 }
@@ -3468,6 +5495,7 @@ impl ActionProvider for SurfaceDoneProvider {
         let parameters = parameters_of(invocation)?;
         tv_of(parameters)?;
         ordinal_of(parameters)?;
+        cycle_param(parameters)?;
         Ok(())
     }
 
@@ -3497,7 +5525,43 @@ impl ActionProvider for SurfaceDoneProvider {
             return Ok(None);
         }
         let mut rigs: BTreeMap<String, DoneRig> = BTreeMap::new();
+        let now = w.world_ic_now();
+        let reads = crate::port::site_map::EngineReads(engine);
         for record in &records {
+            // Doc 20 cut SM.7 (§8 "rights are per act"; the brief's 3.7): a rig drilling has the
+            // rights of its run's next cycle read here, at landing — the licence's standing, the
+            // block's tenure, the lease.
+            let rights = engine
+                .action_state()
+                .get(&self.excursions, &RigKey(record.tv))
+                .ok()
+                .flatten()
+                .and_then(|found| found.run.clone())
+                .map(|run| RightsVerdict {
+                    licence: licence_verdict(w, actor, now.at),
+                    // The SM.7 lead's pre-commit round, item 3: a read that fails is `Dark`, never
+                    // `Claimed` — the run ends with the dark line, not a false claim.
+                    tenure: match site_def_of(w, &run.site) {
+                        None => TenureRead::Dark {
+                            why: DarkCause::Site,
+                        },
+                        Some(site) => {
+                            match mine_tenure(
+                                w,
+                                &reads,
+                                actor,
+                                (&run.site, &site),
+                                run.letter,
+                                &now,
+                            ) {
+                                Ok(()) => TenureRead::Allowed,
+                                Err(TenureBar::Claimed) => TenureRead::Claimed,
+                                Err(TenureBar::Dark(why)) => TenureRead::Dark { why },
+                            }
+                        }
+                    },
+                    lease: lease_gate(w, record).map_err(|bar| bar == LeaseBar::Forfeit),
+                });
             rigs.insert(
                 record.tv.0.to_string(),
                 DoneRig {
@@ -3505,6 +5569,7 @@ impl ActionProvider for SurfaceDoneProvider {
                     facts: facts_of(w, record.tv, record.hull),
                     spoil: spoil_of(w, record.hull),
                     failed: crate::surface::tick::finish_retried(w, record.tv),
+                    rights,
                 },
             );
         }
@@ -3531,6 +5596,15 @@ impl ActionProvider for SurfaceDoneProvider {
                 ProjectedParameterKind::Integer {
                     minimum: 1,
                     maximum: i64::from(u32::MAX),
+                },
+            )?,
+            // Doc 20 cut SM.7 (the brief's 3.7): a run's cycle; absent for an act's finish.
+            parameter(
+                "cycle",
+                false,
+                ProjectedParameterKind::Integer {
+                    minimum: 1,
+                    maximum: i64::from(crate::surface::excursion::MAX_RUN_CYCLES),
                 },
             )?,
         ];
@@ -3574,6 +5648,10 @@ impl ActionProvider for SurfaceDoneProvider {
             return Err(invalid(
                 "a finish's offer fixes at most a bounded set of retried acts",
             ));
+        }
+        // Doc 20 cut SM.7 (the brief's 3.7): a run's cycle finishes on its own path.
+        if let Some(k) = cycle_param(parameters)? {
+            return self.finish_cycle(invocation, txn, (actor, tv, ordinal, k, now), rig);
         }
         // 1. The act in flight, this one, this operator's, and due.
         let Some(mut record) = read_record(txn, &self.excursions, tv)? else {
@@ -3765,7 +5843,7 @@ impl ActionProvider for SurfaceDoneProvider {
                     None
                 } else if rig.spoil != Some(spoil_vault) {
                     Some("the site's spoil is gone or no longer the site's")
-                } else if rig.failed.contains(&act.ordinal) {
+                } else if rig.failed.contains(&(act.ordinal, 0)) {
                     Some("an earlier finish of this dump refused mid-transfer")
                 } else if goods
                     .keys()
@@ -3880,6 +5958,14 @@ impl ActionProvider for SurfaceDoneProvider {
                     }
                 }
             }
+            // Doc 20 cut SM.7: a run never sits in the act slot (`RigRecord::check`); its cycles
+            // finish by their own path.
+            ActKind::Mine => {
+                return Err(port_error(
+                    ActionErrorCode::Integrity,
+                    "a run finishes by its cycle",
+                ));
+            }
         };
         // 3. The act clears; the outcome is stamped at the act's own due instant.
         record.act = None;
@@ -3894,6 +5980,277 @@ impl ActionProvider for SurfaceDoneProvider {
             moved,
             span,
             arrived,
+            mined: None,
+        });
+        write_record(txn, &self.excursions, record, true)?;
+        let outcome = RulesValue::new(
+            self.outcome.clone(),
+            json!({
+                "actor": actor.0,
+                "ordinal": ordinal,
+                "result": match result {
+                    ActResult::Done => "done",
+                    ActResult::Refused { .. } => "refused",
+                },
+                "tv": tv.0,
+            }),
+        )
+        .map_err(|_| {
+            port_error(
+                ActionErrorCode::BoundsExceeded,
+                "the finish's outcome exceeds canonical bounds",
+            )
+        })?;
+        Ok(AuthoritativeActionOutput::new(outcome)
+            .with_eligible_witnesses(vec![invocation.principal().clone()]))
+    }
+}
+
+impl SurfaceDoneProvider {
+    /// **One mining cycle's finish** (doc 20 §6 "the completion"; cut SM.7, the brief's 3.7; lead
+    /// rulings 1, 5, 6 and 7), **one bundle** (≤ 8 writes, §11's Tick row):
+    ///
+    /// 1. **this cycle**: the run of the invocation's ordinal at cycle `k`, the actor's, due — else
+    ///    `Conflict` "that cycle is already finished" (the replay guard behind the key's HIT);
+    /// 2. **at the stand**: the rig on the run's site at its frozen stand cell, else `Moved` —
+    ///    nothing moved, nothing spent, the chart untouched, the run closed;
+    /// 3. **the yield**: `mine::cycle_yield` over the family's cursor row read here; tonnes to move
+    ///    need the block vault to hold them (`available`), else `Unworked` with nothing staged (and
+    ///    logged); then ONE `InventoryFamilies::transfer` of the family's ore good from the block
+    ///    vault to the hopper — a refusal there refuses the whole bundle, and the tick's next finish
+    ///    of the same `(ordinal, k)`, marked `failed`, records `Unworked` with nothing moved (the
+    ///    dump's `SpoilGone` precedent);
+    /// 4. **the end**: `mine::run_end` — refused, worked out, stopped, the next cycle's rights
+    ///    (`DoneRig::rights`, read at landing: the licence lapsing at or before this cycle's due
+    ///    instant, the block's tenure, the lease), the run's last cycle — or re-arm;
+    /// 5. **the cursor**: the family's row drawn by the yield, its lock kept while the run re-arms
+    ///    (`mine::cursor_after`); at a close every other lock row released (`cursor_released`); a
+    ///    barren core writes no cursor of its family (lead ruling 2);
+    /// 6. **the charge**: `settle_spent_out_of_bay` of one cycle's cost at its due instant — no
+    ///    battery read (SM.4b's ground-drive precedent); a refused cycle spends nothing;
+    /// 7. **the chart** (a `Done` cycle): the operator's row — created with the run's body when they
+    ///    have none — gains the pocket's R2 with `PIT_SEEN` (`chart::write_core`);
+    /// 8. **re-arm or close**, and the outcome (`Outcome::mined`). The action's outcome keeps the
+    ///    finish's shape: nothing of the class, the tonnes or the deposit.
+    ///
+    /// The running cycle always yields: rights never undo it (§8).
+    #[allow(clippy::too_many_lines)] // one ordered list, then one bundle
+    fn finish_cycle(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        (actor, tv, ordinal, k, now): (ObjId, ObjId, u32, u8, i64),
+        rig: &DoneRig,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
+        let finished = || port_error(ActionErrorCode::Conflict, "that cycle is already finished");
+        // 1. This cycle.
+        let Some(mut record) = read_record(txn, &self.excursions, tv)? else {
+            return Err(finished());
+        };
+        let Some(mut run) = record
+            .run
+            .clone()
+            .filter(|run| run.ordinal == ordinal && run.k == k)
+        else {
+            return Err(finished());
+        };
+        if run.operator != actor {
+            return Err(port_error(
+                ActionErrorCode::Unauthorized,
+                "that run is another pilot's",
+            ));
+        }
+        if run.due_ic > now {
+            return Err(port_error(ActionErrorCode::Conflict, "not due"));
+        }
+        let rights = rig
+            .rights
+            .clone()
+            .ok_or_else(|| integrity("a run's next rights are read at landing"))?;
+        // 2. At the stand.
+        let at_stand = matches!(
+            &rig.facts,
+            Facts::Ground { site: Some(site), cell: Some(cell), .. }
+                if *site == run.site && *cell == run.stand
+        );
+        // 3. The yield.
+        let own = read_cursor(txn, &self.pockets, run.deposit)?;
+        let drawn = own
+            .as_ref()
+            .and_then(|cursor| cursor.row(run.number))
+            .map_or(0, |row| row.drawn_t);
+        let mut result = ActResult::Done;
+        let mut tonnes = 0_u32;
+        if at_stand {
+            let y = cycle_yield(run.class_t, run.pocket_t, drawn);
+            if y > 0 {
+                let source =
+                    EndpointRef(VaultId(run.source.ok_or_else(|| {
+                        integrity("an ore-bearing run names its block vault")
+                    })?));
+                let available = self
+                    .inventory
+                    .pool(txn, source, &run.good)
+                    .map_err(|_| integrity("the block's ground cannot be read"))?
+                    .map_or(0, |pool| pool.available);
+                let retried = rig.failed.contains(&(ordinal, k));
+                if available < u64::from(y) || retried {
+                    tracing::error!(
+                        tv = tv.0,
+                        run = ordinal,
+                        cycle = k,
+                        deposit = %run.deposit,
+                        available,
+                        wanted = y,
+                        retried,
+                        runbook = "doc 20 cut SM.7: the cycle is recorded Unworked and nothing \
+                                   moved; industry's sweep quarantines the block if its books \
+                                   disagree (initial − pool == Σ drawn); staff read the block \
+                                   vault's pool and the pocket cursor",
+                        "tacsim: a mining cycle's block would not give up its ore"
+                    );
+                    result = ActResult::Refused {
+                        code: RefusedCode::Unworked,
+                    };
+                } else {
+                    self.inventory
+                        .transfer(
+                            txn,
+                            source,
+                            EndpointRef(VaultId(run.hopper)),
+                            &run.good,
+                            u64::from(y),
+                        )
+                        .map_err(|error| {
+                            tracing::warn!(
+                                tv = tv.0,
+                                run = ordinal,
+                                cycle = k,
+                                %error,
+                                "tacsim: a mining cycle's transfer refused; the next finish \
+                                 records it Unworked"
+                            );
+                            port_error(
+                                ActionErrorCode::ProviderRejected,
+                                "the block's ore could not be moved to the hopper",
+                            )
+                        })?;
+                    tonnes = y;
+                }
+            }
+        } else {
+            result = ActResult::Refused {
+                code: RefusedCode::Moved,
+            };
+        }
+        // 4. The end.
+        let refused = result != ActResult::Done;
+        let drawn_after = drawn.saturating_add(tonnes);
+        let worked_out = !refused && u32::from(run.pocket_t).saturating_sub(drawn_after) == 0;
+        let end = run_end(
+            refused,
+            worked_out,
+            run.stop,
+            run.k == run.cycles,
+            &rights,
+            run.due_ic,
+        );
+        let ours = PocketLock { tv, ordinal };
+        // 5. The cursor: the family's row drawn and its lock kept or released; at a close every
+        // other row this run locked released.
+        if !refused {
+            let after = cursor_after(
+                own.as_ref(),
+                run.deposit,
+                run.number,
+                tonnes,
+                &ours,
+                end.is_none(),
+            )
+            .ok_or_else(|| integrity("the pocket's cursor cannot take the draw"))?;
+            // A barren core of a family with no row writes nothing (lead ruling 2); nor does any
+            // cycle that leaves the cursor as it stood.
+            if after != own {
+                write_cursor(txn, &self.pockets, run.deposit, own.is_some(), after)?;
+            }
+        }
+        if end.is_some() {
+            for row in &run.lock_rows {
+                if !refused && row.deposit == run.deposit {
+                    continue;
+                }
+                let before = read_cursor(txn, &self.pockets, row.deposit)?;
+                if let Some(before) = before {
+                    let after = cursor_released(&before, row.pocket, &ours);
+                    if after.as_ref() != Some(&before) {
+                        write_cursor(txn, &self.pockets, row.deposit, true, after)?;
+                    }
+                }
+            }
+        }
+        // 6. The charge, and 7. the chart (a `Done` cycle).
+        if !refused {
+            record.charge = settle_spent_out_of_bay(&record.charge, run.cost_cu, run.due_ic)
+                .ok_or_else(|| integrity("the cycle spent more than the charge"))?;
+            run.reserved_cu = run
+                .reserved_cu
+                .checked_sub(run.cost_cu)
+                .ok_or_else(|| integrity("the run's reservation is short of its cycle"))?;
+            let existing = read_chart(txn, &self.charts, run.operator, &run.site)?;
+            let existed = existing.is_some();
+            let mut row = existing.unwrap_or_else(|| {
+                ChartRecord::new(run.operator, run.site.clone(), run.body.clone())
+            });
+            chart::write_core(&mut row, (run.pocket[0], run.pocket[1]), run.due_ic);
+            row.check()
+                .map_err(|_| integrity("the chart row is out of bounds"))?;
+            let key = row.key();
+            let staged = if existed {
+                txn.replace(&self.charts, &key, row)
+            } else {
+                txn.insert(&self.charts, &key, row)
+            };
+            staged.map_err(|_| integrity("the chart row did not stage"))?;
+        }
+        // 8. Re-arm or close, and the outcome.
+        let mined = Mined {
+            k: run.k,
+            cycles: run.cycles,
+            pocket: run.pocket,
+            good: run.good.clone(),
+            tonnes,
+            blind: run.blind,
+            end,
+        };
+        let at_ic = run.due_ic;
+        let (slot, site) = (run.slot, run.site.clone());
+        record.run = match end {
+            Some(_) => None,
+            None => {
+                run.k = run
+                    .k
+                    .checked_add(1)
+                    .ok_or_else(|| integrity("a run's cycle overflows"))?;
+                run.due_ic = run
+                    .due_ic
+                    .checked_add(i64::from(run.secs))
+                    .ok_or_else(|| integrity("a cycle's due instant overflows"))?;
+                Some(run)
+            }
+        };
+        record.last = Some(Outcome {
+            ordinal,
+            kind: ActKind::Mine,
+            operator: actor,
+            slot,
+            site,
+            at_ic,
+            result,
+            moved: BTreeMap::new(),
+            span: None,
+            arrived: None,
+            mined: Some(mined),
         });
         write_record(txn, &self.excursions, record, true)?;
         let outcome = RulesValue::new(
@@ -4033,6 +6390,65 @@ mod tests {
                 n: 1,
                 ramp: String::new(),
             },
+            // Doc 20 cut SM.7: mining's sixteen words (two variants share `no_ore`).
+            Refusal::MineInBay { n: 1 },
+            Refusal::MineRunning {
+                n: 1,
+                addr: String::new(),
+                k: 1,
+                cycles: 4,
+                when: String::new(),
+            },
+            Refusal::MineNoFooting {
+                n: 1,
+                terrain: String::new(),
+            },
+            Refusal::Licence {
+                line: tv::MINE_NO_LICENCE.to_owned(),
+            },
+            Refusal::Claimed,
+            Refusal::Locked,
+            Refusal::HopperFull {
+                n: 1,
+                hopper: String::new(),
+            },
+            Refusal::HoldFull {
+                name: String::new(),
+            },
+            Refusal::WorkedOut {
+                addr: String::new(),
+                ore: String::new(),
+            },
+            Refusal::NoFit {
+                n: 1,
+                m: 4,
+                fit: 3,
+                bound: Bound::Hopper,
+                fam: String::new(),
+            },
+            Refusal::BlindRoom { room: 3 },
+            Refusal::BlindCount {
+                n: 1,
+                fam: String::new(),
+            },
+            Refusal::NoOre {
+                addr: String::new(),
+                ore: String::new(),
+            },
+            Refusal::AllBarren {
+                addr: String::new(),
+            },
+            Refusal::MineForfeit {
+                n: 1,
+                counter: String::new(),
+                port: String::new(),
+            },
+            Refusal::MineEnded {
+                n: 1,
+                counter: String::new(),
+                port: String::new(),
+            },
+            Refusal::MineChanged,
         ];
         let mut words: Vec<&str> = refusals.iter().map(Refusal::word).collect();
         for refusal in &refusals {
@@ -4063,8 +6479,26 @@ mod tests {
         assert_eq!(code_of_word("nonsense"), "that rig cannot be read");
         assert_eq!(Refusal::NothingNew.line(), "You learn nothing new here.");
         assert_eq!(Refusal::NothingNew.code(), "you learn nothing new here");
-        // Doc 20 cut SM.4b: 24 → 33 words; the drive's lines verbatim.
-        assert_eq!(REFUSAL_CODES.len(), 33);
+        // Doc 20 cut SM.4b: 24 → 33 words; the drive's lines verbatim. Doc 20 cut SM.7: 33 → 49
+        // (mining's sixteen).
+        assert_eq!(REFUSAL_CODES.len(), 49);
+        assert_eq!(
+            Refusal::NoFit {
+                n: 1,
+                m: 4,
+                fit: 3,
+                bound: Bound::Hopper,
+                fam: String::new(),
+            }
+            .line(),
+            "4 cycles do not fit: the hopper is full after the third — +tv/1 mine 3, or +tv/1 \
+             mine with no number."
+        );
+        assert_eq!(Refusal::Claimed.line(), "That block is under claim.");
+        assert_eq!(
+            Refusal::Locked.line(),
+            "Another rig is working that pocket."
+        );
         assert_eq!(
             Refusal::NoWayHome {
                 n: 1,
@@ -4084,9 +6518,10 @@ mod tests {
             "The way to field C-NW winds too much to drive in one leg (32 waypoints at most). \
              Drive to a nearer point first."
         );
+        // Doc 20 cut SM.7 (reviewer F7): the shared word speaks of an act, never a drive.
         assert_eq!(
             Refusal::Unplanned.code(),
-            "that drive was not planned; preview it again"
+            "that act was not planned; preview it again"
         );
         assert_eq!(
             Refusal::Moved.code(),
@@ -4111,7 +6546,11 @@ mod tests {
     /// not parse; a sounding's quiet flag is spelled, every other kind's ignored.
     #[test]
     fn sm4a_the_wire_words_parse() {
-        for word in ACT_WIRE_WORDS {
+        // Doc 20 cut SM.7: `mine_stop` is a control, no act (`sm7_the_wire_words_parse`).
+        for word in ACT_WIRE_WORDS
+            .into_iter()
+            .filter(|word| *word != "mine_stop")
+        {
             let (kind, quiet) = act_of_word(word).unwrap_or_else(|| panic!("{word}"));
             assert_eq!(wire_word(kind, quiet), word);
         }
@@ -4135,14 +6574,224 @@ mod tests {
         let refused = act_param(&parameters("probe")).expect_err("probe is retired");
         assert!(
             refused.to_string().contains(
-                "a surface act names launch, recover, dump, scan, sound, sound_quiet or drive"
+                "a surface act names launch, recover, dump, scan, sound, sound_quiet, drive, mine \
+                 or mine_stop"
             ),
             "{refused}"
         );
         assert_eq!(
             act_param(&parameters("sound_quiet")).ok(),
-            Some((ActKind::Sound, true))
+            Some(StartWord::Act {
+                kind: ActKind::Sound,
+                quiet: true
+            })
         );
+    }
+
+    /// **Tenure reads the block, not the family** (doc 20 cut SM.7; the brief's 3.3 item 5,
+    /// reviewer F5, decisions R5 and R20) — `authored_of` over a synthetic `SiteDef` and
+    /// `tenure_verdict` over hand-built `ClaimRecord`s, with **industry's own
+    /// `extraction_authorized`** as the authorizer: on a bare `TestWorld` with no licence
+    /// instrument named, its tenure half passing reads `Err(NoLicenceInstrument)` (the licence half
+    /// is the world tests'), so the holder rule here is industry's, not a model of it. Commons with a
+    /// claim → Ok (no claim read); `(Held, None)` → open → Ok; `(Held, Some)` with no claim →
+    /// `Claimed`; open with a live claim of another → `Claimed`; open with a term-expired unlapsed
+    /// claim → Ok; open with a lapsed claim → Ok; open with an uncomparable term → `Claimed`; the
+    /// holder of a `Suspended` claim → `Claimed`; the holder of an uncontested in-term claim → Ok.
+    #[test]
+    fn sm7_mine_tenure_reads_the_block_not_the_family() {
+        use crate::port::def::{BlockDef, SiteDef, SiteTenureDef, Tenure, Zone};
+        use mush_core::{ClockRef, ClockStamp};
+        use mush_industry::{
+            Accessibility, BandId, ClaimId, ClaimRecord, ClaimSubject, ContestState, CurvePoint,
+            Exclusivity, ExtractionRefusal, OreDeposit, OreDepositId, Transferability, YieldCurve,
+        };
+        use mush_org::PrincipalId;
+        let cid = |text: &str| CanonicalId::new(text).unwrap_or_else(|_| panic!("{text}"));
+        let block = |tenure: Option<Tenure>, holder: Option<&str>| BlockDef {
+            tenure,
+            holder: holder.map(cid),
+            ..BlockDef::default()
+        };
+        let site = SiteDef {
+            name: "Test Flank".to_owned(),
+            issuer: cid("freeport_registry"),
+            zone: Zone::Core,
+            tenure: SiteTenureDef {
+                default: Tenure::Open,
+            },
+            blocks: [
+                ("A".to_owned(), block(Some(Tenure::Commons), None)),
+                ("F".to_owned(), block(Some(Tenure::Held), Some("occator"))),
+                ("G".to_owned(), block(Some(Tenure::Held), None)),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        assert_eq!(authored_of(&site, 'A'), Authored::Commons);
+        assert_eq!(authored_of(&site, 'F'), Authored::Held);
+        assert_eq!(
+            authored_of(&site, 'G'),
+            Authored::Open,
+            "a holder-less held block"
+        );
+        assert_eq!(authored_of(&site, 'C'), Authored::Open, "the default");
+        let stamp = |at: i64, generation: u64| ClockStamp {
+            clock: ClockRef::WorldIc { generation },
+            at,
+        };
+        let now = stamp(1_000, 1);
+        let me = ObjId(42);
+        let other = ObjId(43);
+        let body = OreDeposit::new(
+            OreDepositId(7),
+            ObjId(7),
+            cid("metal_ore"),
+            mush_inventory::Grade::new(0).unwrap_or_else(|_| panic!("a grade")),
+            Accessibility::new(100).unwrap_or_else(|_| panic!("accessible")),
+            BandId::new("surface").unwrap_or_else(|_| panic!("a band")),
+            BandId::new("surface").unwrap_or_else(|_| panic!("a band")),
+            YieldCurve::new(vec![CurvePoint {
+                cumulative: 0,
+                per_cycle: 1,
+            }])
+            .unwrap_or_else(|_| panic!("a curve")),
+            mush_inventory::EndpointRef(VaultId(9)),
+            40,
+        )
+        .unwrap_or_else(|_| panic!("a deposit"));
+        let claim = |id: u64, holder: ObjId, term: ClockStamp| {
+            ClaimRecord::new(
+                ClaimId(id),
+                ClaimSubject::Deposit {
+                    deposit: OreDepositId(7),
+                },
+                PrincipalId::Object(ObjId(1)),
+                PrincipalId::Object(holder),
+                ObjId(900),
+                Exclusivity::Exclusive,
+                1,
+                term,
+                Transferability::Transferable,
+            )
+            .unwrap_or_else(|_| panic!("a claim"))
+        };
+        let world = mush_testkit::TestWorld::new();
+        let authorizes = |claim: &ClaimRecord| {
+            matches!(
+                mush_industry::extraction_authorized(
+                    world.world(),
+                    me,
+                    &PrincipalId::Object(me),
+                    &body,
+                    body.initial_reserve(),
+                    std::slice::from_ref(claim),
+                    None,
+                    &now,
+                ),
+                Ok(_) | Err(ExtractionRefusal::NoLicenceInstrument)
+            )
+        };
+        let verdict = |authored: Authored, claims: &[ClaimRecord]| {
+            tenure_verdict(authored, claims, &now, &authorizes)
+        };
+        let live_other = claim(1, other, stamp(5_000, 1));
+        assert_eq!(
+            verdict(Authored::Commons, std::slice::from_ref(&live_other)),
+            Ok(())
+        );
+        assert_eq!(verdict(Authored::Open, &[]), Ok(()));
+        assert_eq!(verdict(Authored::Held, &[]), Err(TenureBar::Claimed));
+        assert_eq!(
+            verdict(Authored::Open, std::slice::from_ref(&live_other)),
+            Err(TenureBar::Claimed)
+        );
+        let expired = claim(2, other, stamp(500, 1));
+        assert!(!claim_live(&expired, &now));
+        assert_eq!(
+            verdict(Authored::Open, &[expired]),
+            Ok(()),
+            "term past, not lapsed"
+        );
+        let lapsed = claim(3, other, stamp(5_000, 1))
+            .lapsed(stamp(900, 1))
+            .unwrap_or_else(|_| panic!("lapses"));
+        assert_eq!(verdict(Authored::Open, &[lapsed]), Ok(()));
+        let uncomparable = claim(4, other, stamp(5_000, 2));
+        assert!(
+            claim_live(&uncomparable, &now),
+            "a claim we cannot date bars"
+        );
+        assert_eq!(
+            verdict(Authored::Open, &[uncomparable]),
+            Err(TenureBar::Claimed)
+        );
+        let suspended = claim(5, me, stamp(5_000, 1))
+            .with_contest_state(ContestState::Suspended {
+                by: PrincipalId::Object(ObjId(1)),
+            })
+            .unwrap_or_else(|_| panic!("suspends"));
+        assert_eq!(
+            verdict(Authored::Open, &[suspended]),
+            Err(TenureBar::Claimed),
+            "a suspended claim bars its holder too"
+        );
+        let mine = claim(6, me, stamp(5_000, 1));
+        assert_eq!(verdict(Authored::Open, std::slice::from_ref(&mine)), Ok(()));
+        assert_eq!(
+            verdict(Authored::Held, &[mine]),
+            Ok(()),
+            "a holder's own claim"
+        );
+    }
+
+    /// **The start's nine words parse** (doc 20 cut SM.7; the brief's 3.4): `mine` is an act (the
+    /// `Mine` kind), `mine_stop` a [`StartWord::MineStop`]; every other word's [`start_word`] is its
+    /// [`act_of_word`]; the Choice is sorted and holds nine; the cycle and stop keys form.
+    #[test]
+    fn sm7_the_wire_words_parse() {
+        assert_eq!(ACT_WIRE_WORDS.len(), 9);
+        let mut sorted = ACT_WIRE_WORDS;
+        sorted.sort_unstable();
+        assert_eq!(sorted, ACT_WIRE_WORDS);
+        assert_eq!(act_of_word("mine"), Some((ActKind::Mine, false)));
+        assert_eq!(wire_word(ActKind::Mine, false), "mine");
+        assert_eq!(act_of_word("mine_stop"), None, "no act");
+        assert_eq!(start_word("mine_stop"), Some(StartWord::MineStop));
+        for word in ACT_WIRE_WORDS {
+            let parsed = start_word(word).unwrap_or_else(|| panic!("{word}"));
+            match parsed {
+                StartWord::Act { kind, quiet } => {
+                    assert_eq!(act_of_word(word), Some((kind, quiet)));
+                }
+                StartWord::MineStop => assert_eq!(word, "mine_stop"),
+            }
+        }
+        assert_eq!(start_word("drill"), None, "the alias is the verb's only");
+        assert_eq!(
+            cycle_key(ObjId(900), 3, 2).map(|k| k.as_str().to_owned()),
+            Some("tacsim.surface/900/3/cycle/2".to_owned())
+        );
+        assert_eq!(
+            stop_key(ObjId(900), 3).map(|k| k.as_str().to_owned()),
+            Some("tacsim.surface/900/3/stop".to_owned())
+        );
+        let parameters = |cycle: Value| {
+            json!({ "tv": "900", "ordinal": 1, "cycle": cycle })
+                .as_object()
+                .cloned()
+                .unwrap_or_default()
+        };
+        assert_eq!(cycle_param(&parameters(json!(1))).ok(), Some(Some(1)));
+        assert_eq!(cycle_param(&parameters(json!(8))).ok(), Some(Some(8)));
+        for bad in [json!(0), json!(9), json!("1"), json!(-1)] {
+            assert!(cycle_param(&parameters(bad.clone())).is_err(), "{bad}");
+        }
+        let none = json!({ "tv": "900", "ordinal": 1 })
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(cycle_param(&none).ok(), Some(None));
     }
 
     /// **An implied launch settles at the launch half, never at the due instant** (doc 20 cut

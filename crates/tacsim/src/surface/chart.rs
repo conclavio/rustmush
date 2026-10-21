@@ -75,14 +75,15 @@ pub const MAX_CHART_SITES_PER_BODY: usize = 32;
 /// blocks, four provenance entries each) encodes far under it (a unit test).
 pub const MAX_CHART_RECORD_BYTES: usize = 65_536;
 /// **A pocket cell's byte layout** (the pre-commit round's item 3; §5): bits 0..=1 are its tier
-/// ([`TIER_MASK`]: `0` unsounded, [`TIER_R2`] sounded), bit 2 is [`PIT_SEEN`] (SM.7's, written by
-/// nobody yet), bits 3..=7 are reserved and zero. Every reader masks the tier out with
-/// [`cell_tier`] and every writer keeps the bits it does not own, so SM.7's bit never reads as
-/// unsounded and a re-sounding never clears it.
+/// ([`TIER_MASK`]: `0` unsounded, [`TIER_R2`] sounded), bit 2 is [`PIT_SEEN`] (written by a
+/// core, doc 20 cut SM.7: [`write_core`]), bits 3..=7 are reserved and zero. Every reader masks
+/// the tier out with [`cell_tier`] and every writer keeps the bits it does not own, so SM.7's bit
+/// never reads as unsounded and a re-sounding never clears it.
 pub const TIER_MASK: u8 = 0b0000_0011;
 /// The R2 tier: a sounding (or, from SM.7, a core).
 pub const TIER_R2: u8 = 2;
-/// SM.7's pit-seen bit, reserved here: valid only beside a sounded tier.
+/// **The pit-seen bit** (doc 20 cut SM.7): set by a core ([`write_core`]), valid only beside a
+/// sounded tier.
 pub const PIT_SEEN: u8 = 0b0000_0100;
 /// One heard line a sounder an IC hour (§11 Caps; Q-20-9).
 pub const HEARD_EVERY_IC: i64 = 3_600;
@@ -129,7 +130,7 @@ impl ChartKey {
     }
 }
 
-/// **Which instrument read a row** (§5). SM.7 adds `Core`.
+/// **Which instrument read a row** (§5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Instrument {
@@ -139,6 +140,9 @@ pub enum Instrument {
     Sound,
     /// A quiet sounding (R2), heard by nobody.
     QuietSound,
+    /// **A core** (doc 20 cut SM.7; §6 "the core is a reading"; the brief's lead ruling 7): a
+    /// mining cycle's R2 of the pocket it drilled, written at the cycle's own due instant.
+    Core,
 }
 
 /// **How the reading was made** (§5, §8): by hand, or by a fill plan's instruments while the
@@ -679,6 +683,34 @@ pub fn write_sound(
             at,
         );
     }
+}
+
+/// **A core's write** (doc 20 cut SM.7; §5 "the core is a reading", §6; the brief's lead ruling 7
+/// and 3.9): the row renewed under the current rule; `pocket`'s block (created when absent); its
+/// cell set to [`TIER_R2`] with [`PIT_SEEN`] — the cell's other bits kept; the block stamped once,
+/// `Local { Core, at, Hand }`. **Neither stand is touched**: a core never feeds the same-cell
+/// repeat rule. A pocket off the site writes nothing.
+pub fn write_core(row: &mut ChartRecord, pocket: (i64, i64), at: i64) {
+    renew(row);
+    let Some((letter, index)) = pocket_in_block(pocket.0, pocket.1) else {
+        return;
+    };
+    let block = row
+        .blocks
+        .entry(letter.to_string())
+        .or_insert_with(|| PocketBlock::empty(at));
+    let mut bytes = block.bytes().unwrap_or_else(|| vec![0; BLOCK_POCKETS]);
+    if let Some(cell) = bytes.get_mut(index) {
+        *cell = (*cell & !TIER_MASK) | TIER_R2 | PIT_SEEN;
+    }
+    block.cells = encode_cells(&bytes);
+    stamp(
+        &mut block.first_local_at,
+        &mut block.last_at,
+        &mut block.provenance,
+        Instrument::Core,
+        at,
+    );
 }
 
 /// **`+tv/forget`'s rule** (D7; the brief's reviewer finding F3): `None` (delete the row) when
@@ -1860,6 +1892,136 @@ mod tests {
         assert_eq!(byte(&r), Some(TIER_R2 | PIT_SEEN), "the pit bit survives");
         assert_eq!(r.sounded_pockets(), 64);
         assert_eq!(r.check(), Ok(()));
+    }
+
+    /// The byte of `pocket`'s cell in `r`.
+    fn cell_of(r: &ChartRecord, pocket: (i64, i64)) -> Option<u8> {
+        let (letter, index) = pocket_in_block(pocket.0, pocket.1)?;
+        r.blocks
+            .get(letter.to_string().as_str())
+            .and_then(|block| block.cell(index))
+    }
+
+    /// **A core writes R2 and the pit bit** (doc 20 cut SM.7; the brief's 3.9): on a fresh row the
+    /// pocket's block is created and its cell reads `TIER_R2 | PIT_SEEN`, stamped `Local { Core, at,
+    /// Hand }`; on a row whose pocket was sounded the cell keeps R2 and gains the bit; a re-sounding
+    /// keeps the bit; the block's ring holds the Core stamp in stamp order; neither stand moves.
+    #[test]
+    fn sm7_a_core_writes_r2_and_the_pit_bit() {
+        let pocket = (36, 44);
+        let mut fresh = row();
+        write_core(&mut fresh, pocket, 5_000);
+        assert_eq!(cell_of(&fresh, pocket), Some(TIER_R2 | PIT_SEEN));
+        assert_eq!(fresh.sounded_pockets(), 1);
+        assert_eq!(
+            (fresh.scan_stand, fresh.sound_stand),
+            (None, None),
+            "no stand"
+        );
+        assert_eq!(fresh.check(), Ok(()));
+        let (letter, _) = pocket_in_block(pocket.0, pocket.1).unwrap_or_else(|| panic!("a pocket"));
+        let block = fresh
+            .blocks
+            .get(letter.to_string().as_str())
+            .cloned()
+            .unwrap_or_else(|| panic!("the block"));
+        assert_eq!(
+            block.provenance,
+            vec![ChartProvenance::Local {
+                instrument: Instrument::Core,
+                at: 5_000,
+                via: Via::Hand
+            }]
+        );
+        // A sounded pocket gains the bit and keeps its tier; the stand of the sounding stays.
+        let stand = [pocket.0 * 4 + 2, pocket.1 * 4 + 2];
+        let mut sounded = row();
+        write_sound(
+            &mut sounded,
+            stand,
+            &address::pockets_in_reach((stand[0], stand[1]), 8),
+            false,
+            1_000,
+        );
+        assert_eq!(cell_of(&sounded, pocket), Some(TIER_R2));
+        write_core(&mut sounded, pocket, 3_000);
+        assert_eq!(cell_of(&sounded, pocket), Some(TIER_R2 | PIT_SEEN));
+        assert_eq!(
+            sounded.sound_stand,
+            Some(stand),
+            "the stand is the sounding's"
+        );
+        // A re-sounding keeps the bit.
+        write_sound(
+            &mut sounded,
+            stand,
+            &address::pockets_in_reach((stand[0], stand[1]), 8),
+            true,
+            4_000,
+        );
+        assert_eq!(cell_of(&sounded, pocket), Some(TIER_R2 | PIT_SEEN));
+        let ring: Vec<(Instrument, i64)> = sounded
+            .blocks
+            .get(letter.to_string().as_str())
+            .map(|block| {
+                block
+                    .provenance
+                    .iter()
+                    .map(|entry| match entry {
+                        ChartProvenance::Local { instrument, at, .. } => (*instrument, *at),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            ring,
+            vec![
+                (Instrument::Sound, 1_000),
+                (Instrument::Core, 3_000),
+                (Instrument::QuietSound, 4_000)
+            ],
+            "stamp order"
+        );
+        assert_eq!(sounded.check(), Ok(()));
+        // The wire word.
+        assert_eq!(
+            serde_json::to_value(Instrument::Core).unwrap_or_default(),
+            serde_json::json!("core")
+        );
+    }
+
+    /// **The pit bit reads as sounded** (doc 20 cut SM.7): a cored pocket is `pocket_sounded`, the
+    /// one gate every surface renders through reads it, and a sounding over it adds nothing; a
+    /// byte carrying the pit bit with no tier beside it is refused by `check` (the SM.7 lead's
+    /// pre-commit round, item 8 — the R2 text through the render door is `tests/mining.rs` M1's,
+    /// which reads `pocket_reading` over the keyed ground).
+    #[test]
+    fn sm7_the_pit_bit_reads_as_sounded() {
+        let pocket = (36, 44);
+        let mut r = row();
+        write_core(&mut r, pocket, 5_000);
+        assert!(r.pocket_sounded(pocket));
+        assert!(row_reads_pocket(Some(&r), pocket));
+        assert!(!sound_adds(Some(&r), &[pocket]));
+        assert!(!r.pocket_sounded((37, 44)), "only the cored pocket");
+        assert_eq!(cell_of(&r, pocket), Some(TIER_R2 | PIT_SEEN));
+        assert_eq!(r.check(), Ok(()));
+        // The pit bit alone, no tier: refused.
+        let (letter, index) =
+            pocket_in_block(pocket.0, pocket.1).unwrap_or_else(|| panic!("a pocket"));
+        let mut bad = r.clone();
+        let block = bad
+            .blocks
+            .get_mut(letter.to_string().as_str())
+            .unwrap_or_else(|| panic!("the block"));
+        let mut bytes = block.bytes().unwrap_or_else(|| panic!("the cells"));
+        bytes[index] = PIT_SEEN;
+        block.cells = encode_cells(&bytes);
+        assert!(
+            bad.check().is_err(),
+            "the pit bit needs the R2 tier beside it"
+        );
+        assert!(!bad.pocket_sounded(pocket), "and never reads sounded");
     }
 
     /// **The provenance ring is ordered by stamp** (the pre-commit round's item 4): finishes

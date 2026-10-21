@@ -141,6 +141,12 @@ pub enum ActKind {
     /// **A drive** (doc 20 cut SM.4b; §8 "the frozen leg", D-20-11): over the site's ground along
     /// the leg frozen at the start ([`ActParams::Drive`]); from the bay the launch is implied.
     Drive,
+    /// **A mining run** (doc 20 cut SM.7; §6, D-20-9; the SM.7 brief's lead ruling 1): started
+    /// once on the one start action (`act = mine`), its cycles landing at their own dues through
+    /// the one finish. **A run never occupies the act slot**: it lives in the record's cycle slot
+    /// ([`RigRecord::run`]), so a `Mine` [`Act`] never exists ([`RigRecord::check`] refuses one);
+    /// the kind names the run's outcomes ([`Outcome::mined`]) and its word.
+    Mine,
 }
 
 impl ActKind {
@@ -156,6 +162,7 @@ impl ActKind {
             ActKind::Scan => "scan",
             ActKind::Sound => "sound",
             ActKind::Drive => "drive",
+            ActKind::Mine => "mine",
         }
     }
 
@@ -169,6 +176,7 @@ impl ActKind {
             "scan" => Some(ActKind::Scan),
             "sound" => Some(ActKind::Sound),
             "drive" => Some(ActKind::Drive),
+            "mine" => Some(ActKind::Mine),
             _ => None,
         }
     }
@@ -534,6 +542,11 @@ pub enum RefusedCode {
     /// began** (doc 20 cut SM.4a, D14: a staff move). The charge is untouched and nothing is
     /// written to the chart.
     Moved,
+    /// **A mining cycle whose block would not give up its ore** (doc 20 cut SM.7; §3.4): the
+    /// block vault's pool held less than the cycle's yield, or the transfer refused. Nothing moved,
+    /// nothing was spent, the chart is untouched and the run ends; the sweep's
+    /// `initial − pool == Σ drawn` invariant decides whether the books disagree.
+    Unworked,
 }
 
 /// **How an act finished.**
@@ -582,6 +595,290 @@ pub struct Outcome {
     /// drive; skipped when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrived: Option<[i64; 2]>,
+    /// **What a mining cycle did** (doc 20 cut SM.7; §6): every cycle's outcome — its tonnes, the
+    /// cycle of the run, how the run ended — so the tick tells the cycle line after the finish
+    /// has re-armed or closed the run. `Some` exactly for a [`ActKind::Mine`] outcome; skipped
+    /// when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mined: Option<Mined>,
+}
+
+/// **What one mining cycle did** (doc 20 cut SM.7; §6, §1 beat 8's line): carried on its
+/// [`Outcome`]. Nothing of the pocket's class, its tonnes left, or the deposit is here — a blind
+/// core's outcome must read the same for a barren pocket and an ore pocket until the tell renders
+/// the operator's own new reading (lead ruling 2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Mined {
+    /// The cycle of the run, `1..=cycles`.
+    pub k: u8,
+    /// The run's cycles.
+    pub cycles: u8,
+    /// The site-local pocket.
+    pub pocket: [i64; 2],
+    /// The family's ore good.
+    pub good: CanonicalId,
+    /// The tonnes this cycle moved into the hopper (0 for a barren core or a refused cycle).
+    pub tonnes: u32,
+    /// The run was a blind core.
+    pub blind: bool,
+    /// How the run ended with this cycle; `None` when it re-armed for the next.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<RunEnd>,
+}
+
+/// **Why a run ended** (doc 20 cut SM.7; §6, §8 "rights are per act"; the brief's reviewer
+/// finding F8): the precedence is `crate::surface::mine::run_end`'s, `Refused > WorkedOut >
+/// Stopped > Dark > Licence > Claimed > Lease > Done`. Stores the standing, never a formatted
+/// line: the tell formats it (reviewer F1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RunEnd {
+    /// The run's last cycle landed.
+    Done,
+    /// The pocket's tonnes of the family are drawn.
+    WorkedOut,
+    /// `+tv/mine stop` asked for it.
+    Stopped,
+    /// The licence stops the next cycle.
+    Licence {
+        /// The standing that stops it.
+        why: LicenceEnd,
+    },
+    /// **The registry cannot be read for the run's block** (the SM.7 lead's pre-commit round,
+    /// item 3): the tenure read at landing failed, so the next cycle stops (fail closed) — and the
+    /// operator hears the dark line, never "That block is under claim.", which would be a false
+    /// public fact. The cause is for the page, never a player.
+    Dark {
+        /// Which read failed.
+        why: DarkCause,
+    },
+    /// A live claim the operator holds no right under stops the next cycle.
+    Claimed,
+    /// The rig's lease stops the next cycle: forfeit (`true`) or ended.
+    Lease {
+        /// The deposit is forfeit (else the economy lease ended).
+        forfeit: bool,
+    },
+    /// The cycle did not happen (the rig moved, or the ground would not give up its ore).
+    Refused,
+}
+
+/// **Why a block's tenure cannot be read** (doc 20 cut SM.7; the SM.7 lead's pre-commit round,
+/// item 3): the cause [`RunEnd::Dark`] carries to its page. Never printed to a player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DarkCause {
+    /// The site's issuer does not resolve to a principal.
+    Issuer,
+    /// The run's site has no lane site definition.
+    Site,
+    /// One of the block's deposits does not read.
+    Deposit,
+    /// One of the block's deposits' claim index does not read.
+    Claims,
+}
+
+impl DarkCause {
+    /// The cause in words, for the page.
+    #[must_use]
+    pub fn words(self) -> &'static str {
+        match self {
+            DarkCause::Issuer => "the site's issuer does not resolve",
+            DarkCause::Site => "the site's definition is missing",
+            DarkCause::Deposit => "a deposit of the block does not read",
+            DarkCause::Claims => "a deposit's claims do not read",
+        }
+    }
+}
+
+/// **Why the licence stops the next cycle** — the standing, never a line (the brief's reviewer
+/// finding F1): the tell formats it through `crate::port::licence::standing_line`, as `+licence`
+/// would.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LicenceEnd {
+    /// Past its grace.
+    Lapsed {
+        /// The instant it lapsed.
+        at_ic: i64,
+    },
+    /// No licence at all.
+    Unlicensed,
+    /// The entitlement account is not Active.
+    Suspended,
+    /// Another character of the account holds it.
+    Other,
+    /// The record cannot be read.
+    Unreadable,
+}
+
+/// The most cycles one run commits (doc 20 §6 "at most eight cycles, by the 24 t cap"; §11).
+pub const MAX_RUN_CYCLES: u8 = 8;
+/// **The most cursor rows one run locks** (the SM.7 brief's §3.1, reviewer F14): SM.1 as built
+/// lets a pocket carry at most two families (doc 20 §11's Geology row, "as built (SM.1)"), and a
+/// run locks one row a family with ore — so the finish's close bundle stays within §11's ≤ 8
+/// writes.
+pub const MAX_LOCK_ROWS: usize = 2;
+
+/// **One cursor row a run locked** (doc 20 cut SM.7; lead ruling 3): the deposit's cursor and the
+/// pocket's number in the block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LockRow {
+    /// The deposit whose cursor holds the row.
+    pub deposit: mush_industry::OreDepositId,
+    /// The pocket's number in its block, `1..=256`.
+    pub pocket: u16,
+}
+
+/// **A mining run in flight** (doc 20 §6, §8 "the current cycle {pocket, family, k, cycles,
+/// yield}"; the SM.7 brief's lead ruling 1 and decision R1): one act started once, its cycles
+/// landing at their own dues — the record's **cycle slot**, beside the act slot, so a scan or a
+/// sounding may run from the same rig while it drills (D-20-9). Everything the finish needs is
+/// frozen here at the start, so a cycle reads no geology and no site. **Derived truth on a durable
+/// record** (`class_t`, `pocket_t`; the brief's decision R13, the cursor's precedent): never
+/// projected — [`RunView`] carries none of it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Run {
+    /// The record's ordinal at its start; never reused.
+    pub ordinal: u32,
+    /// Who started it: the tick finishes each cycle as this principal.
+    pub operator: ObjId,
+    /// The hull the rig works from.
+    pub hull: ObjId,
+    /// The rig's bay slot.
+    pub slot: u8,
+    /// The site port entry.
+    pub site: CanonicalId,
+    /// The site's body (a core creates the operator's chart row when they have none).
+    pub body: CanonicalId,
+    /// The rig's site cell, frozen: it never moves during a run.
+    pub stand: [i64; 2],
+    /// The site-local pocket under the stand.
+    pub pocket: [i64; 2],
+    /// The pocket's number in its block, `1..=256` (the cursor row's key).
+    pub number: u16,
+    /// The pocket's block letter.
+    pub letter: char,
+    /// The family mined, frozen (§6).
+    pub family: crate::surface::geology::OreFamily,
+    /// The (site, block, family)'s receipt-derived deposit id — derivable whether or not it was
+    /// opened; never shown.
+    pub deposit: mush_industry::OreDepositId,
+    /// The family's ore good.
+    pub good: CanonicalId,
+    /// The block vault's endpoint when the pocket holds the family's ore, else `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<u64>,
+    /// The rig's hopper endpoint.
+    pub hopper: u64,
+    /// The run's cycles, `1..=`[`MAX_RUN_CYCLES`].
+    pub cycles: u8,
+    /// The cycle in flight, `1..=cycles`.
+    pub k: u8,
+    /// IC seconds a cycle (the drill's `cycle_s`, × its `rock_factor` on rock).
+    pub secs: u32,
+    /// Charge a cycle, cu (the drill's `energy_cu`).
+    pub cost_cu: u32,
+    /// Per cycle, the room the run reserves, whole tonnes: the plan's yields, or the blind room.
+    pub reserve_t: Vec<u8>,
+    /// The drill's yield for the pocket's true class in `family` (0 barren) — truth, never shown.
+    pub class_t: u8,
+    /// The pocket's true tonnes of `family` — truth, never shown.
+    pub pocket_t: u8,
+    /// The operator had no reading of the pocket at the start: one blind cycle.
+    pub blind: bool,
+    /// `+tv/mine stop`: the run closes after cycle `k`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stop: bool,
+    /// The licence's lapse, frozen at the start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lapses_ic: Option<i64>,
+    /// The cursor rows this run locked, at most [`MAX_LOCK_ROWS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lock_rows: Vec<LockRow>,
+    /// Cycle `k`'s due instant.
+    pub due_ic: i64,
+    /// The run's remaining reservation: `cost_cu × (cycles − k + 1)`.
+    pub reserved_cu: u32,
+}
+
+impl Run {
+    /// **The tonnes still reserved** (doc 20 §3.5 "every outstanding, uncompleted cycle"; the
+    /// brief's decision R8): `Σ reserve_t[k − 1 ..]` — the cycle in flight included, its tonnes
+    /// not yet in the hopper.
+    #[must_use]
+    pub fn outstanding_t(&self) -> u64 {
+        let from = usize::from(self.k.saturating_sub(1));
+        self.reserve_t
+            .iter()
+            .skip(from)
+            .map(|t| u64::from(*t))
+            .sum()
+    }
+
+    /// The run's bounds (`RigRecord::check` calls it).
+    fn check(&self) -> Result<(), String> {
+        use crate::surface::address;
+        if !slot_ok(self.slot) {
+            return Err(format!("a run's slot is 1 to {MAX_BAY_ITEMS}"));
+        }
+        if self.cycles == 0 || self.cycles > MAX_RUN_CYCLES || self.k == 0 || self.k > self.cycles {
+            return Err(format!(
+                "a run's cycle k is 1 to its cycles, at most {MAX_RUN_CYCLES}"
+            ));
+        }
+        if self.reserve_t.len() != usize::from(self.cycles) {
+            return Err("a run reserves room for each of its cycles".to_owned());
+        }
+        let cap = crate::surface::cursor::MAX_POCKET_TONNES;
+        if self.reserve_t.iter().any(|t| u32::from(*t) > cap)
+            || u32::from(self.class_t) > cap
+            || u32::from(self.pocket_t) > cap
+        {
+            return Err(format!("a run's tonnes are at most {cap}"));
+        }
+        if self.blind && self.cycles != 1 {
+            return Err("a blind run is one cycle".to_owned());
+        }
+        if !stand_on_site(self.stand) {
+            return Err("a run stands on its site".to_owned());
+        }
+        let pocket = address::pocket_of_cell((self.stand[0], self.stand[1]));
+        if pocket != Some((self.pocket[0], self.pocket[1])) {
+            return Err("a run's pocket is the one under its stand".to_owned());
+        }
+        if address::pocket_number(self.pocket[0], self.pocket[1]) != Some(self.number)
+            || address::block_letter(self.pocket[0], self.pocket[1]) != Some(self.letter)
+        {
+            return Err("a run names its pocket's number and block".to_owned());
+        }
+        if self.source.is_some() != (self.class_t > 0 && self.pocket_t > 0) {
+            return Err(
+                "a run draws from the block's vault exactly when the pocket holds ore".to_owned(),
+            );
+        }
+        let remaining = u32::from(self.cycles)
+            .checked_sub(u32::from(self.k))
+            .and_then(|left| left.checked_add(1))
+            .and_then(|left| left.checked_mul(self.cost_cu));
+        if remaining != Some(self.reserved_cu) {
+            return Err("a run reserves its remaining cycles' charge".to_owned());
+        }
+        if self.lock_rows.len() > MAX_LOCK_ROWS
+            || self.lock_rows.iter().any(|row| row.pocket != self.number)
+        {
+            return Err(format!(
+                "a run locks at most {MAX_LOCK_ROWS} rows, each its own pocket's"
+            ));
+        }
+        if self.due_ic < 0 {
+            return Err("a run's due instant is on the IC clock".to_owned());
+        }
+        Ok(())
+    }
 }
 
 /// **One rig's record in `tacsim.excursion`** (§8; lead ruling 1).
@@ -605,6 +902,11 @@ pub struct RigRecord {
     /// The last finished act.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<Outcome>,
+    /// **The cycle slot** (doc 20 cut SM.7; §8; the brief's decision R1): the mining run in
+    /// flight, beside the act slot. Skipped when `None` (schema 1 stands: pre-launch, no
+    /// migration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<Run>,
 }
 
 /// A slot word a record may carry: `1..=MAX_BAY_ITEMS`.
@@ -630,6 +932,7 @@ impl RigRecord {
             act: None,
             excursion: None,
             last: None,
+            run: None,
         }
     }
 
@@ -652,6 +955,7 @@ impl RigRecord {
             act: None,
             excursion: None,
             last: None,
+            run: None,
         }
     }
 
@@ -677,7 +981,26 @@ impl RigRecord {
                 self.schema
             ));
         }
+        // Doc 20 cut SM.7 (lead ruling 1, decision R1): the run in the cycle slot, and the one
+        // kind of act that may share the rig with it.
+        if let Some(run) = &self.run {
+            if run.ordinal > self.ordinal || run.ordinal == 0 {
+                return Err("a run's ordinal is no later than the record's".to_owned());
+            }
+            run.check()?;
+            if let Some(act) = &self.act
+                && (act.ordinal <= run.ordinal
+                    || !matches!(act.kind, ActKind::Scan | ActKind::Sound))
+            {
+                return Err(
+                    "only a scan or a sounding started later shares a rig with its run".to_owned(),
+                );
+            }
+        }
         if let Some(act) = &self.act {
+            if act.kind == ActKind::Mine {
+                return Err("a run lives in the cycle slot, never the act slot".to_owned());
+            }
             if act.ordinal != self.ordinal {
                 return Err("an act in flight carries the record's ordinal".to_owned());
             }
@@ -718,7 +1041,8 @@ impl RigRecord {
                     | ActKind::Dump
                     | ActKind::Scan
                     | ActKind::Sound
-                    | ActKind::Drive,
+                    | ActKind::Drive
+                    | ActKind::Mine,
                     _,
                 ) => false,
             };
@@ -769,21 +1093,37 @@ impl RigRecord {
             {
                 return Err("only a finished drive arrives, on its site".to_owned());
             }
+            // Doc 20 cut SM.7: a mining outcome carries what its cycle did, and only it.
+            if last.mined.is_some() != (last.kind == ActKind::Mine) {
+                return Err("a mining outcome, and only one, carries its cycle".to_owned());
+            }
+            if let Some(mined) = &last.mined
+                && (mined.cycles == 0
+                    || mined.cycles > MAX_RUN_CYCLES
+                    || mined.k == 0
+                    || mined.k > mined.cycles
+                    || mined.tonnes > crate::surface::cursor::MAX_POCKET_TONNES)
+            {
+                return Err("a mining outcome names a cycle of its run and its tonnes".to_owned());
+            }
         }
         Ok(())
     }
 }
 
 /// **Every in-flight reservation the record holds**, summed (§4.1, §19 item 4: "two acts can
-/// never spend one margin"). In SM.3b that is the act's `reserved_cu`, and because the
-/// start's prepare has already required `act` to be `None` when it reads this (the one act
-/// slot and the ordinal), **it is always 0 at the reserve check in SM.3b**: the "two acts
-/// cannot both start" half holds through the slot and the ordinal. SM.7's cycle slot is the
-/// first reservation that can coexist with a new act; it extends this one function and must
-/// prove the sum in the world (the brief's decision 4).
+/// never spend one margin"): the act's `reserved_cu` plus — since doc 20 cut SM.7 — the run's
+/// remaining reservation (`Run::reserved_cu`, its cycles from the one in flight on), checked and
+/// saturating at `u32::MAX`. The act slot alone is always empty at a start's reserve check (the
+/// one act slot and the ordinal); **the cycle slot is the reservation that coexists with a new
+/// act**: a scan or a sounding started during a run reads the run's remaining reservation here,
+/// so the run's margin is never spent twice (SM.7's `tests/mining.rs` M10 proves the sum in the
+/// world).
 #[must_use]
 pub fn reserved_total(record: &RigRecord) -> u32 {
-    record.act.as_ref().map_or(0, |act| act.reserved_cu)
+    let act = record.act.as_ref().map_or(0, |act| act.reserved_cu);
+    let run = record.run.as_ref().map_or(0, |run| run.reserved_cu);
+    act.saturating_add(run)
 }
 
 // ---- the pure arithmetic ----------------------------------------------------------------
@@ -1121,6 +1461,35 @@ pub struct ActView {
     pub due_ic: i64,
 }
 
+/// **The run in flight, as the projection shows it** (doc 20 cut SM.7; §8): which run, its cycle
+/// and when that cycle is due — no pocket, family, yield or class (the projection decides nothing
+/// and shows nothing a blind core could leak).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunView {
+    /// The run's ordinal.
+    pub ordinal: u32,
+    /// The cycle in flight.
+    pub k: u8,
+    /// The run's cycles.
+    pub cycles: u8,
+    /// When the cycle in flight is due.
+    pub due_ic: i64,
+}
+
+impl RunView {
+    /// The view of `run`.
+    #[must_use]
+    pub fn of(run: &Run) -> RunView {
+        RunView {
+            ordinal: run.ordinal,
+            k: run.k,
+            cycles: run.cycles,
+            due_ic: run.due_ic,
+        }
+    }
+}
+
 /// One waypoint of a frozen leg (§8; doc 20 cut SM.4b fills it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1195,8 +1564,24 @@ pub struct TvRec {
     pub applied: u32,
     /// The act ordinal whose line the operator has been told.
     pub told: u32,
+    /// **The cycle of `told` whose line the operator has been told** (doc 20 cut SM.7; the brief's
+    /// decision R3): 0 for an act's outcome. An outcome is untold iff `(last.ordinal, its cycle)`
+    /// differs from `(told, told_cycle)` — equality, never `>`, since a run's cycles share its
+    /// ordinal and may finish after a later scan's. Skipped at 0.
+    #[serde(default, skip_serializing_if = "is_zero_cycle")]
+    pub told_cycle: u8,
+    /// **The run in flight** (doc 20 cut SM.7), as [`RunView`] shows it; skipped when `None`. Boxed
+    /// so [`TvRecState`] stays within clippy's `large_enum_variant` (the wire form is the view's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<Box<RunView>>,
     /// The newest [`MAX_TV_LOG_LINES`] lines, oldest first.
     pub log: Vec<TvLogLine>,
+}
+
+/// serde's `skip_serializing_if` for [`TvRec::told_cycle`].
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference
+const fn is_zero_cycle(cycle: &u8) -> bool {
+    *cycle == 0
 }
 
 impl TvRec {
@@ -1217,6 +1602,8 @@ impl TvRec {
             leg: None,
             applied: 0,
             told: 0,
+            told_cycle: 0,
+            run: None,
             log: Vec::new(),
         }
     }
@@ -1295,6 +1682,19 @@ impl TvRec {
         {
             return Err(format!(
                 "a frozen leg has at most {MAX_LEG_WAYPOINTS} waypoints"
+            ));
+        }
+        // Doc 20 cut SM.7: a run's view names a cycle of at most eight.
+        if let Some(run) = &self.run
+            && (run.cycles == 0 || run.cycles > MAX_RUN_CYCLES || run.k == 0 || run.k > run.cycles)
+        {
+            return Err(format!(
+                "a rig projection's run is a cycle of at most {MAX_RUN_CYCLES}"
+            ));
+        }
+        if self.told_cycle > MAX_RUN_CYCLES {
+            return Err(format!(
+                "a rig projection's told cycle is at most {MAX_RUN_CYCLES}"
             ));
         }
         let bytes = serde_json::to_vec(self).map_err(|error| error.to_string())?;
@@ -1667,7 +2067,9 @@ mod tests {
                 moved: BTreeMap::new(),
                 span: None,
                 arrived: None,
+                mined: None,
             }),
+            run: None,
         }
     }
 
@@ -1765,6 +2167,7 @@ mod tests {
             ActKind::Scan,
             ActKind::Sound,
             ActKind::Drive,
+            ActKind::Mine,
         ] {
             let wire = serde_json::to_value(kind).unwrap_or_else(|e| panic!("{e}"));
             assert_eq!(wire, serde_json::json!(kind.word()));
@@ -2343,5 +2746,283 @@ mod tests {
         let mut extra = wire;
         extra["surprise"] = serde_json::json!(1);
         assert!(serde_json::from_value::<TvRec>(extra).is_err());
+    }
+
+    /// A run of four fair metal cycles at `C`-block's pocket under `[146, 226]`, cycle 1.
+    fn run_sample(ordinal: u32) -> Run {
+        let stand = [146_i64, 226];
+        let (px, py) = crate::surface::address::pocket_of_cell((stand[0], stand[1]))
+            .unwrap_or_else(|| panic!("a pocket"));
+        Run {
+            ordinal,
+            operator: ObjId(42),
+            hull: ObjId(500),
+            slot: 1,
+            site: cid("ahuna_port"),
+            body: cid("ceres"),
+            stand,
+            pocket: [px, py],
+            number: crate::surface::address::pocket_number(px, py)
+                .unwrap_or_else(|| panic!("a number")),
+            letter: crate::surface::address::block_letter(px, py)
+                .unwrap_or_else(|| panic!("a letter")),
+            family: crate::surface::geology::OreFamily::Metals,
+            deposit: mush_industry::OreDepositId(77),
+            good: cid("metal_ore"),
+            source: Some(12),
+            hopper: 13,
+            cycles: 4,
+            k: 1,
+            secs: 1_800,
+            cost_cu: 2_000,
+            reserve_t: vec![2, 2, 2, 1],
+            class_t: 2,
+            pocket_t: 7,
+            blind: false,
+            stop: false,
+            lapses_ic: Some(9_000_000),
+            lock_rows: vec![LockRow {
+                deposit: mush_industry::OreDepositId(77),
+                pocket: crate::surface::address::pocket_number(px, py)
+                    .unwrap_or_else(|| panic!("a number")),
+            }],
+            due_ic: 2_800,
+            reserved_cu: 8_000,
+        }
+    }
+
+    /// A record holding `run_sample(3)` in its cycle slot, the act slot empty.
+    fn running() -> RigRecord {
+        RigRecord {
+            act: None,
+            run: Some(run_sample(3)),
+            ..sample()
+        }
+    }
+
+    /// **A run record checks its bounds** (doc 20 cut SM.7; the brief's 3.1): the sample passes;
+    /// a scan act beside the run passes; a drive act beside it, an act no later than the run, a
+    /// `Mine` act, a run ordinal past the record's, k past the cycles, nine cycles, reserves of the
+    /// wrong length or past 24 t, a blind run of two cycles, a pocket not under the stand, a wrong
+    /// pocket number or letter, a source on a barren run (and none on an ore run), the remaining
+    /// reservation wrong, three lock rows or one of another pocket are each refused; a mining
+    /// outcome carries `mined` and only it does.
+    #[test]
+    fn sm7_a_run_record_checks_its_bounds() {
+        assert_eq!(running().check(), Ok(()));
+        let with_act = |kind: ActKind, params: ActParams, ordinal: u32| {
+            let mut record = running();
+            record.ordinal = ordinal;
+            record.act = Some(Act {
+                kind,
+                params,
+                ..act(ordinal, ActParams::None {})
+            });
+            record
+        };
+        assert_eq!(
+            with_act(ActKind::Scan, scan_params(), 4).check(),
+            Ok(()),
+            "a scan beside the run"
+        );
+        assert_eq!(with_act(ActKind::Sound, sound_params(), 4).check(), Ok(()));
+        let mut broken = vec![
+            with_act(ActKind::Drive, drive_params(false), 4),
+            with_act(ActKind::Scan, scan_params(), 3),
+            with_act(ActKind::Mine, ActParams::None {}, 4),
+        ];
+        let edit = |change: &dyn Fn(&mut Run)| {
+            let mut record = running();
+            if let Some(run) = record.run.as_mut() {
+                change(run);
+            }
+            record
+        };
+        broken.push(edit(&|r| r.ordinal = 4));
+        broken.push(edit(&|r| r.k = 5));
+        broken.push(edit(&|r| r.k = 0));
+        broken.push(edit(&|r| {
+            r.cycles = 9;
+            r.reserve_t = vec![1; 9];
+            r.reserved_cu = 18_000;
+        }));
+        broken.push(edit(&|r| r.reserve_t = vec![2, 2, 2]));
+        broken.push(edit(&|r| r.reserve_t = vec![25, 2, 2, 1]));
+        broken.push(edit(&|r| r.pocket_t = 25));
+        broken.push(edit(&|r| {
+            r.blind = true;
+            r.cycles = 2;
+            r.reserve_t = vec![3, 3];
+            r.reserved_cu = 4_000;
+        }));
+        broken.push(edit(&|r| r.pocket[0] += 1));
+        broken.push(edit(&|r| r.number += 1));
+        broken.push(edit(&|r| r.letter = 'P'));
+        broken.push(edit(&|r| r.source = None));
+        broken.push(edit(&|r| {
+            r.class_t = 0;
+            r.pocket_t = 0;
+        }));
+        broken.push(edit(&|r| r.reserved_cu = 6_000));
+        broken.push(edit(&|r| {
+            let row = r.lock_rows[0];
+            r.lock_rows = vec![row, row, row];
+        }));
+        broken.push(edit(&|r| r.lock_rows[0].pocket += 1));
+        broken.push(edit(&|r| r.stand = [256, 0]));
+        for record in broken {
+            assert!(record.check().is_err(), "{record:?} passed its check");
+        }
+        // A blind barren core passes: one cycle, the blind room, no source.
+        let blind = edit(&|r| {
+            r.blind = true;
+            r.cycles = 1;
+            r.reserve_t = vec![3];
+            r.reserved_cu = 2_000;
+            r.class_t = 0;
+            r.pocket_t = 0;
+            r.source = None;
+            r.lock_rows = Vec::new();
+        });
+        assert_eq!(blind.check(), Ok(()));
+        // The mining outcome.
+        let outcome = |kind: ActKind, mined: Option<Mined>| {
+            let mut record = running();
+            if let Some(last) = record.last.as_mut() {
+                last.kind = kind;
+                last.result = ActResult::Done;
+                last.mined = mined;
+            }
+            record
+        };
+        let mined = Mined {
+            k: 2,
+            cycles: 4,
+            pocket: [36, 56],
+            good: cid("metal_ore"),
+            tonnes: 2,
+            blind: false,
+            end: None,
+        };
+        assert_eq!(outcome(ActKind::Mine, Some(mined.clone())).check(), Ok(()));
+        assert!(outcome(ActKind::Mine, None).check().is_err());
+        assert!(outcome(ActKind::Scan, Some(mined.clone())).check().is_err());
+        assert!(
+            outcome(
+                ActKind::Mine,
+                Some(Mined {
+                    k: 5,
+                    ..mined.clone()
+                })
+            )
+            .check()
+            .is_err()
+        );
+        assert!(
+            outcome(
+                ActKind::Mine,
+                Some(Mined {
+                    tonnes: 25,
+                    ..mined
+                })
+            )
+            .check()
+            .is_err()
+        );
+    }
+
+    /// **`reserved_total` adds the run** (doc 20 cut SM.7; lead ruling 1): the act's reservation
+    /// plus the run's remaining one; either alone; an overflow saturates.
+    #[test]
+    fn sm7_reserved_total_adds_the_run() {
+        let mut record = running();
+        assert_eq!(reserved_total(&record), 8_000, "the run alone");
+        record.ordinal = 4;
+        record.act = Some(Act {
+            kind: ActKind::Scan,
+            reserved_cu: 1_000,
+            params: scan_params(),
+            ..act(4, ActParams::None {})
+        });
+        assert_eq!(reserved_total(&record), 9_000, "a scan beside the run");
+        record.run = None;
+        assert_eq!(reserved_total(&record), 1_000, "the act alone");
+        let mut huge = running();
+        huge.act = Some(Act {
+            reserved_cu: u32::MAX,
+            ..act(3, ActParams::None {})
+        });
+        assert_eq!(reserved_total(&huge), u32::MAX, "saturates");
+        assert_eq!(run_sample(3).outstanding_t(), 7);
+        let later = Run {
+            k: 3,
+            reserved_cu: 4_000,
+            ..run_sample(3)
+        };
+        assert_eq!(later.outstanding_t(), 3, "the cycle in flight included");
+    }
+
+    /// **The run and the mined outcome round-trip the strict wire** (doc 20 cut SM.7): a record with
+    /// a run, an outcome with `mined` and every `RunEnd`, a projection with a run view and a told
+    /// cycle; an unknown field refused; a record without a run encodes no `run` key.
+    #[test]
+    fn sm7_the_run_and_its_outcome_round_trip() {
+        let record = running();
+        let wire = serde_json::to_value(&record).unwrap_or_else(|e| panic!("{e}"));
+        let back: RigRecord =
+            serde_json::from_value(wire.clone()).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(back, record);
+        let mut extra = wire;
+        extra["run"]["surprise"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<RigRecord>(extra).is_err());
+        let plain = serde_json::to_value(sample()).unwrap_or_else(|e| panic!("{e}"));
+        assert!(plain.get("run").is_none());
+        for end in [
+            RunEnd::Done,
+            RunEnd::WorkedOut,
+            RunEnd::Stopped,
+            RunEnd::Licence {
+                why: LicenceEnd::Lapsed { at_ic: 5 },
+            },
+            RunEnd::Licence {
+                why: LicenceEnd::Other,
+            },
+            RunEnd::Dark {
+                why: DarkCause::Claims,
+            },
+            RunEnd::Claimed,
+            RunEnd::Lease { forfeit: true },
+            RunEnd::Refused,
+        ] {
+            let mined = Mined {
+                k: 1,
+                cycles: 1,
+                pocket: [36, 56],
+                good: cid("ice_ore"),
+                tonnes: 0,
+                blind: true,
+                end: Some(end),
+            };
+            let wire = serde_json::to_value(&mined).unwrap_or_else(|e| panic!("{e}"));
+            let back: Mined = serde_json::from_value(wire).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(back, mined);
+        }
+        let mut rec = TvRec::new(ObjId(900), 1);
+        rec.told_cycle = 2;
+        rec.run = Some(Box::new(RunView::of(&run_sample(3))));
+        assert_eq!(rec.check(), Ok(()));
+        let wire = serde_json::to_value(&rec).unwrap_or_else(|e| panic!("{e}"));
+        let back: TvRec = serde_json::from_value(wire).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(back, rec);
+        let fresh =
+            serde_json::to_value(TvRec::new(ObjId(900), 1)).unwrap_or_else(|e| panic!("{e}"));
+        assert!(fresh.get("told_cycle").is_none() && fresh.get("run").is_none());
+        let mut bad = rec.clone();
+        bad.run = Some(Box::new(RunView {
+            k: 9,
+            cycles: 8,
+            ..RunView::of(&run_sample(3))
+        }));
+        assert!(bad.check().is_err());
     }
 }

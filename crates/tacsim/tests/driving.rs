@@ -2254,7 +2254,8 @@ fn sm4b_no_licence_drives_and_recovers_on_a_held_block() {
 // ---------------------------------------------------------------------------
 
 /// **D9 — a forged or stale drive start is refused** (the brief's decision P2): a raw start with
-/// `act: drive` and no order refuses "that drive was not planned; preview it again"; an order
+/// `act: drive` and no order refuses "that act was not planned; preview it again" (doc 20 cut
+/// SM.7's rewording of the shared word); an order
 /// planned for one ordinal, overtaken by another act, cannot start at the next ("that rig's
 /// orders moved on"); a rig staff-moved after its drive's `go` and before the start lands refuses
 /// "that rig has moved since the drive was planned". None writes the record.
@@ -2268,7 +2269,7 @@ fn sm4b_a_forged_or_stale_drive_start_is_refused() {
     let forged = start(&rig, pilot, tv, "drive", n + 1);
     let refused = land(&mut rig, &forged).expect_err("no order");
     assert!(
-        refused.contains("that drive was not planned; preview it again"),
+        refused.contains("that act was not planned; preview it again"),
         "{refused}"
     );
     // An order for ordinal n + 1, overtaken by a scan at n + 1.

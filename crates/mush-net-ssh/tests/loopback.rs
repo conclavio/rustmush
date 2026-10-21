@@ -2254,3 +2254,58 @@ async fn sm4b_the_arrival_line_and_the_other_map_print_over_ssh() {
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;
 }
+
+// ---------------------------------------------------------------------------
+// Doc 20 cut SM.7 — the cycle line over SSH
+// ---------------------------------------------------------------------------
+
+/// `tacsim`'s M14-blessed mining events: the operator's real `CYCLE_DONE` and `CORED` events.
+const MINE_EVENTS: &str = include_str!("../../../web/src/lib/fixtures/site/mine_events.json");
+
+/// **A11 — the cycle line prints over SSH** (doc 20 cut SM.7): a real russh client in line mode,
+/// the world's own events pushed through the session's queue — the operator's cycle line, then
+/// its blind core's line. The client's screen holds both texts verbatim.
+#[tokio::test]
+async fn sm7_the_cycle_line_prints_over_ssh() {
+    let events: serde_json::Value = serde_json::from_str(MINE_EVENTS).expect("the fixture");
+    let cycle: OutputEvent =
+        serde_json::from_value(events["cycle"].clone()).expect("an output event");
+    let cored: OutputEvent =
+        serde_json::from_value(events["cored"].clone()).expect("an output event");
+    let (cycle_text, cored_text) = (event_text(&cycle), event_text(&cored));
+    // `tacsim`'s M14 blesses exactly `CYCLE_DONE` ("Rig {n}, cycle {k} of {cycles}: {t} t {ore};
+    // hopper {hopper}.") and `CORED` ("Rig {n} cored {reading}: {lift}; hopper {hopper}.").
+    assert!(
+        cycle_text.starts_with("Rig 1, cycle 1 of ") && cycle_text.ends_with(" of 12 t."),
+        "{cycle_text}"
+    );
+    assert!(
+        cored_text.starts_with("Rig 1 cored ") && cored_text.ends_with(" of 12 t."),
+        "{cored_text}"
+    );
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("mining", &hooks).await;
+    let conn = *hooks
+        .txs
+        .lock()
+        .unwrap()
+        .keys()
+        .next()
+        .expect("a connected character");
+    let tx = hooks.tx_of(conn).expect("its queue");
+    let mark = term.seen.len();
+    tx.send(Arc::new(cycle)).await.expect("queue open");
+    tx.send(Arc::new(cored)).await.expect("queue open");
+    term.expect_after(mark, &cycle_text).await;
+    term.expect_after(mark, &cored_text).await;
+    let seen = strip_ansi(&term.seen[mark..]);
+    for line in [&cycle_text, &cored_text] {
+        assert!(seen.contains(line.as_str()), "{line:?} reached the client");
+    }
+    drop(tx);
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}

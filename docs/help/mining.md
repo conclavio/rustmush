@@ -107,8 +107,36 @@ and no claim is needed to drive anywhere on a site.
   +tv/<n> drive <target> [go]  drive to a pocket, a field, a block, a cell or a
                            bearing (C117, C-NW, C, 140,96, ne 300)
 
-**8. Mine.** (not yet) Drilling a pocket, cycle by cycle, into the rig's
-hopper.
+**8. Mine.** With rig 1 standing on a pocket, `+tv/1 mine` previews a run from
+your own reading of that pocket: its class, each cycle's tonnes until the pocket
+is drawn, the time, the hopper before and after, the hold's room after and the
+charge after the run and after the trip home — and `+tv/1 mine go` starts
+exactly that run. A cycle lifts the pocket's class in tonnes into the hopper —
+lean 1 t, fair 2 t, rich 3 t, the last cycle the remainder — for 2,000 cu: 1,800
+IC s on regolith or ice, 3,600 on rock. With no number the run goes until the
+pocket is worked out, the hopper is full (12 t) or the hold's room is used up,
+at most eight cycles; a number that does not fit is refused, and the refusal
+names the number that does (`+tv/1 mine 3`). On a pocket holding two kinds of
+ore, name the one you want (`+tv/1 mine ice`); without a name the run takes the
+one with the most tonnes left, and the preview says what else is there.
+
+A pocket you have no reading of is cored blind: "No reading here: the first
+cycle will tell." It is one cycle, needs 3 t of room in the hopper and in the
+hold whatever the pocket holds, and its core is your reading of the pocket from
+then on. `+tv/1 mine stop` lets the cycle in flight finish and keep its ore; the
+cycles after it are dropped at no cost. While a rig drills you may scan or sound
+from it, preview its next drive, read the map and work your other rig.
+
+Mining needs a prospecting licence in force or in its grace, and open ground or
+the commons: "That block is under claim." refuses a block someone holds. Only
+one rig works a pocket at a time: "Another rig is working that pocket." A
+licence that lapses, or a claim filed, mid-run stops the run after the cycle in
+flight, and the rig can always come home with `+tv/1 recover go`. Every map
+shows the pits worked so far (`v`, and `V` once worked out).
+
+  +tv/<n> mine [family] [cycles] [go]  mine the pocket the rig stands on
+  +tv/<n> drill [family] [cycles] [go] the same
+  +tv/<n> mine stop        end the run after the cycle in flight
 
 **9. Hopper full, go home.** (not yet) Unloading a rig's hopper into the hold.
 Until then a rig comes home with `+tv/1 recover go`: from anywhere on the site's
@@ -152,7 +180,7 @@ sounding thumps through the ground from the southeast, over 1 km off."
 
 ## Still to come
 
-Mining; unloading; staking and the Registry's claims; fill plans and awaiting
-a rig; the ground chart of a whole body.
+Unloading; staking and the Registry's claims; fill plans and awaiting a rig;
+the ground chart of a whole body.
 
 See also: `help ships`, `help coop`, `help travel`, `help trade`.

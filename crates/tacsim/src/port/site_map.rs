@@ -100,7 +100,11 @@ pub enum MapView {
 }
 
 /// **The typed reads a frame needs** (doc 20 cut SM.4b), from a command (`Ctx`) or a feed query
-/// (`HookReadContext`) — both through tacsim's own module-scoped typed-state capability.
+/// (`HookReadContext`) — both through tacsim's own module-scoped typed-state capability. **Doc 20
+/// cut SM.7** (the brief's 3.3, reviewer F20) adds the two reads the mining plan needs —
+/// industry's deposits and the claims over one, read only (SM.6's D10 tripwire holds tacsim to
+/// reads) — and an impl over the engine's own snapshot for the start's and the finish's offers
+/// (`EngineReads`): one trait, never a second reader.
 pub(crate) trait SurfaceReads {
     /// A rig's `tacsim.excursion` record.
     fn rig(&self, tv: ObjId) -> Result<Option<RigRecord>, String>;
@@ -110,12 +114,133 @@ pub(crate) trait SurfaceReads {
     fn cursor(&self, deposit: mush_industry::OreDepositId) -> Result<Option<PocketCursor>, String>;
     /// One pool's balance.
     fn pool(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError>;
+    /// **An industry deposit** (doc 20 cut SM.7), `None` when it was never opened.
+    fn deposit(
+        &self,
+        id: mush_industry::OreDepositId,
+    ) -> Result<Option<mush_industry::OreDeposit>, String>;
+    /// **Every claim filed over a deposit** (doc 20 cut SM.7): the subject's index, then each
+    /// record (industry's `claims_over` shape, no transaction).
+    fn claims(
+        &self,
+        deposit: mush_industry::OreDepositId,
+    ) -> Result<Vec<mush_industry::ClaimRecord>, String>;
 }
 
 /// The handles, or why not.
 fn handles_of(w: &World) -> Result<&PortHandles, String> {
     w.module_state::<PortHandles>()
         .ok_or_else(|| "the port handles are not composed".to_owned())
+}
+
+/// Industry's families, or why not (doc 20 cut SM.7: read only).
+fn industry_of(w: &World) -> Result<mush_industry::IndustryFamilies, String> {
+    w.module_state::<mush_industry::IndustryHandles>()
+        .map(|handles| handles.0.clone())
+        .ok_or_else(|| "the industry families are not composed".to_owned())
+}
+
+/// The claims over `deposit` through a family reader (`claims_over`'s shape: the subject's index,
+/// then each record; an id the index names whose record is gone is skipped).
+fn claims_through<E: std::fmt::Display>(
+    deposit: mush_industry::OreDepositId,
+    index: &dyn Fn(&SmolStr) -> Result<Option<mush_industry::ClaimIndex>, E>,
+    claim: &dyn Fn(&mush_industry::ClaimId) -> Result<Option<mush_industry::ClaimRecord>, E>,
+) -> Result<Vec<mush_industry::ClaimRecord>, String> {
+    let token =
+        mush_industry::claim_subject_token(mush_industry::ClaimSubject::Deposit { deposit });
+    let Some(found) = index(&token).map_err(|error| error.to_string())? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(found.claims().len());
+    for id in found.claims() {
+        if let Some(record) = claim(id).map_err(|error| error.to_string())? {
+            out.push(record);
+        }
+    }
+    Ok(out)
+}
+
+/// **The engine's own snapshot, as [`SurfaceReads`]** (doc 20 cut SM.7; the brief's 3.3): the
+/// start's and the finish's offers hold the engine, not a `Ctx`, and read through it — the same
+/// families, the same pool rule ([`crate::port_tick::read_pool`]'s: absent is 0, a refusal never
+/// 0), never a second reader.
+pub(crate) struct EngineReads<'e>(pub &'e mush_core::Engine);
+
+impl SurfaceReads for EngineReads<'_> {
+    fn rig(&self, tv: ObjId) -> Result<Option<RigRecord>, String> {
+        let handles = handles_of(&self.0.world)?;
+        self.0
+            .action_state()
+            .get(&handles.families.excursions, &RigKey(tv))
+            .map(|found| found.cloned().filter(|record| record.tv == tv))
+            .map_err(|error| error.to_string())
+    }
+
+    fn chart(&self, principal: ObjId, site: &CanonicalId) -> Result<Option<ChartRecord>, String> {
+        let handles = handles_of(&self.0.world)?;
+        let key = ChartKey {
+            principal,
+            site: site.clone(),
+        };
+        self.0
+            .action_state()
+            .get(&handles.families.charts, &key)
+            .map(|found| found.cloned().filter(|row| row.key() == key))
+            .map_err(|error| error.to_string())
+    }
+
+    fn cursor(&self, deposit: mush_industry::OreDepositId) -> Result<Option<PocketCursor>, String> {
+        let handles = handles_of(&self.0.world)?;
+        self.0
+            .action_state()
+            .get(&handles.families.pockets, &deposit)
+            .map(|found| found.cloned().filter(|row| row.deposit == deposit))
+            .map_err(|error| error.to_string())
+    }
+
+    fn pool(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError> {
+        let Some(inventory) = self
+            .0
+            .world
+            .module_state::<PortHandles>()
+            .and_then(|handles| handles.inventory.as_ref())
+        else {
+            return Err(PoolReadError::Unwired);
+        };
+        let key = mush_inventory::pool_key(endpoint, good)
+            .map_err(|error| PoolReadError::Key(error.to_string()))?;
+        match self.0.action_state().get(&inventory.pools, &key) {
+            Ok(None) => Ok(0),
+            Ok(Some(scalar)) => u64::try_from(scalar.current()).map_err(|_| PoolReadError::Corrupt),
+            Err(error) => Err(PoolReadError::Unreadable(error.to_string())),
+        }
+    }
+
+    fn deposit(
+        &self,
+        id: mush_industry::OreDepositId,
+    ) -> Result<Option<mush_industry::OreDeposit>, String> {
+        let families = industry_of(&self.0.world)?;
+        self.0
+            .action_state()
+            .get(&families.deposits, &id)
+            .map(|found| found.cloned())
+            .map_err(|error| error.to_string())
+    }
+
+    fn claims(
+        &self,
+        deposit: mush_industry::OreDepositId,
+    ) -> Result<Vec<mush_industry::ClaimRecord>, String> {
+        let families = industry_of(&self.0.world)?;
+        let state = self.0.action_state();
+        claims_through(
+            deposit,
+            &|token| state.get(&families.claim_index, token).map(|f| f.cloned()),
+            &|id| state.get(&families.claims, id).map(|f| f.cloned()),
+        )
+    }
 }
 
 impl SurfaceReads for Ctx<'_> {
@@ -147,6 +272,31 @@ impl SurfaceReads for Ctx<'_> {
     fn pool(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError> {
         crate::port_tick::read_pool(self, endpoint, good)
     }
+
+    fn deposit(
+        &self,
+        id: mush_industry::OreDepositId,
+    ) -> Result<Option<mush_industry::OreDeposit>, String> {
+        let families = industry_of(self.w)?;
+        self.action_state(&families.deposits, &id)
+            .map(|found| found.cloned())
+            .map_err(|error| error.to_string())
+    }
+
+    fn claims(
+        &self,
+        deposit: mush_industry::OreDepositId,
+    ) -> Result<Vec<mush_industry::ClaimRecord>, String> {
+        let families = industry_of(self.w)?;
+        claims_through(
+            deposit,
+            &|token| {
+                self.action_state(&families.claim_index, token)
+                    .map(|f| f.cloned())
+            },
+            &|id| self.action_state(&families.claims, id).map(|f| f.cloned()),
+        )
+    }
 }
 
 impl SurfaceReads for HookReadContext<'_> {
@@ -177,6 +327,31 @@ impl SurfaceReads for HookReadContext<'_> {
 
     fn pool(&self, endpoint: EndpointRef, good: &CanonicalId) -> Result<u64, PoolReadError> {
         crate::port_tick::read_pool_in(self, endpoint, good)
+    }
+
+    fn deposit(
+        &self,
+        id: mush_industry::OreDepositId,
+    ) -> Result<Option<mush_industry::OreDeposit>, String> {
+        let families = industry_of(self.world())?;
+        self.action_state(&families.deposits, &id)
+            .map(|found| found.cloned())
+            .map_err(|error| error.to_string())
+    }
+
+    fn claims(
+        &self,
+        deposit: mush_industry::OreDepositId,
+    ) -> Result<Vec<mush_industry::ClaimRecord>, String> {
+        let families = industry_of(self.world())?;
+        claims_through(
+            deposit,
+            &|token| {
+                self.action_state(&families.claim_index, token)
+                    .map(|f| f.cloned())
+            },
+            &|id| self.action_state(&families.claims, id).map(|f| f.cloned()),
+        )
     }
 }
 
@@ -446,23 +621,69 @@ fn pit_layer(
                 let Some(pocket) = address::pocket_of_block_index(letter, index) else {
                     continue;
                 };
-                let tonnes = ground
-                    .geology
-                    .pocket(pocket.0, pocket.1)
-                    .map_or(0, |cell| by_family(cell.tonnes, family));
-                let exhausted = row.drawn_t >= u32::from(tonnes);
-                let glyph = if exhausted { 'V' } else { 'v' };
-                pits.entry(pocket)
-                    .and_modify(|seen| {
-                        if !exhausted {
-                            *seen = 'v';
-                        }
-                    })
-                    .or_insert(glyph);
+                let exhausted = row_exhausted(ground, pocket, family, row.drawn_t);
+                let folded = fold_pit(pits.get(&pocket).copied(), exhausted);
+                if let Some(glyph) = folded {
+                    pits.insert(pocket, glyph);
+                }
             }
         }
     }
     pits
+}
+
+/// Whether a drawn cursor row has reached the pocket's tonnes of `family` in the keyed site table.
+fn row_exhausted(
+    ground: &crate::surface::SiteGround,
+    pocket: (i64, i64),
+    family: OreFamily,
+    drawn_t: u32,
+) -> bool {
+    let tonnes = ground
+        .geology
+        .pocket(pocket.0, pocket.1)
+        .map_or(0, |cell| by_family(cell.tonnes, family));
+    drawn_t >= u32::from(tonnes)
+}
+
+/// **The pit rule's fold over one pocket's drawn rows** (doc 20 §3.4; the SM.7 brief's 3.3 item
+/// 8b): the first drawn row gives `v`, or `V` when it is exhausted; any row not exhausted makes the
+/// pocket `v` — so a pocket is `V` only when every drawn row is. The one rule the map's layer and
+/// [`pit_at`] fold through, so the map and the mining preview never disagree.
+fn fold_pit(seen: Option<char>, exhausted: bool) -> Option<char> {
+    match seen {
+        None => Some(if exhausted { 'V' } else { 'v' }),
+        Some(_) if !exhausted => Some('v'),
+        Some(glyph) => Some(glyph),
+    }
+}
+
+/// **One pocket's public pit** (doc 20 §6 "or a public pit"; cut SM.7, the brief's 3.3 item 8b,
+/// R16): `v` worked, `V` exhausted, `None` never drawn — the four families' cursors of the pocket's
+/// block, their row for this pocket, folded by [`pit_layer`]'s own rule ([`fold_pit`]). Public, the
+/// same for every asker; a pocket barren in every family has no cursor row and so never a pit.
+pub(crate) fn pit_at(
+    reads: &dyn SurfaceReads,
+    entry: &CanonicalId,
+    ground: &crate::surface::SiteGround,
+    pocket: (i64, i64),
+) -> Option<char> {
+    let letter = address::block_letter(pocket.0, pocket.1)?;
+    let number = address::pocket_number(pocket.0, pocket.1)?;
+    let mut pit: Option<char> = None;
+    for family in OreFamily::ALL {
+        let receipt = crate::surface::opening::receipt(entry, letter, family);
+        let Ok(deposit) = mush_industry::derive_system_deposit_id(&receipt) else {
+            continue;
+        };
+        let Ok(Some(cursor)) = reads.cursor(deposit) else {
+            continue;
+        };
+        if let Some(row) = cursor.row(number).filter(|row| row.drawn_t >= 1) {
+            pit = fold_pit(pit, row_exhausted(ground, pocket, family, row.drawn_t));
+        }
+    }
+    pit
 }
 
 /// **A held block's edge `#`** — a stub: claims are SM.10's (no claim is filed before it).
@@ -1176,6 +1397,7 @@ pub(crate) fn site_map_frame(
             .map(|lease| lease.tv)
             .collect::<Vec<_>>(),
         &read,
+        &|tv| reads.rig(tv),
     );
     let mut lines: Vec<String> = Vec::new();
     if readings.is_empty() {

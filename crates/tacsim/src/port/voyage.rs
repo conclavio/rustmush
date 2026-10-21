@@ -406,7 +406,9 @@ pub const TV_OUT: &str = "Rig {n} is out on {site}; the {name} lifts only with e
 /// cannot reach (only a staff move gets it there): `{n}`, `{where}` (`on {site}`, or `away
 /// from her bay` when no site can be named), `{name}`. Under the same `DepartRefusalKind::TvOut`.
 pub const TV_AWAY: &str = "Rig {n} is logged out {where}; the {name} lifts only with every rig in her bay: staff must bring it in.";
-/// **Doc 20 cut SM.3b**: a rig mid-act: `{n}`, `{doing}`, `{name}`.
+/// **Doc 20 cut SM.3b**: a rig mid-act: `{n}`, `{doing}`, `{name}`. A rig mid-run (doc 20 cut
+/// SM.7) uses it too, `{doing}` from `crate::surface::act::drilling_words` and
+/// `crate::port::tv::RUN_STOP_REMEDY` appended.
 pub const TV_BUSY: &str = "Rig {n} is {doing}; the {name} lifts once it is done.";
 /// **Doc 20 cut SM.3b (§4.3)**: a hopper with ore in it: `{n}`, `{t}` whole tonnes, `{name}`.
 /// (SM.8 adds the unload to the remedy.)
@@ -2446,16 +2448,19 @@ pub(crate) fn site_gate<'w>(
 /// [`prepare_departure`] (so `+ship/undock`, `+ship/lift` and the order fire refuse),
 /// `+ship/plan`'s block and the queue's dry run (`executor::plan_queue`). The hull's rigs are
 /// the placements in its bay and the live lease records naming it, by slot. Each rig not
-/// `Interior` in this hull's bay, or whose `tacsim.excursion` record holds an act or an open
-/// excursion, refuses — [`TV_BUSY`] with an act in flight; else, with the hull on a site's
-/// pad, [`TV_OUT`] (`{site}` where it stands, or the open excursion's site: a rig a staff move
-/// left in the bay with its excursion open reads `TV_OUT`, and its remedy, `+tv/{n} recover`,
-/// closes it — decision 21); else (the hull at a port or anywhere a recover cannot reach, which
-/// only a staff move makes) [`TV_AWAY`], whose remedy is staff's (the fixer round's item 2).
-/// The record is read through `crate::port::tv::rig_flight`, the reader the lease return and
-/// the repossession share. Then each rig in the bay whose hopper holds anything refuses [`HOPPER_LOADED`]. A
-/// record or a pool that will not read is `PlanDark`, logged. A standard Dray (no bay, no
-/// records) answers `Ok(())` at once.
+/// `Interior` in this hull's bay, or whose `tacsim.excursion` record holds an act, a run or an
+/// open excursion, refuses — [`TV_BUSY`] with an act in flight; else, with a mining run in
+/// flight (`RigFlight::Drilling`, doc 20 cut SM.7), [`TV_BUSY`] with `drilling {addr}` and
+/// `crate::port::tv::RUN_STOP_REMEDY` appended, before any `TV_OUT` (a recover would refuse a
+/// drilling rig, so the remedy is the stop); else, with the hull on a site's pad, [`TV_OUT`]
+/// (`{site}` where it stands, or the open excursion's site: a rig a staff move left in the bay
+/// with its excursion open reads `TV_OUT`, and its remedy, `+tv/{n} recover`, closes it —
+/// decision 21); else (the hull at a port or anywhere a recover cannot reach, which only a
+/// staff move makes) [`TV_AWAY`], whose remedy is staff's (the fixer round's item 2). The
+/// record is read through `crate::port::tv::rig_flight`, the reader the lease return and the
+/// repossession share. Then each rig in the bay whose hopper holds anything refuses
+/// [`HOPPER_LOADED`]. A record or a pool that will not read is `PlanDark`, logged. A standard
+/// Dray (no bay, no records) answers `Ok(())` at once.
 ///
 /// # Errors
 ///
@@ -2468,7 +2473,7 @@ pub(crate) fn bay_gate(
 ) -> Result<(), DepartRefusal> {
     use crate::port::tv::RigFlight;
     use crate::surface::act::{
-        Where, doing_words, ramp_label, site_name, site_of_domain, where_is,
+        Where, doing_words, drilling_words, ramp_label, site_name, site_of_domain, where_is,
     };
     use DepartRefusalKind as K;
     let w: &World = ctx.w;
@@ -2527,9 +2532,24 @@ pub(crate) fn bay_gate(
                     .replace("{name}", name),
             ));
         }
+        // A run in flight (doc 20 cut SM.7; the SM.7 lead's pre-commit round, item 2): busy
+        // until it ends, and the remedy is the stop — a recover would refuse a drilling rig.
+        if let RigFlight::Drilling { pocket, .. } = &flight {
+            return Err(refusal(
+                K::TvOut,
+                format!(
+                    "{}{}",
+                    TV_BUSY
+                        .replace("{n}", &n_of(*slot))
+                        .replace("{doing}", &drilling_words(pocket))
+                        .replace("{name}", name),
+                    crate::port::tv::RUN_STOP_REMEDY.replace("{n}", &n_of(*slot))
+                ),
+            ));
+        }
         let open = match &flight {
             RigFlight::Out { site } => Some(site),
-            RigFlight::Idle | RigFlight::Busy { .. } => None,
+            RigFlight::Idle | RigFlight::Busy { .. } | RigFlight::Drilling { .. } => None,
         };
         if !in_bay || open.is_some() {
             let named = match (open, place) {

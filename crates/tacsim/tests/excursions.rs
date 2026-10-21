@@ -3429,3 +3429,150 @@ fn sm3b_every_act_answers_tv_unwired_without_the_tools_table() {
     );
     no_refused_writes(&rig.tw);
 }
+
+// ---------------------------------------------------------------------------
+// 21. A drilling rig is busy to the return and the repossession (doc 20 cut SM.7)
+// ---------------------------------------------------------------------------
+
+/// **A drilling rig holds the return and the repossession** (doc 20 cut SM.7; the SM.7 lead's
+/// pre-commit round, item 2): a second pilot's Dray-P docked at Ceres, its rig in the bay with a
+/// staff-seeded `tacsim.excursion` record holding a mining run and **no excursion** — the one way
+/// a run can meet Occator's counter, and a record `rig_flight` once read as idle. It reads busy
+/// now: the lease return at the counter, bare and with `go`, answers `RIG_BUSY` with `drilling
+/// <pocket>` and the `+tv/1 mine stop` remedy and changes nothing (the lease record, the deposit
+/// hold, the rig aboard, the record); the revoke reaches `repossess`, which holds — exactly
+/// `NOT_REVOKED` + `RECALL_BAY`, the rig aboard, its lease Active, the record and the charter
+/// standing. The same record with the run cleared is the control: the revoke repossesses.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sm7_a_drilling_rig_holds_the_return_and_the_repossession() {
+    use tacsim::surface::address::{block_letter, pocket_address, pocket_number};
+    use tacsim::surface::{LockRow, OreFamily, Run};
+    let mut rig = stocked();
+    let (other, row_o) = prospector(&mut rig, "Other", 2, "Tally Moth");
+    lease_one(&mut rig, other);
+    let tv_o = rigs_of(&rig.tw, other)[0];
+    let hull_o = ObjId(row_o.hull);
+    assert!(in_bay(&rig.tw, tv_o, &row_o));
+    let now = ic_now(&rig.tw);
+    let (px, py) = (36_i64, 56_i64);
+    let addr = pocket_address(px, py).expect("an address");
+    let number = pocket_number(px, py).expect("a number");
+    let mut drilling = RigRecord::fresh(tv_o, &battery());
+    drilling.ordinal = 1;
+    drilling.run = Some(Run {
+        ordinal: 1,
+        operator: other,
+        hull: hull_o,
+        slot: 1,
+        site: cid("ahuna_port"),
+        body: cid("ceres"),
+        stand: [px * 4 + 1, py * 4 + 1],
+        pocket: [px, py],
+        number,
+        letter: block_letter(px, py).expect("a letter"),
+        family: OreFamily::Metals,
+        deposit: mush_industry::OreDepositId(77),
+        good: cid("metal_ore"),
+        source: Some(12),
+        hopper: 13,
+        cycles: 4,
+        k: 1,
+        secs: 1_800,
+        cost_cu: 2_000,
+        reserve_t: vec![2, 2, 2, 1],
+        class_t: 2,
+        pocket_t: 7,
+        blind: false,
+        stop: false,
+        lapses_ic: None,
+        lock_rows: vec![LockRow {
+            deposit: mush_industry::OreDepositId(77),
+            pocket: number,
+        }],
+        // Far off, so no surface fire lands a cycle while the test reads.
+        due_ic: now + 1_000_000,
+        reserved_cu: 8_000,
+    });
+    assert_eq!(drilling.check(), Ok(()), "a well-formed staff record");
+    put_record(&mut rig, drilling.clone());
+
+    // The lease return at the counter: busy, with the stop as the remedy.
+    let lease = store(&rig.tw)
+        .tv_lease_on(tv_o)
+        .cloned()
+        .expect("the live lease record");
+    let hold = hold_status(&rig.tw, lease.hold);
+    let counter = station_room(&rig.tw, "ceres_port", "room.c07_exchange");
+    teleport(&mut rig.tw, other, counter);
+    let busy = RIG_BUSY
+        .replace("{n}", "1")
+        .replace("{doing}", &format!("drilling {addr}"));
+    let head = busy.split("{when}").next().unwrap_or_default();
+    let remedy = tacsim::port::tv::RUN_STOP_REMEDY.replace("{n}", "1");
+    assert_eq!(
+        remedy, " +tv/1 mine stop ends the run after this cycle.",
+        "the remedy names the stop"
+    );
+    for line in ["+tv/1 lease return", "+tv/1 lease return go"] {
+        let (out, queued) = command(&mut rig, other, line);
+        let out = out.trim();
+        assert!(
+            out.starts_with(head) && out.contains(" UTC (IC ") && out.ends_with(&remedy),
+            "{line}: {out}"
+        );
+        assert!(queued.is_empty(), "{line} queued nothing");
+        assert_eq!(
+            store(&rig.tw).tv_lease_on(tv_o),
+            Some(&lease),
+            "{line}: the lease record"
+        );
+        assert_eq!(
+            hold_status(&rig.tw, lease.hold),
+            hold,
+            "{line}: the deposit hold"
+        );
+        assert!(
+            in_bay(&rig.tw, tv_o, &row_o),
+            "{line}: the rig stays aboard"
+        );
+        assert_eq!(
+            record_of(&mut rig.tw, tv_o).map(|record| record.run),
+            Some(drilling.run.clone()),
+            "{line}: the run stands"
+        );
+    }
+
+    // The repossession holds.
+    let held = format!(
+        "{}{}",
+        tacsim::port::recall::NOT_REVOKED,
+        tacsim::port::recall::RECALL_BAY.replace("{name}", "Tally Moth")
+    );
+    let out = run(&mut rig.tw, GOD, "@coop/revoke Other=test");
+    assert_eq!(out.trim(), held);
+    assert!(in_bay(&rig.tw, tv_o, &row_o), "the rig stays aboard");
+    assert_eq!(
+        store(&rig.tw).tv_lease_on(tv_o).map(|lease| lease.status),
+        Some(TvLeaseStatus::Active),
+        "the lease stands"
+    );
+    assert_eq!(
+        record_of(&mut rig.tw, tv_o).map(|record| record.run),
+        Some(drilling.run.clone()),
+        "the run stands"
+    );
+    assert!(
+        tacsim::port::live_charter(rig.tw.world(), other).is_some(),
+        "the charter stands"
+    );
+    // The control: the run cleared — the revoke repossesses the rig.
+    put_record(&mut rig, RigRecord::fresh(tv_o, &battery()));
+    let out = run(&mut rig.tw, GOD, "@coop/revoke Other=test");
+    assert!(
+        out.contains("Charter of the Tally Moth (") && out.contains(") revoked from Other: test."),
+        "{out}"
+    );
+    assert!(!in_bay(&rig.tw, tv_o, &row_o), "repossessed");
+    no_refused_writes(&rig.tw);
+}

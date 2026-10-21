@@ -84,6 +84,8 @@ A lease past its term is re-debited at your next +tv/lease, or the deposit is fo
 +tv/<n> dump [go]  empty rig n's hopper onto the site's spoil, for good.
 +tv/<n> scan [go]  (alias survey) read the nine fields around rig n by richness, sharper from rock than from regolith; nothing from ice (600 IC s, 1,000 cu).
 +tv/<n> sound [quiet] [go]  read every pocket of the field rig n stands in, heard across the site; quiet reads a quarter of it and nobody hears (1,200 IC s, 2,000 cu).
++tv/<n> mine [family] [cycles] [go]  (alias drill) mine the pocket rig n stands on, from your own reading of it: the family you name, else the one with most tonnes left; no number runs until the pocket, the hopper or the hold's room gives out (at most eight cycles). An unread pocket is cored one cycle (1,800 IC s, 3,600 on rock; 2,000 cu a cycle).
++tv/<n> mine stop  the cycle in flight finishes and yields; the run ends there.
 +tv/quiet [on|off]  stop (or start) hearing other rigs' soundings.
 +tv/forget <site>|<body> [go]  strike your readings of a site, or of every site on a body, from your chart.
 From the bay, a scan, a sounding or a drive goes down the ramp first. Mining is help mining.
@@ -143,7 +145,7 @@ pub const LEASE_FAILED: &str =
     "Occator could not complete it; nothing of the lease or the return was signed.";
 /// **The grammar** (doc 20 cut SM.3b; §10): the status, the three acts and the lease.
 /// Replaces SM.3a's `LEASE_USAGE`; no second constant is kept.
-pub const TV_USAGE: &str = "Usage: +tv[/<n>]  or  +tv[/<n>]/<launch|recover|dump|scan> [go]  or  +tv[/<n>]/sound [quiet] [go]  or  +tv/<n> drive <target> [go]  or  +tv[/<n>]/map [site] [family]  or  +tv[/<n>]/lease [return] [go]  or  +tv/forget <site>|<body> [go]  or  +tv/quiet [on|off]";
+pub const TV_USAGE: &str = "Usage: +tv[/<n>]  or  +tv[/<n>]/<launch|recover|dump|scan> [go]  or  +tv[/<n>]/sound [quiet] [go]  or  +tv/<n> drive <target> [go]  or  +tv[/<n>]/mine [family] [cycles] [go] (alias drill)  or  +tv[/<n>]/mine stop  or  +tv[/<n>]/map [site] [family]  or  +tv[/<n>]/lease [return] [go]  or  +tv/forget <site>|<body> [go]  or  +tv/quiet [on|off]";
 /// A rig within its term (doc 20 cut SM.3b: where it is and its charge): `{n}`, `{mark}`,
 /// `{where}`, `{charge}`, `{span}`, `{hopper}`.
 pub const RIG_LINE: &str = "Rig {n}: {mark}, {where}; charge {charge} %; leased from Occator for {span} more; hopper {hopper}.";
@@ -248,7 +250,8 @@ pub const WHY_HOPPER_CHANGED: &str = "its hopper no longer held what was to be d
 /// 4: the spoil gone, or its pools refusing the transfer).
 pub const WHY_SPOIL_GONE: &str =
     "the spoil would not take the load; it stays in the hopper and nothing moved";
-/// An act in flight: `{n}`, `{doing}`, `{when}`.
+/// An act in flight: `{n}`, `{doing}`, `{when}`. A run in flight (doc 20 cut SM.7) uses it
+/// too, `{doing}` from `crate::surface::act::drilling_words` and [`RUN_STOP_REMEDY`] appended.
 pub const RIG_BUSY: &str = "Rig {n} is {doing}: done {when}.";
 /// **The lease return with a rig still logged out** (the fixer round's item 1): its
 /// `tacsim.excursion` record holds an open excursion but no act. A rig can only be in
@@ -470,6 +473,145 @@ pub const MAP_NO_RIGS: &str = "None of your rigs is on {site}'s ground or in the
 /// `+tv/map` naming no ore family: `{word}`.
 pub const MAP_FAMILY_UNKNOWN: &str =
     "There is no ore family called {word}: metals, volatiles, carbon or strategic.";
+
+// ---- doc 20 cut SM.7: mining (§1 beat 8, §6, §8, §10; the brief's 3.6) --------------------------
+//
+// Placeholders beyond SM.4b's: `{addr}` the pocket's address (`C117`), `{class}` lean, fair or
+// rich (never P0–P3 or A–D), `{ore}` the family's ore good's id with `_` read as a space (`metal
+// ore`, `ice ore`, `carbon ore`, `strategic ore`), `{cycles}` and `{k}` counts, `{yields}` the
+// cycles' tonnes joined `/` (`2/2/2/1`), `{total}` their sum, `{secs}` the run's IC seconds,
+// `{hop0}`/`{hop1}`/`{cap}` the hopper before and after the run and its limit in whole tonnes,
+// `{room}` whole tonnes (the hold's unreserved mass after the run, or a blind core's room),
+// `{home}` the charge after the trip home, `{also}` the other families' clause, `{arg}` the
+// family and count as typed with a leading space (or empty), `{fam}` the family word as typed with
+// a leading space (or empty), `{word}` a family's word, `{m}` a count named, `{fit}` the count
+// that fits, `{why}` the bound's clause, `{ord}` an ordinal word, `{t}` tonnes, `{lift}` what a
+// core lifted, `{reading}` the operator's own reading of the pocket, `{line}` a rights line,
+// `{stop}` the stop clause, `{pit}` the public pit clause. No width bound on prose (the 120-column
+// floor is for grids and tables; reviewer F1).
+
+/// **The mining preview from the operator's own reading** (§6; §1 beat 8): `{n}`, `{mark}`,
+/// `{addr}`, `{class}`, `{ore}`, `{cycles}`, `{yields}`, `{total}`, `{secs}`, `{real}`, `{hop0}`,
+/// `{hop1}`, `{cap}`, `{room}`, `{now}`, `{after}`, `{home}`, `{also}`, `{arg}`.
+pub const MINE_PREVIEW: &str = "Rig {n} ({mark}) would mine {addr} {class} {ore}: {cycles}, {yields} = {total} t, {secs} IC s{real}; hopper {hop0} → {hop1} of {cap} t; hold room after: {room} t; charge {now} → {after} % ({home} % after the trip home).{also} +tv/{n} mine{arg} go starts it.";
+/// `{cycles}` for one cycle.
+pub const ONE_CYCLE: &str = "1 cycle";
+/// `{cycles}` for more: `{c}`.
+pub const SOME_CYCLES: &str = "{c} cycles";
+/// `{also}` per other family the operator's reading shows: `{class}`, `{ore}`, `{n}`, `{word}`.
+pub const MINE_ALSO: &str = " Also {class} {ore} here: +tv/{n} mine {word}.";
+/// **The blind preview** (§6, verbatim: "No reading here: the first cycle will tell." and "3 t of
+/// room needed to core an unread pocket"): `{n}`, `{mark}`, `{addr}`, `{ore}`, `{secs}`, `{real}`,
+/// `{room}`, `{now}`, `{after}`, `{home}`, `{pit}`, `{arg}`.
+pub const MINE_PREVIEW_BLIND: &str = "No reading here: the first cycle will tell. Rig {n} ({mark}) would core {addr} for {ore}: 1 cycle, {secs} IC s{real}; {room} t of room needed to core an unread pocket; charge {now} → {after} % ({home} % after the trip home).{pit} +tv/{n} mine{arg} go starts it.";
+/// `{pit}` over a worked pocket (a public fact, the same for every asker).
+pub const PIT_WORKED: &str = " Every map shows a pit here: someone has mined this pocket.";
+/// `{pit}` over a pocket every map shows worked out.
+pub const PIT_WORKED_OUT: &str = " Every map shows this pit worked out.";
+/// The run, filed: `{n}`, `{addr}`, `{when}` (the first cycle's due).
+pub const MINE_FILED: &str = "Rig {n} starts drilling {addr}: the first cycle {when}.";
+/// The blind core, filed: `{n}`, `{addr}`, `{when}`.
+pub const CORE_FILED: &str = "Rig {n} starts coring {addr}: done {when}.";
+/// **A cycle, done** (§1's line, verbatim): `{n}`, `{k}`, `{cycles}`, `{t}`, `{ore}`, `{hopper}`.
+pub const CYCLE_DONE: &str = "Rig {n}, cycle {k} of {cycles}: {t} t {ore}; hopper {hopper}.";
+/// The last cycle's clause when the run's cycles are done: `{addr}`.
+pub const RUN_DONE: &str = " The run at {addr} is done.";
+/// The last cycle's clause when the pocket is worked out: `{addr}`, `{ore}`.
+pub const RUN_WORKED_OUT: &str = " {addr} is worked out for {ore}.";
+/// The last cycle's clause after `+tv/mine stop`: `{n}`.
+pub const RUN_STOPPED: &str = " Rig {n} stops drilling, as you asked.";
+/// The last cycle's clause when a right stops the next: `{n}`, `{addr}`, `{line}`.
+pub const RUN_RIGHTS: &str = " Rig {n} stops drilling {addr}: {line}";
+/// **The last cycle's clause when the registry cannot be read** (the SM.7 lead's pre-commit round,
+/// item 3; the lead's wording, for the owner to review): `RunEnd::Dark` — the tenure read at
+/// landing failed, so the run ends (fail closed) without telling a claim that may not exist.
+/// `{addr}`.
+pub const RUN_DARK: &str =
+    " The registry cannot be read here; the run at {addr} ends with this cycle.";
+/// **A blind core, done**: `{n}`, `{reading}` (the operator's own new reading), `{lift}`,
+/// `{hopper}`.
+pub const CORED: &str = "Rig {n} cored {reading}: {lift}; hopper {hopper}.";
+/// `{lift}` when the core lifted nothing.
+pub const NOTHING_LIFTED: &str = "nothing to lift";
+/// A cycle that did not happen: `{n}`, `{k}`, `{cycles}`, `{addr}`, `{why}`.
+pub const CYCLE_FAILED: &str =
+    "Rig {n}'s cycle {k} of {cycles} at {addr} did not happen: {why}; the run ends.";
+/// `CYCLE_FAILED`'s `{why}` when the block would not give up its ore.
+pub const WHY_UNWORKED: &str = "the ground would not give up its ore; nothing moved";
+/// A rig in the bay: `{n}`.
+pub const MINE_IN_BAY: &str =
+    "Rig {n} is in the bay; it drills only standing on a pocket: +tv/{n} drive <pocket> first.";
+/// A rig already drilling: `{n}`, `{addr}`, `{k}`, `{cycles}`, `{when}`.
+pub const MINE_RUNNING: &str = "Rig {n} is drilling {addr}, cycle {k} of {cycles}: done {when}. +tv/{n} mine stop ends the run after this cycle.";
+/// No footing for the drill: `{n}`, `{terrain}`.
+pub const MINE_NO_FOOTING: &str =
+    "Rig {n} stands on {terrain}; the drill bites rock, regolith or ice.";
+/// No licence at all (every other standing prints `+licence`'s own line).
+pub const MINE_NO_LICENCE: &str = "Mining needs a prospecting licence: +licence/buy takes the Freeport Registry's, from anywhere.";
+/// A forfeit deposit: `{n}`, `{counter}`, `{port}`.
+pub const MINE_FORFEIT: &str = "Rig {n}'s deposit is forfeit; it mines nothing until it goes back to the {counter} in {port}. +tv/{n} recover brings it home.";
+/// An ended lease: `{n}`, `{counter}`, `{port}`.
+pub const MINE_ENDED: &str = "Rig {n}'s lease from Occator has ended; it mines nothing until it goes back to the {counter} in {port}. +tv/{n} recover brings it home.";
+/// **A block under claim** (doc 20 §5, verbatim).
+pub const MINE_CLAIMED: &str = "That block is under claim.";
+/// **Another rig on the pocket** (doc 20 §6, verbatim).
+pub const MINE_LOCKED: &str = "Another rig is working that pocket.";
+/// The hopper full: `{n}`, `{hopper}`.
+pub const MINE_HOPPER_FULL: &str = "Rig {n}'s hopper has no room for another cycle: {hopper}.";
+/// The hold's room used up: `{name}`.
+pub const MINE_HOLD_FULL: &str = "The {name}'s hold has no unreserved room for another cycle.";
+/// The pocket worked out for the family: `{addr}`, `{ore}`.
+pub const MINE_WORKED_OUT: &str = "{addr} is worked out for {ore}.";
+/// **A named count that does not fit** (doc 20 §6's line, with the slot): `{m}`, `{why}`, `{n}`,
+/// `{fam}`, `{fit}`.
+pub const MINE_NO_FIT: &str =
+    "{m} cycles do not fit: {why} — +tv/{n} mine{fam} {fit}, or +tv/{n} mine{fam} with no number.";
+/// `{why}` bound by the hopper: `{ord}`.
+pub const FIT_HOPPER: &str = "the hopper is full after the {ord}";
+/// `{why}` bound by the hold: `{ord}`.
+pub const FIT_HOLD: &str = "the hold's room is used after the {ord}";
+/// `{why}` bound by the pocket: `{ord}`.
+pub const FIT_POCKET: &str = "the pocket is worked out after the {ord}";
+/// `{why}` bound by the cap (unreachable under §11's ranges; a text, never a panic).
+pub const FIT_CAP: &str = "a run is at most eight cycles";
+/// **The only room line for an unread pocket** (lead ruling 2): `{room}`.
+pub const MINE_BLIND_ROOM: &str =
+    "{room} t of room needed to core an unread pocket; the hopper or the hold has less.";
+/// A count named on an unread pocket: `{n}`, `{fam}`.
+pub const MINE_BLIND_COUNT: &str =
+    "No reading here, so the run is one cycle that reads the pocket: +tv/{n} mine{fam}.";
+/// The family named reads barren: `{addr}`, `{ore}`.
+pub const MINE_NO_ORE: &str = "Your reading of {addr} shows no {ore}.";
+/// Every family reads barren: `{addr}`.
+pub const MINE_ALL_BARREN: &str = "Your reading of {addr} is barren: nothing to mine here.";
+/// The run changed between the preview and its start.
+pub const MINE_CHANGED: &str = "That run changed since its preview; preview it again.";
+/// The grammar: `{n}`.
+pub const MINE_USAGE: &str = "Mine how? +tv/{n} mine [family] [cycles] [go], or +tv/{n} mine stop.";
+/// `stop` with no run: `{n}`.
+pub const MINE_NOT_RUNNING: &str = "Rig {n} is not drilling.";
+/// `stop`, filed: `{n}`, `{addr}`, `{when}`.
+pub const MINE_STOPPING: &str = "Rig {n} stops drilling {addr} after this cycle: done {when}.";
+/// `stop` already asked: `{n}`.
+pub const MINE_STOPPING_ALREADY: &str = "Rig {n} already stops after this cycle.";
+/// **The status's line under a drilling rig**: `{addr}`, `{ore}`, `{k}`, `{cycles}`, `{when}`,
+/// `{stop}`.
+pub const RUN_LINE: &str =
+    "  Drilling {addr} for {ore}, cycle {k} of {cycles}: this cycle done {when}{stop}.";
+/// The status's line under a coring rig: `{addr}`, `{ore}`, `{when}`.
+pub const CORE_LINE: &str = "  Coring {addr} for {ore}: done {when}.";
+/// `{stop}` once `+tv/mine stop` was asked.
+pub const RUN_STOP_CLAUSE: &str = "; it stops after this cycle";
+/// **The remedy a drilling rig's busy line carries** (the SM.7 lead's pre-commit round, item 2):
+/// the departure's `TV_BUSY` and the lease return's [`RIG_BUSY`] for a run in flight, in
+/// [`MINE_RUNNING`]'s words: `{n}`.
+pub const RUN_STOP_REMEDY: &str = " +tv/{n} mine stop ends the run after this cycle.";
+
+/// **`{ore}`**: the family's ore good's id with `_` read as a space (`metal ore`).
+#[must_use]
+pub fn ore_words(good: &str) -> String {
+    good.replace('_', " ")
+}
 
 /// **The quiet preference's document prefix** (doc 20 cut SM.4a; D10): `tacsim:tvpref:{char}`.
 /// Never a prefix of `tacsim:tv:`'s or `tacsim:tvlease:`'s keys, nor they of it: they differ at
@@ -839,6 +981,50 @@ pub(crate) fn hopper_load_with(
     Ok((kg, capacity))
 }
 
+/// **What a rig's hopper holds, good by good, through any pool reader** (doc 20 cut SM.7: the
+/// hold's unreserved room weighs each hopper per measure, mass and packed volume; the mining plan
+/// reads the hopper's load per measure): each accepted good's quantity, zero quantities left out.
+/// `Err` when the rig has no hopper or a pool will not read.
+pub(crate) fn hopper_contents_with(
+    w: &World,
+    tv: ObjId,
+    pool_unit: Option<&CanonicalId>,
+    read: &dyn Fn(EndpointRef, &CanonicalId) -> Result<u64, crate::port_tick::PoolReadError>,
+) -> Result<std::collections::BTreeMap<CanonicalId, u64>, String> {
+    let vault = hopper_of(w, tv).ok_or_else(|| format!("rig #{} has no hopper vault", tv.0))?;
+    let (accepted, _) = hopper_goods(w, tv, pool_unit)
+        .ok_or_else(|| format!("rig #{}'s unit cannot be read", tv.0))?;
+    let mut out = std::collections::BTreeMap::new();
+    for good in accepted {
+        let qty = read(EndpointRef(vault), &good)
+            .map_err(|error| format!("rig #{}'s hopper {good}: {error:?}", tv.0))?;
+        if qty > 0 {
+            out.insert(good, qty);
+        }
+    }
+    Ok(out)
+}
+
+/// **A rig's hopper compartments** (doc 20 cut SM.7): its unit's stowage (the live unit's, else
+/// the pool's), as the capacity function reads it — the Mk1's one `hopper` of 12,000 kg and
+/// 13,200 L.
+pub(crate) fn hopper_compartments(
+    w: &World,
+    tv: ObjId,
+    pool_unit: Option<&CanonicalId>,
+) -> Option<Vec<crate::port::capacity::Compartment>> {
+    let store = w.module_state::<TacsimStore>()?;
+    let unit = crate::port::hull::live_unit_id(w, tv).or_else(|| pool_unit.cloned())?;
+    let logistics = store.definitions().specs.get(&unit)?.logistics.as_ref()?;
+    Some(
+        logistics
+            .stowage
+            .iter()
+            .map(|(id, def)| crate::port::capacity::Compartment::from_stowage(id, def))
+            .collect(),
+    )
+}
+
 /// A rig's hopper mass limit, kilograms: the mass limits of its stowage.
 fn hopper_capacity(w: &World, tv: ObjId, pool_unit: Option<&CanonicalId>) -> Option<u64> {
     let store = w.module_state::<TacsimStore>()?;
@@ -1044,15 +1230,30 @@ enum Act {
         /// The family word, as typed (lowercased).
         family: Option<String>,
     },
+    /// **Doc 20 cut SM.7**: `+tv[/<n>]/mine [family] [cycles] [go]` (alias `drill`).
+    Mine {
+        /// The family word, as typed (lowercased).
+        family: Option<String>,
+        /// The count named, `1..=99`.
+        cycles: Option<u8>,
+        /// Committed.
+        go: bool,
+    },
+    /// **Doc 20 cut SM.7**: `+tv[/<n>]/mine stop` — committed at once (the brief's decision R7).
+    MineStop,
 }
 
 /// The act words a `+tv` switch or first word may name (the lease's, the acts', and since doc
 /// 20 cut SM.4a `scan` with its alias `survey`, `sound`, `forget` and `quiet`; since SM.4b
-/// `drive` and `map`).
-const ACT_WORDS: [&str; 11] = [
+/// `drive` and `map`; since SM.7 `mine` with its alias `drill`).
+const ACT_WORDS: [&str; 13] = [
     "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget", "quiet", "drive",
-    "map",
+    "map", "mine", "drill",
 ];
+
+/// **The most cycles `+tv/mine` takes as typed** (the brief's 3.6: `1..=99`; the plan refuses a
+/// count that does not fit and names the count that does).
+const MAX_TYPED_CYCLES: u8 = 99;
 
 /// **The grammar** (doc 20 §10, cut SM.3b, replacing SM.3a's): `+tv[/<n>]` (status),
 /// `+tv[/<n>][/<act>] [<act>] [go]` with `<act>` one of `launch`, `recover`, `dump` either
@@ -1151,6 +1352,46 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
                 return Err(usage());
             }
             return Ok((slot, Act::Map { site, family }));
+        }
+        // Doc 20 cut SM.7 (the brief's 3.6): `mine [family] [cycles] [go]` — at most one family
+        // word and one count (`1..=99`), either order, then `go` — or `mine stop`.
+        "mine" | "drill" => {
+            let mine_usage = || {
+                CmdError::msg(MINE_USAGE.replace(
+                    "{n}",
+                    &slot.map_or_else(|| "<n>".to_owned(), |n| n.to_string()),
+                ))
+            };
+            if next.as_deref() == Some("stop") {
+                if words.next().is_some() {
+                    return Err(mine_usage());
+                }
+                return Ok((slot, Act::MineStop));
+            }
+            let (mut family, mut cycles, mut go) = (None, None, false);
+            while let Some(word) = next.take() {
+                if go {
+                    return Err(mine_usage());
+                }
+                if word == "go" {
+                    go = true;
+                } else if !word.is_empty() && word.bytes().all(|b| b.is_ascii_digit()) {
+                    let count = word
+                        .parse::<u8>()
+                        .ok()
+                        .filter(|count| (1..=MAX_TYPED_CYCLES).contains(count));
+                    match (count, cycles) {
+                        (Some(count), None) => cycles = Some(count),
+                        _ => return Err(mine_usage()),
+                    }
+                } else if family.is_none() {
+                    family = Some(word);
+                } else {
+                    return Err(mine_usage());
+                }
+                next = words.next();
+            }
+            return Ok((slot, Act::Mine { family, cycles, go }));
         }
         _ => {}
     }
@@ -1290,6 +1531,34 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         Act::Map { site, family } => {
             crate::port::site_map::map_cmd(ctx, slot, site, family.as_deref())
+        }
+        // Doc 20 cut SM.7 (§6, §10; the brief's 3.4 and 3.6).
+        Act::Mine { family, cycles, go } => {
+            let rig = select(ctx, slot, crate::surface::excursion::ActKind::Mine)
+                .map_err(CmdError::msg)?;
+            let named = match family.as_deref() {
+                None => None,
+                Some(word) => Some(
+                    crate::surface::geology::family_of_word(word)
+                        .ok_or_else(|| CmdError::msg(MAP_FAMILY_UNKNOWN.replace("{word}", word)))?,
+                ),
+            };
+            let words: Vec<String> = family
+                .iter()
+                .cloned()
+                .chain(cycles.map(|count| count.to_string()))
+                .collect();
+            let choice = crate::surface::mine::MineChoice {
+                family: named,
+                word: family,
+                cycles,
+            };
+            crate::surface::act::mine_cmd(ctx, &rig, &choice, &words.join(" "), go)
+        }
+        Act::MineStop => {
+            let rig = select(ctx, slot, crate::surface::excursion::ActKind::Mine)
+                .map_err(CmdError::msg)?;
+            crate::surface::act::mine_stop_cmd(ctx, &rig)
         }
     }
 }
@@ -1677,7 +1946,7 @@ fn status_lines(
                 }
             }
         };
-        let (place, charge, act) = rig_state(ctx, handles, &view, berth.as_ref(), record.tv, now);
+        let (place, charge, acts) = rig_state(ctx, handles, &view, berth.as_ref(), record.tv, now);
         lines.push(
             line.replace("{n}", &n.to_string())
                 .replace("{mark}", &record.mark)
@@ -1685,9 +1954,7 @@ fn status_lines(
                 .replace("{charge}", &charge)
                 .replace("{hopper}", &hopper),
         );
-        if let Some(act) = act {
-            lines.push(act);
-        }
+        lines.extend(acts);
         // Doc 20 cut SM.4a (§5, §10; lead ruling 8): where a rig on the ground stands.
         if let (Some(berth), Some(handles)) = (berth.as_ref(), handles)
             && let Some(ground) = ground_line(ctx, handles, berth, record.tv, &mut peeks, wants)
@@ -1712,7 +1979,8 @@ fn status_lines(
 /// within the ramp's cell, else `WHERE_GROUND` (`{m}` = cells × 10); anything else
 /// `WHERE_AWAY` (a staff move). `{charge}` is `⌊charge now × 100 / capacity⌋`, or `?` when
 /// the rig's battery or its record cannot be read. The act line (`ACT_LINE`) when an act
-/// is in flight.
+/// is in flight; **doc 20 cut SM.7**: first the run's line (`RUN_LINE`, or `CORE_LINE` for a blind
+/// core) when a run drills — an act beside it prints its own line after.
 fn rig_state(
     ctx: &Ctx<'_>,
     handles: Option<&crate::port::families::PortHandles>,
@@ -1720,7 +1988,7 @@ fn rig_state(
     berth: Option<&crate::surface::act::SiteBerth<'_>>,
     tv: ObjId,
     now: i64,
-) -> (String, String, Option<String>) {
+) -> (String, String, Vec<String>) {
     use crate::surface::act::{Where, where_is};
     use crate::surface::excursion::{RigKey, RigRecord, cells_apart, charge_shown, site_cell};
     let w: &World = ctx.w;
@@ -1768,18 +2036,45 @@ fn rig_state(
     });
     // The act line reads the record alone: a rig whose battery row stops resolving still shows
     // what it is doing (§4.1 "never stranded by its battery"; the fixer round's item 3).
-    let act = record
+    let mut acts: Vec<String> = Vec::new();
+    if let Some(run) = record
+        .as_ref()
+        .and_then(|found| found.as_ref())
+        .and_then(|record| record.run.as_ref())
+    {
+        let addr = crate::surface::address::pocket_address(run.pocket[0], run.pocket[1])
+            .unwrap_or_default();
+        let ore = ore_words(run.good.as_str());
+        let when = due_words(w, run.due_ic);
+        acts.push(if run.blind {
+            CORE_LINE
+                .replace("{addr}", &addr)
+                .replace("{ore}", &ore)
+                .replace("{when}", &when)
+        } else {
+            RUN_LINE
+                .replace("{addr}", &addr)
+                .replace("{ore}", &ore)
+                .replace("{k}", &run.k.to_string())
+                .replace("{cycles}", &run.cycles.to_string())
+                .replace("{when}", &when)
+                .replace("{stop}", if run.stop { RUN_STOP_CLAUSE } else { "" })
+        });
+    }
+    if let Some(act) = record
         .as_ref()
         .and_then(|found| found.as_ref())
         .and_then(|record| record.act.as_ref())
-        .map(|act| {
+    {
+        acts.push(
             ACT_LINE
                 .replace(
                     "{doing}",
                     &crate::surface::act::doing_words(act.kind, &act.params, &ramp),
                 )
-                .replace("{when}", &due_words(w, act.due_ic))
-        });
+                .replace("{when}", &due_words(w, act.due_ic)),
+        );
+    }
     let charge = match (battery, record) {
         (Some(battery), Some(record)) => {
             let record = record.unwrap_or_else(|| RigRecord::fresh(tv, &battery));
@@ -1790,7 +2085,7 @@ fn rig_state(
         }
         _ => "?".to_owned(),
     };
-    (place, charge, act)
+    (place, charge, acts)
 }
 
 /// **The status's ground line** (doc 20 cut SM.4a; §5 "the `+tv` status line always says where
@@ -2816,6 +3111,16 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
                 )
                 .replace("{when}", &due_words(w, due_ic)));
         }
+        Ok(RigFlight::Drilling { pocket, due_ic }) => {
+            return Err(format!(
+                "{}{}",
+                RIG_BUSY
+                    .replace("{n}", &slot)
+                    .replace("{doing}", &crate::surface::act::drilling_words(&pocket))
+                    .replace("{when}", &due_words(w, due_ic)),
+                RUN_STOP_REMEDY.replace("{n}", &slot)
+            ));
+        }
         Ok(RigFlight::Out { site }) => {
             return Err(RIG_LOGGED_OUT
                 .replace("{n}", &slot)
@@ -3152,7 +3457,7 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
 /// round's item 1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum RigFlight {
-    /// No record, or one with neither an act nor an open excursion.
+    /// No record, or one with neither an act, a run nor an open excursion.
     Idle,
     /// An act in flight — it outranks an open excursion: its kind and due instant.
     Busy {
@@ -3163,7 +3468,17 @@ pub(crate) enum RigFlight {
         /// Its frozen parameters (doc 20 cut SM.4b: a drive's target names what it is doing).
         params: crate::surface::excursion::ActParams,
     },
-    /// No act, but an excursion open on `site` (the site port entry).
+    /// **A mining run in flight** (doc 20 cut SM.7; the SM.7 lead's pre-commit round, item 2): no
+    /// act, but the record's cycle slot holds a run — read before an open excursion, so the
+    /// departure names `+tv/{n} mine stop` rather than a recover the run would refuse, and a run
+    /// with no excursion (a staff placement) is busy, never idle.
+    Drilling {
+        /// The pocket's address (`C117`).
+        pocket: String,
+        /// The running cycle's due instant, IC seconds.
+        due_ic: i64,
+    },
+    /// No act and no run, but an excursion open on `site` (the site port entry).
     Out {
         /// The excursion's site.
         site: CanonicalId,
@@ -3198,22 +3513,29 @@ pub(crate) fn rig_flight(ctx: &Ctx<'_>, tv: ObjId) -> Result<RigFlight, String> 
             tv.0, record.tv.0
         ));
     }
-    Ok(match (&record.act, &record.excursion) {
-        (Some(act), _) => RigFlight::Busy {
+    // An act in flight outranks a run (a scan from a drilling rig names the scan); a run
+    // outranks the open excursion it drills from (the SM.7 lead's pre-commit round, item 2).
+    Ok(match (&record.act, &record.run, &record.excursion) {
+        (Some(act), _, _) => RigFlight::Busy {
             kind: act.kind,
             due_ic: act.due_ic,
             params: act.params.clone(),
         },
-        (None, Some(excursion)) => RigFlight::Out {
+        (None, Some(run), _) => RigFlight::Drilling {
+            pocket: crate::surface::address::pocket_address(run.pocket[0], run.pocket[1])
+                .unwrap_or_default(),
+            due_ic: run.due_ic,
+        },
+        (None, None, Some(excursion)) => RigFlight::Out {
             site: excursion.site.clone(),
         },
-        (None, None) => RigFlight::Idle,
+        (None, None, None) => RigFlight::Idle,
     })
 }
 
-/// **Whether a rig is out on a site or mid-act** (doc 20 cut SM.3b, decision 13): [`rig_flight`]
-/// reads an act or an open excursion. A record that will not read counts as out (fail closed:
-/// the hull is held and paged, never stripped).
+/// **Whether a rig is out on a site or mid-act** (doc 20 cut SM.3b, decision 13):
+/// [`rig_flight`] reads an act, a run (doc 20 cut SM.7) or an open excursion. A record that
+/// will not read counts as out (fail closed: the hull is held and paged, never stripped).
 fn rig_out_or_busy(ctx: &Ctx<'_>, tv: ObjId) -> bool {
     match rig_flight(ctx, tv) {
         Ok(flight) => flight != RigFlight::Idle,
@@ -3514,6 +3836,218 @@ mod tests {
             );
         }
     }
+
+    /// **The mining grammar** (doc 20 cut SM.7; the brief's 3.6): `+tv[/<n>]/mine [family]
+    /// [cycles] [go]` and the alias `drill`, as a switch or a first word, at most one family word
+    /// and one count `1..=99` in either order, then `go`; `+tv[/<n>]/mine stop` with nothing after;
+    /// two counts, two families, a count of 0 or 100, a word after `go` and `stop go` are the
+    /// mining usage line (naming the slot, or `<n>`).
+    #[test]
+    fn sm7_the_mining_grammar() {
+        let parse = |switches: &[&str], raw: &str| -> Result<(Option<u8>, Act), String> {
+            parse_parts(&|word| switches.contains(&word), raw).map_err(|e| e.to_string())
+        };
+        let mine = |family: Option<&str>, cycles: Option<u8>, go| Act::Mine {
+            family: family.map(str::to_owned),
+            cycles,
+            go,
+        };
+        assert_eq!(
+            parse(&["1", "mine"], ""),
+            Ok((Some(1), mine(None, None, false)))
+        );
+        assert_eq!(
+            parse(&["1"], "mine go"),
+            Ok((Some(1), mine(None, None, true)))
+        );
+        assert_eq!(
+            parse(&["2"], "drill ice 3 go"),
+            Ok((Some(2), mine(Some("ice"), Some(3), true)))
+        );
+        assert_eq!(
+            parse(&["drill"], "4 Metals"),
+            Ok((None, mine(Some("metals"), Some(4), false)))
+        );
+        assert_eq!(parse(&[], "mine 3"), Ok((None, mine(None, Some(3), false))));
+        assert_eq!(parse(&["1", "mine"], "stop"), Ok((Some(1), Act::MineStop)));
+        assert_eq!(parse(&[], "drill stop"), Ok((None, Act::MineStop)));
+        let usage1 = MINE_USAGE.replace("{n}", "1");
+        let usage = MINE_USAGE.replace("{n}", "<n>");
+        for (switches, raw, want) in [
+            (&["1", "mine"][..], "3 4", &usage1),
+            (&["1", "mine"][..], "ice metal", &usage1),
+            (&["1", "mine"][..], "0", &usage1),
+            (&["1", "mine"][..], "100", &usage1),
+            (&["1", "mine"][..], "go 3", &usage1),
+            (&["1", "mine"][..], "stop go", &usage1),
+            (&[][..], "mine stop now", &usage),
+        ] {
+            assert_eq!(
+                parse(switches, raw),
+                Err(want.clone()),
+                "{switches:?} {raw:?}"
+            );
+        }
+        assert_eq!(
+            parse(&["mine", "drive"], ""),
+            Err(TV_USAGE.to_owned()),
+            "two act words"
+        );
+    }
+
+    /// **The mining texts fill** (doc 20 cut SM.7; the brief's 3.6, reviewer F1): every template
+    /// filled with the widest figures holds no newline and no unfilled `{`; and the lines doc
+    /// 20 gives verbatim — §1's cycle line, "That block is under claim.", "Another rig is
+    /// working that pocket.", §6's no-fit line for A4 (with the slot), and the blind sentence
+    /// and its room clause filled with the shipped drill row's blind room — equal doc 20's
+    /// words byte for byte.
+    #[test]
+    fn sm7_the_mine_texts_fill() {
+        let fill = |template: &str| {
+            [
+                ("{n}", "4"),
+                ("{mark}", "OWP-TV-04"),
+                ("{addr}", "P256"),
+                ("{class}", "rich"),
+                ("{ore}", "strategic ore"),
+                ("{cycles}", "8 cycles"),
+                ("{yields}", "3/3/3/3/3/3/3/3"),
+                ("{total}", "24"),
+                ("{secs}", "28800"),
+                ("{real}", ", about 1 h 20 min"),
+                ("{hop0}", "12"),
+                ("{hop1}", "12"),
+                ("{cap}", "12"),
+                ("{room}", "86"),
+                ("{now}", "100"),
+                ("{after}", "84"),
+                ("{home}", "83"),
+                ("{also}", " Also rich ice ore here: +tv/4 mine ice."),
+                ("{arg}", " strategic 8"),
+                ("{pit}", PIT_WORKED_OUT),
+                ("{when}", "23:59 UTC (IC 2350-12-31 23:59; in 59 min)"),
+                ("{k}", "8"),
+                ("{t}", "24"),
+                ("{hopper}", "12 of 12 t"),
+                ("{reading}", "P256 rich metals, rich volatiles"),
+                ("{lift}", "24 t strategic ore"),
+                ("{why}", WHY_UNWORKED),
+                ("{terrain}", "deep water"),
+                ("{counter}", "Exchange Hall counter"),
+                ("{port}", "Ceres Freeport"),
+                ("{name}", "Salt Moth"),
+                ("{m}", "99"),
+                ("{fam}", " strategic"),
+                ("{fit}", "7"),
+                ("{ord}", "seventh"),
+                ("{line}", LICENCE_LAPSED_FILLED),
+                ("{stop}", RUN_STOP_CLAUSE),
+                ("{c}", "8"),
+                ("{word}", "strategic"),
+            ]
+            .iter()
+            .fold(template.to_owned(), |text, (key, value)| {
+                text.replace(key, value)
+            })
+        };
+        for template in [
+            MINE_PREVIEW,
+            MINE_ALSO,
+            MINE_PREVIEW_BLIND,
+            MINE_FILED,
+            CORE_FILED,
+            CYCLE_DONE,
+            RUN_DONE,
+            RUN_WORKED_OUT,
+            RUN_STOPPED,
+            RUN_RIGHTS,
+            CORED,
+            CYCLE_FAILED,
+            MINE_IN_BAY,
+            MINE_RUNNING,
+            MINE_NO_FOOTING,
+            MINE_NO_LICENCE,
+            MINE_FORFEIT,
+            MINE_ENDED,
+            MINE_CLAIMED,
+            MINE_LOCKED,
+            MINE_HOPPER_FULL,
+            MINE_HOLD_FULL,
+            MINE_WORKED_OUT,
+            MINE_NO_FIT,
+            FIT_HOPPER,
+            FIT_HOLD,
+            FIT_POCKET,
+            FIT_CAP,
+            MINE_BLIND_ROOM,
+            MINE_BLIND_COUNT,
+            MINE_NO_ORE,
+            MINE_ALL_BARREN,
+            MINE_CHANGED,
+            MINE_USAGE,
+            MINE_NOT_RUNNING,
+            MINE_STOPPING,
+            MINE_STOPPING_ALREADY,
+            RUN_LINE,
+            CORE_LINE,
+            ONE_CYCLE,
+            SOME_CYCLES,
+            PIT_WORKED,
+            PIT_WORKED_OUT,
+            NOTHING_LIFTED,
+            WHY_UNWORKED,
+        ] {
+            let text = fill(template);
+            assert!(!text.contains('\n'), "{template}");
+            assert!(!text.contains('{'), "{template}: {text}");
+        }
+        // Doc 20 §1's cycle line, verbatim.
+        assert_eq!(
+            CYCLE_DONE
+                .replace("{n}", "1")
+                .replace("{k}", "2")
+                .replace("{cycles}", "4")
+                .replace("{t}", "2")
+                .replace("{ore}", &ore_words("metal_ore"))
+                .replace("{hopper}", &hopper_text(4_000, 12_000)),
+            "Rig 1, cycle 2 of 4: 2 t metal ore; hopper 4 of 12 t."
+        );
+        assert_eq!(MINE_CLAIMED, "That block is under claim.");
+        assert_eq!(MINE_LOCKED, "Another rig is working that pocket.");
+        // §6's no-fit line for A4, the slot inserted after `+tv` and the code spans plain.
+        assert_eq!(
+            MINE_NO_FIT
+                .replace("{m}", "4")
+                .replace("{why}", &FIT_HOPPER.replace("{ord}", "third"))
+                .replace("{n}", "1")
+                .replace("{fam}", "")
+                .replace("{fit}", "3"),
+            "4 cycles do not fit: the hopper is full after the third — +tv/1 mine 3, or +tv/1 \
+             mine with no number."
+        );
+        // §6's blind sentence and its room clause, with the shipped drill row's blind room.
+        let room = crate::definitions::tools::tools_table()
+            .ok()
+            .and_then(|tools| {
+                tools
+                    .values()
+                    .find_map(crate::definitions::tools::ToolDef::drill)
+                    .map(crate::surface::mine::blind_room_t)
+            })
+            .expect("the drill row");
+        let blind = MINE_PREVIEW_BLIND.replace("{room}", &room.to_string());
+        assert!(blind.starts_with("No reading here: the first cycle will tell. "));
+        assert!(blind.contains("; 3 t of room needed to core an unread pocket; "));
+        assert_eq!(
+            MINE_BLIND_ROOM.replace("{room}", &room.to_string()),
+            "3 t of room needed to core an unread pocket; the hopper or the hold has less."
+        );
+        assert_eq!(ore_words("carbon_ore"), "carbon ore");
+    }
+
+    /// A filled `LICENCE_LAPSED`, for the rights clause.
+    const LICENCE_LAPSED_FILLED: &str =
+        "Your licence lapsed at 05-21 14:00. +licence/buy takes a new one from today.";
 
     /// Doc 20 cut SM.3a (lead ruling 9): the terms due past the end are whole
     /// terms, the first counted at the boundary.

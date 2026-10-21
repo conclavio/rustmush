@@ -15,6 +15,7 @@
 //! | `tacsim:orders:{hull}` | per-hull sailing plan (doc 18 cut IC11: `crate::port::orders`) — the queued orders, their log and the step in flight | **skipped loudly, and the key stays claimed**: that hull's `+ship/orders` and `+ship/order` refuse (its plan cannot be read), the order arm skips it and pages once a boot; staff repair the document by editing it (a deleted one restarts its order ids only past the hull's recent tickets) |
 //! | `tacsim:tvlease:{lease}` | per-lease rig record (doc 20 cut SM.3a: `crate::port::tv`) — a terrain vehicle Occator leased into a Dray-P's bay, its slot, its deposit hold and its term | **skipped loudly, and the key stays claimed**: the record reads unreadable, which bars only its own lease — its pilot's `+tv` reads dark and the recall holds the hull for staff; staff repair the document |
 //! | `tacsim:tv:{tv}` | per-rig projection (doc 20 cut SM.3b: `crate::surface::excursion::TvRec`) — where a rig is, its open excursion, the act in flight, what the tick applied and told, a sixteen-line log | **skipped loudly, read unreadable, and it bars nothing**: the projection decides nothing (every decision reads the typed `tacsim.excursion` family), and the `tacsim.surface` tick's next write replaces it |
+//! | `tacsim:mined:{site}` | per-site ring of the last 64 mined cycles (doc 20 cut SM.7: `crate::surface::mined::MinedRing`) — the fact `tacsim.surface.mined`, written by the `tacsim.surface` tick's tell; read by nothing yet | **dropped loudly, and it bars nothing**: the ring reads unreadable, and the tick's next write replaces it |
 //! | `tacsim:tvpref:{character}` | per-character `+tv` preferences (doc 20 cut SM.4a: `crate::port::tv::TvPrefs`) — whether the character hears other rigs' soundings | **dropped loudly**: the character reads as not quiet (they hear soundings again) and the key bars nothing; the next `+tv/quiet` rewrites it |
 //! | `tacsim:licence:{account}` | per-gateway-account prospecting licence (doc 20 cut SM.5: `crate::port::licence`) — its holder, entitlement account, expiry, grace and last fee contract | **skipped loudly, and the key still bars the account**: that account's licence reads unreadable, so `+licence/buy` and every licence-gated act (`+tv/lease` now) refuse, and staff repair the document |
 //! | `tacsim:geology` | world pin (doc 20 cut SM.1; Q-20-12) — the geology key's fingerprint | **skipped loudly, and the key still bars a rewrite**: the geology layer reads disabled ("tacsim:geology cannot be read") on the readiness line; staff repair the document, after restoring the key directory |
@@ -327,6 +328,11 @@ pub struct TacsimStore {
     /// [`put_tv_rec`]; an unreadable body is [`crate::surface::excursion::TvRecState::Unreadable`]
     /// and bars nothing (the projection decides nothing; the tick's next write replaces it).
     pub(crate) tv_recs: BTreeMap<u32, crate::surface::excursion::TvRecState>,
+    /// **Doc 20 cut SM.7** (§6) — `tacsim:mined:{site}`: each site's ring of the last 64 mined
+    /// cycles ([`crate::surface::mined::MinedRing`]), keyed by the site entry. Written only by the
+    /// `tacsim.surface` tick's tell through [`put_mined`]; an unreadable body is
+    /// [`crate::surface::mined::MinedState::Unreadable`] and bars nothing.
+    pub(crate) mined: BTreeMap<CanonicalId, crate::surface::mined::MinedState>,
     /// **Doc 20 cut SM.4a** (D10) — `tacsim:tvpref:{character}`: each character's `+tv`
     /// preferences ([`crate::port::tv::TvPrefs`]), keyed by the character's id. Written only by
     /// `+tv/quiet` through [`put_tv_prefs`]; an unreadable body is logged and read as not quiet
@@ -565,6 +571,13 @@ impl TacsimStore {
     #[must_use]
     pub fn tv_rec(&self, tv: ObjId) -> Option<&crate::surface::excursion::TvRecState> {
         self.tv_recs.get(&tv.0)
+    }
+
+    /// **One site's mined ring** (doc 20 cut SM.7; §6): `tacsim:mined:{site}` as the store holds
+    /// it; `None` when no key claims it. Read by nothing in the game yet.
+    #[must_use]
+    pub fn mined(&self, site: &CanonicalId) -> Option<&crate::surface::mined::MinedState> {
+        self.mined.get(site)
     }
 
     /// **Whether `who` has asked not to hear other rigs' soundings** (doc 20 cut SM.4a; D10):
@@ -1792,6 +1805,38 @@ pub(crate) fn put_tv_rec(ctx: &mut Ctx<'_>, rec: &crate::surface::excursion::TvR
     true
 }
 
+/// **Install a site's mined ring into RAM and queue its document** (doc 20 cut SM.7; §6) — the
+/// single write path, [`put_tv_rec`]'s shape: the RAM install, then one whole-document `JsonSet`.
+/// Only the `tacsim.surface` tick's tell calls it, after the projection's write landed. The
+/// serialize failure is structurally unreachable; if it ever happened it logs and writes nothing
+/// (the ring is read by nothing, and the next write replaces it). Returns whether it wrote.
+pub(crate) fn put_mined(ctx: &mut Ctx<'_>, ring: &crate::surface::mined::MinedRing) -> bool {
+    let value = match serde_json::to_value(ring) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                site = %ring.site, %error,
+                "tacsim: a mined ring did not serialize; nothing was written"
+            );
+            return false;
+        }
+    };
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.mined.insert(
+            ring.site.clone(),
+            crate::surface::mined::MinedState::Present(ring.clone()),
+        );
+    }
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: ring.key(),
+            value,
+        },
+    );
+    true
+}
+
 /// **Install a character's `+tv` preferences into RAM and queue their document** (doc 20 cut
 /// SM.4a; D10) — the single write path, [`put_tv_rec`]'s shape: the RAM install, then one
 /// whole-document `JsonSet`, from `+tv/quiet`'s handler (the `Authoritative` bracket, `/lease`'s
@@ -2134,6 +2179,16 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                 continue;
             };
             load_tv_rec(&mut store, key, tv, value);
+        } else if key.starts_with(crate::surface::mined::MINED_PREFIX) {
+            // Doc 20 cut SM.7 (§6). Never a prefix of `tacsim:mindsrc:`'s keys nor they of it
+            // (they differ at the first character after `tacsim:min`). A ring that will not read
+            // is logged and read as unreadable: it bars nothing (nothing reads it yet), and the
+            // tick's next write replaces it.
+            let Some(site) = crate::surface::mined::mined_key_site(key) else {
+                tracing::warn!(%key, "tacsim: a mined ring has an unreadable key; skipped");
+                continue;
+            };
+            load_mined(&mut store, key, site, value);
         } else if key.starts_with(crate::port_tick::NOTICE_PREFIX) {
             // Doc 18 cut IC5 (lead ruling L10). A queue that will not read costs
             // that character its queued notices and nothing else: the key bars
@@ -2483,6 +2538,39 @@ fn load_tv_rec(store: &mut TacsimStore, key: &str, tv: ObjId, value: &serde_json
             store
                 .tv_recs
                 .insert(tv.0, crate::surface::excursion::TvRecState::Unreadable);
+        }
+    }
+}
+
+/// One `tacsim:mined:{site}` body (doc 20 cut SM.7): decoded strictly, checked, and held to the
+/// identity rule (`ring.site` is its key's). Any failure is logged once and reads
+/// [`crate::surface::mined::MinedState::Unreadable`], which bars nothing.
+fn load_mined(store: &mut TacsimStore, key: &str, site: CanonicalId, value: &serde_json::Value) {
+    let ring = serde_json::from_value::<crate::surface::mined::MinedRing>(value.clone())
+        .map_err(|error| error.to_string())
+        .and_then(|ring| ring.check().map(|()| ring))
+        .and_then(|ring| {
+            if ring.site == site {
+                Ok(ring)
+            } else {
+                Err("the ring disagrees with its own key".to_owned())
+            }
+        });
+    match ring {
+        Ok(ring) => {
+            store
+                .mined
+                .insert(site, crate::surface::mined::MinedState::Present(ring));
+        }
+        Err(error) => {
+            tracing::error!(
+                %key, %error,
+                "tacsim: a mined ring is unreadable; it bars nothing and the surface tick's next \
+                 write replaces it"
+            );
+            store
+                .mined
+                .insert(site, crate::surface::mined::MinedState::Unreadable);
         }
     }
 }

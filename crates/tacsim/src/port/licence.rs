@@ -586,21 +586,60 @@ fn show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .replace("{account}", &entitlement.to_string())
             .replace("{until}", &ic_stamp(expired_ic))
             .replace("{lapses}", &ic_stamp(lapses_ic)),
-        LicenceStanding::Lapsed { at_ic } => LICENCE_LAPSED.replace("{lapses}", &ic_stamp(at_ic)),
-        LicenceStanding::Suspended => LICENCE_SUSPENDED
-            .replace("{issuer}", &issuer)
-            .replace("{account}", &entitlement.to_string()),
-        LicenceStanding::Other => LICENCE_OTHER.replace("{issuer}", &issuer),
-        LicenceStanding::Unreadable => {
-            tracing::error!(
-                "tacsim: +licence found an unreadable licence for the asking account; staff \
-                 repair the tacsim:licence: document"
-            );
-            LICENCE_BOOKS_DARK.to_owned()
+        // Doc 20 cut SM.7 (the brief's reviewer finding F21): every standing that stops an act
+        // prints one line, here and wherever a licence-gated act reads it.
+        LicenceStanding::Lapsed { .. }
+        | LicenceStanding::Suspended
+        | LicenceStanding::Other
+        | LicenceStanding::Unreadable => {
+            standing_line(ctx.w, actor, &standing).unwrap_or_else(|| LICENCE_BOOKS_DARK.to_owned())
         }
     };
     say(ctx, line);
     Ok(())
+}
+
+/// **The line a refusing standing prints** (doc 20 cut SM.7; the SM.7 brief's 3.3 item 4,
+/// reviewer F21): one line a standing, wherever it is read — `+licence` and every licence-gated
+/// act (mining's start and the run's next cycle). `Lapsed` → [`LICENCE_LAPSED`] at
+/// [`ic_stamp`]; `Suspended` → [`LICENCE_SUSPENDED`] with the issuer and the asker's own
+/// entitlement account (theirs to see); `Other` → [`LICENCE_OTHER`] ("one licence an account" —
+/// never a `+licence/buy` line that would only refuse them); `Unreadable` →
+/// [`LICENCE_BOOKS_DARK`], logged. `None` for a standing that authorizes (in force, in grace) and
+/// for `Unlicensed`, whose line names the fee and is each verb's own. With no licence port on the
+/// lane, the line `+licence` prints then: [`LICENCE_NOT_HERE`].
+#[must_use]
+pub(crate) fn standing_line(w: &World, pilot: ObjId, standing: &LicenceStanding) -> Option<String> {
+    let issuer = || licence_port(w).map(|(def, _, licence)| issuer_name(def, licence));
+    let entitlement = || match record_for(w, pilot) {
+        LicenceState::Present(record) => record.entitlement,
+        LicenceState::Absent | LicenceState::Unreadable => 0,
+    };
+    let line = match standing {
+        LicenceStanding::Unlicensed
+        | LicenceStanding::InForce { .. }
+        | LicenceStanding::Grace { .. } => return None,
+        LicenceStanding::Lapsed { at_ic } => LICENCE_LAPSED.replace("{lapses}", &ic_stamp(*at_ic)),
+        LicenceStanding::Suspended => match issuer() {
+            Some(issuer) => LICENCE_SUSPENDED
+                .replace("{issuer}", &issuer)
+                .replace("{account}", &entitlement().to_string()),
+            None => LICENCE_NOT_HERE.to_owned(),
+        },
+        LicenceStanding::Other => match issuer() {
+            Some(issuer) => LICENCE_OTHER.replace("{issuer}", &issuer),
+            None => LICENCE_NOT_HERE.to_owned(),
+        },
+        LicenceStanding::Unreadable => {
+            tracing::error!(
+                pilot = pilot.0,
+                "tacsim: a licence-gated read found an unreadable licence for the asking account; \
+                 staff repair the tacsim:licence: document"
+            );
+            LICENCE_BOOKS_DARK.to_owned()
+        }
+    };
+    Some(line)
 }
 
 /// Everything `/buy go` writes, decided before the first write.

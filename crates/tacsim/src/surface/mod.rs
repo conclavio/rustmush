@@ -80,6 +80,18 @@
 //!   depends on the geology key;
 //! - `@geology <site> <addr>` (`commands`), and the map (`crate::port::site_map`).
 //!
+//! **Doc 20 cut SM.7** gives the operator the beat the loop exists for (§1 beat 8, §6, D-20-9):
+//!
+//! - [`mine`](crate::surface::mine) — the pure rules a run, its fit, its cycles and its locks
+//!   share, and the [`MinePlan`](crate::surface::mine::MinePlan) the command and the start's offer
+//!   agree on;
+//! - a run is `act = mine` on SM.3b's one start, held in the record's **cycle slot** beside the
+//!   act slot (`excursion::Run`), each cycle landing at its own due through the one finish (keyed
+//!   per cycle): the family's ore moved from the block vault to the hopper, the cursor's `drawn_t`,
+//!   the charge, the operator's core in the chart;
+//! - [`mined`](crate::surface::mined) — the per-site `tacsim.surface.mined` ring the tick appends
+//!   each cycle that moved ore to.
+//!
 //! **The site ground is warmed off the act's path** (lead ruling 6, D11): the command, the
 //! start's offer and `+tv` status only peek the cache
 //! ([`ground::site_ground_cached`](crate::surface::ground::site_ground_cached)); a cold peek
@@ -106,6 +118,8 @@ pub mod excursion;
 pub mod geology;
 pub mod ground;
 pub mod key;
+pub mod mine;
+pub mod mined;
 pub mod opening;
 pub mod reading;
 pub mod tenure;
@@ -143,14 +157,15 @@ pub use chart::{
 pub use excursion::{
     Act, ActKind, ActParams, ActResult, ActView, CapRefused, Charge, ChargeAfter, DUMP_S,
     EXCURSION_FAMILY, EXCURSION_SCHEMA, Excursion, ExcursionCounts, ExcursionId, FrozenLeg,
-    IC_HOUR, LAUNCH_S, LegWaypoint, MAX_DRIVE_TARGET_BYTES, MAX_DUMP_GOODS,
+    IC_HOUR, LAUNCH_S, LegWaypoint, LicenceEnd, LockRow, MAX_DRIVE_TARGET_BYTES, MAX_DUMP_GOODS,
     MAX_EXCURSIONS_PER_OPERATOR, MAX_EXCURSIONS_PER_SITE, MAX_EXCURSIONS_WORLD, MAX_LEG_WAYPOINTS,
-    MAX_READ_RADIUS_CELLS, MAX_SCAN_FIELDS, MAX_TV_LOG_BYTES, MAX_TV_LOG_LINES, MAX_TV_REC_BYTES,
-    Outcome, PAD_CENTRE_CM, RECOVER_S, ReadSpan, RefusedCode, ReserveShort, RigKey, RigRecord,
-    TV_REC_PREFIX, TV_REC_SCHEMA, TvLogLine, TvPose, TvRec, TvRecState, TvState, cap_refusal,
-    cell_pose, cells_apart, charge_at, charge_for_act, charge_shown, leg_affordable, needs_battery,
-    ramp_pose, reserve_check, reserved_total, settle_free, settle_spent_out_of_bay, site_cell,
-    tv_rec_key, tv_rec_key_owner,
+    MAX_LOCK_ROWS, MAX_READ_RADIUS_CELLS, MAX_RUN_CYCLES, MAX_SCAN_FIELDS, MAX_TV_LOG_BYTES,
+    MAX_TV_LOG_LINES, MAX_TV_REC_BYTES, Mined, Outcome, PAD_CENTRE_CM, RECOVER_S, ReadSpan,
+    RefusedCode, ReserveShort, RigKey, RigRecord, Run, RunEnd, RunView, TV_REC_PREFIX,
+    TV_REC_SCHEMA, TvLogLine, TvPose, TvRec, TvRecState, TvState, cap_refusal, cell_pose,
+    cells_apart, charge_at, charge_for_act, charge_shown, leg_affordable, needs_battery, ramp_pose,
+    reserve_check, reserved_total, settle_free, settle_spent_out_of_bay, site_cell, tv_rec_key,
+    tv_rec_key_owner,
 };
 pub use ground::site_ground_cached;
 pub use tick::{

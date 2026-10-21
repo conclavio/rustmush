@@ -1,0 +1,20 @@
+{
+  "cored": {
+    "d": [
+      {
+        "tag": "tacsim",
+        "text": "Rig 1 cored N241 fair metals: 2 t metal ore; hopper 2 of 12 t."
+      }
+    ],
+    "t": "sys"
+  },
+  "cycle": {
+    "d": [
+      {
+        "tag": "tacsim",
+        "text": "Rig 1, cycle 1 of 4: 2 t metal ore; hopper 2 of 12 t."
+      }
+    ],
+    "t": "sys"
+  }
+}

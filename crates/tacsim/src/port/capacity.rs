@@ -184,8 +184,12 @@ fn room_of(compartment: &Compartment, load: &Load) -> Load {
 }
 
 /// The minimum over limited measures of `room / per_unit`, and every measure
-/// that attains it.
-fn fits_in(room: &Load, figures: &[(CanonicalId, u64)]) -> (u64, Vec<CanonicalId>) {
+/// that attains it. A measure `room` does not name has no room (`0` units): every
+/// caller here builds `figures` from the compartment's own limits. Doc 20 cut SM.7:
+/// mining's fit (`crate::surface::mine::fit`) reads the same rule rather than
+/// restating it, passing only the measures its room names (the SM.7 lead's
+/// pre-commit round, item 6).
+pub(crate) fn fits_in(room: &Load, figures: &[(CanonicalId, u64)]) -> (u64, Vec<CanonicalId>) {
     let mut best: Option<u64> = None;
     let mut bound: Vec<CanonicalId> = Vec::new();
     for (measure, per_unit) in figures {

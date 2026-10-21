@@ -212,7 +212,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // `/lease` precedent) — all in the same bracket. Doc 20 cut SM.4b: `/drive … go` writes
     // one RAM drive order (tacsim's own module slot, the `RigPointer` precedent) and stages
     // exactly one `tacsim_surface_act` with `act drive`; `/recover` from afar carries its leg in
-    // the same one act; `/map` is a pure read.
+    // the same one act; `/map` is a pure read. Doc 20 cut SM.7: `/mine … go` (alias `/drill`)
+    // writes one RAM act order (SM.4b's slot, generalised) and stages exactly one
+    // `tacsim_surface_act` with `act mine`; `/mine stop` stages exactly one with `act mine_stop`.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
@@ -223,7 +225,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 .copied()
                 .chain([
                     "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget",
-                    "quiet", "drive", "map",
+                    "quiet", "drive", "map", "mine", "drill",
                 ])
                 .map(SmolStr::new)
                 .collect(),

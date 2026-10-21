@@ -348,20 +348,42 @@ pub fn hold_vault(w: &World, view: &HullView<'_>) -> Option<VaultId> {
 }
 
 /// **The hold's unreserved room for ore, kilograms** (doc 20 cut SM.4b; the brief's reviewer
-/// resolution R6 and decision P11; §19 item 1): over the hull's stowage compartments that accept
-/// the ore stowage tag (read from the goods table's `metal_ore` row, never a literal), each one's
-/// mass limit less its current mass load (`capacity::load` over every good it holds, through
-/// `read` at the hold vault), summed — **less each of `rigs`' hopper load** (never the hopper's
-/// capacity), saturating at 0. `None` when any pool does not read, the goods table is not loaded,
-/// or no compartment accepts ore. **SM.7 extends this one function** with every outstanding
-/// cycle.
+/// resolution R6 and decision P11; §19 item 1): [`hold_unreserved`]'s mass entry — the one rule
+/// the `site.map` frame's `hold.room_t` and the mining plan both read. `None` as
+/// [`hold_unreserved`].
 #[must_use]
 pub(crate) fn hold_unreserved_kg(
     w: &World,
     view: &HullView<'_>,
     rigs: &[ObjId],
     read: &dyn Fn(EndpointRef, &CanonicalId) -> Result<u64, PoolReadError>,
+    read_rig: &dyn Fn(ObjId) -> Result<Option<crate::surface::excursion::RigRecord>, String>,
 ) -> Option<u64> {
+    let mass = CanonicalId::new(crate::definitions::logistics::MASS_KG).ok()?;
+    hold_unreserved(w, view, rigs, read, read_rig).map(|room| room.get(&mass).copied().unwrap_or(0))
+}
+
+/// **The hold's unreserved room for ore, per measure** (doc 20 §3.5 and §19 item 1: "a hopper
+/// never carries what the hold cannot take"; cut SM.4b's function, generalised by cut SM.7 — the
+/// brief's decision R8): over the hull's stowage compartments that accept the ore stowage tag
+/// (read from the goods table's `metal_ore` row, never a literal), each one's limit less its
+/// current load in every measure it limits (`capacity::load` over every good it holds, through
+/// `read` at the hold vault), summed per measure — **less each of `rigs`' hopper load** (each good
+/// it holds weighed per measure by the goods table; never the hopper's capacity) — **less each of
+/// `rigs`' outstanding cycles** (a rig whose record, read through `read_rig`, holds a run: its
+/// `Run::outstanding_t` tonnes of the run's good, the cycle in flight included, weighed per
+/// measure) — saturating at 0 in each measure. Packed volume counts as mass does: bulky cargo
+/// beside the ore leaves less room than its tonnes say. `None` when any pool or record does not
+/// read, the goods table is not loaded, a good does not weigh in a measure, or no compartment
+/// accepts ore.
+#[must_use]
+pub(crate) fn hold_unreserved(
+    w: &World,
+    view: &HullView<'_>,
+    rigs: &[ObjId],
+    read: &dyn Fn(EndpointRef, &CanonicalId) -> Result<u64, PoolReadError>,
+    read_rig: &dyn Fn(ObjId) -> Result<Option<crate::surface::excursion::RigRecord>, String>,
+) -> Option<crate::port::capacity::Load> {
     let store = w.module_state::<TacsimStore>()?;
     let goods = store.goods()?;
     let ore = CanonicalId::new("metal_ore").ok()?;
@@ -373,22 +395,36 @@ pub(crate) fn hold_unreserved_kg(
     if comps.is_empty() {
         return None;
     }
-    let mass = CanonicalId::new(crate::definitions::logistics::MASS_KG).ok()?;
     let readings = readings_with(goods, comps, hold_vault(w, view), read).ok()?;
-    let mut room: u64 = 0;
+    let mut room = crate::port::capacity::Load::new();
     for (_, comp, contents) in &readings {
-        let limit = comp.limits.get(&mass).copied().unwrap_or(0);
-        let loaded = crate::port::capacity::load(goods, comp, contents)
-            .ok()?
-            .get(&mass)
-            .copied()
-            .unwrap_or(0);
-        room = room.saturating_add(limit.saturating_sub(loaded));
+        let loaded = crate::port::capacity::load(goods, comp, contents).ok()?;
+        for (measure, limit) in &comp.limits {
+            let used = loaded.get(measure).copied().unwrap_or(0);
+            let slot = room.entry(measure.clone()).or_insert(0);
+            *slot = slot.saturating_add(limit.saturating_sub(used));
+        }
     }
+    // Take `qty` units of `good` off every measure of the room, weighed by the goods table.
+    let take = |room: &mut crate::port::capacity::Load, good: &CanonicalId, qty: u64| {
+        let def = goods.good(good)?;
+        for (measure, left) in room.iter_mut() {
+            let per = def.per_unit(measure)?;
+            *left = left.saturating_sub(qty.saturating_mul(per));
+        }
+        Some(())
+    };
     let pool_unit = crate::port::tv::pool_unit(w);
     for rig in rigs {
-        let (kg, _) = crate::port::tv::hopper_load_with(w, *rig, pool_unit.as_ref(), read).ok()?;
-        room = room.saturating_sub(kg);
+        let contents =
+            crate::port::tv::hopper_contents_with(w, *rig, pool_unit.as_ref(), read).ok()?;
+        for (good, qty) in &contents {
+            take(&mut room, good, *qty)?;
+        }
+        // Doc 20 cut SM.7: every outstanding, uncompleted cycle of the rig's run.
+        if let Some(run) = read_rig(*rig).ok()?.and_then(|record| record.run) {
+            take(&mut room, &run.good, run.outstanding_t())?;
+        }
     }
     Some(room)
 }

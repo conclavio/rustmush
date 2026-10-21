@@ -65,12 +65,14 @@ use serde_json::json;
 use crate::port::families::PortHandles;
 use crate::port_tick::{Fire, Step, SwapRefused};
 use crate::store::{TacsimStore, put_tv_rec};
-use crate::surface::act::{Where, done_key, ramp_label, site_berth, site_name, where_is};
+use crate::surface::act::{
+    Where, cycle_key, done_key, ramp_label, site_berth, site_name, where_is,
+};
 use crate::surface::address::{self, Octant};
 use crate::surface::chart::{ChartKey, ChartRecord};
 use crate::surface::excursion::{
-    ActKind, ActResult, ActView, FrozenLeg, LAUNCH_S, Outcome, ReadSpan, RefusedCode, RigKey,
-    RigRecord, TvPose, TvRec, TvRecState, TvState, cells_apart, site_cell,
+    ActKind, ActResult, ActView, FrozenLeg, LAUNCH_S, Mined, Outcome, ReadSpan, RefusedCode,
+    RigKey, RigRecord, RunEnd, RunView, TvPose, TvRec, TvRecState, TvState, cells_apart, site_cell,
 };
 use crate::surface::reading::{Footing, READING_RULE_VERSION};
 
@@ -92,8 +94,9 @@ pub const SCAN_PAGE: usize = 256;
 /// nothing).
 pub const MAX_RIG_RECORDS: usize = 1_024;
 
-/// `(tv.0, act ordinal)`: one act's key in the slot.
-type ActKey = (u32, u32);
+/// `(tv.0, ordinal, cycle)`: one finish's key in the slot — an act's with cycle 0, a mining run's
+/// cycle `k` under the run's ordinal (doc 20 cut SM.7; the brief's 3.8).
+type ActKey = (u32, u32, u8);
 
 /// **The tick's RAM slot** (the brief's 3.5): retry bookkeeping and once-a-boot pages only;
 /// every fact is in the family or the projection, so a restart loses nothing but a retry
@@ -155,23 +158,26 @@ pub(crate) const MAX_RETRIED_ORDINALS: usize = 8;
 /// capped scan never pruned, or a second live act of one rig, never marks this act. The
 /// finish's offer fixes it so a dump whose transfer refused mid-bundle records `SpoilGone` on
 /// its next finish instead of wedging. RAM only, like every retry count: after a restart the
-/// first finish tries the transfer again.
+/// first finish tries the transfer again. **Doc 20 cut SM.7**: `(ordinal, cycle)` pairs, cycle 0
+/// an act's, so a mining cycle whose transfer refused records `Unworked` the same way.
 #[must_use]
-pub(crate) fn finish_retried(w: &World, tv: ObjId) -> Vec<u32> {
+pub(crate) fn finish_retried(w: &World, tv: ObjId) -> Vec<(u32, u8)> {
     w.module_state::<SurfaceTickState>()
         .map(|state| retried_ordinals(state, tv))
         .unwrap_or_default()
 }
 
 /// [`finish_retried`], pure over the slot.
-fn retried_ordinals(state: &SurfaceTickState, tv: ObjId) -> Vec<u32> {
-    let ordinals: Vec<u32> = state
+fn retried_ordinals(state: &SurfaceTickState, tv: ObjId) -> Vec<(u32, u8)> {
+    let keys: Vec<(u32, u8)> = state
         .attempts
-        .range((tv.0, 1)..=(tv.0, u32::MAX))
-        .map(|(&(_, ordinal), _)| ordinal)
+        .range((tv.0, 1, 0)..=(tv.0, u32::MAX, u8::MAX))
+        .map(|(&(_, ordinal, cycle), _)| (ordinal, cycle))
         .collect();
-    let skip = ordinals.len().saturating_sub(MAX_RETRIED_ORDINALS);
-    ordinals[skip..].to_vec()
+    let skip = keys.len().saturating_sub(MAX_RETRIED_ORDINALS);
+    keys.get(skip..)
+        .map(<[(u32, u8)]>::to_vec)
+        .unwrap_or_default()
 }
 
 /// **Register the tick** (the brief's 3.5): its slot, the `+tv` selector's slot
@@ -185,7 +191,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(SurfaceTickState::default());
     reg.state(crate::port::tv::RigPointer::default());
     // Doc 20 cut SM.4b (the brief's decision P2): the drive orders the start's offer fixes.
-    reg.state(crate::surface::act::DriveOrders::default());
+    reg.state(crate::surface::act::ActOrders::default());
     reg.tick(
         SURFACE_TICK,
         TickCadence::Coarse(SURFACE_TICK_PERIOD),
@@ -306,7 +312,7 @@ fn scan(
             }
             let record = entry.value();
             if RigKey::parse(entry.encoded_key()) != Some(record.key()) {
-                if state.paged.insert((record.tv.0, 0)) {
+                if state.paged.insert((record.tv.0, 0, 0)) {
                     tracing::error!(
                         key = entry.encoded_key(),
                         tv = record.tv.0,
@@ -329,12 +335,22 @@ fn scan(
 pub(crate) struct Candidate {
     record: RigRecord,
     due: bool,
+    /// **Doc 20 cut SM.7**: the due item is the run's cycle `k` (else the act's).
+    cycle: Option<u8>,
     untold: bool,
     /// **Doc 20 cut SM.4b** (the brief's decision P8): an act in flight, not yet due, whose
     /// params carry a leg the projection does not show yet — projected at once so clients
-    /// interpolate the rig while it moves.
+    /// interpolate the rig while it moves. **Doc 20 cut SM.7** (the lead's pre-commit round, item
+    /// 4): or a run in flight, its cycle not yet due, that the projection does not show yet.
     started: bool,
     order: (i64, u32),
+}
+
+/// **An outcome's told pair** (doc 20 cut SM.7; decision R3): its ordinal and, for a mining
+/// cycle, its cycle (0 for an act).
+#[must_use]
+pub(crate) fn told_pair(last: &Outcome) -> (u32, u8) {
+    (last.ordinal, last.mined.as_ref().map_or(0, |mined| mined.k))
 }
 
 /// Whether `key`'s finish is inside its back-off this fire (the attempt rule's own test,
@@ -359,11 +375,22 @@ fn backing_off(state: &SurfaceTickState, key: ActKey) -> bool {
 /// flight, not yet due, whose params carry a leg and whose projection's act (`shown`, the
 /// projection's act ordinal, read like `told`) is not that act — ordered by `(started_ic, tv)`
 /// among the others, so a drive's leg reaches `tacsim:tv:<tv>` on the first fire after its start.
+/// **Doc 20 cut SM.7** (the SM.7 lead's pre-commit round, item 4) makes a run started the same way:
+/// its cycle not yet due and the projection's run (`shown_run`, its ordinal and cycle) not this
+/// run's — ordered by the cycle's own start (`due_ic − secs`), so the run reaches the projection
+/// on the first fire after the start lands, never only at its first cycle's due.
+///
+/// **Doc 20 cut SM.7** (the brief's 3.8, decisions R1 and R3): a record's due instant is the
+/// earlier of its act's and its run's cycle's — each outside its own back-off — a tie going to the
+/// run (its cycle began first); and an outcome is **untold** iff `(last.ordinal, its cycle)`
+/// differs from the projection's told pair (`told`, read like `shown`) — equality, never `>`, since
+/// a run's cycles share its ordinal and may finish after a later scan's.
 pub(crate) fn candidates(
     records: Vec<RigRecord>,
     now: i64,
-    told: impl Fn(ObjId) -> u32,
+    told: impl Fn(ObjId) -> (u32, u8),
     shown: impl Fn(ObjId) -> Option<u32>,
+    shown_run: impl Fn(ObjId) -> Option<(u32, u8)>,
     state: &SurfaceTickState,
 ) -> (Vec<Candidate>, u32) {
     let mut passed_over = 0_u32;
@@ -371,33 +398,57 @@ pub(crate) fn candidates(
         .into_iter()
         .filter_map(|record| {
             let told = told(record.tv);
-            let started_at = record
+            let act_started = record
                 .act
                 .as_ref()
                 .filter(|act| act.due_ic > now && act.params.leg().is_some())
                 .filter(|act| shown(record.tv) != Some(act.ordinal))
                 .map(|act| act.started_ic);
-            let due_at = record
+            let run_started = record
+                .run
+                .as_ref()
+                .filter(|run| run.due_ic > now)
+                .filter(|run| shown_run(record.tv) != Some((run.ordinal, run.k)))
+                .map(|run| run.due_ic.saturating_sub(i64::from(run.secs)));
+            let started_at = match (act_started, run_started) {
+                (Some(act), Some(run)) => Some(act.min(run)),
+                (act, run) => act.or(run),
+            };
+            let mut rest = |key: ActKey| {
+                let resting = backing_off(state, key);
+                if resting {
+                    passed_over = passed_over.saturating_add(1);
+                }
+                !resting
+            };
+            let act_due = record
                 .act
                 .as_ref()
                 .filter(|act| act.due_ic <= now)
-                .filter(|act| {
-                    let resting = backing_off(state, (record.tv.0, act.ordinal));
-                    if resting {
-                        passed_over = passed_over.saturating_add(1);
-                    }
-                    !resting
-                })
+                .filter(|act| rest((record.tv.0, act.ordinal, 0)))
                 .map(|act| act.due_ic);
+            let run_due = record
+                .run
+                .as_ref()
+                .filter(|run| run.due_ic <= now)
+                .filter(|run| rest((record.tv.0, run.ordinal, run.k)))
+                .map(|run| (run.due_ic, run.k));
+            let (due_at, cycle) = match (act_due, run_due) {
+                (Some(act), Some((run, k))) if run <= act => (Some(run), Some(k)),
+                (Some(act), _) => (Some(act), None),
+                (None, Some((run, k))) => (Some(run), Some(k)),
+                (None, None) => (None, None),
+            };
             let untold_at = record
                 .last
                 .as_ref()
-                .filter(|last| last.ordinal > told)
+                .filter(|last| told_pair(last) != told)
                 .map(|last| last.at_ic);
             let at = due_at.or(untold_at).or(started_at)?;
             Some(Candidate {
                 order: (at, record.tv.0),
                 due: due_at.is_some(),
+                cycle,
                 untold: untold_at.is_some(),
                 started: started_at.is_some(),
                 record,
@@ -418,6 +469,11 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
     };
     let now = ctx.w.world_ic_now().at;
     let (records, complete) = scan(ctx, &handles, state);
+    // Doc 20 cut SM.7 (the lead's pre-commit round, item 5): a mining order whose start landed (or
+    // was overtaken) leaves the RAM slot, read against the whole family — never a capped scan.
+    if complete {
+        crate::surface::act::prune_mine_orders(ctx.w, &records);
+    }
     // Every act still due over the whole scan, taken **before** the visit cut: an act past
     // the cut is still due, so its retry bookkeeping must survive the prune (the brief's
     // 3.5 step 4; review finding conformance/F2).
@@ -432,6 +488,7 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
             now,
             |tv| told_of(w, tv),
             |tv| shown_of(w, tv),
+            |tv| shown_run_of(w, tv),
             state,
         )
     };
@@ -454,15 +511,31 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
             stats.told = stats.told.saturating_add(1);
             stats.worked = stats.worked.saturating_add(1);
         }
-        // Doc 20 cut SM.4b (decision P8): a started drive's leg, projected at once.
+        // Doc 20 cut SM.4b (decision P8): a started drive's leg, projected at once — and, doc 20
+        // cut SM.7 (the lead's pre-commit round, item 4), a started run with it (`project_start`
+        // writes the run beside the act; a run with no act in flight through `project_run`).
         if candidate.started && !candidate.due {
-            project_start(ctx, record);
+            if record.act.is_some() {
+                project_start(ctx, record);
+            } else {
+                project_run(ctx, record);
+            }
             stats.worked = stats.worked.saturating_add(1);
         }
-        let step = match (candidate.due, &record.act, handles.surface_done.as_ref()) {
-            (true, Some(act), Some(done)) => {
-                let key = (tv.0, act.ordinal);
-                let pending = ctx.authoritative_pending(act.operator);
+        // The due item: the act's (cycle 0), or — doc 20 cut SM.7 — the run's cycle `k`.
+        let due_item: Option<(u32, u8, ObjId, &'static str)> = if candidate.due {
+            match (candidate.cycle, &record.act, &record.run) {
+                (Some(k), _, Some(run)) => Some((run.ordinal, k, run.operator, "mine")),
+                (None, Some(act), _) => Some((act.ordinal, 0, act.operator, act.kind.word())),
+                (Some(_), _, None) | (None, None, _) => None,
+            }
+        } else {
+            None
+        };
+        let step = match (due_item, handles.surface_done.as_ref()) {
+            (Some((ordinal, cycle, operator, word)), Some(done)) => {
+                let key = (tv.0, ordinal, cycle);
+                let pending = ctx.authoritative_pending(operator);
                 match attempt_visit(state, key, pending) {
                     Visit::PassOver => {
                         stats.passed_over = stats.passed_over.saturating_add(1);
@@ -471,30 +544,37 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
                     Visit::Page => {
                         tracing::error!(
                             tv = tv.0,
-                            act = act.ordinal,
-                            kind = act.kind.word(),
+                            act = ordinal,
+                            cycle,
+                            kind = word,
                             "tacsim: a surface act's finish has not landed after 8 tries \
-                             (tacsim.excursion {}, act {}, {}); the rig and its hull stay held \
-                             (TV_BUSY) until it lands; the tick retries every 60 s; staff read \
-                             the finish's refusal in the engine log; a finish that lands clears \
-                             it",
+                             (tacsim.excursion {}, act {}, cycle {}, {}); the rig and its hull \
+                             stay held (TV_BUSY) until it lands; the tick retries every 60 s; \
+                             staff read the finish's refusal in the engine log; a finish that \
+                             lands clears it",
                             tv.0,
-                            act.ordinal,
-                            act.kind.word()
+                            ordinal,
+                            cycle,
+                            word
                         );
                         stats.passed_over = stats.passed_over.saturating_add(1);
                         Step::Held
                     }
                     Visit::Submit => {
-                        world_step(ctx, record);
-                        project_due(ctx, record);
+                        if cycle == 0 {
+                            world_step(ctx, record);
+                            project_due(ctx, record);
+                        } else {
+                            // A run never moves its rig: no placement, the projection only.
+                            project_run(ctx, record);
+                        }
                         let step = submit_done(
                             ctx,
                             &mut fire,
                             &mut state.paged,
                             done,
-                            (tv, act.ordinal),
-                            act.operator,
+                            (tv, ordinal, cycle),
+                            operator,
                         );
                         note_step(state, key, step);
                         match step {
@@ -509,8 +589,8 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
                     }
                 }
             }
-            (true, Some(act), None) => {
-                if state.paged.insert((tv.0, act.ordinal)) {
+            (Some((ordinal, cycle, ..)), None) => {
+                if state.paged.insert((tv.0, ordinal, cycle)) {
                     tracing::error!(
                         tv = tv.0,
                         "tacsim: a rig's act is due but the finish is not registered on this \
@@ -519,7 +599,7 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
                 }
                 Step::Refused
             }
-            _ => Step::Worked,
+            (None, _) => Step::Worked,
         };
         fire.settle(tv, step);
     }
@@ -559,26 +639,28 @@ fn on_site(records: &[RigRecord]) -> OnSite {
 /// [`MAX_EXCURSIONS_VISITED_PER_FIRE`] is still due and keeps its attempts, its back-off and
 /// its once-a-boot page; review finding conformance/F2).
 fn still_due(records: &[RigRecord], now: i64) -> BTreeSet<ActKey> {
-    records
-        .iter()
-        .filter_map(|record| {
-            record
-                .act
-                .as_ref()
-                .filter(|act| act.due_ic <= now)
-                .map(|act| (record.tv.0, act.ordinal))
-        })
-        .collect()
+    let mut due = BTreeSet::new();
+    for record in records {
+        if let Some(act) = record.act.as_ref().filter(|act| act.due_ic <= now) {
+            due.insert((record.tv.0, act.ordinal, 0));
+        }
+        // Doc 20 cut SM.7: a run's cycle in flight.
+        if let Some(run) = record.run.as_ref().filter(|run| run.due_ic <= now) {
+            due.insert((record.tv.0, run.ordinal, run.k));
+        }
+    }
+    due
 }
 
-/// The projection's `told`, 0 when absent or unreadable.
-fn told_of(w: &World, tv: ObjId) -> u32 {
+/// The projection's told pair (`told`, `told_cycle`; doc 20 cut SM.7), `(0, 0)` when absent or
+/// unreadable.
+fn told_of(w: &World, tv: ObjId) -> (u32, u8) {
     match w
         .module_state::<TacsimStore>()
         .and_then(|store| store.tv_rec(tv))
     {
-        Some(TvRecState::Present(rec)) => rec.told,
-        Some(TvRecState::Unreadable) | None => 0,
+        Some(TvRecState::Present(rec)) => (rec.told, rec.told_cycle),
+        Some(TvRecState::Unreadable) | None => (0, 0),
     }
 }
 
@@ -590,6 +672,18 @@ fn shown_of(w: &World, tv: ObjId) -> Option<u32> {
         .and_then(|store| store.tv_rec(tv))
     {
         Some(TvRecState::Present(rec)) => rec.act.map(|act| act.ordinal),
+        Some(TvRecState::Unreadable) | None => None,
+    }
+}
+
+/// The projection's run, as its ordinal and cycle (doc 20 cut SM.7; the lead's pre-commit round,
+/// item 4), `None` when it shows no run or is absent or unreadable.
+fn shown_run_of(w: &World, tv: ObjId) -> Option<(u32, u8)> {
+    match w
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.tv_rec(tv))
+    {
+        Some(TvRecState::Present(rec)) => rec.run.as_ref().map(|run| (run.ordinal, run.k)),
         Some(TvRecState::Unreadable) | None => None,
     }
 }
@@ -634,6 +728,36 @@ fn project_start(ctx: &mut Ctx<'_>, record: &RigRecord) {
         due_ic: act.due_ic,
     });
     rec.leg = leg_view(record);
+    rec.run = record.run.as_ref().map(|run| Box::new(RunView::of(run)));
+    write_projection(ctx, &rec);
+}
+
+/// **A due cycle's projection** (doc 20 cut SM.7; the brief's 3.8): the run's view (and the act
+/// in flight beside it, if any), the state and pose as the placement reads now — a run places
+/// nothing, so `applied` does not move. Also a **started** run's (the SM.7 lead's pre-commit
+/// round, item 4): written on the first fire after the start lands, before any cycle is due.
+fn project_run(ctx: &mut Ctx<'_>, record: &RigRecord) {
+    let Some(run) = &record.run else {
+        return;
+    };
+    let mut rec = projection_of(ctx.w, record.tv, run.slot);
+    rec.slot = run.slot;
+    rec.operator = Some(run.operator);
+    rec.hull = Some(run.hull);
+    rec.excursion = record.excursion.as_ref().map(|excursion| excursion.id);
+    rec.site = record
+        .excursion
+        .as_ref()
+        .map(|excursion| excursion.site.clone());
+    rec.state = projected_state(ctx.w, record, Some(run.hull));
+    rec.pose = pose_of(ctx.w, record.tv);
+    rec.act = record.act.as_ref().map(|act| ActView {
+        ordinal: act.ordinal,
+        kind: act.kind,
+        due_ic: act.due_ic,
+    });
+    rec.leg = leg_view(record);
+    rec.run = Some(Box::new(RunView::of(run)));
     write_projection(ctx, &rec);
 }
 
@@ -786,7 +910,8 @@ fn world_step(ctx: &mut Ctx<'_>, record: &RigRecord) {
                 }
             }
         }
-        ActKind::Dump => {}
+        // Doc 20 cut SM.7: a run never moves its rig (and never sits in the act slot).
+        ActKind::Dump | ActKind::Mine => {}
     }
 }
 
@@ -856,6 +981,7 @@ fn project_due(ctx: &mut Ctx<'_>, record: &RigRecord) {
     // Doc 20 cut SM.4b: the placement just happened — the pose is the leg's end, and the leg
     // no longer moves anything.
     rec.leg = None;
+    rec.run = record.run.as_ref().map(|run| Box::new(RunView::of(run)));
     rec.applied = act.ordinal;
     write_projection(ctx, &rec);
 }
@@ -866,20 +992,31 @@ fn project_due(ctx: &mut Ctx<'_>, record: &RigRecord) {
 /// (review finding conformance/F1: the act stays due and is visited every 1 s fire, so an
 /// unguarded line would repeat each second for as long as the record stands). The key is the
 /// one the attempt rule pages under; an act whose operator is GOD or gone never submits, so
-/// it never counts an attempt and the two pages cannot meet.
+/// it never counts an attempt and the two pages cannot meet. **Doc 20 cut SM.7** (the brief's
+/// 3.8): a run's cycle `k` (`cycle > 0`) finishes under `tacsim.surface/{tv}/{ordinal}/cycle/{k}`
+/// with the `cycle` parameter; an act's (cycle 0) as before.
 fn submit_done(
     ctx: &mut Ctx<'_>,
     fire: &mut Fire,
     paged: &mut BTreeSet<ActKey>,
     done: &mush_core::DefinitionRef,
-    (tv, ordinal): (ObjId, u32),
+    (tv, ordinal, cycle): (ObjId, u32, u8),
     operator: ObjId,
 ) -> Step {
-    let Some(key) = done_key(tv, ordinal) else {
+    let key = if cycle == 0 {
+        done_key(tv, ordinal)
+    } else {
+        cycle_key(tv, ordinal, cycle)
+    };
+    let Some(key) = key else {
         tracing::error!(tv = tv.0, "tacsim: a finish's key did not form");
         return Step::Refused;
     };
-    let parameters = json!({ "tv": tv.0.to_string(), "ordinal": ordinal });
+    let parameters = if cycle == 0 {
+        json!({ "tv": tv.0.to_string(), "ordinal": ordinal })
+    } else {
+        json!({ "tv": tv.0.to_string(), "ordinal": ordinal, "cycle": cycle })
+    };
     match fire.as_principal(ctx, tv, operator, |ctx| {
         ctx.submit_authoritative(
             done.clone(),
@@ -892,7 +1029,7 @@ fn submit_done(
         Ok(()) => Step::Submitted,
         Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => Step::Deferred,
         Err(SwapRefused::God | SwapRefused::Gone) => {
-            if paged.insert((tv.0, ordinal)) {
+            if paged.insert((tv.0, ordinal, cycle)) {
                 tracing::warn!(
                     tv = tv.0,
                     act = ordinal,
@@ -936,11 +1073,13 @@ fn tell(
                 .and_then(|store| store.tv_lease_on(record.tv))
                 .map(|lease| lease.hull)
         });
-    let line = match (&last.result, &last.span, last.arrived) {
-        (ActResult::Done, Some(span), _) => reading_block(ctx, handles, record, last, span),
+    let line = match (&last.result, &last.span, last.arrived, &last.mined) {
+        // Doc 20 cut SM.7 (§1 beat 8's line; the brief's 3.8): a mining cycle's line.
+        (_, _, _, Some(mined)) => mine_line(ctx, handles, record.tv, last, mined),
+        (ActResult::Done, Some(span), _, None) => reading_block(ctx, handles, record, last, span),
         // Doc 20 cut SM.4b (§3.7 of the brief): a drive's arrival, with the operator's own
         // reading of the pocket it ends in.
-        (ActResult::Done, None, Some(cell)) if last.kind == ActKind::Drive => {
+        (ActResult::Done, None, Some(cell), None) if last.kind == ActKind::Drive => {
             arrival_line(ctx, handles, last, cell)
         }
         _ => completion_line(w, last, hull),
@@ -968,7 +1107,9 @@ fn tell(
     });
     // Doc 20 cut SM.4b: the leg of the act in flight now, if it carries one.
     rec.leg = leg_view(record);
-    rec.told = last.ordinal;
+    // Doc 20 cut SM.7: the run in flight now, and the told pair (decision R3).
+    rec.run = record.run.as_ref().map(|run| Box::new(RunView::of(run)));
+    (rec.told, rec.told_cycle) = told_pair(last);
     rec.push_log(last.at_ic, &log_line);
     let written = write_projection(ctx, &rec);
     crate::port_tick::notify(ctx, last.operator, &line);
@@ -978,6 +1119,188 @@ fn tell(
     if let Some(cell) = heard_from(written, last) {
         heard_lines(ctx, last, cell, on_site);
     }
+    // Doc 20 cut SM.7 (§6; the brief's 3.10, decision R12): a cycle that moved ore is one
+    // `tacsim.surface.mined` fact — only once the projection's write landed (SM.4a's D24 order),
+    // so a retold cycle never doubles.
+    if written && let Some(fact) = mined_fact(record.tv, last) {
+        push_mined(ctx, &last.site, fact);
+    }
+    // The SM.7 lead's pre-commit round, item 3: a run the registry's dark read ended is paged
+    // once — with the told cycle, only once the projection's write landed (as the ring's fact),
+    // so a retold cycle never pages twice.
+    if written
+        && let Some(Mined {
+            end: Some(RunEnd::Dark { why }),
+            pocket,
+            ..
+        }) = &last.mined
+    {
+        tracing::error!(
+            site = %last.site,
+            tv = record.tv.0,
+            pocket = %address::pocket_address(pocket[0], pocket[1]).unwrap_or_default(),
+            block = %address::block_letter(pocket[0], pocket[1]).unwrap_or('?'),
+            cause = why.words(),
+            "tacsim: a mining run ended because its block's registry could not be read ({}); \
+             the operator was told the registry is dark; staff repair the read before the \
+             block is mined again",
+            why.words()
+        );
+    }
+}
+
+/// **The fact a told cycle publishes** (doc 20 cut SM.7; decision R12): a `Done` cycle that moved
+/// at least a tonne; `None` for everything else (a barren core never reaches the ring).
+fn mined_fact(tv: ObjId, last: &Outcome) -> Option<crate::surface::mined::MinedFact> {
+    let mined = last.mined.as_ref()?;
+    if last.result != ActResult::Done || mined.tonnes == 0 {
+        return None;
+    }
+    Some(crate::surface::mined::MinedFact {
+        at_ic: last.at_ic,
+        tv,
+        operator: last.operator,
+        pocket: address::pocket_address(mined.pocket[0], mined.pocket[1])?,
+        good: mined.good.clone(),
+        tonnes: mined.tonnes,
+        ordinal: last.ordinal,
+        k: mined.k,
+    })
+}
+
+/// Push `fact` into `site`'s ring and write it (a fact already held, or older than a full ring,
+/// writes nothing).
+fn push_mined(
+    ctx: &mut Ctx<'_>,
+    site: &mush_core::CanonicalId,
+    fact: crate::surface::mined::MinedFact,
+) {
+    use crate::surface::mined::{MinedRing, MinedState, push};
+    let mut ring = match ctx
+        .w
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.mined(site))
+    {
+        Some(MinedState::Present(ring)) => ring.clone(),
+        Some(MinedState::Unreadable) | None => MinedRing::new(site.clone()),
+    };
+    if push(&mut ring, fact) && ring.check().is_ok() {
+        let _ = crate::store::put_mined(ctx, &ring);
+    }
+}
+
+/// **A mining cycle's line** (doc 20 §1 beat 8; cut SM.7, the brief's 3.6): `CYCLE_DONE` with the
+/// hopper read now and, at the run's end, its clause (`RUN_DONE`, `RUN_WORKED_OUT`,
+/// `RUN_STOPPED`, `RUN_DARK`, or `RUN_RIGHTS` with the public line formatted here from the stored
+/// standing);
+/// a blind core `CORED` with the operator's own new reading (the address alone when their row is
+/// gone) and no end clause; a cycle that did not happen `CYCLE_FAILED`.
+fn mine_line(
+    ctx: &Ctx<'_>,
+    handles: &PortHandles,
+    tv: ObjId,
+    last: &Outcome,
+    mined: &Mined,
+) -> String {
+    use crate::port::tv;
+    let w: &World = ctx.w;
+    let n = last.slot.to_string();
+    let ore = tv::ore_words(mined.good.as_str());
+    let pocket = (mined.pocket[0], mined.pocket[1]);
+    let addr = address::pocket_address(pocket.0, pocket.1).unwrap_or_default();
+    let hopper = match tv::hopper_load_of(ctx, tv) {
+        Ok((kg, cap)) => tv::hopper_text(kg, cap),
+        Err(error) => {
+            tracing::warn!(tv = tv.0, %error, "tacsim: a cycle's tell could not read the hopper");
+            "?".to_owned()
+        }
+    };
+    if let ActResult::Refused { code } = last.result {
+        let why = match code {
+            RefusedCode::Unworked => tv::WHY_UNWORKED.to_owned(),
+            RefusedCode::Moved => tv::WHY_MOVED.to_owned(),
+            RefusedCode::NeverLeft => tv::WHY_NEVER_LEFT.to_owned(),
+            RefusedCode::NotBeside => tv::WHY_NOT_BESIDE.replace("{ramp}", "ramp"),
+            RefusedCode::HopperChanged => tv::WHY_HOPPER_CHANGED.to_owned(),
+            RefusedCode::SpoilGone => tv::WHY_SPOIL_GONE.to_owned(),
+        };
+        return tv::CYCLE_FAILED
+            .replace("{n}", &n)
+            .replace("{k}", &mined.k.to_string())
+            .replace("{cycles}", &mined.cycles.to_string())
+            .replace("{addr}", &addr)
+            .replace("{why}", &why);
+    }
+    if mined.blind {
+        let key = ChartKey {
+            principal: last.operator,
+            site: last.site.clone(),
+        };
+        let row: Option<ChartRecord> = ctx
+            .action_state(&handles.families.charts, &key)
+            .ok()
+            .flatten()
+            .cloned()
+            .filter(|row| row.key() == key);
+        let reading = if crate::surface::chart::row_reads_pocket(row.as_ref(), pocket) {
+            crate::surface::chart::pocket_reading(w, &last.site, row.as_ref(), pocket)
+        } else {
+            addr.clone()
+        };
+        let lift = if mined.tonnes == 0 {
+            tv::NOTHING_LIFTED.to_owned()
+        } else {
+            format!("{} t {ore}", mined.tonnes)
+        };
+        return tv::CORED
+            .replace("{n}", &n)
+            .replace("{reading}", &reading)
+            .replace("{lift}", &lift)
+            .replace("{hopper}", &hopper);
+    }
+    let rights = |line: &str| {
+        tv::RUN_RIGHTS
+            .replace("{n}", &n)
+            .replace("{addr}", &addr)
+            .replace("{line}", line)
+    };
+    let end = match mined.end {
+        None | Some(RunEnd::Refused) => String::new(),
+        Some(RunEnd::Done) => tv::RUN_DONE.replace("{addr}", &addr),
+        Some(RunEnd::WorkedOut) => tv::RUN_WORKED_OUT
+            .replace("{addr}", &addr)
+            .replace("{ore}", &ore),
+        Some(RunEnd::Stopped) => tv::RUN_STOPPED.replace("{n}", &n),
+        Some(RunEnd::Licence { why }) => rights(&crate::surface::act::licence_end_line(
+            w,
+            last.operator,
+            why,
+        )),
+        Some(RunEnd::Dark { .. }) => tv::RUN_DARK.replace("{addr}", &addr),
+        Some(RunEnd::Claimed) => rights(tv::MINE_CLAIMED),
+        Some(RunEnd::Lease { forfeit }) => {
+            let (counter, port) = tv::counter_words(w);
+            rights(
+                &if forfeit {
+                    tv::MINE_FORFEIT
+                } else {
+                    tv::MINE_ENDED
+                }
+                .replace("{n}", &n)
+                .replace("{counter}", &counter)
+                .replace("{port}", &port),
+            )
+        }
+    };
+    let mut line = tv::CYCLE_DONE
+        .replace("{n}", &n)
+        .replace("{k}", &mined.k.to_string())
+        .replace("{cycles}", &mined.cycles.to_string())
+        .replace("{t}", &mined.tonnes.to_string())
+        .replace("{ore}", &ore)
+        .replace("{hopper}", &hopper);
+    line.push_str(&end);
+    line
 }
 
 /// **Whether the tell sends a heard line, and from where** (doc 20 cut SM.4a, D24; pure so it is
@@ -1294,6 +1617,9 @@ fn completion_line(w: &World, last: &Outcome, hull: Option<ObjId>) -> String {
                 .replace("{n}", &n)
                 .replace("{addr}", &site)
                 .replace("{reading}", ""),
+            // Doc 20 cut SM.7: a cycle's outcome always carries what it did (`mine_line`, which
+            // the tell reads first); without it the run can only be said to be over.
+            ActKind::Mine => tv::MINE_NOT_RUNNING.replace("{n}", &n),
         },
         ActResult::Refused { code } => {
             let why = match code {
@@ -1302,6 +1628,7 @@ fn completion_line(w: &World, last: &Outcome, hull: Option<ObjId>) -> String {
                 RefusedCode::HopperChanged => tv::WHY_HOPPER_CHANGED.to_owned(),
                 RefusedCode::SpoilGone => tv::WHY_SPOIL_GONE.to_owned(),
                 RefusedCode::Moved => tv::WHY_MOVED.to_owned(),
+                RefusedCode::Unworked => tv::WHY_UNWORKED.to_owned(),
             };
             tv::ACT_FAILED
                 .replace("{n}", &n)
@@ -1339,6 +1666,7 @@ mod tests {
             moved: BTreeMap::new(),
             span,
             arrived: None,
+            mined: None,
         };
         let loud = outcome(Some(sound(false, true)), ActResult::Done);
         assert_eq!(heard_from(true, &loud), Some([170, 90]));
@@ -1383,7 +1711,7 @@ mod tests {
     #[test]
     fn sm3b_the_attempt_rule_counts_only_finishes_that_did_not_land() {
         let mut state = SurfaceTickState::default();
-        let key = (900, 1);
+        let key = (900, 1, 0);
         // Sixty deferred visits count nothing.
         for _ in 0..60 {
             state.fires += 1;
@@ -1444,30 +1772,33 @@ mod tests {
     fn sm3b_a_retried_finish_is_keyed_by_the_act_not_the_rig() {
         let tv = ObjId(900);
         let mut state = SurfaceTickState::default();
-        state.attempts.insert((tv.0, 1), 2);
-        state.attempts.insert((901, 2), 1);
-        state.paged.insert((tv.0, 0));
+        state.attempts.insert((tv.0, 1, 0), 2);
+        state.attempts.insert((901, 2, 0), 1);
+        state.paged.insert((tv.0, 0, 0));
         let failed = retried_ordinals(&state, tv);
-        assert_eq!(failed, vec![1]);
+        assert_eq!(failed, vec![(1, 0)]);
         assert!(
-            !failed.contains(&2),
+            !failed.contains(&(2, 0)),
             "a stale attempt of act 1 never marks act 2"
         );
-        state.attempts.insert((tv.0, 2), 1);
+        state.attempts.insert((tv.0, 2, 0), 1);
         let failed = retried_ordinals(&state, tv);
-        assert!(failed.contains(&2), "an attempt at (tv, 2) marks act 2");
-        assert_eq!(failed, vec![1, 2]);
+        assert!(
+            failed.contains(&(2, 0)),
+            "an attempt at (tv, 2) marks act 2"
+        );
+        assert_eq!(failed, vec![(1, 0), (2, 0)]);
         assert!(retried_ordinals(&state, ObjId(902)).is_empty());
         // Bounded: the highest ordinals are kept.
         let cap = u32::try_from(MAX_RETRIED_ORDINALS).expect("fits");
         let over = cap + 5;
         for ordinal in 1..=over {
-            state.attempts.insert((tv.0, ordinal), 1);
+            state.attempts.insert((tv.0, ordinal, 0), 1);
         }
         let failed = retried_ordinals(&state, tv);
         assert_eq!(failed.len(), MAX_RETRIED_ORDINALS);
-        assert_eq!(failed.last(), Some(&over));
-        assert_eq!(failed.first(), Some(&(over + 1 - cap)));
+        assert_eq!(failed.last(), Some(&(over, 0)));
+        assert_eq!(failed.first(), Some(&(over + 1 - cap, 0)));
     }
 
     /// **The prune keeps every act still due, not only the visited ones** (review finding
@@ -1502,6 +1833,7 @@ mod tests {
             }),
             excursion: None,
             last: None,
+            run: None,
         };
         let over = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits") + 6;
         let mut records: Vec<RigRecord> = (1..=over)
@@ -1513,9 +1845,9 @@ mod tests {
         assert_eq!(due.len(), usize::try_from(over).expect("fits"));
         // Oldest due first: rig `over` is visited first and rig 1 (the newest due) falls
         // past the cut, still due.
-        assert!(due.contains(&(over, 3)));
-        assert!(due.contains(&(1, 3)), "past the visit cut, still due");
-        assert!(!due.contains(&(5_000, 3)), "not yet due");
+        assert!(due.contains(&(over, 3, 0)));
+        assert!(due.contains(&(1, 3, 0)), "past the visit cut, still due");
+        assert!(!due.contains(&(5_000, 3, 0)), "not yet due");
         assert!(!due.iter().any(|key| key.0 == 5_001), "no act");
     }
 
@@ -1553,6 +1885,7 @@ mod tests {
             }),
             excursion: None,
             last: None,
+            run: None,
         };
         let stuck = u32::try_from(MAX_EXCURSIONS_VISITED_PER_FIRE).expect("fits");
         let mut records: Vec<RigRecord> = (1..=stuck)
@@ -1565,11 +1898,11 @@ mod tests {
             ..SurfaceTickState::default()
         };
         for tv in 1..=stuck {
-            state.backoff.insert((tv, 2), 500);
+            state.backoff.insert((tv, 2, 0), 500);
         }
-        let told = |_: ObjId| 0;
+        let told = |_: ObjId| (0, 0);
         // In the back-off: the fresh act is the one candidate.
-        let (picked, resting) = candidates(records.clone(), now, told, |_| None, &state);
+        let (picked, resting) = candidates(records.clone(), now, told, |_| None, |_| None, &state);
         assert_eq!(
             picked
                 .iter()
@@ -1581,7 +1914,7 @@ mod tests {
         assert_eq!(resting, stuck, "every backed-off act is passed over");
         // One fire before the back-off ends: still the fresh act alone.
         state.fires = 500 + DONE_BACKOFF_FIRES - 1;
-        let (picked, _) = candidates(records.clone(), now, told, |_| None, &state);
+        let (picked, _) = candidates(records.clone(), now, told, |_| None, |_| None, &state);
         assert_eq!(
             picked.len(),
             1,
@@ -1589,7 +1922,7 @@ mod tests {
         );
         // The back-off over: the 64 are candidates again, oldest first, and fill the window.
         state.fires = 500 + DONE_BACKOFF_FIRES;
-        let (picked, resting) = candidates(records.clone(), now, told, |_| None, &state);
+        let (picked, resting) = candidates(records.clone(), now, told, |_| None, |_| None, &state);
         assert_eq!(resting, 0);
         assert_eq!(picked.len(), MAX_EXCURSIONS_VISITED_PER_FIRE);
         assert_eq!(picked[0].record.tv, ObjId(1), "the oldest due first");
@@ -1614,8 +1947,9 @@ mod tests {
             moved: BTreeMap::new(),
             span: None,
             arrived: None,
+            mined: None,
         });
-        let (picked, resting) = candidates(vec![untold], now, told, |_| None, &state);
+        let (picked, resting) = candidates(vec![untold], now, told, |_| None, |_| None, &state);
         assert_eq!(resting, 1);
         assert_eq!(picked.len(), 1);
         assert!(picked[0].untold && !picked[0].due, "told, not submitted");
@@ -1678,6 +2012,7 @@ mod tests {
             }),
             excursion: None,
             last: None,
+            run: None,
         };
         let state = SurfaceTickState::default();
         let records = vec![
@@ -1686,7 +2021,7 @@ mod tests {
             record(22, now - 10, now + 590, ActParams::None {}),
             record(23, now - 600, now, drive.clone()),
         ];
-        let (picked, _) = candidates(records.clone(), now, |_| 0, |_| None, &state);
+        let (picked, _) = candidates(records.clone(), now, |_| (0, 0), |_| None, |_| None, &state);
         let order: Vec<(u32, bool, bool)> = picked
             .iter()
             .map(|c| (c.record.tv.0, c.started, c.due))
@@ -1697,9 +2032,250 @@ mod tests {
             "two started drives by their start, the due drive at its due instant, no leg no visit"
         );
         // Once the projection shows the act, a started drive is no longer a candidate.
-        let (picked, _) = candidates(records, now, |_| 0, |tv| (tv.0 == 20).then_some(4), &state);
+        let (picked, _) = candidates(
+            records,
+            now,
+            |_| (0, 0),
+            |tv| (tv.0 == 20).then_some(4),
+            |_| None,
+            &state,
+        );
         assert!(!picked.iter().any(|c| c.record.tv.0 == 20));
         assert!(picked.iter().any(|c| c.record.tv.0 == 21 && c.started));
+    }
+
+    /// A record with a run (ordinal 3, cycle `k`, due `run_due`) and, when `act_due` is given, a
+    /// scan at ordinal 4 due then.
+    fn drilling(tv: u32, run_due: i64, k: u8, act_due: Option<i64>) -> RigRecord {
+        use crate::surface::excursion::{Act, ActParams, Charge, LockRow, Run};
+        let site = mush_core::CanonicalId::new("ahuna_port").expect("an id");
+        let stand = [146_i64, 226];
+        let (px, py) = address::pocket_of_cell((stand[0], stand[1])).expect("a pocket");
+        let number = address::pocket_number(px, py).expect("a number");
+        RigRecord {
+            schema: crate::surface::excursion::EXCURSION_SCHEMA,
+            tv: ObjId(tv),
+            ordinal: if act_due.is_some() { 4 } else { 3 },
+            charge: Charge {
+                value_cu: 90_000,
+                at_ic: 0,
+                in_bay: false,
+            },
+            act: act_due.map(|due_ic| Act {
+                ordinal: 4,
+                kind: ActKind::Scan,
+                operator: ObjId(7),
+                hull: ObjId(8),
+                slot: 1,
+                site: site.clone(),
+                started_ic: due_ic - 600,
+                due_ic,
+                reserved_cu: 1_000,
+                params: ActParams::Scan {
+                    from_bay: false,
+                    body: mush_core::CanonicalId::new("ceres").expect("an id"),
+                    cell: stand,
+                    footing: Footing::Regolith,
+                    fields: vec![27],
+                    hidden: Vec::new(),
+                },
+            }),
+            excursion: None,
+            last: None,
+            run: Some(Run {
+                ordinal: 3,
+                operator: ObjId(7),
+                hull: ObjId(8),
+                slot: 1,
+                site: site.clone(),
+                body: mush_core::CanonicalId::new("ceres").expect("an id"),
+                stand,
+                pocket: [px, py],
+                number,
+                letter: address::block_letter(px, py).expect("a letter"),
+                family: crate::surface::geology::OreFamily::Metals,
+                deposit: mush_industry::OreDepositId(77),
+                good: mush_core::CanonicalId::new("metal_ore").expect("an id"),
+                source: Some(12),
+                hopper: 13,
+                cycles: 4,
+                k,
+                secs: 1_800,
+                cost_cu: 2_000,
+                reserve_t: vec![2, 2, 2, 1],
+                class_t: 2,
+                pocket_t: 7,
+                blind: false,
+                stop: false,
+                lapses_ic: None,
+                lock_rows: vec![LockRow {
+                    deposit: mush_industry::OreDepositId(77),
+                    pocket: number,
+                }],
+                due_ic: run_due,
+                reserved_cu: 2_000 * u32::from(5 - k),
+            }),
+        }
+    }
+
+    /// **A run and an act take turns** (doc 20 cut SM.7; the brief's 3.8): the earlier due item
+    /// first — the act when it falls due before the cycle, the cycle otherwise — a tie to the run
+    /// (its cycle began first); each key's back-off independent (the act resting leaves the cycle
+    /// due, and the reverse); `still_due` holds both keys.
+    #[test]
+    fn sm7_a_run_and_an_act_take_turns() {
+        let now = 10_000;
+        let state = SurfaceTickState::default();
+        // The projection already shows each record's run (the started reason is the next test's).
+        let pick = |record: RigRecord, state: &SurfaceTickState| {
+            let shown = record.run.as_ref().map(|run| (run.ordinal, run.k));
+            let (picked, _) = candidates(vec![record], now, |_| (0, 0), |_| None, |_| shown, state);
+            picked.first().map(|c| (c.due, c.cycle))
+        };
+        assert_eq!(
+            pick(drilling(1, 9_000, 2, Some(8_000)), &state),
+            Some((true, None))
+        );
+        assert_eq!(
+            pick(drilling(1, 8_000, 2, Some(9_000)), &state),
+            Some((true, Some(2)))
+        );
+        assert_eq!(
+            pick(drilling(1, 9_000, 2, Some(9_000)), &state),
+            Some((true, Some(2))),
+            "a tie to the run"
+        );
+        assert_eq!(
+            pick(drilling(1, 9_000, 3, None), &state),
+            Some((true, Some(3)))
+        );
+        assert_eq!(
+            pick(drilling(1, 11_000, 3, None), &state),
+            None,
+            "not yet due"
+        );
+        // The act resting: the cycle is still due; the cycle resting: the act still is.
+        let mut resting = SurfaceTickState {
+            fires: 100,
+            ..SurfaceTickState::default()
+        };
+        resting.backoff.insert((1, 4, 0), 100);
+        assert_eq!(
+            pick(drilling(1, 9_000, 2, Some(8_000)), &resting),
+            Some((true, Some(2)))
+        );
+        let mut resting = SurfaceTickState {
+            fires: 100,
+            ..SurfaceTickState::default()
+        };
+        resting.backoff.insert((1, 3, 2), 100);
+        assert_eq!(
+            pick(drilling(1, 8_000, 2, Some(9_000)), &resting),
+            Some((true, None))
+        );
+        let due = still_due(&[drilling(1, 9_000, 2, Some(8_000))], now);
+        assert!(due.contains(&(1, 4, 0)) && due.contains(&(1, 3, 2)));
+    }
+
+    /// **A started run is a candidate once** (doc 20 cut SM.7; the SM.7 lead's pre-commit round,
+    /// item 4): a run whose cycle is not yet due is a started candidate (not a due one) while the
+    /// projection shows no run, or another run's or another cycle's — ordered by its cycle's start
+    /// (`due_ic − secs`) — and never once it shows this run's ordinal and cycle; a due cycle is a
+    /// due candidate, not a started one.
+    #[test]
+    fn sm7_a_started_run_is_a_candidate_once() {
+        let now = 10_000;
+        let state = SurfaceTickState::default();
+        let pick = |record: RigRecord, shown: Option<(u32, u8)>| {
+            let (picked, _) =
+                candidates(vec![record], now, |_| (0, 0), |_| None, |_| shown, &state);
+            picked.first().map(|c| (c.started, c.due, c.order))
+        };
+        assert_eq!(
+            pick(drilling(1, 11_000, 1, None), None),
+            Some((true, false, (11_000 - 1_800, 1))),
+            "the start landed; the projection shows no run yet"
+        );
+        assert_eq!(
+            pick(drilling(1, 11_000, 2, None), Some((3, 1))),
+            Some((true, false, (11_000 - 1_800, 1))),
+            "the projection shows the cycle before"
+        );
+        assert_eq!(
+            pick(drilling(1, 11_000, 2, None), Some((2, 2))),
+            Some((true, false, (11_000 - 1_800, 1))),
+            "another run's"
+        );
+        assert_eq!(
+            pick(drilling(1, 11_000, 2, None), Some((3, 2))),
+            None,
+            "shown: never again"
+        );
+        assert_eq!(
+            pick(drilling(1, 9_000, 2, None), None).map(|(started, due, _)| (started, due)),
+            Some((false, true)),
+            "a due cycle is due, not started"
+        );
+    }
+
+    /// **The told rule is equality** (doc 20 cut SM.7; decision R3): a cycle of the run at ordinal
+    /// 3 finishing after a told scan at ordinal 4 is untold (never `>`); a told pair is told; the
+    /// next cycle of the same run is untold.
+    #[test]
+    fn sm7_the_told_rule_is_equality() {
+        use crate::surface::excursion::Mined;
+        let now = 10_000;
+        let state = SurfaceTickState::default();
+        let mut record = drilling(1, 20_000, 3, None);
+        record.ordinal = 4;
+        record.last = Some(Outcome {
+            ordinal: 3,
+            kind: ActKind::Mine,
+            operator: ObjId(7),
+            slot: 1,
+            site: mush_core::CanonicalId::new("ahuna_port").expect("an id"),
+            at_ic: 9_000,
+            result: ActResult::Done,
+            moved: BTreeMap::new(),
+            span: None,
+            arrived: None,
+            mined: Some(Mined {
+                k: 2,
+                cycles: 4,
+                pocket: [36, 56],
+                good: mush_core::CanonicalId::new("metal_ore").expect("an id"),
+                tonnes: 2,
+                blind: false,
+                end: None,
+            }),
+        });
+        let untold = |told: (u32, u8)| {
+            let (picked, _) = candidates(
+                vec![record.clone()],
+                now,
+                |_| told,
+                |_| None,
+                |_| None,
+                &state,
+            );
+            picked.first().is_some_and(|c| c.untold)
+        };
+        assert!(
+            untold((4, 0)),
+            "a later scan told; the cycle of ordinal 3 is not"
+        );
+        assert!(untold((3, 1)), "the cycle before");
+        assert!(!untold((3, 2)), "told");
+        assert_eq!(told_pair(record.last.as_ref().expect("an outcome")), (3, 2));
+    }
+
+    /// **A cycle's key forms** (doc 20 cut SM.7): `tacsim.surface/{tv}/{ordinal}/cycle/{k}`.
+    #[test]
+    fn sm7_a_cycle_key_forms() {
+        assert_eq!(
+            cycle_key(ObjId(900), 3, 4).map(|key| key.as_str().to_owned()),
+            Some("tacsim.surface/900/3/cycle/4".to_owned())
+        );
     }
 
     /// **The heard line names a bearing and a band and nothing more** (doc 20 cut SM.4a, D19):
