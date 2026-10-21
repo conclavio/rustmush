@@ -216,3 +216,13 @@ full redeploys: the new process came up while the old one still held the
 port and systemd's `Restart=on-failure` brought it back five seconds later.
 Harmless here; a cut that redeploys often should make deploy.sh wait for
 the port.
+
+## Target (the owner's ruling, 2026-10-21)
+
+**640x480 at 20 fps.** The budget it buys on the VPS is about 21 % of a
+vCPU and 100 KB/s a viewer; the extra pixels over 320x220 are for the
+instruments a real cut draws into the frame itself — minimap, heat gauges,
+weapon recycle states, the armour-status doll — rather than as separate
+placed images. The view's default is now 640x480 (commit 8732d107) and `r`
+steps down to 320x220 for a slow link; dev2 keeps the 320-default build
+until it is next redeployed.
