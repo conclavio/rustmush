@@ -344,10 +344,13 @@ async fn working(f: &PurchaseFixture, saved: &Durable) -> TestResult<Durable> {
         probe(&mut world, "capture-source", true)?;
         let before = world.engine.world.world_ic_now();
         let epoch = world.engine.world.next_world_timeline_epoch(2)?;
+        eprintln!("M7_STORY_DIAG b1 step=epoch_next"); // TEMP M7 diag
         world.engine.world.append_world_timeline_epoch(epoch)?;
+        eprintln!("M7_STORY_DIAG b1 step=epoch_appended"); // TEMP M7 diag
         assert_eq!(world.engine.world.world_ic_now().at, before.at);
         assert_ne!(world.engine.world.world_ic_now().clock, before.clock);
         probe(&mut world, "check", false)?;
+        eprintln!("M7_STORY_DIAG b1 step=checked"); // TEMP M7 diag
         Ok(retained)
     }
     .await;
@@ -357,7 +360,9 @@ async fn working(f: &PurchaseFixture, saved: &Durable) -> TestResult<Durable> {
 
 pub(super) async fn exercise(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     let edited = story_phase("access.working", || working(f, saved))?.await?;
+    eprintln!("M7_STORY_DIAG exercise boot_forks begin"); // TEMP M7 diag
     let mut world = PlayerWorld::boot_forks(f, &edited, true)?;
+    eprintln!("M7_STORY_DIAG exercise boot_forks done"); // TEMP M7 diag
     let tasks = world.tasks.clone();
     let result:TestResult=async {
         let term:PaidTermRecord=serde_json::from_value(one(rows(&disk(&world),"roll","roll_mind_paid_term"))?)?;
