@@ -20,6 +20,7 @@
 //! replies arrive through the key parser as [`Key::GraphicsOk`],
 //! [`Key::GraphicsErr`] and [`Key::DeviceAttributes`].
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use mush_pixel::raycast::{Camera, Ground, Map, Sprite, SpriteKind, render};
@@ -90,6 +91,10 @@ pub struct PixelView {
     /// The arena map built from the held `arena.map`, keyed by its match.
     map: Option<(Option<i64>, Map)>,
     close_pending: bool,
+    /// When the frames of the last second went out: the HUD's measured
+    /// frames-per-second, which is what the wire carries (the `sent` total
+    /// says nothing about rate).
+    sent_at: VecDeque<Instant>,
     /// Counters.
     pub stats: Stats,
 }
@@ -114,8 +119,18 @@ impl PixelView {
             frame: Frame::new(FRAME_W, FRAME_H),
             map: None,
             close_pending: false,
+            sent_at: VecDeque::new(),
             stats: Stats::default(),
         }
+    }
+
+    /// Frames sent in the second before `now`.
+    #[must_use]
+    pub fn fps(&self, now: Instant) -> usize {
+        self.sent_at
+            .iter()
+            .filter(|at| now.saturating_duration_since(**at) < Duration::from_secs(1))
+            .count()
     }
 
     // ---- the probe -------------------------------------------------------
@@ -287,6 +302,14 @@ impl PixelView {
         let wire = kitty::frame_bytes(&bytes, IMAGE_ID, col, row, c, r);
         self.stats.wire_bytes = wire.len();
         self.stats.sent += 1;
+        self.sent_at.push_back(now);
+        while self
+            .sent_at
+            .front()
+            .is_some_and(|at| now.saturating_duration_since(*at) >= Duration::from_secs(1))
+        {
+            self.sent_at.pop_front();
+        }
         self.last_sent = Some(key);
         wire
     }
@@ -332,8 +355,12 @@ impl PixelView {
         // did not, which is twenty small writes a second for nothing (and a
         // slow client's SSH window fills up on them). Everything printed here
         // changes only when a frame is sent or a key is pressed.
+        // `fps` is the frames of the last second, read at the last send (the
+        // HUD is drawn only under a sent picture, so this never ticks a
+        // repaint of its own).
+        let fps = self.sent_at.back().map_or(0, |last| self.fps(*last));
         let top = format!(
-            "PIXEL VIEW  camera {camera:03}° (sim {:03}° {:+}°)  {turning}  |  {probe}  render {:.1} ms  encode {:.1} ms  png {} B  wire {} B  sent {}",
+            "PIXEL VIEW  camera {camera:03}° (sim {:03}° {:+}°)  {turning}  |  {probe}  render {:.1} ms  encode {:.1} ms  png {} B  wire {} B  sent {}  fps {fps}",
             heading / 1_000,
             self.offset_mdeg() / 1_000,
             s.render_us as f64 / 1000.0,
@@ -563,6 +590,8 @@ mod tests {
         let turned = v.paint(Some(&cockpit), Some(&map), 160, 50, t0);
         assert!(!turned.is_empty());
         assert_eq!(v.stats.sent, 3);
+        assert_eq!(v.fps(t0 + Duration::from_millis(200)), 3, "three frames inside a second");
+        assert_eq!(v.fps(t0 + Duration::from_secs(2)), 0);
         // Without a map the view still paints (open ground).
         let mut bare = supported(t0);
         bare.toggle(t0);
