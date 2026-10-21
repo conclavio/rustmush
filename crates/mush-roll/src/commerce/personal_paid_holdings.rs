@@ -332,11 +332,15 @@ fn project_paid_for(
             .map_err(|_| OwnerProjectionError::Integrity)?;
     }
     if allocation.operation() != allocation.birth_operation() {
-        roll.check_required_root(&RequiredRoot {
-            anchor: RootAnchor::RenewalOperation(allocation.operation()),
-            identity,
-        })
-        .map_err(|_| OwnerProjectionError::Integrity)?;
+        // A renewed generation's root is its renewal operation, House or personal.
+        let anchor = match allocation.birth() {
+            super::entitlement::history::Birth::House(_) => {
+                RootAnchor::HouseRenewalOperation(allocation.operation())
+            }
+            _ => RootAnchor::RenewalOperation(allocation.operation()),
+        };
+        roll.check_required_root(&RequiredRoot { anchor, identity })
+            .map_err(|_| OwnerProjectionError::Integrity)?;
     }
     let reference = identity.revision();
     let revision = roll
