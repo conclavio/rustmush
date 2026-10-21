@@ -384,7 +384,10 @@ fn contract(record: &history::OfferRecord) -> Result<EconomicContract, Participa
     offer.validate()?;
     let marker = RenewalMarkerV1::new(record.operation, record.action.clone(), offer)?;
     let buyer = PrincipalId::Object(offer.terms.buyer);
-    let issuer = PrincipalId::Organization(offer.terms.organization);
+    // The buyer issues their own renewal, as a plain renewal and an original
+    // purchase do: the contract checker requires the issuer to be a party and
+    // only the buyer consents. The House is paid through the split.
+    let issuer = buyer.clone();
     let consent = ConsentSurface {
         fact_consent: None,
         managed: Some(ManagedConsent::house_renewal_offer(marker)?),

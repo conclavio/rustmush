@@ -45,7 +45,8 @@ fn actor(context: &OfferContext<'_>, buyer: ObjId) -> Result<(), ParticipantErro
 }
 fn open_counts(state: &EconomyStore, terms: &super::RenewalOfferTermsV1) -> (usize, usize) {
     let buyer = PrincipalId::Object(terms.buyer);
-    let issuer = PrincipalId::Organization(terms.organization);
+    // The buyer is the renewal's issuer (`managed_house_renewal::contract`).
+    let issuer = buyer.clone();
     state
         .snapshot
         .contracts()

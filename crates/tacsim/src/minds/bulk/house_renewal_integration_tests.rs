@@ -168,9 +168,12 @@ pub(super) fn exercise(
         .contract(draft.contract())
         .ok_or("actual offered contract")?;
     let contract_value = serde_json::to_value(contract)?;
+    // The buyer issues their own renewal (the House is paid through the split).
     assert_eq!(
         contract_value.get("issuer"),
-        Some(&serde_json::to_value(draft.binding().issuer().principal())?)
+        Some(&serde_json::to_value(mush_org::PrincipalId::Object(
+            draft.offer().terms.buyer
+        ))?)
     );
     assert_eq!(
         contract.acceptances.len(),
