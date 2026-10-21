@@ -51,6 +51,10 @@ fn parsed<T: serde::de::DeserializeOwned>(v: &Value) -> Result<T, ActionStateErr
 fn shape(v: &Value, names: &[&str]) -> Result<(), ActionStateError> {
     let o = v.as_object().ok_or_else(|| refused("coverage object"))?;
     if o.len() != names.len() || names.iter().any(|n| !o.contains_key(*n)) {
+        if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+            // TEMP M7 diag: key names only.
+            eprintln!("M7_CONDUCT_DIAG coverage shape expected={names:?} actual={:?}", o.keys().collect::<Vec<_>>());
+        }
         return Err(refused("coverage closed shape"));
     }
     Ok(())

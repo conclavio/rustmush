@@ -112,9 +112,12 @@ impl Provider {
 }
 impl ActionProvider for Provider {
     fn validate_invocation(&self, inv: &ActionInvocation) -> Result<(), ActionError> {
-        self.writer
-            .check_service_invocation(inv)
-            .map_err(|_| self.refusal.clone())
+        self.writer.check_service_invocation(inv).map_err(|e| {
+            if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+                eprintln!("M7_CONDUCT_DIAG paid_resale_service validate: {e:?}"); // TEMP M7 diag
+            }
+            self.refusal.clone()
+        })
     }
     fn prepare_authoritative_with_context(
         &self,
@@ -146,7 +149,12 @@ impl ActionProvider for Provider {
         let Some(intent) = self
             .writer
             .service_offer(&engine.world, q.actor())
-            .map_err(|_| self.refusal.clone())?
+            .map_err(|e| {
+                if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+                    eprintln!("M7_CONDUCT_DIAG paid_resale_service service_offer: {e:?}"); // TEMP M7 diag
+                }
+                self.refusal.clone()
+            })?
         else {
             return Ok(None);
         };
