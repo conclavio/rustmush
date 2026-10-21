@@ -22,6 +22,13 @@ use mush_economy::registry_filing::{EconomyRequest, InitialFilingParticipant};
 use mush_economy::{AccountStatus, EconomyStore, InstrumentStatus};
 use mush_roll::commerce::coverage::{PreparedCoverageOpen, RegisteredCoverageWriter};
 use serde::Deserialize;
+// TEMP M7 diag: name the swallowing site behind M7_CONDUCT_DIAG.
+fn bad_at(e: impl std::fmt::Display, line: u32) -> CoverageError {
+    if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+        eprintln!("M7_CONDUCT_DIAG {}:{line}: {e}", file!());
+    }
+    bad(e)
+}
 fn bad(_: impl std::fmt::Display) -> CoverageError {
     CoverageError::Authority
 }
@@ -53,7 +60,7 @@ impl Provider {
         {
             return Err(CoverageError::Authority);
         }
-        let p: Parameters = serde_json::from_value(inv.parameters().clone()).map_err(bad)?;
+        let p: Parameters = serde_json::from_value(inv.parameters().clone()).map_err(|e| bad_at(e, line!()))?;
         Ok((
             p.ticket,
             self.host.lookup(p.ticket, inv.actor(), self.index)?,
@@ -65,18 +72,18 @@ impl Provider {
         txn: &mut ActionTxn<'_>,
         departure: &crate::minds::ic_sortie::AcknowledgedDeparture,
     ) -> Result<PreparedCoverageOpen, CoverageError> {
-        departure.recheck(ctx.world().map_err(bad)?).map_err(bad)?;
+        departure.recheck(ctx.world().map_err(|e| bad_at(e, line!()))?).map_err(|e| bad_at(e, line!()))?;
         let observed = self
             .writer
             .observe(ctx, txn, departure.open())
-            .map_err(bad)?;
+            .map_err(|e| bad_at(e, line!()))?;
         let f = observed.facts();
         if f.actor() != departure.actor()
             || f.unit() != departure.unit()
             || f.hull_revision() != departure.unit_revision()
             || f.hull_schema() != departure.unit_schema()
             || f.seal_digest() != departure.seal_digest()
-            || f.admission_digest().map_err(bad)? != departure.admission_digest()
+            || f.admission_digest().map_err(|e| bad_at(e, line!()))? != departure.admission_digest()
         {
             return Err(CoverageError::Authority);
         }
@@ -91,7 +98,7 @@ impl Provider {
         let p = families::read(txn, &self.families.products, id.to_hex())?;
         // The native immutable mirror closes publication provenance without
         // treating its decoded historical authorization as a current grant.
-        let w = ctx.world().map_err(bad)?;
+        let w = ctx.world().map_err(|e| bad_at(e, line!()))?;
         if w.module_state::<super::metadata::Publications>()
             .and_then(|s| s.rows.get(&id))
             .is_none_or(|actual| actual.as_ref() != &p)
@@ -145,7 +152,7 @@ impl Provider {
             } else {
                 illustration.ordinary()
             };
-            let w = ctx.world().map_err(bad)?;
+            let w = ctx.world().map_err(|e| bad_at(e, line!()))?;
             let now = w.now();
             if now < p.posted_at_utc
                 || !product.hulls().contains(departure.unit_schema())
@@ -211,7 +218,7 @@ impl Provider {
                 Some((product.clone(), payer)),
                 qualified.map(|(_, proof)| proof),
             );
-            self.writer.quote(ctx, observed, check).map_err(bad)?;
+            self.writer.quote(ctx, observed, check).map_err(|e| bad_at(e, line!()))?;
             "quoted"
         };
         Ok(kind)
@@ -226,7 +233,7 @@ impl Provider {
         let hull_key = format!("{:08x}", q.risk.hull.0);
         let head = txn
             .get(&self.families.hulls, &hull_key)
-            .map_err(bad)?
+            .map_err(|e| bad_at(e, line!()))?
             .cloned();
         let (sequence, previous) = if let Some(h) = &head {
             if h.active.is_some() {
@@ -241,7 +248,7 @@ impl Provider {
                 .terminal()
                 .ok_or(CoverageError::Authority)?
                 .decision();
-            let w = ctx.world().map_err(bad)?;
+            let w = ctx.world().map_err(|e| bad_at(e, line!()))?;
             let now = w.world_ic_now();
             if w.now() < d.posted_at_utc || now.clock == d.at_ic.clock && now.at < d.at_ic.at {
                 return Err(CoverageError::Clock);
@@ -306,9 +313,9 @@ impl Provider {
                         terms: q.terms.clone(),
                     }),
                 )
-                .map_err(bad)?
+                .map_err(|e| bad_at(e, line!()))?
                 .coverage()
-                .map_err(bad)?;
+                .map_err(|e| bad_at(e, line!()))?;
             let check = super::fence::HostCheck::capture(
                 self.host.clone(),
                 self.action.clone(),
@@ -323,7 +330,7 @@ impl Provider {
             let actual = self
                 .writer
                 .bind(ctx, txn, observed, output, check)
-                .map_err(bad)?;
+                .map_err(|e| bad_at(e, line!()))?;
             let policy = Policy {
                 format: 1,
                 request,
@@ -341,7 +348,7 @@ impl Provider {
             actual
                 .retention()
                 .matches_history(&policy.history)
-                .map_err(bad)?;
+                .map_err(|e| bad_at(e, line!()))?;
             self.families.admit(txn, 2)?;
             families::insert(txn, &self.families.policies, &policy)?;
             families::insert(
@@ -355,7 +362,7 @@ impl Provider {
             } else {
                 families::insert(txn, &self.families.hulls, &after)?;
             }
-            ctx.reserve_hull_coverage_completion(txn).map_err(bad)?;
+            ctx.reserve_hull_coverage_completion(txn).map_err(|e| bad_at(e, line!()))?;
             "bound"
         };
         Ok(kind)
@@ -384,7 +391,7 @@ impl Provider {
                 return Err(CoverageError::Authority);
             }
             let c = before.history.consent();
-            let proof = CloseProof::capture(ctx.world().map_err(bad)?, &close)?;
+            let proof = CloseProof::capture(ctx.world().map_err(|e| bad_at(e, line!()))?, &close)?;
             if proof.open != c.basis.ic_open {
                 return Err(CoverageError::Authority);
             }
@@ -415,7 +422,7 @@ impl Provider {
                     transition: proof.transition,
                 }
             } else {
-                let now = ctx.world().map_err(bad)?.world_ic_now();
+                let now = ctx.world().map_err(|e| bad_at(e, line!()))?.world_ic_now();
                 if now.clock == c.terms.ends_at.clock && now.at >= c.terms.ends_at.at {
                     CoverageDecisionKindV1::ExpiredClean {
                         close: proof.close,
@@ -430,7 +437,7 @@ impl Provider {
                     }
                 }
             };
-            let w = ctx.world().map_err(bad)?;
+            let w = ctx.world().map_err(|e| bad_at(e, line!()))?;
             let decision = CoverageDecisionV1 {
                 format: 1,
                 operation,
@@ -440,7 +447,7 @@ impl Provider {
                 posted_at_utc: w.now(),
                 reason,
             };
-            decision.matches_consent(c).map_err(bad)?;
+            decision.matches_consent(c).map_err(|e| bad_at(e, line!()))?;
             let h = families::read(txn, &self.families.hulls, format!("{:08x}", c.basis.hull.0))?;
             if h != HullHead::from_policy(&before)? || h.active != Some(policy) {
                 return Err(CoverageError::Product);
@@ -453,9 +460,9 @@ impl Provider {
                         decision,
                     }),
                 )
-                .map_err(bad)?
+                .map_err(|e| bad_at(e, line!()))?
                 .coverage()
-                .map_err(bad)?;
+                .map_err(|e| bad_at(e, line!()))?;
             let check = super::fence::HostCheck::capture(
                 self.host.clone(),
                 self.action.clone(),
@@ -467,7 +474,7 @@ impl Provider {
                 None,
                 None,
             );
-            let actual = self.writer.finish(ctx, txn, output, check).map_err(bad)?;
+            let actual = self.writer.finish(ctx, txn, output, check).map_err(|e| bad_at(e, line!()))?;
             let mut after = before.clone();
             after.history = actual.history().clone();
             after.terminal_of(&before)?;
@@ -479,7 +486,7 @@ impl Provider {
                 protocol: self.protocol.clone(),
                 policy,
                 policy_digest: after.digest()?,
-                native_history: after.history.digest().map_err(bad)?,
+                native_history: after.history.digest().map_err(|e| bad_at(e, line!()))?,
                 close: proof,
             };
             terminal.matches_policy(&after)?;
@@ -493,7 +500,7 @@ impl Provider {
             families::insert(txn, &self.families.terminals, &terminal)?;
             families::insert(txn, &self.families.receipts, &Receipt::from_policy(&after)?)?;
             ctx.finish_hull_coverage_completion(txn, policy)
-                .map_err(bad)?;
+                .map_err(|e| bad_at(e, line!()))?;
             if pays { "claimed" } else { "released" }
         };
         Ok(kind)
@@ -505,8 +512,8 @@ impl Provider {
         ctx: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, CoverageError> {
         let (request, intent) = self.intent(inv)?;
-        self.host.ready(ctx.world().map_err(bad)?, self.index)?;
-        authority::player(ctx.world().map_err(bad)?, inv.actor())?;
+        self.host.ready(ctx.world().map_err(|e| bad_at(e, line!()))?, self.index)?;
+        authority::player(ctx.world().map_err(|e| bad_at(e, line!()))?, inv.actor())?;
         let operation = ctx.commit_token();
         let retained_intent = intent.clone();
         let kind = match intent {
@@ -525,7 +532,7 @@ impl Provider {
             self.outcome.clone(),
             serde_json::json!({"operation":operation,"kind":kind}),
         )
-        .map_err(bad)?;
+        .map_err(|e| bad_at(e, line!()))?;
         Ok(AuthoritativeActionOutput::new(result)
             .with_definitions(vec![
                 self.action.clone(),
@@ -547,8 +554,12 @@ impl ActionProvider for Provider {
         txn: &mut ActionTxn<'_>,
         ctx: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
-        self.prepare(inv, txn, ctx)
-            .map_err(|_| self.refusal.clone())
+        self.prepare(inv, txn, ctx).map_err(|e| {
+            if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+                eprintln!("M7_CONDUCT_DIAG coverage prepare: {e:?}"); // TEMP M7 diag
+            }
+            self.refusal.clone()
+        })
     }
     fn project_offer(
         &self,

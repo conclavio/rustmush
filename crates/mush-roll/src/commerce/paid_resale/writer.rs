@@ -21,6 +21,13 @@ use mush_economy::managed_paid_resale::{
     MAX_HISTORY_BYTES, PaidResaleModeV1, PaidResaleOutcome, PaidResaleOutput,
 };
 use std::sync::{Arc, OnceLock};
+// TEMP M7 diag: name the swallowing site behind M7_CONDUCT_DIAG.
+fn bad_at(e: impl std::fmt::Display, line: u32) -> PublicationError {
+    if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+        eprintln!("M7_CONDUCT_DIAG {}:{line}: {e}", file!());
+    }
+    bad(e)
+}
 fn bad(_: impl std::fmt::Display) -> PublicationError {
     PublicationError::Mismatch
 }
@@ -324,17 +331,17 @@ impl RegisteredPaidResaleWriter {
         }
         let facts = ctx
             .read_owner_preimage(txn, &self.reader, request)
-            .map_err(bad)?;
+            .map_err(|e| bad_at(e, line!()))?;
         let counterparty = if seller {
             facts.buyer()
         } else {
             facts.seller()
         };
-        let accounts = ctx.distinct_personal_accounts(counterparty).map_err(bad)?;
+        let accounts = ctx.distinct_personal_accounts(counterparty).map_err(|e| bad_at(e, line!()))?;
         if accounts.requester() != facts.requester() || accounts.other() != counterparty {
             return Err(PublicationError::Mismatch);
         }
-        let world = ctx.world().map_err(bad)?;
+        let world = ctx.world().map_err(|e| bad_at(e, line!()))?;
         Ok(PreparedPaidResale {
             state: Box::new(PreparedPaidResaleState {
                 action: self.action.clone(),
@@ -354,7 +361,7 @@ impl RegisteredPaidResaleWriter {
         if v.state.action != self.action || v.state.commit != ctx.commit_token() {
             return Err(PublicationError::Mismatch);
         }
-        v.state.facts.check_world(ctx.world().map_err(bad)?)?;
+        v.state.facts.check_world(ctx.world().map_err(|e| bad_at(e, line!()))?)?;
         Ok(&v.state.facts)
     }
     fn before(
@@ -365,24 +372,24 @@ impl RegisteredPaidResaleWriter {
         let f = &self.registration()?.families;
         if txn
             .get(&f.paid_licences, &facts.pointer().key())
-            .map_err(bad)?
+            .map_err(|e| bad_at(e, line!()))?
             != Some(facts.pointer())
             || txn
                 .get(&f.paid_terms, &facts.binding().term().key())
-                .map_err(bad)?
+                .map_err(|e| bad_at(e, line!()))?
                 != Some(facts.binding().term())
         {
             return Err(PublicationError::Mismatch);
         }
         let head = txn
             .get(&f.paid_resale_heads, &facts.pointer().id().key())
-            .map_err(bad)?
+            .map_err(|e| bad_at(e, line!()))?
             .cloned();
         match (head, facts.previous()) {
             (None, None) => (),
             (Some(head), Some(row)) => {
                 head.matches(row)?;
-                if txn.get(&f.paid_resales, &row.key()).map_err(bad)? != Some(row)
+                if txn.get(&f.paid_resales, &row.key()).map_err(|e| bad_at(e, line!()))? != Some(row)
                     || matches!(row.state(), PaidResaleState::Funded {})
                 {
                     return Err(PublicationError::Mismatch);
@@ -394,7 +401,7 @@ impl RegisteredPaidResaleWriter {
             facts.pointer().id(),
             facts.binding().ownership().generation + 1,
         );
-        if txn.get(&f.paid_holders, &next).map_err(bad)?.is_some() {
+        if txn.get(&f.paid_holders, &next).map_err(|e| bad_at(e, line!()))?.is_some() {
             return Err(PublicationError::Mismatch);
         }
         Ok(())
@@ -493,7 +500,7 @@ impl RegisteredPaidResaleWriter {
         envelope(
             &f.paid_resales,
             &row.key(),
-            serde_json::to_value(&row).map_err(bad)?,
+            serde_json::to_value(&row).map_err(|e| bad_at(e, line!()))?,
         )?;
         let mut old = vec![RequiredRoot {
             anchor: RootAnchor::PaidOperation(facts.pointer().operation()),
@@ -519,13 +526,13 @@ impl RegisteredPaidResaleWriter {
             },
         };
         txn.insert(&f.paid_resales, &row.key(), row.clone())
-            .map_err(bad)?;
+            .map_err(|e| bad_at(e, line!()))?;
         if facts.previous().is_some() {
             txn.replace(&f.paid_resale_heads, &head.key(), head.clone())
-                .map_err(bad)?;
+                .map_err(|e| bad_at(e, line!()))?;
         } else {
             txn.insert(&f.paid_resale_heads, &head.key(), head.clone())
-                .map_err(bad)?;
+                .map_err(|e| bad_at(e, line!()))?;
         }
         if let Some(holder) = holder {
             let pointer = facts
@@ -534,25 +541,25 @@ impl RegisteredPaidResaleWriter {
             envelope(
                 &f.paid_holders,
                 &holder.key(),
-                serde_json::to_value(&holder).map_err(bad)?,
+                serde_json::to_value(&holder).map_err(|e| bad_at(e, line!()))?,
             )?;
             envelope(
                 &f.paid_licences,
                 &pointer.key(),
-                serde_json::to_value(&pointer).map_err(bad)?,
+                serde_json::to_value(&pointer).map_err(|e| bad_at(e, line!()))?,
             )?;
             txn.insert(&f.paid_holders, &holder.key(), holder.clone())
-                .map_err(bad)?;
+                .map_err(|e| bad_at(e, line!()))?;
             txn.replace(&f.paid_licences, &pointer.key(), pointer.clone())
-                .map_err(bad)?;
-            if txn.get(&f.paid_holders, &holder.key()).map_err(bad)? != Some(&holder)
-                || txn.get(&f.paid_licences, &pointer.key()).map_err(bad)? != Some(&pointer)
+                .map_err(|e| bad_at(e, line!()))?;
+            if txn.get(&f.paid_holders, &holder.key()).map_err(|e| bad_at(e, line!()))? != Some(&holder)
+                || txn.get(&f.paid_licences, &pointer.key()).map_err(|e| bad_at(e, line!()))? != Some(&pointer)
             {
                 return Err(PublicationError::Mismatch);
             }
         }
-        if txn.get(&f.paid_resales, &row.key()).map_err(bad)? != Some(&row)
-            || txn.get(&f.paid_resale_heads, &head.key()).map_err(bad)? != Some(&head)
+        if txn.get(&f.paid_resales, &row.key()).map_err(|e| bad_at(e, line!()))? != Some(&row)
+            || txn.get(&f.paid_resale_heads, &head.key()).map_err(|e| bad_at(e, line!()))? != Some(&head)
         {
             return Err(PublicationError::Mismatch);
         }
@@ -560,7 +567,7 @@ impl RegisteredPaidResaleWriter {
             self.roots.as_ref().ok_or(PublicationError::Unavailable)?,
             RootRequest::PaidResale(Box::new(roots)),
         )
-        .map_err(bad)?;
+        .map_err(|e| bad_at(e, line!()))?;
         Ok(row)
     }
     pub fn service_offer(
@@ -600,11 +607,11 @@ impl RegisteredPaidResaleWriter {
             return Err(PublicationError::Mismatch);
         }
         let intent = r.runtime.intent(inv, &self.action)?;
-        intent.fresh(ctx.world().map_err(bad)?)?;
+        intent.fresh(ctx.world().map_err(|e| bad_at(e, line!()))?)?;
         let f = &r.families;
         let before = txn
             .get(&f.paid_resales, &intent.acceptance.to_hex())
-            .map_err(bad)?
+            .map_err(|e| bad_at(e, line!()))?
             .cloned()
             .ok_or(PublicationError::Missing)?;
         before.validate()?;
@@ -615,12 +622,12 @@ impl RegisteredPaidResaleWriter {
         }
         let b = before.binding();
         txn.get(&f.paid_resale_heads, &b.licence().key())
-            .map_err(bad)?
+            .map_err(|e| bad_at(e, line!()))?
             .ok_or(PublicationError::Missing)?
             .matches(&before)?;
         let pointer = txn
             .get(&f.paid_licences, &b.licence().key())
-            .map_err(bad)?
+            .map_err(|e| bad_at(e, line!()))?
             .cloned()
             .ok_or(PublicationError::Missing)?;
         pointer.validate()?;
@@ -636,19 +643,19 @@ impl RegisteredPaidResaleWriter {
                 } else {
                     Some(b.ownership())
                 }
-            || txn.get(&f.paid_terms, &b.term().key()).map_err(bad)? != Some(b.term())
+            || txn.get(&f.paid_terms, &b.term().key()).map_err(|e| bad_at(e, line!()))? != Some(b.term())
             || txn
                 .get(
                     &f.paid_holders,
                     &PaidHolderRecord::key_for(b.licence(), b.ownership().generation + 1),
                 )
-                .map_err(bad)?
+                .map_err(|e| bad_at(e, line!()))?
                 .is_some()
         {
             return Err(PublicationError::Mismatch);
         }
-        history::native(ctx.world().map_err(bad)?, &before)?;
-        history::roots(ctx.world().map_err(bad)?, &before, intent.revision)?;
+        history::native(ctx.world().map_err(|e| bad_at(e, line!()))?, &before)?;
+        history::roots(ctx.world().map_err(|e| bad_at(e, line!()))?, &before, intent.revision)?;
         use crate::commerce::registry_revocation::records::{AcceptedTerm, RevokedTerm};
         use mush_economy::managed_paid_resale::PaidResaleDecisionKindV1 as Reason;
         let status = txn
@@ -656,9 +663,9 @@ impl RegisteredPaidResaleWriter {
                 &f.revoked_terms,
                 &RevokedTerm::key_for(b.licence(), b.term().generation()),
             )
-            .map_err(bad)?
+            .map_err(|e| bad_at(e, line!()))?
             .cloned();
-        let now = ctx.world().map_err(bad)?.world_ic_now();
+        let now = ctx.world().map_err(|e| bad_at(e, line!()))?.world_ic_now();
         let effective = now.at
             < before
                 .economic()
@@ -680,7 +687,7 @@ impl RegisteredPaidResaleWriter {
             ) if effective => {
                 let op = txn
                     .get(&f.registry_revocations, &status.operation.to_hex())
-                    .map_err(bad)?
+                    .map_err(|e| bad_at(e, line!()))?
                     .ok_or(PublicationError::Missing)?;
                 status.matches(op)?;
                 if !matches!(&op.term, AcceptedTerm::Paid { term } if term.as_ref() == b.term())
@@ -692,11 +699,11 @@ impl RegisteredPaidResaleWriter {
                     return Err(PublicationError::Mismatch);
                 }
                 ctx.world()
-                    .map_err(bad)?
+                    .map_err(|e| bad_at(e, line!()))?
                     .module_state::<crate::RollStore>()
                     .ok_or(PublicationError::Unavailable)?
                     .check_required_root(&op.root()?)
-                    .map_err(bad)?;
+                    .map_err(|e| bad_at(e, line!()))?;
             }
             (None, Reason::RegistryRevoked { .. }) | (Some(_), Reason::RegistryRevoked { .. }) => {
                 return Err(PublicationError::Mismatch);
@@ -710,12 +717,12 @@ impl RegisteredPaidResaleWriter {
             action: self.action.clone(),
             actor: inv.actor(),
             at_ic: now,
-            posted_at_utc: ctx.world().map_err(bad)?.now(),
+            posted_at_utc: ctx.world().map_err(|e| bad_at(e, line!()))?.now(),
             reason: intent.reason.clone(),
         };
         decision
             .matches_consent(before.economic().consent())
-            .map_err(bad)?;
+            .map_err(|e| bad_at(e, line!()))?;
         Ok(PreparedPaidResaleTerminal {
             state: Box::new(PreparedPaidResaleTerminalState {
                 before,
@@ -735,7 +742,7 @@ impl RegisteredPaidResaleWriter {
         let r = self.registration()?;
         r.ready.check()?;
         r.runtime.require(&observed.state.intent)?;
-        observed.state.intent.fresh(ctx.world().map_err(bad)?)?;
+        observed.state.intent.fresh(ctx.world().map_err(|e| bad_at(e, line!()))?)?;
         let before = &observed.state.before;
         let actual = output.history();
         let terminal = actual.terminal().ok_or(PublicationError::Missing)?;
@@ -749,16 +756,16 @@ impl RegisteredPaidResaleWriter {
             return Err(PublicationError::Mismatch);
         }
         let f = &r.families;
-        if txn.get(&f.paid_resales, &before.key()).map_err(bad)? != Some(before)
+        if txn.get(&f.paid_resales, &before.key()).map_err(|e| bad_at(e, line!()))? != Some(before)
             || txn
                 .get(&f.paid_licences, &observed.state.pointer.key())
-                .map_err(bad)?
+                .map_err(|e| bad_at(e, line!()))?
                 != Some(&observed.state.pointer)
         {
             return Err(PublicationError::Mismatch);
         }
         txn.get(&f.paid_resale_heads, &before.binding().licence().key())
-            .map_err(bad)?
+            .map_err(|e| bad_at(e, line!()))?
             .ok_or(PublicationError::Missing)?
             .matches(before)?;
         let holder = if actual.outcome() == PaidResaleOutcome::Settled {
@@ -806,12 +813,12 @@ impl RegisteredPaidResaleWriter {
         envelope(
             &f.paid_resales,
             &row.key(),
-            serde_json::to_value(&row).map_err(bad)?,
+            serde_json::to_value(&row).map_err(|e| bad_at(e, line!()))?,
         )?;
         txn.replace(&f.paid_resales, &row.key(), row.clone())
-            .map_err(bad)?;
+            .map_err(|e| bad_at(e, line!()))?;
         txn.replace(&f.paid_resale_heads, &head.key(), head.clone())
-            .map_err(bad)?;
+            .map_err(|e| bad_at(e, line!()))?;
         if let Some(holder) = holder {
             let pointer = observed
                 .state
@@ -820,20 +827,20 @@ impl RegisteredPaidResaleWriter {
             envelope(
                 &f.paid_holders,
                 &holder.key(),
-                serde_json::to_value(&holder).map_err(bad)?,
+                serde_json::to_value(&holder).map_err(|e| bad_at(e, line!()))?,
             )?;
             txn.insert(&f.paid_holders, &holder.key(), holder.clone())
-                .map_err(bad)?;
+                .map_err(|e| bad_at(e, line!()))?;
             txn.replace(&f.paid_licences, &pointer.key(), pointer.clone())
-                .map_err(bad)?;
-            if txn.get(&f.paid_holders, &holder.key()).map_err(bad)? != Some(&holder)
-                || txn.get(&f.paid_licences, &pointer.key()).map_err(bad)? != Some(&pointer)
+                .map_err(|e| bad_at(e, line!()))?;
+            if txn.get(&f.paid_holders, &holder.key()).map_err(|e| bad_at(e, line!()))? != Some(&holder)
+                || txn.get(&f.paid_licences, &pointer.key()).map_err(|e| bad_at(e, line!()))? != Some(&pointer)
             {
                 return Err(PublicationError::Mismatch);
             }
         }
-        if txn.get(&f.paid_resales, &row.key()).map_err(bad)? != Some(&row)
-            || txn.get(&f.paid_resale_heads, &head.key()).map_err(bad)? != Some(&head)
+        if txn.get(&f.paid_resales, &row.key()).map_err(|e| bad_at(e, line!()))? != Some(&row)
+            || txn.get(&f.paid_resale_heads, &head.key()).map_err(|e| bad_at(e, line!()))? != Some(&head)
         {
             return Err(PublicationError::Mismatch);
         }
@@ -841,7 +848,7 @@ impl RegisteredPaidResaleWriter {
             self.roots.as_ref().ok_or(PublicationError::Unavailable)?,
             RootRequest::PaidResale(Box::new(roots)),
         )
-        .map_err(bad)?;
+        .map_err(|e| bad_at(e, line!()))?;
         Ok(row)
     }
 }
