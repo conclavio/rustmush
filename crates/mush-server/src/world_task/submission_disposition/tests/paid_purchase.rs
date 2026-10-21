@@ -712,6 +712,9 @@ async fn story() -> TestResult {
             assert_pending(&store, &exact, &funded, &held, &retained_roots, true).await?;
             store.heal();
             // Actual K3 reconciliation runs before typed hydration/final audit.
+            // A restart composes its owners afresh, as a new process does: the
+            // writers are installed once per composition.
+            let active = composition(&config, CommerceMode::Active, sink)?;
             server = Running::boot(&config, store.clone(), Some(&active)).await?;
             server.connect(GOD).await?;
             server.connect(buyer).await?;
@@ -728,6 +731,7 @@ async fn story() -> TestResult {
         )
         .await?;
         server.stop().await?;
+        let active = composition(&config, CommerceMode::Active, sink)?;
         server = Running::boot(&config, store.clone(), Some(&active)).await?;
         server.connect(GOD).await?;
         server.connect(buyer).await?;
