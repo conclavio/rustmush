@@ -762,7 +762,8 @@ impl PlayerWorld {
     }
     fn select(&mut self) -> TestResult {
         let team = self.say(BUYER, "SIM TEAM red")?;
-        assert!(Self::private_text(&team, BUYER).contains("red slot 1"));
+        let joined = Self::private_text(&team, BUYER);
+        assert!(joined.contains("red slot 1"), "SIM TEAM red: {joined}");
         self.say(BUYER, "SIM AI 1")?;
         self.say(BUYER, "SIM UNIT heavy_mk1")?;
         let selected = self.say(BUYER, "SIM MIND filed:2 PROFILE Default")?;
