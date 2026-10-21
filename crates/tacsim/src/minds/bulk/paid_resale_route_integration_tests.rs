@@ -17,12 +17,22 @@ const ACCEPT: &str = "accept_paid_mind_resale";
 const ROUTE_CONN: mush_core::ConnId = 631;
 
 fn disk(w: &PlayerWorld) -> Disk {
+    // Boot normalisation moves every `log:` chunk out of `kv` into `ledger`;
+    // a snapshot without them has no Economy journal to replay.
     w.image
         .iter()
         .flat_map(|(owner, data)| {
-            data.kv
+            let kv = data
+                .kv
                 .iter()
-                .map(move |(key, value)| ((owner.to_string(), key.to_string()), value.clone()))
+                .map(move |(key, value)| ((owner.to_string(), key.to_string()), value.clone()));
+            let ledger = data.ledger.iter().map(move |(key, text)| {
+                (
+                    (owner.to_string(), key.to_string()),
+                    serde_json::from_str::<Value>(text).expect("a ledger chunk is JSON"),
+                )
+            });
+            kv.chain(ledger)
         })
         .collect()
 }

@@ -35,9 +35,18 @@ fn disk(w: &PlayerWorld) -> Disk {
     w.image
         .iter()
         .flat_map(|(ns, data)| {
-            data.kv
+            // Keep the `log:` chunks boot normalisation moved into `ledger`.
+            let kv = data
+                .kv
                 .iter()
-                .map(move |(k, v)| ((ns.to_string(), k.to_string()), v.clone()))
+                .map(move |(k, v)| ((ns.to_string(), k.to_string()), v.clone()));
+            let ledger = data.ledger.iter().map(move |(key, text)| {
+                (
+                    (ns.to_string(), key.to_string()),
+                    serde_json::from_str::<serde_json::Value>(text).expect("a ledger chunk is JSON"),
+                )
+            });
+            kv.chain(ledger)
         })
         .collect()
 }
