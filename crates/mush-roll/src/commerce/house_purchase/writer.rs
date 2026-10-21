@@ -480,6 +480,24 @@ impl HousePurchaseWriter {
         reg.delegate_state_family(&families.paid_licences, "market")?;
         reg.delegate_state_family(&families.paid_terms, "market")?;
         reg.delegate_state_family(&families.house_economics, "market")?;
+        // Market's boot audit repeats each listing's historical identity join
+        // (`audit_listing_for_boot`) from its own ModuleCtx: read-only grants
+        // for exactly the families that join reaches; Market writes none.
+        reg.grant_state_family_read(&families.charters, "market")?;
+        reg.grant_state_family_read(&families.operations, "market")?;
+        reg.grant_state_family_read(&families.terms, "market")?;
+        reg.grant_state_family_read(&families.owner_attestations, "market")?;
+        reg.grant_state_family_read(&families.charter_transfers, "market")?;
+        reg.grant_state_family_read(&families.charter_transfer_offers, "market")?;
+        reg.grant_state_family_read(&families.charter_pending, "market")?;
+        reg.grant_state_family_read(&families.charter_pending_offers, "market")?;
+        reg.grant_state_family_read(&families.filed, "market")?;
+        reg.grant_state_family_read(&families.lines, "market")?;
+        reg.grant_state_family_read(&families.line_updates, "market")?;
+        reg.grant_state_family_read(&families.update_positions, "market")?;
+        reg.grant_state_family_read(&ratings.receipts, "market")?;
+        reg.grant_state_family_read(&ratings.jobs, "market")?;
+        reg.grant_state_family_read(&ratings.executions, "market")?;
         self.0
             .set(Registration {
                 families,

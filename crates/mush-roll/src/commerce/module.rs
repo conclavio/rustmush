@@ -1331,6 +1331,20 @@ fn register_paid_writers(
         coverage
             .writer
             .install(reg, families.clone(), coverage.protocol.clone())?;
+        // Tacsim's coverage boot audit re-proves each publication's Conduct
+        // trial (`publications_for_boot`) from its own ModuleCtx: read-only
+        // grants for exactly the families that proof reaches.
+        reg.grant_state_family_read(&families.conduct_jobs, "tacsim")?;
+        reg.grant_state_family_read(&families.conduct_executions, "tacsim")?;
+        reg.grant_state_family_read(&families.conduct_results, "tacsim")?;
+        reg.grant_state_family_read(&families.filed, "tacsim")?;
+        reg.grant_state_family_read(&families.lines, "tacsim")?;
+        reg.grant_state_family_read(&ratings.receipts, "tacsim")?;
+        reg.grant_state_family_read(&ratings.completions, "tacsim")?;
+        reg.grant_state_family_read(&ratings.executions, "tacsim")?;
+        reg.grant_state_family_read(&ratings.jobs, "tacsim")?;
+        reg.grant_state_family_read(&ratings.status, "tacsim")?;
+        reg.grant_state_family_read(&ratings.pages, "tacsim")?;
     }
     Ok(())
 }
