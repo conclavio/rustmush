@@ -424,8 +424,8 @@ mod tests {
         let bytes = sess.pixel_frame();
         let text = String::from_utf8_lossy(&bytes);
         assert!(
-            text.contains("\x1b[?2026h\x1b[2;1H\x1b_Ga=T,f=100,t=d,i=1,p=1,q=2,C=1,c=110,r=38,m="),
-            "the kitty frame scaled into 110 by 38 cells: {text:?}"
+            text.contains("\x1b[?2026h\x1b[2;1H\x1b_Ga=T,f=100,t=d,i=1,p=1,q=2,C=1,c=101,r=38,m="),
+            "the 640x480 frame scaled into 101 by 38 cells: {text:?}"
         );
         assert!(text.ends_with("\x1b[?2026l"));
         // The same picture is not sent twice — and an idle frame tick writes

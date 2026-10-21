@@ -30,13 +30,18 @@ use serde_json::Value;
 use super::keys::Key;
 
 /// The rendered frame's size; the terminal scales it into the cell box.
-pub const FRAME_W: usize = 320;
+/// **640x480 at 20 Hz is the target** (the owner's ruling of 2026-10-21,
+/// after the load experiment measured it at 21 % of a vCPU and 100 KB/s a
+/// viewer): the extra pixels are for the minimap, heat gauges, weapon
+/// recycle states and the armour doll a real cut will draw into the frame.
+pub const FRAME_W: usize = 640;
 /// See [`FRAME_W`].
-pub const FRAME_H: usize = 220;
-/// The larger frame `r` switches to (the load experiment of 2026-10-21).
-pub const FRAME_W_HI: usize = 640;
-/// See [`FRAME_W_HI`].
-pub const FRAME_H_HI: usize = 480;
+pub const FRAME_H: usize = 480;
+/// The smaller frame `r` switches to: the spike's original 320x220, a
+/// quarter of the pixels and the cost, for a slow link or a loaded box.
+pub const FRAME_W_LO: usize = 320;
+/// See [`FRAME_W_LO`].
+pub const FRAME_H_LO: usize = 220;
 /// The frame clock's wait when `u` uncaps it: as fast as render, encode
 /// and the write allow (tokio's timer floor).
 pub const FRAME_INTERVAL_UNCAPPED: Duration = Duration::from_millis(1);
@@ -253,7 +258,7 @@ impl PixelView {
             // next tick sends whatever the new shape is.
             Key::Char('r') => {
                 let (w, h) = if self.frame.width() == FRAME_W {
-                    (FRAME_W_HI, FRAME_H_HI)
+                    (FRAME_W_LO, FRAME_H_LO)
                 } else {
                     (FRAME_W, FRAME_H)
                 };
@@ -420,7 +425,7 @@ impl PixelView {
             s.sent,
         );
         let bottom = if cockpit.is_some() {
-            "←/a and →/d: toggle a turn   space: hold   c: recentre   r: 320x220/640x480   u: 20 Hz/uncapped   Esc/q: close   ^]: detach"
+            "←/a and →/d: toggle a turn   space: hold   c: recentre   r: 640x480/320x220   u: 20 Hz/uncapped   Esc/q: close   ^]: detach"
                 .to_string()
         } else {
             "No cockpit frame held: take a seat in the arena, then ^G.   Esc/q: close".to_string()
@@ -629,7 +634,7 @@ mod tests {
         assert!(s.starts_with("\x1b[?2026h\x1b[2;1H\x1b_Ga=T,f=100,t=d,i=1,p=1,q=2,C=1,c="));
         assert!(s.ends_with("\x1b[?2026l"));
         assert_eq!(v.stats.sent, 1);
-        assert!(v.stats.png_bytes > 0 && v.stats.png_bytes < 20_000, "{}", v.stats.png_bytes);
+        assert!(v.stats.png_bytes > 0 && v.stats.png_bytes < 40_000, "{}", v.stats.png_bytes);
         // The same picture again: skipped.
         assert!(v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty());
         assert_eq!(v.stats.skipped, 1);
@@ -673,24 +678,25 @@ mod tests {
         let (cockpit, map) = fixtures();
         let mut v = supported(t0);
         v.toggle(t0);
-        assert_eq!(v.size(), (320, 220));
+        assert_eq!(v.size(), (640, 480), "the target frame is the default");
         assert_eq!(v.interval(), FRAME_INTERVAL);
         assert!(!v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty());
         assert!(v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty());
         v.key(Key::Char('r'));
-        assert_eq!(v.size(), (640, 480));
-        let big = String::from_utf8_lossy(&v.paint(Some(&cockpit), Some(&map), 120, 40, t0)).into_owned();
-        assert!(big.contains("c=101,r=38"), "{}", &big[..80]);
+        assert_eq!(v.size(), (320, 220));
+        let small = String::from_utf8_lossy(&v.paint(Some(&cockpit), Some(&map), 120, 40, t0)).into_owned();
+        assert!(small.contains("c=110,r=38"), "{}", &small[..80]);
         assert!(v.stats.png_bytes > 0);
         v.key(Key::Char('u'));
         assert!(v.uncapped());
         assert_eq!(v.interval(), FRAME_INTERVAL_UNCAPPED);
         assert!(!v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty(), "re-sent after the switch");
-        let (_, bottom) = v.hud(Some(&cockpit), t0);
-        assert!(bottom.contains("640x480") && bottom.contains("uncapped"));
+        let (top, bottom) = v.hud(Some(&cockpit), t0);
+        assert!(top.contains("320x220 uncapped"), "{top}");
+        assert!(bottom.contains("640x480/320x220") && bottom.contains("uncapped"));
         v.key(Key::Char('r'));
         v.key(Key::Char('u'));
-        assert_eq!((v.size(), v.uncapped()), ((320, 220), false));
+        assert_eq!((v.size(), v.uncapped()), ((640, 480), false));
     }
 
     #[test]

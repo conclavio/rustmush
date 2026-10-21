@@ -97,7 +97,8 @@ fn main() {
         })
         .collect();
 
-    let mut frame = Frame::new(320, 220);
+    // 640x480: the target frame (the owner's ruling of 2026-10-21).
+    let mut frame = Frame::new(640, 480);
     const N: u32 = 200;
     let t0 = Instant::now();
     for _ in 0..N {
