@@ -119,8 +119,10 @@ impl IcHostTicket {
     pub fn action(&self) -> &DefinitionRef {
         &self.action
     }
+    /// The public parameters to submit: none. The provider's offer carries
+    /// this ticket as a fixed parameter, so resubmitting it would collide.
     pub fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"ticket":self.request})
+        serde_json::json!({})
     }
 }
 /// The original Open capability returned after definitive non-dispatch and
