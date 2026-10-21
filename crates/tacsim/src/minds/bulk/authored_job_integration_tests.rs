@@ -387,13 +387,10 @@ async fn refusal(f: &PurchaseFixture, saved: &Durable, mode: &str) -> TestResult
         let events=drain(&mut world,job).await?;
         no_private_result(&events);
         assert_eq!(roll(&world)?.mind(BUYER,"child")?,&before);
-        let after=disk(&world);
-        if after!=retained {
-            // TEMP M7 diag: name the differing keys only.
-            let keys:Vec<_>=after.keys().chain(retained.keys()).filter(|k|after.get(*k)!=retained.get(*k)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-            eprintln!("M7_STORY_DIAG refused completion diff mode={mode} keys={keys:?}");
-        }
-        assert_eq!(after,retained,"refused completion publishes no revision/source");
+        // Revisions and sources live in Roll's and Tacsim's rows; unrelated
+        // world services (an atlas connection's schedule) may advance meanwhile.
+        let minds=|d:&Disk|->Disk{d.iter().filter(|((owner,_),_)|owner=="roll"||owner=="tacsim").map(|(k,v)|(k.clone(),v.clone())).collect()};
+        assert_eq!(minds(&disk(&world)),minds(&retained),"refused completion publishes no revision/source");
         if !matches!(mode,"reconnect"|"cancel") {
             assert!(matches!(terminal(&events)?,MindResponse::Error {message,..} if message=="Authoring completion is no longer available."));
         } else {assert!(!events.iter().any(|(_,e)|matches!(e,OutputEvent::InvokeResult {id:REQUEST,..})));}
