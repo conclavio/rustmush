@@ -170,3 +170,49 @@ Deploy gotcha for the record: a re-ship with `git archive` stamps files at
 the commit time, which can be OLDER than the previous on-box build, so cargo
 keeps the stale object; `touch` the shipped crate's sources before the
 incremental rebuild.
+
+## The load experiment (2026-10-21, later still)
+
+The owner asked for 640x480 at 20 Hz and then the clock uncapped, to see
+what the box can do given every resource. Two keys were added to the view
+for it: `r` swaps 320x220 and 640x480, `u` swaps the 20 Hz clock for a
+~1 ms wait. Same setup as above (dev2, one viewer in WezTerm's SSH client,
+turning continuously, the box sampled for 14 s each run); the HUD's `fps` is
+the frames of the last second.
+
+| frame | clock | fps on the wire | render | encode | PNG | wire a frame | SSH bytes | gateway CPU |
+|---|---|---|---|---|---|---|---|---|
+| 320x220 | 20 Hz | 20–21 | 0.5–2.6 ms | 0.3–1.4 ms | 1.1–2.4 KB | 1.5–3.3 KB | 24–44 KB/s | 4–8 % |
+| 640x480 | 20 Hz | 21 | 6.2 ms | 1.0 ms | 4.9 KB | 6.6 KB | 100 KB/s | 21 % |
+| 320x220 | uncapped | **189** | 2.3 ms | 0.4 ms | 2.0 KB | 2.7 KB | 368 KB/s | 51 % |
+| 640x480 | uncapped | **58** | 10.5 ms | 1.4 ms | 5.8 KB | 7.8 KB | 284 KB/s | 75 % |
+
+(CPU is one vCPU of the 4-vCPU VPS; the server half stayed under 2 % in
+every run. SSH bytes are after the transport's zlib, which takes roughly a
+third off the base64 PNGs.)
+
+What it says:
+
+- **Uncapped, the render is the ceiling.** One connection's output pump is
+  one task, so a viewer can take at most one core: 189 frames a second at
+  320x220 is ~2.7 ms of gateway CPU a frame (render, encode, base64, the
+  write), and 58 at 640x480 is ~13 ms. The raycaster's per-pixel floor cast
+  is where 640x480 spends its time; a per-row ground lookup would roughly
+  halve it, and that is a real cut's work, not the spike's.
+- **At 20 Hz the budget is linear in pixels**: 320x220 costs ~5 % of a vCPU
+  and ~35 KB/s a viewer, 640x480 ~21 % and ~100 KB/s. On this box that is
+  about 80 viewers at 320x220 or 20 at 640x480 before anything else runs,
+  which is why 320x220 scaled by the terminal stays the recommendation.
+- **WezTerm's software renderer kept up with 189 frames a second** of
+  kitty PNG replacements with no visible tearing in the captures; the
+  picture was smooth to the eye at every setting.
+- **The first 20 Hz run at 640x480 read 17 fps** because the clock was a
+  sleep after each tick, so the 8 ms frame stretched the period; the pump
+  now uses a deadline (`sleep_until`, resynced when behind) and 640x480
+  holds 21.
+
+The gateway logged one restart (NRestarts=1) after one of the evening's
+full redeploys: the new process came up while the old one still held the
+port and systemd's `Restart=on-failure` brought it back five seconds later.
+Harmless here; a cut that redeploys often should make deploy.sh wait for
+the port.
