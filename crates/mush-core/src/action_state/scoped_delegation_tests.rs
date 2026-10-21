@@ -422,3 +422,66 @@ fn registrar_only_grants_during_real_composition_and_frozen_tables_cannot_expand
     );
     Ok(())
 }
+
+#[test]
+fn read_grants_permit_module_reads_never_writes_and_change_identity_only_when_present()
+-> TestResult {
+    // The same composition with and without a grant: no grant keeps the
+    // exact existing fingerprint bytes; a grant is a different deployment.
+    let plain = {
+        let mut builder = StateFamilyRegistryBuilder::new();
+        register(&mut builder, "roll", "history")?;
+        register(&mut builder, "market", "own")?;
+        freeze(builder, &["roll", "market"])?
+    };
+    let mut builder = StateFamilyRegistryBuilder::new();
+    let history = register(&mut builder, "roll", "history")?;
+    let market = register(&mut builder, "market", "own")?;
+    let roll = OwnerId::new("roll")?;
+    assert!(matches!(
+        builder.grant_family_read(roll.clone(), &history, roll.clone()),
+        Err(StateFamilyRegistryError::SelfDelegation { .. })
+    ));
+    assert!(matches!(
+        builder.grant_family_read(OwnerId::new("market")?, &history, OwnerId::new("tacsim")?),
+        Err(StateFamilyRegistryError::DelegationOwnerMismatch { .. })
+    ));
+    builder.grant_family_read(roll.clone(), &history, OwnerId::new("market")?)?;
+    // Repeating a grant is idempotent.
+    builder.grant_family_read(roll.clone(), &history, OwnerId::new("market")?)?;
+    let granted = freeze(builder, &["roll", "market"])?;
+    assert_ne!(plain.fingerprint(), granted.fingerprint());
+    assert_eq!(granted.family_read_grants().len(), 1);
+    assert!(granted.family_delegations().is_empty());
+    let mut store = ActionStateStore::new(granted);
+
+    let mut own = store.transaction(&history)?;
+    own.insert(&history, &1, 42)?;
+    let (_, installation) = own.prepare()?.into_parts();
+    store.install(installation)?;
+
+    // Market's own ModuleCtx may read and scan the granted family.
+    let view = ModuleActionState::for_module(TypedStateLens::Live(&store), Some("market"));
+    assert_eq!(view.get(&history, &1)?, Some(&42));
+    assert_eq!(view.scan_family(&history, None, 4)?.entries().len(), 1);
+    // A module without the grant still refuses.
+    let other = ModuleActionState::for_module(TypedStateLens::Live(&store), Some("tacsim"));
+    assert!(matches!(
+        other.get(&history, &1),
+        Err(ModuleActionStateReadError::ForeignOwner { .. })
+    ));
+    // The grant never reaches the write gate.
+    let mut txn = store.transaction(&market)?;
+    assert!(matches!(
+        txn.insert(&history, &2, 7),
+        Err(ActionStateError::OwnerMismatch { .. })
+    ));
+    assert_eq!(store.get(&history, &2)?, None);
+
+    // An uncomposed reader is refused at freeze.
+    let mut builder = StateFamilyRegistryBuilder::new();
+    let history = register(&mut builder, "roll", "history")?;
+    builder.grant_family_read(roll, &history, OwnerId::new("absent")?)?;
+    assert!(freeze(builder, &["roll"]).is_err());
+    Ok(())
+}

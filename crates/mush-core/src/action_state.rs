@@ -49,6 +49,14 @@ pub const MAX_STATE_FAMILIES_PER_OWNER: usize = 1_024;
 /// extractor's lot) is one bundle rather than two. It is never implicit,
 /// never transitive and never symmetric.
 pub const MAX_STATE_FAMILY_DELEGATES: usize = 4;
+/// Maximum exact read-only family grants in one composition.
+///
+/// A read grant lets a named module read one exact typed family through its
+/// own `ModuleCtx` (a boot audit that joins another owner's history). It never
+/// permits a write: the transaction gate consults delegations only. Like a
+/// delegation it is a composition-time statement by the owning module, never
+/// implicit, transitive or symmetric, and it enters the frozen fingerprint.
+pub const MAX_STATE_FAMILY_READ_GRANTS: usize = 256;
 /// Hard maximum encoded key bytes for one state-family record.
 pub const MAX_STATE_KEY_BYTES: usize = 1_024;
 /// Hard maximum canonical bytes in one state-family record.
@@ -710,7 +718,7 @@ impl<'a> ModuleActionState<'a> {
         if self
             .lens
             .store()
-            .is_some_and(|store| store.registry.delegates_family(family, id, context))
+            .is_some_and(|store| store.registry.permits_family_read(family, id, context))
         {
             return Ok(());
         }
@@ -745,6 +753,8 @@ pub struct StateFamilyRegistryBuilder {
     delegations: BTreeSet<(OwnerId, OwnerId)>,
     /// Exact `(family owner, family id, grantee)` grants.
     family_delegations: BTreeSet<(OwnerId, StateFamilyId, OwnerId)>,
+    /// Exact `(family owner, family id, reader)` read-only grants.
+    family_read_grants: BTreeSet<(OwnerId, StateFamilyId, OwnerId)>,
     registry_rating: Option<Box<terminal_capacity::Protocol>>,
     original_purchase: Option<Box<terminal_capacity::PurchaseProtocol>>,
     entitlement_purchase: Option<Box<terminal_capacity::EntitlementProtocol>>,
@@ -881,6 +891,49 @@ impl StateFamilyRegistryBuilder {
         self.check_delegate(&owner, &grantee)?;
         self.family_delegations
             .insert((owner, handle.descriptor().id.clone(), grantee));
+        Ok(())
+    }
+
+    /// Grant one already-registered family to another composed owner for
+    /// reads only. The same opaque-handle rules as a delegation apply; the
+    /// grant consumes no delegate slot and never reaches the write gate.
+    pub(crate) fn grant_family_read<K: 'static, V: 'static>(
+        &mut self,
+        owner: OwnerId,
+        handle: &StateFamilyHandle<K, V>,
+        reader: OwnerId,
+    ) -> Result<(), StateFamilyRegistryError> {
+        if handle.owner() != &owner {
+            return Err(StateFamilyRegistryError::DelegationOwnerMismatch {
+                caller: owner,
+                family_owner: handle.owner().clone(),
+            });
+        }
+        let locator = (owner.clone(), handle.descriptor().id.clone());
+        let Some(registered) = self.entries.get(&locator) else {
+            return Err(StateFamilyRegistryError::UnknownDelegatedFamily {
+                owner,
+                family: handle.descriptor().id.clone(),
+            });
+        };
+        if !Arc::ptr_eq(registered, &handle.family) {
+            return Err(StateFamilyRegistryError::ForeignDelegatedFamily {
+                owner,
+                family: handle.descriptor().id.clone(),
+            });
+        }
+        if owner == reader {
+            return Err(StateFamilyRegistryError::SelfDelegation { owner });
+        }
+        let grant = (owner, handle.descriptor().id.clone(), reader);
+        if self.family_read_grants.len() >= MAX_STATE_FAMILY_READ_GRANTS
+            && !self.family_read_grants.contains(&grant)
+        {
+            return Err(StateFamilyRegistryError::ReadGrantLimit {
+                max: MAX_STATE_FAMILY_READ_GRANTS,
+            });
+        }
+        self.family_read_grants.insert(grant);
         Ok(())
     }
 
@@ -1365,7 +1418,11 @@ impl StateFamilyRegistryBuilder {
                 }
             }
         }
-        for (owner, _, grantee) in &self.family_delegations {
+        for (owner, _, grantee) in self
+            .family_delegations
+            .iter()
+            .chain(&self.family_read_grants)
+        {
             for named in [owner, grantee] {
                 if !module_owners.contains(named) {
                     return Err(StateFamilyRegistryError::UnknownOwner {
@@ -1378,6 +1435,7 @@ impl StateFamilyRegistryBuilder {
             self.entries.values(),
             &self.delegations,
             &self.family_delegations,
+            &self.family_read_grants,
             self.registry_rating.as_deref(),
             self.original_purchase.as_deref(),
             self.entitlement_purchase.as_deref(),
@@ -1396,6 +1454,7 @@ impl StateFamilyRegistryBuilder {
             entries: self.entries,
             delegations: self.delegations,
             family_delegations: self.family_delegations,
+            family_read_grants: self.family_read_grants,
             registry_rating: self.registry_rating,
             original_purchase: self.original_purchase,
             entitlement_purchase: self.entitlement_purchase,
@@ -1487,6 +1546,8 @@ pub struct StateFamilyRegistry {
     delegations: BTreeSet<(OwnerId, OwnerId)>,
     /// Exact `(family owner, family id, grantee)` grants.
     family_delegations: BTreeSet<(OwnerId, StateFamilyId, OwnerId)>,
+    /// Exact `(family owner, family id, reader)` read-only grants.
+    family_read_grants: BTreeSet<(OwnerId, StateFamilyId, OwnerId)>,
     registry_rating: Option<Box<terminal_capacity::Protocol>>,
     original_purchase: Option<Box<terminal_capacity::PurchaseProtocol>>,
     entitlement_purchase: Option<Box<terminal_capacity::EntitlementProtocol>>,
@@ -1592,6 +1653,31 @@ impl StateFamilyRegistry {
             ))
     }
 
+    /// Whether this exact family may be read by `reader`: its owner, a
+    /// delegate, or an explicit read-only grant. Writes never consult this.
+    #[must_use]
+    pub fn permits_family_read(
+        &self,
+        family_owner: &OwnerId,
+        family: &StateFamilyId,
+        reader: &OwnerId,
+    ) -> bool {
+        family_owner == reader
+            || self.delegates_family(family_owner, family, reader)
+            || self.family_read_grants.contains(&(
+                family_owner.clone(),
+                family.clone(),
+                reader.clone(),
+            ))
+    }
+
+    /// Every explicit `(family owner, family id, reader)` read-only grant,
+    /// in canonical order.
+    #[must_use]
+    pub fn family_read_grants(&self) -> Vec<(OwnerId, StateFamilyId, OwnerId)> {
+        self.family_read_grants.iter().cloned().collect()
+    }
+
     /// Every explicit `(family owner, family id, grantee)` scoped grant,
     /// in canonical order. Legacy owner-wide grants remain in `delegations`.
     #[must_use]
@@ -1662,6 +1748,7 @@ fn state_family_fingerprint<'a>(
     entries: impl Iterator<Item = &'a Arc<dyn ErasedStateFamily>>,
     delegations: &BTreeSet<(OwnerId, OwnerId)>,
     family_delegations: &BTreeSet<(OwnerId, StateFamilyId, OwnerId)>,
+    family_read_grants: &BTreeSet<(OwnerId, StateFamilyId, OwnerId)>,
     registry_rating: Option<&terminal_capacity::Protocol>,
     original_purchase: Option<&terminal_capacity::PurchaseProtocol>,
     entitlement_purchase: Option<&terminal_capacity::EntitlementProtocol>,
@@ -1718,6 +1805,21 @@ fn state_family_fingerprint<'a>(
         );
         "state_family_registry.v2"
     };
+    // Read-only grants enter the identity only when present, so every
+    // composition without one keeps its exact existing bytes.
+    if !family_read_grants.is_empty() {
+        value.insert(
+            "family_read_grants".to_owned(),
+            Value::Array(
+                family_read_grants
+                    .iter()
+                    .map(|(owner, family, reader)| {
+                        json!({ "owner": owner, "family": family, "reader": reader })
+                    })
+                    .collect(),
+            ),
+        );
+    }
     let domain = if let Some(protocol) = registry_rating {
         value.insert("registry_rating".to_owned(), json!(protocol));
         "state_family_registry.v3"
@@ -1844,6 +1946,8 @@ pub enum StateFamilyRegistryError {
         caller: OwnerId,
         family_owner: OwnerId,
     },
+    #[error("read-only state-family grants exceed their limit of {max}")]
+    ReadGrantLimit { max: usize },
     #[error("delegated state family {owner}/{family} is not registered")]
     UnknownDelegatedFamily {
         owner: OwnerId,

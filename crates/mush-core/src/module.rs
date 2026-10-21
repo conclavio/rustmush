@@ -3893,6 +3893,45 @@ impl<'a> Registrar<'a> {
             })
     }
 
+    /// Grant another composed owner read-only access to one exact
+    /// already-registered typed family of this module.
+    ///
+    /// For a boot or recovery audit that joins this owner's history from the
+    /// reader's own `ModuleCtx`. The reader may never write the family: the
+    /// transaction gate consults delegations only. The grant is neither
+    /// transitive nor symmetric and enters the frozen fingerprint.
+    ///
+    /// # Errors
+    /// Refuses legacy/frozen registrars, a foreign or unregistered handle,
+    /// another owner's family, an invalid/self reader, or the grant cap. An
+    /// uncomposed reader is refused when the registries freeze.
+    pub fn grant_state_family_read<K: 'static, V: 'static>(
+        &mut self,
+        family: &crate::action_state::StateFamilyHandle<K, V>,
+        reader: &str,
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.state_families.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: state-family registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str())
+            .map_err(|error| ModError::msg(error.to_string()))?;
+        let reader = crate::mechanics::OwnerId::new(reader)
+            .map_err(|error| ModError::msg(error.to_string()))?;
+        self.reg
+            .state_family_builder
+            .grant_family_read(owner, family, reader)
+            .map_err(|error| {
+                ModError::msg(format!(
+                    "module {}: state-family read grant: {error}",
+                    self.module
+                ))
+            })
+    }
+
     /// Register a synchronous provider for one exact module-owned clock.
     ///
     /// The registrar stamps the provider owner. At read time the kernel
