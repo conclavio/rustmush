@@ -474,7 +474,12 @@ fn account_fences(
 ) -> TestResult {
     for after_prepare in [false, true] {
         let mut world = PlayerWorld::boot_entitlements(f, saved)?;
-        eprintln!("M7_STORY_DIAG {} god_room={:?} room={:?}", format!("fence {id} after_prepare={after_prepare}"), world.engine.world.get(GOD).and_then(|o| o.location), ROOM); // TEMP M7 diag
+        // A fresh boot seats both actors in the lobby; the venue is ROOM, so
+        // each fence starts where the purchase itself is made.
+        for actor in [GOD, BUYER] {
+            world.engine.world.move_to(actor, ROOM)?;
+        }
+        world.commit()?;
         let before = balances(&world)?;
         let original_disk = disk(&world);
         let refused = if after_prepare {
