@@ -192,7 +192,7 @@ fn audited_state<'a>(
     world: &'a World,
     writer: &IcWriter,
 ) -> Result<&'a super::IcSorties, ParticipantError> {
-    let expected = writer.require_audited(world).map_err(bad)?;
+    let expected = writer.require_audited(world).map_err(|e| bad(e))?;
     if world
         .module_state_owner(std::any::TypeId::of::<super::IcSorties>())
         .is_none_or(|o| o.as_str() != crate::NS)
@@ -238,7 +238,7 @@ impl IcHost {
         }
     }
     fn insert(&self, intent: Intent, bytes: usize) -> Result<IcHostTicket, ParticipantError> {
-        let mut inbox = self.inbox.lock().map_err(bad)?;
+        let mut inbox = self.inbox.lock().map_err(|e| bad(e))?;
         let total = inbox.bytes.checked_add(bytes).ok_or_else(|| bad("bytes"))?;
         if bytes > super::protocol::MAX_RECORD_BYTES
             || total > MAX_BYTES
@@ -283,7 +283,7 @@ impl IcHost {
             &serde_json::json!({"unit":permit.unit,"licence":licence,"profiles":profiles}),
             super::protocol::MAX_RECORD_BYTES,
         )
-        .map_err(bad)?
+        .map_err(|e| bad(e))?
         .len();
         let request = DefinitionDigest::from_bytes(rand::random());
         self.insert(
@@ -326,7 +326,7 @@ impl IcHost {
         if ctx.actor != ticket.actor || !self.ready(ctx.w) {
             return Err(ParticipantError::Authority);
         }
-        let mut inbox = self.inbox.lock().map_err(bad)?;
+        let mut inbox = self.inbox.lock().map_err(|e| bad(e))?;
         let pending = inbox
             .rows
             .get_mut(&ticket.request)
@@ -341,7 +341,7 @@ impl IcHost {
             return Ok(pending.attempt.status());
         }
         let key = IdempotencyKeyText::parse_canonical(format!("ic.{}", ticket.request.to_hex()))
-            .map_err(bad)?;
+            .map_err(|e| bad(e))?;
         let observed = ctx
             .submit_authoritative_observed(
                 ticket.action.clone(),
@@ -350,7 +350,7 @@ impl IcHost {
                 ticket.parameters(),
                 key,
             )
-            .map_err(bad)?;
+            .map_err(|e| bad(e))?;
         pending.attempt = Attempt::Observed(observed);
         Ok(pending.attempt.status())
     }
@@ -361,7 +361,7 @@ impl IcHost {
         &self,
         ticket: &IcHostTicket,
     ) -> Result<IcSubmissionState, ParticipantError> {
-        let mut inbox = self.inbox.lock().map_err(bad)?;
+        let mut inbox = self.inbox.lock().map_err(|e| bad(e))?;
         let pending = inbox
             .rows
             .get_mut(&ticket.request)
@@ -384,7 +384,7 @@ impl IcHost {
         if state.request_used(ticket.request) {
             return Err(bad("request has actual installed history"));
         }
-        let mut inbox = self.inbox.lock().map_err(bad)?;
+        let mut inbox = self.inbox.lock().map_err(|e| bad(e))?;
         let pending = inbox
             .rows
             .get_mut(&ticket.request)
@@ -471,7 +471,7 @@ impl IcHost {
         actor: ObjId,
         closing: bool,
     ) -> Result<Option<Intent>, ParticipantError> {
-        let inbox = self.inbox.lock().map_err(bad)?;
+        let inbox = self.inbox.lock().map_err(|e| bad(e))?;
         Ok(inbox
             .rows
             .values()
@@ -484,7 +484,7 @@ impl IcHost {
         actor: ObjId,
         closing: bool,
     ) -> Result<Intent, ParticipantError> {
-        let inbox = self.inbox.lock().map_err(bad)?;
+        let inbox = self.inbox.lock().map_err(|e| bad(e))?;
         let p = inbox
             .rows
             .get(&request)
@@ -502,7 +502,7 @@ impl IcHost {
         ticket: &IcHostTicket,
     ) -> Result<Option<IcHostCompletion>, ParticipantError> {
         let state = audited_state(world, &self.writer)?;
-        let mut inbox = self.inbox.lock().map_err(bad)?;
+        let mut inbox = self.inbox.lock().map_err(|e| bad(e))?;
         let pending = inbox
             .rows
             .get(&ticket.request)

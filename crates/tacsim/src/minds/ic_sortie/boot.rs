@@ -22,9 +22,9 @@ pub(crate) fn load(
             if head.is_some() {
                 return Err(bad("duplicate head"));
             }
-            let parsed: Head = serde_json::from_value(value.clone()).map_err(bad)?;
-            parsed.validate().map_err(bad)?;
-            if serde_json::to_value(&parsed).map_err(bad)? != *value {
+            let parsed: Head = serde_json::from_value(value.clone()).map_err(|e| bad(e))?;
+            parsed.validate().map_err(|e| bad(e))?;
+            if serde_json::to_value(&parsed).map_err(|e| bad(e))? != *value {
                 return Err(bad("head encoding"));
             }
             head = Some(parsed);
@@ -32,7 +32,7 @@ pub(crate) fn load(
             if rows.len() >= super::protocol::MAX_HISTORY {
                 return Err(bad("history bound"));
             }
-            let row = Record::decode(value).map_err(bad)?;
+            let row = Record::decode(value).map_err(|e| bad(e))?;
             if key.as_str() != row.key() {
                 return Err(bad("record key"));
             }
@@ -53,7 +53,7 @@ pub(crate) fn load(
         format: 1,
         next_transition: 1,
     });
-    let state = IcSorties::reconstruct(head.clone(), rows).map_err(bad)?;
+    let state = IcSorties::reconstruct(head.clone(), rows).map_err(|e| bad(e))?;
     registration.loaded(ctx)?;
     *ctx.w
         .module_state_mut::<IcSorties>()
@@ -63,7 +63,7 @@ pub(crate) fn load(
             ns: crate::NS.into(),
             op: ModuleWrite::JsonSet {
                 key: HEAD.into(),
-                value: serde_json::to_value(head).map_err(bad)?,
+                value: serde_json::to_value(head).map_err(|e| bad(e))?,
             },
         });
     }

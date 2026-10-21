@@ -11,7 +11,11 @@ pub(super) const HEAD: &str = "ic_sortie_head";
 // Complete terminal metadata has its own strict bound; Open reserves this
 // amount before custody. No dummy terminal event or padding is persisted.
 pub(super) const MAX_CLOSE_BYTES: usize = 8192;
-pub(super) fn bad(_: impl std::fmt::Display) -> ParticipantError {
+#[track_caller]
+pub(super) fn bad(e: impl std::fmt::Display) -> ParticipantError {
+    if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+        eprintln!("M7_CONDUCT_DIAG ic_sortie bad at {}: {e}", std::panic::Location::caller()); // TEMP M7 diag
+    }
     ParticipantError::refused("IC retained execution or event identity differs")
 }
 pub(super) fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
@@ -35,7 +39,7 @@ impl CapturedProtocol {
     }
     pub(super) fn config(&self) -> Result<IcClaimConfig, ParticipantError> {
         let seal = self.participants.get(1).ok_or_else(|| bad("seal"))?.clone();
-        let config = IcClaimConfig::new(self.manifest.clone(), seal).map_err(bad)?;
+        let config = IcClaimConfig::new(self.manifest.clone(), seal).map_err(|e| bad(e))?;
         if config.participants() != self.participants {
             return Err(bad("participants"));
         }
@@ -44,7 +48,7 @@ impl CapturedProtocol {
     fn action(&self, close: bool) -> Result<DefinitionRef, ParticipantError> {
         self.config()?
             .actions()
-            .map_err(bad)?
+            .map_err(|e| bad(e))?
             .get(usize::from(close))
             .cloned()
             .ok_or_else(|| bad("action"))
@@ -167,7 +171,7 @@ impl Closing {
                 .ok_or_else(|| bad("close event"))?
                 .insert(
                     "coverage".into(),
-                    serde_json::to_value(coverage).map_err(bad)?,
+                    serde_json::to_value(coverage).map_err(|e| bad(e))?,
                 );
         }
         DefinitionDigest::for_canonical_value_with_limit(
@@ -175,7 +179,7 @@ impl Closing {
             &value,
             MAX_CLOSE_BYTES,
         )
-        .map_err(bad)
+        .map_err(|e| bad(e))
     }
     pub(super) fn validate(&self, open: &Opening) -> Result<(), ParticipantError> {
         world(&self.at_ic)?;
@@ -200,10 +204,10 @@ impl Closing {
             return Err(bad("closing"));
         }
         mush_core::canonical_json_bytes_with_limit(
-            &serde_json::to_value(self).map_err(bad)?,
+            &serde_json::to_value(self).map_err(|e| bad(e))?,
             MAX_CLOSE_BYTES,
         )
-        .map_err(bad)?;
+        .map_err(|e| bad(e))?;
         Ok(())
     }
 }
@@ -232,10 +236,10 @@ impl Record {
         }
         self.reserved_bytes()?;
         mush_core::canonical_json_bytes_with_limit(
-            &serde_json::to_value(self).map_err(bad)?,
+            &serde_json::to_value(self).map_err(|e| bad(e))?,
             MAX_RECORD_BYTES,
         )
-        .map_err(bad)?;
+        .map_err(|e| bad(e))?;
         Ok(())
     }
     pub(super) fn reserved_bytes(&self) -> Result<usize, ParticipantError> {
@@ -243,7 +247,7 @@ impl Record {
         // reserving the complete maximum terminal body is conservative by four.
         let open = serde_json::json!({"format":self.format,"open":self.open,"closed":null});
         let bytes = mush_core::canonical_json_bytes_with_limit(&open, MAX_RECORD_BYTES)
-            .map_err(bad)?
+            .map_err(|e| bad(e))?
             .len();
         let total = bytes
             .checked_add(MAX_CLOSE_BYTES)
@@ -254,10 +258,10 @@ impl Record {
         Ok(total)
     }
     pub(super) fn decode(value: &serde_json::Value) -> Result<Self, ParticipantError> {
-        mush_core::canonical_json_bytes_with_limit(value, MAX_RECORD_BYTES).map_err(bad)?;
-        let row: Self = serde_json::from_value(value.clone()).map_err(bad)?;
+        mush_core::canonical_json_bytes_with_limit(value, MAX_RECORD_BYTES).map_err(|e| bad(e))?;
+        let row: Self = serde_json::from_value(value.clone()).map_err(|e| bad(e))?;
         row.validate()?;
-        if serde_json::to_value(&row).map_err(bad)? != *value {
+        if serde_json::to_value(&row).map_err(|e| bad(e))? != *value {
             return Err(bad("noncanonical record"));
         }
         Ok(row)
@@ -280,7 +284,7 @@ impl Head {
             &serde_json::json!({"format":1,"next_transition":u64::MAX}),
             128,
         )
-        .map_err(bad)?;
+        .map_err(|e| bad(e))?;
         Ok(())
     }
 }

@@ -31,10 +31,10 @@ impl Composition {
     ) -> Result<Self, ModError> {
         let seal = mush_core::mechanics::DefinitionRegistryBuilder::new()
             .register(
-                mush_core::OwnerId::new(crate::NS).map_err(bad)?,
+                mush_core::OwnerId::new(crate::NS).map_err(|e| bad(e))?,
                 super::protocol::participant_descriptor()?,
             )
-            .map_err(bad)?;
+            .map_err(|e| bad(e))?;
         let claims = IcClaimConfig::new(manifest, seal)?;
         let custody = mush_tactics::ic_custody::IcCustodyConfig::new(
             claims.manifest().clone(),
@@ -71,8 +71,8 @@ impl Composition {
         &self,
         cfg: &crate::config::TacsimConfig,
     ) -> Result<Registration, ModError> {
-        cfg.arena.validate().map_err(bad)?;
-        cfg.minds.validate().map_err(bad)?;
+        cfg.arena.validate().map_err(|e| bad(e))?;
+        cfg.minds.validate().map_err(|e| bad(e))?;
         let config = Config {
             claims: self.claims.clone(),
             writer: self.writer.clone(),
@@ -98,8 +98,8 @@ impl Registration {
         self.config.claims.action_descriptors()
     }
     pub(crate) fn outcome(&self) -> Result<DefinitionDescriptor, ModError> {
-        DefinitionDescriptor::new(DefinitionKind::new("outcome").map_err(bad)?, DefinitionId::new("ic_mind_transition").map_err(bad)?, 1,
-            serde_json::json!({"format":1,"protocol":"ic_mind_transition_v1","fields":["open","closed"]})).map_err(bad)
+        DefinitionDescriptor::new(DefinitionKind::new("outcome").map_err(|e| bad(e))?, DefinitionId::new("ic_mind_transition").map_err(|e| bad(e))?, 1,
+            serde_json::json!({"format":1,"protocol":"ic_mind_transition_v1","fields":["open","closed"]})).map_err(|e| bad(e))
     }
     pub(crate) fn register(
         &self,
@@ -116,7 +116,7 @@ impl Registration {
             return Err(bad("IC composition differs from actual Tacsim"));
         }
         reg.definition_validator(
-            DefinitionKind::new("ic_base").map_err(bad)?,
+            DefinitionKind::new("ic_base").map_err(|e| bad(e))?,
             crate::definitions::exact_validator(self.bases.clone()),
         )?;
         for descriptor in &self.bases {
@@ -139,10 +139,10 @@ impl Registration {
         let reader = IcAdmissionReader::request(reg, manifest)?;
         let outcome = mush_core::mechanics::DefinitionRegistryBuilder::new()
             .register(
-                mush_core::OwnerId::new(crate::NS).map_err(bad)?,
+                mush_core::OwnerId::new(crate::NS).map_err(|e| bad(e))?,
                 self.outcome()?,
             )
-            .map_err(bad)?;
+            .map_err(|e| bad(e))?;
         for (index, action) in actions.iter().enumerate() {
             let writer = self.config.writer.for_action::<IcSortieParticipant>(
                 reg,
@@ -168,12 +168,12 @@ impl Registration {
         let expected = claims.clone();
         let writer = self.config.writer.clone();
         let descriptor = DefinitionDescriptor::new(
-            DefinitionKind::new("ic_composition").map_err(bad)?,
-            DefinitionId::new("mind_custody").map_err(bad)?,
+            DefinitionKind::new("ic_composition").map_err(|e| bad(e))?,
+            DefinitionId::new("mind_custody").map_err(|e| bad(e))?,
             1,
             serde_json::json!({"format":1,"protocol":"ic_mind_composition_v1"}),
         )
-        .map_err(bad)?
+        .map_err(|e| bad(e))?
         .with_references(
             std::iter::once(manifest.clone())
                 .chain(claims.participants())
@@ -182,7 +182,7 @@ impl Registration {
         );
         let shape = descriptor.clone();
         reg.definition_validator(
-            DefinitionKind::new("ic_composition").map_err(bad)?,
+            DefinitionKind::new("ic_composition").map_err(|e| bad(e))?,
             move |ctx: &mush_core::DefinitionValidationContext<'_>| {
                 crate::definitions::exact_validator(vec![shape.clone()])(ctx)?;
                 writer
