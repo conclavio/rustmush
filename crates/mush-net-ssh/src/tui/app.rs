@@ -3651,6 +3651,12 @@ impl TuiApp {
         self.pixel.tick(Instant::now());
     }
 
+    /// The frame clock's wait (20 Hz, or ~1 ms when `u` uncapped it).
+    #[must_use]
+    pub fn pixel_interval(&self) -> std::time::Duration {
+        self.pixel.interval()
+    }
+
     /// Whether the view closed since the last call (the caller frees the
     /// image).
     pub fn pixel_take_close(&mut self) -> bool {

@@ -33,6 +33,13 @@ use super::keys::Key;
 pub const FRAME_W: usize = 320;
 /// See [`FRAME_W`].
 pub const FRAME_H: usize = 220;
+/// The larger frame `r` switches to (the load experiment of 2026-10-21).
+pub const FRAME_W_HI: usize = 640;
+/// See [`FRAME_W_HI`].
+pub const FRAME_H_HI: usize = 480;
+/// The frame clock's wait when `u` uncaps it: as fast as render, encode
+/// and the write allow (tokio's timer floor).
+pub const FRAME_INTERVAL_UNCAPPED: Duration = Duration::from_millis(1);
 /// The kitty image id the view is placed under (the probe uses 31).
 pub const IMAGE_ID: u32 = 1;
 /// How long after the probe a silent terminal is taken to lack support.
@@ -91,6 +98,8 @@ pub struct PixelView {
     /// The arena map built from the held `arena.map`, keyed by its match.
     map: Option<(Option<i64>, Map)>,
     close_pending: bool,
+    /// `u`: the frame clock runs as fast as it can instead of 20 Hz.
+    uncapped: bool,
     /// When the frames of the last second went out: the HUD's measured
     /// frames-per-second, which is what the wire carries (the `sent` total
     /// says nothing about rate).
@@ -119,9 +128,32 @@ impl PixelView {
             frame: Frame::new(FRAME_W, FRAME_H),
             map: None,
             close_pending: false,
+            uncapped: false,
             sent_at: VecDeque::new(),
             stats: Stats::default(),
         }
+    }
+
+    /// The frame clock's wait: 20 Hz, or ~1 ms when uncapped.
+    #[must_use]
+    pub fn interval(&self) -> Duration {
+        if self.uncapped {
+            FRAME_INTERVAL_UNCAPPED
+        } else {
+            FRAME_INTERVAL
+        }
+    }
+
+    /// Whether the clock is uncapped.
+    #[must_use]
+    pub fn uncapped(&self) -> bool {
+        self.uncapped
+    }
+
+    /// The rendered frame's size in pixels.
+    #[must_use]
+    pub fn size(&self) -> (usize, usize) {
+        (self.frame.width(), self.frame.height())
     }
 
     /// Frames sent in the second before `now`.
@@ -216,6 +248,22 @@ impl PixelView {
                 self.turn = 0;
                 self.offset_mdeg = 0;
             }
+            // The load experiment's two switches (2026-10-21): the frame
+            // size and the clock cap. Either resets the last-sent key so the
+            // next tick sends whatever the new shape is.
+            Key::Char('r') => {
+                let (w, h) = if self.frame.width() == FRAME_W {
+                    (FRAME_W_HI, FRAME_H_HI)
+                } else {
+                    (FRAME_W, FRAME_H)
+                };
+                self.frame = Frame::new(w, h);
+                self.last_sent = None;
+            }
+            Key::Char('u') => {
+                self.uncapped = !self.uncapped;
+                self.last_sent = None;
+            }
             Key::Esc | Key::Char('q') => self.close(),
             _ => {}
         }
@@ -281,7 +329,7 @@ impl PixelView {
             heading_mdeg: u32::try_from(heading).unwrap_or(0),
         };
         let sprites = contacts_as_sprites(cockpit, &cam);
-        let (col, row, c, r) = image_box(cols, rows);
+        let (col, row, c, r) = image_box(cols, rows, self.frame.width(), self.frame.height());
 
         let t0 = Instant::now();
         if let Some((_, map)) = &self.map {
@@ -359,8 +407,10 @@ impl PixelView {
         // HUD is drawn only under a sent picture, so this never ticks a
         // repaint of its own).
         let fps = self.sent_at.back().map_or(0, |last| self.fps(*last));
+        let clock = if self.uncapped { "uncapped" } else { "20 Hz" };
+        let (w, h) = self.size();
         let top = format!(
-            "PIXEL VIEW  camera {camera:03}° (sim {:03}° {:+}°)  {turning}  |  {probe}  render {:.1} ms  encode {:.1} ms  png {} B  wire {} B  sent {}  fps {fps}",
+            "PIXEL VIEW  camera {camera:03}° (sim {:03}° {:+}°)  {turning}  |  {probe}  {w}x{h} {clock}  render {:.1} ms  encode {:.1} ms  png {} B  wire {} B  sent {}  fps {fps}",
             heading / 1_000,
             self.offset_mdeg() / 1_000,
             s.render_us as f64 / 1000.0,
@@ -370,7 +420,7 @@ impl PixelView {
             s.sent,
         );
         let bottom = if cockpit.is_some() {
-            "←/a and →/d: toggle a turn   space: hold   c: recentre   Esc/q: close   ^]: detach"
+            "←/a and →/d: toggle a turn   space: hold   c: recentre   r: 320x220/640x480   u: 20 Hz/uncapped   Esc/q: close   ^]: detach"
                 .to_string()
         } else {
             "No cockpit frame held: take a seat in the arena, then ^G.   Esc/q: close".to_string()
@@ -379,18 +429,19 @@ impl PixelView {
     }
 }
 
-/// The cell box the picture is scaled into: below the top HUD line, above
-/// the bottom one, as wide as keeps roughly the frame's aspect at the
-/// usual 1:2 cell. Returns `(col, row, cols, rows)`, 1-based.
+/// The cell box a `w` by `h` picture is scaled into: below the top HUD
+/// line, above the bottom one, as wide as keeps roughly the frame's aspect
+/// at the usual 1:2 cell. Returns `(col, row, cols, rows)`, 1-based.
 #[must_use]
-pub fn image_box(cols: u16, rows: u16) -> (u16, u16, u16, u16) {
+pub fn image_box(cols: u16, rows: u16, w: usize, h: usize) -> (u16, u16, u16, u16) {
     let avail_rows = rows.saturating_sub(2).max(1);
     let avail_cols = cols.max(1);
-    let wide = u32::from(avail_rows) * 2 * FRAME_W as u32 / FRAME_H as u32;
+    let (fw, fh) = (w.max(1) as u32, h.max(1) as u32);
+    let wide = u32::from(avail_rows) * 2 * fw / fh;
     let (c, r) = if wide <= u32::from(avail_cols) {
         (u16::try_from(wide).unwrap_or(avail_cols).max(1), avail_rows)
     } else {
-        let tall = u32::from(avail_cols) * FRAME_H as u32 / (2 * FRAME_W as u32);
+        let tall = u32::from(avail_cols) * fh / (2 * fw);
         (avail_cols, u16::try_from(tall).unwrap_or(avail_rows).clamp(1, avail_rows))
     };
     (1, 2, c, r)
@@ -604,12 +655,42 @@ mod tests {
     #[test]
     fn the_image_box_keeps_the_aspect_and_fits() {
         // 40 rows: 38 for the picture, 110 cells wide at 1:2 cells.
-        assert_eq!(image_box(120, 40), (1, 2, 110, 38));
+        assert_eq!(image_box(120, 40, 320, 220), (1, 2, 110, 38));
         // A narrow terminal: width-bound.
-        let (_, _, c, r) = image_box(80, 60);
+        let (_, _, c, r) = image_box(80, 60, 320, 220);
         assert_eq!(c, 80);
         assert!((1..=58).contains(&r));
-        assert_eq!(image_box(1, 1), (1, 2, 1, 1));
+        assert_eq!(image_box(1, 1, 320, 220), (1, 2, 1, 1));
+        // The 4:3 frame is squarer: 38 rows take 101 columns.
+        assert_eq!(image_box(120, 40, 640, 480), (1, 2, 101, 38));
+    }
+
+    /// The load experiment's switches (2026-10-21): `r` swaps the frame
+    /// size and `u` uncaps the clock; either re-sends on the next tick.
+    #[test]
+    fn r_swaps_the_size_and_u_uncaps_the_clock() {
+        let t0 = Instant::now();
+        let (cockpit, map) = fixtures();
+        let mut v = supported(t0);
+        v.toggle(t0);
+        assert_eq!(v.size(), (320, 220));
+        assert_eq!(v.interval(), FRAME_INTERVAL);
+        assert!(!v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty());
+        assert!(v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty());
+        v.key(Key::Char('r'));
+        assert_eq!(v.size(), (640, 480));
+        let big = String::from_utf8_lossy(&v.paint(Some(&cockpit), Some(&map), 120, 40, t0)).into_owned();
+        assert!(big.contains("c=101,r=38"), "{}", &big[..80]);
+        assert!(v.stats.png_bytes > 0);
+        v.key(Key::Char('u'));
+        assert!(v.uncapped());
+        assert_eq!(v.interval(), FRAME_INTERVAL_UNCAPPED);
+        assert!(!v.paint(Some(&cockpit), Some(&map), 120, 40, t0).is_empty(), "re-sent after the switch");
+        let (_, bottom) = v.hud(Some(&cockpit), t0);
+        assert!(bottom.contains("640x480") && bottom.contains("uncapped"));
+        v.key(Key::Char('r'));
+        v.key(Key::Char('u'));
+        assert_eq!((v.size(), v.uncapped()), ((320, 220), false));
     }
 
     #[test]

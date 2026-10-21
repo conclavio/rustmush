@@ -175,6 +175,12 @@ impl TuiSession {
         self.app.pixel_tick();
     }
 
+    /// The frame clock's wait while the view is open (20 Hz, or uncapped).
+    #[must_use]
+    pub fn pixel_interval(&self) -> std::time::Duration {
+        self.app.pixel_interval()
+    }
+
     /// The bytes that free the picture's image when the view is open — to
     /// send before leaving the alternate screen.
     #[must_use]

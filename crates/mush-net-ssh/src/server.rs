@@ -2029,10 +2029,12 @@ fn spawn_output_pump(
         who_timer.tick().await;
         // Pixel cockpit spike (2026-10-21): the frame clock. It ticks for
         // every TUI connection and costs a lock and a bool when the view is
-        // closed; a spike's price, noted in its NOTES.
-        let mut frame_timer = tokio::time::interval(crate::tui::pixel::FRAME_INTERVAL);
-        frame_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        frame_timer.tick().await;
+        // closed; a spike's price, noted in its NOTES. The wait is read from
+        // the view each time round (20 Hz, or ~1 ms while `u` uncaps it for
+        // the load experiment); a sleep, not an interval, so the view can
+        // change it. An event or repaint that lands first restarts the wait,
+        // which only matters under a flood of events, and the arena's are a
+        // pulse apart.
 
         enum Wake {
             Event(Option<Arc<OutputEvent>>),
@@ -2042,12 +2044,19 @@ fn spawn_output_pump(
         }
 
         loop {
+            let frame_wait = {
+                let sh = shared.lock().expect("conn state poisoned");
+                match (&sh.mode, sh.tui.as_ref()) {
+                    (Mode::Tui, Some(t)) if t.pixel_active() => t.pixel_interval(),
+                    _ => crate::tui::pixel::FRAME_INTERVAL,
+                }
+            };
             let wake = tokio::select! {
                 biased;
                 ev = rx.recv() => Wake::Event(ev),
                 () = repaint.notified() => Wake::Repaint,
                 _ = who_timer.tick() => Wake::Tick,
-                _ = frame_timer.tick() => Wake::Frame,
+                () = tokio::time::sleep(frame_wait) => Wake::Frame,
             };
 
             // WHO refresh: submit a read-only query while a TUI is active
