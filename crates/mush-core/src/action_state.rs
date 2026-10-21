@@ -3379,13 +3379,12 @@ impl ActionTxn<'_> {
     {
         let result = (|| {
             self.store.registry.get_for_handle(handle)?;
-            if handle.owner() != &self.owner
-                && !self.store.registry.delegates_family(
-                    handle.owner(),
-                    &handle.descriptor().id,
-                    &self.owner,
-                )
-            {
+            // A read: an owner, a delegate or a read-only grantee.
+            if !self.store.registry.permits_family_read(
+                handle.owner(),
+                &handle.descriptor().id,
+                &self.owner,
+            ) {
                 return Err(ActionStateError::OwnerMismatch {
                     transaction: self.owner.clone(),
                     family: handle.owner().clone(),
@@ -3427,7 +3426,7 @@ impl ActionTxn<'_> {
         K: Send + Sync + 'static,
         V: Clone + Send + Sync + 'static,
     {
-        let state_key = match self.checked_key(handle, key) {
+        let state_key = match self.checked_read_key(handle, key) {
             Ok(key) => key,
             Err(error) => {
                 self.poison(&error);
@@ -3525,6 +3524,32 @@ impl ActionTxn<'_> {
             self.poison(error);
         }
         result
+    }
+
+    /// The read gate: an owner, a delegate, or a read-only grantee
+    /// ([`StateFamilyRegistry::permits_family_read`]). Every write keeps
+    /// [`Self::checked_key`]'s owner-or-delegate rule.
+    fn checked_read_key<K, V>(
+        &self,
+        handle: &StateFamilyHandle<K, V>,
+        key: &K,
+    ) -> Result<StateKey, ActionStateError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.store.registry.get_for_handle(handle)?;
+        if !self.store.registry.permits_family_read(
+            handle.owner(),
+            &handle.descriptor().id,
+            &self.owner,
+        ) {
+            return Err(ActionStateError::OwnerMismatch {
+                transaction: self.owner.clone(),
+                family: handle.owner().clone(),
+            });
+        }
+        encode_state_key(handle, key)
     }
 
     fn checked_key<K, V>(

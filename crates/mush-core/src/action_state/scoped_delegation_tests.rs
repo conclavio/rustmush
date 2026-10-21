@@ -470,7 +470,12 @@ fn read_grants_permit_module_reads_never_writes_and_change_identity_only_when_pr
         other.get(&history, &1),
         Err(ModuleActionStateReadError::ForeignOwner { .. })
     ));
-    // The grant never reaches the write gate.
+    // Market's own transaction may read the granted family...
+    let mut txn = store.transaction(&market)?;
+    assert_eq!(txn.get(&history, &1)?, Some(&42));
+    assert!(!txn.family_is_empty(&history)?);
+    drop(txn);
+    // ...but the grant never reaches the write gate.
     let mut txn = store.transaction(&market)?;
     assert!(matches!(
         txn.insert(&history, &2, 7),
