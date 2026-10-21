@@ -394,9 +394,12 @@ mod tests {
             "the kitty frame scaled into 110 by 38 cells: {text:?}"
         );
         assert!(text.ends_with("\x1b[?2026l"));
-        // The same picture is not sent twice.
-        let again = String::from_utf8_lossy(&sess.paint()).into_owned();
-        assert!(!again.contains("\x1b_Ga=T"), "{again:?}");
+        // The same picture is not sent twice — and an idle tick writes NOTHING,
+        // not even a HUD cell: a counter that moved every 50 ms would be twenty
+        // small writes a second into a client that may not be reading.
+        sess.pixel_tick();
+        let again = sess.paint();
+        assert!(again.is_empty(), "{:?}", String::from_utf8_lossy(&again));
         // A turn, a tick with time on the clock, a new picture.
         sess.feed_input(b"\x1b[C");
         std::thread::sleep(std::time::Duration::from_millis(80));
