@@ -272,13 +272,14 @@ impl PixelView {
         if let Some((_, map)) = &self.map {
             render(&mut self.frame, map, &cam, &sprites);
         }
-        self.stats.render_us = t0.elapsed().as_micros();
+        let render_us = t0.elapsed().as_micros();
 
         let key = (self.frame.hash(), c, r);
         if self.last_sent == Some(key) {
             self.stats.skipped += 1;
             return Vec::new();
         }
+        self.stats.render_us = render_us;
         let t1 = Instant::now();
         let bytes = png::encode(&self.frame);
         self.stats.encode_us = t1.elapsed().as_micros();
@@ -326,8 +327,13 @@ impl PixelView {
             Probe::Unsupported => "no kitty graphics",
         };
         let s = self.stats;
+        // The skipped-tick counter is NOT printed: a line that changes every
+        // 50 ms would make the text frame repaint on every tick the picture
+        // did not, which is twenty small writes a second for nothing (and a
+        // slow client's SSH window fills up on them). Everything printed here
+        // changes only when a frame is sent or a key is pressed.
         let top = format!(
-            "PIXEL VIEW  camera {camera:03}° (sim {:03}° {:+}°)  {turning}  |  {probe}  render {:.1} ms  encode {:.1} ms  png {} B  wire {} B  sent {}  skipped {}",
+            "PIXEL VIEW  camera {camera:03}° (sim {:03}° {:+}°)  {turning}  |  {probe}  render {:.1} ms  encode {:.1} ms  png {} B  wire {} B  sent {}",
             heading / 1_000,
             self.offset_mdeg() / 1_000,
             s.render_us as f64 / 1000.0,
@@ -335,7 +341,6 @@ impl PixelView {
             s.png_bytes,
             s.wire_bytes,
             s.sent,
-            s.skipped,
         );
         let bottom = if cockpit.is_some() {
             "←/a and →/d: toggle a turn   space: hold   c: recentre   Esc/q: close   ^]: detach"
