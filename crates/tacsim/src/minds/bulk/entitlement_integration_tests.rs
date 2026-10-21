@@ -474,6 +474,7 @@ fn account_fences(
 ) -> TestResult {
     for after_prepare in [false, true] {
         let mut world = PlayerWorld::boot_entitlements(f, saved)?;
+        eprintln!("M7_STORY_DIAG {} god_room={:?} room={:?}", format!("fence {id} after_prepare={after_prepare}"), world.engine.world.get(GOD).and_then(|o| o.location), ROOM); // TEMP M7 diag
         let before = balances(&world)?;
         let original_disk = disk(&world);
         let refused = if after_prepare {
@@ -553,6 +554,7 @@ fn transactions(
         json!({"quote":token(FIRST+3)}),
     )?;
     // E4 and typed images remain unchanged before the actual owner install.
+    eprintln!("M7_STORY_DIAG {} god_room={:?} room={:?}", "main purchase", world.engine.world.get(GOD).and_then(|o| o.location), ROOM); // TEMP M7 diag
     let (prepared, _) = prepare(
         &mut world,
         "market",
