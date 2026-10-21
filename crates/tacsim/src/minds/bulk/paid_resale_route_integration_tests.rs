@@ -330,6 +330,9 @@ fn land(w: &mut PlayerWorld, value: Box<Prepared>) -> TestResult {
         .registry
         .server_guard_set_builder(mush_core::RevisionSet::default())?
         .finish()?;
+    // The host's persistence pass drains ordinary world dirt (moves, logins,
+    // commands) before a staged action, as the other fixtures do.
+    let _ = w.engine.world.take_dirty();
     w.engine
         .stage_authoritative_action(prepared, guards, bundle)?;
     let staged = w.engine.take_staged_action()?.ok_or("actual custody")?;
