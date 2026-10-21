@@ -43,7 +43,9 @@ fn paid(w: &PlayerWorld, id: LicenceId, generation: u64) -> TestResult<PaidTermR
     let mut all = rows(&disk(w), "roll", "roll_mind_paid_term")
         .into_iter()
         .filter(|r| {
-            r.get("licence") == Some(&json!(id)) && r.get("generation") == Some(&json!(generation))
+            // A term generation is stored as its canonical decimal string.
+            r.get("licence") == Some(&json!(id))
+                && r.get("generation") == Some(&json!(generation.to_string()))
         });
     let value = all.next().ok_or("actual generation")?;
     assert!(all.next().is_none());
