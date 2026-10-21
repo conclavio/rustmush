@@ -28,6 +28,13 @@ use mush_economy::{
     },
 };
 use std::sync::{Arc, OnceLock};
+// TEMP M7 diag: name the swallowing site behind M7_CONDUCT_DIAG.
+fn invalid_at(e: impl std::fmt::Display, line: u32) -> PublicationError {
+    if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+        eprintln!("M7_CONDUCT_DIAG {}:{line}: {e}", file!());
+    }
+    invalid(e)
+}
 fn invalid(_: impl std::fmt::Display) -> PublicationError {
     PublicationError::Mismatch
 }
@@ -106,13 +113,13 @@ impl RenewalWriter {
         let economy = ctx
             .state::<EconomyStore>()
             .ok_or(PublicationError::Unavailable)?;
-        let actual = economy.house_renewal_audit().map_err(invalid)?;
-        super::history::verify(row, &actual.get(operation).map_err(invalid)?)?;
+        let actual = economy.house_renewal_audit().map_err(|e| invalid_at(e, line!()))?;
+        super::history::verify(row, &actual.get(operation).map_err(|e| invalid_at(e, line!()))?)?;
         let roll = ctx
             .state::<crate::RollStore>()
             .ok_or(PublicationError::Unavailable)?;
         for root in super::audit::required(row)? {
-            roll.check_required_root(&root).map_err(invalid)?;
+            roll.check_required_root(&root).map_err(|e| invalid_at(e, line!()))?;
         }
         Ok(row.clone())
     }
@@ -126,7 +133,7 @@ impl RenewalWriter {
         ctx.state::<crate::RollStore>()
             .ok_or(PublicationError::Unavailable)?
             .commerce_ready()
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         self.0.get().ok_or(PublicationError::Unavailable)
     }
     pub(crate) fn install(
@@ -276,15 +283,15 @@ impl RegisteredRenewalWriter {
         let facts = ctx
             .read_owner_preimage(txn, &self.reader, RenewalRequest::own(licence))
             .and_then(|v| v.into_facts())
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         if let Some(policy) = &self.registration.1 {
             policy.check(
-                ctx.world().map_err(invalid)?,
+                ctx.world().map_err(|e| invalid_at(e, line!()))?,
                 facts.sale().issuer(),
                 facts.binding().holder(),
             )?;
         }
-        let account = ctx.personal_account().map_err(invalid)?;
+        let account = ctx.personal_account().map_err(|e| invalid_at(e, line!()))?;
         if account.requester() != facts.binding().holder() {
             return Err(PublicationError::Mismatch);
         }
@@ -317,19 +324,19 @@ impl RegisteredRenewalWriter {
         let f = &self.registration()?.families;
         let row = txn
             .get(&f.house_renewal_operations, &operation.to_hex())
-            .map_err(invalid)?
+            .map_err(|e| invalid_at(e, line!()))?
             .cloned()
             .ok_or(PublicationError::Missing)?;
         if row.operation() != operation {
             return Err(PublicationError::Mismatch);
         }
-        let world = ctx.world().map_err(invalid)?;
+        let world = ctx.world().map_err(|e| invalid_at(e, line!()))?;
         let actual = world
             .module_state::<EconomyStore>()
             .ok_or(PublicationError::Unavailable)?
             .house_renewal_audit()
-            .map_err(invalid)?;
-        super::history::verify(&row, &actual.get(operation).map_err(invalid)?)?;
+            .map_err(|e| invalid_at(e, line!()))?;
+        super::history::verify(&row, &actual.get(operation).map_err(|e| invalid_at(e, line!()))?)?;
         Ok(row)
     }
     fn predecessor(
@@ -340,18 +347,18 @@ impl RegisteredRenewalWriter {
         let f = &self.registration()?.families;
         let licence = txn
             .get(&f.paid_licences, &binding.licence.key())
-            .map_err(invalid)?
+            .map_err(|e| invalid_at(e, line!()))?
             .cloned()
             .ok_or(PublicationError::Missing)?;
         let key = format!("{}/{}", binding.licence.key(), binding.predecessor.key());
         let term = txn
             .get(&f.paid_terms, &key)
-            .map_err(invalid)?
+            .map_err(|e| invalid_at(e, line!()))?
             .cloned()
             .ok_or(PublicationError::Missing)?;
         let economics = txn
             .get(&f.house_economics, &key)
-            .map_err(invalid)?
+            .map_err(|e| invalid_at(e, line!()))?
             .ok_or(PublicationError::Missing)?;
         term.matches_current(&licence)?;
         binding.check_predecessor(&licence, &term, economics)?;
@@ -364,12 +371,12 @@ impl RegisteredRenewalWriter {
     ) -> Result<(), PublicationError> {
         let f = &self.registration()?.families;
         let key = format!("{}/{}", binding.licence.key(), binding.next.key());
-        if txn.get(&f.paid_terms, &key).map_err(invalid)?.is_some()
+        if txn.get(&f.paid_terms, &key).map_err(|e| invalid_at(e, line!()))?.is_some()
             || txn
                 .get(&f.house_economics, &key)
-                .map_err(invalid)?
+                .map_err(|e| invalid_at(e, line!()))?
                 .is_some()
-            || txn.get(&f.term_economics, &key).map_err(invalid)?.is_some()
+            || txn.get(&f.term_economics, &key).map_err(|e| invalid_at(e, line!()))?.is_some()
         {
             return Err(PublicationError::Mismatch);
         }
@@ -423,7 +430,7 @@ impl RegisteredRenewalWriter {
             || output.action() != &self.action
             || output.closed().is_some()
             || output.service_closed().is_some()
-            || output.offer_digest() != offer.digest().map_err(invalid)?
+            || output.offer_digest() != offer.digest().map_err(|e| invalid_at(e, line!()))?
         {
             return Err(PublicationError::Mismatch);
         }
@@ -446,14 +453,14 @@ impl RegisteredRenewalWriter {
         let f = &self.registration()?.families;
         if txn
             .get(&f.house_renewal_operations, &row.key())
-            .map_err(invalid)?
+            .map_err(|e| invalid_at(e, line!()))?
             .is_some()
         {
             return Err(PublicationError::Mismatch);
         }
         let head = txn
             .get(&f.house_renewal_heads, &licence.key())
-            .map_err(invalid)?
+            .map_err(|e| invalid_at(e, line!()))?
             .cloned();
         let previous = head
             .as_ref()
@@ -479,17 +486,17 @@ impl RegisteredRenewalWriter {
             self.registration.1.clone(),
         )?;
         txn.insert(&f.house_renewal_operations, &row.key(), row.clone())
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         if head.is_some() {
             txn.replace(&f.house_renewal_heads, &next.key(), next.clone())
-                .map_err(invalid)?;
+                .map_err(|e| invalid_at(e, line!()))?;
         } else {
             txn.insert(&f.house_renewal_heads, &next.key(), next.clone())
-                .map_err(invalid)?;
+                .map_err(|e| invalid_at(e, line!()))?;
         }
         self.readback(txn, &row, &next)?;
         ctx.prepare_owner(&self.roots, RootRequest::HouseRenewal(Box::new(roots)))
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         Ok(row)
     }
     pub fn fund(
@@ -656,7 +663,7 @@ impl RegisteredRenewalWriter {
         let old = RenewalHeadV1::for_operation(before)?;
         if txn
             .get(&f.house_renewal_heads, &old.key())
-            .map_err(invalid)?
+            .map_err(|e| invalid_at(e, line!()))?
             != Some(&old)
         {
             return Err(PublicationError::Mismatch);
@@ -683,34 +690,34 @@ impl RegisteredRenewalWriter {
                 &economics,
             )?;
             txn.replace(&f.paid_licences, &licence.key(), licence.clone())
-                .map_err(invalid)?;
+                .map_err(|e| invalid_at(e, line!()))?;
             txn.insert(&f.paid_terms, &term.key(), term.clone())
-                .map_err(invalid)?;
+                .map_err(|e| invalid_at(e, line!()))?;
             txn.insert(&f.house_economics, &economics.key(), economics.clone())
-                .map_err(invalid)?;
-            if txn.get(&f.paid_licences, &licence.key()).map_err(invalid)? != Some(&licence)
-                || txn.get(&f.paid_terms, &term.key()).map_err(invalid)? != Some(&term)
+                .map_err(|e| invalid_at(e, line!()))?;
+            if txn.get(&f.paid_licences, &licence.key()).map_err(|e| invalid_at(e, line!()))? != Some(&licence)
+                || txn.get(&f.paid_terms, &term.key()).map_err(|e| invalid_at(e, line!()))? != Some(&term)
                 || txn
                     .get(&f.house_economics, &economics.key())
-                    .map_err(invalid)?
+                    .map_err(|e| invalid_at(e, line!()))?
                     != Some(&economics)
             {
                 return Err(PublicationError::Mismatch);
             }
         }
         txn.replace(&f.house_renewal_operations, &before.key(), after.clone())
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         // Fund retains the reservation and exact head without a third typed
         // mutation; core permits only the two paired operation progress rows.
         if transition != Publication::Ordinary(Transition::Fund) {
             txn.replace(&f.house_renewal_heads, &next.key(), next.clone())
-                .map_err(invalid)?;
+                .map_err(|e| invalid_at(e, line!()))?;
         } else if next != old {
             return Err(PublicationError::Mismatch);
         }
         self.readback(txn, &after, &next)?;
         ctx.prepare_owner(&self.roots, RootRequest::HouseRenewal(Box::new(roots)))
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         Ok(after)
     }
     fn readback(
@@ -722,11 +729,11 @@ impl RegisteredRenewalWriter {
         let f = &self.registration()?.families;
         if txn
             .get(&f.house_renewal_operations, &row.key())
-            .map_err(invalid)?
+            .map_err(|e| invalid_at(e, line!()))?
             != Some(row)
             || txn
                 .get(&f.house_renewal_heads, &head.key())
-                .map_err(invalid)?
+                .map_err(|e| invalid_at(e, line!()))?
                 != Some(head)
         {
             return Err(PublicationError::Mismatch);

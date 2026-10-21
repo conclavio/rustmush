@@ -51,7 +51,7 @@ pub(super) fn decode(kind: Transition, value: &Value) -> Result<Request, String>
             let r: Draft = serde_json::from_value(value.clone()).map_err(bad)?;
             match (r.licence, r.previous_operation) {
                 (Some(id), None) if id <= i64::MAX as u64 => {
-                    Ok(Request::Draft(LicenceId::new(id).map_err(invalid)?))
+                    Ok(Request::Draft(LicenceId::new(id).map_err(|e| invalid_at(e, line!()))?))
                 }
                 (None, Some(id)) => Ok(Request::Retry(id)),
                 _ => Err(super::records::invalid()),
@@ -66,6 +66,13 @@ pub(super) fn decode(kind: Transition, value: &Value) -> Result<Request, String>
             Ok(Request::Operation(r.operation))
         }
     }
+}
+// TEMP M7 diag: name the swallowing site behind M7_CONDUCT_DIAG.
+fn invalid_at(e: impl std::fmt::Display, line: u32) -> String {
+    if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+        eprintln!("M7_CONDUCT_DIAG {}:{line}: {e}", file!());
+    }
+    invalid(e)
 }
 fn invalid(_: impl std::fmt::Display) -> String {
     super::records::invalid()
@@ -84,7 +91,7 @@ pub(super) fn require_due(
     now: &mush_core::ClockStamp,
     end: mush_roll::commerce::WorldIcSeconds,
 ) -> Result<(), String> {
-    let now = mush_roll::commerce::WorldIcSeconds::from_stamp(now).map_err(invalid)?;
+    let now = mush_roll::commerce::WorldIcSeconds::from_stamp(now).map_err(|e| invalid_at(e, line!()))?;
     if now < end {
         return Err(super::records::invalid());
     }
@@ -97,9 +104,9 @@ impl Provider {
         txn: &mut ActionTxn<'_>,
         licence: LicenceId,
     ) -> Result<mush_roll::commerce::house_renewal::writer::PreparedRenewal, String> {
-        let value = self.writer.observe(ctx, txn, licence).map_err(invalid)?;
+        let value = self.writer.observe(ctx, txn, licence).map_err(|e| invalid_at(e, line!()))?;
         require_due(
-            &ctx.world().map_err(invalid)?.world_ic_now(),
+            &ctx.world().map_err(|e| invalid_at(e, line!()))?.world_ic_now(),
             value.facts().predecessor_term_end(),
         )?;
         if !self
@@ -108,7 +115,7 @@ impl Provider {
         {
             return Err(super::records::invalid());
         }
-        self.writer.preflight(ctx, txn, &value).map_err(invalid)?;
+        self.writer.preflight(ctx, txn, &value).map_err(|e| invalid_at(e, line!()))?;
         Ok(value)
     }
     fn request(&self, inv: &ActionInvocation) -> Result<Request, String> {
@@ -136,7 +143,7 @@ impl Provider {
     > {
         let row = txn
             .get(&self.families.operations, &operation)
-            .map_err(invalid)?
+            .map_err(|e| invalid_at(e, line!()))?
             .cloned()
             .ok_or_else(super::records::invalid)?;
         row.validate()?;
@@ -146,11 +153,11 @@ impl Provider {
         let roll = self
             .writer
             .operation(ctx, txn, operation)
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         row.matches_roll(&roll)?;
         if txn
             .get(&self.families.receipts, &operation)
-            .map_err(invalid)?
+            .map_err(|e| invalid_at(e, line!()))?
             .is_some()
             != !row.state().pending()
         {
@@ -158,7 +165,7 @@ impl Provider {
         }
         if !row.state().pending() {
             txn.get(&self.families.receipts, &operation)
-                .map_err(invalid)?
+                .map_err(|e| invalid_at(e, line!()))?
                 .ok_or_else(super::records::invalid)?
                 .matches_operation(&row)?;
         }
@@ -185,7 +192,7 @@ impl Provider {
             self.outcome.clone(),
             serde_json::json!({"kind":kind,"operation":operation,"commit":commit}),
         )
-        .map_err(invalid)?;
+        .map_err(|e| invalid_at(e, line!()))?;
         Ok(AuthoritativeActionOutput::new(outcome)
             .with_definitions(vec![self.outcome.clone(), self.config.manifest.clone()])
             .with_eligible_witnesses(vec![inv.principal().clone()]))
@@ -229,7 +236,7 @@ impl Provider {
         };
         let offer = super::offer::build(
             &self.config,
-            ctx.world().map_err(invalid)?,
+            ctx.world().map_err(|e| invalid_at(e, line!()))?,
             observed.facts(),
         )?;
         let request = match attempt {
@@ -258,18 +265,18 @@ impl Provider {
         let output = ctx
             .prepare_owner(&self.economy, request)
             .and_then(|o| o.house_renewal_offer())
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         let roll = self
             .writer
             .draft(ctx, txn, &offer, attempt, &observed, &output)
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         let row = MindRenewalOperationV1::captured(&self.config, offer, &roll)?;
         super::capacity::check(&self.families, &row)?;
         txn.insert(&self.families.operations, &commit, row.clone())
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         self.readback(txn, &row)?;
         ctx.reserve_house_mind_renewal_completion(txn)
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         Ok((commit, "drafted"))
     }
     #[inline(never)]
@@ -310,7 +317,7 @@ impl Provider {
             let output = ctx
                 .prepare_owner(&self.economy, EconomyRequest::HouseRenewalFunding(money))
                 .and_then(|o| o.house_renewal_funding())
-                .map_err(invalid)?;
+                .map_err(|e| invalid_at(e, line!()))?;
             self.writer
                 .fund(
                     ctx,
@@ -320,7 +327,7 @@ impl Provider {
                     observed.as_ref().ok_or_else(super::records::invalid)?,
                     &output,
                 )
-                .map_err(invalid)?
+                .map_err(|e| invalid_at(e, line!()))?
         } else {
             let request = if self.kind == Transition::Grant {
                 EconomyRequest::HouseRenewalGrant(money)
@@ -330,22 +337,22 @@ impl Provider {
             let output = ctx
                 .prepare_owner(&self.economy, request)
                 .and_then(|o| o.house_renewal_terminal())
-                .map_err(invalid)?;
+                .map_err(|e| invalid_at(e, line!()))?;
             self.writer
                 .terminal(ctx, txn, &roll, before.offer(), observed.as_ref(), &output)
-                .map_err(invalid)?
+                .map_err(|e| invalid_at(e, line!()))?
         };
         let after = before.progressed(&after_roll)?;
         txn.replace(&self.families.operations, &operation, after.clone())
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         if self.kind != Transition::Fund {
             let receipt = after.receipt()?;
             txn.insert(&self.families.receipts, &operation, receipt)
-                .map_err(invalid)?;
+                .map_err(|e| invalid_at(e, line!()))?;
         }
         self.readback(txn, &after)?;
         ctx.advance_house_mind_renewal_completion(txn, operation)
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         Ok((
             operation,
             match self.kind {
@@ -374,19 +381,19 @@ impl Provider {
                 EconomyRequest::HouseRenewalClose { operation, reason },
             )
             .and_then(|o| o.house_renewal_offer())
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         let after_roll = self
             .writer
             .close(ctx, txn, &roll, &output)
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         let after = before.progressed(&after_roll)?;
         txn.replace(&self.families.operations, &operation, after.clone())
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         txn.insert(&self.families.receipts, &operation, after.receipt()?)
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         self.readback(txn, &after)?;
         ctx.advance_house_mind_renewal_completion(txn, operation)
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         Ok((operation, "closed"))
     }
     fn readback(
@@ -396,14 +403,14 @@ impl Provider {
     ) -> Result<(), String> {
         if txn
             .get(&self.families.operations, &row.operation())
-            .map_err(invalid)?
+            .map_err(|e| invalid_at(e, line!()))?
             != Some(row)
         {
             return Err(super::records::invalid());
         }
         let receipt = txn
             .get(&self.families.receipts, &row.operation())
-            .map_err(invalid)?;
+            .map_err(|e| invalid_at(e, line!()))?;
         if row.state().pending() {
             if receipt.is_some() {
                 return Err(super::records::invalid());
