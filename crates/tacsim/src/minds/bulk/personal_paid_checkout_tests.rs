@@ -804,10 +804,6 @@ impl PlayerWorld {
                 .map(|id| id.get()),
             Some(2)
         );
-        assert_eq!(
-            match_::lobby::lead_character_of(&self.engine.world, crate::arena::Team::Red),
-            Some(BUYER)
-        );
         assert_eq!(self.state()?, MatchState::Selection);
         Ok(())
     }
@@ -818,6 +814,11 @@ impl PlayerWorld {
             MatchState::Boarding,
             "{}",
             Self::private_text(&said, BUYER)
+        );
+        // The lead character is read during Boarding (`lead_character_of`).
+        assert_eq!(
+            match_::lobby::lead_character_of(&self.engine.world, crate::arena::Team::Red),
+            Some(BUYER)
         );
         Ok(())
     }
