@@ -2031,10 +2031,12 @@ fn spawn_output_pump(
         // every TUI connection and costs a lock and a bool when the view is
         // closed; a spike's price, noted in its NOTES. The wait is read from
         // the view each time round (20 Hz, or ~1 ms while `u` uncaps it for
-        // the load experiment); a sleep, not an interval, so the view can
-        // change it. An event or repaint that lands first restarts the wait,
-        // which only matters under a flood of events, and the arena's are a
-        // pulse apart.
+        // the load experiment); a deadline, not an interval, so the view can
+        // change it, and a deadline rather than a plain sleep so the render
+        // and the write do not stretch the period (an 8 ms frame on a 50 ms
+        // sleep measured 17 Hz on dev2). A tick that falls behind resyncs to
+        // now instead of bursting.
+        let mut next_frame = tokio::time::Instant::now() + crate::tui::pixel::FRAME_INTERVAL;
 
         enum Wake {
             Event(Option<Arc<OutputEvent>>),
@@ -2056,8 +2058,11 @@ fn spawn_output_pump(
                 ev = rx.recv() => Wake::Event(ev),
                 () = repaint.notified() => Wake::Repaint,
                 _ = who_timer.tick() => Wake::Tick,
-                () = tokio::time::sleep(frame_wait) => Wake::Frame,
+                () = tokio::time::sleep_until(next_frame) => Wake::Frame,
             };
+            if matches!(wake, Wake::Frame) {
+                next_frame = std::cmp::max(next_frame + frame_wait, tokio::time::Instant::now());
+            }
 
             // WHO refresh: submit a read-only query while a TUI is active
             // (design M15 D5 — never types the WHO command, never stamps
