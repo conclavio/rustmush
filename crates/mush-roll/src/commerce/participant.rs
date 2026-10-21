@@ -1453,38 +1453,49 @@ impl OwnerParticipant for RootParticipant {
             && row.key.kind == ReferenceKind::Commercial
             && row.key.key() == key.as_str()
             && row.validate().is_ok()
-            && matches!(
-                RootAnchor::parse(&row.key.record),
-                Ok(RootAnchor::Filed(_)
-                    | RootAnchor::Term(_, _)
-                    | RootAnchor::OwnerParent(_, _)
-                    | RootAnchor::Operation(_)
-                    | RootAnchor::UpdateOperation(_)
-                    | RootAnchor::PaidOperation(_)
-                    | RootAnchor::PaidResaleFunding(_, _)
-                    | RootAnchor::PaidResaleTerminal(_, _)
-                    | RootAnchor::RenewalOperation(_)
-                    | RootAnchor::HouseRenewalOperation(_)
-                    | RootAnchor::Coverage(_, _)
-                    | RootAnchor::CoveragePublication(_, _, _)
-                    | RootAnchor::DraftRetirement(_, _)
-                    | RootAnchor::CharterPendingOffer(_, _)
-                    | RootAnchor::CharterPendingFunding(_, _)
-                    | RootAnchor::CharterPendingTerminal(_, _)
-                    | RootAnchor::CharterTransferOffer(_, _)
-                    | RootAnchor::CharterTransfer(_, _, _, _)
-                    | RootAnchor::AuthorWithdrawal(_, _)
-                    | RootAnchor::RegistryRecall(_, _)
-                    | RootAnchor::RegistryRevocation(_, _)
-                    | RootAnchor::OwnerQualification(_, _)
-                    | RootAnchor::OwnerAttestation(_, _)
-                    | RootAnchor::OwnerAttestationParent(_, _)
-                    | RootAnchor::ConductJob(_, _)
-                    | RootAnchor::RatingJob(_)
-                    | RootAnchor::RatingPending(_)
-                    | RootAnchor::Rating { .. })
-            )
+            && RootAnchor::parse(&row.key.record).is_ok_and(|anchor| retains(&anchor))
             && serde_json::to_value(&row).is_ok_and(|canonical| canonical == *value)
+    }
+}
+
+/// Every commercial anchor the root participant may write. Exhaustive with no
+/// wildcard: a new `RootAnchor` variant does not compile until someone decides
+/// here whether this participant retains it (Conduct jobs, IC claims and term
+/// lapses were once added to the enum and missed from the list, and every
+/// genuine admission that retained one was refused as a foreign write).
+fn retains(anchor: &RootAnchor) -> bool {
+    match anchor {
+        RootAnchor::parse(&row.key.record)
+        | RootAnchor::Filed(_)
+        | RootAnchor::Term(_, _)
+        | RootAnchor::OwnerParent(_, _)
+        | RootAnchor::Operation(_)
+        | RootAnchor::UpdateOperation(_)
+        | RootAnchor::PaidOperation(_)
+        | RootAnchor::PaidResaleFunding(_, _)
+        | RootAnchor::PaidResaleTerminal(_, _)
+        | RootAnchor::RenewalOperation(_)
+        | RootAnchor::HouseRenewalOperation(_)
+        | RootAnchor::Coverage(_, _)
+        | RootAnchor::CoveragePublication(_, _, _)
+        | RootAnchor::DraftRetirement(_, _)
+        | RootAnchor::CharterPendingOffer(_, _)
+        | RootAnchor::CharterPendingFunding(_, _)
+        | RootAnchor::CharterPendingTerminal(_, _)
+        | RootAnchor::CharterTransferOffer(_, _)
+        | RootAnchor::CharterTransfer(_, _, _, _)
+        | RootAnchor::AuthorWithdrawal(_, _)
+        | RootAnchor::RegistryRecall(_, _)
+        | RootAnchor::RegistryRevocation(_, _)
+        | RootAnchor::OwnerQualification(_, _)
+        | RootAnchor::OwnerAttestation(_, _)
+        | RootAnchor::OwnerAttestationParent(_, _)
+        | RootAnchor::ConductJob(_, _)
+        | RootAnchor::IcClaim(_, _)
+        | RootAnchor::TermLapse(_, _, _, _)
+        | RootAnchor::RatingJob(_)
+        | RootAnchor::RatingPending(_)
+        | RootAnchor::Rating { .. } => true,
     }
 }
 
