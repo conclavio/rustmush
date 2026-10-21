@@ -539,12 +539,14 @@ impl RegisteredEntitlementWriter {
             && &self.action != r.action(facts.protocol(), Transition::Grant))
             || !facts.materialization().creates().is_empty()
         {
+            if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG observe_purchase action_ok={} creates={}", !(&self.action != r.action(facts.protocol(), Transition::Fund) && &self.action != r.action(facts.protocol(), Transition::Grant)), facts.materialization().creates().len()); } // TEMP M7 diag
             return Err(PublicationError::Mismatch);
         }
         let pair = ctx
             .distinct_personal_accounts(facts.seller())
             .map_err(invalid)?;
         if pair.requester() != facts.requester() || pair.other() != facts.seller() {
+            if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG observe_purchase pair requester {:?} vs facts {:?}; other {:?} vs seller {:?}", pair.requester(), facts.requester(), pair.other(), facts.seller()); } // TEMP M7 diag
             return Err(PublicationError::Mismatch);
         }
         Ok(PreparedEntitlementSale {
