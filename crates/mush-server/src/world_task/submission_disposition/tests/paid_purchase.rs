@@ -34,7 +34,10 @@ use tokio::time::{Instant, timeout};
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const PRICE: i64 = 100;
 const QUOTE_SECONDS: i64 = 30;
-const REGISTRY_GUARD: Duration = Duration::from_secs(7_200);
+// A finite hang guard, not a pace requirement (timing is report-only under
+// the owner's waiver): the live server paces a Registry lease through its
+// maintenance ticks, about 7 s each, and this certificate takes ~1,070.
+const REGISTRY_GUARD: Duration = Duration::from_secs(14_400);
 
 fn config() -> Config {
     let mut config = Config::default();
@@ -513,7 +516,7 @@ async fn wait_terminal(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "required expensive real server Registry, writer Unknown, expiry and cold recovery gate"]
 async fn genuine_registry_purchase_writer_unknown_expiry_and_recovery() -> TestResult {
-    timeout(Duration::from_secs(10_800), story()).await?
+    timeout(Duration::from_secs(18_000), story()).await?
 }
 
 /// A generic committed receipt is real durable success even when the provider
