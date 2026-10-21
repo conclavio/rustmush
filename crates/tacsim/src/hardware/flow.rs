@@ -89,8 +89,20 @@ fn modules(
 }
 fn command(w: &mut TestWorld, actor: ObjId, line: &str) -> Result {
     let out = w.run(actor, line);
-    if out.iter().any(|(_,e)|matches!(e,mush_proto::OutputEvent::Sys(t) if t.spans().iter().any(|s|s.tag.as_deref()==Some("error")))) {
-        return Err("actual hardware setup command refused".into());
+    let refusals: Vec<String> = out
+        .iter()
+        .filter_map(|(_, e)| match e {
+            mush_proto::OutputEvent::Sys(t)
+                if t.spans().iter().any(|s| s.tag.as_deref() == Some("error")) =>
+            {
+                Some(t.to_plain_text())
+            }
+            _ => None,
+        })
+        .collect();
+    if !refusals.is_empty() {
+        let verb = line.split_whitespace().next().unwrap_or_default();
+        return Err(format!("actual hardware setup command refused: {verb}: {}", refusals.join(" | ")).into());
     }
     Ok(())
 }
