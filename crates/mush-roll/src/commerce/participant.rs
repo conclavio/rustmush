@@ -1465,8 +1465,7 @@ impl OwnerParticipant for RootParticipant {
 /// genuine admission that retained one was refused as a foreign write).
 fn retains(anchor: &RootAnchor) -> bool {
     match anchor {
-        RootAnchor::parse(&row.key.record)
-        | RootAnchor::Filed(_)
+        RootAnchor::Filed(_)
         | RootAnchor::Term(_, _)
         | RootAnchor::OwnerParent(_, _)
         | RootAnchor::Operation(_)
