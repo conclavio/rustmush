@@ -557,7 +557,12 @@ pub(super) fn read<'a, R: Record>(
 ) -> Result<&'a R, PublicationError> {
     let row = ctx
         .action_state(handle, &key)
-        .map_err(|_| PublicationError::Unavailable)?
+        .map_err(|e| {
+            if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+                eprintln!("M7_CONDUCT_DIAG commerce read {} module={:?}: {e}", R::FAMILY, ctx.module); // TEMP M7 diag
+            }
+            PublicationError::Unavailable
+        })?
         .ok_or(PublicationError::Missing)?;
     row.validate()?;
     if row.key() != key {
@@ -579,7 +584,12 @@ pub(super) fn scan<R: Record>(
     loop {
         let page = ctx
             .scan_action_state(handle, after.as_deref(), PAGE)
-            .map_err(|_| PublicationError::Unavailable)?;
+            .map_err(|e| {
+                if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+                    eprintln!("M7_CONDUCT_DIAG commerce scan {} module={:?}: {e}", R::FAMILY, ctx.module); // TEMP M7 diag
+                }
+                PublicationError::Unavailable
+            })?;
         for entry in page.entries() {
             count = count.checked_add(1).ok_or(PublicationError::Capacity)?;
             if count > MAX_RECORDS as u64 {

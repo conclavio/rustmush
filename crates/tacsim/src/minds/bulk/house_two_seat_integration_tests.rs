@@ -102,6 +102,12 @@ fn act(
     land(w, prepared)
 }
 fn paid_term(w: &IcWorld, generation: u64) -> TestResult<PaidTermRecord> {
+    if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+        // TEMP M7 diag
+        let all = rows(&w.disk, "roll", TERMS);
+        let gens: Vec<_> = all.iter().map(|r| (r["generation"].clone(), r["licence"].clone())).collect();
+        eprintln!("M7_HOUSE_DIAG paid_term want={generation} rows={} (generation, licence)={gens:?}", all.len());
+    }
     let value = one(rows(&w.disk, "roll", TERMS)
         .into_iter()
         .filter(|r| r["generation"] == json!(generation))
