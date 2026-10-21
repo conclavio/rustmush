@@ -15,6 +15,7 @@
 //! | `tacsim:orders:{hull}` | per-hull sailing plan (doc 18 cut IC11: `crate::port::orders`) — the queued orders, their log and the step in flight | **skipped loudly, and the key stays claimed**: that hull's `+ship/orders` and `+ship/order` refuse (its plan cannot be read), the order arm skips it and pages once a boot; staff repair the document by editing it (a deleted one restarts its order ids only past the hull's recent tickets) |
 //! | `tacsim:tvlease:{lease}` | per-lease rig record (doc 20 cut SM.3a: `crate::port::tv`) — a terrain vehicle Occator leased into a Dray-P's bay, its slot, its deposit hold and its term | **skipped loudly, and the key stays claimed**: the record reads unreadable, which bars only its own lease — its pilot's `+tv` reads dark and the recall holds the hull for staff; staff repair the document |
 //! | `tacsim:tv:{tv}` | per-rig projection (doc 20 cut SM.3b: `crate::surface::excursion::TvRec`) — where a rig is, its open excursion, the act in flight, what the tick applied and told, a sixteen-line log | **skipped loudly, read unreadable, and it bars nothing**: the projection decides nothing (every decision reads the typed `tacsim.excursion` family), and the `tacsim.surface` tick's next write replaces it |
+//! | `tacsim:tvpref:{character}` | per-character `+tv` preferences (doc 20 cut SM.4a: `crate::port::tv::TvPrefs`) — whether the character hears other rigs' soundings | **dropped loudly**: the character reads as not quiet (they hear soundings again) and the key bars nothing; the next `+tv/quiet` rewrites it |
 //! | `tacsim:licence:{account}` | per-gateway-account prospecting licence (doc 20 cut SM.5: `crate::port::licence`) — its holder, entitlement account, expiry, grace and last fee contract | **skipped loudly, and the key still bars the account**: that account's licence reads unreadable, so `+licence/buy` and every licence-gated act (`+tv/lease` now) refuse, and staff repair the document |
 //! | `tacsim:geology` | world pin (doc 20 cut SM.1; Q-20-12) — the geology key's fingerprint | **skipped loudly, and the key still bars a rewrite**: the geology layer reads disabled ("tacsim:geology cannot be read") on the readiness line; staff repair the document, after restoring the key directory |
 //! | `tacsim:meta` | allocators | tolerated field by field, floors re-derived from every **parsed key**, loaded or not (E6b's R8 finding). Losing it costs nothing |
@@ -326,6 +327,11 @@ pub struct TacsimStore {
     /// [`put_tv_rec`]; an unreadable body is [`crate::surface::excursion::TvRecState::Unreadable`]
     /// and bars nothing (the projection decides nothing; the tick's next write replaces it).
     pub(crate) tv_recs: BTreeMap<u32, crate::surface::excursion::TvRecState>,
+    /// **Doc 20 cut SM.4a** (D10) — `tacsim:tvpref:{character}`: each character's `+tv`
+    /// preferences ([`crate::port::tv::TvPrefs`]), keyed by the character's id. Written only by
+    /// `+tv/quiet` through [`put_tv_prefs`]; an unreadable body is logged and read as not quiet
+    /// (it bars nothing, and the next `+tv/quiet` replaces it).
+    pub(crate) tv_prefs: BTreeMap<u32, crate::port::tv::TvPrefs>,
     /// **Doc 20 cut SM.5** (§9.1, D-20-12) — `tacsim:licence:{account}`: each
     /// gateway account's prospecting licence ([`crate::port::licence::Licence`]),
     /// keyed by the immutable account id (one licence an account, the enrolment
@@ -542,6 +548,14 @@ impl TacsimStore {
     #[must_use]
     pub fn tv_rec(&self, tv: ObjId) -> Option<&crate::surface::excursion::TvRecState> {
         self.tv_recs.get(&tv.0)
+    }
+
+    /// **Whether `who` has asked not to hear other rigs' soundings** (doc 20 cut SM.4a; D10):
+    /// their `tacsim:tvpref:` document's `quiet`; absent or unreadable reads `false` (the
+    /// unreadable one was logged at load).
+    #[must_use]
+    pub fn tv_quiet(&self, who: ObjId) -> bool {
+        self.tv_prefs.get(&who.0).is_some_and(|prefs| prefs.quiet)
     }
 
     /// **One hull's sailing plan** (doc 18 cut IC9): absent, readable, or a key
@@ -1732,8 +1746,9 @@ pub(crate) fn put_tv_lease(ctx: &mut Ctx<'_>, record: &crate::port::tv::TvLease)
 /// one whole-document `JsonSet`. Only the `tacsim.surface` tick calls it, in its own outbox
 /// batch beside the placement. The serialize failure is structurally unreachable; if it ever
 /// happened it logs and writes nothing (the projection decides nothing, and the tick's next
-/// write replaces it).
-pub(crate) fn put_tv_rec(ctx: &mut Ctx<'_>, rec: &crate::surface::excursion::TvRec) {
+/// write replaces it). **Returns whether it wrote** (doc 20 cut SM.4a, D24: the tell's heard
+/// lines leave only after the projection that advances `told` is written).
+pub(crate) fn put_tv_rec(ctx: &mut Ctx<'_>, rec: &crate::surface::excursion::TvRec) -> bool {
     let value = match serde_json::to_value(rec) {
         Ok(value) => value,
         Err(error) => {
@@ -1741,7 +1756,7 @@ pub(crate) fn put_tv_rec(ctx: &mut Ctx<'_>, rec: &crate::surface::excursion::TvR
                 tv = rec.tv.0, %error,
                 "tacsim: a rig projection did not serialize; nothing was written"
             );
-            return;
+            return false;
         }
     };
     if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
@@ -1754,6 +1769,35 @@ pub(crate) fn put_tv_rec(ctx: &mut Ctx<'_>, rec: &crate::surface::excursion::TvR
         ctx.out,
         ModuleWrite::JsonSet {
             key: rec.key(),
+            value,
+        },
+    );
+    true
+}
+
+/// **Install a character's `+tv` preferences into RAM and queue their document** (doc 20 cut
+/// SM.4a; D10) — the single write path, [`put_tv_rec`]'s shape: the RAM install, then one
+/// whole-document `JsonSet`, from `+tv/quiet`'s handler (the `Authoritative` bracket, `/lease`'s
+/// precedent). The serialize failure is structurally unreachable; if it ever happened it logs and
+/// writes nothing.
+pub(crate) fn put_tv_prefs(ctx: &mut Ctx<'_>, prefs: &crate::port::tv::TvPrefs) {
+    let value = match serde_json::to_value(prefs) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                character = prefs.character.0, %error,
+                "tacsim: a +tv preference did not serialize; nothing was written"
+            );
+            return;
+        }
+    };
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.tv_prefs.insert(prefs.character.0, prefs.clone());
+    }
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: prefs.key(),
             value,
         },
     );
@@ -2053,6 +2097,16 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                 continue;
             };
             load_tv_lease(&mut store, key, lease, value);
+        } else if key.starts_with(crate::port::tv::TV_PREF_PREFIX) {
+            // Doc 20 cut SM.4a (D10). Before the `tacsim:tv:` arm, though the prefixes differ at
+            // the first character after `tacsim:tv` and neither ever reads the other's keys. A
+            // preference that will not read is logged and dropped: it bars nothing, reads as not
+            // quiet, and the next `+tv/quiet` rewrites it.
+            let Some(character) = crate::port::tv::tv_pref_key_owner(key) else {
+                tracing::warn!(%key, "tacsim: a +tv preference has an unreadable key; skipped");
+                continue;
+            };
+            load_tv_prefs(&mut store, key, character, value);
         } else if key.starts_with(crate::surface::excursion::TV_REC_PREFIX) {
             // Doc 20 cut SM.3b. After the `tacsim:tvlease:` arm, though the prefixes differ at
             // the colon and neither ever reads the other's keys. A projection that will not
@@ -2359,6 +2413,27 @@ fn load_tv_lease(store: &mut TacsimStore, key: &str, lease: u64, value: &serde_j
                 },
             );
         }
+    }
+}
+
+/// One `tacsim:tvpref:{character}` body (doc 20 cut SM.4a): decoded strictly, its schema and
+/// the identity rule (`prefs.character` is its key's) held. Any failure is logged and the
+/// document dropped (absent reads as not quiet).
+fn load_tv_prefs(store: &mut TacsimStore, key: &str, character: ObjId, value: &serde_json::Value) {
+    match serde_json::from_value::<crate::port::tv::TvPrefs>(value.clone()) {
+        Ok(prefs)
+            if prefs.schema == crate::port::tv::TV_PREF_SCHEMA && prefs.character == character =>
+        {
+            store.tv_prefs.insert(character.0, prefs);
+        }
+        Ok(_) => tracing::error!(
+            %key,
+            "tacsim: a +tv preference disagrees with its key or schema; it reads as not quiet"
+        ),
+        Err(error) => tracing::error!(
+            %key, %error,
+            "tacsim: a +tv preference is unreadable; it reads as not quiet"
+        ),
     }
 }
 

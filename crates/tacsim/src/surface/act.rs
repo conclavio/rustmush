@@ -6,10 +6,11 @@
 //! drift:
 //!
 //! - **the world plans** — `launch_plan`,
-//!   `recover_plan`, `dump_plan` and the test world's `probe_plan`: each act's whole
-//!   world-side gate in a fixed order, pure reads of the `World`, used by `+tv`'s preview,
-//!   by its `go` and by the start's offer. **SM.4 prepends `launch_plan`** for the launch its
-//!   first scan, sound or drive from the bay implies (lead ruling 5);
+//!   `recover_plan`, `dump_plan` and, since doc 20 cut SM.4a, `scan_plan` and `sound_plan`:
+//!   each act's whole world-side gate in a fixed order, pure reads of the `World`, used by
+//!   `+tv`'s preview, by its `go` and by the start's offer. **A scan or a sounding from the
+//!   bay prepends `launch_plan`** (the implied launch, SM.4a's lead ruling 2: one act whose
+//!   plan has `from_bay` set, `LAUNCH_S` longer, opening the excursion as a launch does);
 //! - **`tacsim_surface_act`** — every act's **start**, submitted by `+tv/<n> <act> go` as the
 //!   operator. Its offer holds the world and passes server-authored fixed parameters (§6:
 //!   every rig's plans, the battery's **id**, the world's rigs); its prepare writes the rig's
@@ -28,6 +29,14 @@
 //! lease"; SM.3b reads it as the live lessee (`TvLease.pilot`) aboard the settled hull — the
 //! teleoperation from the bridge §4.1 describes — and takes no mush-sim control lease on the
 //! TV (its cab has no station to grant). It applies to every act alike.
+//!
+//! **Doc 20 cut SM.4a** adds the knowing acts on the same two actions (no third): a **scan**
+//! and a **sounding** (loud or quiet; the start's `act` word `scan`, `sound` or `sound_quiet`,
+//! parsed once by `act_of_word`). The start's prepare also reads the operator's chart
+//! (`crate::surface::chart`) for "You learn nothing new here." and the body caps; the finish
+//! writes it — coverage and provenance, stamped at the act's own `due_ic` — and decides the
+//! site-wide heard line's budget. No act reads a licence or a tenure (§8 "rights are per act";
+//! lead ruling 9). The probe kind SM.3b kept for its tests is retired (D15).
 //!
 //! Neither provider ever reads `World::now`: `now` is the offer's IC instant.
 
@@ -49,7 +58,7 @@ use mush_sim::{DomainId, SlotId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::definitions::tools::{BatteryDef, ToolDef};
+use crate::definitions::tools::{BatteryDef, ScannerDef, ToolDef};
 use crate::port::coop::{name_of, port_name};
 use crate::port::def::PortDef;
 use crate::port::families::PortHandles;
@@ -58,12 +67,18 @@ use crate::port::ship::{Berth, HullView, berth_of, hull_view};
 use crate::port::tv::{self, TvLease, TvLeaseStatus};
 use crate::port_tick::port_error;
 use crate::store::TacsimStore;
+use crate::surface::address::{self, cell_on_site, pockets_in_reach};
+use crate::surface::chart::{
+    self, ChartKey, ChartRecord, SitePeek, body_admits, heard_line_due, repeat_refused, scan_adds,
+    sound_adds, write_scan, write_sound,
+};
 use crate::surface::excursion::{
     Act, ActKind, ActParams, ActResult, CapRefused, Charge, DUMP_S, Excursion, ExcursionCounts,
-    ExcursionId, LAUNCH_S, MAX_DUMP_GOODS, Outcome, RECOVER_S, RefusedCode, RigKey, RigRecord,
-    cap_refusal, cells_apart, charge_at, needs_battery, ramp_pose, reserve_check, reserved_total,
-    settle_free, site_cell,
+    ExcursionId, LAUNCH_S, MAX_DUMP_GOODS, Outcome, RECOVER_S, ReadSpan, RefusedCode, RigKey,
+    RigRecord, cap_refusal, cells_apart, charge_at, charge_for_act, needs_battery, ramp_pose,
+    reserve_check, reserved_total, settle_free, settle_spent_out_of_bay, site_cell,
 };
+use crate::surface::reading::Footing;
 
 /// The start's action id (lead ruling 3, "the planner's call"; doc 20 §6 names the mining
 /// start `tacsim_surface_mine` — it becomes `act = mine` of this action in SM.7, the brief's
@@ -78,10 +93,34 @@ pub const SURFACE_DONE_OUTCOME: &str = "tacsim_surface_done_result";
 /// Both actions' idempotency namespace: the start is `tacsim.surface/{tv}/{ordinal}/act`,
 /// the finish `tacsim.surface/{tv}/{ordinal}/done`.
 pub const SURFACE_KEY_PREFIX: &str = "tacsim.surface/";
-/// The most a test-world probe may cost, cu (its parameter's bound).
-pub const MAX_PROBE_CU: i64 = 1_000_000;
-/// The longest a test-world probe may run, IC seconds (its parameter's bound).
-pub const MAX_PROBE_S: i64 = 86_400;
+/// **The start's `act` words** (doc 20 cut SM.4a, D23): the offer's Choice and the plans' keys,
+/// sorted.
+pub const ACT_WIRE_WORDS: [&str; 6] = ["dump", "launch", "recover", "scan", "sound", "sound_quiet"];
+
+/// **The start's `act` parameter** (doc 20 cut SM.4a; the brief's reviewer finding F6, D23):
+/// `launch`, `recover`, `dump`, `scan`, `sound` and `sound_quiet` — the kind and the sounding's
+/// quiet flag. Both the start's `validate_invocation` and its prepare read it, never
+/// `ActKind::from_word`.
+#[must_use]
+pub(crate) fn act_of_word(word: &str) -> Option<(ActKind, bool)> {
+    match word {
+        "sound_quiet" => Some((ActKind::Sound, true)),
+        "launch" | "recover" | "dump" | "scan" | "sound" => {
+            ActKind::from_word(word).map(|kind| (kind, false))
+        }
+        _ => None,
+    }
+}
+
+/// The inverse of [`act_of_word`]: a quiet sounding is `sound_quiet`; the quiet flag means
+/// nothing for any other kind.
+#[must_use]
+pub(crate) fn wire_word(kind: ActKind, quiet: bool) -> &'static str {
+    match (kind, quiet) {
+        (ActKind::Sound, true) => "sound_quiet",
+        (kind, _) => kind.word(),
+    }
+}
 
 /// The start's key: `tacsim.surface/{tv}/{ordinal}/act`.
 #[must_use]
@@ -194,8 +233,7 @@ pub(crate) struct SiteBerth<'w> {
     pub entry: CanonicalId,
     /// The site's name (`port_name`).
     pub name: String,
-    /// The site's port entry definition.
-    #[allow(dead_code)] // SM.4's reader
+    /// The site's port entry definition (`+tv` status reads its site block's tenure).
     pub def: &'w PortDef,
     /// The site's port map.
     pub map: &'w PortMap,
@@ -416,11 +454,34 @@ pub enum Refusal {
         /// The site's name.
         site: String,
     },
+    /// `LEARN_NOTHING` (doc 20 cut SM.4a; §5, D4).
+    NothingNew,
+    /// `CHART_FULL` (doc 20 cut SM.4a; §5's caps, D1, D3).
+    ChartFull {
+        /// The body's display name.
+        body: String,
+    },
+    /// `GROUND_COLD` (doc 20 cut SM.4a; lead ruling 6): the site's ground is not cached yet.
+    GroundCold {
+        /// The site's name.
+        site: String,
+        /// The site's port entry (the command asks for its warm).
+        entry: CanonicalId,
+    },
+    /// `INSTRUMENTS_DARK` (doc 20 cut SM.4a; D16, D25).
+    InstrumentsDark,
+    /// `NO_FOOTING` (doc 20 cut SM.4a; §5): the rig stands where the mast reads nothing.
+    NoFooting {
+        /// The slot.
+        n: u8,
+        /// The terrain's word.
+        terrain: String,
+    },
 }
 
 /// The offer-wire words and the start's messages, in one table (the prepare's
 /// `port_error` needs a `&'static str`).
-const REFUSAL_CODES: [(&str, &str); 19] = [
+const REFUSAL_CODES: [(&str, &str); 24] = [
     ("tv_dark", "that rig cannot be read"),
     ("tv_unwired", "rigs cannot be worked on this server"),
     ("not_aboard", "the operator is not aboard the hull"),
@@ -440,6 +501,11 @@ const REFUSAL_CODES: [(&str, &str); 19] = [
     ("busy", "that rig is busy"),
     ("reserve", "the rig's charge is under the reserve"),
     ("cap", "that is as many rigs out as may be"),
+    ("nothing_new", "you learn nothing new here"),
+    ("chart_full", "your chart of that body is full"),
+    ("ground_cold", "the site's ground is still being mapped"),
+    ("instruments_dark", "the instruments cannot read the ground"),
+    ("no_footing", "the rig stands where the mast reads nothing"),
 ];
 
 /// The start's message for an offer-wire word; an unknown word reads as dark.
@@ -475,6 +541,11 @@ impl Refusal {
             Refusal::Busy { .. } => "busy",
             Refusal::Reserve { .. } => "reserve",
             Refusal::Cap { .. } => "cap",
+            Refusal::NothingNew => "nothing_new",
+            Refusal::ChartFull { .. } => "chart_full",
+            Refusal::GroundCold { .. } => "ground_cold",
+            Refusal::InstrumentsDark => "instruments_dark",
+            Refusal::NoFooting { .. } => "no_footing",
         }
     }
 
@@ -543,6 +614,13 @@ impl Refusal {
                     .replace("{cap}", &cap.cap().to_string())
                     .replace("{site}", site)
             }
+            Refusal::NothingNew => tv::LEARN_NOTHING.to_owned(),
+            Refusal::ChartFull { body } => tv::CHART_FULL.replace("{body}", body),
+            Refusal::GroundCold { site, .. } => tv::GROUND_COLD.replace("{site}", site),
+            Refusal::InstrumentsDark => tv::INSTRUMENTS_DARK.to_owned(),
+            Refusal::NoFooting { n, terrain } => tv::NO_FOOTING
+                .replace("{n}", &n.to_string())
+                .replace("{terrain}", terrain),
         }
     }
 }
@@ -553,12 +631,6 @@ impl Refusal {
 /// the `go` submits and what the start's offer fixes.
 #[derive(Clone, Debug)]
 pub(crate) struct ActPlan {
-    /// What act.
-    #[allow(dead_code)] // SM.4's chaining reads it (the implied launch's plan)
-    pub kind: ActKind,
-    /// The rig.
-    #[allow(dead_code)] // SM.4's chaining reads it (the implied launch's plan)
-    pub rig: RigAt,
     /// The site entry the hull is settled at.
     pub site: CanonicalId,
     /// How long it takes, IC seconds.
@@ -570,7 +642,9 @@ pub(crate) struct ActPlan {
     /// Its parameters (a dump's goods are read later: the command by `read_pool`, the
     /// prepare by the transaction).
     pub params: ActParams,
-    /// Read only by a recover: the rig already stands in this hull's bay (decision 21).
+    /// The rig stands in this hull's bay at plan time (decision 21; doc 20 cut SM.4a, D12): a
+    /// launch sets it, a recover from the bay sets it, and for a scan or a sounding it means
+    /// **the launch is implied**.
     pub from_bay: bool,
 }
 
@@ -610,8 +684,8 @@ fn view_of<'w>(w: &'w World, rig: &RigAt) -> Result<(HullView<'w>, String), Refu
 /// an Active lease past its paid term still launches, decision 11); the rig not in this hull's
 /// bay → `LAUNCH_OUT`. `LAUNCH_S`, no cost, no trip home.
 ///
-/// **SM.4 prepends this** for the launch its first scan, sound or drive from the bay implies
-/// (lead ruling 5): keep the refusal order stable.
+/// **A scan or a sounding from the bay prepends this** (doc 20 cut SM.4a's lead ruling 2: the
+/// implied launch; SM.4b's drive will too): keep the refusal order stable.
 ///
 /// # Errors
 ///
@@ -657,8 +731,6 @@ pub(crate) fn launch_plan(w: &World, actor: ObjId, rig: &RigAt) -> Result<ActPla
         return Err(Refusal::Out { n: rig.slot });
     }
     Ok(ActPlan {
-        kind: ActKind::Launch,
-        rig: rig.clone(),
         site: berth.entry,
         secs: LAUNCH_S,
         cost_cu: 0,
@@ -712,8 +784,6 @@ pub(crate) fn recover_plan(w: &World, actor: ObjId, rig: &RigAt) -> Result<ActPl
         }
     };
     Ok(ActPlan {
-        kind: ActKind::Recover,
-        rig: rig.clone(),
         site: berth.entry,
         secs: RECOVER_S,
         cost_cu: 0,
@@ -759,8 +829,6 @@ pub(crate) fn dump_plan(w: &World, actor: ObjId, rig: &RigAt) -> Result<ActPlan,
         return Err(Refusal::Dark { name });
     };
     Ok(ActPlan {
-        kind: ActKind::Dump,
-        rig: rig.clone(),
         site: berth.entry,
         secs: DUMP_S,
         cost_cu: 0,
@@ -774,33 +842,245 @@ pub(crate) fn dump_plan(w: &World, actor: ObjId, rig: &RigAt) -> Result<ActPlan,
     })
 }
 
-/// **The test world's probe** (the brief's 3.7): the layer, the view, at a site, aboard.
-///
-/// # Errors
-///
-/// The first [`Refusal`].
-pub(crate) fn probe_plan(
-    w: &World,
-    actor: ObjId,
-    rig: &RigAt,
-    cost_cu: u32,
-    secs: u32,
-) -> Result<ActPlan, Refusal> {
+/// Where a scan or a sounding is made from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Stand {
+    /// The site's port entry.
+    site: CanonicalId,
+    /// The stand cell, site-local.
+    cell: (i64, i64),
+    /// The launch is implied (the rig stands in the bay; it reads from the ramp's cell).
+    from_bay: bool,
+}
+
+/// **Where a scan or a sounding stands, in the plan's order** (doc 20 cut SM.4a; the brief's
+/// 3.4, D12, D13): the layer and the view (`view_of`); under way → `LAUNCH_UNDER_WAY`; then
+/// the rig: in this hull's bay → **`launch_plan`, its whole order unchanged**, and the stand
+/// is the ramp's cell (`from_bay`); otherwise the hull's site berth (not a site →
+/// `LAUNCH_NOT_SITE`), the actor aboard (else `TV_NOT_ABOARD`), and the rig `Direct` on the
+/// hull's site domain inside the site (else `RECOVER_ELSEWHERE`) — **no lease-state gate**, as
+/// a recover's and a dump's (decision 11).
+fn stand_of(w: &World, actor: ObjId, rig: &RigAt) -> Result<Stand, Refusal> {
     let (view, name) = view_of(w, rig)?;
+    if matches!(berth_of(w, rig.hull), Berth::UnderWay) {
+        return Err(Refusal::UnderWay { name });
+    }
+    if where_is(w, rig.tv) == (Where::Bay { hull: rig.hull }) {
+        let launch = launch_plan(w, actor, rig)?;
+        let berth = site_berth(w, &view)?;
+        return Ok(Stand {
+            site: launch.site,
+            cell: site_cell(berth.ramp.x_cm, berth.ramp.y_cm),
+            from_bay: true,
+        });
+    }
     let berth = site_berth(w, &view)?;
     if !crate::port::voyage::aboard(w, rig.hull, actor) {
         return Err(Refusal::NotAboard { name });
     }
+    match where_is(w, rig.tv) {
+        Where::Ground {
+            domain, x_cm, y_cm, ..
+        } if domain == berth.domain && cell_on_site(site_cell(x_cm, y_cm)) => Ok(Stand {
+            site: berth.entry,
+            cell: site_cell(x_cm, y_cm),
+            from_bay: false,
+        }),
+        Where::Bay { .. } | Where::Ground { .. } | Where::Elsewhere => {
+            Err(Refusal::Elsewhere { n: rig.slot, name })
+        }
+    }
+}
+
+/// **The scan's world-side gate, in order** (doc 20 cut SM.4a; §5's R1, the brief's 3.4): the
+/// stand (`stand_of`, the implied launch's whole gate first); the site's ground resolved
+/// (`chart::site_context`, else `INSTRUMENTS_DARK`); the composite through the **non-building
+/// peek**, shared by every rig of the call (`peeks`; cold → `GROUND_COLD`, dark →
+/// `INSTRUMENTS_DARK`); the footing at the stand (none → `NO_FOOTING`); the fields the mast
+/// sees (`chart::seen_fields`). `LAUNCH_S` more when it launches; the scanner's `scan_s` and
+/// `scan_cu`; no trip home yet (`home_cu` 0 until SM.4b's drive supplies it — lead ruling 1).
+///
+/// # Errors
+///
+/// The first [`Refusal`] in that order.
+pub(crate) fn scan_plan(
+    w: &World,
+    actor: ObjId,
+    rig: &RigAt,
+    scanner: &ScannerDef,
+    peeks: &mut BTreeMap<CanonicalId, SitePeek>,
+) -> Result<ActPlan, Refusal> {
+    let stand = stand_of(w, actor, rig)?;
+    let site = chart::site_context(w, &stand.site).map_err(|_| Refusal::InstrumentsDark)?;
+    let ground = match chart::peek_site(w, &stand.site, peeks) {
+        SitePeek::Warm(ground) => ground,
+        SitePeek::Cold => {
+            return Err(Refusal::GroundCold {
+                site: site.name.clone(),
+                entry: stand.site.clone(),
+            });
+        }
+        SitePeek::Dark => return Err(Refusal::InstrumentsDark),
+    };
+    let surface = chart::ground_surface(&ground).ok_or(Refusal::InstrumentsDark)?;
+    let footing = chart::footing_at(surface, stand.cell).map_err(|terrain| Refusal::NoFooting {
+        n: rig.slot,
+        terrain: terrain.label().replace('_', " "),
+    })?;
+    let (fields, hidden) = chart::seen_fields(surface, stand.cell, scanner);
+    if fields.is_empty() {
+        return Err(Refusal::InstrumentsDark);
+    }
+    let launch = if stand.from_bay { LAUNCH_S } else { 0 };
     Ok(ActPlan {
-        kind: ActKind::Probe,
-        rig: rig.clone(),
-        site: berth.entry,
-        secs,
-        cost_cu,
+        site: stand.site,
+        secs: launch.saturating_add(scanner.scan_s),
+        cost_cu: scanner.scan_cu,
+        // Lead ruling 1: SM.3b's 0 until SM.4b's drive supplies the trip home.
         home_cu: 0,
-        params: ActParams::Probe { cost_cu },
-        from_bay: false,
+        params: ActParams::Scan {
+            from_bay: stand.from_bay,
+            body: site.spec.body.clone(),
+            cell: [stand.cell.0, stand.cell.1],
+            footing,
+            fields,
+            hidden,
+        },
+        from_bay: stand.from_bay,
     })
+}
+
+/// **The sounding's world-side gate, in order** (doc 20 cut SM.4a; §5's R2): the stand
+/// (`stand_of`), the site's ground resolved (`chart::site_context`, else `INSTRUMENTS_DARK`:
+/// an act that could render nothing never spends charge, D16). It needs no composite. The
+/// reach is the scanner's `sound_radius_cells`, or `quiet_radius_cells` when quiet, at the
+/// same `sound_s` and `sound_cu`; `LAUNCH_S` more when it launches; `home_cu` 0 (lead ruling 1).
+///
+/// # Errors
+///
+/// The first [`Refusal`] in that order.
+pub(crate) fn sound_plan(
+    w: &World,
+    actor: ObjId,
+    rig: &RigAt,
+    scanner: &ScannerDef,
+    quiet: bool,
+) -> Result<ActPlan, Refusal> {
+    let stand = stand_of(w, actor, rig)?;
+    let site = chart::site_context(w, &stand.site).map_err(|_| Refusal::InstrumentsDark)?;
+    let launch = if stand.from_bay { LAUNCH_S } else { 0 };
+    let radius = if quiet {
+        scanner.quiet_radius_cells
+    } else {
+        scanner.sound_radius_cells
+    };
+    Ok(ActPlan {
+        site: stand.site,
+        secs: launch.saturating_add(scanner.sound_s),
+        cost_cu: scanner.sound_cu,
+        // Lead ruling 1: SM.3b's 0 until SM.4b's drive supplies the trip home.
+        home_cu: 0,
+        params: ActParams::Sound {
+            from_bay: stand.from_bay,
+            body: site.spec.body.clone(),
+            cell: [stand.cell.0, stand.cell.1],
+            radius,
+            quiet,
+        },
+        from_bay: stand.from_bay,
+    })
+}
+
+/// **Which scanner a rig carries** (doc 20 cut SM.4a; `rig_battery_id`'s rule): the lessor
+/// pool's tools whose row in the one tools table is a scanner.
+#[must_use]
+pub(crate) fn rig_scanner_id(w: &World, rig_tv: ObjId) -> Option<CanonicalId> {
+    crate::port::vehicle::rig_row(w, rig_tv)?;
+    let tools = w.module_state::<PortHandles>()?.surface_tools.clone()?;
+    let port = crate::port::coop::programme_port(w)?;
+    let pool = port.def.vehicles.as_deref()?;
+    pool.tools
+        .iter()
+        .find(|id| tools.get(*id).and_then(ToolDef::scanner).is_some())
+        .cloned()
+}
+
+/// **A scanner's figures** by its id, from a tools table (`ToolDef::scanner`).
+#[must_use]
+pub(crate) fn scanner_of<'t>(
+    tools: &'t BTreeMap<CanonicalId, ToolDef>,
+    id: &CanonicalId,
+) -> Option<&'t ScannerDef> {
+    tools.get(id).and_then(ToolDef::scanner)
+}
+
+/// **The plan of a reading act's stand and reach**, for the chart rules: the stand cell, the
+/// fields a scan reads with its footing, or the pockets a sounding reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Reach {
+    /// A scan.
+    Scan {
+        stand: [i64; 2],
+        fields: Vec<u8>,
+        footing: Footing,
+    },
+    /// A sounding.
+    Sound {
+        stand: [i64; 2],
+        pockets: Vec<(i64, i64)>,
+    },
+}
+
+impl Reach {
+    /// A scan's or a sounding's reach from its frozen parameters; `None` for every other act.
+    fn of(params: &ActParams) -> Option<Reach> {
+        match params {
+            ActParams::Scan {
+                cell,
+                fields,
+                footing,
+                ..
+            } => Some(Reach::Scan {
+                stand: *cell,
+                fields: fields.clone(),
+                footing: *footing,
+            }),
+            ActParams::Sound { cell, radius, .. } => Some(Reach::Sound {
+                stand: *cell,
+                pockets: pockets_in_reach((cell[0], cell[1]), i64::from(*radius)),
+            }),
+            ActParams::None {} | ActParams::Dump { .. } => None,
+        }
+    }
+
+    /// **"You learn nothing new here."** (D4) against the operator's row for the site.
+    fn refused(&self, row: Option<&ChartRecord>) -> bool {
+        match self {
+            Reach::Scan {
+                stand,
+                fields,
+                footing,
+            } => repeat_refused(row, false, *stand, scan_adds(row, fields, *footing)),
+            Reach::Sound { stand, pockets } => {
+                repeat_refused(row, true, *stand, sound_adds(row, pockets))
+            }
+        }
+    }
+
+    /// The units the act names, for the body caps: field indexes, block letters.
+    fn units(&self) -> (Vec<u8>, Vec<String>) {
+        match self {
+            Reach::Scan { fields, .. } => (fields.clone(), Vec::new()),
+            Reach::Sound { pockets, .. } => {
+                let blocks: std::collections::BTreeSet<String> = pockets
+                    .iter()
+                    .filter_map(|(px, py)| address::block_letter(*px, *py))
+                    .map(|letter| letter.to_string())
+                    .collect();
+                (Vec::new(), blocks.into_iter().collect())
+            }
+        }
+    }
 }
 
 /// **Which battery a rig carries** (finding F5): the lessor pool's tools
@@ -859,7 +1139,8 @@ pub(crate) fn doing_words(kind: ActKind, ramp: &str) -> String {
         ActKind::Launch => format!("going down the {ramp}"),
         ActKind::Recover => format!("climbing the {ramp}"),
         ActKind::Dump => "dumping its hopper".to_owned(),
-        ActKind::Probe => "running a test".to_owned(),
+        ActKind::Scan => "scanning".to_owned(),
+        ActKind::Sound => "sounding".to_owned(),
     }
 }
 
@@ -930,6 +1211,14 @@ pub(crate) fn load_words(w: &World, goods: &BTreeMap<CanonicalId, u64>) -> Strin
 /// `tacsim_surface_act` submission as the actor and the filed line; the handler writes
 /// nothing else (the projection is the tick's).
 ///
+/// **Doc 20 cut SM.4a**: a scan or a sounding (`quiet` for `sound quiet`) plans through
+/// `scan_plan`/`sound_plan` — the site's composite peeked once for the call, a cold one
+/// answering `GROUND_COLD` and asking for its warm (RAM only, the `RigPointer` precedent) —
+/// then, when it implies the launch, the launch's open-excursion refusal and its caps; then the
+/// operator's chart: "You learn nothing new here." (the same-cell rule, D4) and the body caps
+/// (`CHART_FULL`); then the reserve from `charge_for_act` (the bay credited no further than the
+/// launch half, D22). No licence and no tenure is read (lead ruling 9).
+///
 /// # Errors
 ///
 /// Every refusal is a [`CmdError`] line.
@@ -938,6 +1227,7 @@ pub(crate) fn act_cmd(
     ctx: &mut Ctx<'_>,
     rig: &RigAt,
     kind: ActKind,
+    quiet: bool,
     go: bool,
 ) -> Result<(), CmdError> {
     let actor = ctx.actor;
@@ -949,17 +1239,41 @@ pub(crate) fn act_cmd(
     let Some(action) = handles.surface_act.clone() else {
         return Err(CmdError::msg(tv::TV_UNWIRED));
     };
-    let w: &World = ctx.w;
-    let name = name_of(w, rig.hull);
+    let name = name_of(ctx.w, rig.hull);
     let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
-    // 1. The world plan (the start's offer runs the same function).
-    let plan = match kind {
-        ActKind::Launch => launch_plan(w, actor, rig),
-        ActKind::Recover => recover_plan(w, actor, rig),
-        ActKind::Dump => dump_plan(w, actor, rig),
-        ActKind::Probe => return Err(CmdError::msg(tv::TV_USAGE)),
-    }
-    .map_err(|refusal| CmdError::msg(refusal.line()))?;
+    // 1. The world plan (the start's offer runs the same function). A reading act needs the
+    // rig's scanner; a scan peeks the site's composite once for the whole call.
+    let scanner = handles.surface_tools.as_ref().and_then(|tools| {
+        rig_scanner_id(ctx.w, rig.tv).and_then(|id| scanner_of(tools, &id).copied())
+    });
+    let mut peeks: BTreeMap<CanonicalId, SitePeek> = BTreeMap::new();
+    let planned = match kind {
+        ActKind::Launch => launch_plan(ctx.w, actor, rig),
+        ActKind::Recover => recover_plan(ctx.w, actor, rig),
+        ActKind::Dump => dump_plan(ctx.w, actor, rig),
+        ActKind::Scan | ActKind::Sound => {
+            let Some(scanner) = scanner.as_ref() else {
+                tracing::warn!(tv = rig.tv.0, "tacsim: a rig carries no readable scanner");
+                return Err(dark());
+            };
+            if kind == ActKind::Scan {
+                scan_plan(ctx.w, actor, rig, scanner, &mut peeks)
+            } else {
+                sound_plan(ctx.w, actor, rig, scanner, quiet)
+            }
+        }
+    };
+    let plan = match planned {
+        Ok(plan) => plan,
+        Err(refusal) => {
+            // A cold site is asked for: the surface tick warms it, never this path.
+            if let Refusal::GroundCold { entry, .. } = &refusal {
+                crate::surface::want_site_ground(ctx.w, entry);
+            }
+            return Err(CmdError::msg(refusal.line()));
+        }
+    };
+    let w: &World = ctx.w;
     // 2. The battery (finding F5: the one tools table), read only where the act needs it —
     // a spend or a launch (`needs_battery`); a recover or a dump never does, so a rig whose
     // battery row stops resolving still comes home (§4.1; the fixer round's item 3).
@@ -983,13 +1297,15 @@ pub(crate) fn act_cmd(
             .line(),
         ));
     }
-    if kind == ActKind::Launch && record.excursion.is_some() {
+    // The launch's half: a launch, or a scan or a sounding that implies one (lead ruling 2).
+    let launches = kind == ActKind::Launch || (kind.reads_ground() && plan.from_bay);
+    if launches && record.excursion.is_some() {
         return Err(CmdError::msg(Refusal::Open { n: rig.slot }.line()));
     }
     if kind == ActKind::Recover && plan.from_bay && record.excursion.is_none() {
         return Err(CmdError::msg(Refusal::InBay { n: rig.slot }.line()));
     }
-    if kind == ActKind::Launch {
+    if launches {
         let mut counts = ExcursionCounts::default();
         for tv in world_rigs(w) {
             let found = ctx
@@ -1015,25 +1331,72 @@ pub(crate) fn act_cmd(
             ));
         }
     }
+    // 4. The chart (doc 20 cut SM.4a): the same-cell rule, then the body caps.
+    if let Some(reach) = Reach::of(&plan.params) {
+        let read = |site: &CanonicalId| -> Result<Option<ChartRecord>, CmdError> {
+            ctx.action_state(
+                &handles.families.charts,
+                &ChartKey {
+                    principal: actor,
+                    site: site.clone(),
+                },
+            )
+            .map(|found| found.cloned())
+            .map_err(|error| {
+                tracing::warn!(tv = rig.tv.0, %error, "tacsim: a chart row does not read");
+                dark()
+            })
+        };
+        let row = read(&plan.site)?;
+        if reach.refused(row.as_ref()) {
+            return Err(CmdError::msg(Refusal::NothingNew.line()));
+        }
+        let body = match &plan.params {
+            ActParams::Scan { body, .. } | ActParams::Sound { body, .. } => body.clone(),
+            ActParams::None {} | ActParams::Dump { .. } => return Err(dark()),
+        };
+        let mut rows = Vec::new();
+        for site in chart::body_sites(w, &body) {
+            if let Some(found) = read(&site)? {
+                rows.push(found);
+            }
+        }
+        let (fields, blocks) = reach.units();
+        if !body_admits(&rows, &plan.site, &fields, &blocks) {
+            return Err(CmdError::msg(
+                Refusal::ChartFull {
+                    body: crate::port::site::body_name(&body),
+                }
+                .line(),
+            ));
+        }
+    }
     let now_ic = w.world_ic_now().at;
-    // `(now %, after %)`, `None` with no battery (a zero spend: the rule passes it unread).
+    // `(now %, after %)`, `None` with no battery (a zero spend: the rule passes it unread). An
+    // implied launch spends from the charge the bay holds when the launch half ends (D22).
     let charge = match &battery {
         Some(battery) => {
-            let now_cu = charge_at(&record.charge, now_ic, battery);
+            let shown = charge_at(&record.charge, now_ic, battery);
+            let from = charge_for_act(
+                &record.charge,
+                now_ic,
+                kind.reads_ground() && plan.from_bay,
+                battery,
+            );
             match reserve_check(
-                now_cu,
+                from,
                 reserved_total(&record),
                 plan.cost_cu,
                 plan.home_cu,
                 battery,
             ) {
-                Ok(after) => Some((percent(now_cu, battery), percent(after.after_home, battery))),
+                Ok(after) => Some((percent(shown, battery), percent(after.after_home, battery))),
                 Err(short) => {
                     let after = u32::try_from(short.after_home.max(0)).unwrap_or(0);
                     return Err(CmdError::msg(
                         Refusal::Reserve {
                             n: rig.slot,
-                            now: percent(now_cu, battery),
+                            now: percent(shown, battery),
                             after: percent(after, battery),
                             floor: percent(short.floor, battery),
                         }
@@ -1102,11 +1465,36 @@ pub(crate) fn act_cmd(
                 .replace("{real}", &real)
                 .replace("{hopper}", &hopper)
             }
-            ActKind::Dump | ActKind::Probe => tv::DUMP_PREVIEW
+            ActKind::Dump => tv::DUMP_PREVIEW
                 .replace("{n}", &n)
                 .replace("{mark}", &rig.mark)
                 .replace("{load}", &load)
                 .replace("{site}", &site),
+            ActKind::Scan | ActKind::Sound => {
+                // A scan or a sounding spends, so `charge` is `Some` here.
+                let Some((now, after)) = charge else {
+                    return Err(dark());
+                };
+                let Some(scanner) = scanner.as_ref() else {
+                    return Err(dark());
+                };
+                reading_preview(
+                    w,
+                    &plan,
+                    scanner,
+                    &mut peeks,
+                    PreviewWords {
+                        n: &n,
+                        mark: &rig.mark,
+                        ramp: &ramp,
+                        site: &site,
+                        real: &real,
+                        now,
+                        after,
+                    },
+                )
+                .ok_or_else(dark)?
+            }
         };
         crate::port::coop::say(ctx, line);
         return Ok(());
@@ -1128,7 +1516,7 @@ pub(crate) fn act_cmd(
         Vec::new(),
         json!({
             "tv": rig.tv.0.to_string(),
-            "act": kind.word(),
+            "act": wire_word(kind, quiet),
             "ordinal": ordinal,
         }),
         key,
@@ -1142,10 +1530,144 @@ pub(crate) fn act_cmd(
             .replace("{n}", &n)
             .replace("{ramp}", &ramp)
             .replace("{when}", &when),
-        ActKind::Dump | ActKind::Probe => tv::DUMP_FILED.replace("{n}", &n),
+        ActKind::Dump => tv::DUMP_FILED.replace("{n}", &n),
+        ActKind::Scan | ActKind::Sound => {
+            let template = match (kind, plan.from_bay) {
+                (ActKind::Scan, false) => tv::SCAN_FILED,
+                (ActKind::Scan, true) => tv::SCAN_FILED_LAUNCH,
+                (_, false) => tv::SOUND_FILED,
+                (_, true) => tv::SOUND_FILED_LAUNCH,
+            };
+            template
+                .replace("{n}", &n)
+                .replace("{ramp}", &ramp)
+                .replace("{when}", &when)
+        }
     };
     crate::port::coop::say(ctx, line);
     Ok(())
+}
+
+/// The words every reading preview shares.
+struct PreviewWords<'a> {
+    n: &'a str,
+    mark: &'a str,
+    ramp: &'a str,
+    site: &'a str,
+    real: &'a str,
+    now: u32,
+    after: u32,
+}
+
+/// **A scan's or a sounding's preview** (doc 20 cut SM.4a; the brief's 3.8): `SCAN_PREVIEW` —
+/// the fields the mast sees around the stand's field, the footing and what better footing
+/// would buy (`chart::better_footing` within the scan's reach), the hidden count — or
+/// `SOUND_PREVIEW` — the pockets in reach around the stand's pocket and who hears it; both name
+/// the implied launch's two legs. `None` when a name does not form (never expected).
+fn reading_preview(
+    w: &World,
+    plan: &ActPlan,
+    scanner: &ScannerDef,
+    peeks: &mut BTreeMap<CanonicalId, SitePeek>,
+    words: PreviewWords<'_>,
+) -> Option<String> {
+    let launch = if plan.from_bay {
+        tv::IMPLIED_LAUNCH
+            .replace("{ramp}", words.ramp)
+            .replace("{site}", words.site)
+    } else {
+        String::new()
+    };
+    let own_secs = if plan.from_bay {
+        plan.secs.saturating_sub(LAUNCH_S)
+    } else {
+        plan.secs
+    };
+    let time = if plan.from_bay {
+        tv::TWO_LEGS
+            .replace("{down}", &LAUNCH_S.to_string())
+            .replace("{secs}", &own_secs.to_string())
+    } else {
+        format!("{own_secs} IC s")
+    };
+    let head = |template: &str| {
+        template
+            .replace("{n}", words.n)
+            .replace("{mark}", words.mark)
+            .replace("{launch}", &launch)
+            .replace("{time}", &time)
+            .replace("{real}", words.real)
+            .replace("{now}", &words.now.to_string())
+            .replace("{after}", &words.after.to_string())
+    };
+    match &plan.params {
+        ActParams::Scan {
+            cell,
+            footing,
+            fields,
+            hidden,
+            ..
+        } => {
+            let stand = (cell[0], cell[1]);
+            let field =
+                address::field_of_cell(stand).and_then(|(fx, fy)| address::field_name(fx, fy))?;
+            let radius = i64::from(scanner.scan_radius_cells);
+            let better = match chart::peek_site(w, &plan.site, peeks) {
+                SitePeek::Warm(ground) => chart::ground_surface(&ground)
+                    .and_then(|surface| chart::better_footing(surface, stand, *footing, radius)),
+                SitePeek::Cold | SitePeek::Dark => None,
+            };
+            let reach_m = radius.saturating_mul(10).to_string();
+            let footing_words = match (footing, better) {
+                (Footing::Rock, _) => tv::FOOTING_ROCK.to_owned(),
+                (Footing::Regolith, Some((_, m, dir))) => tv::FOOTING_REGOLITH
+                    .replace("{m}", &m.to_string())
+                    .replace("{dir}", dir.abbrev()),
+                (Footing::Regolith, None) => tv::FOOTING_REGOLITH_NONE.replace("{r}", &reach_m),
+                (Footing::Ice, Some((sharper, m, dir))) => tv::FOOTING_ICE
+                    .replace("{better}", sharper.name())
+                    .replace("{m}", &m.to_string())
+                    .replace("{dir}", dir.abbrev()),
+                (Footing::Ice, None) => tv::FOOTING_ICE_NONE.replace("{r}", &reach_m),
+            };
+            let hidden_words = if hidden.is_empty() {
+                String::new()
+            } else {
+                tv::HIDDEN_FIELDS.replace("{k}", &hidden.len().to_string())
+            };
+            Some(
+                head(tv::SCAN_PREVIEW)
+                    .replace("{count}", &fields.len().to_string())
+                    .replace("{field}", &field)
+                    .replace("{footing}", &footing_words)
+                    .replace("{hidden}", &hidden_words),
+            )
+        }
+        ActParams::Sound {
+            cell,
+            radius,
+            quiet,
+            ..
+        } => {
+            let stand = (cell[0], cell[1]);
+            let (px, py) = address::pocket_of_cell(stand)?;
+            let addr = address::pocket_address(px, py)?;
+            let count = pockets_in_reach(stand, i64::from(*radius)).len();
+            let heard = if *quiet {
+                tv::HEARD_BY_NOBODY.to_owned()
+            } else {
+                tv::HEARD_ACROSS.replace("{site}", words.site)
+            };
+            Some(
+                head(tv::SOUND_PREVIEW)
+                    .replace("{count}", &count.to_string())
+                    .replace("{addr}", &addr)
+                    .replace("{heard}", &heard)
+                    .replace("{quiet}", if *quiet { " quiet" } else { "" }),
+            )
+        }
+        ActParams::None {} | ActParams::Dump { .. } => None,
+    }
 }
 
 // ---- the offers' fixed parameters ------------------------------------------------------------
@@ -1172,6 +1694,10 @@ struct FixedPlan {
     /// A dump's hopper's accepted goods (the prepare reads each through its transaction).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     goods: Vec<CanonicalId>,
+    /// **Doc 20 cut SM.4a**: a scan's or a sounding's body's site entries (at most
+    /// `MAX_CHART_SITES_PER_BODY`), whose chart rows the prepare reads for the body caps.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    body_sites: Vec<CanonicalId>,
 }
 
 impl FixedPlan {
@@ -1195,13 +1721,15 @@ impl FixedPlan {
                 params: Some(plan.params),
                 from_bay: plan.from_bay,
                 goods: Vec::new(),
+                body_sites: Vec::new(),
             },
             Err(refusal) => FixedPlan::refused(refusal.word()),
         }
     }
 }
 
-/// One rig as the start's offer fixes it.
+/// One rig as the start's offer fixes it: its plans keyed by the start's `act` word
+/// ([`ACT_WIRE_WORDS`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FixedRig {
@@ -1210,8 +1738,6 @@ struct FixedRig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     battery_id: Option<CanonicalId>,
     plans: BTreeMap<String, FixedPlan>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    probe: Option<FixedPlan>,
 }
 
 /// The world as the finish's offer reads it at landing (decision 5).
@@ -1221,13 +1747,16 @@ enum Facts {
     /// In a programme hull's bay.
     Bay { hull: ObjId },
     /// On a domain: the site whose domain it is (if any) and the cells from that site's
-    /// ramp (through the hull of the rig's live record).
+    /// ramp (through the hull of the rig's live record), and — doc 20 cut SM.4a — the rig's
+    /// site cell on a site's domain (a scan's or a sounding's frozen stand is compared with it).
     Ground {
         domain: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         site: Option<CanonicalId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cells: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell: Option<[i64; 2]>,
     },
     /// Anywhere else.
     Elsewhere,
@@ -1276,10 +1805,15 @@ fn facts_of(w: &World, tv: ObjId, hull: ObjId) -> Facts {
             let cells = hull_view(w, hull)
                 .and_then(|view| view.bay().and_then(|(bay, _)| ramp_pose(bay).ok()))
                 .map(|ramp| cells_apart(site_cell(x_cm, y_cm), site_cell(ramp.x_cm, ramp.y_cm)));
+            let cell = site.as_ref().map(|_| {
+                let (x, y) = site_cell(x_cm, y_cm);
+                [x, y]
+            });
             Facts::Ground {
                 domain: domain.0,
                 site,
                 cells,
+                cell,
             }
         }
         Where::Elsewhere => Facts::Elsewhere,
@@ -1289,7 +1823,7 @@ fn facts_of(w: &World, tv: ObjId, hull: ObjId) -> Facts {
 // ---- the providers' shared plumbing -------------------------------------------------------
 
 /// The offer's guard set and presentation (the burn's shape).
-fn offer_draft(
+pub(crate) fn offer_draft(
     action: &DefinitionRef,
     engine: &mush_core::Engine,
     fixed: Value,
@@ -1328,7 +1862,7 @@ fn offer_draft(
 }
 
 /// One projected parameter.
-fn parameter(
+pub(crate) fn parameter(
     id: &str,
     required: bool,
     kind: ProjectedParameterKind,
@@ -1346,7 +1880,7 @@ fn parameter(
 }
 
 /// Whether the query is this provider's self-scoped one.
-fn self_query(
+pub(crate) fn self_query(
     action: &DefinitionRef,
     ours: &DefinitionRef,
     query: &mush_core::LegalActionQuery,
@@ -1394,16 +1928,15 @@ fn ordinal_of(parameters: &Map<String, Value>) -> Result<u32, ActionError> {
         .ok_or_else(|| invalid("a surface act names its ordinal"))
 }
 
-/// An optional bounded integer parameter, as `u32`.
-fn optional_u32(parameters: &Map<String, Value>, id: &str, max: i64) -> Result<u32, ActionError> {
-    match parameters.get(id) {
-        None => Ok(0),
-        Some(value) => value
-            .as_u64()
-            .filter(|n| i64::try_from(*n).is_ok_and(|n| n <= max))
-            .and_then(|n| u32::try_from(n).ok())
-            .ok_or_else(|| invalid("a probe's figures are out of bounds")),
-    }
+/// The `act` parameter through [`act_of_word`] (D23): the kind and the sounding's quiet flag.
+fn act_param(parameters: &Map<String, Value>) -> Result<(ActKind, bool), ActionError> {
+    parameters
+        .get("act")
+        .and_then(Value::as_str)
+        .and_then(act_of_word)
+        .ok_or_else(|| {
+            invalid("a surface act names launch, recover, dump, scan, sound or sound_quiet")
+        })
 }
 
 /// The fixed `now`.
@@ -1465,28 +1998,37 @@ fn write_record(
 
 // ---- tacsim_surface_act: the start ---------------------------------------------------------------
 
-/// **`tacsim_surface_act`** — every act's start (the brief's 3.4).
+/// **`tacsim_surface_act`** — every act's start (the brief's 3.4; doc 20 cut SM.4a adds the scan
+/// and the soundings, and retires SM.3b's test-world probe).
 pub(crate) struct SurfaceActProvider {
     pub action: DefinitionRef,
     pub outcome: DefinitionRef,
     pub excursions: StateFamilyHandle<RigKey, RigRecord>,
+    pub charts: StateFamilyHandle<ChartKey, ChartRecord>,
     pub inventory: InventoryFamilies,
     pub tools: Arc<BTreeMap<CanonicalId, ToolDef>>,
-    pub test_world: bool,
 }
 
-impl SurfaceActProvider {
-    /// The act words this provider offers.
-    fn words(&self) -> Vec<String> {
-        let mut words: Vec<String> = ["dump", "launch", "recover"]
-            .iter()
-            .map(|w| (*w).to_owned())
-            .collect();
-        if self.test_world {
-            words.push("probe".to_owned());
-        }
-        words
+/// **The start's fixed plan of a reading act** (doc 20 cut SM.4a): its plan, with the body's
+/// site entries for the body caps; a refused one when the rig has no readable battery or
+/// scanner (a scan or a sounding spends).
+fn reading_fixed(
+    w: &World,
+    plan: Option<Result<ActPlan, Refusal>>,
+    has_battery: bool,
+) -> FixedPlan {
+    let (Some(plan), true) = (plan, has_battery) else {
+        return FixedPlan::refused("tv_dark");
+    };
+    let body = plan.as_ref().ok().and_then(|plan| match &plan.params {
+        ActParams::Scan { body, .. } | ActParams::Sound { body, .. } => Some(body.clone()),
+        ActParams::None {} | ActParams::Dump { .. } => None,
+    });
+    let mut fixed = FixedPlan::of(plan);
+    if let Some(body) = body {
+        fixed.body_sites = chart::body_sites(w, &body);
     }
+    fixed
 }
 
 impl ActionProvider for SurfaceActProvider {
@@ -1494,16 +2036,7 @@ impl ActionProvider for SurfaceActProvider {
         let parameters = parameters_of(invocation)?;
         tv_of(parameters)?;
         ordinal_of(parameters)?;
-        let kind = parameters
-            .get("act")
-            .and_then(Value::as_str)
-            .and_then(ActKind::from_word)
-            .ok_or_else(|| invalid("a surface act names launch, recover or dump"))?;
-        if kind == ActKind::Probe && !self.test_world {
-            return Err(invalid("a probe is a test world's"));
-        }
-        optional_u32(parameters, "probe_cu", MAX_PROBE_CU)?;
-        optional_u32(parameters, "probe_s", MAX_PROBE_S)?;
+        act_param(parameters)?;
         Ok(())
     }
 
@@ -1522,16 +2055,20 @@ impl ActionProvider for SurfaceActProvider {
         if rigs.is_empty() {
             return Ok(None);
         }
+        // Doc 20 cut SM.4a (the brief's reviewer finding F5): each site's composite is peeked
+        // once for the whole projection and shared by every rig's scan plan.
+        let mut peeks: BTreeMap<CanonicalId, SitePeek> = BTreeMap::new();
         let mut fixed_rigs: BTreeMap<String, FixedRig> = BTreeMap::new();
         for rig in &rigs {
             let battery_id = rig_battery_id(w, rig.tv);
+            let scanner = rig_scanner_id(w, rig.tv).and_then(|id| scanner_of(&self.tools, &id));
             let mut plans: BTreeMap<String, FixedPlan> = BTreeMap::new();
-            // A launch and a probe need the battery (`needs_battery`: a launch always, a
-            // probe's cost is named at the invocation); a recover and a dump never do, so they
-            // plan whether or not its row resolves (§4.1; the fixer round's item 3).
+            // A launch, a scan and a sounding need the battery (`needs_battery`: a launch
+            // always, a reading act spends); a recover and a dump never do, so they plan whether
+            // or not its row resolves (§4.1; the fixer round's item 3).
             let has_battery = battery_id.is_some();
             plans.insert(
-                ActKind::Launch.word().to_owned(),
+                wire_word(ActKind::Launch, false).to_owned(),
                 if has_battery {
                     FixedPlan::of(launch_plan(w, actor, rig))
                 } else {
@@ -1539,7 +2076,7 @@ impl ActionProvider for SurfaceActProvider {
                 },
             );
             plans.insert(
-                ActKind::Recover.word().to_owned(),
+                wire_word(ActKind::Recover, false).to_owned(),
                 FixedPlan::of(recover_plan(w, actor, rig)),
             );
             let mut dump = FixedPlan::of(dump_plan(w, actor, rig));
@@ -1551,14 +2088,19 @@ impl ActionProvider for SurfaceActProvider {
                     dump = FixedPlan::refused("tv_dark");
                 }
             }
-            plans.insert(ActKind::Dump.word().to_owned(), dump);
-            let probe = self.test_world.then(|| {
-                if has_battery {
-                    FixedPlan::of(probe_plan(w, actor, rig, 0, 0))
-                } else {
-                    FixedPlan::refused("tv_dark")
-                }
-            });
+            plans.insert(wire_word(ActKind::Dump, false).to_owned(), dump);
+            let scan = scanner.map(|scanner| scan_plan(w, actor, rig, scanner, &mut peeks));
+            plans.insert(
+                wire_word(ActKind::Scan, false).to_owned(),
+                reading_fixed(w, scan, has_battery),
+            );
+            for quiet in [false, true] {
+                let sound = scanner.map(|scanner| sound_plan(w, actor, rig, scanner, quiet));
+                plans.insert(
+                    wire_word(ActKind::Sound, quiet).to_owned(),
+                    reading_fixed(w, sound, has_battery),
+                );
+            }
             fixed_rigs.insert(
                 rig.tv.0.to_string(),
                 FixedRig {
@@ -1566,7 +2108,6 @@ impl ActionProvider for SurfaceActProvider {
                     hull: rig.hull,
                     battery_id,
                     plans,
-                    probe,
                 },
             );
         }
@@ -1578,7 +2119,7 @@ impl ActionProvider for SurfaceActProvider {
                 .map_err(|_| integrity("the rigs' plans do not encode"))?,
             "world": world,
         });
-        let mut parameters = vec![
+        let parameters = vec![
             parameter(
                 "tv",
                 true,
@@ -1590,7 +2131,7 @@ impl ActionProvider for SurfaceActProvider {
                 "act",
                 true,
                 ProjectedParameterKind::Choice {
-                    choices: self.words(),
+                    choices: ACT_WIRE_WORDS.iter().map(|w| (*w).to_owned()).collect(),
                 },
             )?,
             parameter(
@@ -1602,24 +2143,6 @@ impl ActionProvider for SurfaceActProvider {
                 },
             )?,
         ];
-        if self.test_world {
-            parameters.push(parameter(
-                "probe_cu",
-                false,
-                ProjectedParameterKind::Integer {
-                    minimum: 0,
-                    maximum: MAX_PROBE_CU,
-                },
-            )?);
-            parameters.push(parameter(
-                "probe_s",
-                false,
-                ProjectedParameterKind::Integer {
-                    minimum: 0,
-                    maximum: MAX_PROBE_S,
-                },
-            )?);
-        }
         offer_draft(
             action,
             engine,
@@ -1628,7 +2151,8 @@ impl ActionProvider for SurfaceActProvider {
             (
                 "tacsim-surface-act",
                 "Work a rig",
-                "Send a rig down the ramp, bring it in, or empty its hopper onto the spoil.",
+                "Send a rig down the ramp, scan or sound the ground, bring it in, or empty its \
+                 hopper onto the spoil.",
             ),
         )
         .map(Some)
@@ -1646,11 +2170,7 @@ impl ActionProvider for SurfaceActProvider {
         let tv = tv_of(parameters)?;
         let ordinal = ordinal_of(parameters)?;
         let now = now_of(parameters)?;
-        let kind = parameters
-            .get("act")
-            .and_then(Value::as_str)
-            .and_then(ActKind::from_word)
-            .ok_or_else(|| invalid("a surface act names launch, recover or dump"))?;
+        let (kind, quiet) = act_param(parameters)?;
         // 1. The rig is the actor's and the act's fixed plan is ok.
         let rigs: BTreeMap<String, FixedRig> = parameters
             .get("rigs")
@@ -1668,28 +2188,16 @@ impl ActionProvider for SurfaceActProvider {
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok())
             .ok_or_else(|| invalid("a surface act's offer fixes the world's rigs"))?;
-        let mut plan = match kind {
-            ActKind::Probe => rig
-                .probe
-                .clone()
-                .ok_or_else(|| invalid("a probe is a test world's"))?,
-            ActKind::Launch | ActKind::Recover | ActKind::Dump => rig
-                .plans
-                .get(kind.word())
-                .cloned()
-                .ok_or_else(|| invalid("that act is not planned"))?,
-        };
+        let plan = rig
+            .plans
+            .get(wire_word(kind, quiet))
+            .cloned()
+            .ok_or_else(|| invalid("that act is not planned"))?;
         if !plan.ok {
             return Err(port_error(
                 ActionErrorCode::ProviderRejected,
                 code_of_word(plan.code.as_deref().unwrap_or("tv_dark")),
             ));
-        }
-        if kind == ActKind::Probe {
-            let cost_cu = optional_u32(parameters, "probe_cu", MAX_PROBE_CU)?;
-            plan.cost_cu = cost_cu;
-            plan.secs = optional_u32(parameters, "probe_s", MAX_PROBE_S)?;
-            plan.params = Some(ActParams::Probe { cost_cu });
         }
         let site = plan
             .site
@@ -1726,58 +2234,104 @@ impl ActionProvider for SurfaceActProvider {
         if record.act.is_some() {
             return Err(port_error(ActionErrorCode::Conflict, "that rig is busy"));
         }
-        // 4. The launch's open excursion and the caps; a recover from the bay closes one.
-        match kind {
-            ActKind::Launch => {
-                if record.excursion.is_some() {
-                    return Err(port_error(
-                        ActionErrorCode::ProviderRejected,
-                        "that rig has an excursion open",
-                    ));
-                }
-                let mut counts = ExcursionCounts::default();
-                for other in world {
-                    if let Some(found) = read_record(txn, &self.excursions, ObjId(other))?
-                        && let Some(excursion) = &found.excursion
-                    {
-                        counts.world = counts.world.saturating_add(1);
-                        if excursion.site == site {
-                            counts.site = counts.site.saturating_add(1);
-                        }
-                        if excursion.operator == actor {
-                            counts.operator = counts.operator.saturating_add(1);
-                        }
+        // 4. The launch's open excursion and the caps — a launch's, and a scan's or a
+        // sounding's that implies one (doc 20 cut SM.4a, lead ruling 2); a recover from the bay
+        // closes one.
+        let launches = kind == ActKind::Launch || (kind.reads_ground() && plan.from_bay);
+        if launches {
+            if record.excursion.is_some() {
+                return Err(port_error(
+                    ActionErrorCode::ProviderRejected,
+                    "that rig has an excursion open",
+                ));
+            }
+            let mut counts = ExcursionCounts::default();
+            for other in world {
+                if let Some(found) = read_record(txn, &self.excursions, ObjId(other))?
+                    && let Some(excursion) = &found.excursion
+                {
+                    counts.world = counts.world.saturating_add(1);
+                    if excursion.site == site {
+                        counts.site = counts.site.saturating_add(1);
+                    }
+                    if excursion.operator == actor {
+                        counts.operator = counts.operator.saturating_add(1);
                     }
                 }
-                if let Some(cap) = cap_refusal(&counts) {
-                    return Err(port_error(
-                        ActionErrorCode::ProviderRejected,
-                        match cap {
-                            CapRefused::Operator => {
-                                "you have as many rigs out as one pilot may run"
-                            }
-                            CapRefused::Site => "that site has as many rigs out as it holds",
-                            CapRefused::World => "the Registry has as many rigs out as it allows",
-                        },
-                    ));
-                }
             }
-            ActKind::Recover => {
-                if plan.from_bay && record.excursion.is_none() {
-                    return Err(port_error(
-                        ActionErrorCode::ProviderRejected,
-                        "that rig is in the bay",
-                    ));
-                }
+            if let Some(cap) = cap_refusal(&counts) {
+                return Err(port_error(
+                    ActionErrorCode::ProviderRejected,
+                    match cap {
+                        CapRefused::Operator => "you have as many rigs out as one pilot may run",
+                        CapRefused::Site => "that site has as many rigs out as it holds",
+                        CapRefused::World => "the Registry has as many rigs out as it allows",
+                    },
+                ));
             }
-            ActKind::Dump | ActKind::Probe => {}
         }
-        // 5. The reserve rule (§4.1; lead ruling 3): here and nowhere else. With no battery the
-        // act spends nothing (`needs_battery` refused every spend above), which the rule
-        // always passes.
+        if kind == ActKind::Recover && plan.from_bay && record.excursion.is_none() {
+            return Err(port_error(
+                ActionErrorCode::ProviderRejected,
+                "that rig is in the bay",
+            ));
+        }
+        let mut params = plan
+            .params
+            .clone()
+            .ok_or_else(|| invalid("an act's plan names its parameters"))?;
+        // 5. The chart (doc 20 cut SM.4a; lead ruling 3, D4, D3): the same-cell rule from the
+        // fixed plan's frozen stand, then the body caps over the actor's rows on the body. The
+        // chart is not written by the start.
+        if let Some(reach) = Reach::of(&params) {
+            if plan.body_sites.len() > chart::MAX_CHART_SITES_PER_BODY {
+                return Err(invalid(
+                    "a reading act's offer names a bounded set of sites",
+                ));
+            }
+            let row = read_chart(txn, &self.charts, actor, &site)?;
+            if reach.refused(row.as_ref()) {
+                return Err(port_error(
+                    ActionErrorCode::ProviderRejected,
+                    code_of_word(Refusal::NothingNew.word()),
+                ));
+            }
+            let mut rows = Vec::new();
+            for other in &plan.body_sites {
+                if let Some(found) = read_chart(txn, &self.charts, actor, other)? {
+                    rows.push(found);
+                }
+            }
+            if let Some(row) = row
+                && !plan.body_sites.contains(&site)
+            {
+                rows.push(row);
+            }
+            let (fields, blocks) = reach.units();
+            if !body_admits(&rows, &site, &fields, &blocks) {
+                return Err(port_error(
+                    ActionErrorCode::ProviderRejected,
+                    code_of_word(
+                        Refusal::ChartFull {
+                            body: String::new(),
+                        }
+                        .word(),
+                    ),
+                ));
+            }
+        }
+        // 6. The reserve rule (§4.1; lead ruling 3): here and nowhere else, from the charge the
+        // act will spend from (an implied launch: the bay credited no further than the launch
+        // half, D22). With no battery the act spends nothing (`needs_battery` refused every
+        // spend above), which the rule always passes.
         if let Some(battery) = battery
             && reserve_check(
-                charge_at(&record.charge, now, battery),
+                charge_for_act(
+                    &record.charge,
+                    now,
+                    kind.reads_ground() && plan.from_bay,
+                    battery,
+                ),
                 reserved_total(&record),
                 plan.cost_cu,
                 plan.home_cu,
@@ -1790,14 +2344,10 @@ impl ActionProvider for SurfaceActProvider {
                 "the rig's charge is under the reserve",
             ));
         }
-        // 6. A dump freezes what the hopper holds now: each pool's **available** quantity
+        // 7. A dump freezes what the hopper holds now: each pool's **available** quantity
         // (its balance less every live hold), the one figure the finish compares and the
         // inventory's `transfer` can move — freezing the balance would refuse every dump of
         // a pool with a hold on it as `HopperChanged` (review finding tests/T4).
-        let mut params = plan
-            .params
-            .clone()
-            .ok_or_else(|| invalid("an act's plan names its parameters"))?;
         if let ActParams::Dump { hopper, goods, .. } = &mut params {
             for good in &plan.goods {
                 let held = self
@@ -1824,8 +2374,9 @@ impl ActionProvider for SurfaceActProvider {
                 ));
             }
         }
-        // 7. The write: the act, its due instant and the charge it reserves; a launch opens
-        // the excursion. The charge itself is not written (lazy).
+        // 8. The write: the act, its due instant and the charge it reserves; a launch (or the
+        // launch a reading act implies) opens the excursion. The charge itself is not written
+        // (lazy).
         let due_ic = now.checked_add(i64::from(plan.secs)).ok_or_else(|| {
             port_error(
                 ActionErrorCode::Integrity,
@@ -1845,7 +2396,7 @@ impl ActionProvider for SurfaceActProvider {
             reserved_cu: plan.cost_cu,
             params,
         });
-        if kind == ActKind::Launch {
+        if launches {
             record.excursion = Some(Excursion {
                 id: ExcursionId { tv, launch_ic: now },
                 operator: actor,
@@ -1858,7 +2409,7 @@ impl ActionProvider for SurfaceActProvider {
         let outcome = RulesValue::new(
             self.outcome.clone(),
             json!({
-                "act": kind.word(),
+                "act": wire_word(kind, quiet),
                 "actor": actor.0,
                 "due_ic": due_ic,
                 "ordinal": ordinal,
@@ -1876,6 +2427,33 @@ impl ActionProvider for SurfaceActProvider {
     }
 }
 
+/// A principal's chart row for a site, cloned; `None` when absent. A row under another key
+/// fails closed (the families rule: readers re-check the key).
+fn read_chart(
+    txn: &mut ActionTxn<'_>,
+    family: &StateFamilyHandle<ChartKey, ChartRecord>,
+    principal: ObjId,
+    site: &CanonicalId,
+) -> Result<Option<ChartRecord>, ActionError> {
+    let key = ChartKey {
+        principal,
+        site: site.clone(),
+    };
+    let found = txn
+        .get(family, &key)
+        .map_err(|_| port_error(ActionErrorCode::Integrity, "the charts are unavailable"))?
+        .cloned();
+    if let Some(row) = &found
+        && row.key() != key
+    {
+        return Err(port_error(
+            ActionErrorCode::Integrity,
+            "a chart row disagrees with its own key",
+        ));
+    }
+    Ok(found)
+}
+
 // ---- tacsim_surface_done: the finish ------------------------------------------------------------
 
 /// **`tacsim_surface_done`** — every act's finish (the brief's 3.4).
@@ -1883,8 +2461,127 @@ pub(crate) struct SurfaceDoneProvider {
     pub action: DefinitionRef,
     pub outcome: DefinitionRef,
     pub excursions: StateFamilyHandle<RigKey, RigRecord>,
+    pub charts: StateFamilyHandle<ChartKey, ChartRecord>,
     pub inventory: InventoryFamilies,
     pub tools: Arc<BTreeMap<CanonicalId, ToolDef>>,
+}
+
+/// **An implied launch's settlement** (doc 20 cut SM.4a; the brief's reviewer finding F1,
+/// D22; §4.1): the bay credits charge up to the end of the launch half (`started_ic +
+/// LAUNCH_S`) and no further; the act's cost then comes off out of the bay, stamped at the
+/// act's `due_ic`. SM.3b's [`spent`] — which would credit the bay for the whole act — is never
+/// called on a scan or a sounding from the bay.
+fn spent_after_launch(
+    charge: &Charge,
+    act: &Act,
+    battery: &BatteryDef,
+) -> Result<Charge, ActionError> {
+    let launched_at = act.started_ic.saturating_add(i64::from(LAUNCH_S));
+    let value = charge_at(charge, launched_at, battery)
+        .checked_sub(act.reserved_cu)
+        .ok_or_else(|| {
+            port_error(
+                ActionErrorCode::Integrity,
+                "the act spent more than the charge",
+            )
+        })?;
+    Ok(Charge {
+        value_cu: value,
+        at_ic: act.due_ic,
+        in_bay: false,
+    })
+}
+
+/// **An implied launch refused `Moved`** (the SM.4a fixer round's finding F1; §4.1, D22): the
+/// rig left the bay (a staff move) and its excursion stays open, so its charge leaves the bay
+/// as [`spent_after_launch`]'s would — the bay's credit up to `started_ic + LAUNCH_S` and no
+/// further — with nothing spent (the act did not run), stamped at the act's `due_ic`, out of
+/// the bay. Without the battery's row no credit is read at all (the stored value stands): a
+/// rig never gains charge it cannot be shown to have. A charge already out of the bay is
+/// unchanged.
+fn left_after_launch(charge: &Charge, act: &Act, battery: Option<&BatteryDef>) -> Charge {
+    if !charge.in_bay {
+        return *charge;
+    }
+    let launched_at = act.started_ic.saturating_add(i64::from(LAUNCH_S));
+    Charge {
+        value_cu: battery.map_or(charge.value_cu, |battery| {
+            charge_at(charge, launched_at, battery)
+        }),
+        at_ic: act.due_ic,
+        in_bay: false,
+    }
+}
+
+/// **What a reading act's finish wrote to the chart**: its span on the outcome.
+fn write_reading(
+    txn: &mut ActionTxn<'_>,
+    charts: &StateFamilyHandle<ChartKey, ChartRecord>,
+    act: &Act,
+) -> Result<ReadSpan, ActionError> {
+    let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
+    let body = match &act.params {
+        ActParams::Scan { body, .. } | ActParams::Sound { body, .. } => body.clone(),
+        ActParams::None {} | ActParams::Dump { .. } => {
+            return Err(integrity("a reading act carries its reach"));
+        }
+    };
+    let existing = read_chart(txn, charts, act.operator, &act.site)?;
+    let existed = existing.is_some();
+    let mut row =
+        existing.unwrap_or_else(|| ChartRecord::new(act.operator, act.site.clone(), body));
+    let at = act.due_ic;
+    let span = match &act.params {
+        ActParams::Scan {
+            cell,
+            footing,
+            fields,
+            hidden,
+            ..
+        } => {
+            write_scan(&mut row, *cell, fields, *footing, at);
+            ReadSpan::Scan {
+                cell: *cell,
+                footing: *footing,
+                fields: fields.clone(),
+                hidden: hidden.clone(),
+            }
+        }
+        ActParams::Sound {
+            cell,
+            radius,
+            quiet,
+            ..
+        } => {
+            let pockets = pockets_in_reach((cell[0], cell[1]), i64::from(*radius));
+            write_sound(&mut row, *cell, &pockets, *quiet, at);
+            // The heard budget (D7): one heard line a sounder an IC hour on this site; a quiet
+            // sounding is never heard and never touches it.
+            let heard = !*quiet && heard_line_due(row.heard_ic, at);
+            if heard {
+                row.heard_ic = Some(at);
+            }
+            ReadSpan::Sound {
+                cell: *cell,
+                radius: *radius,
+                quiet: *quiet,
+                heard,
+            }
+        }
+        ActParams::None {} | ActParams::Dump { .. } => {
+            return Err(integrity("a reading act carries its reach"));
+        }
+    };
+    row.check()
+        .map_err(|_| integrity("the chart row is out of bounds"))?;
+    let key = row.key();
+    let staged = if existed {
+        txn.replace(charts, &key, row)
+    } else {
+        txn.insert(charts, &key, row)
+    };
+    staged.map_err(|_| integrity("the chart row did not stage"))?;
+    Ok(span)
 }
 
 /// The charge at the act's own stamp, less its cost; an underflow is `Integrity` (the
@@ -2045,9 +2742,12 @@ impl ActionProvider for SurfaceDoneProvider {
             return Err(port_error(ActionErrorCode::Conflict, "not due"));
         }
         // The charge at the act's stamp: through the battery when its row resolves; without
-        // it only a zero spend that does not leave the bay settles (`settle_free`), so a
-        // recover lands with the row unresolvable and a launch fails closed (§4.1 "never
-        // stranded by its battery"; the fixer round's item 3). A dump never touches it.
+        // it a zero spend that does not leave the bay settles (`settle_free`), and — since cut
+        // SM.4a's pre-commit round (item 2) — so does a spend that stays out of the bay (a scan
+        // or a sounding from the ground: `settle_spent_out_of_bay`, which is what `spent` gives
+        // out of the bay), so a recover and a ground reading land with the row unresolvable and
+        // a launch (or an implied launch) fails closed (§4.1 "never stranded by its battery";
+        // the fixer round's item 3). A dump never touches it.
         let battery = rig
             .battery_id
             .as_ref()
@@ -2060,6 +2760,14 @@ impl ActionProvider for SurfaceDoneProvider {
                         port_error(ActionErrorCode::Integrity, "that rig cannot be read")
                     })
                 }
+                None if !charge.in_bay && !in_bay => {
+                    settle_spent_out_of_bay(charge, act.reserved_cu, act.due_ic).ok_or_else(|| {
+                        port_error(
+                            ActionErrorCode::Integrity,
+                            "the act spent more than the charge",
+                        )
+                    })
+                }
                 None => Err(port_error(
                     ActionErrorCode::Integrity,
                     "that rig cannot be read",
@@ -2068,6 +2776,7 @@ impl ActionProvider for SurfaceDoneProvider {
         };
         // 2. Decide from the facts at landing and the kind (decision 5).
         let mut moved: BTreeMap<CanonicalId, u64> = BTreeMap::new();
+        let mut span: Option<ReadSpan> = None;
         let result = match act.kind {
             ActKind::Launch => {
                 let beside = matches!(
@@ -2189,10 +2898,57 @@ impl ActionProvider for SurfaceDoneProvider {
                     ActResult::Done
                 }
             }
-            ActKind::Probe => {
-                let in_bay = record.charge.in_bay;
-                record.charge = settle(&record.charge, in_bay)?;
-                ActResult::Done
+            // Doc 20 cut SM.4a (D14, D22): a scan or a sounding is `Done` when the rig stands,
+            // at landing, on the act's site at the frozen stand cell — the tick placed an implied
+            // launch's rig at the ramp — and then the charge settles out of the bay and the
+            // operator's chart is written in this bundle, stamped at the act's own `due_ic`. An
+            // implied launch whose rig never left the bay is `NeverLeft` (the excursion closes,
+            // the launch's rule); anything else is `Moved`. Neither refusal spends charge or
+            // writes the chart.
+            ActKind::Scan | ActKind::Sound => {
+                let from_bay = act.params.launches();
+                let stand = act.params.stand();
+                let at_stand = matches!(
+                    &rig.facts,
+                    Facts::Ground { site: Some(site), cell: Some(cell), .. }
+                        if *site == act.site && Some(*cell) == stand
+                );
+                if at_stand {
+                    record.charge = if from_bay {
+                        match battery {
+                            Some(battery) => spent_after_launch(&record.charge, &act, battery)?,
+                            None => {
+                                return Err(port_error(
+                                    ActionErrorCode::Integrity,
+                                    "that rig cannot be read",
+                                ));
+                            }
+                        }
+                    } else {
+                        settle(&record.charge, false)?
+                    };
+                    span = Some(write_reading(txn, &self.charts, &act)?);
+                    ActResult::Done
+                } else if from_bay && matches!(&rig.facts, Facts::Bay { hull } if *hull == act.hull)
+                {
+                    record.excursion = None;
+                    ActResult::Refused {
+                        code: RefusedCode::NeverLeft,
+                    }
+                } else {
+                    // An implied launch whose rig left the bay but not for its stand (a staff
+                    // move before the due instant): the excursion the start opened stays open
+                    // (the rig is out), so the charge leaves the bay too — credited to the end
+                    // of the launch half and no further, nothing spent (the SM.4a fixer round's
+                    // finding F1; §4.1: out of the bay charge only falls by acts). A rig found
+                    // in some bay keeps its charge as it is.
+                    if from_bay && !matches!(&rig.facts, Facts::Bay { .. }) {
+                        record.charge = left_after_launch(&record.charge, &act, battery);
+                    }
+                    ActResult::Refused {
+                        code: RefusedCode::Moved,
+                    }
+                }
             }
         };
         // 3. The act clears; the outcome is stamped at the act's own due instant.
@@ -2206,6 +2962,7 @@ impl ActionProvider for SurfaceDoneProvider {
             at_ic: act.due_ic,
             result,
             moved,
+            span,
         });
         write_record(txn, &self.excursions, record, true)?;
         let outcome = RulesValue::new(
@@ -2301,6 +3058,19 @@ mod tests {
                 cap: CapRefused::Operator,
                 site: String::new(),
             },
+            Refusal::NothingNew,
+            Refusal::ChartFull {
+                body: String::new(),
+            },
+            Refusal::GroundCold {
+                site: String::new(),
+                entry: CanonicalId::new("ahuna_port").unwrap_or_else(|_| panic!("an id")),
+            },
+            Refusal::InstrumentsDark,
+            Refusal::NoFooting {
+                n: 1,
+                terrain: String::new(),
+            },
         ];
         let mut words: Vec<&str> = refusals.iter().map(Refusal::word).collect();
         for refusal in &refusals {
@@ -2329,6 +3099,160 @@ mod tests {
             "Rig 1 is about 20 m from the stern ramp; it climbs aboard from beside it."
         );
         assert_eq!(code_of_word("nonsense"), "that rig cannot be read");
+        assert_eq!(Refusal::NothingNew.line(), "You learn nothing new here.");
+        assert_eq!(Refusal::NothingNew.code(), "you learn nothing new here");
+    }
+
+    /// **The start's `act` words parse** (doc 20 cut SM.4a, D23; the brief's reviewer finding
+    /// F6): every wire word round-trips through `act_of_word`/`wire_word`; `sound_quiet` is a
+    /// quiet sounding; `probe` (the retired test kind) and `survey` (the verb's alias only) do
+    /// not parse; a sounding's quiet flag is spelled, every other kind's ignored.
+    #[test]
+    fn sm4a_the_wire_words_parse() {
+        for word in ACT_WIRE_WORDS {
+            let (kind, quiet) = act_of_word(word).unwrap_or_else(|| panic!("{word}"));
+            assert_eq!(wire_word(kind, quiet), word);
+        }
+        assert_eq!(act_of_word("sound_quiet"), Some((ActKind::Sound, true)));
+        assert_eq!(act_of_word("sound"), Some((ActKind::Sound, false)));
+        assert_eq!(act_of_word("scan"), Some((ActKind::Scan, false)));
+        for bad in ["probe", "survey", "quiet", "", "Scan"] {
+            assert_eq!(act_of_word(bad), None, "{bad:?}");
+        }
+        assert_eq!(wire_word(ActKind::Scan, true), "scan");
+        let mut sorted = ACT_WIRE_WORDS;
+        sorted.sort_unstable();
+        assert_eq!(sorted, ACT_WIRE_WORDS, "the Choice is sorted");
+        // The start's parameter gate refuses the retired probe with the message naming the six.
+        let parameters = |act: &str| {
+            json!({ "tv": "900", "act": act, "ordinal": 1 })
+                .as_object()
+                .cloned()
+                .unwrap_or_default()
+        };
+        let refused = act_param(&parameters("probe")).expect_err("probe is retired");
+        assert!(
+            refused
+                .to_string()
+                .contains("a surface act names launch, recover, dump, scan, sound or sound_quiet"),
+            "{refused}"
+        );
+        assert_eq!(
+            act_param(&parameters("sound_quiet")).ok(),
+            Some((ActKind::Sound, true))
+        );
+    }
+
+    /// **An implied launch settles at the launch half, never at the due instant** (doc 20 cut
+    /// SM.4a, F1, D22): with a battery's figures and a charge under capacity in the bay,
+    /// `spent_after_launch` leaves `charge_at(c, started + 300) − cost` out of the bay stamped
+    /// at the due instant — strictly less than `charge_at(c, due) − cost`, which SM.3b's
+    /// `spent` would credit — and equal to `charge_for_act` at the start less the cost.
+    #[test]
+    fn sm4a_spent_after_launch_credits_the_bay_only_for_the_launch_half() {
+        let battery = crate::definitions::tools::tools_table()
+            .unwrap_or_else(|e| panic!("{e}"))
+            .values()
+            .find_map(ToolDef::battery)
+            .copied()
+            .unwrap_or_else(|| panic!("a battery row"));
+        let charge = Charge {
+            value_cu: 20_000,
+            at_ic: 1_000,
+            in_bay: true,
+        };
+        let act = Act {
+            ordinal: 1,
+            kind: ActKind::Scan,
+            operator: ObjId(42),
+            hull: ObjId(500),
+            slot: 1,
+            site: CanonicalId::new("ahuna_port").unwrap_or_else(|_| panic!("an id")),
+            started_ic: 1_000,
+            due_ic: 1_900,
+            reserved_cu: 1_000,
+            params: ActParams::None {},
+        };
+        let settled =
+            spent_after_launch(&charge, &act, &battery).unwrap_or_else(|e| panic!("{e:?}"));
+        let launched = charge_at(&charge, 1_300, &battery);
+        assert_eq!(
+            settled,
+            Charge {
+                value_cu: launched - 1_000,
+                at_ic: 1_900,
+                in_bay: false
+            }
+        );
+        assert!(settled.value_cu < charge_at(&charge, 1_900, &battery) - 1_000);
+        assert_eq!(
+            settled.value_cu,
+            charge_for_act(&charge, act.started_ic, true, &battery) - act.reserved_cu
+        );
+        let ruinous = Act {
+            reserved_cu: launched + 1,
+            ..act
+        };
+        assert!(spent_after_launch(&charge, &ruinous, &battery).is_err());
+    }
+
+    /// **An implied launch refused `Moved` leaves the bay at the launch half, spending nothing**
+    /// (the SM.4a fixer round's finding F1): the charge is `charge_at(c, started + 300)` out of
+    /// the bay at the due instant — never the bay's credit for the whole act, never less the
+    /// act's cost; without the battery's row the stored value stands (no credit), still out of
+    /// the bay; a charge already out of the bay is unchanged.
+    #[test]
+    fn sm4a_a_moved_implied_launch_leaves_the_bay_at_the_launch_half() {
+        let battery = crate::definitions::tools::tools_table()
+            .unwrap_or_else(|e| panic!("{e}"))
+            .values()
+            .find_map(ToolDef::battery)
+            .copied()
+            .unwrap_or_else(|| panic!("a battery row"));
+        let charge = Charge {
+            value_cu: 20_000,
+            at_ic: 1_000,
+            in_bay: true,
+        };
+        let act = Act {
+            ordinal: 1,
+            kind: ActKind::Sound,
+            operator: ObjId(42),
+            hull: ObjId(500),
+            slot: 1,
+            site: CanonicalId::new("ahuna_port").unwrap_or_else(|_| panic!("an id")),
+            started_ic: 1_000,
+            due_ic: 2_500,
+            reserved_cu: 2_000,
+            params: ActParams::None {},
+        };
+        let left = left_after_launch(&charge, &act, Some(&battery));
+        assert_eq!(
+            left,
+            Charge {
+                value_cu: charge_at(&charge, 1_300, &battery),
+                at_ic: 2_500,
+                in_bay: false
+            }
+        );
+        assert!(
+            left.value_cu > charge.value_cu,
+            "the launch half's credit shows"
+        );
+        assert!(left.value_cu < charge_at(&charge, 2_500, &battery));
+        assert_eq!(
+            left_after_launch(&charge, &act, None),
+            Charge {
+                value_cu: 20_000,
+                at_ic: 2_500,
+                in_bay: false
+            }
+        );
+        let out = Charge {
+            in_bay: false,
+            ..charge
+        };
+        assert_eq!(left_after_launch(&out, &act, Some(&battery)), out);
     }
 
     /// The keys of both actions form.

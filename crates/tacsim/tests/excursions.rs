@@ -21,13 +21,18 @@
 
 mod support;
 
+/// Doc 20 cut SM.4a: test 8 boots keyed, so a scan and a sounding plan (the retired probe's
+/// replacement).
+#[path = "support/geology_keyed.rs"]
+mod geology_keyed;
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use mush_core::{
     AccountId, AccountIdentity, ActionStateBootRecord, Audience, AuthoritativeSubmit, CanonicalId,
-    CommitToken, GOD, IdempotencyKey, IdempotencyKeyText, IdempotencyScope, ModuleWrite, ObjId,
-    OfferExecutionContext, OfferSubmission, PerceivedRef, RequestUid, ScopedIdempotencyKey,
+    CommitToken, GOD, IdempotencyKey, IdempotencyScope, ModuleWrite, ObjId, OfferExecutionContext,
+    OfferSubmission, PerceivedRef, RequestUid, ScopedIdempotencyKey,
 };
 use mush_economy::{EconomyConfig, EconomyStore, HoldId, VaultId};
 use mush_inventory::{EndpointRef, Grade, InventoryHandles, LotId};
@@ -38,12 +43,12 @@ use mush_testkit::{TestWorld, fold_module_ops_into};
 use smol_str::SmolStr;
 use tacsim::definitions::content::LANE_PACK;
 use tacsim::port::tv::{
-    ACT_FAILED, CAP_OPERATOR, DUMP_EMPTY, DUMP_NO_SPOIL, DUMP_NOT_SITE, DUMPED, LAUNCH_CLEARED,
-    LAUNCH_ENDED, LAUNCH_FORFEIT, LAUNCH_NOT_SITE, LAUNCH_OPEN, LAUNCH_OUT, LAUNCH_PREVIEW,
-    LAUNCH_UNDER_WAY, LAUNCHED, LEASE_FAILED, NO_RIG, RECOVER_ELSEWHERE, RECOVER_FAR,
-    RECOVER_IN_BAY, RECOVER_PREVIEW_UNREAD, RECOVERED, RIG_BUSY, RIG_LOGGED_OUT, TV_DARK,
-    TV_NOT_ABOARD, TV_UNWIRED, TvLeaseStatus, WHERE_AWAY, WHICH_RIG_ACT, WHY_HOPPER_CHANGED,
-    WHY_NEVER_LEFT, WHY_NOT_BESIDE, WHY_SPOIL_GONE,
+    ACT_FAILED, CAP_OPERATOR, DUMP_EMPTY, DUMP_NO_SPOIL, DUMP_NOT_SITE, DUMPED, GROUND_DARK_LINE,
+    LAUNCH_CLEARED, LAUNCH_ENDED, LAUNCH_FORFEIT, LAUNCH_NOT_SITE, LAUNCH_OPEN, LAUNCH_OUT,
+    LAUNCH_PREVIEW, LAUNCH_UNDER_WAY, LAUNCHED, LEASE_FAILED, NO_RIG, RECOVER_ELSEWHERE,
+    RECOVER_FAR, RECOVER_IN_BAY, RECOVER_PREVIEW_UNREAD, RECOVERED, RIG_BUSY, RIG_LOGGED_OUT,
+    TV_DARK, TV_NOT_ABOARD, TV_UNWIRED, TvLeaseStatus, WHERE_AWAY, WHICH_RIG_ACT,
+    WHY_HOPPER_CHANGED, WHY_NEVER_LEFT, WHY_NOT_BESIDE, WHY_SPOIL_GONE,
 };
 use tacsim::port::voyage::{HOPPER_LOADED, TV_AWAY, TV_BUSY, TV_OUT, Voyage, VoyageState};
 use tacsim::port::{HullRow, PortHandles, PortMap, PortMapState, Ticket, TicketId, room_key};
@@ -994,6 +999,13 @@ fn sm3b_launch_previews_bare_and_go_sends_the_rig_down_the_ramp() {
         ),
         "{status}"
     );
+    // Doc 20 cut SM.4a: the rig on the ground gains the status's ground line; this world is
+    // unkeyed, so the instruments read dark (the ramp cell is block K's, field K-NW).
+    let dark = GROUND_DARK_LINE
+        .replace("{block}", "K")
+        .replace("{tenure}", "open")
+        .replace("{field}", "K-NW");
+    assert!(status.contains(&dark), "{status}");
     no_refused_writes(&rig.tw);
 }
 
@@ -1559,52 +1571,98 @@ fn sm3b_a_bare_act_commits_nothing() {
 // 8. Two acts cannot spend one margin (A7)
 // ---------------------------------------------------------------------------
 
-/// A test-world probe of `cost_cu` at `ordinal`, as `pilot` (the brief's 3.7).
-fn probe(rig: &Rig, pilot: ObjId, tv: ObjId, ordinal: u32, cost_cu: u32) -> AuthoritativeSubmit {
-    AuthoritativeSubmit {
-        actor: pilot,
-        action: handles(&rig.tw)
-            .surface_act
-            .expect("the start is registered"),
-        subject: PerceivedRef::SelfActor,
-        targets: Vec::new(),
-        parameters: serde_json::json!({
-            "tv": tv.0.to_string(),
-            "act": "probe",
-            "ordinal": ordinal,
-            "probe_cu": cost_cu,
-            "probe_s": 0,
-        }),
-        key: IdempotencyKeyText::parse_canonical(format!(
-            "tacsim.surface/{}/{ordinal}/probe{cost_cu}",
-            tv.0
-        ))
-        .expect("a key"),
-    }
+/// **Boot, settle and stock every port with the geology key handed in** (doc 20 cut SM.4a):
+/// `stocked`'s rig, composed, keyed between composition and the boot pass (`build_engine`'s
+/// order), so a scan and a sounding plan.
+fn stocked_keyed() -> Rig {
+    let (world, registry) = mush_testkit::boot_world();
+    let mut engine = mush_core::Engine::with_modules(world, registry, Roster.modules())
+        .expect("the roster composes");
+    assert!(tacsim::surface::install_geology(
+        &mut engine.world,
+        tacsim::surface::GeologyBoot::Key(geology_keyed::secret(geology_keyed::KEY_1))
+    ));
+    let (mut out, mut fx) = (mush_core::Outbox::new(), mush_core::Effects::new());
+    engine
+        .modules_loaded(HashMap::new(), &mut out, &mut fx)
+        .expect("the world boots");
+    let mut tw = TestWorld::from_engine(engine);
+    no_refused_writes(&tw);
+    with_offer_keys(&mut tw);
+    let oracle = Arc::new(MapOracle::default());
+    install_oracle(&mut tw, &oracle);
+    let mut rig = Rig {
+        tw,
+        oracle,
+        store: HashMap::new(),
+        typed: BTreeMap::new(),
+    };
+    sweep(&mut rig.tw, 120);
+    stock(&mut rig);
+    set_rate(&mut rig.tw, 1);
+    rig
 }
 
-/// **Two acts cannot spend one margin** (A7; §4.1, §19 item 4; decision 4): on a launched rig
-/// (100,000 cu, out of the bay, so the charge is flat) at ordinal N: (a) two 60,000 cu probes
-/// both at N+1, built before either lands — the first lands, the second refuses "that rig's
-/// orders moved on" and changes nothing; (b) the first finished, the charge reads 40,000 and
-/// a 60,000 cu probe at N+2 refuses "the rig's charge is under the reserve"; (c) a 35,000 cu
-/// probe at N+2 lands and finishes — 5,000 left, exactly the floor — and a 1 cu probe at N+3
-/// refuses with the reserve message; (d) staff leave the rig under the floor (4,000 cu): a
-/// 1 cu probe refuses, and a recover from beside the ramp (a zero spend) previews, lands and
-/// finishes — the exemption, in the world.
+/// Set a rig's charge out of the bay at the world's IC now (staff's hand, `put_record`).
+fn put_charge(rig: &mut Rig, tv: ObjId, value_cu: u32) {
+    let mut record = record_of(&mut rig.tw, tv).expect("the record");
+    record.charge = Charge {
+        value_cu,
+        at_ic: ic_now(&rig.tw),
+        in_bay: false,
+    };
+    put_record(rig, record);
+}
+
+/// Staff move `tv` to the centre of site cell `(x, y)`.
+fn to_cell(rig: &mut Rig, tv: ObjId, (x, y): (i64, i64)) {
+    staff_place(rig, tv, x * 1_000 + 500, y * 1_000 + 500);
+}
+
+/// Fire until Ahuna Flank's ground is warm (the arrival hook asked for it; the surface tick
+/// builds one site a fire).
+fn warm_ahuna(rig: &mut Rig) {
+    for _ in 0..8 {
+        let warm = rig
+            .tw
+            .world()
+            .module_state::<tacsim::surface::GeologyState>()
+            .is_some_and(|state| !state.sites().is_empty());
+        if warm {
+            return;
+        }
+        let (_, queued) = fire(rig);
+        land_quietly(rig, &queued);
+    }
+    panic!("Ahuna Flank's ground was not warmed");
+}
+
+/// **Two acts cannot spend one margin** (A7; §4.1, §19 item 4; decision 4) — **rewritten by doc
+/// 20 cut SM.4a on the real kinds** (the test-world probe is retired, D15; a keyed boot so the
+/// scan and the sounding plan): on a launched rig (100,000 cu, out of the bay, so the charge is
+/// flat) at ordinal N: (a) two soundings both at N+1, built before either lands — the first
+/// lands, the second refuses "that rig's orders moved on" and changes nothing; (b) the first
+/// finished, staff set the charge to 6,500 cu and move the rig to a new cell (the same-cell
+/// rule refuses a repeat before the reserve is read): a sounding (2,000) refuses "the rig's
+/// charge is under the reserve" (4,500 < 5,000), while a scan (1,000) lands and finishes leaving
+/// 5,500; (c) staff set 7,000 and move it again: a sounding lands and finishes leaving exactly
+/// the 5,000 floor, and a scan from a new cell then refuses with the reserve message (4,000);
+/// (d) staff leave the rig at the ramp **under** the floor (4,000 cu): a scan refuses, and a
+/// recover (a zero spend) previews, lands and finishes — the exemption, in the world.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn sm3b_two_acts_cannot_spend_one_margin() {
-    let mut rig = stocked();
+    let mut rig = stocked_keyed();
     let (pilot, _, tvs) = on_pad(&mut rig, 1);
     let tv = tvs[0];
     let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
     let _ = finish(&mut rig, tv, pilot);
+    warm_ahuna(&mut rig);
     let n = record_of(&mut rig.tw, tv).expect("the record").ordinal;
     // (a)
-    let first = probe(&rig, pilot, tv, n + 1, 60_000);
-    let second = probe(&rig, pilot, tv, n + 1, 60_001);
-    land(&mut rig, &first).expect("the first probe lands");
+    let first = start(&rig, pilot, tv, "sound", n + 1);
+    let second = start(&rig, pilot, tv, "sound", n + 1);
+    land(&mut rig, &first).expect("the first sounding lands");
     let landed = record_of(&mut rig.tw, tv);
     let refused = land(&mut rig, &second).expect_err("the second refuses");
     assert!(refused.contains("that rig's orders moved on"), "{refused}");
@@ -1616,45 +1674,52 @@ fn sm3b_two_acts_cannot_spend_one_margin() {
     // (b)
     let _ = finish(&mut rig, tv, pilot);
     let record = record_of(&mut rig.tw, tv).expect("the record");
-    assert_eq!(record.charge.value_cu, 40_000);
+    assert_eq!(record.charge.value_cu, FULL - 2_000);
     assert!(!record.charge.in_bay);
-    let over = probe(&rig, pilot, tv, n + 2, 60_000);
+    put_charge(&mut rig, tv, 6_500);
+    to_cell(&mut rig, tv, (133, 124));
+    let over = start(&rig, pilot, tv, "sound", n + 2);
     let refused = land(&mut rig, &over).expect_err("reserve");
     assert!(
         refused.contains("the rig's charge is under the reserve"),
         "{refused}"
     );
+    let scan = start(&rig, pilot, tv, "scan", n + 2);
+    land(&mut rig, &scan).expect("a scan of 1,000 fits");
+    let _ = finish(&mut rig, tv, pilot);
+    assert_eq!(
+        record_of(&mut rig.tw, tv).map(|r| r.charge.value_cu),
+        Some(5_500)
+    );
     // (c)
-    let fits = probe(&rig, pilot, tv, n + 2, 35_000);
-    land(&mut rig, &fits).expect("35,000 fits");
+    put_charge(&mut rig, tv, 7_000);
+    to_cell(&mut rig, tv, (138, 124));
+    let fits = start(&rig, pilot, tv, "sound", n + 3);
+    land(&mut rig, &fits).expect("2,000 from 7,000 fits");
     let _ = finish(&mut rig, tv, pilot);
     assert_eq!(
         record_of(&mut rig.tw, tv).map(|r| r.charge.value_cu),
         Some(5_000),
         "exactly the floor"
     );
-    let one = probe(&rig, pilot, tv, n + 3, 1);
-    let refused = land(&mut rig, &one).expect_err("4,999");
+    to_cell(&mut rig, tv, (143, 124));
+    let one = start(&rig, pilot, tv, "scan", n + 4);
+    let refused = land(&mut rig, &one).expect_err("4,000");
     assert!(
         refused.contains("the rig's charge is under the reserve"),
         "{refused}"
     );
     // (d) The way home is never refused by the rule (decision 21; review finding tests/T2):
     // at exactly the floor a zero spend fits without the exemption, so staff leave the rig
-    // **under** it (4,000 cu, out of the bay, as a tools-data change might). A 1 cu probe
-    // there refuses — the rule is live — yet the recover (a zero spend) previews, lands and
-    // finishes `Done`.
+    // **under** it (4,000 cu, out of the bay, as a tools-data change might), at the ramp. A
+    // scan there refuses — the rule is live — yet the recover (a zero spend) previews, lands
+    // and finishes `Done`.
+    staff_place(&mut rig, tv, RAMP.0, RAMP.1);
     let (out, queued) = command(&mut rig, pilot, "+tv/1 recover");
     assert!(out.contains("charge 5 → 5 %"), "{out}");
     assert!(queued.is_empty());
-    let mut under = record_of(&mut rig.tw, tv).expect("the record");
-    under.charge = Charge {
-        value_cu: 4_000,
-        at_ic: ic_now(&rig.tw),
-        in_bay: false,
-    };
-    put_record(&mut rig, under);
-    let one = probe(&rig, pilot, tv, n + 3, 1);
+    put_charge(&mut rig, tv, 4_000);
+    let one = start(&rig, pilot, tv, "scan", n + 4);
     let refused = land(&mut rig, &one).expect_err("under the floor");
     assert!(
         refused.contains("the rig's charge is under the reserve"),

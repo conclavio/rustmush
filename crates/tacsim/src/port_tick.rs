@@ -43,6 +43,8 @@
 //! finish, submitted by the `tacsim.surface` tick as the operator), each only when the
 //! inventory cell is filled and the tools table built (`crate::surface::act`); and, at the
 //! end of [`crate::port_tick::register`], the surface tick itself (`crate::surface::tick`).
+//! **Doc 20 cut SM.4a** hands both the chart family and adds `+tv/forget`'s own action,
+//! `tacsim_chart_forget` (`crate::surface::chart`), on every roster.
 //!
 //! **The probe** (lead ruling L3) is registered only in a test world: an agent
 //! that acts as its principal once per remaining count, submitting
@@ -177,10 +179,15 @@ pub fn register(
         .get(crate::surface::act::SURFACE_DONE_OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("the surface finish's outcome did not register"))?;
+    let chart_forget_outcome = outcome_refs
+        .get(crate::surface::chart::CHART_FORGET_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the chart forget's outcome did not register"))?;
     let actions = action_descriptors(
         &stock_outcome,
         &burn_outcome,
         (&surface_act_outcome, &surface_done_outcome),
+        &chart_forget_outcome,
         probe_outcome.as_ref(),
     )?;
     reg.definition_validator(
@@ -280,9 +287,9 @@ pub fn register(
                     action: act.clone(),
                     outcome: surface_act_outcome,
                     excursions: port_families.excursions.clone(),
+                    charts: port_families.charts.clone(),
                     inventory: inventory.clone(),
                     tools: Arc::clone(&tools),
-                    test_world,
                 },
             )?;
             reg.action_provider(
@@ -291,6 +298,7 @@ pub fn register(
                     action: done.clone(),
                     outcome: surface_done_outcome,
                     excursions: port_families.excursions.clone(),
+                    charts: port_families.charts.clone(),
                     inventory,
                     tools,
                 },
@@ -298,6 +306,25 @@ pub fn register(
             (Some(act), Some(done))
         }
         _ => (None, None),
+    };
+    // Doc 20 cut SM.4a (D9): `tacsim_chart_forget`, `+tv/forget`'s own action — registered on
+    // every roster, since it needs only the chart family.
+    let chart_forget = match action_refs
+        .get(crate::surface::chart::CHART_FORGET_ACTION)
+        .cloned()
+    {
+        Some(action) => {
+            reg.action_provider(
+                action.clone(),
+                crate::surface::chart::ChartForgetProvider {
+                    action: action.clone(),
+                    outcome: chart_forget_outcome,
+                    charts: port_families.charts.clone(),
+                },
+            )?;
+            Some(action)
+        }
+        None => None,
     };
     reg.state(PortHandles {
         families: port_families,
@@ -307,6 +334,7 @@ pub fn register(
         surface_act,
         surface_done,
         surface_tools,
+        chart_forget,
     });
     reg.state(PortTickState::new(probe_action, stock_action));
     reg.tick(
@@ -365,6 +393,12 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
             crate::surface::act::SURFACE_DONE_OUTCOME,
             json!({ "fields": ["actor", "ordinal", "result", "tv"] }),
         )?,
+        // Doc 20 cut SM.4a (D9): `+tv/forget`'s own action.
+        descriptor(
+            "outcome",
+            crate::surface::chart::CHART_FORGET_OUTCOME,
+            json!({ "fields": ["actor", "rows"] }),
+        )?,
     ];
     if test_world {
         descriptors.push(descriptor(
@@ -385,6 +419,7 @@ fn action_descriptors(
     stock_outcome: &DefinitionRef,
     burn_outcome: &DefinitionRef,
     surface_outcomes: (&DefinitionRef, &DefinitionRef),
+    chart_forget_outcome: &DefinitionRef,
     probe_outcome: Option<&DefinitionRef>,
 ) -> Result<Vec<DefinitionDescriptor>, ModError> {
     let mut descriptors = vec![
@@ -430,6 +465,17 @@ fn action_descriptors(
             }),
         )?
         .with_references(vec![surface_outcomes.1.clone()]),
+        // Doc 20 cut SM.4a (D9): `+tv/forget` strikes the actor's `tacsim.chart` rows.
+        descriptor(
+            "action",
+            crate::surface::chart::CHART_FORGET_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::surface::chart::CHART_FAMILY,
+            }),
+        )?
+        .with_references(vec![chart_forget_outcome.clone()]),
     ];
     if let Some(outcome) = probe_outcome {
         descriptors.push(

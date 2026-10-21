@@ -194,6 +194,39 @@ pub fn survey_words(w: &World, pack: &RulesPack, site_location: &CanonicalId) ->
     Some(parts.join(", "))
 }
 
+/// **An org's name** in the pack: its `name` on the port entry that authors it, else its id.
+#[must_use]
+pub fn org_name(pack: &RulesPack, id: &CanonicalId) -> String {
+    pack.entries()
+        .values()
+        .find_map(|entry| match entry {
+            PackEntry::Port(port) => port
+                .orgs
+                .iter()
+                .find(|org| &org.id == id)
+                .map(|org| org.name.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// **One block's tenure word** (doc 20 cut SM.4a; §10's `+tv` status line, D18): `commons`,
+/// `open`, or `held by {org}` (the holder's name in `pack`, its id without one). A held block
+/// the validator would refuse without a holder reads `open`, as [`tenure_parts`] counts it.
+/// Claims are SM.6's and SM.10's: this is the site's authored word.
+#[must_use]
+pub fn block_tenure(pack: Option<&RulesPack>, site: &SiteDef, letter: char) -> String {
+    let block = site.block(letter);
+    match (block.tenure, block.holder) {
+        (Tenure::Commons, _) => Tenure::Commons.word().to_owned(),
+        (Tenure::Open, _) | (Tenure::Held, None) => Tenure::Open.word().to_owned(),
+        (Tenure::Held, Some(holder)) => format!(
+            "held by {}",
+            pack.map_or_else(|| holder.to_string(), |pack| org_name(pack, holder))
+        ),
+    }
+}
+
 /// **The site's tenure in words** (`+chart`'s [`TENURE_LINE`]): the sixteen blocks
 /// counted per tenure in the order commons, open, held — the held ones grouped by
 /// holder, each named by its org's `name` in the pack (the id when no port authors it) —
@@ -218,19 +251,7 @@ pub fn tenure_parts(pack: &RulesPack, site: &SiteDef) -> String {
             (Tenure::Held, None) => open = open.saturating_add(1),
         }
     }
-    let org_name = |id: &CanonicalId| -> String {
-        pack.entries()
-            .values()
-            .find_map(|entry| match entry {
-                PackEntry::Port(port) => port
-                    .orgs
-                    .iter()
-                    .find(|org| &org.id == id)
-                    .map(|org| org.name.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| id.to_string())
-    };
+    let org_name = |id: &CanonicalId| org_name(pack, id);
     let mut parts: Vec<String> = Vec::new();
     if commons > 0 {
         parts.push(format!("{commons} commons"));
@@ -751,6 +772,51 @@ mod tests {
             },
         )]);
         assert_eq!(tenure_parts(&pack, &mixed), "1 commons; 15 open");
+    }
+
+    /// **One block's tenure word** (doc 20 cut SM.4a; the `+tv` status's ground line, D18; the
+    /// fixer round's finding T5), over the shipped lane's own sites: Occator Rim's F, G, J and K
+    /// read `held by Occator Water & Propellant` (the holder's name, never its id) and its other
+    /// blocks `open`; Freeport Commons's blocks `commons`; Ahuna Flank's `open`. Without the
+    /// pack the holder's id stands; a held block without a holder reads `open`.
+    #[test]
+    fn sm4a_block_tenure_names_commons_open_and_the_holder() {
+        let Ok(pack) = crate::pack::load_pack(crate::definitions::content::LANE_JSON) else {
+            panic!("the shipped lane loads");
+        };
+        let site_of = |entry: &str| match pack.entry(&cid(entry)) {
+            Some(PackEntry::Port(port)) => port
+                .site
+                .clone()
+                .unwrap_or_else(|| panic!("{entry} is a site")),
+            _ => panic!("{entry} is a port entry"),
+        };
+        let rim = site_of("occator_port");
+        for letter in ['F', 'G', 'J', 'K'] {
+            assert_eq!(
+                block_tenure(Some(&pack), &rim, letter),
+                "held by Occator Water & Propellant",
+                "{letter}"
+            );
+        }
+        assert_eq!(block_tenure(Some(&pack), &rim, 'A'), "open");
+        assert_eq!(block_tenure(None, &rim, 'F'), "held by occator");
+        let commons = site_of("commons_port");
+        for letter in BLOCK_LETTERS {
+            assert_eq!(block_tenure(Some(&pack), &commons, letter), "commons");
+        }
+        assert_eq!(
+            block_tenure(Some(&pack), &site_of("ahuna_port"), 'K'),
+            "open"
+        );
+        let headless = site(&[(
+            "F",
+            BlockDef {
+                tenure: Some(Tenure::Held),
+                ..BlockDef::default()
+            },
+        )]);
+        assert_eq!(block_tenure(Some(&pack), &headless, 'F'), "open");
     }
 
     /// The charge: whole IC days a soul, capped at the leg home; nothing before arrival.

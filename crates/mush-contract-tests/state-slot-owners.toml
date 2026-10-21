@@ -366,6 +366,20 @@ store, which a `TestWorld` has none of, so the rig installs the fixed account ma
 """
 
 [[site]]
+path = "crates/tacsim/tests/knowing.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.4a, for the excursions.rs row's reason: the knowing tests charter
+their pilots through `+coop/enrol` and buy their licences per gateway account
+before the refit, the rig leases and the hop to a site's pad, and both rules
+fail closed on an unmapped character. The oracle is boot-hydrated by the host
+from the store, which a `TestWorld` has none of, so the rig installs the fixed
+account map — the `match_lifecycle.rs` precedent.
+"""
+
+[[site]]
 path = "crates/tacsim/tests/plumbing.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
@@ -728,6 +742,21 @@ site region (SM.2's lane packs author them). The test inserts its own 256 by 256
 test region into this world's atlas records (RAM only; nothing is persisted) so
 the synchronous door's capture, cache key, hit and refusals run on a composed
 world rather than on a hand-made `Records`.
+"""
+
+[[site]]
+path = "crates/tacsim/tests/knowing.rs"
+accessor = "World::module_state_mut"
+slot = "AtlasState"
+owner = "atlas"
+reason = """
+Doc 20 cut SM.4a, for the definitions.rs and geology.rs rows' reasons: a site's
+footing and its build both read the composed atlas's records, and the only way to
+hand a rig a cell with no footing, a site whose build fails or a capture that
+fails is to change the ground it reads. The tests repaint the middle cell of
+Ahuna Flank's tiles as paved (a class with no footing), or strike its region record (RAM only;
+nothing is persisted), then assert the refusal, the dark site and the once-a-boot
+warning.
 """
 
 [[site]]

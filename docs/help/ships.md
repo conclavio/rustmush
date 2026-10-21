@@ -172,6 +172,7 @@ site's spoil heap, for good. Without a number, `+tv/launch` addresses the rig yo
 named last, or your only rig. `+tv` shows where each rig is, its charge and any
 act it is in the middle of. The Dray-P lifts only with every rig in her bay and
 every hopper empty: `+ship/lift`, `+ship/plan` and a queued depart all say which
-rig holds her.
+rig holds her. Scanning, sounding and the rest of the mining loop are in
+`help mining`.
 
-See also: `help orders`, `help ports`, `help trade`, `help coop`.
+See also: `help orders`, `help ports`, `help trade`, `help coop`, `help mining`.

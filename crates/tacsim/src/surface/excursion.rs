@@ -38,6 +38,7 @@ use smol_str::SmolStr;
 use crate::definitions::logistics::{BayDef, MAX_BAY_ITEMS};
 use crate::definitions::tools::BatteryDef;
 use crate::surface::ground::SITE_CELL_CM;
+use crate::surface::reading::Footing;
 
 /// The typed family (§8; lead ruling 1).
 pub const EXCURSION_FAMILY: &str = "tacsim.excursion";
@@ -125,20 +126,27 @@ pub enum ActKind {
     Recover,
     /// The hopper emptied onto the site's spoil (§4.3).
     Dump,
-    /// **A test world's act with a cost** (the brief's 3.7): exercises the reserve rule
-    /// before SM.4 and SM.7 give real acts costs. Never offered in production.
-    Probe,
+    /// **A scan** (doc 20 cut SM.4a; §5's R1, D-20-8): the nine fields around the rig's own
+    /// that the mast sees, sharpened by its footing. `survey` is the verb's alias only.
+    Scan,
+    /// **A sounding** (doc 20 cut SM.4a; §5's R2): every pocket within the sounding's reach,
+    /// loud (heard across the site) or quiet (a quarter of the reach, heard by nobody) — the
+    /// quiet flag is the act's parameter, not a kind ([`ActParams::Sound`]).
+    Sound,
 }
 
 impl ActKind {
-    /// The act's word on the verb and the wire (`launch`, `recover`, `dump`, `probe`).
+    /// The act's word on the verb and in every line a player reads (`launch`, `recover`,
+    /// `dump`, `scan`, `sound`). The start's `act` parameter spells a quiet sounding
+    /// `sound_quiet` (`crate::surface::act::wire_word`).
     #[must_use]
     pub fn word(self) -> &'static str {
         match self {
             ActKind::Launch => "launch",
             ActKind::Recover => "recover",
             ActKind::Dump => "dump",
-            ActKind::Probe => "probe",
+            ActKind::Scan => "scan",
+            ActKind::Sound => "sound",
         }
     }
 
@@ -149,9 +157,17 @@ impl ActKind {
             "launch" => Some(ActKind::Launch),
             "recover" => Some(ActKind::Recover),
             "dump" => Some(ActKind::Dump),
-            "probe" => Some(ActKind::Probe),
+            "scan" => Some(ActKind::Scan),
+            "sound" => Some(ActKind::Sound),
             _ => None,
         }
+    }
+
+    /// Whether the act reads the ground (a scan or a sounding): its plan may imply the launch,
+    /// and its finish writes the operator's chart.
+    #[must_use]
+    pub fn reads_ground(self) -> bool {
+        matches!(self, ActKind::Scan | ActKind::Sound)
     }
 }
 
@@ -172,11 +188,189 @@ pub enum ActParams {
         /// Good → the quantity the hopper held at the start.
         goods: BTreeMap<CanonicalId, u64>,
     },
-    /// The test world's probe: its cost, cu.
-    Probe {
-        /// What the probe spends, cu.
-        cost_cu: u32,
+    /// **A scan** (doc 20 cut SM.4a; lead ruling 6): everything it reads, frozen at the start
+    /// so the finish needs no composite (cells are never edited, D-14-9).
+    Scan {
+        /// The launch is implied: the rig stood in the bay at plan time, and the scan reads
+        /// from the ramp's cell once the tick has placed it there.
+        from_bay: bool,
+        /// The site's body (the chart row's).
+        body: CanonicalId,
+        /// The stand cell, site-local `[x, y]` from the south-west.
+        cell: [i64; 2],
+        /// The footing at the stand.
+        footing: Footing,
+        /// The fields the mast sees (site field indexes, `fy · 8 + fx`), 1..=9, the stand's
+        /// own always among them.
+        fields: Vec<u8>,
+        /// The fields in reach the mast does not see, at most 8, disjoint from `fields`.
+        hidden: Vec<u8>,
     },
+    /// **A sounding** (doc 20 cut SM.4a): its stand and reach, frozen at the start.
+    Sound {
+        /// The launch is implied (as the scan's).
+        from_bay: bool,
+        /// The site's body.
+        body: CanonicalId,
+        /// The stand cell.
+        cell: [i64; 2],
+        /// The reach, cells per axis (16 loud, 8 quiet on the Mk1 mast), 1..=48.
+        radius: u32,
+        /// Quiet: heard by nobody.
+        quiet: bool,
+    },
+}
+
+/// The most cells an instrument's reach may name (the scan's 48 on the Mk1 mast).
+pub const MAX_READ_RADIUS_CELLS: u32 = 48;
+/// The most fields a scan reads: the stand's own and its eight neighbours.
+pub const MAX_SCAN_FIELDS: usize = 9;
+
+impl ActParams {
+    /// Whether a scan's or a sounding's launch is implied; `false` for every other act.
+    #[must_use]
+    pub fn launches(&self) -> bool {
+        match self {
+            ActParams::Scan { from_bay, .. } | ActParams::Sound { from_bay, .. } => *from_bay,
+            ActParams::None {} | ActParams::Dump { .. } => false,
+        }
+    }
+
+    /// A scan's or a sounding's stand cell.
+    #[must_use]
+    pub fn stand(&self) -> Option<[i64; 2]> {
+        match self {
+            ActParams::Scan { cell, .. } | ActParams::Sound { cell, .. } => Some(*cell),
+            ActParams::None {} | ActParams::Dump { .. } => None,
+        }
+    }
+
+    /// **A reading act's own bounds** (doc 20 cut SM.4a): the stand on the site; a scan's
+    /// `1..=9` distinct field indexes and at most 8 hidden ones, distinct and disjoint; a
+    /// sounding's reach `1..=48`.
+    fn check(&self) -> Result<(), String> {
+        match self {
+            ActParams::None {} | ActParams::Dump { .. } => Ok(()),
+            ActParams::Scan {
+                cell,
+                fields,
+                hidden,
+                ..
+            } => {
+                if !stand_on_site(*cell) {
+                    return Err("a scan stands on its site".to_owned());
+                }
+                check_fields(fields, hidden)
+            }
+            ActParams::Sound { cell, radius, .. } => {
+                if !stand_on_site(*cell) {
+                    return Err("a sounding stands on its site".to_owned());
+                }
+                check_radius(*radius)
+            }
+        }
+    }
+}
+
+/// A stand cell on the site, `0..256` on both axes.
+fn stand_on_site([x, y]: [i64; 2]) -> bool {
+    crate::surface::address::cell_on_site((x, y))
+}
+
+/// A sounding's reach, `1..=MAX_READ_RADIUS_CELLS`.
+fn check_radius(radius: u32) -> Result<(), String> {
+    if radius == 0 || radius > MAX_READ_RADIUS_CELLS {
+        return Err(format!(
+            "a sounding reads 1 to {MAX_READ_RADIUS_CELLS} cells"
+        ));
+    }
+    Ok(())
+}
+
+/// A scan's seen and hidden fields: `1..=9` distinct valid seen, at most 8 distinct valid
+/// hidden, the two disjoint.
+fn check_fields(fields: &[u8], hidden: &[u8]) -> Result<(), String> {
+    let valid = |index: &u8| crate::surface::address::field_of_index(*index).is_some();
+    let distinct = |list: &[u8]| {
+        let set: std::collections::BTreeSet<u8> = list.iter().copied().collect();
+        set.len() == list.len()
+    };
+    if fields.is_empty() || fields.len() > MAX_SCAN_FIELDS || !fields.iter().all(valid) {
+        return Err(format!(
+            "a scan reads 1 to {MAX_SCAN_FIELDS} fields of its site"
+        ));
+    }
+    if hidden.len() >= MAX_SCAN_FIELDS || !hidden.iter().all(valid) {
+        return Err("a scan hides fewer than nine fields of its site".to_owned());
+    }
+    if !distinct(fields) || !distinct(hidden) || fields.iter().any(|f| hidden.contains(f)) {
+        return Err("a scan's fields are distinct, each seen or hidden, never both".to_owned());
+    }
+    Ok(())
+}
+
+/// **What a finished scan or sounding read** (doc 20 cut SM.4a; §3.3 of the brief): carried on
+/// its [`Outcome`] so the tell names what **this** act read after the act has cleared — the
+/// stand, and the scan's fields or the sounding's reach — and whether a loud sounding was
+/// heard (the heard budget, `crate::surface::chart::heard_line_due`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReadSpan {
+    /// A scan's.
+    Scan {
+        /// The stand cell.
+        cell: [i64; 2],
+        /// The footing it read from.
+        footing: Footing,
+        /// The fields it read.
+        fields: Vec<u8>,
+        /// The fields in reach the mast did not see.
+        hidden: Vec<u8>,
+    },
+    /// A sounding's.
+    Sound {
+        /// The stand cell.
+        cell: [i64; 2],
+        /// Its reach, cells per axis.
+        radius: u32,
+        /// Quiet.
+        quiet: bool,
+        /// A loud sounding the site heard (inside the sounder's budget); never a quiet one.
+        heard: bool,
+    },
+}
+
+impl ReadSpan {
+    /// The span's bounds: [`ActParams`]'s for the same act, and a quiet sounding never heard.
+    fn check(&self) -> Result<(), String> {
+        match self {
+            ReadSpan::Scan {
+                cell,
+                fields,
+                hidden,
+                ..
+            } => {
+                if !stand_on_site(*cell) {
+                    return Err("a scan stands on its site".to_owned());
+                }
+                check_fields(fields, hidden)
+            }
+            ReadSpan::Sound {
+                cell,
+                radius,
+                quiet,
+                heard,
+            } => {
+                if !stand_on_site(*cell) {
+                    return Err("a sounding stands on its site".to_owned());
+                }
+                if *quiet && *heard {
+                    return Err("a quiet sounding is heard by nobody".to_owned());
+                }
+                check_radius(*radius)
+            }
+        }
+    }
 }
 
 /// **The act in flight** (§8; lead ruling 2). One at a time in SM.3b; SM.7 adds the cycle.
@@ -252,6 +446,10 @@ pub enum RefusedCode {
     /// vault the start froze is no longer the site's live spoil, a spoil pool will not read,
     /// or the transfer itself refused. Nothing moved; the load stays in the hopper.
     SpoilGone,
+    /// **A scan or a sounding whose rig was not, at landing, where it stood when the act
+    /// began** (doc 20 cut SM.4a, D14: a staff move). The charge is untouched and nothing is
+    /// written to the chart.
+    Moved,
 }
 
 /// **How an act finished.**
@@ -290,6 +488,11 @@ pub struct Outcome {
     /// that froze it has cleared. Skipped when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub moved: BTreeMap<CanonicalId, u64>,
+    /// **What a finished scan or sounding read** (doc 20 cut SM.4a), so the tell renders this
+    /// act's readings from the chart after the act has cleared. `None` for every other act
+    /// and for a refused one; skipped when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<ReadSpan>,
 }
 
 /// **One rig's record in `tacsim.excursion`** (§8; lead ruling 1).
@@ -404,6 +607,28 @@ impl RigRecord {
                     "a dump freezes 1 to {MAX_DUMP_GOODS} goods, each a positive quantity"
                 ));
             }
+            // Doc 20 cut SM.4a: a scan's or a sounding's frozen reach, and its kind's shape.
+            act.params.check()?;
+            let shaped = match (&act.kind, &act.params) {
+                (ActKind::Launch | ActKind::Recover, ActParams::None {})
+                | (ActKind::Dump, ActParams::Dump { .. })
+                | (ActKind::Scan, ActParams::Scan { .. })
+                | (ActKind::Sound, ActParams::Sound { .. }) => true,
+                (
+                    ActKind::Launch
+                    | ActKind::Recover
+                    | ActKind::Dump
+                    | ActKind::Scan
+                    | ActKind::Sound,
+                    _,
+                ) => false,
+            };
+            if !shaped {
+                return Err(format!(
+                    "an act's parameters are its kind's ({})",
+                    act.kind.word()
+                ));
+            }
         }
         if let Some(excursion) = &self.excursion {
             if excursion.id.tv != self.tv {
@@ -424,6 +649,18 @@ impl RigRecord {
                 return Err(format!(
                     "a finished dump moved at most {MAX_DUMP_GOODS} goods, each a positive quantity"
                 ));
+            }
+            // Doc 20 cut SM.4a: what a finished scan or sounding read, within its bounds.
+            if let Some(span) = &last.span {
+                span.check()?;
+                let shaped = matches!(
+                    (last.kind, span),
+                    (ActKind::Scan, ReadSpan::Scan { .. })
+                        | (ActKind::Sound, ReadSpan::Sound { .. })
+                );
+                if !shaped {
+                    return Err("a finished act's span is a scan's or a sounding's".to_owned());
+                }
             }
         }
         Ok(())
@@ -463,6 +700,36 @@ pub fn charge_at(charge: &Charge, now_ic: i64, battery: &BatteryDef) -> u32 {
     match total {
         Some(total) => u32::try_from(total.min(u64::from(capacity))).unwrap_or(capacity),
         None => capacity,
+    }
+}
+
+/// **The charge an act will spend from** (doc 20 cut SM.4a; §4.1; the brief's reviewer finding
+/// F1, D22): in the bay with the launch implied, the bay's recharge up to the instant the
+/// launch half ends (`now + LAUNCH_S`) and no further — out of the bay charge only falls by
+/// acts; otherwise [`charge_at`] `now`. The command's preview and reserve, the start's
+/// prepare reserve and the finish's settlement (`spent_after_launch` in
+/// `crate::surface::act`) all read this same instant, so the reserve admits exactly what the
+/// finish settles.
+#[must_use]
+pub fn charge_for_act(charge: &Charge, now_ic: i64, from_bay: bool, battery: &BatteryDef) -> u32 {
+    if from_bay && charge.in_bay {
+        charge_at(charge, now_ic.saturating_add(i64::from(LAUNCH_S)), battery)
+    } else {
+        charge_at(charge, now_ic, battery)
+    }
+}
+
+/// **The charge `+tv` shows** (doc 20 cut SM.4a, D22): [`charge_at`] `now`, except while an
+/// implied launch is in flight — its record stays `in_bay` until the finish, so its bay credit
+/// is read no later than `started_ic + LAUNCH_S`, the instant the finish will settle it at.
+#[must_use]
+pub fn charge_shown(record: &RigRecord, now_ic: i64, battery: &BatteryDef) -> u32 {
+    match &record.act {
+        Some(act) if act.kind.reads_ground() && act.params.launches() => {
+            let launched = act.started_ic.saturating_add(i64::from(LAUNCH_S));
+            charge_at(&record.charge, now_ic.min(launched), battery)
+        }
+        Some(_) | None => charge_at(&record.charge, now_ic, battery),
     }
 }
 
@@ -548,6 +815,26 @@ pub fn settle_free(charge: &Charge, at_ic: i64, in_bay: bool) -> Option<Charge> 
         }),
         (true, false) => None,
     }
+}
+
+/// **A spend out of the bay, without the battery** (doc 20 cut SM.4a's pre-commit round, item 2;
+/// §4.1 "a TV cannot be stranded by its battery"): out of the bay [`charge_at`] reads the stored
+/// value and adds nothing (charge only falls by acts), so a scan or a sounding started from the
+/// ground settles without its battery's row exactly as it would with it — the reservation off
+/// the value, stamped `at_ic`, still out of the bay — and a battery row that stops resolving
+/// between the start and the finish never wedges the rig. `None` for a charge in the bay
+/// (leaving the umbilical settles the bay's credit, which needs the battery: the implied launch
+/// fails closed, as SM.3b's launch does) or a reservation past the value.
+#[must_use]
+pub fn settle_spent_out_of_bay(charge: &Charge, reserved_cu: u32, at_ic: i64) -> Option<Charge> {
+    if charge.in_bay {
+        return None;
+    }
+    Some(Charge {
+        value_cu: charge.value_cu.checked_sub(reserved_cu)?,
+        at_ic,
+        in_bay: false,
+    })
 }
 
 /// **The open excursions an act's caps count** (§8, §11 Caps): the operator's, the
@@ -949,11 +1236,11 @@ mod tests {
             needs_battery(ActKind::Launch, 0, 0),
             "a launch leaves the bay"
         );
-        assert!(needs_battery(ActKind::Probe, 1, 0));
+        assert!(needs_battery(ActKind::Scan, 1_000, 0));
+        assert!(needs_battery(ActKind::Sound, 2_000, 0));
         assert!(needs_battery(ActKind::Recover, 0, 1), "a spend home");
         assert!(!needs_battery(ActKind::Recover, 0, 0));
         assert!(!needs_battery(ActKind::Dump, 0, 0));
-        assert!(!needs_battery(ActKind::Probe, 0, 0));
         let b = battery();
         let ground = Charge {
             value_cu: 42_000,
@@ -994,6 +1281,39 @@ mod tests {
             charge_at(&unread.charge, 1_000_000, &b),
             charge_at(&RigRecord::fresh(ObjId(7), &b).charge, 1_000_000, &b)
         );
+    }
+
+    /// **A ground reading settles without the battery** (doc 20 cut SM.4a's pre-commit round,
+    /// item 2; §4.1): out of the bay `settle_spent_out_of_bay` is exactly what the battery's own
+    /// settle writes (`charge_at` at the stamp — flat out of the bay — less the reservation,
+    /// stamped, out of the bay), at any stamp; a charge in the bay never settles without the
+    /// battery (the implied launch fails closed); a reservation past the value is refused.
+    #[test]
+    fn sm4a_a_ground_reading_settles_without_the_battery() {
+        let b = battery();
+        let ground = Charge {
+            value_cu: 42_000,
+            at_ic: 1_000,
+            in_bay: false,
+        };
+        for (reserved, at) in [(1_000, 1_600), (2_000, 9_000), (42_000, 1_000)] {
+            let settled =
+                settle_spent_out_of_bay(&ground, reserved, at).expect("a ground reading settles");
+            assert_eq!(
+                settled,
+                Charge {
+                    value_cu: charge_at(&ground, at, &b) - reserved,
+                    at_ic: at,
+                    in_bay: false,
+                }
+            );
+        }
+        assert_eq!(settle_spent_out_of_bay(&ground, 42_001, 1_600), None);
+        let bay = Charge {
+            in_bay: true,
+            ..ground
+        };
+        assert_eq!(settle_spent_out_of_bay(&bay, 1_000, 1_600), None);
     }
 
     /// `reserve_check` with the A7 numbers: two 60,000 reservations fit alone on 100,000
@@ -1177,6 +1497,7 @@ mod tests {
                     code: RefusedCode::NotBeside,
                 },
                 moved: BTreeMap::new(),
+                span: None,
             }),
         }
     }
@@ -1272,7 +1593,8 @@ mod tests {
             ActKind::Launch,
             ActKind::Recover,
             ActKind::Dump,
-            ActKind::Probe,
+            ActKind::Scan,
+            ActKind::Sound,
         ] {
             let wire = serde_json::to_value(kind).unwrap_or_else(|e| panic!("{e}"));
             assert_eq!(wire, serde_json::json!(kind.word()));
@@ -1287,7 +1609,8 @@ mod tests {
                 spoil: 8,
                 goods: [(cid("metal_ore"), 3)].into_iter().collect(),
             },
-            ActParams::Probe { cost_cu: 60_000 },
+            scan_params(),
+            sound_params(),
         ] {
             let wire = serde_json::to_value(&params).unwrap_or_else(|e| panic!("{e}"));
             let back: ActParams =
@@ -1304,6 +1627,9 @@ mod tests {
             },
             ActResult::Refused {
                 code: RefusedCode::HopperChanged,
+            },
+            ActResult::Refused {
+                code: RefusedCode::Moved,
             },
         ] {
             let wire = serde_json::to_value(result).unwrap_or_else(|e| panic!("{e}"));
@@ -1331,6 +1657,203 @@ mod tests {
             }
             .to_string(),
             "900@1000"
+        );
+    }
+
+    fn scan_params() -> ActParams {
+        ActParams::Scan {
+            from_bay: true,
+            body: cid("ceres"),
+            cell: [128, 124],
+            footing: Footing::Regolith,
+            fields: vec![27, 28, 29, 19, 20, 21, 11, 12],
+            hidden: vec![13],
+        }
+    }
+
+    fn sound_params() -> ActParams {
+        ActParams::Sound {
+            from_bay: false,
+            body: cid("ceres"),
+            cell: [128, 124],
+            radius: 16,
+            quiet: false,
+        }
+    }
+
+    /// **A scan's and a sounding's frozen reach is bounded** (doc 20 cut SM.4a): a stand off
+    /// the site, no fields or ten, a repeated or invalid index, a field both seen and hidden,
+    /// a reach of 0 or 49, a quiet sounding heard, a kind with another kind's parameters and a
+    /// span on another kind's outcome are each refused; the shapes in bounds pass.
+    #[test]
+    fn sm4a_the_reading_acts_are_bounded() {
+        let mut ok = sample();
+        ok.act = Some(Act {
+            kind: ActKind::Scan,
+            params: scan_params(),
+            ..act(3, ActParams::None {})
+        });
+        assert_eq!(ok.check(), Ok(()));
+        let scan = |edit: &dyn Fn(&mut ActParams)| {
+            let mut record = ok.clone();
+            if let Some(act) = record.act.as_mut() {
+                edit(&mut act.params);
+            }
+            record
+        };
+        let mut broken = vec![
+            scan(&|p| {
+                if let ActParams::Scan { cell, .. } = p {
+                    *cell = [256, 0];
+                }
+            }),
+            scan(&|p| {
+                if let ActParams::Scan { fields, .. } = p {
+                    fields.clear();
+                }
+            }),
+            scan(&|p| {
+                if let ActParams::Scan { fields, .. } = p {
+                    *fields = (0..10).collect();
+                }
+            }),
+            scan(&|p| {
+                if let ActParams::Scan { fields, .. } = p {
+                    fields.push(27);
+                }
+            }),
+            scan(&|p| {
+                if let ActParams::Scan { fields, .. } = p {
+                    fields.push(64);
+                }
+            }),
+            scan(&|p| {
+                if let ActParams::Scan { hidden, .. } = p {
+                    hidden.push(27);
+                }
+            }),
+        ];
+        let mut sound = ok.clone();
+        if let Some(act) = sound.act.as_mut() {
+            act.kind = ActKind::Sound;
+            act.params = sound_params();
+        }
+        assert_eq!(sound.check(), Ok(()));
+        for radius in [0, 49] {
+            let mut bad = sound.clone();
+            if let Some(Act {
+                params: ActParams::Sound { radius: r, .. },
+                ..
+            }) = bad.act.as_mut()
+            {
+                *r = radius;
+            }
+            broken.push(bad);
+        }
+        let mut mismatched = sound.clone();
+        if let Some(act) = mismatched.act.as_mut() {
+            act.kind = ActKind::Scan;
+        }
+        broken.push(mismatched);
+        let mut heard_quiet = sample();
+        if let Some(last) = heard_quiet.last.as_mut() {
+            last.kind = ActKind::Sound;
+            last.result = ActResult::Done;
+            last.span = Some(ReadSpan::Sound {
+                cell: [128, 124],
+                radius: 8,
+                quiet: true,
+                heard: true,
+            });
+        }
+        broken.push(heard_quiet.clone());
+        if let Some(last) = heard_quiet.last.as_mut() {
+            last.span = Some(ReadSpan::Sound {
+                cell: [128, 124],
+                radius: 8,
+                quiet: true,
+                heard: false,
+            });
+        }
+        assert_eq!(heard_quiet.check(), Ok(()));
+        let mut wrong_kind = heard_quiet.clone();
+        if let Some(last) = wrong_kind.last.as_mut() {
+            last.kind = ActKind::Scan;
+        }
+        broken.push(wrong_kind);
+        for record in broken {
+            assert!(record.check().is_err(), "{record:?} passed its check");
+        }
+        // The span round-trips strictly.
+        let span = ReadSpan::Scan {
+            cell: [1, 2],
+            footing: Footing::Rock,
+            fields: vec![0],
+            hidden: Vec::new(),
+        };
+        let wire = serde_json::to_value(&span).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(wire["kind"], "scan");
+        let back: ReadSpan = serde_json::from_value(wire).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(back, span);
+    }
+
+    /// **An implied launch settles at the launch half** (doc 20 cut SM.4a; the brief's reviewer
+    /// finding F1, D22): in the bay under capacity, `charge_for_act` reads the recharge up to
+    /// `now + LAUNCH_S` and no further, out of the bay `charge_at` now; `charge_shown` holds an
+    /// in-flight implied launch's bay credit at `started + LAUNCH_S` while an ordinary act
+    /// (and a scan from the ground) reads `charge_at` now.
+    #[test]
+    fn sm4a_an_implied_launch_settles_at_the_launch_half() {
+        let b = battery();
+        let c = Charge {
+            value_cu: 20_000,
+            at_ic: 1_000,
+            in_bay: true,
+        };
+        let now = 1_000;
+        let launched = charge_at(&c, now + i64::from(LAUNCH_S), &b);
+        assert_eq!(launched, 20_000 + 300 * 50_000 / 3_600);
+        assert_eq!(charge_for_act(&c, now, true, &b), launched);
+        assert_eq!(charge_for_act(&c, now, false, &b), 20_000);
+        let out = Charge { in_bay: false, ..c };
+        assert_eq!(
+            charge_for_act(&out, now, true, &b),
+            20_000,
+            "out of the bay"
+        );
+        // While the implied launch's scan is in flight: never past the launch half.
+        let mut record = RigRecord::fresh(ObjId(7), &b);
+        record.charge = c;
+        record.ordinal = 1;
+        record.act = Some(Act {
+            ordinal: 1,
+            kind: ActKind::Scan,
+            started_ic: now,
+            due_ic: now + 900,
+            reserved_cu: 1_000,
+            params: scan_params(),
+            ..act(1, ActParams::None {})
+        });
+        assert_eq!(
+            charge_shown(&record, now + 100, &b),
+            charge_at(&c, now + 100, &b)
+        );
+        assert_eq!(charge_shown(&record, now + 900, &b), launched);
+        assert!(charge_shown(&record, now + 900, &b) < charge_at(&c, now + 900, &b));
+        // A scan from the ground reads `charge_at` now.
+        if let Some(act) = record.act.as_mut() {
+            act.params = ActParams::Scan {
+                from_bay: false,
+                body: cid("ceres"),
+                cell: [128, 124],
+                footing: Footing::Rock,
+                fields: vec![28],
+                hidden: Vec::new(),
+            };
+        }
+        assert_eq!(
+            charge_shown(&record, now + 900, &b),
+            charge_at(&c, now + 900, &b)
         );
     }
 

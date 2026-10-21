@@ -32,6 +32,19 @@
 //! attempt; past [`MAX_DONE_ATTEMPTS`] the tick pages once a boot and passes the act over for
 //! [`DONE_BACKOFF_FIRES`], then submits again — never skipped for the boot (the port tick's
 //! `launch_backoff` shape).
+//!
+//! **Doc 20 cut SM.4a** adds, per fire: **the warm** — at the top, at most one wanted site's
+//! ground is built (`crate::surface::warm_one`; lead ruling 6), never on an act's path; **the
+//! reading acts' due step** — a scan or a sounding from the bay is placed at the ramp exactly as
+//! a launch is; **the reading tell** — a finished scan's or sounding's readings are rendered
+//! from the operator's own chart row restricted to the act's span (D17), the projection logging
+//! the block's first line, and `READINGS_GONE` alone when the row is gone, unreadable or under
+//! another rule (D26) — `READINGS_DARK` when the row stands but the site's ground cannot be read
+//! at the tell; and **the heard sounding** (§5, Q-20-9; D7, D8, D24) — a loud sounding
+//! inside its sounder's budget reaches every other party with a rig or a hull on the site,
+//! connected and not quiet, as one line naming a bearing and a range band and nothing more,
+//! **only once the projection write that advances `told` succeeded**, so the at-least-once tell
+//! never repeats a heard line.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -45,10 +58,13 @@ use crate::port::families::PortHandles;
 use crate::port_tick::{Fire, Step, SwapRefused};
 use crate::store::{TacsimStore, put_tv_rec};
 use crate::surface::act::{Where, done_key, ramp_label, site_berth, site_name, where_is};
+use crate::surface::address::{self, Octant};
+use crate::surface::chart::{ChartKey, ChartRecord};
 use crate::surface::excursion::{
-    ActKind, ActResult, ActView, Outcome, RefusedCode, RigKey, RigRecord, TvPose, TvRec,
+    ActKind, ActResult, ActView, Outcome, ReadSpan, RefusedCode, RigKey, RigRecord, TvPose, TvRec,
     TvRecState, TvState, cells_apart, site_cell,
 };
+use crate::surface::reading::{Footing, READING_RULE_VERSION};
 
 /// The tick's tag.
 pub const SURFACE_TICK: &str = "tacsim.surface";
@@ -227,6 +243,9 @@ fn surface_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     {
         return;
     }
+    // Doc 20 cut SM.4a (lead ruling 6): at most one wanted site's ground a fire, here and
+    // never on an act's path; a dark geology layer returns at once.
+    crate::surface::warm_one(ctx);
     let Some(slot) = ctx.w.module_state_mut::<SurfaceTickState>() else {
         return;
     };
@@ -376,6 +395,9 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
     // the cut is still due, so its retry bookkeeping must survive the prune (the brief's
     // 3.5 step 4; review finding conformance/F2).
     let still_due = still_due(&records, now);
+    // Doc 20 cut SM.4a (§3.9): every open excursion's operator and rig by site, from the whole
+    // scan and before the records move into the candidates — the heard sounding's listeners.
+    let on_site = on_site(&records);
     let (candidates, resting) = {
         let w: &World = ctx.w;
         candidates(records, now, |tv| told_of(w, tv), state)
@@ -395,7 +417,7 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
         if candidate.untold
             && let Some(last) = &record.last
         {
-            tell(ctx, record, last);
+            tell(ctx, &handles, record, last, &on_site);
             stats.told = stats.told.saturating_add(1);
             stats.worked = stats.worked.saturating_add(1);
         }
@@ -475,6 +497,25 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
     stats
 }
 
+/// One rig on a site's ground: its operator, the rig and its slot.
+type OnSite = BTreeMap<mush_core::CanonicalId, Vec<(ObjId, ObjId, u8)>>;
+
+/// **Every open excursion by site** (doc 20 cut SM.4a; §3.9): `(operator, tv, slot)` per rig
+/// record with an excursion open, read from the whole scan.
+fn on_site(records: &[RigRecord]) -> OnSite {
+    let mut out: OnSite = BTreeMap::new();
+    for record in records {
+        if let Some(excursion) = &record.excursion {
+            out.entry(excursion.site.clone()).or_default().push((
+                excursion.operator,
+                record.tv,
+                excursion.slot,
+            ));
+        }
+    }
+    out
+}
+
 /// **Every act still due** among `records` at `now`: the keys the slot's retry bookkeeping
 /// may keep. Read over the whole scan, never over the fire's visit cut (an act past
 /// [`MAX_EXCURSIONS_VISITED_PER_FIRE`] is still due and keeps its attempts, its back-off and
@@ -531,21 +572,23 @@ fn pose_of(w: &World, tv: ObjId) -> Option<TvPose> {
     }
 }
 
-/// Write `rec` unless the store already holds it.
-fn write_projection(ctx: &mut Ctx<'_>, rec: &TvRec) {
+/// Write `rec` unless the store already holds it. **`true` when the store now holds it**
+/// (already equal, or written); `false` on a `check` or serialise refusal (doc 20 cut SM.4a,
+/// D24: the tell sends a heard line only on `true`).
+fn write_projection(ctx: &mut Ctx<'_>, rec: &TvRec) -> bool {
     let same = ctx
         .w
         .module_state::<TacsimStore>()
         .and_then(|store| store.tv_rec(rec.tv))
         .is_some_and(|state| *state == TvRecState::Present(rec.clone()));
     if same {
-        return;
+        return true;
     }
     if let Err(error) = rec.check() {
         tracing::error!(tv = rec.tv.0, %error, "tacsim: a rig projection is out of bounds; it is not written");
-        return;
+        return false;
     }
-    put_tv_rec(ctx, rec);
+    put_tv_rec(ctx, rec)
 }
 
 /// **The due step's world write** (the brief's 3.5), idempotent by state: a launch places a
@@ -566,9 +609,14 @@ fn world_step(ctx: &mut Ctx<'_>, record: &RigRecord) {
     if entry != act.site {
         return;
     }
+    // Doc 20 cut SM.4a (lead ruling 2): a scan or a sounding from the bay places its rig at the
+    // ramp exactly as a launch does; one from the ground places nothing.
+    let launches =
+        act.kind == ActKind::Launch || (act.kind.reads_ground() && act.params.launches());
     match act.kind {
-        ActKind::Launch => {
-            if where_is(ctx.w, tv) == (Where::Bay { hull: act.hull })
+        ActKind::Launch | ActKind::Scan | ActKind::Sound => {
+            if launches
+                && where_is(ctx.w, tv) == (Where::Bay { hull: act.hull })
                 && let Err(error) = mush_sim::place(ctx, tv, domain, ramp)
             {
                 tracing::warn!(tv = tv.0, %error, "tacsim: a launch's placement was refused; the finish records it");
@@ -588,7 +636,7 @@ fn world_step(ctx: &mut Ctx<'_>, record: &RigRecord) {
                 tracing::warn!(tv = tv.0, %error, "tacsim: a recover's placement was refused; the finish records it");
             }
         }
-        ActKind::Dump | ActKind::Probe => {}
+        ActKind::Dump => {}
     }
 }
 
@@ -706,8 +754,23 @@ fn submit_done(
 
 /// **The tell** (the brief's 3.5): the projection (`told` moved to the last act, the state
 /// and pose as they stand, one log line stamped at the act's own instant) and the completion
-/// line to the operator. A probe's line is logged and never said (a test world's act).
-fn tell(ctx: &mut Ctx<'_>, record: &RigRecord, last: &Outcome) {
+/// line to the operator.
+///
+/// **Doc 20 cut SM.4a**: a finished scan's or sounding's completion is a multi-line block
+/// rendered from the operator's chart row restricted to the act's span (`reading_block`); the
+/// projection logs its first line (cut to `MAX_TV_LOG_BYTES`) and the operator hears the whole
+/// block. A loud sounding the site heard reaches its listeners (`heard_lines`) **only when the
+/// projection write succeeded** (D24): a refused write leaves `told` where it was, so the next
+/// fire tells the operator again (at-least-once, as before) but never re-broadcasts until the
+/// write lands. The residual: a crash between the in-memory write and its persistence may
+/// repeat one heard line once after a restart.
+fn tell(
+    ctx: &mut Ctx<'_>,
+    handles: &PortHandles,
+    record: &RigRecord,
+    last: &Outcome,
+    on_site: &OnSite,
+) {
     let w: &World = ctx.w;
     let mut rec = projection_of(w, record.tv, last.slot);
     let hull = record
@@ -720,7 +783,11 @@ fn tell(ctx: &mut Ctx<'_>, record: &RigRecord, last: &Outcome) {
                 .and_then(|store| store.tv_lease_on(record.tv))
                 .map(|lease| lease.hull)
         });
-    let line = completion_line(w, last, hull);
+    let line = match (&last.result, &last.span) {
+        (ActResult::Done, Some(span)) => reading_block(ctx, handles, record, last, span),
+        _ => completion_line(w, last, hull),
+    };
+    let log_line = line.lines().next().unwrap_or_default().to_owned();
     rec.slot = last.slot;
     rec.operator = Some(last.operator);
     rec.hull = hull;
@@ -737,11 +804,247 @@ fn tell(ctx: &mut Ctx<'_>, record: &RigRecord, last: &Outcome) {
         due_ic: act.due_ic,
     });
     rec.told = last.ordinal;
-    rec.push_log(last.at_ic, &line);
-    write_projection(ctx, &rec);
-    if last.kind != ActKind::Probe {
-        crate::port_tick::notify(ctx, last.operator, &line);
+    rec.push_log(last.at_ic, &log_line);
+    let written = write_projection(ctx, &rec);
+    crate::port_tick::notify(ctx, last.operator, &line);
+    if written
+        && let Some(ReadSpan::Sound {
+            cell, heard: true, ..
+        }) = &last.span
+        && last.result == ActResult::Done
+    {
+        heard_lines(ctx, last, *cell, on_site);
     }
+}
+
+/// **A finished scan's or sounding's block** (doc 20 cut SM.4a; the brief's 3.8, D17, D26):
+/// `SCANNED` (or `SCANNED_ICE`) with one row per field of the span, or `SOUNDED` (or
+/// `SOUNDED_BARREN`) with one line per family with ore — rendered from the operator's chart row
+/// for the site, restricted to this act's span, so a row the act sharpened reads at its
+/// sharpest. The row absent (forgotten between the finish and the tell), unreadable or under
+/// another rule → `READINGS_GONE` alone; the row present but the site's ground dark at the tell
+/// → `READINGS_DARK` alone (the readings wait on the chart) — each with one `tracing::info!`
+/// naming the rig and the act, and never a reading rendered from the geology without the row.
+fn reading_block(
+    ctx: &Ctx<'_>,
+    handles: &PortHandles,
+    record: &RigRecord,
+    last: &Outcome,
+    span: &ReadSpan,
+) -> String {
+    use crate::port::tv;
+    let n = last.slot.to_string();
+    let gone = || {
+        tracing::info!(
+            tv = record.tv.0,
+            act = last.ordinal,
+            "tacsim: a finished reading's chart row is gone, unreadable or under another rule; \
+             the operator is told so"
+        );
+        tv::READINGS_GONE
+            .replace("{n}", &n)
+            .replace("{act}", last.kind.word())
+    };
+    let key = ChartKey {
+        principal: last.operator,
+        site: last.site.clone(),
+    };
+    let row: Option<ChartRecord> = match ctx.action_state(&handles.families.charts, &key) {
+        Ok(found) => found.cloned(),
+        Err(error) => {
+            tracing::warn!(tv = record.tv.0, %error, "tacsim: a chart row does not read");
+            None
+        }
+    };
+    let Some(row) = row.filter(|row| row.rule == READING_RULE_VERSION) else {
+        return gone();
+    };
+    // The row stands but the site's ground cannot be read now (the layer dark, no body table,
+    // the spec unreadable): the readings are on the chart, so the operator is told that, never
+    // `READINGS_GONE` (the SM.4a fixer round's finding F2; D26 names only a row that is gone).
+    let Ok(site) = crate::surface::chart::site_context(ctx.w, &last.site) else {
+        tracing::info!(
+            tv = record.tv.0,
+            act = last.ordinal,
+            "tacsim: a finished reading's site ground cannot be read at the tell; the operator \
+             is told its readings wait on the chart"
+        );
+        return tv::READINGS_DARK
+            .replace("{n}", &n)
+            .replace("{act}", last.kind.word());
+    };
+    match span {
+        ReadSpan::Scan {
+            footing,
+            fields,
+            hidden,
+            ..
+        } => {
+            if *footing == Footing::Ice {
+                return tv::SCANNED_ICE
+                    .replace("{n}", &n)
+                    .replace("{count}", &fields.len().to_string());
+            }
+            let rows = crate::surface::chart::scan_rows(&site, &row, fields);
+            if rows.is_empty() {
+                return gone();
+            }
+            let hidden_words = if hidden.is_empty() {
+                String::new()
+            } else {
+                tv::HIDDEN_FIELDS.replace("{k}", &hidden.len().to_string())
+            };
+            let mut block = vec![
+                tv::SCANNED
+                    .replace("{n}", &n)
+                    .replace("{count}", &fields.len().to_string())
+                    .replace("{footing}", footing.name())
+                    .replace("{hidden}", &hidden_words),
+            ];
+            block.extend(rows);
+            block.join("\n")
+        }
+        ReadSpan::Sound {
+            cell,
+            radius,
+            quiet,
+            ..
+        } => {
+            let stand = (cell[0], cell[1]);
+            let pockets = address::pockets_in_reach(stand, i64::from(*radius));
+            if !pockets.iter().any(|pocket| row.pocket_sounded(*pocket)) {
+                return gone();
+            }
+            let addr = address::pocket_of_cell(stand)
+                .and_then(|(px, py)| address::pocket_address(px, py))
+                .unwrap_or_default();
+            let quietly = if *quiet { " quietly" } else { "" };
+            let lines = crate::surface::chart::sound_lines(&site, &row, &pockets);
+            let head = if lines.is_empty() {
+                tv::SOUNDED_BARREN
+            } else {
+                tv::SOUNDED
+            }
+            .replace("{n}", &n)
+            .replace("{count}", &pockets.len().to_string())
+            .replace("{addr}", &addr)
+            .replace("{quietly}", quietly);
+            let mut block = vec![head];
+            block.extend(lines);
+            block.join("\n")
+        }
+    }
+}
+
+/// **The heard sounding** (doc 20 cut SM.4a; §5, Q-20-9; the brief's 3.9, D7, D8, D19): every
+/// party with a rig or a hull on the sounding's site — the operators of every rig record with an
+/// open excursion there (`on_site`) and the helm holder of every programme hull docked on its
+/// pad — deduplicated, **minus the sounder**, minus anyone whose quiet preference is set, and
+/// **connected now** (a heard line is a transient perception, never queued) hears exactly one
+/// line: `HEARD` with the octant word of (the sounder's cell − the listener's position) and the
+/// range band of the Chebyshev cells between them, or `HEARD_HERE` on the sounder's own cell.
+/// The listener's position is their lowest-slot rig on that site's ground, else the pad centre
+/// cell. Nothing else reaches a listener: no family, no tier, no name, no address, no chart or
+/// projection write.
+fn heard_lines(ctx: &mut Ctx<'_>, last: &Outcome, sounder: [i64; 2], on_site: &OnSite) {
+    let w: &World = ctx.w;
+    let site = &last.site;
+    let mut listeners: BTreeMap<ObjId, (i64, i64)> = BTreeMap::new();
+    let pad = {
+        let centre = crate::surface::excursion::PAD_CENTRE_CM;
+        site_cell(centre, centre)
+    };
+    // Rig operators on the site: the position of their lowest-slot rig standing on its ground.
+    let domain = site_domain(w, site);
+    let mut rigs: Vec<(ObjId, u8, ObjId)> = on_site
+        .get(site)
+        .map(|rows| {
+            rows.iter()
+                .map(|(operator, tv, slot)| (*operator, *slot, *tv))
+                .collect()
+        })
+        .unwrap_or_default();
+    rigs.sort_unstable();
+    for (operator, _, tv) in &rigs {
+        if let Where::Ground {
+            domain: on,
+            x_cm,
+            y_cm,
+            ..
+        } = where_is(w, *tv)
+            && Some(on) == domain
+        {
+            listeners
+                .entry(*operator)
+                .or_insert_with(|| site_cell(x_cm, y_cm));
+        }
+    }
+    // An operator whose rigs on the site all stand off its ground hears from the pad.
+    for (operator, _, _) in &rigs {
+        listeners.entry(*operator).or_insert(pad);
+    }
+    // The helm holders of programme hulls docked on the site's pad.
+    if let Some(port) = crate::port::coop::programme_port(w) {
+        for row in &port.map.hulls {
+            let hull = ObjId(row.hull);
+            let docked_here = matches!(
+                crate::port::ship::berth_of(w, hull),
+                crate::port::ship::Berth::Docked { map, .. } if &map.entry == site
+            );
+            if docked_here && let Some(holder) = crate::port::coop::helm_holder(w, hull) {
+                listeners.entry(holder).or_insert(pad);
+            }
+        }
+    }
+    let quiet = |who: ObjId| {
+        w.module_state::<TacsimStore>()
+            .is_some_and(|store| store.tv_quiet(who))
+    };
+    let lines: Vec<(ObjId, String)> = listeners
+        .into_iter()
+        .filter(|(who, _)| *who != last.operator && w.is_connected(*who) && !quiet(*who))
+        .map(|(who, at)| (who, heard_line(sounder, at)))
+        .collect();
+    for (who, line) in lines {
+        ctx.out.sys_to_actor(who, "tacsim", &line);
+    }
+}
+
+/// The passive domain of a site's port map.
+fn site_domain(w: &World, site: &mush_core::CanonicalId) -> Option<mush_sim::DomainId> {
+    w.module_state::<TacsimStore>()?
+        .port_maps()
+        .find(|map| {
+            &map.entry == site && map.pack.as_str() == crate::definitions::content::LANE_PACK
+        })
+        .and_then(|map| map.domain)
+        .map(mush_sim::DomainId)
+}
+
+/// **One heard line** (D19): the octant word of the sounder's cell less the listener's, and the
+/// band of the Chebyshev cells between them (< 50 `BAND_NEAR`, 50..=100 `BAND_MID`, > 100
+/// `BAND_FAR`); `HEARD_HERE` on the sounder's own cell.
+#[must_use]
+pub(crate) fn heard_line(sounder: [i64; 2], listener: (i64, i64)) -> String {
+    use crate::port::tv;
+    let (dx, dy) = (
+        sounder[0].saturating_sub(listener.0),
+        sounder[1].saturating_sub(listener.1),
+    );
+    let Some(octant) = Octant::of(dx, dy) else {
+        return tv::HEARD_HERE.to_owned();
+    };
+    let cells = cells_apart((sounder[0], sounder[1]), listener);
+    let band = if cells < 50 {
+        tv::BAND_NEAR
+    } else if cells <= 100 {
+        tv::BAND_MID
+    } else {
+        tv::BAND_FAR
+    };
+    tv::HEARD
+        .replace("{bearing}", octant.word())
+        .replace("{band}", band)
 }
 
 /// **The completion line** of a finished act (the brief's 3.6 texts).
@@ -762,7 +1065,11 @@ fn completion_line(w: &World, last: &Outcome, hull: Option<ObjId>) -> String {
                 .replace("{n}", &n)
                 .replace("{load}", &crate::surface::act::load_words(w, &last.moved))
                 .replace("{site}", &site),
-            ActKind::Probe => format!("Rig {n} ran a test."),
+            // A finished reading always carries its span (`reading_block`); without one its
+            // readings cannot be named.
+            ActKind::Scan | ActKind::Sound => tv::READINGS_GONE
+                .replace("{n}", &n)
+                .replace("{act}", last.kind.word()),
         },
         ActResult::Refused { code } => {
             let why = match code {
@@ -770,6 +1077,7 @@ fn completion_line(w: &World, last: &Outcome, hull: Option<ObjId>) -> String {
                 RefusedCode::NotBeside => tv::WHY_NOT_BESIDE.replace("{ramp}", &ramp),
                 RefusedCode::HopperChanged => tv::WHY_HOPPER_CHANGED.to_owned(),
                 RefusedCode::SpoilGone => tv::WHY_SPOIL_GONE.to_owned(),
+                RefusedCode::Moved => tv::WHY_MOVED.to_owned(),
             };
             tv::ACT_FAILED
                 .replace("{n}", &n)
@@ -1019,10 +1327,45 @@ mod tests {
             at_ic: 900,
             result: ActResult::Done,
             moved: BTreeMap::new(),
+            span: None,
         });
         let (picked, resting) = candidates(vec![untold], now, told, &state);
         assert_eq!(resting, 1);
         assert_eq!(picked.len(), 1);
         assert!(picked[0].untold && !picked[0].due, "told, not submitted");
+    }
+
+    /// **The heard line names a bearing and a band and nothing more** (doc 20 cut SM.4a, D19):
+    /// the octant of (sounder − listener) by the 2:5 rule, the band by Chebyshev cells (< 50
+    /// under 500 m, 50..=100 500 m to 1 km, > 100 over 1 km), and right under you on the same
+    /// cell.
+    #[test]
+    fn sm4a_the_heard_band_and_bearing_come_from_positions() {
+        use crate::port::tv::{BAND_FAR, BAND_MID, BAND_NEAR, HEARD, HEARD_HERE};
+        let line =
+            |bearing: &str, band: &str| HEARD.replace("{bearing}", bearing).replace("{band}", band);
+        assert_eq!(heard_line([128, 128], (128, 128)), HEARD_HERE);
+        assert_eq!(heard_line([128, 177], (128, 128)), line("north", BAND_NEAR));
+        assert_eq!(heard_line([128, 178], (128, 128)), line("north", BAND_MID));
+        assert_eq!(heard_line([28, 128], (128, 128)), line("west", BAND_MID));
+        assert_eq!(heard_line([27, 128], (128, 128)), line("west", BAND_FAR));
+        assert_eq!(
+            heard_line([200, 60], (128, 128)),
+            line("southeast", BAND_MID)
+        );
+        assert_eq!(
+            heard_line([10, 250], (128, 128)),
+            line("northwest", BAND_FAR)
+        );
+        assert_eq!(
+            heard_line([130, 125], (128, 128)),
+            line("southeast", BAND_NEAR)
+        );
+        assert_eq!(heard_line([135, 126], (128, 128)), line("east", BAND_NEAR));
+        let text = heard_line([200, 60], (128, 128));
+        assert_eq!(
+            text,
+            "A sounding thumps through the ground from the southeast, 500 m to 1 km off."
+        );
     }
 }

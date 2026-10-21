@@ -80,6 +80,11 @@ A lease past its term is re-debited at your next +tv/lease, or the deposit is fo
 +tv/<n> launch [go]  with your Dray-P settled on a site's pad and you aboard: send rig n down the stern ramp onto the site (300 IC s).
 +tv/<n> recover [go]  bring rig n up the ramp into the bay from beside it (300 IC s).
 +tv/<n> dump [go]  empty rig n's hopper onto the site's spoil, for good.
++tv/<n> scan [go]  (alias survey) read the nine fields around rig n by richness, sharper from rock than from regolith; nothing from ice (600 IC s, 1,000 cu).
++tv/<n> sound [quiet] [go]  read every pocket of the field rig n stands in, heard across the site; quiet reads a quarter of it and nobody hears (1,200 IC s, 2,000 cu).
++tv/quiet [on|off]  stop (or start) hearing other rigs' soundings.
++tv/forget <site>|<body> [go]  strike your readings of a site, or of every site on a body, from your chart.
+From the bay, a scan or a sounding goes down the ramp first. Mining is help mining.
 Each act shows what it would do and commits nothing; go commits it. Without a number it addresses the rig you named last, or your only rig.";
 
 /// A hull with no bay: `{name}`, `{office}`, `{port}`.
@@ -136,8 +141,7 @@ pub const LEASE_FAILED: &str =
     "Occator could not complete it; nothing of the lease or the return was signed.";
 /// **The grammar** (doc 20 cut SM.3b; §10): the status, the three acts and the lease.
 /// Replaces SM.3a's `LEASE_USAGE`; no second constant is kept.
-pub const TV_USAGE: &str =
-    "Usage: +tv[/<n>]  or  +tv[/<n>]/<launch|recover|dump> [go]  or  +tv[/<n>]/lease [return] [go]";
+pub const TV_USAGE: &str = "Usage: +tv[/<n>]  or  +tv[/<n>]/<launch|recover|dump|scan> [go]  or  +tv[/<n>]/sound [quiet] [go]  or  +tv[/<n>]/lease [return] [go]  or  +tv/forget <site>|<body> [go]  or  +tv/quiet [on|off]";
 /// A rig within its term (doc 20 cut SM.3b: where it is and its charge): `{n}`, `{mark}`,
 /// `{where}`, `{charge}`, `{span}`, `{hopper}`.
 pub const RIG_LINE: &str = "Rig {n}: {mark}, {where}; charge {charge} %; leased from Occator for {span} more; hopper {hopper}.";
@@ -272,6 +276,177 @@ pub const WHERE_GROUND: &str = "on the ground on {site}, about {m} m from the {r
 pub const WHERE_AWAY: &str = "not in the {name}'s bay";
 /// The status's line under a rig with an act in flight: `{doing}`, `{when}`.
 pub const ACT_LINE: &str = "  {doing}: done {when}.";
+
+// ---- doc 20 cut SM.4a: knowing (§1 beats 4–6, §5, §10; the brief's 3.8) ------------------
+//
+// Placeholders beyond SM.3b's: `{field}` a field's name (`C-NW`), `{addr}` a pocket's address
+// (`C117`), `{count}` the units read, `{footing}` a footing's words, `{hidden}` the hidden
+// count's clause, `{launch}` the implied launch's clause, `{time}` the act's IC seconds (two
+// legs when it launches), `{heard}` who hears it, `{quiet}` " quiet" or "", `{quietly}`
+// " quietly" or "", `{m}` metres (cells × 10), `{dir}` an octant's short form, `{r}` the scan's
+// reach in metres, `{better}` a sharper footing's name, `{down}` the launch's IC seconds,
+// `{bearing}` an octant's word, `{band}` a range band, `{block}` a block letter, `{tenure}` its
+// tenure word, `{reading}` a reading or the hint, `{terrain}` a terrain word, `{body}` a body's
+// name, `{what}` a site's or a body's name, `{arg}` the forget's name as typed, `{fields}` and
+// `{pockets}` counts. Richness is barren, lean, fair, rich: never P0–P3 or A–D.
+
+/// The scan's preview: `{n}`, `{mark}`, `{launch}`, `{count}`, `{field}`, `{footing}`,
+/// `{hidden}`, `{time}`, `{real}`, `{now}`, `{after}`.
+pub const SCAN_PREVIEW: &str = "Rig {n} ({mark}) would {launch}scan the {count} fields around {field} {footing}{hidden}: {time}{real}; charge {now} → {after} %. +tv/{n} scan go starts it.";
+/// The sounding's preview: `{n}`, `{mark}`, `{launch}`, `{count}`, `{addr}`, `{heard}`,
+/// `{time}`, `{real}`, `{now}`, `{after}`, `{quiet}`.
+pub const SOUND_PREVIEW: &str = "Rig {n} ({mark}) would {launch}sound the {count} pockets around {addr}{heard}: {time}{real}; charge {now} → {after} %. +tv/{n} sound{quiet} go starts it.";
+/// `{launch}` when the act implies the launch: `{ramp}`, `{site}`.
+pub const IMPLIED_LAUNCH: &str = "go down the {ramp} onto {site}, then ";
+/// `{time}` when the act implies the launch: `{down}`, `{secs}`.
+pub const TWO_LEGS: &str = "{down} IC s down, then {secs} IC s";
+/// `{footing}` from rock.
+pub const FOOTING_ROCK: &str = "from rock: fields read exactly";
+/// `{footing}` from regolith with rock in reach: `{m}`, `{dir}` (doc 20 §5, verbatim).
+pub const FOOTING_REGOLITH: &str = "from regolith: fields read as a band; rock {m} m {dir}";
+/// `{footing}` from regolith with no rock in reach: `{r}`.
+pub const FOOTING_REGOLITH_NONE: &str =
+    "from regolith: fields read as a band; no rock within {r} m";
+/// `{footing}` from ice with a sharper footing in reach: `{better}`, `{m}`, `{dir}`.
+pub const FOOTING_ICE: &str = "from ice: no return; {better} {m} m {dir}";
+/// `{footing}` from ice with nothing sharper in reach: `{r}`.
+pub const FOOTING_ICE_NONE: &str = "from ice: no return; no regolith or rock within {r} m";
+/// `{hidden}` when the mast does not see some fields: `{k}`.
+pub const HIDDEN_FIELDS: &str = "; {k} hidden from the mast";
+/// `{heard}` for a loud sounding: `{site}`.
+pub const HEARD_ACROSS: &str = ", heard across {site}";
+/// `{heard}` for a quiet sounding.
+pub const HEARD_BY_NOBODY: &str = " quietly, heard by nobody";
+/// The scan, filed: `{n}`, `{when}`.
+pub const SCAN_FILED: &str = "Rig {n} starts its scan: done {when}.";
+/// The scan, filed from the bay: `{n}`, `{ramp}`, `{when}`.
+pub const SCAN_FILED_LAUNCH: &str = "Rig {n} starts down the {ramp} to scan: done {when}.";
+/// The sounding, filed: `{n}`, `{when}`.
+pub const SOUND_FILED: &str = "Rig {n} starts its sounding: done {when}.";
+/// The sounding, filed from the bay: `{n}`, `{ramp}`, `{when}`.
+pub const SOUND_FILED_LAUNCH: &str = "Rig {n} starts down the {ramp} to sound: done {when}.";
+/// The scan, done (then one `"  {row}"` line per field, north-west first): `{n}`, `{count}`,
+/// `{footing}`, `{hidden}`.
+pub const SCANNED: &str = "Rig {n} scanned {count} fields from {footing}{hidden}:";
+/// The scan from ice, done: `{n}`, `{count}`.
+pub const SCANNED_ICE: &str = "Rig {n} scanned from ice: no return from {count} fields.";
+/// The sounding, done (then `"  {family}: {list}"` per family with ore): `{n}`, `{count}`,
+/// `{addr}`, `{quietly}`.
+pub const SOUNDED: &str =
+    "Rig {n} sounded {count} pockets around {addr}{quietly}; every pocket not named reads barren:";
+/// The sounding, done, every pocket barren: `{n}`, `{count}`, `{addr}`, `{quietly}`.
+pub const SOUNDED_BARREN: &str =
+    "Rig {n} sounded {count} pockets around {addr}{quietly}: every one reads barren.";
+/// **The heard sounding** (§5, Q-20-9): `{bearing}`, `{band}` and nothing more.
+pub const HEARD: &str = "A sounding thumps through the ground from the {bearing}, {band}.";
+/// The heard sounding on the listener's own cell.
+pub const HEARD_HERE: &str = "A sounding thumps through the ground right under you.";
+/// `{band}` under 50 cells.
+pub const BAND_NEAR: &str = "under 500 m off";
+/// `{band}` 50 to 100 cells.
+pub const BAND_MID: &str = "500 m to 1 km off";
+/// `{band}` over 100 cells.
+pub const BAND_FAR: &str = "over 1 km off";
+/// **A repeat from the same cell adding nothing** (doc 20 §5, verbatim).
+pub const LEARN_NOTHING: &str = "You learn nothing new here.";
+/// **No reading** — byte-identical for an unknown site, an uncovered unit and a barren pocket
+/// never sounded (doc 20 §5, verbatim).
+pub const NO_READING: &str = "You have no reading there.";
+/// The status's hint where the rig stands on nothing read yet (doc 20 §1 beat 4).
+pub const NO_READINGS_HERE: &str =
+    "no readings here yet: +tv/scan reads the nine fields around you";
+/// The status's line under a rig on the ground: `{block}`, `{tenure}`, `{field}`,
+/// `{footing}`, `{reading}`.
+pub const GROUND_LINE: &str =
+    "  Block {block} ({tenure}), field {field}, footing {footing} — {reading}.";
+/// The status's line while the site's ground is still being mapped: `{block}`, `{tenure}`,
+/// `{field}`.
+pub const GROUND_COLD_LINE: &str =
+    "  Block {block} ({tenure}), field {field}; the ground here is still being mapped.";
+/// The status's line where the instruments cannot read the ground: `{block}`, `{tenure}`,
+/// `{field}`.
+pub const GROUND_DARK_LINE: &str =
+    "  Block {block} ({tenure}), field {field}; the instruments cannot read the ground here.";
+/// A finished reading whose chart row is gone: `{n}`, `{act}`.
+pub const READINGS_GONE: &str =
+    "Rig {n} finished its {act}; its readings are no longer on your chart.";
+/// A finished reading whose chart row was written but whose site's ground cannot be read at the
+/// tell (the geology layer dark, the body's table missing, the site's spec unreadable): `{n}`,
+/// `{act}`. The row stands; `+tv` reads it once the ground reads again (the SM.4a fixer round's
+/// finding F2: never `READINGS_GONE`, which would say paid-for coverage was lost).
+pub const READINGS_DARK: &str = "Rig {n} finished its {act}; its readings are on your chart, but the instruments cannot read the ground right now.";
+/// A cold site: `{site}`.
+pub const GROUND_COLD: &str = "{site}'s ground is still being mapped; try again in a moment.";
+/// The geology layer dark for this site.
+pub const INSTRUMENTS_DARK: &str =
+    "The rigs' instruments cannot read the ground here right now; nothing changes.";
+/// No footing under the rig: `{n}`, `{terrain}`.
+pub const NO_FOOTING: &str =
+    "Rig {n} stands on {terrain}; the mast reads from rock, regolith or ice.";
+/// The body's chart full: `{body}`.
+pub const CHART_FULL: &str = "Your chart of {body} is full; +tv/forget <site> frees room.";
+/// `ACT_FAILED`'s `{why}` for a scan or a sounding whose rig was moved.
+pub const WHY_MOVED: &str = "it was moved before it finished";
+/// The forget's preview: `{what}`, `{fields}`, `{pockets}`, `{arg}`.
+pub const FORGET_PREVIEW: &str = "You would strike {what} from your chart: {fields} fields scanned and {pockets} pockets sounded. It cannot be undone. +tv/forget {arg} go strikes it.";
+/// The forget, done: `{what}`.
+pub const FORGOTTEN: &str = "You strike {what} from your chart.";
+/// Nothing to forget: `{what}`.
+pub const FORGET_NOTHING: &str = "Your chart holds no readings of {what}.";
+/// A chart row of the forget's target that will not read (the pre-commit round's item 8: never
+/// `INSTRUMENTS_DARK`, which speaks of the ground under a rig): `{what}`.
+pub const CHART_UNREAD: &str = "Your chart of {what} cannot be read right now; nothing changes.";
+/// An unknown name: `{arg}`.
+pub const FORGET_UNKNOWN: &str = "There is no mining site or body called {arg}.";
+/// No name.
+pub const FORGET_WHICH: &str = "Forget which? +tv/forget <site> or +tv/forget <body>.";
+/// Quiet on.
+pub const QUIET_ON: &str = "You will not hear other rigs' soundings.";
+/// Quiet off.
+pub const QUIET_OFF: &str = "You will hear other rigs' soundings again.";
+
+/// **The quiet preference's document prefix** (doc 20 cut SM.4a; D10): `tacsim:tvpref:{char}`.
+/// Never a prefix of `tacsim:tv:`'s or `tacsim:tvlease:`'s keys, nor they of it: they differ at
+/// the first character after `tacsim:tv` (`p` against `:` and `l`).
+pub const TV_PREF_PREFIX: &str = "tacsim:tvpref:";
+/// [`TvPrefs::schema`].
+pub const TV_PREF_SCHEMA: u16 = 1;
+
+/// **A character's `+tv` preferences** (doc 20 cut SM.4a; D10): whether they hear other rigs'
+/// soundings. A small whole document on the normal lane, written by `+tv/quiet`; absent reads
+/// as not quiet.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TvPrefs {
+    /// [`TV_PREF_SCHEMA`].
+    pub schema: u16,
+    /// The character: the key.
+    pub character: ObjId,
+    /// Not hearing other rigs' soundings.
+    pub quiet: bool,
+}
+
+impl TvPrefs {
+    /// **`tacsim:tvpref:{character.0}`**.
+    #[must_use]
+    pub fn key(&self) -> SmolStr {
+        tv_pref_key(self.character)
+    }
+}
+
+/// **`tacsim:tvpref:{character.0}`** — the numeric id, never `ObjId`'s `#`-prefixed Display.
+#[must_use]
+pub fn tv_pref_key(character: ObjId) -> SmolStr {
+    SmolStr::new(format!("{TV_PREF_PREFIX}{}", character.0))
+}
+
+/// The inverse: the tail after [`TV_PREF_PREFIX`] as a strict decimal `u32`.
+#[must_use]
+pub fn tv_pref_key_owner(key: &str) -> Option<ObjId> {
+    key.strip_prefix(TV_PREF_PREFIX)
+        .and_then(crate::port::families::strict_decimal_u32)
+        .map(ObjId)
+}
 
 /// **The slot switches** (doc 20 cut SM.3b; SM.3a's residual F10): `/1`…`/4`, one per
 /// `MAX_BAY_ITEMS`.
@@ -743,7 +918,7 @@ fn dark_line(w: &World, store: &TacsimStore, actor: ObjId, charter_hull: Option<
 // ---- the verb --------------------------------------------------------------------
 
 /// What `+tv` was asked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Act {
     /// The status.
     Status,
@@ -751,17 +926,36 @@ enum Act {
     Take { go: bool },
     /// A return, committed or previewed.
     Return { go: bool },
-    /// **Doc 20 cut SM.3b**: a launch, a recover or a dump, committed or previewed.
+    /// **Doc 20 cut SM.3b**: a launch, a recover or a dump — and since SM.4a a scan or a
+    /// sounding (`quiet` the sounding's word after `sound`) — committed or previewed.
     Work {
         /// Which act.
         kind: crate::surface::excursion::ActKind,
+        /// A quiet sounding.
+        quiet: bool,
         /// Committed.
         go: bool,
     },
+    /// **Doc 20 cut SM.4a**: `+tv/forget <site>|<body> [go]` — the name as typed (case kept,
+    /// whitespace collapsed; the brief's reviewer finding F10).
+    Forget {
+        /// The name.
+        name: String,
+        /// Committed.
+        go: bool,
+    },
+    /// **Doc 20 cut SM.4a**: `+tv/quiet [on|off]`; `None` toggles.
+    Quiet {
+        /// On, off, or toggle.
+        set: Option<bool>,
+    },
 }
 
-/// The act words a `+tv` switch or first word may name (the lease's and the three acts').
-const ACT_WORDS: [&str; 4] = ["lease", "launch", "recover", "dump"];
+/// The act words a `+tv` switch or first word may name (the lease's, the acts', and since doc
+/// 20 cut SM.4a `scan` with its alias `survey`, `sound`, `forget` and `quiet`).
+const ACT_WORDS: [&str; 9] = [
+    "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget", "quiet",
+];
 
 /// **The grammar** (doc 20 §10, cut SM.3b, replacing SM.3a's): `+tv[/<n>]` (status),
 /// `+tv[/<n>][/<act>] [<act>] [go]` with `<act>` one of `launch`, `recover`, `dump` either
@@ -769,38 +963,41 @@ const ACT_WORDS: [&str; 4] = ["lease", "launch", "recover", "dump"];
 /// [take|return] [go]` unchanged. Two slot switches, two act words, an unknown word, or a
 /// word after `go` is [`TV_USAGE`]. The slot switches are [`SLOT_SWITCHES`]; `/5` and above
 /// never reach here (the dispatcher refuses the undeclared switch).
+///
+/// **Doc 20 cut SM.4a** adds `scan` (alias `survey`) and `sound [quiet]` as acts, `forget
+/// <site>|<body> [go]` (the name read from the raw text; empty → [`FORGET_WHICH`]) and `quiet
+/// [on|off]`; a slot switch with `forget` or `quiet` is [`TV_USAGE`].
 fn parse(ctx: &Ctx<'_>) -> Result<(Option<u8>, Act), CmdError> {
+    parse_parts(&|word| ctx.switches.has(word), ctx.args.raw())
+}
+
+/// [`parse`] over its two inputs: whether a switch was given, and the raw argument text. Pure.
+fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act), CmdError> {
     let usage = || CmdError::msg(TV_USAGE);
     let mut slot: Option<u8> = None;
     for (index, word) in SLOT_SWITCHES.iter().enumerate() {
-        if ctx.switches.has(word) {
+        if has(word) {
             if slot.is_some() {
                 return Err(usage());
             }
             slot = u8::try_from(index.saturating_add(1)).ok();
         }
     }
-    let switched: Vec<&str> = ACT_WORDS
-        .iter()
-        .copied()
-        .filter(|word| ctx.switches.has(word))
-        .collect();
+    let switched: Vec<&str> = ACT_WORDS.iter().copied().filter(|word| has(word)).collect();
     let mut act: Option<String> = match switched.as_slice() {
         [] => None,
         [one] => Some((*one).to_owned()),
         _ => return Err(usage()),
     };
-    let mut words = ctx
-        .args
-        .raw()
-        .split_whitespace()
-        .map(str::to_ascii_lowercase);
+    let mut words = raw.split_whitespace().map(str::to_ascii_lowercase);
     let mut next = words.next();
+    let mut first_word = false;
     if act.is_none()
         && let Some(word) = next.as_deref()
         && ACT_WORDS.contains(&word)
     {
         act = Some(word.to_owned());
+        first_word = true;
         next = words.next();
     }
     let Some(act) = act else {
@@ -810,7 +1007,37 @@ fn parse(ctx: &Ctx<'_>) -> Result<(Option<u8>, Act), CmdError> {
             Err(usage())
         };
     };
+    match act.as_str() {
+        // Doc 20 cut SM.4a: the forget names no rig; its name is the raw text (F10).
+        "forget" => {
+            if slot.is_some() {
+                return Err(usage());
+            }
+            let (name, go) = forget_name(raw, first_word);
+            if name.is_empty() {
+                return Err(CmdError::msg(FORGET_WHICH));
+            }
+            return Ok((None, Act::Forget { name, go }));
+        }
+        "quiet" => {
+            if slot.is_some() {
+                return Err(usage());
+            }
+            let set = match next.as_deref() {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(_) => return Err(usage()),
+            };
+            if next.is_some() && words.next().is_some() {
+                return Err(usage());
+            }
+            return Ok((None, Act::Quiet { set }));
+        }
+        _ => {}
+    }
     let mut back = false;
+    let mut quiet = false;
     if act == "lease" {
         match next.as_deref() {
             Some("take") => next = words.next(),
@@ -821,6 +1048,10 @@ fn parse(ctx: &Ctx<'_>) -> Result<(Option<u8>, Act), CmdError> {
             _ => {}
         }
     }
+    if act == "sound" && next.as_deref() == Some("quiet") {
+        quiet = true;
+        next = words.next();
+    }
     let go = match next.as_deref() {
         None => false,
         Some("go") => true,
@@ -829,15 +1060,40 @@ fn parse(ctx: &Ctx<'_>) -> Result<(Option<u8>, Act), CmdError> {
     if words.next().is_some() {
         return Err(usage());
     }
-    let parsed = match act.as_str() {
+    let word = if act == "survey" {
+        "scan"
+    } else {
+        act.as_str()
+    };
+    let parsed = match word {
         "lease" if back => Act::Return { go },
         "lease" => Act::Take { go },
         word => match crate::surface::excursion::ActKind::from_word(word) {
-            Some(kind) => Act::Work { kind, go },
+            Some(kind) => Act::Work { kind, quiet, go },
             None => return Err(usage()),
         },
     };
     Ok((slot, parsed))
+}
+
+/// **The forget's name, as typed** (doc 20 cut SM.4a; the brief's reviewer finding F10): the
+/// raw text trimmed, a leading `forget` word stripped when the act was typed as a first word,
+/// a final `go` (any case) stripped, internal whitespace collapsed to single spaces — case
+/// kept. Returns the name and whether `go` was given.
+fn forget_name(raw: &str, first_word: bool) -> (String, bool) {
+    let mut words: Vec<&str> = raw.split_whitespace().collect();
+    if first_word
+        && words
+            .first()
+            .is_some_and(|w| w.eq_ignore_ascii_case("forget"))
+    {
+        words.remove(0);
+    }
+    let go = words.last().is_some_and(|w| w.eq_ignore_ascii_case("go"));
+    if go {
+        words.pop();
+    }
+    (words.join(" "), go)
 }
 
 /// **The last rig each operator named** (doc 20 cut SM.3b; lead ruling 6): a RAM slot,
@@ -878,9 +1134,9 @@ fn slots_words(slots: &[u8]) -> String {
     }
 }
 
-/// **`+tv`, `+tv/<n>`, `+tv/lease`, `+tv/<n> launch|recover|dump [go]`** (doc 20 §4.3, §10;
-/// Q-20-6, Q-20-8; cut SM.3b). Any command that names a slot records it for the actor
-/// (`RigPointer`, the status included).
+/// **`+tv`, `+tv/<n>`, `+tv/lease`, `+tv/<n> launch|recover|dump|scan|sound [go]`,
+/// `+tv/forget`, `+tv/quiet`** (doc 20 §4.3, §5, §10; Q-20-6, Q-20-8; cuts SM.3b and SM.4a).
+/// Any command that names a slot records it for the actor (`RigPointer`, the status included).
 ///
 /// # Errors
 ///
@@ -899,13 +1155,188 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Act::Status => status(ctx, slot),
         Act::Take { go } => take(ctx, slot, go),
         Act::Return { go } => give_back(ctx, slot, go),
-        Act::Work { kind, go } => {
+        Act::Work { kind, quiet, go } => {
             let rig = select(ctx, slot, kind).map_err(CmdError::msg)?;
-            crate::surface::act::act_cmd(ctx, &rig, kind, go)
+            crate::surface::act::act_cmd(ctx, &rig, kind, quiet, go)
         }
+        Act::Forget { name, go } => forget(ctx, &name, go),
+        Act::Quiet { set } => quiet(ctx, set),
     }
 }
 
+// ---- doc 20 cut SM.4a: +tv/forget and +tv/quiet ----------------------------------------
+
+/// What a forget names: the target the action takes, its words and the site entries it covers.
+struct ForgetTarget {
+    /// The site entry or the body id.
+    target: CanonicalId,
+    /// The site's name or the body's display name.
+    what: String,
+    /// The site entries it covers.
+    sites: Vec<CanonicalId>,
+}
+
+/// **Resolve a forget's name** (doc 20 cut SM.4a; F10), case-insensitively: each lane site's
+/// name, location id and entry id, then each body's id and display name.
+fn forget_target(w: &World, name: &str) -> Option<ForgetTarget> {
+    let sites = crate::surface::chart::lane_sites(w);
+    let wanted = name.to_lowercase();
+    if let Some(site) = sites.iter().find(|site| {
+        site.name.to_lowercase() == wanted
+            || site.location.as_str() == wanted
+            || site.entry.as_str() == wanted
+    }) {
+        return Some(ForgetTarget {
+            target: site.entry.clone(),
+            what: site.name.clone(),
+            sites: vec![site.entry.clone()],
+        });
+    }
+    let body = sites.iter().map(|site| &site.body).find(|body| {
+        body.as_str() == wanted || crate::port::site::body_name(body).to_lowercase() == wanted
+    })?;
+    Some(ForgetTarget {
+        target: body.clone(),
+        what: crate::port::site::body_name(body),
+        sites: sites
+            .iter()
+            .filter(|site| &site.body == body)
+            .map(|site| site.entry.clone())
+            .collect(),
+    })
+}
+
+/// **`+tv/forget <site>|<body> [go]`** (doc 20 §5, §10; cut SM.4a, D9, D27): the name
+/// resolved (`FORGET_UNKNOWN`); the actor's rows it covers counted — fields scanned, pockets
+/// sounded, and budget-keepers whose IC hour is over (the pre-commit round's item 6: the forget
+/// prunes them, their only path to deletion). A keeper holds no reading the player can see, so
+/// with no fields and no pockets the answer is `FORGET_NOTHING` whatever the keeper's hour (the
+/// lead-round review's S1): bare, nothing is written; with `go` and an expired keeper, the same
+/// `tacsim_chart_forget` is submitted to prune it before `FORGET_NOTHING`. An unreadable row
+/// answers `CHART_UNREAD`; otherwise bare, the preview;
+/// with `go`, ONE `tacsim_chart_forget` submission keyed `tacsim.chart/{actor}/forget/{target}/
+/// {now_ic}` and `FORGOTTEN`. No rig, hull or place is needed; no licence or tenure is read.
+fn forget(ctx: &mut Ctx<'_>, name: &str, go: bool) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let handles = ctx
+        .w
+        .module_state::<crate::port::families::PortHandles>()
+        .cloned()
+        .ok_or_else(|| CmdError::msg(TV_UNWIRED))?;
+    let Some(action) = handles.chart_forget.clone() else {
+        return Err(CmdError::msg(TV_UNWIRED));
+    };
+    let Some(target) = forget_target(ctx.w, name) else {
+        return Err(CmdError::msg(FORGET_UNKNOWN.replace("{arg}", name)));
+    };
+    let now_ic = ctx.w.world_ic_now().at;
+    let mut fields = 0_usize;
+    let mut pockets = 0_usize;
+    let mut stale = 0_usize;
+    for site in &target.sites {
+        let key = crate::surface::chart::ChartKey {
+            principal: actor,
+            site: site.clone(),
+        };
+        let unread = || CmdError::msg(CHART_UNREAD.replace("{what}", &target.what));
+        let row = match ctx.action_state(&handles.families.charts, &key) {
+            Ok(row) => row,
+            Err(error) => {
+                tracing::warn!(pilot = actor.0, %error, "tacsim: a chart row does not read");
+                return Err(unread());
+            }
+        };
+        match row {
+            // The families rule: a reader re-checks the key (the prepare refuses it too).
+            Some(row) if row.key() != key => {
+                tracing::warn!(
+                    pilot = actor.0,
+                    site = %site,
+                    "tacsim: a chart row disagrees with its own key"
+                );
+                return Err(unread());
+            }
+            Some(row) if row.has_coverage() => {
+                fields = fields.saturating_add(row.fields.len());
+                pockets = pockets.saturating_add(row.sounded_pockets());
+            }
+            // A budget-keeper whose IC hour is over: the forget prunes it.
+            Some(row) if crate::surface::chart::heard_line_due(row.heard_ic, now_ic) => {
+                stale = stale.saturating_add(1);
+            }
+            Some(_) | None => {}
+        }
+    }
+    // A budget-keeper holds no readings the player can see, so it never surfaces as a forget
+    // of "0 fields and 0 pockets" (the lead-round review's S1): with nothing visible the answer
+    // is `FORGET_NOTHING` either side of the keeper's hour. Bare, nothing is written; with `go`
+    // and an expired keeper, the same forget is submitted silently to prune it — and once it
+    // lands `FORGET_NOTHING` is simply true.
+    let nothing = FORGET_NOTHING.replace("{what}", &target.what);
+    if fields == 0 && pockets == 0 {
+        if !go || stale == 0 {
+            return Err(CmdError::msg(nothing));
+        }
+        let Some(key) = crate::surface::chart::forget_key(actor, &target.target, now_ic) else {
+            tracing::error!(pilot = actor.0, "tacsim: a forget's key did not form");
+            return Err(CmdError::msg(TV_UNWIRED));
+        };
+        ctx.submit_authoritative(
+            action,
+            mush_core::PerceivedRef::SelfActor,
+            Vec::new(),
+            serde_json::json!({ "target": target.target.as_str() }),
+            key,
+        );
+        say(ctx, nothing);
+        return Ok(());
+    }
+    if !go {
+        say(
+            ctx,
+            FORGET_PREVIEW
+                .replace("{what}", &target.what)
+                .replace("{fields}", &fields.to_string())
+                .replace("{pockets}", &pockets.to_string())
+                .replace("{arg}", name),
+        );
+        return Ok(());
+    }
+    let Some(key) = crate::surface::chart::forget_key(actor, &target.target, now_ic) else {
+        tracing::error!(pilot = actor.0, "tacsim: a forget's key did not form");
+        return Err(CmdError::msg(TV_UNWIRED));
+    };
+    ctx.submit_authoritative(
+        action,
+        mush_core::PerceivedRef::SelfActor,
+        Vec::new(),
+        serde_json::json!({ "target": target.target.as_str() }),
+        key,
+    );
+    say(ctx, FORGOTTEN.replace("{what}", &target.what));
+    Ok(())
+}
+
+/// **`+tv/quiet [on|off]`** (doc 20 §5, §10; cut SM.4a, D10): set, or toggle, the actor's
+/// quiet preference (`tacsim:tvpref:<character>`) and say which. Not an act: no `go`.
+fn quiet(ctx: &mut Ctx<'_>, set: Option<bool>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let now = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .is_some_and(|store| store.tv_quiet(actor));
+    let quiet = set.unwrap_or(!now);
+    crate::store::put_tv_prefs(
+        ctx,
+        &TvPrefs {
+            schema: TV_PREF_SCHEMA,
+            character: actor,
+            quiet,
+        },
+    );
+    say(ctx, if quiet { QUIET_ON } else { QUIET_OFF });
+    Ok(())
+}
 /// **The slot selector** (doc 20 cut SM.3b; lead ruling 6; SM.3a's finding F10): a named
 /// slot must hold one of the actor's rigs (`NO_RIG`, also past the bay's slots); with none
 /// named, the slot the actor named last if a rig is still there, else the only rig, else
@@ -924,7 +1355,7 @@ fn select(
             .replace("{name}", &hull_name(w, hull))
     };
     if rigs.is_empty() {
-        status_lines(ctx, named)?;
+        status_lines(ctx, named, &mut Vec::new())?;
         let hull = crate::port::coop::helm_of(w, ctx.actor)
             .map(|helm| helm.hull)
             .or_else(|| live_records(w, ctx.actor).first().map(|record| record.hull));
@@ -962,16 +1393,26 @@ fn select(
 /// one the actor's live records name), then one line per bay slot, the unlisted
 /// rigs, and on a site's pad SM.2's stores line.
 fn status(ctx: &mut Ctx<'_>, only: Option<u8>) -> Result<(), CmdError> {
-    let lines = status_lines(ctx, only).map_err(CmdError::msg)?;
+    let mut wants = Vec::new();
+    let lines = status_lines(ctx, only, &mut wants).map_err(CmdError::msg)?;
+    // Doc 20 cut SM.4a (lead ruling 6): a cold site the status peeked is asked for (RAM only).
+    for entry in wants {
+        crate::surface::want_site_ground(ctx.w, &entry);
+    }
     for line in lines {
         say(ctx, line);
     }
     Ok(())
 }
 
-/// The status, read-only; `Err` is the refusal.
+/// The status, read-only; `Err` is the refusal. `wants` gathers the cold sites the ground
+/// lines peeked (doc 20 cut SM.4a), for the caller to ask for.
 #[allow(clippy::too_many_lines)] // one slot walk, one line per state
-fn status_lines(ctx: &Ctx<'_>, only: Option<u8>) -> Result<Vec<String>, String> {
+fn status_lines(
+    ctx: &Ctx<'_>,
+    only: Option<u8>,
+    wants: &mut Vec<CanonicalId>,
+) -> Result<Vec<String>, String> {
     let w: &World = ctx.w;
     let actor = ctx.actor;
     let port = programme_port(w).ok_or_else(|| NOT_OPEN_HERE.to_owned())?;
@@ -1056,6 +1497,9 @@ fn status_lines(ctx: &Ctx<'_>, only: Option<u8>) -> Result<Vec<String>, String> 
     // the one tools table and the rig's typed record; the hull's site berth, once.
     let berth = crate::surface::act::site_berth(w, &view).ok();
     let handles = w.module_state::<crate::port::families::PortHandles>();
+    // Doc 20 cut SM.4a (the brief's reviewer finding F5): each site's composite is peeked at
+    // most once for the whole status.
+    let mut peeks = std::collections::BTreeMap::new();
     // Slots no live record names, in order: the first `unlisted.len()` are filled by
     // the unlisted rigs, the rest are empty.
     let free: Vec<u8> = (1..=max)
@@ -1116,6 +1560,12 @@ fn status_lines(ctx: &Ctx<'_>, only: Option<u8>) -> Result<Vec<String>, String> 
         if let Some(act) = act {
             lines.push(act);
         }
+        // Doc 20 cut SM.4a (§5, §10; lead ruling 8): where a rig on the ground stands.
+        if let (Some(berth), Some(handles)) = (berth.as_ref(), handles)
+            && let Some(ground) = ground_line(ctx, handles, berth, record.tv, &mut peeks, wants)
+        {
+            lines.push(ground);
+        }
     }
     if only.is_none() {
         for rig in unlisted {
@@ -1144,7 +1594,7 @@ fn rig_state(
     now: i64,
 ) -> (String, String, Option<String>) {
     use crate::surface::act::{Where, where_is};
-    use crate::surface::excursion::{RigKey, RigRecord, cells_apart, charge_at, site_cell};
+    use crate::surface::excursion::{RigKey, RigRecord, cells_apart, charge_shown, site_cell};
     let w: &World = ctx.w;
     let name = hull_name(w, view.hull());
     let ramp = crate::surface::act::ramp_label(w, view.hull());
@@ -1205,12 +1655,112 @@ fn rig_state(
     let charge = match (battery, record) {
         (Some(battery), Some(record)) => {
             let record = record.unwrap_or_else(|| RigRecord::fresh(tv, &battery));
-            let now_cu = charge_at(&record.charge, now, &battery);
+            // Doc 20 cut SM.4a (D22): an implied launch's bay credit is read no later than its
+            // launch half.
+            let now_cu = charge_shown(&record, now, &battery);
             crate::surface::act::percent(now_cu, &battery).to_string()
         }
         _ => "?".to_owned(),
     };
     (place, charge, act)
+}
+
+/// **The status's ground line** (doc 20 cut SM.4a; §5 "the `+tv` status line always says where
+/// each rig stands", §10; lead ruling 8, D18, D25): for a rig `Direct` on the hull's site
+/// domain, its block letter and the block's tenure word (`commons`, `open`, `held by {org}`),
+/// its field's name, and — through the non-building peek (`peeks`, one per site per call) — its
+/// footing and the reading there: the pocket's text when the actor's chart has sounded the
+/// rig's pocket, else the field's row when it has scanned the field, else
+/// [`NO_READINGS_HERE`]. The block, the tenure and the field come from the address arithmetic
+/// and the lane's site block alone, so they always print; a dark site prints
+/// [`GROUND_DARK_LINE`], a cold one [`GROUND_COLD_LINE`] and is added to `wants`. `None` for a
+/// rig anywhere else.
+fn ground_line(
+    ctx: &Ctx<'_>,
+    handles: &crate::port::families::PortHandles,
+    berth: &crate::surface::act::SiteBerth<'_>,
+    tv: ObjId,
+    peeks: &mut std::collections::BTreeMap<CanonicalId, crate::surface::chart::SitePeek>,
+    wants: &mut Vec<CanonicalId>,
+) -> Option<String> {
+    use crate::surface::act::{Where, where_is};
+    use crate::surface::address;
+    use crate::surface::chart::{self, SitePeek};
+    let w: &World = ctx.w;
+    let Where::Ground {
+        domain, x_cm, y_cm, ..
+    } = where_is(w, tv)
+    else {
+        return None;
+    };
+    if domain != berth.domain {
+        return None;
+    }
+    let cell = crate::surface::excursion::site_cell(x_cm, y_cm);
+    let pocket = address::pocket_of_cell(cell)?;
+    let field = address::field_of_cell(cell)?;
+    let letter = address::block_letter(pocket.0, pocket.1)?;
+    let site_def = berth.def.site.as_ref()?;
+    let pack = w
+        .module_state::<TacsimStore>()
+        .and_then(|store| crate::port::readiness::report_ports(store, w).0);
+    let tenure = crate::port::site::block_tenure(pack, site_def, letter);
+    let field_word = address::field_name(field.0, field.1)?;
+    let fill = |template: &str| {
+        template
+            .replace("{block}", &letter.to_string())
+            .replace("{tenure}", &tenure)
+            .replace("{field}", &field_word)
+    };
+    let ground = match chart::peek_site(w, &berth.entry, peeks) {
+        SitePeek::Dark => return Some(fill(GROUND_DARK_LINE)),
+        SitePeek::Cold => {
+            if !wants.contains(&berth.entry) {
+                wants.push(berth.entry.clone());
+            }
+            return Some(fill(GROUND_COLD_LINE));
+        }
+        SitePeek::Warm(ground) => ground,
+    };
+    let (Some(surface), Ok(site)) = (
+        chart::ground_surface(&ground),
+        chart::site_context(w, &berth.entry),
+    ) else {
+        return Some(fill(GROUND_DARK_LINE));
+    };
+    let footing = match chart::footing_at(surface, cell) {
+        Ok(footing) => footing.name().to_owned(),
+        Err(terrain) => terrain.label().replace('_', " "),
+    };
+    let key = chart::ChartKey {
+        principal: ctx.actor,
+        site: berth.entry.clone(),
+    };
+    let row = match ctx.action_state(&handles.families.charts, &key) {
+        Ok(found) => found.cloned(),
+        Err(error) => {
+            tracing::warn!(pilot = ctx.actor.0, %error, "tacsim: +tv could not read a chart row");
+            None
+        }
+    };
+    let row = row.as_ref();
+    let reading = if row.is_some_and(|row| {
+        row.rule == crate::surface::READING_RULE_VERSION && row.pocket_sounded(pocket)
+    }) {
+        chart::pocket_text(&site, row, pocket)
+    } else if row.is_some_and(|row| {
+        row.rule == crate::surface::READING_RULE_VERSION
+            && address::field_index(field.0, field.1).is_some_and(|i| row.fields.contains_key(&i))
+    }) {
+        chart::field_text(&site, row, field)
+    } else {
+        NO_READINGS_HERE.to_owned()
+    };
+    Some(
+        fill(GROUND_LINE)
+            .replace("{footing}", &footing)
+            .replace("{reading}", &reading),
+    )
 }
 
 // ---- the term settle --------------------------------------------------------------------
@@ -2654,6 +3204,103 @@ mod tests {
         assert_eq!(slots_words(&[1, 2]), "1 or 2");
         assert_eq!(slots_words(&[1, 2, 4]), "1, 2 or 4");
         assert_eq!(slots_words(&[3]), "3");
+    }
+
+    /// **The grammar** (doc 20 cut SM.4a; the brief's 3.7): `scan`, its alias `survey`, `sound
+    /// quiet go` as switches or first words, with a slot; `forget Ahuna Flank go` keeps the
+    /// name as typed; `quiet on|off` and the bare toggle; a slot with `forget` or `quiet`, two
+    /// act words, a word after `go`, or `quiet` after a scan is the usage line; an empty forget
+    /// asks which.
+    #[test]
+    fn sm4a_the_grammar() {
+        use crate::surface::excursion::ActKind;
+        let parse = |switches: &[&str], raw: &str| -> Result<(Option<u8>, Act), String> {
+            parse_parts(&|word| switches.contains(&word), raw).map_err(|e| e.to_string())
+        };
+        let work = |kind, quiet, go| Act::Work { kind, quiet, go };
+        assert_eq!(
+            parse(&["1", "scan"], ""),
+            Ok((Some(1), work(ActKind::Scan, false, false)))
+        );
+        assert_eq!(
+            parse(&["2"], "survey go"),
+            Ok((Some(2), work(ActKind::Scan, false, true)))
+        );
+        assert_eq!(
+            parse(&["survey"], "GO"),
+            Ok((None, work(ActKind::Scan, false, true)))
+        );
+        assert_eq!(
+            parse(&["1"], "sound quiet go"),
+            Ok((Some(1), work(ActKind::Sound, true, true)))
+        );
+        assert_eq!(
+            parse(&["sound"], "quiet"),
+            Ok((None, work(ActKind::Sound, true, false)))
+        );
+        assert_eq!(
+            parse(&[], "forget Ahuna  Flank go"),
+            Ok((
+                None,
+                Act::Forget {
+                    name: "Ahuna Flank".to_owned(),
+                    go: true
+                }
+            ))
+        );
+        assert_eq!(
+            parse(&["forget"], "ahuna FLANK"),
+            Ok((
+                None,
+                Act::Forget {
+                    name: "ahuna FLANK".to_owned(),
+                    go: false
+                }
+            ))
+        );
+        assert_eq!(
+            parse(&[], "quiet on"),
+            Ok((None, Act::Quiet { set: Some(true) }))
+        );
+        assert_eq!(
+            parse(&["quiet"], "off"),
+            Ok((None, Act::Quiet { set: Some(false) }))
+        );
+        assert_eq!(parse(&["quiet"], ""), Ok((None, Act::Quiet { set: None })));
+        for (switches, raw) in [
+            (&["1", "forget"][..], "ahuna"),
+            (&["1"][..], "forget ahuna"),
+            (&["2", "quiet"][..], ""),
+            (&["scan"][..], "sound"),
+            (&["scan", "sound"][..], ""),
+            (&[][..], "scan go now"),
+            (&[][..], "scan quiet"),
+            (&[][..], "quiet loud"),
+            (&[][..], "quiet on go"),
+            (&[][..], "probe"),
+        ] {
+            assert_eq!(
+                parse(switches, raw),
+                Err(TV_USAGE.to_owned()),
+                "{switches:?} {raw:?}"
+            );
+        }
+        assert_eq!(parse(&["forget"], "go"), Err(FORGET_WHICH.to_owned()));
+        assert_eq!(parse(&[], "forget"), Err(FORGET_WHICH.to_owned()));
+        assert_eq!(
+            forget_name("  forget   Ahuna   Flank  GO ", true),
+            ("Ahuna Flank".to_owned(), true)
+        );
+        assert_eq!(
+            forget_name("forget", false),
+            ("forget".to_owned(), false),
+            "a switch's raw text is all name"
+        );
+        assert_eq!(tv_pref_key(ObjId(42)).as_str(), "tacsim:tvpref:42");
+        assert_eq!(tv_pref_key_owner("tacsim:tvpref:42"), Some(ObjId(42)));
+        assert_eq!(tv_pref_key_owner("tacsim:tv:42"), None);
+        assert!(!"tacsim:tvpref:42".starts_with(crate::surface::excursion::TV_REC_PREFIX));
+        assert!(!"tacsim:tvpref:42".starts_with(TV_LEASE_PREFIX));
     }
 
     /// Doc 20 cut SM.3a (lead ruling 9): the terms due past the end are whole

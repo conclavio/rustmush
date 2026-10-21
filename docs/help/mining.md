@@ -1,0 +1,129 @@
+# Mining
+
+Surface mining is the trade run's other trade: you take a Dray-P down onto a
+mining site's pad, send its terrain vehicles out, learn where the ore lies, dig
+it, and carry it home to sell at Ceres. This page walks the loop beat by beat.
+Some of it is not built yet; those beats say "(not yet)".
+
+## Two rules every rig act follows
+
+**The go rule.** A bare act shows what it would do and commits nothing: what it
+reads or moves, how long it takes and what it leaves in the battery. Add `go` and
+it does exactly that. `+tv/1 scan` is a preview; `+tv/1 scan go` is the scan.
+
+**The slot rule.** A Dray-P carries up to two rigs, one in each bay slot, and
+the slot number is the rig's name: `+tv/2 scan` names rig 2. Without a number
+an act addresses the rig you named last, or your only rig.
+
+Landing is at the Registry's lettered sites this phase: Freeport Commons, Kerwan
+Floor, Ahuna Flank, Juling Shadow and Occator Rim on Ceres, and Rheasilvia
+Commons on Vesta (`help travel`).
+
+## The loop
+
+**1. Kit up.** At Ceres Freeport the Freeport Registry licenses prospectors
+(`+licence/buy`, `help coop`), the Co-op's yard refits a chartered Dray into a
+Dray-P (`+coop/refit prospector`), and Occator leases terrain vehicles into its
+bay at the Exchange Hall counter (`+tv/lease`, `help ships`). A lease needs a
+licence in force or in its grace.
+
+  +licence/buy [go]        the Freeport Registry's prospecting licence
+  +coop/refit prospector   a Dray-P: a two-slot vehicle bay and a stern ramp
+  +tv/lease [go]           lease a rig into a free bay slot
+
+**2. Pick a body and a site.** `+chart` shows every site with the Registry's
+survey of its province (the same for everyone) and its tenure: commons, open,
+or held by an org.
+
+**3. Hop and settle.** `+ship/plan <site>` and `+ship/undock <site>` fly you
+down. Nothing sells reaction mass or provisions on a pad, so the departure holds
+back the leg home: it is refused unless the tank and the locker cover the
+passage out and the worst passage home. The crew's days on the pad are charged
+when she lifts (`help ships`).
+
+**4. On the ground.** `+tv/1 launch go` sends rig 1 down the stern ramp (300 IC
+s). `+tv` says where each rig stands: its block and the block's tenure, its
+field, its footing, and what you have read there — or "no readings here yet".
+
+  +tv[/<n>]                each rig: where it stands, its charge, its act
+  +tv/<n> launch [go]      down the ramp onto the site
+  +tv/<n> recover [go]     back up the ramp from beside it, on the ramp's own
+                           cell or the next (300 IC s)
+  +tv/<n> dump [go]        empty the hopper onto the site's spoil, for good
+
+**5. Scan.** `+tv/1 scan go` (or `+tv/1 survey go`) reads the nine fields around
+the rig's own — each one the rig's 2.5 m mast can see over the ground — by
+richness: 600 IC s and 1,000 cu of charge. How sharp it reads depends on the
+footing under the rig: from rock each field reads one word, from regolith a band
+of two words that always holds the truth, and from ice nothing comes back. The
+preview names your footing and the nearest better one ("rock 60 m W"): where
+you park is the prospecting decision.
+
+**6. Sound.** `+tv/1 sound go` reads every 40 m pocket of the field the rig
+stands in (when it stands in the field's middle; otherwise the 64 pockets around
+it), family by family: 1,200 IC s and 2,000 cu. A sounding thumps through the
+ground: every other party on the site hears it, as a bearing and a distance and
+nothing more, at most once an IC hour from any one sounder on that site. `+tv/1 sound quiet go`
+reads a quarter of that and nobody hears it, for the same charge and time.
+
+  +tv/<n> scan [go]        read the nine fields around the rig
+  +tv/<n> sound [quiet] [go]  read every pocket around the rig
+  +tv/quiet [on|off]       stop (or start) hearing other rigs' soundings
+  +tv/forget <site>|<body> [go]  strike your readings of a site, or of every
+                           site on a body, from your chart
+
+From the bay, a scan or a sounding goes down the ramp first: one act, 300 IC s
+longer, and the preview names both legs. A rig's battery recharges in the bay
+and only falls outside it; a scan or a sounding that would leave it under 5 % is
+refused, but a recover never is: a rig can always come home.
+
+**7. Drive.** (not yet) Driving a rig to a pocket, a field or a bearing.
+
+**8. Mine.** (not yet) Drilling a pocket, cycle by cycle, into the rig's
+hopper.
+
+**9. Hopper full, go home.** (not yet) Unloading a rig's hopper into the hold.
+Until then a rig comes home with `+tv/1 recover go`, and `+ship/lift ceres` lifts
+the Dray-P off the pad once every rig is in her bay and every hopper is empty
+(`help ships`).
+
+**10. Stake.** (not yet) Staking an open block and the Registry's claims.
+
+**11. Leave it running.** (not yet) Fill plans, and awaiting a rig from the
+order queue.
+
+**12. Sell.** Ore sells only at Ceres, to the Exchange's and Occator's standing
+bids. `+market/sell <listing>` shows what a sale would take and pay;
+`+market/sell <listing>=all` sells what the bid takes and leaves the rest
+aboard.
+
+## What a reading says
+
+Every reading is your own: nobody else sees your chart, and you see nobody
+else's. Richness is one of four words everywhere — barren, lean, fair, rich.
+
+A scan's row names a field and, for each kind of ore it holds, its richness and
+the number of ore pockets that word stands for: `C-NW fair–rich metals (5–16
+pockets)`. A field is named by its block's letter and its corner of the block:
+the sixteen blocks run A to D across the northern row to M to P across the
+southern, and each holds four fields, NW, NE, SW and SE. A sounding names each
+pocket by its block letter and its number in the block, counted from the
+block's north-west corner: `C117 fair metals`. A pocket a sounding does not name
+reads barren.
+
+"You have no reading there." is all a place you have not read says — the same
+words for a site you have never seen, a field you have not scanned and a barren
+pocket you have not sounded. "You learn nothing new here." is a scan or a
+sounding repeated from the very cell you last used it from when it would add
+nothing; it costs nothing. The same instrument from any other cell always runs.
+
+Soundings you hear name where they came from and how far, nothing else: "A
+sounding thumps through the ground from the southeast, over 1 km off."
+
+## Still to come
+
+The site map and its legend; driving; mining; unloading; staking and the
+Registry's claims; fill plans and awaiting a rig; the ground chart of a whole
+body.
+
+See also: `help ships`, `help coop`, `help travel`, `help trade`.

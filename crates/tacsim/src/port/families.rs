@@ -1,7 +1,7 @@
 //! **The port's typed families** (doc 18 cut IC5; §4.2 "the ticket", §4.3
 //! "Finite seeded stock", §4.8 "the seams", D-18-11, D-18-33, D-18-46).
 //!
-//! Three production families, all registered unconditionally (a family is a fact
+//! Four production families, all registered unconditionally (a family is a fact
 //! about the composition, and hydrating a later cut's records must never depend
 //! on a flag):
 //!
@@ -20,6 +20,12 @@
 //!   in the start's and the finish's own bundles (`tacsim_surface_act`,
 //!   `tacsim_surface_done`, `crate::surface::act`) and read by the `tacsim.surface`
 //!   tick, `+tv` and the departure's bay gate.
+//! - **`tacsim.chart`** (doc 20 cut SM.4a; §5, D-20-8) — one
+//!   [`crate::surface::chart::ChartRecord`] per (character, site), keyed by
+//!   [`crate::surface::chart::ChartKey`]: the operator's coverage and provenance, never a
+//!   reading. Written in the finish's bundle of a scan or a sounding
+//!   (`tacsim_surface_done`) and by `+tv/forget`'s own action (`tacsim_chart_forget`), its
+//!   record cap tightened to 64 KiB.
 //!
 //! The ticket carries the whole [`PassagePlan`] of §4.8, **declared here as
 //! data** (lead ruling L6): IC9's `port/passage.rs` writes it, but the ticket's
@@ -470,7 +476,7 @@ impl StockReceipt {
 
 // ---- the families and the handles ------------------------------------------
 
-/// The port's three production family handles.
+/// The port's four production family handles.
 #[derive(Clone, Debug)]
 pub struct PortFamilies {
     /// `tacsim.port_stock`.
@@ -480,6 +486,9 @@ pub struct PortFamilies {
     /// **`tacsim.excursion`** (doc 20 cut SM.3b; §8): one rig record per terrain vehicle.
     pub excursions:
         StateFamilyHandle<crate::surface::excursion::RigKey, crate::surface::excursion::RigRecord>,
+    /// **`tacsim.chart`** (doc 20 cut SM.4a; §5, D-20-8): one chart row per (character, site).
+    pub charts:
+        StateFamilyHandle<crate::surface::chart::ChartKey, crate::surface::chart::ChartRecord>,
 }
 
 /// Published in module state by `crate::port_tick::register` — read-only capabilities, the
@@ -512,6 +521,10 @@ pub struct PortHandles {
     /// then unregistered and the verb answers `TV_UNWIRED`).
     pub surface_tools:
         Option<std::sync::Arc<BTreeMap<CanonicalId, crate::definitions::tools::ToolDef>>>,
+    /// **Doc 20 cut SM.4a** (D9): the registered `tacsim_chart_forget` action (`+tv/forget`'s
+    /// own, `crate::surface::chart::ChartForgetProvider`); registered on every roster, since it
+    /// needs only the chart family.
+    pub chart_forget: Option<mush_core::DefinitionRef>,
 }
 
 pub(crate) fn canonical(text: &str) -> Result<CanonicalId, ModError> {
@@ -538,8 +551,8 @@ pub(crate) fn family_descriptor(
     .map_err(|error| ModError::msg(error.to_string()))
 }
 
-/// Register the three production families (doc 18 cut IC5; doc 20 cut SM.3b's
-/// `tacsim.excursion`), unconditionally.
+/// Register the four production families (doc 18 cut IC5; doc 20 cut SM.3b's
+/// `tacsim.excursion`; doc 20 cut SM.4a's `tacsim.chart`), unconditionally.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError> {
     let port_stock = reg.state_family::<StockIssueId, StockReceipt, _, _, _, _>(
         family_descriptor(
@@ -580,10 +593,38 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
             serde_json::to_value(value).map_err(|e| e.to_string())
         },
     )?;
+    // Doc 20 cut SM.4a (§5, D-20-8; the brief's lead ruling 3): the operators' charts, their
+    // record cap tightened to `MAX_CHART_RECORD_BYTES` (the key limit unchanged).
+    let chart_descriptor = family_descriptor(
+        crate::surface::chart::CHART_FAMILY,
+        "tacsim.chart_key.v1",
+        "tacsim.chart",
+    )?;
+    let key_limit = chart_descriptor.max_key_bytes();
+    let chart_descriptor = chart_descriptor
+        .with_limits(key_limit, crate::surface::chart::MAX_CHART_RECORD_BYTES)
+        .map_err(|error| ModError::msg(error.to_string()))?;
+    let charts = reg.state_family::<
+        crate::surface::chart::ChartKey,
+        crate::surface::chart::ChartRecord,
+        _,
+        _,
+        _,
+        _,
+    >(
+        chart_descriptor,
+        |key: &crate::surface::chart::ChartKey| Ok(key.key_text()),
+        |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+        |value: &crate::surface::chart::ChartRecord| value.check(),
+        |value: &crate::surface::chart::ChartRecord| {
+            serde_json::to_value(value).map_err(|e| e.to_string())
+        },
+    )?;
     Ok(PortFamilies {
         port_stock,
         tickets,
         excursions,
+        charts,
     })
 }
 

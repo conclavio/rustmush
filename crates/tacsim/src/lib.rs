@@ -708,6 +708,30 @@ impl GameModule for TacsimRuleset {
             .map(surface::lane_geologies)
             .unwrap_or_default();
         surface::install_lane_geology(ctx.w, bodies);
+        // Doc 20 cut SM.4a (lead ruling 6): every site with a programme hull docked on its pad
+        // asks for its ground, so the surface tick warms it (RAM only; nothing with the geology
+        // layer dark).
+        let docked_sites: Vec<mush_core::CanonicalId> = port::coop::programme_port(ctx.w)
+            .map(|port| {
+                port.map
+                    .hulls
+                    .iter()
+                    .filter_map(|row| {
+                        match port::ship::berth_of(ctx.w, mush_core::ObjId(row.hull)) {
+                            port::ship::Berth::Docked { map, def } if def.site.is_some() => {
+                                Some(map.entry.clone())
+                            }
+                            port::ship::Berth::Docked { .. }
+                            | port::ship::Berth::UnderWay
+                            | port::ship::Berth::Elsewhere => None,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for entry in docked_sites {
+            surface::want_site_ground(ctx.w, &entry);
+        }
         // **17b cut M3.3** (doc 17 §13): the stock mind's source, stored
         // immutably under its digest (`tacsim:mindsrc:<sha256>`) — written by
         // the first boot that finds no document under that key and never

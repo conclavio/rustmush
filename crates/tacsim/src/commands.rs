@@ -206,7 +206,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // primary verb takes the ceiling class of its switches; `/lease`'s economy writes ride
     // the same lane, the `+ship/board` precedent). The class is declared before the
     // `reg.command` and the module default restored right after. The slot switches are
-    // `/1`…`/4` (`MAX_BAY_ITEMS`), then the act switches.
+    // `/1`…`/4` (`MAX_BAY_ITEMS`), then the act switches. Doc 20 cut SM.4a: `/scan` (`/survey`)
+    // and `/sound [quiet]` go stage exactly one `tacsim_surface_act`; `/forget … go` stages
+    // exactly one `tacsim_chart_forget`; `/quiet` writes one `tacsim:tvpref:` document (the
+    // `/lease` precedent) — all in the same bracket.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
@@ -215,7 +218,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             switches: crate::port::tv::SLOT_SWITCHES
                 .iter()
                 .copied()
-                .chain(["lease", "launch", "recover", "dump"])
+                .chain([
+                    "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget",
+                    "quiet",
+                ])
                 .map(SmolStr::new)
                 .collect(),
             help: crate::port::tv::TV_HELP.into(),
