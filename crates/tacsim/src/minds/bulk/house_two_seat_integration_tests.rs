@@ -110,7 +110,8 @@ fn paid_term(w: &IcWorld, generation: u64) -> TestResult<PaidTermRecord> {
     }
     let value = one(rows(&w.disk, "roll", TERMS)
         .into_iter()
-        .filter(|r| r["generation"] == json!(generation))
+        // A term generation is stored as its canonical decimal string.
+        .filter(|r| r["generation"] == json!(generation.to_string()))
         .collect())?;
     Ok(serde_json::from_value(value)?)
 }
