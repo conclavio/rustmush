@@ -24,6 +24,10 @@ mush-content.workspace = true
 # connections; this crate's appliers build the records and the atlas puts them.
 mush-atlas.workspace = true
 mush-proto.workspace = true
+# Doc 20 cut SM.4b (lead ruling 7): `+tv/map` reads its grid rows through
+# `mush_ansi::panel::window_rows`, the TUI's own grid decoder, so line mode and the TUI cannot
+# disagree about a glyph. A pure leaf crate (mush-proto, serde_json, smol_str).
+mush-ansi.workspace = true
 
 # 16b cut R-a (R2): the production composition root lives here, so the game crate
 # composes every module it boots. No engine crate depends back on this one; see

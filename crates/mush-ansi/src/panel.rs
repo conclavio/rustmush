@@ -3,8 +3,9 @@
 //! from its data alone, with no per-feed code on the gateway's side of the
 //! IPC boundary. The first shape is `grid` — the `atlas.map` frame: one glyph
 //! per cell, a legend, the viewer centred, one surface at a time, fitting
-//! eighty by twenty-four with the rest scrolled (P10: the text is the
-//! acceptance test of every map the server emits).
+//! the 120-column floor — at most 118 columns by 32 rows since doc 20 cut
+//! SM.4b (eighty by twenty-four before) — with the rest scrolled (P10: the
+//! text is the acceptance test of every map the server emits).
 //!
 //! The grid frame: `schema.shape == "grid"`, `title`, `surface`, `floors`,
 //! `width`, `height`, `rows` (row `y` from the south edge up, each a list of
@@ -15,11 +16,14 @@
 use mush_proto::PanelFrameKind;
 use serde_json::Value;
 
-/// The widest grid line mode prints (the eightieth column stays free).
-pub const GRID_MAX_COLUMNS: usize = 78;
+/// The widest grid line mode prints (doc 20 cut SM.4b, under the 120-column floor: the
+/// hundred-and-nineteenth and twentieth columns stay free; it was 78 under the old
+/// eighty-column assumption).
+pub const GRID_MAX_COLUMNS: usize = 118;
 
-/// The tallest grid line mode prints at once.
-pub const GRID_MAX_ROWS: usize = 20;
+/// The tallest grid line mode prints at once (doc 20 cut SM.4b: 32, so the whole 32-row site
+/// map prints in one go; it was 20).
+pub const GRID_MAX_ROWS: usize = 32;
 
 /// Whether `data` is a frame in the grid shape.
 #[must_use]
@@ -188,9 +192,9 @@ fn cell_columns(data: &Value) -> usize {
 
 /// The lines a grid frame prints: a title, the legend, then the viewport's rows
 /// north-up (at most `columns` PRINTED columns by `rows_max` rows; line mode
-/// passes [`GRID_MAX_COLUMNS`] by [`GRID_MAX_ROWS`], a scrolling pane the whole
-/// grid), and a footer naming the viewport's extent. A delta prints its `note`
-/// alone, or nothing.
+/// passes [`GRID_MAX_COLUMNS`] by [`GRID_MAX_ROWS`] — 118 by 32 since doc 20 cut SM.4b — a
+/// scrolling pane the whole grid), and a footer naming the viewport's extent. A delta prints
+/// its `note` alone, or nothing.
 ///
 /// **16b cut B.4** (`B-24`, and `T-60`'s footer slip) made two keys count:
 ///
@@ -354,7 +358,8 @@ mod tests {
         f["you"] = json!([150, 80]);
         f["units"] =
             json!([{ "id": "#5", "name": "Rae", "cell": [150, 80], "glyph": "@", "you": true }]);
-        // Line mode's viewport: seventy-eight by twenty.
+        // Line mode's viewport: 118 by 32 (doc 20 cut SM.4b; 78 by 20 before), clamped at the
+        // east edge of the 200 by 100 grid (only x is clamped).
         let lines = grid_lines(
             &f,
             PanelFrameKind::Keyframe,
@@ -376,7 +381,7 @@ mod tests {
         assert!(
             lines
                 .last()
-                .is_some_and(|l| l.starts_with("x 111..188  y 70..89")),
+                .is_some_and(|l| l.starts_with("x 82..199  y 64..95")),
             "{:?}",
             lines.last()
         );

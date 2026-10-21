@@ -347,8 +347,54 @@ pub fn hold_vault(w: &World, view: &HullView<'_>) -> Option<VaultId> {
         .map(|vault| vault.id)
 }
 
+/// **The hold's unreserved room for ore, kilograms** (doc 20 cut SM.4b; the brief's reviewer
+/// resolution R6 and decision P11; §19 item 1): over the hull's stowage compartments that accept
+/// the ore stowage tag (read from the goods table's `metal_ore` row, never a literal), each one's
+/// mass limit less its current mass load (`capacity::load` over every good it holds, through
+/// `read` at the hold vault), summed — **less each of `rigs`' hopper load** (never the hopper's
+/// capacity), saturating at 0. `None` when any pool does not read, the goods table is not loaded,
+/// or no compartment accepts ore. **SM.7 extends this one function** with every outstanding
+/// cycle.
+#[must_use]
+pub(crate) fn hold_unreserved_kg(
+    w: &World,
+    view: &HullView<'_>,
+    rigs: &[ObjId],
+    read: &dyn Fn(EndpointRef, &CanonicalId) -> Result<u64, PoolReadError>,
+) -> Option<u64> {
+    let store = w.module_state::<TacsimStore>()?;
+    let goods = store.goods()?;
+    let ore = CanonicalId::new("metal_ore").ok()?;
+    let tag = goods.good(&ore)?.stowage.clone();
+    let comps: Vec<(CanonicalId, Compartment)> = compartments(view)
+        .into_iter()
+        .filter(|(_, comp)| comp.accepts.contains(&tag))
+        .collect();
+    if comps.is_empty() {
+        return None;
+    }
+    let mass = CanonicalId::new(crate::definitions::logistics::MASS_KG).ok()?;
+    let readings = readings_with(goods, comps, hold_vault(w, view), read).ok()?;
+    let mut room: u64 = 0;
+    for (_, comp, contents) in &readings {
+        let limit = comp.limits.get(&mass).copied().unwrap_or(0);
+        let loaded = crate::port::capacity::load(goods, comp, contents)
+            .ok()?
+            .get(&mass)
+            .copied()
+            .unwrap_or(0);
+        room = room.saturating_add(limit.saturating_sub(loaded));
+    }
+    let pool_unit = crate::port::tv::pool_unit(w);
+    for rig in rigs {
+        let (kg, _) = crate::port::tv::hopper_load_with(w, *rig, pool_unit.as_ref(), read).ok()?;
+        room = room.saturating_sub(kg);
+    }
+    Some(room)
+}
+
 /// The hull's stowage compartments, in stowage order.
-fn compartments(view: &HullView<'_>) -> Vec<(CanonicalId, Compartment)> {
+pub(crate) fn compartments(view: &HullView<'_>) -> Vec<(CanonicalId, Compartment)> {
     view.logistics
         .stowage
         .iter()

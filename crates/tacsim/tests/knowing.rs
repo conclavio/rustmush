@@ -778,10 +778,17 @@ fn on_pad(rig: &mut Rig, n_rigs: usize) -> (ObjId, HullRow, Vec<ObjId>) {
     on_pad_as(rig, "Pilot", 1, "Salt Moth", n_rigs)
 }
 
-/// Fire until Ahuna Flank's ground is cached.
+/// Fire until Ahuna Flank's ground is cached — and, since doc 20 cut SM.4b, its home field built
+/// (a scan or a sounding from the ground reserves the real trip home; the surface tick builds the
+/// home the fire after the site).
 fn warm(rig: &mut Rig) {
     for _ in 0..8 {
-        if cached(&rig.tw) {
+        let homed = rig
+            .tw
+            .world()
+            .module_state::<GeologyState>()
+            .is_some_and(|state| !state.homes().is_empty());
+        if cached(&rig.tw) && homed {
             return;
         }
         let (_, queued) = fire(rig);
@@ -1948,6 +1955,9 @@ fn sm4a_quiet_drops_heard_lines_and_survives_a_restart() {
     assert_eq!(heard_count(&heard), 0, "{heard}");
     let mut rig = reboot(rig, &[sounder, listener]);
     assert!(store(&rig.tw).tv_quiet(listener), "the preference survives");
+    // Doc 20 cut SM.4b: a sounding from the ground reserves the real trip home, so the restart's
+    // cold site and home field are warmed (the surface tick, one a fire) before it.
+    warm(&mut rig);
     let _ = to_ic(&mut rig, due + 3_600);
     to_cell(&mut rig, tv, (171, 90));
     let _ = act_go(&mut rig, sounder, "+tv/1 sound go");
@@ -2368,15 +2378,21 @@ fn sm4a_a_dark_layer_never_wants_a_site() {
 // The heard line waits for the projection; a moved rig; the status line; the ramps
 // ---------------------------------------------------------------------------
 
-/// **A heard line waits for the projection** (D24; the brief's reviewer finding F8): a loud
-/// sounding lands its finish; before the tell, staff pad the rig's stored projection (through a
-/// restart) so the tell's write would pass its 4 KiB bound — the next fires tell the operator
-/// (at-least-once) and send the listener no heard line; once staff trim the projection, the
-/// write lands and exactly one heard line goes.
+/// **A heard line goes once the fitted projection lands** (D24; the brief's reviewer finding F8)
+/// — **as doc 20 cut SM.4b leaves it** (its decision P7; the review's tests/T1 and
+/// conformance/F3): a loud sounding lands its finish; before the tell, staff pad the rig's stored
+/// projection (through a restart) — its log only, no leg, with lines of characters JSON escapes —
+/// to just under its 4 KiB bound, so the tell's write, one more log line, would pass it
+/// unfitted (asserted on the image). `TvRec::fit` drops the oldest log lines, never a leg, so the
+/// write lands on the first tell: the operator is told, the listener hears exactly one heard line,
+/// the projection stays under its bound with the oldest lines gone, the rest in order and the
+/// sounding's line newest, and the next fires never repeat it. (That a refused write holds the
+/// heard line back is pinned by `surface::tick`'s `sm4b_a_heard_line_waits_for_the_written_projection`:
+/// no padding can refuse a fitted write.)
 #[test]
 #[allow(clippy::too_many_lines)]
-fn sm4a_a_heard_line_waits_for_the_projection() {
-    use tacsim::surface::{FrozenLeg, LegWaypoint, MAX_TV_REC_BYTES, TvLogLine};
+fn sm4b_a_heard_line_goes_once_the_fitted_projection_lands() {
+    use tacsim::surface::{MAX_TV_LOG_LINES, MAX_TV_REC_BYTES, TvLogLine};
     let mut rig = stocked();
     let (sounder, tv, listener, _) = two_on_pad(&mut rig);
     to_cell(&mut rig, tv, (170, 90));
@@ -2385,30 +2401,33 @@ fn sm4a_a_heard_line_waits_for_the_projection() {
     let (_, queued) = advance_to(&mut rig, due);
     assert_eq!(finishes(&queued).len(), 1);
     land_all(&mut rig, &queued);
-    // The finish has landed; the tell has not run. Pad the stored projection to just under its
-    // bound: the tell's write (one more log line, the act cleared) then cannot pass it.
+    // The finish has landed; the tell has not run. Pad the stored projection's log — no leg, no
+    // act shown — to just under its bound with lines of `"` (two JSON bytes a character): the
+    // tell's write (one more log line) then cannot pass it unfitted.
     let mut padded = projection(&rig.tw, tv).expect("the projection beside the placement");
-    padded.leg = Some(FrozenLeg {
-        started_ic: 0,
-        waypoints: (0..32)
-            .map(|n| LegWaypoint {
-                x_cm: i64::MIN + n,
-                y_cm: i64::MIN + n,
-                at_s: u32::MAX,
-            })
-            .collect(),
-    });
+    padded.leg = None;
+    padded.act = None;
     let size = |rec: &TvRec| serde_json::to_vec(rec).map(|b| b.len()).unwrap_or(0);
+    let mut n = 0_u32;
     while size(&padded) < MAX_TV_REC_BYTES - 12 {
         match padded.log.last_mut() {
-            Some(line) if line.text.len() < 160 => line.text.push('x'),
-            _ => padded.log.push(TvLogLine {
-                at_ic: 0,
-                text: String::new(),
-            }),
+            Some(line) if line.text.starts_with('#') && line.text.len() < 160 => {
+                line.text.push('"');
+            }
+            _ => {
+                n += 1;
+                padded.log.push(TvLogLine {
+                    at_ic: 0,
+                    text: format!("#{n:02} "),
+                });
+            }
         }
     }
-    assert!(padded.log.len() < 16 && size(&padded) <= MAX_TV_REC_BYTES);
+    assert!(
+        padded.log.len() < MAX_TV_LOG_LINES,
+        "room for one more line by count: only the bytes overflow"
+    );
+    assert!(size(&padded) <= MAX_TV_REC_BYTES);
     assert_eq!(padded.check(), Ok(()));
     let key = tacsim::surface::tv_rec_key(tv);
     let wire = serde_json::to_value(&padded).expect("serializes");
@@ -2427,24 +2446,35 @@ fn sm4a_a_heard_line_waits_for_the_projection() {
         operator.contains("Rig 1 sounded "),
         "the operator is told: {operator}"
     );
-    assert_eq!(heard_count(&heard), 0, "{heard}");
-    assert_eq!(projection(&rig.tw, tv).map(|r| r.told), Some(padded.told));
-    // Staff trim the projection: the write lands and exactly one heard line goes.
-    let mut trimmed = padded.clone();
-    trimmed.leg = None;
-    trimmed.log.clear();
-    let wire = serde_json::to_value(&trimmed).expect("serializes");
-    let mut rig = reboot_editing(rig, key.as_str(), &[sounder, listener], |doc| {
-        *doc = wire;
-    });
-    let mut heard = String::new();
+    assert_eq!(heard_count(&heard), 1, "the fitted write lands: {heard}");
+    let stored = projection(&rig.tw, tv).expect("the projection");
+    assert!(stored.told > padded.told, "the tell's write landed");
+    assert!(size(&stored) <= MAX_TV_REC_BYTES);
+    let newest = stored.log.last().cloned().expect("a newest line");
+    assert!(
+        newest.text.starts_with("Rig 1 sounded "),
+        "the newest line is the sounding's: {newest:?}"
+    );
+    // The fit, not luck: the same record with the padded log whole and the new line is past the
+    // bound, and what was kept is the padded log less its oldest lines, in order.
+    let mut unfitted = stored.clone();
+    unfitted.log = padded.log.clone();
+    unfitted.log.push(newest);
+    assert!(
+        size(&unfitted) > MAX_TV_REC_BYTES,
+        "unfitted, the tell's write would be refused"
+    );
+    let kept = &stored.log[..stored.log.len() - 1];
+    assert!(kept.len() < padded.log.len(), "the oldest lines went");
+    assert_eq!(kept, &padded.log[padded.log.len() - kept.len()..]);
+    // Never twice.
+    let mut again = String::new();
     for _ in 0..3 {
         let (events, queued) = fire(&mut rig);
         land_all(&mut rig, &queued);
-        heard.push_str(&said(&rig.tw, &events, listener));
+        again.push_str(&said(&rig.tw, &events, listener));
     }
-    assert_eq!(heard_count(&heard), 1, "{heard}");
-    assert!(projection(&rig.tw, tv).is_some_and(|r| r.told > padded.told));
+    assert_eq!(heard_count(&again), 0, "{again}");
     no_refused_writes(&rig.tw);
 }
 

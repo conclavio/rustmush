@@ -108,6 +108,9 @@ pub const RUN_ALLOWLIST: &[&str] = &[
     // Doc 19 cut A.3b: the chart reads the sky and plans nothing.
     "+chart",
     "+chart/map",
+    // Doc 20 cut SM.4b: the site map reads the ground, the rigs and your own chart; it
+    // writes and submits nothing.
+    "+tv/map",
 ];
 
 /// The body of a declared-but-unproduced pane (interface plan I8), two rows

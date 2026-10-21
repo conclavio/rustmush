@@ -579,6 +579,8 @@ impl GameModule for TacsimRuleset {
         commands::register(reg)?;
         // Doc 19 cut A.3b: the `sky.chart` panel feed and its query, with the port verbs.
         port::chart_panel::register(reg)?;
+        // Doc 20 cut SM.4b (§10, D-20-13): the `site.map` panel feed and its query.
+        port::site_map::register(reg)?;
         // Doc 20 cut SM.1 (§3.2, D-20-4): `@geology`, staff truth, in its own ReadOnly bracket.
         surface::commands::register(reg)?;
         // 16b cut C.2 (C1): the game's definitions, through the C1 registry.
@@ -721,27 +723,37 @@ impl GameModule for TacsimRuleset {
         surface::install_lane_geology(ctx.w, bodies);
         // Doc 20 cut SM.4a (lead ruling 6): every site with a programme hull docked on its pad
         // asks for its ground, so the surface tick warms it (RAM only; nothing with the geology
-        // layer dark).
-        let docked_sites: Vec<mush_core::CanonicalId> = port::coop::programme_port(ctx.w)
-            .map(|port| {
-                port.map
-                    .hulls
-                    .iter()
-                    .filter_map(|row| {
-                        match port::ship::berth_of(ctx.w, mush_core::ObjId(row.hull)) {
-                            port::ship::Berth::Docked { map, def } if def.site.is_some() => {
-                                Some(map.entry.clone())
+        // layer dark). Doc 20 cut SM.4b (lead ruling 4, R3): and for the home field of that
+        // hull's ramp cell — wanted whatever the layer's state, so a far rig's way home is built
+        // at the first fire after a restart even without a key.
+        let docked_sites: Vec<(mush_core::CanonicalId, Option<(i64, i64)>)> =
+            port::coop::programme_port(ctx.w)
+                .map(|port| {
+                    port.map
+                        .hulls
+                        .iter()
+                        .filter_map(|row| {
+                            let hull = mush_core::ObjId(row.hull);
+                            match port::ship::berth_of(ctx.w, hull) {
+                                port::ship::Berth::Docked { map, def } if def.site.is_some() => {
+                                    Some((
+                                        map.entry.clone(),
+                                        surface::hull_home(ctx.w, hull).map(|(_, ramp)| ramp),
+                                    ))
+                                }
+                                port::ship::Berth::Docked { .. }
+                                | port::ship::Berth::UnderWay
+                                | port::ship::Berth::Elsewhere => None,
                             }
-                            port::ship::Berth::Docked { .. }
-                            | port::ship::Berth::UnderWay
-                            | port::ship::Berth::Elsewhere => None,
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        for entry in docked_sites {
-            surface::want_site_ground(ctx.w, &entry);
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        for (entry, ramp) in docked_sites {
+            match ramp {
+                Some(ramp) => surface::want_home(ctx.w, &entry, ramp),
+                None => surface::want_site_ground(ctx.w, &entry),
+            }
         }
         // **17b cut M3.3** (doc 17 §13): the stock mind's source, stored
         // immutably under its digest (`tacsim:mindsrc:<sha256>`) — written by

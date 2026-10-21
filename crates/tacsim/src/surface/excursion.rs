@@ -28,6 +28,11 @@
 //! brief's decision 3) and the site grid's
 //! [`site_cell`] /
 //! [`cells_apart`]. Integers throughout (§16); no RNG.
+//!
+//! **Doc 20 cut SM.4b** adds the drive: [`ActKind::Drive`] and [`ActParams::Drive`] — the frozen
+//! leg, the one leg variant a far recover carries too — [`Outcome::arrived`], the leg in
+//! [`TvRec::leg`] (fitted under 4 KiB by [`TvRec::fit`]), [`leg_affordable`] (a recover's way
+//! home, never held to the floor) and [`cell_pose`].
 
 use std::collections::BTreeMap;
 
@@ -133,6 +138,9 @@ pub enum ActKind {
     /// loud (heard across the site) or quiet (a quarter of the reach, heard by nobody) — the
     /// quiet flag is the act's parameter, not a kind ([`ActParams::Sound`]).
     Sound,
+    /// **A drive** (doc 20 cut SM.4b; §8 "the frozen leg", D-20-11): over the site's ground along
+    /// the leg frozen at the start ([`ActParams::Drive`]); from the bay the launch is implied.
+    Drive,
 }
 
 impl ActKind {
@@ -147,6 +155,7 @@ impl ActKind {
             ActKind::Dump => "dump",
             ActKind::Scan => "scan",
             ActKind::Sound => "sound",
+            ActKind::Drive => "drive",
         }
     }
 
@@ -159,15 +168,9 @@ impl ActKind {
             "dump" => Some(ActKind::Dump),
             "scan" => Some(ActKind::Scan),
             "sound" => Some(ActKind::Sound),
+            "drive" => Some(ActKind::Drive),
             _ => None,
         }
-    }
-
-    /// Whether the act reads the ground (a scan or a sounding): its plan may imply the launch,
-    /// and its finish writes the operator's chart.
-    #[must_use]
-    pub fn reads_ground(self) -> bool {
-        matches!(self, ActKind::Scan | ActKind::Sound)
     }
 }
 
@@ -219,7 +222,34 @@ pub enum ActParams {
         /// Quiet: heard by nobody.
         quiet: bool,
     },
+    /// **A drive's frozen leg** (doc 20 cut SM.4b; §8; lead rulings 1 and 5): the one leg variant
+    /// — a drive's, and a recover's from farther than beside the ramp. The start's prepare writes
+    /// it; the tick projects its waypoints into `TvRec.leg` for interpolation and places the rig
+    /// at `to` at the act's due instant; positions between are never written.
+    Drive {
+        /// The launch is implied (a drive typed from the bay; a recover's is always `false`).
+        from_bay: bool,
+        /// The target in words (`crate::surface::drive::target_words`, or "the {ramp}" for a
+        /// recover), at most [`MAX_DRIVE_TARGET_BYTES`].
+        target: String,
+        /// The end cell, site-local `[x, y]` (a recover's: the beside-ramp cell its leg ends on).
+        to: [i64; 2],
+        /// The frozen display leg, `2..=`[`MAX_LEG_WAYPOINTS`], `at_s` from the leg's start,
+        /// non-decreasing.
+        waypoints: Vec<LegWaypoint>,
+        /// The leg's own IC seconds (the last waypoint's `at_s`).
+        secs: u32,
+        /// The exact path's atlas cost (for the log and the tests).
+        cost: u64,
+        /// The exact path's length, metres.
+        metres: u32,
+        /// The heading at the end, millidegrees clockwise from north, `< 360,000`.
+        heading_mdeg: u32,
+    },
 }
+
+/// The most bytes a drive's target words carry.
+pub const MAX_DRIVE_TARGET_BYTES: usize = 32;
 
 /// The most cells an instrument's reach may name (the scan's 48 on the Mk1 mast).
 pub const MAX_READ_RADIUS_CELLS: u32 = 48;
@@ -227,30 +257,84 @@ pub const MAX_READ_RADIUS_CELLS: u32 = 48;
 pub const MAX_SCAN_FIELDS: usize = 9;
 
 impl ActParams {
-    /// Whether a scan's or a sounding's launch is implied; `false` for every other act.
+    /// Whether the act's launch is implied — a scan's, a sounding's or (doc 20 cut SM.4b) a
+    /// drive's from the bay; `false` for every other act (and for a recover's leg).
     #[must_use]
     pub fn launches(&self) -> bool {
         match self {
-            ActParams::Scan { from_bay, .. } | ActParams::Sound { from_bay, .. } => *from_bay,
+            ActParams::Scan { from_bay, .. }
+            | ActParams::Sound { from_bay, .. }
+            | ActParams::Drive { from_bay, .. } => *from_bay,
             ActParams::None {} | ActParams::Dump { .. } => false,
         }
     }
 
-    /// A scan's or a sounding's stand cell.
+    /// A scan's or a sounding's stand cell (a drive has no reading stand).
     #[must_use]
     pub fn stand(&self) -> Option<[i64; 2]> {
         match self {
             ActParams::Scan { cell, .. } | ActParams::Sound { cell, .. } => Some(*cell),
-            ActParams::None {} | ActParams::Dump { .. } => None,
+            ActParams::None {} | ActParams::Dump { .. } | ActParams::Drive { .. } => None,
         }
     }
 
-    /// **A reading act's own bounds** (doc 20 cut SM.4a): the stand on the site; a scan's
-    /// `1..=9` distinct field indexes and at most 8 hidden ones, distinct and disjoint; a
-    /// sounding's reach `1..=48`.
+    /// **The frozen leg** (doc 20 cut SM.4b): a drive's or a recover's waypoints and end cell;
+    /// `None` for every act without one.
+    #[must_use]
+    pub fn leg(&self) -> Option<(&[LegWaypoint], [i64; 2])> {
+        match self {
+            ActParams::Drive { waypoints, to, .. } => Some((waypoints.as_slice(), *to)),
+            ActParams::None {}
+            | ActParams::Dump { .. }
+            | ActParams::Scan { .. }
+            | ActParams::Sound { .. } => None,
+        }
+    }
+
+    /// **An act's own bounds** (doc 20 cut SM.4a): the stand on the site; a scan's `1..=9`
+    /// distinct field indexes and at most 8 hidden ones, distinct and disjoint; a sounding's
+    /// reach `1..=48`. **Doc 20 cut SM.4b**: a leg's `2..=`[`MAX_LEG_WAYPOINTS`] waypoints with
+    /// non-decreasing `at_s`, the last equal to `secs`; `to` on the site; the target at most
+    /// [`MAX_DRIVE_TARGET_BYTES`]; the heading under 360,000.
     fn check(&self) -> Result<(), String> {
         match self {
             ActParams::None {} | ActParams::Dump { .. } => Ok(()),
+            ActParams::Drive {
+                target,
+                to,
+                waypoints,
+                secs,
+                heading_mdeg,
+                ..
+            } => {
+                if waypoints.len() < 2 || waypoints.len() > MAX_LEG_WAYPOINTS {
+                    return Err(format!("a leg carries 2 to {MAX_LEG_WAYPOINTS} waypoints"));
+                }
+                if waypoints
+                    .windows(2)
+                    .any(|pair| match (pair.first(), pair.get(1)) {
+                        (Some(a), Some(b)) => a.at_s > b.at_s,
+                        _ => true,
+                    })
+                {
+                    return Err("a leg's waypoints run forward in time".to_owned());
+                }
+                if waypoints.last().map(|last| last.at_s) != Some(*secs) {
+                    return Err("a leg ends at its own seconds".to_owned());
+                }
+                if !stand_on_site(*to) {
+                    return Err("a leg ends on its site".to_owned());
+                }
+                if target.len() > MAX_DRIVE_TARGET_BYTES {
+                    return Err(format!(
+                        "a drive's target is at most {MAX_DRIVE_TARGET_BYTES} bytes"
+                    ));
+                }
+                if *heading_mdeg >= 360_000 {
+                    return Err("a leg's heading is under 360,000 millidegrees".to_owned());
+                }
+                Ok(())
+            }
             ActParams::Scan {
                 cell,
                 fields,
@@ -493,6 +577,11 @@ pub struct Outcome {
     /// and for a refused one; skipped when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<ReadSpan>,
+    /// **Where a finished drive arrived** (doc 20 cut SM.4b): the end cell of a `Done` drive, so
+    /// the tell names it after the act has cleared. `None` for every other act and for a refused
+    /// drive; skipped when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrived: Option<[i64; 2]>,
 }
 
 /// **One rig's record in `tacsim.excursion`** (§8; lead ruling 1).
@@ -609,17 +698,27 @@ impl RigRecord {
             }
             // Doc 20 cut SM.4a: a scan's or a sounding's frozen reach, and its kind's shape.
             act.params.check()?;
+            // Doc 20 cut SM.4b: a drive carries its leg; a recover carries none, or a leg home
+            // that never implies a launch.
             let shaped = match (&act.kind, &act.params) {
                 (ActKind::Launch | ActKind::Recover, ActParams::None {})
                 | (ActKind::Dump, ActParams::Dump { .. })
                 | (ActKind::Scan, ActParams::Scan { .. })
-                | (ActKind::Sound, ActParams::Sound { .. }) => true,
+                | (ActKind::Sound, ActParams::Sound { .. })
+                | (ActKind::Drive, ActParams::Drive { .. })
+                | (
+                    ActKind::Recover,
+                    ActParams::Drive {
+                        from_bay: false, ..
+                    },
+                ) => true,
                 (
                     ActKind::Launch
                     | ActKind::Recover
                     | ActKind::Dump
                     | ActKind::Scan
-                    | ActKind::Sound,
+                    | ActKind::Sound
+                    | ActKind::Drive,
                     _,
                 ) => false,
             };
@@ -661,6 +760,14 @@ impl RigRecord {
                 if !shaped {
                     return Err("a finished act's span is a scan's or a sounding's".to_owned());
                 }
+            }
+            // Doc 20 cut SM.4b: only a finished drive arrived, on the site.
+            if let Some(cell) = last.arrived
+                && (last.kind != ActKind::Drive
+                    || last.result != ActResult::Done
+                    || !stand_on_site(cell))
+            {
+                return Err("only a finished drive arrives, on its site".to_owned());
             }
         }
         Ok(())
@@ -722,10 +829,11 @@ pub fn charge_for_act(charge: &Charge, now_ic: i64, from_bay: bool, battery: &Ba
 /// **The charge `+tv` shows** (doc 20 cut SM.4a, D22): [`charge_at`] `now`, except while an
 /// implied launch is in flight — its record stays `in_bay` until the finish, so its bay credit
 /// is read no later than `started_ic + LAUNCH_S`, the instant the finish will settle it at.
+/// Since doc 20 cut SM.4b a drive from the bay is an implied launch too (`params.launches()`).
 #[must_use]
 pub fn charge_shown(record: &RigRecord, now_ic: i64, battery: &BatteryDef) -> u32 {
     match &record.act {
-        Some(act) if act.kind.reads_ground() && act.params.launches() => {
+        Some(act) if act.params.launches() => {
             let launched = act.started_ic.saturating_add(i64::from(LAUNCH_S));
             charge_at(&record.charge, now_ic.min(launched), battery)
         }
@@ -790,12 +898,27 @@ pub fn reserve_check(
 /// **Whether an act must read its rig's battery** (§4.1 "a TV cannot be stranded by its
 /// battery"; the SM.3b fixer round's item 3): only a **spend** (`cost + home > 0`, where the
 /// reserve rule reads the floor) or a **launch**, which leaves the bay's umbilical and so
-/// settles the charge the bay put back (the recharge rate is the battery's). A recover and a
-/// dump spend nothing and never read it: a rig whose battery row stops resolving still plans,
-/// starts and finishes its way home and still empties its hopper; a launch fails closed.
+/// settles the charge the bay put back (the recharge rate is the battery's). A dump spends
+/// nothing and never reads it, and — since doc 20 cut SM.4b — **a recover never does, even one
+/// that drives home and spends its leg's charge**: its leg is checked against the record's own
+/// out-of-bay value ([`leg_affordable`]), which needs no battery, so a rig whose battery row
+/// stops resolving still plans, starts and finishes its way home and still empties its hopper;
+/// a launch fails closed.
 #[must_use]
 pub fn needs_battery(kind: ActKind, cost_cu: u32, home_cu: u32) -> bool {
-    kind == ActKind::Launch || u64::from(cost_cu).saturating_add(u64::from(home_cu)) > 0
+    kind == ActKind::Launch
+        || (kind != ActKind::Recover && u64::from(cost_cu).saturating_add(u64::from(home_cu)) > 0)
+}
+
+/// **Whether a rig can afford its own leg home** (doc 20 cut SM.4b; lead ruling 5, the brief's
+/// decision P6): out of the bay, `value − reserved − cost ≥ 0` on the record's own value (out of
+/// the bay charge only falls by acts, so no battery is read); in the bay always (a recover from
+/// the bay drives nowhere). The 5 % floor is never applied to the way home: the floor exists to
+/// pay it.
+#[must_use]
+pub fn leg_affordable(charge: &Charge, reserved_cu: u32, cost_cu: u32) -> bool {
+    charge.in_bay
+        || u64::from(charge.value_cu) >= u64::from(reserved_cu).saturating_add(u64::from(cost_cu))
 }
 
 /// **A zero spend's charge at its act's stamp, without the battery** (§4.1; the SM.3b fixer
@@ -917,6 +1040,31 @@ pub fn ramp_pose(bay: &BayDef) -> Result<mush_sim::data::Pose, String> {
     })
 }
 
+/// **A site cell's centre as a pose** (doc 20 cut SM.4b: where a drive places its rig):
+/// `(x · 1000 + 500, y · 1000 + 500)`, `z` 0, the heading given (`% 360,000`), the passive
+/// posture every tacsim pose uses ([`ramp_pose`]'s construction).
+///
+/// # Errors
+///
+/// The posture's own refusal, or a cell whose centre leaves `i64`.
+pub fn cell_pose(cell: [i64; 2], heading_mdeg: u32) -> Result<mush_sim::data::Pose, String> {
+    let side = i64::from(SITE_CELL_CM);
+    let centre = |v: i64| {
+        v.checked_mul(side)
+            .and_then(|cm| cm.checked_add(side / 2))
+            .ok_or_else(|| "the cell leaves the site".to_owned())
+    };
+    let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
+        .map_err(|error| error.to_string())?;
+    Ok(mush_sim::data::Pose {
+        x_cm: centre(cell[0])?,
+        y_cm: centre(cell[1])?,
+        z_cm: 0,
+        heading_mdeg: heading_mdeg % 360_000,
+        posture,
+    })
+}
+
 /// **The site cell a position stands in** (§3.1: 10 m cells; `div_euclid`, so a position
 /// south or west of the origin never snaps toward it).
 #[must_use]
@@ -973,7 +1121,7 @@ pub struct ActView {
     pub due_ic: i64,
 }
 
-/// One waypoint of a frozen leg (§8; SM.4's slot).
+/// One waypoint of a frozen leg (§8; doc 20 cut SM.4b fills it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LegWaypoint {
@@ -986,7 +1134,8 @@ pub struct LegWaypoint {
 }
 
 /// **A frozen leg** (§8: at most [`MAX_LEG_WAYPOINTS`] waypoints with cumulative IC seconds;
-/// positions between are pure interpolation). SM.4's slot: always `None` in SM.3b.
+/// positions between are pure interpolation). Doc 20 cut SM.4b projects a drive's into
+/// [`TvRec::leg`] from its act's [`ActParams::Drive`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenLeg {
@@ -1037,7 +1186,9 @@ pub struct TvRec {
     /// The act in flight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub act: Option<ActView>,
-    /// SM.4's frozen leg; always `None` in SM.3b.
+    /// **The frozen leg of the act in flight** (doc 20 cut SM.4b; §8): a drive's (or a recover's
+    /// way home) from the tick's first visit after its start until its placement, so clients
+    /// interpolate the rig between waypoints; `None` otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leg: Option<FrozenLeg>,
     /// The act ordinal whose placement the tick wrote (the idempotency key).
@@ -1095,6 +1246,18 @@ impl TvRec {
             self.log.remove(0);
         }
         self.log.push(TvLogLine { at_ic, text: flat });
+    }
+
+    /// **Fit the projection under [`MAX_TV_REC_BYTES`]** (doc 20 cut SM.4b; the brief's decision
+    /// P7): while its canonical JSON is past the ceiling, drop the oldest log line. The leg is
+    /// never cut (doc 20 §8's 4 KiB stands; a 32-waypoint leg and a full sixteen-line log do not
+    /// fit together). A record that will not serialise is left as it is (its `check` refuses).
+    pub fn fit(&mut self) {
+        while !self.log.is_empty()
+            && serde_json::to_vec(self).is_ok_and(|bytes| bytes.len() > MAX_TV_REC_BYTES)
+        {
+            self.log.remove(0);
+        }
     }
 
     /// **The projection's bounds**: the schema; at most [`MAX_TV_LOG_LINES`] log lines, each
@@ -1238,7 +1401,12 @@ mod tests {
         );
         assert!(needs_battery(ActKind::Scan, 1_000, 0));
         assert!(needs_battery(ActKind::Sound, 2_000, 0));
-        assert!(needs_battery(ActKind::Recover, 0, 1), "a spend home");
+        // Doc 20 cut SM.4b (lead ruling 5): a recover never reads the battery, even one that
+        // spends its leg's charge home (`leg_affordable` checks it on the record's own value).
+        assert!(
+            !needs_battery(ActKind::Recover, 0, 1),
+            "a recover spends home unread"
+        );
         assert!(!needs_battery(ActKind::Recover, 0, 0));
         assert!(!needs_battery(ActKind::Dump, 0, 0));
         let b = battery();
@@ -1498,6 +1666,7 @@ mod tests {
                 },
                 moved: BTreeMap::new(),
                 span: None,
+                arrived: None,
             }),
         }
     }
@@ -1595,6 +1764,7 @@ mod tests {
             ActKind::Dump,
             ActKind::Scan,
             ActKind::Sound,
+            ActKind::Drive,
         ] {
             let wire = serde_json::to_value(kind).unwrap_or_else(|e| panic!("{e}"));
             assert_eq!(wire, serde_json::json!(kind.word()));
@@ -1611,6 +1781,8 @@ mod tests {
             },
             scan_params(),
             sound_params(),
+            drive_params(true),
+            drive_params(false),
         ] {
             let wire = serde_json::to_value(&params).unwrap_or_else(|e| panic!("{e}"));
             let back: ActParams =
@@ -1679,6 +1851,221 @@ mod tests {
             radius: 16,
             quiet: false,
         }
+    }
+
+    /// A drive's leg (doc 20 cut SM.4b): from the ramp pose to `C117`'s cell, three waypoints.
+    fn drive_params(from_bay: bool) -> ActParams {
+        ActParams::Drive {
+            from_bay,
+            target: "C117".to_owned(),
+            to: [146, 226],
+            waypoints: vec![
+                LegWaypoint {
+                    x_cm: 128_000,
+                    y_cm: 124_500,
+                    at_s: 0,
+                },
+                LegWaypoint {
+                    x_cm: 140_500,
+                    y_cm: 180_500,
+                    at_s: 400,
+                },
+                LegWaypoint {
+                    x_cm: 146_500,
+                    y_cm: 226_500,
+                    at_s: 640,
+                },
+            ],
+            secs: 640,
+            cost: 19_200,
+            metres: 1_040,
+            heading_mdeg: 45_000,
+        }
+    }
+
+    /// **A drive record checks its leg** (doc 20 cut SM.4b): a drive with its leg and a recover
+    /// with a leg home pass; a leg of one waypoint or thirty-three, running back in time, ending
+    /// off its own seconds, off the site, with a long target or a full-circle heading, a drive
+    /// with another kind's parameters, a recover whose leg implies a launch, and an `arrived`
+    /// on anything but a finished drive are each refused.
+    #[test]
+    fn sm4b_a_drive_record_checks_its_leg() {
+        let with = |kind: ActKind, params: ActParams| {
+            let mut record = sample();
+            record.act = Some(Act {
+                kind,
+                params,
+                ..act(3, ActParams::None {})
+            });
+            record
+        };
+        assert_eq!(with(ActKind::Drive, drive_params(true)).check(), Ok(()));
+        assert_eq!(with(ActKind::Drive, drive_params(false)).check(), Ok(()));
+        assert_eq!(with(ActKind::Recover, drive_params(false)).check(), Ok(()));
+        assert_eq!(
+            drive_params(true).leg().map(|(w, to)| (w.len(), to)),
+            Some((3, [146, 226]))
+        );
+        assert!(drive_params(true).launches());
+        assert!(!drive_params(false).launches());
+        assert_eq!(drive_params(true).stand(), None);
+        let edit = |change: &dyn Fn(&mut ActParams)| {
+            let mut params = drive_params(false);
+            change(&mut params);
+            with(ActKind::Drive, params)
+        };
+        let mut broken = vec![
+            edit(&|p| {
+                if let ActParams::Drive { waypoints, .. } = p {
+                    waypoints.truncate(1);
+                }
+            }),
+            edit(&|p| {
+                if let ActParams::Drive {
+                    waypoints, secs, ..
+                } = p
+                {
+                    *waypoints = (0..33_u32)
+                        .map(|n| LegWaypoint {
+                            x_cm: 128_000,
+                            y_cm: 124_500,
+                            at_s: n,
+                        })
+                        .collect();
+                    *secs = 32;
+                }
+            }),
+            edit(&|p| {
+                if let ActParams::Drive { waypoints, .. } = p
+                    && let Some(second) = waypoints.get_mut(1)
+                {
+                    second.at_s = 700;
+                }
+            }),
+            edit(&|p| {
+                if let ActParams::Drive { secs, .. } = p {
+                    *secs = 641;
+                }
+            }),
+            edit(&|p| {
+                if let ActParams::Drive { to, .. } = p {
+                    *to = [256, 0];
+                }
+            }),
+            edit(&|p| {
+                if let ActParams::Drive { target, .. } = p {
+                    *target = "x".repeat(MAX_DRIVE_TARGET_BYTES + 1);
+                }
+            }),
+            edit(&|p| {
+                if let ActParams::Drive { heading_mdeg, .. } = p {
+                    *heading_mdeg = 360_000;
+                }
+            }),
+            with(ActKind::Drive, ActParams::None {}),
+            with(ActKind::Scan, drive_params(false)),
+            with(ActKind::Recover, drive_params(true)),
+        ];
+        // `arrived` only on a finished drive, on the site.
+        let arrived = |kind: ActKind, result: ActResult, cell: [i64; 2]| {
+            let mut record = sample();
+            if let Some(last) = record.last.as_mut() {
+                last.kind = kind;
+                last.result = result;
+                last.arrived = Some(cell);
+            }
+            record
+        };
+        assert_eq!(
+            arrived(ActKind::Drive, ActResult::Done, [146, 226]).check(),
+            Ok(())
+        );
+        broken.push(arrived(ActKind::Scan, ActResult::Done, [146, 226]));
+        broken.push(arrived(
+            ActKind::Drive,
+            ActResult::Refused {
+                code: RefusedCode::Moved,
+            },
+            [146, 226],
+        ));
+        broken.push(arrived(ActKind::Drive, ActResult::Done, [-1, 3]));
+        for record in broken {
+            assert!(record.check().is_err(), "{record:?} passed its check");
+        }
+    }
+
+    /// **A recover never needs the battery** (doc 20 cut SM.4b; lead ruling 5, decision P6): not
+    /// even with a leg's charge to spend; a drive does; and a leg is affordable out of the bay
+    /// exactly when the value covers the reservation and the cost — never the 5 % floor — and
+    /// always from the bay.
+    #[test]
+    fn sm4b_a_recover_never_needs_the_battery() {
+        assert!(!needs_battery(ActKind::Recover, 4_500, 0));
+        assert!(!needs_battery(ActKind::Recover, 0, 0));
+        assert!(needs_battery(ActKind::Drive, 2_250, 0));
+        assert!(needs_battery(ActKind::Drive, 0, 900));
+        assert!(needs_battery(ActKind::Launch, 0, 0));
+        let out = Charge {
+            value_cu: 3_000,
+            at_ic: 10,
+            in_bay: false,
+        };
+        assert!(leg_affordable(&out, 0, 3_000), "exactly the leg fits");
+        assert!(!leg_affordable(&out, 0, 3_001));
+        assert!(!leg_affordable(&out, 1, 3_000), "the reservations count");
+        assert!(leg_affordable(&out, 0, 0));
+        let bay = Charge {
+            in_bay: true,
+            ..out
+        };
+        assert!(leg_affordable(&bay, 0, u32::MAX));
+    }
+
+    /// **A full leg and a full log fit** (doc 20 cut SM.4b; the brief's decision P7): 32
+    /// waypoints at six-digit coordinates and sixteen lines of 160 bytes run past 4 KiB; `fit`
+    /// drops the oldest lines until it fits, keeps the newest, and never cuts the leg.
+    #[test]
+    fn sm4b_a_full_leg_and_a_full_log_fit() {
+        let mut rec = TvRec::new(ObjId(900), 1);
+        rec.leg = Some(FrozenLeg {
+            started_ic: 123_456_789,
+            waypoints: (0..32_i64)
+                .map(|n| LegWaypoint {
+                    x_cm: 255_500 - n * 1_000,
+                    y_cm: 200_500 + n * 1_000,
+                    at_s: u32::try_from(n * 30).unwrap_or(0),
+                })
+                .collect(),
+        });
+        for n in 0..16_i64 {
+            rec.push_log(1_000_000 + n, &format!("{n:02}{}", "x".repeat(158)));
+        }
+        let size = |rec: &TvRec| serde_json::to_vec(rec).map(|b| b.len()).unwrap_or(0);
+        assert!(size(&rec) > MAX_TV_REC_BYTES, "{}", size(&rec));
+        assert!(rec.check().is_err());
+        let leg = rec.leg.clone();
+        rec.fit();
+        assert_eq!(rec.check(), Ok(()));
+        assert!(size(&rec) <= MAX_TV_REC_BYTES);
+        assert_eq!(rec.leg, leg, "the leg is whole");
+        assert!(rec.log.len() < MAX_TV_LOG_LINES && !rec.log.is_empty());
+        assert_eq!(
+            rec.log.last().map(|l| l.at_ic),
+            Some(1_000_015),
+            "the newest line is kept"
+        );
+        // Dropping one line fewer would not fit: `fit` drops only what it must.
+        let kept = rec.log.len();
+        assert!(kept < MAX_TV_LOG_LINES);
+        let mut one_more = rec.clone();
+        one_more.log.insert(
+            0,
+            TvLogLine {
+                at_ic: 1_000_000,
+                text: format!("00{}", "x".repeat(158)),
+            },
+        );
+        assert!(size(&one_more) > MAX_TV_REC_BYTES);
     }
 
     /// **A scan's and a sounding's frozen reach is bounded** (doc 20 cut SM.4a): a stand off

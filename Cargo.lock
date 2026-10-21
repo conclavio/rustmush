@@ -4603,6 +4603,7 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "memory-stats",
+ "mush-ansi",
  "mush-atlas",
  "mush-campaign",
  "mush-canon",

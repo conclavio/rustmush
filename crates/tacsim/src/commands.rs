@@ -209,7 +209,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // `/1`…`/4` (`MAX_BAY_ITEMS`), then the act switches. Doc 20 cut SM.4a: `/scan` (`/survey`)
     // and `/sound [quiet]` go stage exactly one `tacsim_surface_act`; `/forget … go` stages
     // exactly one `tacsim_chart_forget`; `/quiet` writes one `tacsim:tvpref:` document (the
-    // `/lease` precedent) — all in the same bracket.
+    // `/lease` precedent) — all in the same bracket. Doc 20 cut SM.4b: `/drive … go` writes
+    // one RAM drive order (tacsim's own module slot, the `RigPointer` precedent) and stages
+    // exactly one `tacsim_surface_act` with `act drive`; `/recover` from afar carries its leg in
+    // the same one act; `/map` is a pure read.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
@@ -220,7 +223,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 .copied()
                 .chain([
                     "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget",
-                    "quiet",
+                    "quiet", "drive", "map",
                 ])
                 .map(SmolStr::new)
                 .collect(),

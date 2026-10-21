@@ -45,6 +45,14 @@
 //! connected and not quiet, as one line naming a bearing and a range band and nothing more,
 //! **only once the projection write that advances `told` succeeded**, so the at-least-once tell
 //! never repeats a heard line.
+//!
+//! **Doc 20 cut SM.4b** adds **the started leg** — a third candidate reason: a drive (or a far
+//! recover) in flight, not yet due, whose leg the projection does not show yet is projected at
+//! once, so clients interpolate the rig between its waypoints; **the drive's due step** — the rig
+//! placed at its leg's end (from the bay straight there, the ramp half inside the act), a far
+//! recover's rig placed back in the bay from its leg's start, its end or beside the ramp; **the
+//! arrival** — `ARRIVED`, with the operator's own reading of the end pocket; and the projection
+//! fitted under its 4 KiB by dropping the oldest log lines, never the leg.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -61,8 +69,8 @@ use crate::surface::act::{Where, done_key, ramp_label, site_berth, site_name, wh
 use crate::surface::address::{self, Octant};
 use crate::surface::chart::{ChartKey, ChartRecord};
 use crate::surface::excursion::{
-    ActKind, ActResult, ActView, Outcome, ReadSpan, RefusedCode, RigKey, RigRecord, TvPose, TvRec,
-    TvRecState, TvState, cells_apart, site_cell,
+    ActKind, ActResult, ActView, FrozenLeg, LAUNCH_S, Outcome, ReadSpan, RefusedCode, RigKey,
+    RigRecord, TvPose, TvRec, TvRecState, TvState, cells_apart, site_cell,
 };
 use crate::surface::reading::{Footing, READING_RULE_VERSION};
 
@@ -176,6 +184,8 @@ fn retried_ordinals(state: &SurfaceTickState, tv: ObjId) -> Vec<u32> {
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.state(SurfaceTickState::default());
     reg.state(crate::port::tv::RigPointer::default());
+    // Doc 20 cut SM.4b (the brief's decision P2): the drive orders the start's offer fixes.
+    reg.state(crate::surface::act::DriveOrders::default());
     reg.tick(
         SURFACE_TICK,
         TickCadence::Coarse(SURFACE_TICK_PERIOD),
@@ -320,6 +330,10 @@ pub(crate) struct Candidate {
     record: RigRecord,
     due: bool,
     untold: bool,
+    /// **Doc 20 cut SM.4b** (the brief's decision P8): an act in flight, not yet due, whose
+    /// params carry a leg the projection does not show yet — projected at once so clients
+    /// interpolate the rig while it moves.
+    started: bool,
     order: (i64, u32),
 }
 
@@ -340,10 +354,16 @@ fn backing_off(state: &SurfaceTickState, key: ActKey) -> bool {
 /// starve newer acts world-wide. Once the back-off has run its [`DONE_BACKOFF_FIRES`] the act
 /// is a candidate again (its old `due_ic` puts it first). Deterministic: a total order over
 /// `(instant, tv)`. Returns the candidates and how many backed-off acts were left out.
+///
+/// **Doc 20 cut SM.4b** adds a third reason, **started** (the brief's decision P8): an act in
+/// flight, not yet due, whose params carry a leg and whose projection's act (`shown`, the
+/// projection's act ordinal, read like `told`) is not that act — ordered by `(started_ic, tv)`
+/// among the others, so a drive's leg reaches `tacsim:tv:<tv>` on the first fire after its start.
 pub(crate) fn candidates(
     records: Vec<RigRecord>,
     now: i64,
     told: impl Fn(ObjId) -> u32,
+    shown: impl Fn(ObjId) -> Option<u32>,
     state: &SurfaceTickState,
 ) -> (Vec<Candidate>, u32) {
     let mut passed_over = 0_u32;
@@ -351,6 +371,12 @@ pub(crate) fn candidates(
         .into_iter()
         .filter_map(|record| {
             let told = told(record.tv);
+            let started_at = record
+                .act
+                .as_ref()
+                .filter(|act| act.due_ic > now && act.params.leg().is_some())
+                .filter(|act| shown(record.tv) != Some(act.ordinal))
+                .map(|act| act.started_ic);
             let due_at = record
                 .act
                 .as_ref()
@@ -368,11 +394,12 @@ pub(crate) fn candidates(
                 .as_ref()
                 .filter(|last| last.ordinal > told)
                 .map(|last| last.at_ic);
-            let at = due_at.or(untold_at)?;
+            let at = due_at.or(untold_at).or(started_at)?;
             Some(Candidate {
                 order: (at, record.tv.0),
                 due: due_at.is_some(),
                 untold: untold_at.is_some(),
+                started: started_at.is_some(),
                 record,
             })
         })
@@ -400,7 +427,13 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
     let on_site = on_site(&records);
     let (candidates, resting) = {
         let w: &World = ctx.w;
-        candidates(records, now, |tv| told_of(w, tv), state)
+        candidates(
+            records,
+            now,
+            |tv| told_of(w, tv),
+            |tv| shown_of(w, tv),
+            state,
+        )
     };
     stats.passed_over = resting;
     let mut fire = Fire::new(BTreeMap::new());
@@ -419,6 +452,11 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
         {
             tell(ctx, &handles, record, last, &on_site);
             stats.told = stats.told.saturating_add(1);
+            stats.worked = stats.worked.saturating_add(1);
+        }
+        // Doc 20 cut SM.4b (decision P8): a started drive's leg, projected at once.
+        if candidate.started && !candidate.due {
+            project_start(ctx, record);
             stats.worked = stats.worked.saturating_add(1);
         }
         let step = match (candidate.due, &record.act, handles.surface_done.as_ref()) {
@@ -544,6 +582,61 @@ fn told_of(w: &World, tv: ObjId) -> u32 {
     }
 }
 
+/// The projection's act ordinal (doc 20 cut SM.4b), `None` when it shows no act or is absent or
+/// unreadable.
+fn shown_of(w: &World, tv: ObjId) -> Option<u32> {
+    match w
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.tv_rec(tv))
+    {
+        Some(TvRecState::Present(rec)) => rec.act.map(|act| act.ordinal),
+        Some(TvRecState::Unreadable) | None => None,
+    }
+}
+
+/// **The leg a record's act in flight carries, as the projection shows it** (doc 20 cut SM.4b;
+/// §8): its waypoints from the leg's start — the act's own start, `LAUNCH_S` later when the
+/// launch is implied. `None` for an act without a leg.
+fn leg_view(record: &RigRecord) -> Option<FrozenLeg> {
+    let act = record.act.as_ref()?;
+    let (waypoints, _) = act.params.leg()?;
+    let launch = if act.params.launches() {
+        i64::from(LAUNCH_S)
+    } else {
+        0
+    };
+    Some(FrozenLeg {
+        started_ic: act.started_ic.saturating_add(launch),
+        waypoints: waypoints.to_vec(),
+    })
+}
+
+/// **A started drive's projection** (doc 20 cut SM.4b; decision P8): the act view, its leg for
+/// interpolation, and the state and pose as the placement reads now. Nothing else moves.
+fn project_start(ctx: &mut Ctx<'_>, record: &RigRecord) {
+    let Some(act) = &record.act else {
+        return;
+    };
+    let mut rec = projection_of(ctx.w, record.tv, act.slot);
+    rec.slot = act.slot;
+    rec.operator = Some(act.operator);
+    rec.hull = Some(act.hull);
+    rec.excursion = record.excursion.as_ref().map(|excursion| excursion.id);
+    rec.site = record
+        .excursion
+        .as_ref()
+        .map(|excursion| excursion.site.clone());
+    rec.state = projected_state(ctx.w, record, Some(act.hull));
+    rec.pose = pose_of(ctx.w, record.tv);
+    rec.act = Some(ActView {
+        ordinal: act.ordinal,
+        kind: act.kind,
+        due_ic: act.due_ic,
+    });
+    rec.leg = leg_view(record);
+    write_projection(ctx, &rec);
+}
+
 /// The projection as stored, else a new one.
 fn projection_of(w: &World, tv: ObjId, slot: u8) -> TvRec {
     match w
@@ -576,6 +669,10 @@ fn pose_of(w: &World, tv: ObjId) -> Option<TvPose> {
 /// (already equal, or written); `false` on a `check` or serialise refusal (doc 20 cut SM.4a,
 /// D24: the tell sends a heard line only on `true`).
 fn write_projection(ctx: &mut Ctx<'_>, rec: &TvRec) -> bool {
+    // Doc 20 cut SM.4b (decision P7): a full leg and a full log do not fit 4 KiB together; the
+    // oldest log lines go, never the leg.
+    let mut rec = rec.clone();
+    rec.fit();
     let same = ctx
         .w
         .module_state::<TacsimStore>()
@@ -588,7 +685,7 @@ fn write_projection(ctx: &mut Ctx<'_>, rec: &TvRec) -> bool {
         tracing::error!(tv = rec.tv.0, %error, "tacsim: a rig projection is out of bounds; it is not written");
         return false;
     }
-    put_tv_rec(ctx, rec)
+    put_tv_rec(ctx, &rec)
 }
 
 /// **The due step's world write** (the brief's 3.5), idempotent by state: a launch places a
@@ -611,8 +708,7 @@ fn world_step(ctx: &mut Ctx<'_>, record: &RigRecord) {
     }
     // Doc 20 cut SM.4a (lead ruling 2): a scan or a sounding from the bay places its rig at the
     // ramp exactly as a launch does; one from the ground places nothing.
-    let launches =
-        act.kind == ActKind::Launch || (act.kind.reads_ground() && act.params.launches());
+    let launches = act.kind == ActKind::Launch || act.params.launches();
     match act.kind {
         ActKind::Launch | ActKind::Scan | ActKind::Sound => {
             if launches
@@ -622,7 +718,56 @@ fn world_step(ctx: &mut Ctx<'_>, record: &RigRecord) {
                 tracing::warn!(tv = tv.0, %error, "tacsim: a launch's placement was refused; the finish records it");
             }
         }
+        // Doc 20 cut SM.4b (§3.7 of the brief): the drive's one placement, at its due instant —
+        // at the leg's end, from the bay straight there (the ramp half is inside the act), or
+        // from the leg's start cell on the act's site domain. Anywhere else nothing (the finish
+        // records `Moved`); at the end cell nothing is written again.
+        ActKind::Drive => {
+            let Some((waypoints, to)) = act.params.leg() else {
+                return;
+            };
+            let start = waypoints
+                .first()
+                .map(|first| site_cell(first.x_cm, first.y_cm));
+            let at_start = match where_is(ctx.w, tv) {
+                Where::Bay { hull } => launches && hull == act.hull,
+                Where::Ground {
+                    domain: on,
+                    x_cm,
+                    y_cm,
+                    ..
+                } => on == domain && Some(site_cell(x_cm, y_cm)) == start,
+                Where::Elsewhere => false,
+            };
+            let heading = match &act.params {
+                crate::surface::excursion::ActParams::Drive { heading_mdeg, .. } => *heading_mdeg,
+                _ => 0,
+            };
+            if at_start {
+                match crate::surface::excursion::cell_pose(to, heading) {
+                    Ok(pose) => {
+                        if let Err(error) = mush_sim::place(ctx, tv, domain, pose) {
+                            tracing::warn!(tv = tv.0, %error, "tacsim: a drive's placement was refused; the finish records it");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(tv = tv.0, %error, "tacsim: a drive's end does not read as a pose");
+                    }
+                }
+            }
+        }
+        // Doc 20 cut SM.4b (§3.6 of the brief): a recover with a leg places the rig back in the
+        // bay when it stands on the site's domain at its leg's start cell, at its end cell, or
+        // within one cell of the ramp (SM.3b's rule) — idempotently.
         ActKind::Recover => {
+            let leg = act.params.leg().map(|(waypoints, to)| {
+                (
+                    waypoints
+                        .first()
+                        .map(|first| site_cell(first.x_cm, first.y_cm)),
+                    (to[0], to[1]),
+                )
+            });
             if let Where::Ground {
                 domain: on,
                 x_cm,
@@ -630,10 +775,15 @@ fn world_step(ctx: &mut Ctx<'_>, record: &RigRecord) {
                 ..
             } = where_is(ctx.w, tv)
                 && on == domain
-                && cells_apart(site_cell(x_cm, y_cm), site_cell(ramp.x_cm, ramp.y_cm)) <= 1
-                && let Err(error) = mush_sim::place_interior(ctx, tv, bay_room, Some(bay_slot))
             {
-                tracing::warn!(tv = tv.0, %error, "tacsim: a recover's placement was refused; the finish records it");
+                let cell = site_cell(x_cm, y_cm);
+                let beside = cells_apart(cell, site_cell(ramp.x_cm, ramp.y_cm)) <= 1;
+                let on_leg = leg.is_some_and(|(start, end)| Some(cell) == start || cell == end);
+                if (beside || on_leg)
+                    && let Err(error) = mush_sim::place_interior(ctx, tv, bay_room, Some(bay_slot))
+                {
+                    tracing::warn!(tv = tv.0, %error, "tacsim: a recover's placement was refused; the finish records it");
+                }
             }
         }
         ActKind::Dump => {}
@@ -703,6 +853,9 @@ fn project_due(ctx: &mut Ctx<'_>, record: &RigRecord) {
         kind: act.kind,
         due_ic: act.due_ic,
     });
+    // Doc 20 cut SM.4b: the placement just happened — the pose is the leg's end, and the leg
+    // no longer moves anything.
+    rec.leg = None;
     rec.applied = act.ordinal;
     write_projection(ctx, &rec);
 }
@@ -783,10 +936,20 @@ fn tell(
                 .and_then(|store| store.tv_lease_on(record.tv))
                 .map(|lease| lease.hull)
         });
-    let line = match (&last.result, &last.span) {
-        (ActResult::Done, Some(span)) => reading_block(ctx, handles, record, last, span),
+    let line = match (&last.result, &last.span, last.arrived) {
+        (ActResult::Done, Some(span), _) => reading_block(ctx, handles, record, last, span),
+        // Doc 20 cut SM.4b (§3.7 of the brief): a drive's arrival, with the operator's own
+        // reading of the pocket it ends in.
+        (ActResult::Done, None, Some(cell)) if last.kind == ActKind::Drive => {
+            arrival_line(ctx, handles, last, cell)
+        }
         _ => completion_line(w, last, hull),
     };
+    // Doc 20 cut SM.4b: a finished drive asks for its site's ground and home once more (a no-op
+    // when warm), so the next act from the new stand peeks them warm.
+    let wants = (last.kind == ActKind::Drive && last.result == ActResult::Done)
+        .then(|| hull.and_then(|hull| crate::surface::hull_home(w, hull)))
+        .flatten();
     let log_line = line.lines().next().unwrap_or_default().to_owned();
     rec.slot = last.slot;
     rec.operator = Some(last.operator);
@@ -803,17 +966,31 @@ fn tell(
         kind: act.kind,
         due_ic: act.due_ic,
     });
+    // Doc 20 cut SM.4b: the leg of the act in flight now, if it carries one.
+    rec.leg = leg_view(record);
     rec.told = last.ordinal;
     rec.push_log(last.at_ic, &log_line);
     let written = write_projection(ctx, &rec);
     crate::port_tick::notify(ctx, last.operator, &line);
-    if written
-        && let Some(ReadSpan::Sound {
+    if let Some((site, ramp)) = wants {
+        crate::surface::want_home(ctx.w, &site, ramp);
+    }
+    if let Some(cell) = heard_from(written, last) {
+        heard_lines(ctx, last, cell, on_site);
+    }
+}
+
+/// **Whether the tell sends a heard line, and from where** (doc 20 cut SM.4a, D24; pure so it is
+/// pinned on its own — the review's conformance/F3: since cut SM.4b fits the projection, no
+/// world padding can refuse the write any more): the sounder's stand for a `Done` loud sounding
+/// the site heard, **and only once the projection write landed** (`written`) — a refused write
+/// holds the line back until the next fire's write lands, so a listener never hears it twice.
+fn heard_from(written: bool, last: &Outcome) -> Option<[i64; 2]> {
+    match &last.span {
+        Some(ReadSpan::Sound {
             cell, heard: true, ..
-        }) = &last.span
-        && last.result == ActResult::Done
-    {
-        heard_lines(ctx, last, *cell, on_site);
+        }) if written && last.result == ActResult::Done => Some(*cell),
+        Some(ReadSpan::Sound { .. } | ReadSpan::Scan { .. }) | None => None,
     }
 }
 
@@ -1047,6 +1224,47 @@ pub(crate) fn heard_line(sounder: [i64; 2], listener: (i64, i64)) -> String {
         .replace("{band}", band)
 }
 
+/// **A drive's arrival line** (doc 20 cut SM.4b; §3.7 of the brief): `ARRIVED` naming the pocket
+/// address of the end cell, and — only where the operator's OWN chart row has sounded that pocket
+/// — its reading in brackets (`chart::pocket_text` without its leading address: `fair metals,
+/// lean volatiles`, or `barren`). Never from the ground: no row, a row under another rule, an
+/// unsounded pocket or a site whose ground cannot be read now each print the address alone.
+fn arrival_line(ctx: &Ctx<'_>, handles: &PortHandles, last: &Outcome, cell: [i64; 2]) -> String {
+    use crate::port::tv;
+    let pocket = address::pocket_of_cell((cell[0], cell[1]));
+    let addr = pocket
+        .and_then(|(px, py)| address::pocket_address(px, py))
+        .unwrap_or_else(|| format!("{},{}", cell[0], cell[1]));
+    let key = ChartKey {
+        principal: last.operator,
+        site: last.site.clone(),
+    };
+    let row: Option<ChartRecord> = ctx
+        .action_state(&handles.families.charts, &key)
+        .ok()
+        .flatten()
+        .cloned()
+        .filter(|row| row.rule == READING_RULE_VERSION && row.key() == key);
+    let reading = match (pocket, row.as_ref()) {
+        (Some(pocket), Some(row)) if row.pocket_sounded(pocket) => {
+            match crate::surface::chart::site_context(ctx.w, &last.site) {
+                Ok(site) => {
+                    let text = crate::surface::chart::pocket_text(&site, Some(row), pocket);
+                    text.strip_prefix(&format!("{addr} "))
+                        .map(|words| format!(" ({words})"))
+                        .unwrap_or_default()
+                }
+                Err(_) => String::new(),
+            }
+        }
+        _ => String::new(),
+    };
+    tv::ARRIVED
+        .replace("{n}", &last.slot.to_string())
+        .replace("{addr}", &addr)
+        .replace("{reading}", &reading)
+}
+
 /// **The completion line** of a finished act (the brief's 3.6 texts).
 fn completion_line(w: &World, last: &Outcome, hull: Option<ObjId>) -> String {
     use crate::port::tv;
@@ -1070,6 +1288,12 @@ fn completion_line(w: &World, last: &Outcome, hull: Option<ObjId>) -> String {
             ActKind::Scan | ActKind::Sound => tv::READINGS_GONE
                 .replace("{n}", &n)
                 .replace("{act}", last.kind.word()),
+            // Doc 20 cut SM.4b: a finished drive is told by `arrival_line` (it reads the chart);
+            // without its cell, the address of nothing is named.
+            ActKind::Drive => tv::ARRIVED
+                .replace("{n}", &n)
+                .replace("{addr}", &site)
+                .replace("{reading}", ""),
         },
         ActResult::Refused { code } => {
             let why = match code {
@@ -1090,6 +1314,67 @@ fn completion_line(w: &World, last: &Outcome, hull: Option<ObjId>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A heard line waits for the projection** (doc 20 cut SM.4a, D24 — the review's
+    /// conformance/F3 moved its witness here, since cut SM.4b's fitted projection leaves no
+    /// world padding that refuses the write): a `Done` loud sounding the site heard is sent
+    /// from its stand only once the write landed; a refused write, a quiet or unheard sounding,
+    /// a refused act, a scan and an act with no span send nothing.
+    #[test]
+    fn sm4b_a_heard_line_waits_for_the_written_projection() {
+        let sound = |quiet: bool, heard: bool| ReadSpan::Sound {
+            cell: [170, 90],
+            radius: 3,
+            quiet,
+            heard,
+        };
+        let outcome = |span: Option<ReadSpan>, result: ActResult| Outcome {
+            ordinal: 3,
+            kind: ActKind::Sound,
+            operator: ObjId(7),
+            slot: 1,
+            site: mush_core::CanonicalId::new("ahuna_port").expect("an id"),
+            at_ic: 1_000,
+            result,
+            moved: BTreeMap::new(),
+            span,
+            arrived: None,
+        };
+        let loud = outcome(Some(sound(false, true)), ActResult::Done);
+        assert_eq!(heard_from(true, &loud), Some([170, 90]));
+        assert_eq!(heard_from(false, &loud), None, "a refused write holds it");
+        assert_eq!(
+            heard_from(true, &outcome(Some(sound(true, false)), ActResult::Done)),
+            None
+        );
+        assert_eq!(
+            heard_from(true, &outcome(Some(sound(false, false)), ActResult::Done)),
+            None
+        );
+        assert_eq!(
+            heard_from(
+                true,
+                &outcome(
+                    Some(sound(false, true)),
+                    ActResult::Refused {
+                        code: crate::surface::excursion::RefusedCode::NeverLeft
+                    }
+                )
+            ),
+            None
+        );
+        let scan = ReadSpan::Scan {
+            cell: [170, 90],
+            footing: crate::surface::reading::Footing::Rock,
+            fields: vec![1],
+            hidden: Vec::new(),
+        };
+        assert_eq!(
+            heard_from(true, &outcome(Some(scan), ActResult::Done)),
+            None
+        );
+        assert_eq!(heard_from(true, &outcome(None, ActResult::Done)), None);
+    }
 
     /// **The attempt rule** (finding F2): a deferral never counts; a `Submitted` step then a
     /// pending visit does not count; then a visit with nothing pending counts one; the eighth
@@ -1284,7 +1569,7 @@ mod tests {
         }
         let told = |_: ObjId| 0;
         // In the back-off: the fresh act is the one candidate.
-        let (picked, resting) = candidates(records.clone(), now, told, &state);
+        let (picked, resting) = candidates(records.clone(), now, told, |_| None, &state);
         assert_eq!(
             picked
                 .iter()
@@ -1296,7 +1581,7 @@ mod tests {
         assert_eq!(resting, stuck, "every backed-off act is passed over");
         // One fire before the back-off ends: still the fresh act alone.
         state.fires = 500 + DONE_BACKOFF_FIRES - 1;
-        let (picked, _) = candidates(records.clone(), now, told, &state);
+        let (picked, _) = candidates(records.clone(), now, told, |_| None, &state);
         assert_eq!(
             picked.len(),
             1,
@@ -1304,7 +1589,7 @@ mod tests {
         );
         // The back-off over: the 64 are candidates again, oldest first, and fill the window.
         state.fires = 500 + DONE_BACKOFF_FIRES;
-        let (picked, resting) = candidates(records.clone(), now, told, &state);
+        let (picked, resting) = candidates(records.clone(), now, told, |_| None, &state);
         assert_eq!(resting, 0);
         assert_eq!(picked.len(), MAX_EXCURSIONS_VISITED_PER_FIRE);
         assert_eq!(picked[0].record.tv, ObjId(1), "the oldest due first");
@@ -1328,11 +1613,93 @@ mod tests {
             result: ActResult::Done,
             moved: BTreeMap::new(),
             span: None,
+            arrived: None,
         });
-        let (picked, resting) = candidates(vec![untold], now, told, &state);
+        let (picked, resting) = candidates(vec![untold], now, told, |_| None, &state);
         assert_eq!(resting, 1);
         assert_eq!(picked.len(), 1);
         assert!(picked[0].untold && !picked[0].due, "told, not submitted");
+    }
+
+    /// **A started drive is a candidate once** (doc 20 cut SM.4b; decision P8): an act in
+    /// flight, not yet due, whose params carry a leg is a candidate while the projection's act
+    /// is not that ordinal, and never once it is; an act without a leg is not; a due drive is a
+    /// due candidate, not a started one; ordered by `(started_ic, tv)` among the others.
+    #[test]
+    fn sm4b_a_started_drive_is_a_candidate_once() {
+        use crate::surface::excursion::{Act, ActParams, Charge, LegWaypoint};
+        let now = 10_000;
+        let site = mush_core::CanonicalId::new("ahuna_port").expect("an id");
+        let drive = ActParams::Drive {
+            from_bay: false,
+            target: "C117".to_owned(),
+            to: [146, 226],
+            waypoints: vec![
+                LegWaypoint {
+                    x_cm: 128_500,
+                    y_cm: 124_500,
+                    at_s: 0,
+                },
+                LegWaypoint {
+                    x_cm: 146_500,
+                    y_cm: 226_500,
+                    at_s: 600,
+                },
+            ],
+            secs: 600,
+            cost: 18_000,
+            metres: 1_020,
+            heading_mdeg: 0,
+        };
+        let record = |tv: u32, started_ic: i64, due_ic: i64, params: ActParams| RigRecord {
+            schema: crate::surface::excursion::EXCURSION_SCHEMA,
+            tv: ObjId(tv),
+            ordinal: 4,
+            charge: Charge {
+                value_cu: 90_000,
+                at_ic: 0,
+                in_bay: false,
+            },
+            act: Some(Act {
+                ordinal: 4,
+                kind: if matches!(params, ActParams::Drive { .. }) {
+                    ActKind::Drive
+                } else {
+                    ActKind::Scan
+                },
+                operator: ObjId(7),
+                hull: ObjId(8),
+                slot: 1,
+                site: site.clone(),
+                started_ic,
+                due_ic,
+                reserved_cu: 2_700,
+                params,
+            }),
+            excursion: None,
+            last: None,
+        };
+        let state = SurfaceTickState::default();
+        let records = vec![
+            record(20, now - 50, now + 550, drive.clone()),
+            record(21, now - 90, now + 510, drive.clone()),
+            record(22, now - 10, now + 590, ActParams::None {}),
+            record(23, now - 600, now, drive.clone()),
+        ];
+        let (picked, _) = candidates(records.clone(), now, |_| 0, |_| None, &state);
+        let order: Vec<(u32, bool, bool)> = picked
+            .iter()
+            .map(|c| (c.record.tv.0, c.started, c.due))
+            .collect();
+        assert_eq!(
+            order,
+            vec![(21, true, false), (20, true, false), (23, false, true)],
+            "two started drives by their start, the due drive at its due instant, no leg no visit"
+        );
+        // Once the projection shows the act, a started drive is no longer a candidate.
+        let (picked, _) = candidates(records, now, |_| 0, |tv| (tv.0 == 20).then_some(4), &state);
+        assert!(!picked.iter().any(|c| c.record.tv.0 == 20));
+        assert!(picked.iter().any(|c| c.record.tv.0 == 21 && c.started));
     }
 
     /// **The heard line names a bearing and a band and nothing more** (doc 20 cut SM.4a, D19):

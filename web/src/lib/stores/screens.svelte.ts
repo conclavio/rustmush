@@ -135,6 +135,8 @@ export const RUN_ALLOWLIST: readonly string[] = [
   // Doc 19 cut A.3b: the chart reads the sky and plans nothing.
   "+chart",
   "+chart/map",
+  // Doc 20 cut SM.4b: the site map reads the rig's site and plans nothing.
+  "+tv/map",
 ];
 
 const hasPanel = (g: GateInput, p: string): boolean => g.panels.includes(p);

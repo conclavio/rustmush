@@ -44,12 +44,25 @@ when she lifts (`help ships`).
 **4. On the ground.** `+tv/1 launch go` sends rig 1 down the stern ramp (300 IC
 s). `+tv` says where each rig stands: its block and the block's tenure, its
 field, its footing, and what you have read there — or "no readings here yet".
+`+tv/map` draws the ground around the rig, 280 m a side at 10 m a cell, and
+`+tv/map site` the whole site at 80 m a cell: the terrain, the hull, your rigs,
+everyone else's, the public pits and your own readings of one kind of ore —
+the kind you have read most of, or the one you name (`+tv/map volatiles`). Every
+map carries this legend:
+
+  @ you  H hull  o rig  , regolith  ^ rock  = ice  O crater  1–3 ore (t a cycle)  + other family  . barren  v/V pit
+  # claim
+
+A digit is your own reading of a pocket: 3 rich, 2 fair, 1 lean, and the
+tonnes a drill cycle would give there. Nobody else's readings ever show on your
+map, and yours never show on theirs.
 
   +tv[/<n>]                each rig: where it stands, its charge, its act
   +tv/<n> launch [go]      down the ramp onto the site
-  +tv/<n> recover [go]     back up the ramp from beside it, on the ramp's own
-                           cell or the next (300 IC s)
+  +tv/<n> recover [go]     back up the ramp into the bay; from further off the
+                           rig drives to the ramp first, in the same act
   +tv/<n> dump [go]        empty the hopper onto the site's spoil, for good
+  +tv[/<n>]/map [site] [family]  the site map around the rig, or the whole site
 
 **5. Scan.** `+tv/1 scan go` (or `+tv/1 survey go`) reads the nine fields around
 the rig's own — each one the rig's 2.5 m mast can see over the ground — by
@@ -75,17 +88,34 @@ reads a quarter of that and nobody hears it, for the same charge and time.
 From the bay, a scan or a sounding goes down the ramp first: one act, 300 IC s
 longer, and the preview names both legs. A rig's battery recharges in the bay
 and only falls outside it; a scan or a sounding that would leave it under 5 % is
-refused, but a recover never is: a rig can always come home.
+refused (the charge home counts too: beat 7), but a recover is never
+held to the 5 %: a rig whose charge covers the drive to the ramp always comes home.
 
-**7. Drive.** (not yet) Driving a rig to a pocket, a field or a bearing.
+**7. Drive.** `+tv/1 drive C117` drives rig 1 over the ground to a pocket; the
+target can also be a field (`C-NW`, its middle), a block (`C`, its middle), a
+site cell (`140,96`) or a bearing and a distance from where the rig stands
+(`ne 300`). The preview names the distance, the time — a regolith cell is 5 IC
+s, rock twice that — the charge it costs and the charge left after the trip
+home: every drive, scan and sounding keeps back the charge to drive home to the
+ramp, and one that would leave less than 5 % after it is refused. A drive to a
+place the rig could not come back from is refused, and a way too winding to
+hold in 32 waypoints is refused too: drive to a nearer point first. From the
+bay the rig goes down the ramp first, one act 300 IC s longer. When it arrives
+you hear where, with your reading of that pocket if you have one. No licence
+and no claim is needed to drive anywhere on a site.
+
+  +tv/<n> drive <target> [go]  drive to a pocket, a field, a block, a cell or a
+                           bearing (C117, C-NW, C, 140,96, ne 300)
 
 **8. Mine.** (not yet) Drilling a pocket, cycle by cycle, into the rig's
 hopper.
 
 **9. Hopper full, go home.** (not yet) Unloading a rig's hopper into the hold.
-Until then a rig comes home with `+tv/1 recover go`, and `+ship/lift ceres` lifts
-the Dray-P off the pad once every rig is in her bay and every hopper is empty
-(`help ships`).
+Until then a rig comes home with `+tv/1 recover go`: from anywhere on the site's
+ground it drives to the ramp and climbs aboard as one act, even while the
+instruments are dark, and it is refused only when its charge cannot cover that
+drive. `+ship/lift ceres` lifts the Dray-P off the pad once every rig is in her
+bay and every hopper is empty (`help ships`).
 
 **10. Stake.** (not yet) Staking an open block and the Registry's claims.
 
@@ -122,8 +152,7 @@ sounding thumps through the ground from the southeast, over 1 km off."
 
 ## Still to come
 
-The site map and its legend; driving; mining; unloading; staking and the
-Registry's claims; fill plans and awaiting a rig; the ground chart of a whole
-body.
+Mining; unloading; staking and the Registry's claims; fill plans and awaiting
+a rig; the ground chart of a whole body.
 
 See also: `help ships`, `help coop`, `help travel`, `help trade`.

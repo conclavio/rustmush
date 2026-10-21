@@ -187,6 +187,65 @@ pub fn field_name(fx: i64, fy: i64) -> Option<String> {
     Some(format!("{letter}-{ns}{we}"))
 }
 
+/// **The block of a letter** (doc 20 cut SM.4b): the inverse of [`letter_of_block`], `(bx, by)`
+/// from the south-west, case-insensitive; `None` for anything but `A`–`P`.
+#[must_use]
+pub fn block_of_letter(letter: char) -> Option<(i64, i64)> {
+    let upper = letter.to_ascii_uppercase();
+    let at = i64::try_from(BLOCK_LETTERS.iter().position(|l| *l == upper)?).ok()?;
+    Some((at % SITE_BLOCKS, SITE_BLOCKS - 1 - at / SITE_BLOCKS))
+}
+
+/// **A pocket address's pocket** (doc 20 cut SM.4b): the inverse of [`pocket_address`] —
+/// `C117`, case-insensitive, strict: a block letter `A`–`P` and a number `1..=256` with no sign
+/// and no leading zero. `@geology`'s site form and `+tv/drive` read it.
+#[must_use]
+pub fn parse_pocket_address(text: &str) -> Option<(i64, i64)> {
+    let mut chars = text.chars();
+    let letter = chars.next()?.to_ascii_uppercase();
+    let number = chars.as_str();
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) || number.starts_with('0') {
+        return None;
+    }
+    let n: usize = number.parse().ok()?;
+    if n == 0 || i64::try_from(n).ok()? > POCKETS_IN_BLOCK {
+        return None;
+    }
+    pocket_of_block_index(letter, n.checked_sub(1)?)
+}
+
+/// **A field name's field** (doc 20 cut SM.4b): the inverse of [`field_name`] — `C-NW`,
+/// case-insensitive: a block letter, a hyphen, `N` or `S`, then `W` or `E`.
+#[must_use]
+pub fn parse_field_name(text: &str) -> Option<(i64, i64)> {
+    let upper = text.to_ascii_uppercase();
+    let mut chars = upper.chars();
+    let (Some(letter), Some('-'), Some(ns), Some(we), None) = (
+        chars.next(),
+        chars.next(),
+        chars.next(),
+        chars.next(),
+        chars.next(),
+    ) else {
+        return None;
+    };
+    let (bx, by) = block_of_letter(letter)?;
+    let north = match ns {
+        'N' => 1,
+        'S' => 0,
+        _ => return None,
+    };
+    let east = match we {
+        'E' => 1,
+        'W' => 0,
+        _ => return None,
+    };
+    Some((
+        bx.checked_mul(2)?.checked_add(east)?,
+        by.checked_mul(2)?.checked_add(north)?,
+    ))
+}
+
 /// **A field's index on the site** (`fy · 8 + fx`, `0..64`): the chart's field-row key.
 #[must_use]
 pub fn field_index(fx: i64, fy: i64) -> Option<u8> {
@@ -461,6 +520,47 @@ mod tests {
         assert_eq!(Octant::of(i64::MAX, i64::MIN), Some(Octant::SE));
         assert_eq!(Octant::NW.abbrev(), "NW");
         assert_eq!(Octant::SW.word(), "southwest");
+    }
+
+    /// **Doc 20 cut SM.4b: the three inverses round-trip** — every pocket's address, every
+    /// field's name and every block's letter parse back (in either case) to where they came
+    /// from; malformed text is refused.
+    #[test]
+    fn sm4b_the_inverses_round_trip() {
+        for py in 0..SITE_POCKETS {
+            for px in 0..SITE_POCKETS {
+                let text = pocket_address(px, py).expect("an address");
+                assert_eq!(parse_pocket_address(&text), Some((px, py)), "{text}");
+                assert_eq!(
+                    parse_pocket_address(&text.to_ascii_lowercase()),
+                    Some((px, py))
+                );
+            }
+        }
+        for fy in 0..SITE_FIELDS {
+            for fx in 0..SITE_FIELDS {
+                let text = field_name(fx, fy).expect("a name");
+                assert_eq!(parse_field_name(&text), Some((fx, fy)), "{text}");
+                assert_eq!(parse_field_name(&text.to_ascii_lowercase()), Some((fx, fy)));
+            }
+        }
+        for by in 0..SITE_BLOCKS {
+            for bx in 0..SITE_BLOCKS {
+                let letter = letter_of_block(bx, by).expect("a letter");
+                assert_eq!(block_of_letter(letter), Some((bx, by)));
+                assert_eq!(block_of_letter(letter.to_ascii_lowercase()), Some((bx, by)));
+            }
+        }
+        for bad in [
+            "", "C", "C0", "C257", "C01", "C+1", "Q1", "C1x", "1C", "C-1",
+        ] {
+            assert_eq!(parse_pocket_address(bad), None, "{bad:?}");
+        }
+        for bad in ["", "C", "C-", "C-N", "C-NWX", "C-WN", "C_NW", "Q-NW", "CNW"] {
+            assert_eq!(parse_field_name(bad), None, "{bad:?}");
+        }
+        assert_eq!(block_of_letter('Q'), None);
+        assert_eq!(block_of_letter('1'), None);
     }
 
     /// Doc 20 cut SM.6: `pocket_number` is `pocket_address`'s number part over the whole site.

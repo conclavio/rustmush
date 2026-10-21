@@ -2173,3 +2173,84 @@ async fn mind_exec_close_before_eof_discards_partial_source_without_invocation()
     assert!(hooks.invokes.lock().unwrap().is_empty());
     assert!(hooks.connected_chars.lock().unwrap().is_empty());
 }
+
+// ---- doc 20 cut SM.4b: the arrival line and the second principal's map over SSH ----------
+
+/// The events `tacsim`'s `tests/driving.rs` blessed from the world (`TACSIM_BLESS=1 cargo test
+/// -p tacsim --test driving sm4b_the_site_map_fixtures_are_blessed`): the operator's real
+/// `ARRIVED` event and a second principal's real `+tv/map site` events, serialised as the world
+/// produced them.
+const SITE_EVENTS: &str = include_str!("../../../web/src/lib/fixtures/site/site_events.json");
+
+/// The text a line-mode event prints.
+fn event_text(event: &OutputEvent) -> String {
+    serde_json::to_value(event)
+        .ok()
+        .and_then(|value| {
+            value["d"].as_array().map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<String>()
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// **V4 and V5's SSH half — the arrival line and the other principal's map print over SSH**
+/// (doc 20 cut SM.4b; lead ruling 8, the brief's decision P10): a real russh client in line mode,
+/// the world's own events pushed through the session's queue — the operator's `ARRIVED`, then the
+/// second principal's `+tv/map site` lines. The client's screen holds the arrival text verbatim
+/// and every line of the map, and no grid line holds an ore glyph (`1`–`3`, `+`, `.`).
+#[tokio::test]
+async fn sm4b_the_arrival_line_and_the_other_map_print_over_ssh() {
+    let events: serde_json::Value = serde_json::from_str(SITE_EVENTS).expect("the fixture");
+    let arrival: OutputEvent =
+        serde_json::from_value(events["arrival"].clone()).expect("an output event");
+    let other_map: Vec<OutputEvent> =
+        serde_json::from_value(events["other_map"].clone()).expect("output events");
+    let arrival_text = event_text(&arrival);
+    // `tacsim`'s D13 blesses exactly the operator's `ARRIVED` ("Rig {n} arrives at {addr}{reading}.").
+    assert!(
+        arrival_text.starts_with("Rig 1 arrives at ") && arrival_text.ends_with('.'),
+        "{arrival_text}"
+    );
+    let lines: Vec<String> = other_map.iter().map(event_text).collect();
+    assert!(lines.len() > 3 + 32, "{lines:?}");
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("sitemap", &hooks).await;
+    let conn = *hooks
+        .txs
+        .lock()
+        .unwrap()
+        .keys()
+        .next()
+        .expect("a connected character");
+    let tx = hooks.tx_of(conn).expect("its queue");
+    let mark = term.seen.len();
+    tx.send(Arc::new(arrival)).await.expect("queue open");
+    for event in other_map {
+        tx.send(Arc::new(event)).await.expect("queue open");
+    }
+    term.expect_after(mark, &arrival_text).await;
+    let last = lines.last().cloned().unwrap_or_default();
+    term.expect_after(mark, &last).await;
+    let seen = strip_ansi(&term.seen[mark..]);
+    for line in &lines {
+        assert!(seen.contains(line.as_str()), "{line:?} reached the client");
+    }
+    // The grid: the 32 rows after the title and the legend's two lines.
+    for row in lines.iter().skip(3).take(32) {
+        assert_eq!(row.chars().count(), 64, "{row}");
+        assert!(
+            !row.chars().any(|c| ['1', '2', '3', '+', '.'].contains(&c)),
+            "an ore glyph reached the second principal: {row}"
+        );
+    }
+    drop(tx);
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}

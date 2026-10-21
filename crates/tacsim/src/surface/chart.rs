@@ -459,6 +459,26 @@ fn current(row: Option<&ChartRecord>) -> Option<&ChartRecord> {
     row.filter(|row| row.rule == READING_RULE_VERSION)
 }
 
+/// **Whether a viewer's row reads a pocket** (§5; doc 20 cut SM.4b): the row under the current
+/// rule has sounded it. **The one gate** every surface renders a pocket's classes through —
+/// [`pocket_text`] (the render door, [`pocket_reading`]) and the `site.map` frame's digits
+/// (`crate::port::site_map`) — so no surface shows a pocket the door would not.
+#[must_use]
+pub(crate) fn row_reads_pocket(row: Option<&ChartRecord>, pocket: (i64, i64)) -> bool {
+    current(row).is_some_and(|row| row.pocket_sounded(pocket))
+}
+
+/// **The footing a viewer's row reads a field at** (§5; doc 20 cut SM.4b), or `None` when the
+/// row (under the current rule) does not cover it. The one gate [`field_text`] and the
+/// `site.map` frame's readings list both render a field's R1 readings through
+/// ([`row_reads_pocket`]'s twin).
+#[must_use]
+pub(crate) fn row_reads_field(row: Option<&ChartRecord>, (fx, fy): (i64, i64)) -> Option<Footing> {
+    let row = current(row)?;
+    let index = field_index(fx, fy)?;
+    row.fields.get(&index).map(|known| known.footing)
+}
+
 /// **Whether a scan adds to the chart**: some field not in the row, or in it at a duller
 /// footing.
 #[must_use]
@@ -792,6 +812,19 @@ pub(crate) fn lane_sites(w: &World) -> Vec<LaneSite> {
         .collect()
 }
 
+/// **A lane site by a name a player or staff typed** (doc 20 cut SM.4b, factored out of
+/// `+tv/forget`'s resolver): its name, its location id or its entry id, case-insensitive; a
+/// multi-word name as typed (`Ahuna Flank`). `None` for anything else.
+#[must_use]
+pub(crate) fn site_named(w: &World, name: &str) -> Option<LaneSite> {
+    let wanted = name.trim().to_lowercase();
+    lane_sites(w).into_iter().find(|site| {
+        site.name.to_lowercase() == wanted
+            || site.location.as_str() == wanted
+            || site.entry.as_str() == wanted
+    })
+}
+
 /// **The site entries on `body`**, entry order, at most [`MAX_CHART_SITES_PER_BODY`] (the start
 /// offer's census for the body caps).
 #[must_use]
@@ -942,13 +975,7 @@ pub(crate) fn field_text(
     (fx, fy): (i64, i64),
 ) -> String {
     let no = || crate::port::tv::NO_READING.to_owned();
-    let Some(row) = current(row) else {
-        return no();
-    };
-    let Some(index) = field_index(fx, fy) else {
-        return no();
-    };
-    let Some(known) = row.fields.get(&index) else {
+    let Some(footing) = row_reads_field(row, (fx, fy)) else {
         return no();
     };
     let Some(name) = field_name(fx, fy) else {
@@ -957,11 +984,11 @@ pub(crate) fn field_text(
     match field_ground_at(ctx, (fx, fy)) {
         Ok(ground) => field_row_text(
             &name,
-            &read_r1(&ctx.mac, &ctx.body, &ground, known.footing),
-            known.footing,
+            &read_r1(&ctx.mac, &ctx.body, &ground, footing),
+            footing,
         ),
         Err(error) => {
-            tracing::warn!(site = %ctx.entry, field = index, %error, "tacsim: a covered field's ground does not read");
+            tracing::warn!(site = %ctx.entry, field = ?(fx, fy), %error, "tacsim: a covered field's ground does not read");
             no()
         }
     }
@@ -977,10 +1004,7 @@ pub(crate) fn pocket_text(
     (px, py): (i64, i64),
 ) -> String {
     let no = || crate::port::tv::NO_READING.to_owned();
-    let Some(row) = current(row) else {
-        return no();
-    };
-    if !row.pocket_sounded((px, py)) {
+    if !row_reads_pocket(row, (px, py)) {
         return no();
     }
     let Some(addr) = pocket_address(px, py) else {
@@ -998,8 +1022,13 @@ pub(crate) fn pocket_text(
 /// **A field's reading for its viewer, from the world** (doc 20 cut SM.4a): `field_text` over
 /// the lane site `site` with `row` — the viewer's own row for that site, or none — and
 /// `NO_READING` when the site's ground cannot be resolved or the row is another site's. The
-/// one public render door: SM.4b's map and the acceptance tests read every reading through
-/// it, so no surface can render a field any other way.
+/// one public render door for a reading's **text**: the acceptance tests read every reading
+/// through it. The `site.map` frame (doc 20 cut SM.4b) draws glyphs and a family-restricted list
+/// rather than this text, so it renders through the same two pieces the door is made of — the
+/// one gate (`row_reads_field`, `row_reads_pocket`) and the same pure reads (`read_r1`,
+/// `read_r2`) over the same keyed ground (`field_ground_at`) — and so shows exactly what the
+/// door would, never a reading the door would not (the review's correctness/F6; the map's D11
+/// holds the two equal).
 #[must_use]
 pub fn field_reading(
     w: &World,
@@ -1214,16 +1243,18 @@ pub(crate) enum SitePeek {
 }
 
 /// **Peek a site's ground, never building it**, at most once per site per call (`peeks` is the
-/// call's own map; the brief's reviewer finding F5): `site_context` dark → `Dark`; a site whose
-/// build (or capture) failed this boot → `Dark`; `site_ground_cached` hit → `Warm`, miss →
-/// `Cold`; a capture that refuses → `Dark`, and the site joins the once-a-boot dark set
-/// (`crate::surface::fail_site`; the pre-commit round's item 5), so it is warned once a boot and
-/// never captured again — not once a peek.
+/// call's own bundle — since doc 20 cut SM.4b `crate::surface::Peeks`, which carries the home
+/// fields' peeks beside the sites'; the brief's reviewer finding F5): `site_context` dark →
+/// `Dark`; a site whose build (or capture) failed this boot → `Dark`; `site_ground_cached` hit →
+/// `Warm`, miss → `Cold`; a capture that refuses → `Dark`, and the site joins the once-a-boot dark
+/// set (`crate::surface::fail_site`; the pre-commit round's item 5), so it is warned once a boot
+/// and never captured again — not once a peek.
 pub(crate) fn peek_site(
     w: &World,
     entry: &CanonicalId,
-    peeks: &mut BTreeMap<CanonicalId, SitePeek>,
+    peeks: &mut crate::surface::Peeks,
 ) -> SitePeek {
+    let peeks = &mut peeks.sites;
     if let Some(found) = peeks.get(entry) {
         return found.clone();
     }

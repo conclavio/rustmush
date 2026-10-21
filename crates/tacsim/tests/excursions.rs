@@ -46,9 +46,9 @@ use tacsim::port::tv::{
     ACT_FAILED, CAP_OPERATOR, DUMP_EMPTY, DUMP_NO_SPOIL, DUMP_NOT_SITE, DUMPED, GROUND_DARK_LINE,
     LAUNCH_CLEARED, LAUNCH_ENDED, LAUNCH_FORFEIT, LAUNCH_NOT_SITE, LAUNCH_OPEN, LAUNCH_OUT,
     LAUNCH_PREVIEW, LAUNCH_UNDER_WAY, LAUNCHED, LEASE_FAILED, NO_RIG, RECOVER_ELSEWHERE,
-    RECOVER_FAR, RECOVER_IN_BAY, RECOVER_PREVIEW_UNREAD, RECOVERED, RIG_BUSY, RIG_LOGGED_OUT,
-    TV_DARK, TV_NOT_ABOARD, TV_UNWIRED, TvLeaseStatus, WHERE_AWAY, WHICH_RIG_ACT,
-    WHY_HOPPER_CHANGED, WHY_NEVER_LEFT, WHY_NOT_BESIDE, WHY_SPOIL_GONE,
+    RECOVER_IN_BAY, RECOVER_PREVIEW_UNREAD, RECOVERED, RIG_BUSY, RIG_LOGGED_OUT, TV_DARK,
+    TV_NOT_ABOARD, TV_UNWIRED, TvLeaseStatus, WHERE_AWAY, WHICH_RIG_ACT, WHY_HOPPER_CHANGED,
+    WHY_NEVER_LEFT, WHY_NOT_BESIDE, WHY_SPOIL_GONE,
 };
 use tacsim::port::voyage::{HOPPER_LOADED, TV_AWAY, TV_BUSY, TV_OUT, Voyage, VoyageState};
 use tacsim::port::{HullRow, PortHandles, PortMap, PortMapState, Ticket, TicketId, room_key};
@@ -1126,27 +1126,31 @@ fn staff_bay(rig: &mut Rig, tv: ObjId, row: &HullRow) {
     placed.expect("staff place the rig in the bay");
 }
 
-/// **A recover from beside the ramp; refused from two cells** (A3): staff place the launched
-/// rig two cells south of the ramp — `RECOVER_FAR` naming 20 m, nothing queued; one cell off —
+/// **A recover from beside the ramp; driven home from two cells** (A3): staff place the launched
+/// rig two cells south of the ramp — since doc 20 cut SM.4b the preview drives the one cell (10 m)
+/// to beside the ramp first (it was `RECOVER_FAR`), nothing queued; one cell off —
 /// the preview, `go`, and at the due instant the rig stands `Interior` in the bay's `rigs`
 /// compartment, the excursion is closed, the charge is back in the bay and the pilot hears
 /// `RECOVERED` once; a recover with the rig in the bay answers `RECOVER_IN_BAY`.
 #[test]
-fn sm3b_recover_from_beside_the_ramp_and_refused_from_two_cells() {
+fn sm3b_recover_from_beside_the_ramp_and_driven_home_from_two_cells() {
     let mut rig = stocked();
     let (pilot, row, tvs) = on_pad(&mut rig, 1);
     let tv = tvs[0];
     let _ = act_go(&mut rig, pilot, "+tv/1 launch go");
     let _ = finish(&mut rig, tv, pilot);
     staff_place(&mut rig, tv, RAMP.0, RAMP.1 - 2_000);
+    // Doc 20 cut SM.4b (lead ruling 5): two cells off, the recover no longer refuses
+    // `RECOVER_FAR` — it drives the one cell to beside the ramp first, in the same one act.
     let (out, queued) = command(&mut rig, pilot, "+tv/1 recover");
-    assert_eq!(
-        out.trim(),
-        RECOVER_FAR
-            .replace("{n}", "1")
-            .replace("{m}", "20")
-            .replace("{ramp}", "stern ramp")
+    assert!(
+        out.trim().starts_with(
+            "Rig 1 (OWP-TV-01) would drive 10 m to the stern ramp and climb into the Salt Moth's \
+             bay: "
+        ),
+        "{out}"
     );
+    assert!(!out.contains("climbs aboard from beside it"), "{out}");
     assert!(queued.is_empty());
     staff_place(&mut rig, tv, RAMP.0, RAMP.1 - 1_000);
     let (out, queued) = command(&mut rig, pilot, "+tv/1 recover");
@@ -1643,14 +1647,15 @@ fn to_cell(rig: &mut Rig, tv: ObjId, (x, y): (i64, i64)) {
 }
 
 /// Fire until Ahuna Flank's ground is warm (the arrival hook asked for it; the surface tick
-/// builds one site a fire).
+/// builds one site a fire) — and, since doc 20 cut SM.4b, its home field (a scan or a sounding
+/// from the ground reserves the real trip home; the tick builds the home the fire after).
 fn warm_ahuna(rig: &mut Rig) {
     for _ in 0..8 {
         let warm = rig
             .tw
             .world()
             .module_state::<tacsim::surface::GeologyState>()
-            .is_some_and(|state| !state.sites().is_empty());
+            .is_some_and(|state| !state.sites().is_empty() && !state.homes().is_empty());
         if warm {
             return;
         }
@@ -1658,6 +1663,27 @@ fn warm_ahuna(rig: &mut Rig) {
         land_quietly(rig, &queued);
     }
     panic!("Ahuna Flank's ground was not warmed");
+}
+
+/// **The charge home from a site cell** (doc 20 cut SM.4b): the Dray-P's ramp cell's home field
+/// on Ahuna Flank and the TV's rates (300 cm/s, 15 cu a nominal cell) — what the reserve rule
+/// now adds to a scan's or a sounding's spend from the ground.
+fn home_cu_from(rig: &Rig, cell: (i64, i64)) -> u32 {
+    let field = rig
+        .tw
+        .world()
+        .module_state::<tacsim::surface::GeologyState>()
+        .and_then(|state| state.home_field(&cid("ahuna_port"), (128, 124)))
+        .expect("Ahuna Flank's home field is built");
+    tacsim::surface::drive::home_cu_to(
+        &field,
+        cell,
+        &tacsim::surface::drive::DriveRates {
+            max_speed_cms: 300,
+            cu_per_nominal_cell: 15,
+        },
+    )
+    .expect("a way home")
 }
 
 /// **Two acts cannot spend one margin** (A7; §4.1, §19 item 4; decision 4) — **rewritten by doc
@@ -1668,8 +1694,10 @@ fn warm_ahuna(rig: &mut Rig) {
 /// finished, staff set the charge to 6,500 cu and move the rig to a new cell (the same-cell
 /// rule refuses a repeat before the reserve is read): a sounding (2,000) refuses "the rig's
 /// charge is under the reserve" (4,500 < 5,000), while a scan (1,000) lands and finishes leaving
-/// 5,500; (c) staff set 7,000 and move it again: a sounding lands and finishes leaving exactly
-/// the 5,000 floor, and a scan from a new cell then refuses with the reserve message (4,000);
+/// 5,500; (c) staff set 7,000 plus the real trip home from the next stand (doc 20 cut SM.4b:
+/// the reserve counts it) and move it there: a sounding lands and finishes leaving exactly the
+/// 5,000 floor plus that trip home, and a scan from a new cell then refuses with the reserve
+/// message (4,000);
 /// (d) staff leave the rig at the ramp **under** the floor (4,000 cu): a scan refuses, and a
 /// recover (a zero spend) previews, lands and finishes — the exemption, in the world.
 #[test]
@@ -1714,16 +1742,20 @@ fn sm3b_two_acts_cannot_spend_one_margin() {
         record_of(&mut rig.tw, tv).map(|r| r.charge.value_cu),
         Some(5_500)
     );
-    // (c)
-    put_charge(&mut rig, tv, 7_000);
+    // (c) Doc 20 cut SM.4b (lead ruling 4): the reserve now counts the real trip home from the
+    // stand, so "exactly the floor" is 7,000 plus that trip: the sounding leaves the floor plus
+    // the charge home, which the reserve kept back.
+    let home = home_cu_from(&rig, (138, 124));
+    assert!(home > 0, "a real trip home from ten cells off");
+    put_charge(&mut rig, tv, 7_000 + home);
     to_cell(&mut rig, tv, (138, 124));
     let fits = start(&rig, pilot, tv, "sound", n + 3);
-    land(&mut rig, &fits).expect("2,000 from 7,000 fits");
+    land(&mut rig, &fits).expect("2,000 and the trip home from 7,000 + home fits");
     let _ = finish(&mut rig, tv, pilot);
     assert_eq!(
         record_of(&mut rig.tw, tv).map(|r| r.charge.value_cu),
-        Some(5_000),
-        "exactly the floor"
+        Some(5_000 + home),
+        "exactly the floor after the trip home"
     );
     to_cell(&mut rig, tv, (143, 124));
     let one = start(&rig, pilot, tv, "scan", n + 4);

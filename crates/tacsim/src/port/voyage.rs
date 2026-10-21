@@ -2518,12 +2518,12 @@ pub(crate) fn bay_gate(
         };
         let place = where_is(w, *tv);
         let in_bay = place == (Where::Bay { hull });
-        if let RigFlight::Busy { kind, .. } = flight {
+        if let RigFlight::Busy { kind, params, .. } = &flight {
             return Err(refusal(
                 K::TvOut,
                 TV_BUSY
                     .replace("{n}", &n_of(*slot))
-                    .replace("{doing}", &doing_words(kind, &ramp))
+                    .replace("{doing}", &doing_words(*kind, params, &ramp))
                     .replace("{name}", name),
             ));
         }

@@ -153,6 +153,8 @@ pub mod ship;
 /// Doc 20 cut SM.2: a mining site's pure reads, its lay-up and its stores line
 /// (doc 20 §3.1, §3.3, §3.4).
 pub mod site;
+/// Doc 20 cut SM.4b: the `site.map` feed and `+tv/map` (doc 20 §10).
+pub mod site_map;
 pub mod stock;
 pub mod tv;
 pub mod vehicle;

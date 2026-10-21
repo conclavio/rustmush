@@ -61,6 +61,25 @@
 //!   deposit, what industry's sweep reconciles each pool against and the lock's one home;
 //! - [`tenure`](crate::surface::tenure) — §9's numbers, which SM.10 reads.
 //!
+//! **Doc 20 cut SM.4b** gives the operator the moving half (§1 beats 7 and 9, §8, §10, D-20-13):
+//!
+//! - [`drive`](crate::surface::drive) — the pure planner: the targets, ONE A* a command over the
+//!   site's composite at a whole site's budget, the frozen leg (an integer Douglas–Peucker at a
+//!   display tolerance of 1–8 cells, at most 32 waypoints, time and charge the exact path's), the
+//!   rates (the unit's tracked ceiling, the battery's per-cell draw: a regolith kilometre is 500
+//!   IC s and 2,250 cu) and the **home field** — every cell's exact least cost back to beside the
+//!   ramp, built once per (site terrain, ramp cell) on the surface tick, so every act from the
+//!   ground reserves its real trip home and a drive to a stand with no way home is refused;
+//! - a drive is a fourth kind on SM.3b's one start and one finish (`act` word `drive`), its leg
+//!   in the act's params, projected into `tacsim:tv:<tv>` for interpolation and placed at its
+//!   end at the due instant; a recover from farther than beside the ramp drives home first, in
+//!   the same one act, never held to the 5 % floor;
+//! - the home fields are cached beside the site cache (`want_home`, `peek_home`, one
+//!   `Peeks` bundle per call) and warmed **whatever the geology layer's state**: a dark site's
+//!   home is built from its keyless terrain (`ground::site_terrain`), so a rig's way home never
+//!   depends on the geology key;
+//! - `@geology <site> <addr>` (`commands`), and the map (`crate::port::site_map`).
+//!
 //! **The site ground is warmed off the act's path** (lead ruling 6, D11): the command, the
 //! start's offer and `+tv` status only peek the cache
 //! ([`ground::site_ground_cached`](crate::surface::ground::site_ground_cached)); a cold peek
@@ -82,6 +101,7 @@ pub mod address;
 pub mod chart;
 pub mod commands;
 pub mod cursor;
+pub mod drive;
 pub mod excursion;
 pub mod geology;
 pub mod ground;
@@ -123,13 +143,14 @@ pub use chart::{
 pub use excursion::{
     Act, ActKind, ActParams, ActResult, ActView, CapRefused, Charge, ChargeAfter, DUMP_S,
     EXCURSION_FAMILY, EXCURSION_SCHEMA, Excursion, ExcursionCounts, ExcursionId, FrozenLeg,
-    IC_HOUR, LAUNCH_S, LegWaypoint, MAX_DUMP_GOODS, MAX_EXCURSIONS_PER_OPERATOR,
-    MAX_EXCURSIONS_PER_SITE, MAX_EXCURSIONS_WORLD, MAX_LEG_WAYPOINTS, MAX_READ_RADIUS_CELLS,
-    MAX_SCAN_FIELDS, MAX_TV_LOG_BYTES, MAX_TV_LOG_LINES, MAX_TV_REC_BYTES, Outcome, PAD_CENTRE_CM,
-    RECOVER_S, ReadSpan, RefusedCode, ReserveShort, RigKey, RigRecord, TV_REC_PREFIX,
-    TV_REC_SCHEMA, TvLogLine, TvPose, TvRec, TvRecState, TvState, cap_refusal, cells_apart,
-    charge_at, charge_for_act, charge_shown, needs_battery, ramp_pose, reserve_check,
-    reserved_total, settle_free, settle_spent_out_of_bay, site_cell, tv_rec_key, tv_rec_key_owner,
+    IC_HOUR, LAUNCH_S, LegWaypoint, MAX_DRIVE_TARGET_BYTES, MAX_DUMP_GOODS,
+    MAX_EXCURSIONS_PER_OPERATOR, MAX_EXCURSIONS_PER_SITE, MAX_EXCURSIONS_WORLD, MAX_LEG_WAYPOINTS,
+    MAX_READ_RADIUS_CELLS, MAX_SCAN_FIELDS, MAX_TV_LOG_BYTES, MAX_TV_LOG_LINES, MAX_TV_REC_BYTES,
+    Outcome, PAD_CENTRE_CM, RECOVER_S, ReadSpan, RefusedCode, ReserveShort, RigKey, RigRecord,
+    TV_REC_PREFIX, TV_REC_SCHEMA, TvLogLine, TvPose, TvRec, TvRecState, TvState, cap_refusal,
+    cell_pose, cells_apart, charge_at, charge_for_act, charge_shown, leg_affordable, needs_battery,
+    ramp_pose, reserve_check, reserved_total, settle_free, settle_spent_out_of_bay, site_cell,
+    tv_rec_key, tv_rec_key_owner,
 };
 pub use ground::site_ground_cached;
 pub use tick::{
@@ -163,6 +184,301 @@ pub struct GeologyState {
     /// cut's pre-commit round (item 5) a peek whose **capture** fails joins it too, from a
     /// `&World` reader ([`fail_site`]), so a dark site logs once a boot, never once a peek.
     warm_failed: FailedSites,
+    /// **Doc 20 cut SM.4b** (lead ruling 4; the brief's decision P1, R3): the built home fields,
+    /// one per (site entry, ramp cell), at most [`MAX_HOME_FIELDS`] (the least recently built
+    /// dropped past it). RAM only.
+    homes: BTreeMap<(CanonicalId, (i64, i64)), HomeEntry>,
+    /// The home fields asked for — at landing, at boot and by a cold peek — worked by
+    /// [`warm_one`] **whatever the layer's state** (R3), one job a fire.
+    homes_wanted: BTreeSet<(CanonicalId, (i64, i64))>,
+    /// The sites whose home field could not be built this boot (no terrain, or no field over
+    /// it): never wanted or warned again, and read [`HomePeek::Dark`] (D25's rule).
+    homes_failed: FailedSites,
+    /// The home cache's clock (the least recently built is dropped first).
+    homes_clock: u64,
+}
+
+/// **The most home fields one world holds** (doc 20 cut SM.4b): twice the site cache's sixteen
+/// — a field is about 330 KiB (a cost and a step for each of 65,536 cells).
+pub const MAX_HOME_FIELDS: usize = 2 * ground::SITE_CACHE_CAPACITY;
+
+/// **One built home field** (doc 20 cut SM.4b): `built_over` is the warm site ground it was built
+/// from (its composite) — `None` when it was built from keyless terrain because the site read
+/// dark (R3) — and the clock tick it was built at.
+#[derive(Clone, Debug)]
+struct HomeEntry {
+    built_over: Option<std::sync::Weak<SiteGround>>,
+    field: Arc<drive::HomeField>,
+    built: u64,
+}
+
+/// **What a peek at a site's home field found** (doc 20 cut SM.4b; R3).
+#[derive(Clone, Debug)]
+pub(crate) enum HomePeek {
+    /// The field cannot be built this boot: its terrain failed to capture or the field did not
+    /// form (`homes_failed`). Staff's remedy.
+    Dark,
+    /// Not built yet (or built over a ground the cache has since replaced): wanted.
+    Cold,
+    /// The field.
+    Warm(Arc<drive::HomeField>),
+}
+
+/// **One call's peeks** (doc 20 cut SM.4b): every site's and every home's peek at most once a
+/// call — the command, the start's offer projection, `+tv` status and the map each carry one.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Peeks {
+    /// Site entry → its peek (`chart::peek_site`).
+    pub sites: BTreeMap<CanonicalId, chart::SitePeek>,
+    /// (Site entry, ramp cell) → its home's peek ([`peek_home`]).
+    pub homes: BTreeMap<(CanonicalId, (i64, i64)), HomePeek>,
+}
+
+/// Whether `entry` is a lane site (keyless: `chart::lane_sites`).
+fn is_lane_site(w: &World, entry: &CanonicalId) -> bool {
+    chart::lane_sites(w).iter().any(|site| &site.entry == entry)
+}
+
+/// **Ask for a site's home field** (doc 20 cut SM.4b; lead ruling 4, R3): RAM only. Wants the home
+/// for `(entry, ramp)` whenever `entry` is a lane site and its home has not failed this boot —
+/// **whatever the geology layer's state**, so a far rig's way home is built at the first fire
+/// after a keyless restart — and wants the site's ground too (a no-op when dark).
+pub(crate) fn want_home(w: &mut World, entry: &CanonicalId, ramp: (i64, i64)) {
+    want_site_ground(w, entry);
+    if !is_lane_site(w, entry) {
+        return;
+    }
+    if let Some(state) = w.module_state_mut::<GeologyState>()
+        && !state.homes_failed.set().contains(entry)
+    {
+        state.homes_wanted.insert((entry.clone(), ramp));
+    }
+}
+
+/// **The home of a hull settled on a site's pad** (doc 20 cut SM.4b): its site entry and its
+/// ramp cell, through `act::site_berth`; `None` when it is not settled on a site.
+pub(crate) fn hull_home(w: &World, hull: mush_core::ObjId) -> Option<(CanonicalId, (i64, i64))> {
+    let view = crate::port::ship::hull_view(w, hull)?;
+    let berth = act::site_berth(w, &view).ok()?;
+    Some((
+        berth.entry.clone(),
+        excursion::site_cell(berth.ramp.x_cm, berth.ramp.y_cm),
+    ))
+}
+
+/// **What a site's own peek read, for the home rule** ([`home_read`]): warm, cold or dark.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SiteSeen {
+    /// The site's ground is warm.
+    Warm,
+    /// Not built yet.
+    Cold,
+    /// The geology layer is dark for this site.
+    Dark,
+}
+
+/// **The home field the cache holds, for the home rule** ([`home_read`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeldHome {
+    /// None held.
+    None,
+    /// Built over the very ground the site's peek found warm.
+    OverThisGround,
+    /// Built over a ground the site cache has since replaced or dropped.
+    OverOtherGround,
+    /// Built from keyless terrain because the site read dark (R3).
+    Keyless,
+}
+
+/// **What a home peek reads, for the home rule** ([`home_read`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HomeRead {
+    /// The held field.
+    Held,
+    /// [`HomePeek::Cold`].
+    Cold,
+    /// [`HomePeek::Dark`].
+    Dark,
+}
+
+/// **The home rule, pure** (doc 20 cut SM.4b; R3; the review's correctness/F4): a warm site reads
+/// the field built over that very ground, a dark site the keyless one; anything else is cold —
+/// **unless the home failed this boot**, which is never retried (D25's rule: `warm_one_home`
+/// skips it and [`want_home`] never wants it again), so it reads dark rather than "still being
+/// mapped" for the rest of the boot, whatever the site's own peek.
+fn home_read(site: SiteSeen, held: HeldHome, failed: bool) -> HomeRead {
+    let read = match (site, held) {
+        (SiteSeen::Warm, HeldHome::OverThisGround) | (SiteSeen::Dark, HeldHome::Keyless) => {
+            HomeRead::Held
+        }
+        (SiteSeen::Warm | SiteSeen::Cold | SiteSeen::Dark, _) => HomeRead::Cold,
+    };
+    match read {
+        HomeRead::Cold if failed => HomeRead::Dark,
+        other => other,
+    }
+}
+
+/// **Peek a site's home field, never building it** (doc 20 cut SM.4b; R3), at most once per call
+/// (`peeks`), by [`home_read`]: the site's own peek first — warm, the home built over that very
+/// ground (`built_over` upgrades to it), else `Cold`; cold, `Cold`; **dark, the home built
+/// keyless** (the site read dark when it was built), else `Cold` while its terrain may still be
+/// captured — and `Dark` for a home that failed this boot, whatever the site's peek. A keyless
+/// home stands for the boot: a terrain edit on a lane site during a dark boot is seen at the next
+/// boot (the brief's decision P14's residual).
+pub(crate) fn peek_home(
+    w: &World,
+    entry: &CanonicalId,
+    ramp: (i64, i64),
+    peeks: &mut Peeks,
+) -> HomePeek {
+    let key = (entry.clone(), ramp);
+    if let Some(found) = peeks.homes.get(&key) {
+        return found.clone();
+    }
+    let state = w.module_state::<GeologyState>();
+    let failed = state.is_some_and(|state| state.homes_failed.set().contains(entry));
+    let held = state.and_then(|state| state.homes.get(&key));
+    let (site, over) = match chart::peek_site(w, entry, peeks) {
+        chart::SitePeek::Warm(ground) => {
+            let over = held.map(|home| {
+                home.built_over
+                    .as_ref()
+                    .and_then(std::sync::Weak::upgrade)
+                    .is_some_and(|over| Arc::ptr_eq(&over, &ground))
+            });
+            (SiteSeen::Warm, over)
+        }
+        chart::SitePeek::Cold => (SiteSeen::Cold, None),
+        chart::SitePeek::Dark => (SiteSeen::Dark, None),
+    };
+    let shape = match (held, over) {
+        (None, _) => HeldHome::None,
+        (Some(home), _) if home.built_over.is_none() => HeldHome::Keyless,
+        (Some(_), Some(true)) => HeldHome::OverThisGround,
+        (Some(_), Some(false) | None) => HeldHome::OverOtherGround,
+    };
+    let found = match (home_read(site, shape, failed), held) {
+        (HomeRead::Held, Some(home)) => HomePeek::Warm(Arc::clone(&home.field)),
+        (HomeRead::Held | HomeRead::Cold, _) => HomePeek::Cold,
+        (HomeRead::Dark, _) => HomePeek::Dark,
+    };
+    peeks.homes.insert(key, found.clone());
+    found
+}
+
+/// Insert a built home, dropping the least recently built past [`MAX_HOME_FIELDS`].
+fn insert_home(
+    state: &mut GeologyState,
+    key: (CanonicalId, (i64, i64)),
+    built_over: Option<std::sync::Weak<SiteGround>>,
+    field: drive::HomeField,
+) {
+    state.homes_clock = state.homes_clock.saturating_add(1);
+    let built = state.homes_clock;
+    state.homes.insert(
+        key,
+        HomeEntry {
+            built_over,
+            field: Arc::new(field),
+            built,
+        },
+    );
+    while state.homes.len() > MAX_HOME_FIELDS {
+        let Some(oldest) = state
+            .homes
+            .iter()
+            .min_by_key(|(_, home)| home.built)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        state.homes.remove(&oldest);
+    }
+}
+
+/// **Work one wanted home field** (doc 20 cut SM.4b; [`warm_one`]'s second job): the first
+/// wanted home that has not failed and does not already peek warm ([`peek_home`]); the site's peek
+/// warm → the field over that ground's composite (`built_over` it); cold → the site wanted again
+/// and the home kept wanted, nothing else this fire; dark → the field over the keyless terrain
+/// (`ground::site_terrain`, R3). Each build is timed (`tracing::debug!`); a build that fails
+/// warns once and joins `homes_failed` (never wanted or warned again this boot).
+fn warm_one_home(ctx: &mut Ctx<'_>) {
+    // The first wanted home that needs a build. A failed one is skipped (D25), and — the
+    // review's correctness/F3 — so is one whose field over the current ground (or, dark, its
+    // keyless field) still stands: every drive's arrival wants its home again, and that costs
+    // no build ("built once per (site ground, ramp cell)", the brief's decision P1). Each turn
+    // pops one, so the loop ends within the wanted set.
+    let mut peeks = Peeks::default();
+    let (entry, ramp) = loop {
+        let Some((entry, ramp)) = ctx
+            .w
+            .module_state_mut::<GeologyState>()
+            .and_then(|state| state.homes_wanted.pop_first())
+        else {
+            return;
+        };
+        let failed = ctx
+            .w
+            .module_state::<GeologyState>()
+            .is_some_and(|state| state.homes_failed.set().contains(&entry));
+        if failed {
+            continue;
+        }
+        if matches!(
+            peek_home(ctx.w, &entry, ramp, &mut peeks),
+            HomePeek::Warm(_)
+        ) {
+            continue;
+        }
+        break (entry, ramp);
+    };
+    let started = std::time::Instant::now();
+    let table = mush_atlas::physics::LocomotionTable::shipped();
+    let built = match chart::peek_site(ctx.w, &entry, &mut peeks) {
+        chart::SitePeek::Warm(ground) => chart::ground_surface(&ground)
+            .and_then(|surface| drive::HomeField::build(surface, table, ramp))
+            .map(|field| (Some(Arc::downgrade(&ground)), field))
+            .ok_or_else(|| "no home field forms over the site's ground".to_owned()),
+        chart::SitePeek::Cold => {
+            want_site_ground(ctx.w, &entry);
+            if let Some(state) = ctx.w.module_state_mut::<GeologyState>() {
+                state.homes_wanted.insert((entry, ramp));
+            }
+            return;
+        }
+        chart::SitePeek::Dark => ground::site_terrain(ctx.w, &entry).and_then(|terrain| {
+            terrain
+                .surface(&mush_atlas::SurfaceRef::Ground)
+                .and_then(|surface| drive::HomeField::build(surface, table, ramp))
+                .map(|field| (None, field))
+                .ok_or_else(|| "no home field forms over the site's terrain".to_owned())
+        }),
+    };
+    match built {
+        Ok((built_over, field)) => {
+            let keyless = built_over.is_none();
+            if let Some(state) = ctx.w.module_state_mut::<GeologyState>() {
+                insert_home(state, (entry.clone(), ramp), built_over, field);
+            }
+            tracing::debug!(
+                site = %entry,
+                keyless,
+                ms = started.elapsed().as_millis(),
+                "tacsim: a site's home field was warmed"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                site = %entry,
+                %error,
+                "tacsim: a site's way home cannot be mapped; its rigs read dark until the next boot"
+            );
+            if let Some(state) = ctx.w.module_state::<GeologyState>() {
+                state.homes_failed.set().insert(entry);
+            }
+        }
+    }
 }
 
 /// **The once-a-boot dark set** (doc 20 cut SM.4a, D25; the pre-commit round's item 5): behind
@@ -198,6 +514,10 @@ impl Default for GeologyState {
             sites: SiteGroundCache::default(),
             warm: BTreeSet::new(),
             warm_failed: FailedSites::default(),
+            homes: BTreeMap::new(),
+            homes_wanted: BTreeSet::new(),
+            homes_failed: FailedSites::default(),
+            homes_clock: 0,
         }
     }
 }
@@ -219,6 +539,35 @@ impl GeologyState {
     #[must_use]
     pub fn failed(&self) -> Vec<CanonicalId> {
         self.warm_failed.set().iter().cloned().collect()
+    }
+
+    /// **The built home fields** (doc 20 cut SM.4b): `(site entry, ramp cell, keyless)` in key
+    /// order — `keyless` when the field was built from the terrain alone because the site read
+    /// dark (R3). For tests and status renders.
+    #[must_use]
+    pub fn homes(&self) -> Vec<(CanonicalId, (i64, i64), bool)> {
+        self.homes
+            .iter()
+            .map(|((entry, ramp), home)| (entry.clone(), *ramp, home.built_over.is_none()))
+            .collect()
+    }
+
+    /// **A built home field** (doc 20 cut SM.4b), whatever ground it was built over.
+    #[must_use]
+    pub fn home_field(
+        &self,
+        entry: &CanonicalId,
+        ramp: (i64, i64),
+    ) -> Option<Arc<drive::HomeField>> {
+        self.homes
+            .get(&(entry.clone(), ramp))
+            .map(|home| Arc::clone(&home.field))
+    }
+
+    /// The home fields waiting for a warm (doc 20 cut SM.4b), in key order.
+    #[must_use]
+    pub fn homes_wanted(&self) -> Vec<(CanonicalId, (i64, i64))> {
+        self.homes_wanted.iter().cloned().collect()
     }
 }
 
@@ -251,14 +600,17 @@ pub(crate) fn fail_site(w: &World, entry: &CanonicalId) -> bool {
         .is_some_and(|state| state.warm_failed.set().insert(entry.clone()))
 }
 
-/// **Warm one wanted site** (doc 20 cut SM.4a; lead ruling 6): called at the top of each
-/// `tacsim.surface` fire. Returns at once with the layer dark; else pops the first wanted entry
-/// (id order) and builds its ground through [`ground::site_ground_sync`] — one build a fire,
-/// on the tick, never on an act's path — `tracing::debug!`ing its milliseconds. A failed build
-/// `tracing::warn!`s once, joins `warm_failed` and is dropped: it is never wanted or warned
-/// again this boot (D25).
+/// **Warm one wanted site, else one wanted home** (doc 20 cut SM.4a; lead ruling 6; since cut
+/// SM.4b the home fields too): called at the top of each `tacsim.surface` fire, one job a fire,
+/// on the tick, never on an act's path. With the layer live a wanted **site** goes first: the
+/// first wanted entry (id order) is built through [`ground::site_ground_sync`],
+/// `tracing::debug!`ing its milliseconds; a failed build `tracing::warn!`s once, joins
+/// `warm_failed` and is dropped — never wanted or warned again this boot (D25). With none wanted,
+/// **or with the layer dark** (R3: a rig's way home never depends on the geology key), one wanted
+/// **home field** is worked instead (`warm_one_home`).
 pub(crate) fn warm_one(ctx: &mut Ctx<'_>) {
     if live(ctx.w).is_err() {
+        warm_one_home(ctx);
         return;
     }
     let Some(entry) = ctx
@@ -266,11 +618,27 @@ pub(crate) fn warm_one(ctx: &mut Ctx<'_>) {
         .module_state_mut::<GeologyState>()
         .and_then(|state| state.warm.pop_first())
     else {
+        warm_one_home(ctx);
         return;
     };
     // A site a peek has marked dark since it was wanted (the pre-commit round's item 5) is
     // not built, and so not warned a second time.
     if warm_failed(ctx.w, &entry) {
+        return;
+    }
+    // Doc 20 cut SM.4b: a site wanted again while already warm (a cold home's command, a drive's
+    // arrival) costs no build, so the fire goes on to a wanted home — a site re-wanted every
+    // fire must never starve the home fields.
+    // The cache is read directly, never through `chart::peek_site`: a capture that refuses
+    // here is the build's to warn (once, below).
+    let already_warm = chart::site_context(ctx.w, &entry).is_ok_and(|site| {
+        matches!(
+            ground::site_ground_cached(ctx.w, &site.frame, &site.spec),
+            Ok(Some(_))
+        )
+    });
+    if already_warm {
+        warm_one_home(ctx);
         return;
     }
     let started = std::time::Instant::now();
@@ -413,4 +781,47 @@ pub fn installed_bodies(w: &World) -> Vec<CanonicalId> {
     w.module_state::<GeologyState>()
         .map(|state| state.tables.keys().cloned().collect())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The home rule** (doc 20 cut SM.4b; R3; the review's correctness/F4): a warm site reads
+    /// only the field built over that very ground, a dark site only the keyless one, and every
+    /// other combination is cold — save a home that failed this boot, which is never retried and
+    /// so reads dark whatever the site's peek (it never reads "still being mapped" forever).
+    #[test]
+    fn sm4b_a_failed_home_reads_dark_and_a_held_one_by_its_ground() {
+        use HeldHome as H;
+        use HomeRead as R;
+        use SiteSeen as S;
+        let held = [H::None, H::OverThisGround, H::OverOtherGround, H::Keyless];
+        for site in [S::Warm, S::Cold, S::Dark] {
+            for shape in held {
+                let expected = match (site, shape) {
+                    (S::Warm, H::OverThisGround) | (S::Dark, H::Keyless) => R::Held,
+                    _ => R::Cold,
+                };
+                assert_eq!(
+                    home_read(site, shape, false),
+                    expected,
+                    "{site:?} {shape:?}"
+                );
+                let failed = if expected == R::Held {
+                    R::Held
+                } else {
+                    R::Dark
+                };
+                assert_eq!(
+                    home_read(site, shape, true),
+                    failed,
+                    "failed: {site:?} {shape:?}"
+                );
+            }
+        }
+        // The case the review found: the site warm, its home failed and none held — dark, never
+        // a cold "still being mapped" for the rest of the boot.
+        assert_eq!(home_read(S::Warm, H::None, true), R::Dark);
+    }
 }

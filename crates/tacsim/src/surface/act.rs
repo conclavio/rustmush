@@ -38,6 +38,17 @@
 //! site-wide heard line's budget. No act reads a licence or a tenure (§8 "rights are per act";
 //! lead ruling 9). The probe kind SM.3b kept for its tests is retired (D15).
 //!
+//! **Doc 20 cut SM.4b** adds the **drive** on the same two actions (`act` word `drive`): the
+//! command (`drive_cmd`) runs the cheap gates first, then ONE A* (`drive_plan`, through
+//! `crate::surface::drive`) and the reserve with the real trip home, writes the drive's order to
+//! a RAM slot (`DriveOrders`: the legal-action query carries no parameters, so a typed target
+//! cannot reach the offer, and a player-supplied leg cannot be trusted) and submits; the start's
+//! offer fixes that order after re-running the stand gate, and the prepare binds it to the
+//! invocation's ordinal. A **recover** from farther than beside the ramp carries its leg home in
+//! the same one act (`recover_plan`), checked by `leg_affordable` — never the 5 % floor — and the
+//! scan's and the sounding's reserve now carry the real trip home from their stand (`home_here`).
+//! No act reads a licence or a tenure (lead ruling 9).
+//!
 //! Neither provider ever reads `World::now`: `now` is the offer's IC instant.
 
 use std::collections::BTreeMap;
@@ -72,13 +83,15 @@ use crate::surface::chart::{
     self, ChartKey, ChartRecord, SitePeek, body_admits, heard_line_due, repeat_refused, scan_adds,
     sound_adds, write_scan, write_sound,
 };
+use crate::surface::drive::{self, DriveRates, Leg, LegRefused, Target};
 use crate::surface::excursion::{
     Act, ActKind, ActParams, ActResult, CapRefused, Charge, DUMP_S, Excursion, ExcursionCounts,
     ExcursionId, LAUNCH_S, MAX_DUMP_GOODS, Outcome, RECOVER_S, ReadSpan, RefusedCode, RigKey,
-    RigRecord, cap_refusal, cells_apart, charge_at, charge_for_act, needs_battery, ramp_pose,
-    reserve_check, reserved_total, settle_free, settle_spent_out_of_bay, site_cell,
+    RigRecord, cap_refusal, cells_apart, charge_at, charge_for_act, leg_affordable, needs_battery,
+    ramp_pose, reserve_check, reserved_total, settle_free, settle_spent_out_of_bay, site_cell,
 };
 use crate::surface::reading::Footing;
+use crate::surface::{HomePeek, Peeks};
 
 /// The start's action id (lead ruling 3, "the planner's call"; doc 20 §6 names the mining
 /// start `tacsim_surface_mine` — it becomes `act = mine` of this action in SM.7, the brief's
@@ -95,17 +108,25 @@ pub const SURFACE_DONE_OUTCOME: &str = "tacsim_surface_done_result";
 pub const SURFACE_KEY_PREFIX: &str = "tacsim.surface/";
 /// **The start's `act` words** (doc 20 cut SM.4a, D23): the offer's Choice and the plans' keys,
 /// sorted.
-pub const ACT_WIRE_WORDS: [&str; 6] = ["dump", "launch", "recover", "scan", "sound", "sound_quiet"];
+pub const ACT_WIRE_WORDS: [&str; 7] = [
+    "drive",
+    "dump",
+    "launch",
+    "recover",
+    "scan",
+    "sound",
+    "sound_quiet",
+];
 
 /// **The start's `act` parameter** (doc 20 cut SM.4a; the brief's reviewer finding F6, D23):
 /// `launch`, `recover`, `dump`, `scan`, `sound` and `sound_quiet` — the kind and the sounding's
-/// quiet flag. Both the start's `validate_invocation` and its prepare read it, never
-/// `ActKind::from_word`.
+/// quiet flag — and since doc 20 cut SM.4b `drive`. Both the start's `validate_invocation` and
+/// its prepare read it, never `ActKind::from_word`.
 #[must_use]
 pub(crate) fn act_of_word(word: &str) -> Option<(ActKind, bool)> {
     match word {
         "sound_quiet" => Some((ActKind::Sound, true)),
-        "launch" | "recover" | "dump" | "scan" | "sound" => {
+        "launch" | "recover" | "dump" | "scan" | "sound" | "drive" => {
             ActKind::from_word(word).map(|kind| (kind, false))
         }
         _ => None,
@@ -477,11 +498,70 @@ pub enum Refusal {
         /// The terrain's word.
         terrain: String,
     },
+    /// `DRIVE_OFF_SITE` (doc 20 cut SM.4b): the target is off the site.
+    OffSite {
+        /// The site's name.
+        site: String,
+    },
+    /// `DRIVE_HERE` (doc 20 cut SM.4b): the rig stands on the target's cell.
+    Here {
+        /// The slot.
+        n: u8,
+    },
+    /// `NO_PATH` (doc 20 cut SM.4b; §8): no way over the ground within the site's budget.
+    NoPath {
+        /// The slot.
+        n: u8,
+        /// The target in words.
+        target: String,
+    },
+    /// `TOO_WINDING` (doc 20 cut SM.4b; R1): more than 32 waypoints even at 80 m.
+    Winding {
+        /// The slot.
+        n: u8,
+        /// The target in words.
+        target: String,
+        /// The waypoints the widest freeze kept.
+        needed: usize,
+    },
+    /// `NO_WAY_HOME` (doc 20 cut SM.4b; R2): the end stand has no way back to the ramp.
+    NoWayHome {
+        /// The slot.
+        n: u8,
+        /// The target in words.
+        target: String,
+        /// The egress's label.
+        ramp: String,
+    },
+    /// `DRIVE_UNPLANNED` (doc 20 cut SM.4b; the brief's decision P2): a start of a drive with no
+    /// order of the actor's for the rig (a forged start, or an order lost to a restart).
+    Unplanned,
+    /// `DRIVE_MOVED` (doc 20 cut SM.4b): the rig no longer stands where its drive's leg begins.
+    Moved,
+    /// `RECOVER_SHORT` (doc 20 cut SM.4b; lead ruling 5, decision P6): the rig's charge cannot
+    /// cover its own leg home.
+    LegShort {
+        /// The slot.
+        n: u8,
+        /// The charge now, whole percent (`?` when the battery cannot be read).
+        now: String,
+        /// The leg's charge, whole percent rounded up (`?` likewise).
+        need: String,
+        /// The egress's label.
+        ramp: String,
+    },
+    /// `RECOVER_DARK` (doc 20 cut SM.4b; R3): the way home's terrain cannot be mapped this boot.
+    RecoverDark {
+        /// The slot.
+        n: u8,
+        /// The egress's label.
+        ramp: String,
+    },
 }
 
 /// The offer-wire words and the start's messages, in one table (the prepare's
 /// `port_error` needs a `&'static str`).
-const REFUSAL_CODES: [(&str, &str); 24] = [
+const REFUSAL_CODES: [(&str, &str); 33] = [
     ("tv_dark", "that rig cannot be read"),
     ("tv_unwired", "rigs cannot be worked on this server"),
     ("not_aboard", "the operator is not aboard the hull"),
@@ -506,6 +586,21 @@ const REFUSAL_CODES: [(&str, &str); 24] = [
     ("ground_cold", "the site's ground is still being mapped"),
     ("instruments_dark", "the instruments cannot read the ground"),
     ("no_footing", "the rig stands where the mast reads nothing"),
+    ("off_site", "that point is off the site"),
+    ("here", "the rig is there already"),
+    ("no_path", "there is no way there over the ground"),
+    ("winding", "that way winds too much to drive in one leg"),
+    (
+        "no_way_home",
+        "the rig could not get back to the ramp from there",
+    ),
+    ("unplanned", "that drive was not planned; preview it again"),
+    ("moved", "that rig has moved since the drive was planned"),
+    ("leg_short", "the rig's charge cannot cover the drive"),
+    (
+        "recover_dark",
+        "the rig's way back cannot be mapped just now",
+    ),
 ];
 
 /// The start's message for an offer-wire word; an unknown word reads as dark.
@@ -546,6 +641,15 @@ impl Refusal {
             Refusal::GroundCold { .. } => "ground_cold",
             Refusal::InstrumentsDark => "instruments_dark",
             Refusal::NoFooting { .. } => "no_footing",
+            Refusal::OffSite { .. } => "off_site",
+            Refusal::Here { .. } => "here",
+            Refusal::NoPath { .. } => "no_path",
+            Refusal::Winding { .. } => "winding",
+            Refusal::NoWayHome { .. } => "no_way_home",
+            Refusal::Unplanned => "unplanned",
+            Refusal::Moved => "moved",
+            Refusal::LegShort { .. } => "leg_short",
+            Refusal::RecoverDark { .. } => "recover_dark",
         }
     }
 
@@ -621,6 +725,28 @@ impl Refusal {
             Refusal::NoFooting { n, terrain } => tv::NO_FOOTING
                 .replace("{n}", &n.to_string())
                 .replace("{terrain}", terrain),
+            Refusal::OffSite { site } => tv::DRIVE_OFF_SITE.replace("{site}", site),
+            Refusal::Here { n } => tv::DRIVE_HERE.replace("{n}", &n.to_string()),
+            Refusal::NoPath { n, target } => tv::NO_PATH
+                .replace("{n}", &n.to_string())
+                .replace("{target}", target),
+            Refusal::Winding { target, .. } => tv::TOO_WINDING
+                .replace("{target}", target)
+                .replace("{cap}", &crate::surface::MAX_LEG_WAYPOINTS.to_string()),
+            Refusal::NoWayHome { n, target, ramp } => tv::NO_WAY_HOME
+                .replace("{n}", &n.to_string())
+                .replace("{target}", target)
+                .replace("{ramp}", ramp),
+            Refusal::Unplanned => tv::DRIVE_UNPLANNED.to_owned(),
+            Refusal::Moved => tv::DRIVE_MOVED.to_owned(),
+            Refusal::LegShort { n, now, need, ramp } => tv::RECOVER_SHORT
+                .replace("{n}", &n.to_string())
+                .replace("{now}", now)
+                .replace("{need}", need)
+                .replace("{ramp}", ramp),
+            Refusal::RecoverDark { n, ramp } => tv::RECOVER_DARK
+                .replace("{n}", &n.to_string())
+                .replace("{ramp}", ramp),
         }
     }
 }
@@ -745,14 +871,30 @@ pub(crate) fn launch_plan(w: &World, actor: ObjId, rig: &RigAt) -> Result<ActPla
 /// hull's bay → `Ok` with `from_bay` (the command and the prepare refuse `RECOVER_IN_BAY`
 /// unless an excursion is still open, which this recover closes — decision 21); on another
 /// domain, another hull's bay or elsewhere → `RECOVER_ELSEWHERE`; on the hull's site domain
-/// more than one cell from the ramp → `RECOVER_FAR` naming `cells × 10` m (the drive to the
-/// ramp is SM.4's). No lease-state gate (§8 / §19 item 3: rights never stop a rig's way
-/// home). `RECOVER_S` either way (one rule), no cost.
+/// beside the ramp (Chebyshev ≤ 1) → SM.3b's recover, `RECOVER_S`, no cost. No lease-state gate
+/// (§8 / §19 item 3: rights never stop a rig's way home).
+///
+/// **Doc 20 cut SM.4b — farther off, the rig drives home first** (lead ruling 5; §3.6 of the
+/// brief): the site's home field through the non-building peek (`peeks`; cold →
+/// `GROUND_COLD`; it reads the keyless field when the site is dark, R3, so a recover never
+/// refuses `INSTRUMENTS_DARK` — only a home whose terrain failed this boot reads `RECOVER_DARK`),
+/// the descent from the rig's cell frozen by `drive::recover_leg` (never refused for its
+/// waypoints), and ONE act of kind `Recover` whose params carry the leg to the beside-ramp cell
+/// it ends on: `secs` the leg's then `RECOVER_S`, `cost_cu` the leg's charge, `home_cu` 0 (it IS
+/// the way home). `rates` is the rig's (`rig_rates`): without the battery's row the leg costs
+/// nothing (a rig is never stranded by its battery, §4.1); without the unit's speed, dark. A
+/// cell with no way home at all → `RECOVER_FAR` as before (staff's remedy).
 ///
 /// # Errors
 ///
 /// The first [`Refusal`] in that order.
-pub(crate) fn recover_plan(w: &World, actor: ObjId, rig: &RigAt) -> Result<ActPlan, Refusal> {
+pub(crate) fn recover_plan(
+    w: &World,
+    actor: ObjId,
+    rig: &RigAt,
+    peeks: &mut Peeks,
+    rates: Option<DriveRates>,
+) -> Result<ActPlan, Refusal> {
     let (view, name) = view_of(w, rig)?;
     if matches!(berth_of(w, rig.hull), Berth::UnderWay) {
         return Err(Refusal::UnderWay { name });
@@ -761,35 +903,82 @@ pub(crate) fn recover_plan(w: &World, actor: ObjId, rig: &RigAt) -> Result<ActPl
     if !crate::port::voyage::aboard(w, rig.hull, actor) {
         return Err(Refusal::NotAboard { name });
     }
-    let from_bay = match where_is(w, rig.tv) {
-        Where::Bay { hull } if hull == rig.hull => true,
+    let ramp_cell = site_cell(berth.ramp.x_cm, berth.ramp.y_cm);
+    let (x_cm, y_cm) = match where_is(w, rig.tv) {
+        Where::Bay { hull } if hull == rig.hull => {
+            return Ok(ActPlan {
+                site: berth.entry,
+                secs: RECOVER_S,
+                cost_cu: 0,
+                home_cu: 0,
+                params: ActParams::None {},
+                from_bay: true,
+            });
+        }
         Where::Ground {
             domain, x_cm, y_cm, ..
-        } if domain == berth.domain => {
-            let cells = cells_apart(
-                site_cell(x_cm, y_cm),
-                site_cell(berth.ramp.x_cm, berth.ramp.y_cm),
-            );
-            if cells > 1 {
-                return Err(Refusal::Far {
-                    n: rig.slot,
-                    m: cells.saturating_mul(10),
-                    ramp: berth.ramp_label,
-                });
-            }
-            false
-        }
+        } if domain == berth.domain => (x_cm, y_cm),
         Where::Bay { .. } | Where::Ground { .. } | Where::Elsewhere => {
             return Err(Refusal::Elsewhere { n: rig.slot, name });
         }
     };
+    let cells = cells_apart(site_cell(x_cm, y_cm), ramp_cell);
+    if cells <= 1 {
+        return Ok(ActPlan {
+            site: berth.entry,
+            secs: RECOVER_S,
+            cost_cu: 0,
+            home_cu: 0,
+            params: ActParams::None {},
+            from_bay: false,
+        });
+    }
+    let far = || Refusal::Far {
+        n: rig.slot,
+        m: cells.saturating_mul(10),
+        ramp: berth.ramp_label.clone(),
+    };
+    let field = match crate::surface::peek_home(w, &berth.entry, ramp_cell, peeks) {
+        HomePeek::Warm(field) => field,
+        HomePeek::Cold => {
+            return Err(Refusal::GroundCold {
+                site: berth.name.clone(),
+                entry: berth.entry.clone(),
+            });
+        }
+        HomePeek::Dark => {
+            return Err(Refusal::RecoverDark {
+                n: rig.slot,
+                ramp: berth.ramp_label.clone(),
+            });
+        }
+    };
+    let Some(rates) = rates else {
+        return Err(Refusal::Dark { name });
+    };
+    // Lead ruling 5: a cell with no way home is SM.3b's `RECOVER_FAR` (staff's remedy).
+    let leg = drive::recover_leg(&field, (x_cm, y_cm), &rates).ok_or_else(far)?;
+    let to = leg
+        .cells
+        .last()
+        .map(|(x, y)| [i64::from(*x), i64::from(*y)])
+        .ok_or_else(far)?;
     Ok(ActPlan {
         site: berth.entry,
-        secs: RECOVER_S,
-        cost_cu: 0,
+        secs: leg.secs.saturating_add(RECOVER_S),
+        cost_cu: leg.cu,
         home_cu: 0,
-        params: ActParams::None {},
-        from_bay,
+        params: ActParams::Drive {
+            from_bay: false,
+            target: format!("the {}", berth.ramp_label),
+            to,
+            waypoints: leg.waypoints,
+            secs: leg.secs,
+            cost: leg.cost,
+            metres: leg.metres,
+            heading_mdeg: leg.heading_mdeg,
+        },
+        from_bay: false,
     })
 }
 
@@ -842,15 +1031,24 @@ pub(crate) fn dump_plan(w: &World, actor: ObjId, rig: &RigAt) -> Result<ActPlan,
     })
 }
 
-/// Where a scan or a sounding is made from.
+/// Where a scan, a sounding or (doc 20 cut SM.4b) a drive is made from.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Stand {
+pub(crate) struct Stand {
     /// The site's port entry.
-    site: CanonicalId,
+    pub site: CanonicalId,
     /// The stand cell, site-local.
-    cell: (i64, i64),
+    pub cell: (i64, i64),
     /// The launch is implied (the rig stands in the bay; it reads from the ramp's cell).
-    from_bay: bool,
+    pub from_bay: bool,
+    /// **The exact start pose, centimetres** (doc 20 cut SM.4b): the ramp pose from the bay,
+    /// else the rig's own `Direct` pose — a drive's leg starts here.
+    pub start_cm: (i64, i64),
+    /// The hull's ramp cell (doc 20 cut SM.4b: the home field's key).
+    pub ramp_cell: (i64, i64),
+    /// The egress's label (`stern ramp`).
+    pub ramp_label: String,
+    /// The site's name.
+    pub site_name: String,
 }
 
 /// **Where a scan or a sounding stands, in the plan's order** (doc 20 cut SM.4a; the brief's
@@ -859,8 +1057,10 @@ struct Stand {
 /// is the ramp's cell (`from_bay`); otherwise the hull's site berth (not a site →
 /// `LAUNCH_NOT_SITE`), the actor aboard (else `TV_NOT_ABOARD`), and the rig `Direct` on the
 /// hull's site domain inside the site (else `RECOVER_ELSEWHERE`) — **no lease-state gate**, as
-/// a recover's and a dump's (decision 11).
-fn stand_of(w: &World, actor: ObjId, rig: &RigAt) -> Result<Stand, Refusal> {
+/// a recover's and a dump's (decision 11). **Doc 20 cut SM.4b**: a drive stands the same way
+/// (the implied launch's whole gate from the bay), so the command, the start's offer and the
+/// drive's order all read this one rule.
+pub(crate) fn stand_of(w: &World, actor: ObjId, rig: &RigAt) -> Result<Stand, Refusal> {
     let (view, name) = view_of(w, rig)?;
     if matches!(berth_of(w, rig.hull), Berth::UnderWay) {
         return Err(Refusal::UnderWay { name });
@@ -868,10 +1068,15 @@ fn stand_of(w: &World, actor: ObjId, rig: &RigAt) -> Result<Stand, Refusal> {
     if where_is(w, rig.tv) == (Where::Bay { hull: rig.hull }) {
         let launch = launch_plan(w, actor, rig)?;
         let berth = site_berth(w, &view)?;
+        let ramp_cell = site_cell(berth.ramp.x_cm, berth.ramp.y_cm);
         return Ok(Stand {
             site: launch.site,
-            cell: site_cell(berth.ramp.x_cm, berth.ramp.y_cm),
+            cell: ramp_cell,
             from_bay: true,
+            start_cm: (berth.ramp.x_cm, berth.ramp.y_cm),
+            ramp_cell,
+            ramp_label: berth.ramp_label.clone(),
+            site_name: berth.name.clone(),
         });
     }
     let berth = site_berth(w, &view)?;
@@ -882,14 +1087,164 @@ fn stand_of(w: &World, actor: ObjId, rig: &RigAt) -> Result<Stand, Refusal> {
         Where::Ground {
             domain, x_cm, y_cm, ..
         } if domain == berth.domain && cell_on_site(site_cell(x_cm, y_cm)) => Ok(Stand {
-            site: berth.entry,
+            site: berth.entry.clone(),
             cell: site_cell(x_cm, y_cm),
             from_bay: false,
+            start_cm: (x_cm, y_cm),
+            ramp_cell: site_cell(berth.ramp.x_cm, berth.ramp.y_cm),
+            ramp_label: berth.ramp_label.clone(),
+            site_name: berth.name.clone(),
         }),
         Where::Bay { .. } | Where::Ground { .. } | Where::Elsewhere => {
             Err(Refusal::Elsewhere { n: rig.slot, name })
         }
     }
+}
+
+/// **The charge home from a stand a reading act occupies** (doc 20 cut SM.4b; lead ruling 4,
+/// §3.8 of the brief): 0 from the bay (the stand is the ramp's cell); else the home field's figure
+/// through the non-building peek (cold → `GROUND_COLD`, dark → `INSTRUMENTS_DARK`) and
+/// `drive::home_cu_here` — the conservative bound where the stand has no way home, since there is
+/// nothing left to prevent there (R2).
+fn home_here(
+    w: &World,
+    stand: &Stand,
+    rates: Option<&DriveRates>,
+    name: &str,
+    peeks: &mut Peeks,
+) -> Result<u32, Refusal> {
+    // From the bay, or from beside the ramp (Chebyshev ≤ 1: the recover's own rule), the way
+    // home is the climb alone — no field is read, so a rig at the ramp scans and sounds with
+    // the home field still cold.
+    if stand.from_bay || cells_apart(stand.cell, stand.ramp_cell) <= 1 {
+        return Ok(0);
+    }
+    let field = match crate::surface::peek_home(w, &stand.site, stand.ramp_cell, peeks) {
+        HomePeek::Warm(field) => field,
+        HomePeek::Cold => {
+            return Err(Refusal::GroundCold {
+                site: stand.site_name.clone(),
+                entry: stand.site.clone(),
+            });
+        }
+        HomePeek::Dark => return Err(Refusal::InstrumentsDark),
+    };
+    let rates = rates.ok_or_else(|| Refusal::Dark {
+        name: name.to_owned(),
+    })?;
+    Ok(drive::home_cu_here(
+        &field,
+        stand.cell,
+        rates,
+        mush_atlas::physics::LocomotionTable::shipped(),
+    ))
+}
+
+/// **A rig's driving figures** (doc 20 cut SM.4b; lead ruling 3): the rig unit's tracked
+/// `max_speed_cms` (its live unit record's, else the programme pool's unit) and the battery's
+/// `drive_cu_per_nominal_cell` — **0 without the battery's row**, so a recover's leg home never
+/// needs it (§4.1; a drive needs the battery anyway). `None` when the unit has no tracked mode or
+/// a zero speed (`TV_DARK`).
+#[must_use]
+pub(crate) fn rig_rates(w: &World, tv: ObjId, battery: Option<&BatteryDef>) -> Option<DriveRates> {
+    let store = w.module_state::<TacsimStore>()?;
+    let unit = crate::port::hull::live_unit_id(w, tv).or_else(|| tv::pool_unit(w))?;
+    let speed = store
+        .definitions()
+        .specs
+        .get(&unit)?
+        .mobility
+        .tracked
+        .as_ref()?
+        .max_speed_cms;
+    if speed == 0 {
+        return None;
+    }
+    Some(DriveRates {
+        max_speed_cms: speed,
+        cu_per_nominal_cell: battery.map_or(0, |battery| battery.drive_cu_per_nominal_cell),
+    })
+}
+
+/// **The drive's world plan** (doc 20 cut SM.4b; lead rulings 2 and 4, R1–R4; §3.5 of the brief),
+/// called only after the command's cheap gates: the site's ground resolved (dark →
+/// `INSTRUMENTS_DARK`); the composite through the non-building peek (cold → `GROUND_COLD`, dark →
+/// `INSTRUMENTS_DARK`); the home field at the hull's ramp cell (likewise); the target's cell (off
+/// the site → `DRIVE_OFF_SITE`); **ONE A*** from the stand's exact start pose
+/// (`drive::drive_leg`: the rig's cell → `DRIVE_HERE`, no way → `NO_PATH`, past 32 waypoints even
+/// at 80 m → `TOO_WINDING`); then the charge home from the end stand (`drive::home_cu_to`: no way
+/// home at all → `NO_WAY_HOME`, R2). The plan: `LAUNCH_S` more from the bay, the leg's seconds,
+/// its charge, the real trip home, the leg in the params.
+///
+/// # Errors
+///
+/// The first [`Refusal`] in that order.
+pub(crate) fn drive_plan(
+    w: &World,
+    rig: &RigAt,
+    stand: &Stand,
+    target: &Target,
+    rates: &DriveRates,
+    peeks: &mut Peeks,
+) -> Result<(ActPlan, Leg), Refusal> {
+    chart::site_context(w, &stand.site).map_err(|_| Refusal::InstrumentsDark)?;
+    let cold = || Refusal::GroundCold {
+        site: stand.site_name.clone(),
+        entry: stand.site.clone(),
+    };
+    let ground = match chart::peek_site(w, &stand.site, peeks) {
+        SitePeek::Warm(ground) => ground,
+        SitePeek::Cold => return Err(cold()),
+        SitePeek::Dark => return Err(Refusal::InstrumentsDark),
+    };
+    let field = match crate::surface::peek_home(w, &stand.site, stand.ramp_cell, peeks) {
+        HomePeek::Warm(field) => field,
+        HomePeek::Cold => return Err(cold()),
+        HomePeek::Dark => return Err(Refusal::InstrumentsDark),
+    };
+    let surface = chart::ground_surface(&ground).ok_or(Refusal::InstrumentsDark)?;
+    let to = drive::target_cell(target, stand.cell).ok_or_else(|| Refusal::OffSite {
+        site: stand.site_name.clone(),
+    })?;
+    let words = drive::target_words(target);
+    let table = mush_atlas::physics::LocomotionTable::shipped();
+    let leg =
+        drive::drive_leg(surface, table, stand.start_cm, to, rates).map_err(|why| match why {
+            LegRefused::Here => Refusal::Here { n: rig.slot },
+            LegRefused::NoPath | LegRefused::Overflow => Refusal::NoPath {
+                n: rig.slot,
+                target: words.clone(),
+            },
+            LegRefused::Winding { needed } => Refusal::Winding {
+                n: rig.slot,
+                target: words.clone(),
+                needed,
+            },
+        })?;
+    let home_cu = drive::home_cu_to(&field, to, rates).ok_or_else(|| Refusal::NoWayHome {
+        n: rig.slot,
+        target: words.clone(),
+        ramp: stand.ramp_label.clone(),
+    })?;
+    let launch = if stand.from_bay { LAUNCH_S } else { 0 };
+    let plan = ActPlan {
+        site: stand.site.clone(),
+        secs: launch.saturating_add(leg.secs),
+        cost_cu: leg.cu,
+        home_cu,
+        params: ActParams::Drive {
+            from_bay: stand.from_bay,
+            target: words,
+            to: [to.0, to.1],
+            waypoints: leg.waypoints.clone(),
+            secs: leg.secs,
+            cost: leg.cost,
+            metres: leg.metres,
+            heading_mdeg: leg.heading_mdeg,
+        },
+        from_bay: stand.from_bay,
+    };
+    Ok((plan, leg))
 }
 
 /// **The scan's world-side gate, in order** (doc 20 cut SM.4a; §5's R1, the brief's 3.4): the
@@ -898,7 +1253,9 @@ fn stand_of(w: &World, actor: ObjId, rig: &RigAt) -> Result<Stand, Refusal> {
 /// peek**, shared by every rig of the call (`peeks`; cold → `GROUND_COLD`, dark →
 /// `INSTRUMENTS_DARK`); the footing at the stand (none → `NO_FOOTING`); the fields the mast
 /// sees (`chart::seen_fields`). `LAUNCH_S` more when it launches; the scanner's `scan_s` and
-/// `scan_cu`; no trip home yet (`home_cu` 0 until SM.4b's drive supplies it — lead ruling 1).
+/// `scan_cu`; **since doc 20 cut SM.4b the real trip home** from the stand (`home_here`: 0 from
+/// the bay, else the home field's figure — cold → `GROUND_COLD`, dark → `INSTRUMENTS_DARK` — and
+/// without the rig's rates `TV_DARK`).
 ///
 /// # Errors
 ///
@@ -908,7 +1265,8 @@ pub(crate) fn scan_plan(
     actor: ObjId,
     rig: &RigAt,
     scanner: &ScannerDef,
-    peeks: &mut BTreeMap<CanonicalId, SitePeek>,
+    peeks: &mut Peeks,
+    rates: Option<&DriveRates>,
 ) -> Result<ActPlan, Refusal> {
     let stand = stand_of(w, actor, rig)?;
     let site = chart::site_context(w, &stand.site).map_err(|_| Refusal::InstrumentsDark)?;
@@ -931,13 +1289,14 @@ pub(crate) fn scan_plan(
     if fields.is_empty() {
         return Err(Refusal::InstrumentsDark);
     }
+    // Doc 20 cut SM.4b (lead ruling 4): the real trip home from the stand.
+    let home_cu = home_here(w, &stand, rates, &name_of(w, rig.hull), peeks)?;
     let launch = if stand.from_bay { LAUNCH_S } else { 0 };
     Ok(ActPlan {
         site: stand.site,
         secs: launch.saturating_add(scanner.scan_s),
         cost_cu: scanner.scan_cu,
-        // Lead ruling 1: SM.3b's 0 until SM.4b's drive supplies the trip home.
-        home_cu: 0,
+        home_cu,
         params: ActParams::Scan {
             from_bay: stand.from_bay,
             body: site.spec.body.clone(),
@@ -954,7 +1313,8 @@ pub(crate) fn scan_plan(
 /// (`stand_of`), the site's ground resolved (`chart::site_context`, else `INSTRUMENTS_DARK`:
 /// an act that could render nothing never spends charge, D16). It needs no composite. The
 /// reach is the scanner's `sound_radius_cells`, or `quiet_radius_cells` when quiet, at the
-/// same `sound_s` and `sound_cu`; `LAUNCH_S` more when it launches; `home_cu` 0 (lead ruling 1).
+/// same `sound_s` and `sound_cu`; `LAUNCH_S` more when it launches; **since doc 20 cut SM.4b
+/// the real trip home** from the stand (`home_here`, as the scan's).
 ///
 /// # Errors
 ///
@@ -965,9 +1325,12 @@ pub(crate) fn sound_plan(
     rig: &RigAt,
     scanner: &ScannerDef,
     quiet: bool,
+    peeks: &mut Peeks,
+    rates: Option<&DriveRates>,
 ) -> Result<ActPlan, Refusal> {
     let stand = stand_of(w, actor, rig)?;
     let site = chart::site_context(w, &stand.site).map_err(|_| Refusal::InstrumentsDark)?;
+    let home_cu = home_here(w, &stand, rates, &name_of(w, rig.hull), peeks)?;
     let launch = if stand.from_bay { LAUNCH_S } else { 0 };
     let radius = if quiet {
         scanner.quiet_radius_cells
@@ -978,8 +1341,7 @@ pub(crate) fn sound_plan(
         site: stand.site,
         secs: launch.saturating_add(scanner.sound_s),
         cost_cu: scanner.sound_cu,
-        // Lead ruling 1: SM.3b's 0 until SM.4b's drive supplies the trip home.
-        home_cu: 0,
+        home_cu,
         params: ActParams::Sound {
             from_bay: stand.from_bay,
             body: site.spec.body.clone(),
@@ -1049,7 +1411,7 @@ impl Reach {
                 stand: *cell,
                 pockets: pockets_in_reach((cell[0], cell[1]), i64::from(*radius)),
             }),
-            ActParams::None {} | ActParams::Dump { .. } => None,
+            ActParams::None {} | ActParams::Dump { .. } | ActParams::Drive { .. } => None,
         }
     }
 
@@ -1132,15 +1494,19 @@ pub(crate) fn percent(cu: u32, battery: &BatteryDef) -> u32 {
         .unwrap_or(u32::MAX)
 }
 
-/// **What an act in flight is doing** (`RIG_BUSY`'s and `ACT_LINE`'s `{doing}`).
+/// **What an act in flight is doing** (`RIG_BUSY`'s and `ACT_LINE`'s `{doing}`). Doc 20 cut
+/// SM.4b: a drive is `driving to {target}`, a recover with a leg `driving to the {ramp}`.
 #[must_use]
-pub(crate) fn doing_words(kind: ActKind, ramp: &str) -> String {
-    match kind {
-        ActKind::Launch => format!("going down the {ramp}"),
-        ActKind::Recover => format!("climbing the {ramp}"),
-        ActKind::Dump => "dumping its hopper".to_owned(),
-        ActKind::Scan => "scanning".to_owned(),
-        ActKind::Sound => "sounding".to_owned(),
+pub(crate) fn doing_words(kind: ActKind, params: &ActParams, ramp: &str) -> String {
+    match (kind, params) {
+        (ActKind::Drive, ActParams::Drive { target, .. }) => format!("driving to {target}"),
+        (ActKind::Recover, ActParams::Drive { .. }) => format!("driving to the {ramp}"),
+        (ActKind::Drive, _) => "driving".to_owned(),
+        (ActKind::Launch, _) => format!("going down the {ramp}"),
+        (ActKind::Recover, _) => format!("climbing the {ramp}"),
+        (ActKind::Dump, _) => "dumping its hopper".to_owned(),
+        (ActKind::Scan, _) => "scanning".to_owned(),
+        (ActKind::Sound, _) => "sounding".to_owned(),
     }
 }
 
@@ -1203,6 +1569,162 @@ pub(crate) fn load_words(w: &World, goods: &BTreeMap<CanonicalId, u64>) -> Strin
         .join(", ")
 }
 
+/// **The rig's battery row** (finding F5: the one tools table), whether or not the act needs it.
+fn rig_battery(w: &World, handles: &PortHandles, rig: &RigAt) -> Option<BatteryDef> {
+    handles
+        .surface_tools
+        .as_ref()
+        .and_then(|tools| rig_battery_id(w, rig.tv).and_then(|id| battery_of(tools, &id).cloned()))
+}
+
+/// **A cold site or home asked for** (doc 20 cut SM.4a; since SM.4b the home field too): the
+/// surface tick warms them, never this path (RAM only, the `RigPointer` precedent).
+fn want_cold(ctx: &mut Ctx<'_>, rig: &RigAt, refusal: &Refusal) {
+    if let Refusal::GroundCold { entry, .. } = refusal {
+        crate::surface::want_site_ground(ctx.w, entry);
+        if let Some((site, ramp)) = crate::surface::hull_home(ctx.w, rig.hull) {
+            crate::surface::want_home(ctx.w, &site, ramp);
+        }
+    }
+}
+
+/// **The record's busy refusal** (`RIG_BUSY`): an act in flight.
+fn busy_refusal(w: &World, rig: &RigAt, record: &RigRecord) -> Option<Refusal> {
+    let act = record.act.as_ref()?;
+    let ramp = ramp_label(w, rig.hull);
+    Some(Refusal::Busy {
+        n: rig.slot,
+        doing: doing_words(act.kind, &act.params, &ramp),
+        when: tv::due_words(w, act.due_ic),
+    })
+}
+
+/// **The launch half's gates** (a launch, or a scan, a sounding or a drive that implies one;
+/// lead ruling 2): an excursion still open (`LAUNCH_OPEN`), then the caps (§8; lead ruling 8),
+/// counted over the world's rig records.
+fn launch_half(
+    ctx: &Ctx<'_>,
+    handles: &PortHandles,
+    rig: &RigAt,
+    record: &RigRecord,
+    site: &CanonicalId,
+    dark: &dyn Fn() -> CmdError,
+) -> Result<(), CmdError> {
+    if record.excursion.is_some() {
+        return Err(CmdError::msg(Refusal::Open { n: rig.slot }.line()));
+    }
+    let w: &World = ctx.w;
+    let mut counts = ExcursionCounts::default();
+    for tv in world_rigs(w) {
+        let found = ctx
+            .action_state(&handles.families.excursions, &RigKey(tv))
+            .map_err(|_| dark())?;
+        if let Some(excursion) = found.and_then(|record| record.excursion.as_ref()) {
+            counts.world = counts.world.saturating_add(1);
+            if &excursion.site == site {
+                counts.site = counts.site.saturating_add(1);
+            }
+            if excursion.operator == ctx.actor {
+                counts.operator = counts.operator.saturating_add(1);
+            }
+        }
+    }
+    if let Some(cap) = cap_refusal(&counts) {
+        return Err(CmdError::msg(
+            Refusal::Cap {
+                cap,
+                site: site_name(w, site),
+            }
+            .line(),
+        ));
+    }
+    Ok(())
+}
+
+/// **The reserve rule's words** (§4.1; lead ruling 3, enforced again in the start's prepare):
+/// `(now %, after the act %, after the trip home %)` from the charge the act spends from (an
+/// implied launch: the bay credited no further than the launch half, D22), or the `RESERVE_LOW`
+/// line.
+fn reserve_words(
+    record: &RigRecord,
+    now_ic: i64,
+    launches: bool,
+    plan: &ActPlan,
+    battery: &BatteryDef,
+    n: u8,
+) -> Result<(u32, u32, u32), CmdError> {
+    let shown = charge_at(&record.charge, now_ic, battery);
+    let from = charge_for_act(&record.charge, now_ic, launches, battery);
+    match reserve_check(
+        from,
+        reserved_total(record),
+        plan.cost_cu,
+        plan.home_cu,
+        battery,
+    ) {
+        Ok(after) => Ok((
+            percent(shown, battery),
+            percent(after.after_act, battery),
+            percent(after.after_home, battery),
+        )),
+        Err(short) => {
+            let after = u32::try_from(short.after_home.max(0)).unwrap_or(0);
+            Err(CmdError::msg(
+                Refusal::Reserve {
+                    n,
+                    now: percent(shown, battery),
+                    after: percent(after, battery),
+                    floor: percent(short.floor, battery),
+                }
+                .line(),
+            ))
+        }
+    }
+}
+
+/// Whole percent of a battery, rounded up (a leg's need: never under what it costs).
+fn percent_up(cu: u32, battery: &BatteryDef) -> u32 {
+    if battery.capacity_cu == 0 {
+        return 0;
+    }
+    u32::try_from((u64::from(cu).saturating_mul(100)).div_ceil(u64::from(battery.capacity_cu)))
+        .unwrap_or(u32::MAX)
+}
+
+/// **A recover's leg home, affordable or `RECOVER_SHORT`** (doc 20 cut SM.4b; lead ruling 5,
+/// decision P6): `leg_affordable` on the record's own value — never the 5 % floor, never the
+/// battery's row; the battery reads only the words (`?` without it). **SM.11: its idle
+/// return-and-park must treat this refusal as "parked where it stands".**
+fn leg_home(
+    record: &RigRecord,
+    plan: &ActPlan,
+    battery: Option<&BatteryDef>,
+    rig: &RigAt,
+    ramp: &str,
+) -> Result<(), Refusal> {
+    if leg_affordable(&record.charge, reserved_total(record), plan.cost_cu) {
+        return Ok(());
+    }
+    let words = |cu: u32, up: bool| {
+        battery.map_or_else(
+            || "?".to_owned(),
+            |battery| {
+                if up {
+                    percent_up(cu, battery).to_string()
+                } else {
+                    percent(cu, battery).to_string()
+                }
+            },
+        )
+    };
+    Err(Refusal::LegShort {
+        n: rig.slot,
+        now: words(record.charge.value_cu, false),
+        need: words(plan.cost_cu, true),
+        ramp: ramp.to_owned(),
+    })
+}
+
 /// **`+tv/<n> <act> [go]`** (the brief's 3.6; Q-20-8, D-20-9's `go` rule): the act's planner,
 /// then the typed record (unreadable → `TV_DARK`), mirroring every refusal of the prepare it
 /// can read in the prepare's order (finding F10: `RIG_BUSY`, `LAUNCH_OPEN`,
@@ -1218,6 +1740,11 @@ pub(crate) fn load_words(w: &World, goods: &BTreeMap<CanonicalId, u64>) -> Strin
 /// operator's chart: "You learn nothing new here." (the same-cell rule, D4) and the body caps
 /// (`CHART_FULL`); then the reserve from `charge_for_act` (the bay credited no further than the
 /// launch half, D22). No licence and no tenure is read (lead ruling 9).
+///
+/// **Doc 20 cut SM.4b**: a scan's and a sounding's reserve carries the real trip home from the
+/// stand (`home_here`); a recover from farther than beside the ramp drives home first — one act
+/// whose leg is checked by `leg_affordable` (`RECOVER_SHORT`), never by the 5 % floor, and
+/// previewed `RECOVER_DRIVE_PREVIEW`. A drive is `drive_cmd`'s.
 ///
 /// # Errors
 ///
@@ -1242,14 +1769,16 @@ pub(crate) fn act_cmd(
     let name = name_of(ctx.w, rig.hull);
     let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
     // 1. The world plan (the start's offer runs the same function). A reading act needs the
-    // rig's scanner; a scan peeks the site's composite once for the whole call.
+    // rig's scanner; the site's composite and its home field are peeked once for the whole call.
     let scanner = handles.surface_tools.as_ref().and_then(|tools| {
         rig_scanner_id(ctx.w, rig.tv).and_then(|id| scanner_of(tools, &id).copied())
     });
-    let mut peeks: BTreeMap<CanonicalId, SitePeek> = BTreeMap::new();
+    let battery = rig_battery(ctx.w, &handles, rig);
+    let rates = rig_rates(ctx.w, rig.tv, battery.as_ref());
+    let mut peeks = Peeks::default();
     let planned = match kind {
         ActKind::Launch => launch_plan(ctx.w, actor, rig),
-        ActKind::Recover => recover_plan(ctx.w, actor, rig),
+        ActKind::Recover => recover_plan(ctx.w, actor, rig, &mut peeks, rates),
         ActKind::Dump => dump_plan(ctx.w, actor, rig),
         ActKind::Scan | ActKind::Sound => {
             let Some(scanner) = scanner.as_ref() else {
@@ -1257,79 +1786,51 @@ pub(crate) fn act_cmd(
                 return Err(dark());
             };
             if kind == ActKind::Scan {
-                scan_plan(ctx.w, actor, rig, scanner, &mut peeks)
+                scan_plan(ctx.w, actor, rig, scanner, &mut peeks, rates.as_ref())
             } else {
-                sound_plan(ctx.w, actor, rig, scanner, quiet)
+                sound_plan(
+                    ctx.w,
+                    actor,
+                    rig,
+                    scanner,
+                    quiet,
+                    &mut peeks,
+                    rates.as_ref(),
+                )
             }
         }
+        // A drive names its target: `drive_cmd`.
+        ActKind::Drive => return Err(dark()),
     };
     let plan = match planned {
         Ok(plan) => plan,
         Err(refusal) => {
-            // A cold site is asked for: the surface tick warms it, never this path.
-            if let Refusal::GroundCold { entry, .. } = &refusal {
-                crate::surface::want_site_ground(ctx.w, entry);
-            }
+            // A cold site or home is asked for: the surface tick warms it, never this path.
+            want_cold(ctx, rig, &refusal);
             return Err(CmdError::msg(refusal.line()));
         }
     };
     let w: &World = ctx.w;
-    // 2. The battery (finding F5: the one tools table), read only where the act needs it —
-    // a spend or a launch (`needs_battery`); a recover or a dump never does, so a rig whose
-    // battery row stops resolving still comes home (§4.1; the fixer round's item 3).
-    let battery = handles
-        .surface_tools
-        .as_ref()
-        .and_then(|tools| rig_battery_id(w, rig.tv).and_then(|id| battery_of(tools, &id).cloned()));
+    // 2. The battery, read only where the act needs it — a spend or a launch
+    // (`needs_battery`); a recover or a dump never does, so a rig whose battery row stops
+    // resolving still comes home (§4.1; the fixer round's item 3; since doc 20 cut SM.4b a
+    // recover with a leg too).
     if battery.is_none() && needs_battery(kind, plan.cost_cu, plan.home_cu) {
         return Err(dark());
     }
     // 3. The typed record, and every refusal of the prepare it can read, in its order.
     let record = record_of(ctx, &handles, rig.tv, battery.as_ref()).map_err(|()| dark())?;
     let ramp = ramp_label(w, rig.hull);
-    if let Some(act) = &record.act {
-        return Err(CmdError::msg(
-            Refusal::Busy {
-                n: rig.slot,
-                doing: doing_words(act.kind, &ramp),
-                when: tv::due_words(w, act.due_ic),
-            }
-            .line(),
-        ));
+    if let Some(busy) = busy_refusal(w, rig, &record) {
+        return Err(CmdError::msg(busy.line()));
     }
     // The launch's half: a launch, or a scan or a sounding that implies one (lead ruling 2).
-    let launches = kind == ActKind::Launch || (kind.reads_ground() && plan.from_bay);
-    if launches && record.excursion.is_some() {
-        return Err(CmdError::msg(Refusal::Open { n: rig.slot }.line()));
-    }
+    let launches = kind == ActKind::Launch || plan.params.launches();
     if kind == ActKind::Recover && plan.from_bay && record.excursion.is_none() {
         return Err(CmdError::msg(Refusal::InBay { n: rig.slot }.line()));
     }
     if launches {
-        let mut counts = ExcursionCounts::default();
-        for tv in world_rigs(w) {
-            let found = ctx
-                .action_state(&handles.families.excursions, &RigKey(tv))
-                .map_err(|_| dark())?;
-            if let Some(excursion) = found.and_then(|record| record.excursion.as_ref()) {
-                counts.world = counts.world.saturating_add(1);
-                if excursion.site == plan.site {
-                    counts.site = counts.site.saturating_add(1);
-                }
-                if excursion.operator == actor {
-                    counts.operator = counts.operator.saturating_add(1);
-                }
-            }
-        }
-        if let Some(cap) = cap_refusal(&counts) {
-            return Err(CmdError::msg(
-                Refusal::Cap {
-                    cap,
-                    site: site_name(w, &plan.site),
-                }
-                .line(),
-            ));
-        }
+        launch_half(ctx, &handles, rig, &record, &plan.site, &dark)?;
     }
     // 4. The chart (doc 20 cut SM.4a): the same-cell rule, then the body caps.
     if let Some(reach) = Reach::of(&plan.params) {
@@ -1353,7 +1854,9 @@ pub(crate) fn act_cmd(
         }
         let body = match &plan.params {
             ActParams::Scan { body, .. } | ActParams::Sound { body, .. } => body.clone(),
-            ActParams::None {} | ActParams::Dump { .. } => return Err(dark()),
+            ActParams::None {} | ActParams::Dump { .. } | ActParams::Drive { .. } => {
+                return Err(dark());
+            }
         };
         let mut rows = Vec::new();
         for site in chart::body_sites(w, &body) {
@@ -1373,39 +1876,34 @@ pub(crate) fn act_cmd(
     }
     let now_ic = w.world_ic_now().at;
     // `(now %, after %)`, `None` with no battery (a zero spend: the rule passes it unread). An
-    // implied launch spends from the charge the bay holds when the launch half ends (D22).
-    let charge = match &battery {
-        Some(battery) => {
+    // implied launch spends from the charge the bay holds when the launch half ends (D22). Doc
+    // 20 cut SM.4b: a recover's leg home is checked by `leg_affordable`, never the floor.
+    let homeward = kind == ActKind::Recover && plan.params.leg().is_some();
+    let charge = if homeward {
+        leg_home(&record, &plan, battery.as_ref(), rig, &ramp)
+            .map_err(|refusal| CmdError::msg(refusal.line()))?;
+        battery.as_ref().map(|battery| {
             let shown = charge_at(&record.charge, now_ic, battery);
-            let from = charge_for_act(
-                &record.charge,
-                now_ic,
-                kind.reads_ground() && plan.from_bay,
-                battery,
-            );
-            match reserve_check(
-                from,
-                reserved_total(&record),
-                plan.cost_cu,
-                plan.home_cu,
-                battery,
-            ) {
-                Ok(after) => Some((percent(shown, battery), percent(after.after_home, battery))),
-                Err(short) => {
-                    let after = u32::try_from(short.after_home.max(0)).unwrap_or(0);
-                    return Err(CmdError::msg(
-                        Refusal::Reserve {
-                            n: rig.slot,
-                            now: percent(shown, battery),
-                            after: percent(after, battery),
-                            floor: percent(short.floor, battery),
-                        }
-                        .line(),
-                    ));
-                }
+            (
+                percent(shown, battery),
+                percent(shown.saturating_sub(plan.cost_cu), battery),
+            )
+        })
+    } else {
+        match &battery {
+            Some(battery) => {
+                let (now, _, after) = reserve_words(
+                    &record,
+                    now_ic,
+                    plan.params.launches(),
+                    &plan,
+                    battery,
+                    rig.slot,
+                )?;
+                Some((now, after))
             }
+            None => None,
         }
-        None => None,
     };
     let load = if kind == ActKind::Dump {
         let goods = hopper_contents(ctx, rig.tv).map_err(|error| {
@@ -1451,17 +1949,30 @@ pub(crate) fn act_cmd(
                         return Err(dark());
                     }
                 };
+                let (preview, unread) = match &plan.params {
+                    ActParams::Drive { .. } => {
+                        (tv::RECOVER_DRIVE_PREVIEW, tv::RECOVER_DRIVE_PREVIEW_UNREAD)
+                    }
+                    _ => (tv::RECOVER_PREVIEW, tv::RECOVER_PREVIEW_UNREAD),
+                };
+                let (metres, drive_s) = match &plan.params {
+                    ActParams::Drive { metres, secs, .. } => (*metres, *secs),
+                    _ => (0, 0),
+                };
                 match charge {
-                    Some((now, after)) => tv::RECOVER_PREVIEW
+                    Some((now, after)) => preview
                         .replace("{now}", &now.to_string())
                         .replace("{after}", &after.to_string()),
-                    None => tv::RECOVER_PREVIEW_UNREAD.to_owned(),
+                    None => unread.to_owned(),
                 }
                 .replace("{n}", &n)
                 .replace("{mark}", &rig.mark)
                 .replace("{ramp}", &ramp)
                 .replace("{name}", &name)
                 .replace("{secs}", &plan.secs.to_string())
+                .replace("{m}", &metres.to_string())
+                .replace("{drive}", &drive_s.to_string())
+                .replace("{climb}", &RECOVER_S.to_string())
                 .replace("{real}", &real)
                 .replace("{hopper}", &hopper)
             }
@@ -1495,6 +2006,7 @@ pub(crate) fn act_cmd(
                 )
                 .ok_or_else(dark)?
             }
+            ActKind::Drive => return Err(dark()),
         };
         crate::port::coop::say(ctx, line);
         return Ok(());
@@ -1526,6 +2038,10 @@ pub(crate) fn act_cmd(
             .replace("{n}", &n)
             .replace("{ramp}", &ramp)
             .replace("{when}", &when),
+        ActKind::Recover if homeward => tv::RECOVER_DRIVE_FILED
+            .replace("{n}", &n)
+            .replace("{ramp}", &ramp)
+            .replace("{when}", &when),
         ActKind::Recover => tv::RECOVER_FILED
             .replace("{n}", &n)
             .replace("{ramp}", &ramp)
@@ -1543,7 +2059,240 @@ pub(crate) fn act_cmd(
                 .replace("{ramp}", &ramp)
                 .replace("{when}", &when)
         }
+        ActKind::Drive => return Err(dark()),
     };
+    crate::port::coop::say(ctx, line);
+    Ok(())
+}
+
+// ---- doc 20 cut SM.4b: the drive's order and `+tv/drive` --------------------------------------
+
+/// **One planned drive, waiting for its start** (doc 20 cut SM.4b; the brief's decision P2): the
+/// command plans the drive, writes this order for the rig and submits; the start's offer fixes
+/// it (after re-running the same stand gate) and the prepare binds it to the invocation's
+/// ordinal. A player-typed target cannot reach the offer (the legal-action query carries no
+/// parameters) and a player-supplied leg cannot be trusted (the prepare has no composite), so the
+/// plan the prepare trusts is server-fixed this way. RAM only: a restart loses an unlanded order,
+/// and its start then refuses "not planned; preview it again".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DriveOrder {
+    /// Who planned it.
+    pub actor: ObjId,
+    /// The ordinal its start carries.
+    pub ordinal: u32,
+    /// The site entry.
+    pub site: CanonicalId,
+    /// The act's IC seconds (`LAUNCH_S` more from the bay).
+    pub secs: u32,
+    /// The leg's charge.
+    pub cost_cu: u32,
+    /// The charge home from the end stand.
+    pub home_cu: u32,
+    /// The frozen leg ([`ActParams::Drive`]).
+    pub params: ActParams,
+    /// The launch is implied.
+    pub from_bay: bool,
+}
+
+/// **The drive orders** (doc 20 cut SM.4b; the `RigPointer` precedent): tacsim's own RAM module
+/// slot, registered by `crate::surface::tick::register`, keyed by the rig, bounded at
+/// `crate::port::tv::MAX_POINTERS` (the smallest key dropped past it). A convenience for the
+/// offer, never a fact: it decides nothing the prepare does not re-check.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DriveOrders(BTreeMap<ObjId, DriveOrder>);
+
+/// Write `order` for `tv`.
+fn put_order(ctx: &mut Ctx<'_>, tv: ObjId, order: DriveOrder) {
+    if let Some(orders) = ctx.w.module_state_mut::<DriveOrders>() {
+        orders.0.insert(tv, order);
+        while orders.0.len() > tv::MAX_POINTERS {
+            if orders.0.pop_first().is_none() {
+                break;
+            }
+        }
+    }
+}
+
+/// **A drive's end cell as one word** (the review's correctness/F5): `y × 256 + x` for the
+/// `to` of an [`ActParams::Drive`], `0..=65,535` — the start's `to` parameter, which the prepare
+/// holds to the order the offer fixed. `None` for any other params or a cell off the site.
+fn order_to_word(params: &ActParams) -> Option<u32> {
+    let ActParams::Drive { to, .. } = params else {
+        return None;
+    };
+    let side = i64::from(crate::surface::ground::SITE_CELLS);
+    let ([x, y], range) = (*to, 0..side);
+    if !range.contains(&x) || !range.contains(&y) {
+        return None;
+    }
+    u32::try_from(y.checked_mul(side)?.checked_add(x)?).ok()
+}
+
+/// The order planned for `tv`, if any.
+fn order_of(w: &World, tv: ObjId) -> Option<DriveOrder> {
+    w.module_state::<DriveOrders>()
+        .and_then(|orders| orders.0.get(&tv).cloned())
+}
+
+/// **`+tv/<n> drive <target> [go]`** (doc 20 §1 beat 7, §8, §10; cut SM.4b, the brief's 3.5;
+/// lead rulings 1–4 and 9, R4): **the cheap gates first** — the target parsed (`DRIVE_USAGE`);
+/// the stand (`stand_of`: from the bay the implied launch's whole gate; else on the site's
+/// ground); the battery and the rig's rates (`TV_DARK`); the record (busy → `RIG_BUSY`; the launch
+/// half's open excursion and the caps) — **then** the plan (`drive_plan`: the peeks, a cold site or
+/// home wanted and refused `GROUND_COLD`; the target; ONE A*; no way home); then the reserve with
+/// the real trip home (`RESERVE_LOW`); then the preview (`DRIVE_PREVIEW`) or, with `go`, the order
+/// written ([`DriveOrders`]) and ONE `tacsim_surface_act` submission with `act: drive` keyed
+/// `tacsim.surface/{tv}/{ordinal}/act`. No licence and no tenure is read (lead ruling 9): a rig
+/// may drive onto any block.
+///
+/// # Errors
+///
+/// Every refusal is a [`CmdError`] line.
+#[allow(clippy::too_many_lines)] // one ordered refusal list, then the preview or the go
+pub(crate) fn drive_cmd(
+    ctx: &mut Ctx<'_>,
+    rig: &RigAt,
+    words: &str,
+    go: bool,
+) -> Result<(), CmdError> {
+    let n = rig.slot.to_string();
+    let split: Vec<&str> = words.split_whitespace().collect();
+    let Some(target) = drive::parse_target(&split) else {
+        return Err(CmdError::msg(tv::DRIVE_USAGE.replace("{n}", &n)));
+    };
+    let actor = ctx.actor;
+    let handles = ctx
+        .w
+        .module_state::<PortHandles>()
+        .cloned()
+        .ok_or_else(|| CmdError::msg(tv::TV_UNWIRED))?;
+    let Some(action) = handles.surface_act.clone() else {
+        return Err(CmdError::msg(tv::TV_UNWIRED));
+    };
+    let name = name_of(ctx.w, rig.hull);
+    let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
+    // 1. The stand: from the bay the implied launch's whole gate, else on the site's ground.
+    let stand = stand_of(ctx.w, actor, rig).map_err(|refusal| CmdError::msg(refusal.line()))?;
+    // 2. The battery and the rates: a drive spends.
+    let Some(battery) = rig_battery(ctx.w, &handles, rig) else {
+        return Err(dark());
+    };
+    let Some(rates) = rig_rates(ctx.w, rig.tv, Some(&battery)) else {
+        return Err(dark());
+    };
+    // 3. The record: busy, the launch half's open excursion and its caps.
+    let record = record_of(ctx, &handles, rig.tv, Some(&battery)).map_err(|()| dark())?;
+    if let Some(busy) = busy_refusal(ctx.w, rig, &record) {
+        return Err(CmdError::msg(busy.line()));
+    }
+    if stand.from_bay {
+        launch_half(ctx, &handles, rig, &record, &stand.site, &dark)?;
+    }
+    // 4. The plan: the peeks, the target, ONE A*, the way home (R4: never before the gates).
+    let mut peeks = Peeks::default();
+    let (plan, leg) = match drive_plan(ctx.w, rig, &stand, &target, &rates, &mut peeks) {
+        Ok(planned) => planned,
+        Err(refusal) => {
+            want_cold(ctx, rig, &refusal);
+            return Err(CmdError::msg(refusal.line()));
+        }
+    };
+    let w: &World = ctx.w;
+    // 5. The reserve, with the real trip home.
+    let now_ic = w.world_ic_now().at;
+    let (now, after, home) =
+        reserve_words(&record, now_ic, stand.from_bay, &plan, &battery, rig.slot)?;
+    let target_text = drive::target_words(&target);
+    let ramp = stand.ramp_label.clone();
+    if !go {
+        let launch = if stand.from_bay {
+            tv::IMPLIED_LAUNCH
+                .replace("{ramp}", &ramp)
+                .replace("{site}", &stand.site_name)
+        } else {
+            String::new()
+        };
+        let time = if stand.from_bay {
+            tv::TWO_LEGS
+                .replace("{down}", &LAUNCH_S.to_string())
+                .replace("{secs}", &leg.secs.to_string())
+        } else {
+            format!("{} IC s", leg.secs)
+        };
+        let real =
+            match crate::port::voyage::real_until(w, now_ic.saturating_add(i64::from(plan.secs))) {
+                Some(real) => format!(", about {}", tv::span_words(real)),
+                None => String::new(),
+            };
+        let line = tv::DRIVE_PREVIEW
+            .replace("{n}", &n)
+            .replace("{mark}", &rig.mark)
+            .replace("{launch}", &launch)
+            .replace("{m}", &leg.metres.to_string())
+            .replace("{target}", &target_text)
+            .replace("{time}", &time)
+            .replace("{real}", &real)
+            .replace("{now}", &now.to_string())
+            .replace("{after}", &after.to_string())
+            .replace("{home}", &home.to_string())
+            .replace("{arg}", &split.join(" "));
+        crate::port::coop::say(ctx, line);
+        return Ok(());
+    }
+    // `go`: the order, then ONE submission as the actor.
+    let Some(ordinal) = record.ordinal.checked_add(1) else {
+        tracing::error!(tv = rig.tv.0, "tacsim: a rig's act ordinal is exhausted");
+        return Err(dark());
+    };
+    let Some(key) = act_key(rig.tv, ordinal) else {
+        tracing::error!(tv = rig.tv.0, "tacsim: a rig act's key did not form");
+        return Err(dark());
+    };
+    let due = now_ic.saturating_add(i64::from(plan.secs));
+    let when = tv::due_words(w, due);
+    put_order(
+        ctx,
+        rig.tv,
+        DriveOrder {
+            actor,
+            ordinal,
+            site: plan.site.clone(),
+            secs: plan.secs,
+            cost_cu: plan.cost_cu,
+            home_cu: plan.home_cu,
+            params: plan.params.clone(),
+            from_bay: plan.from_bay,
+        },
+    );
+    // The review's correctness/F5: the start names the end cell this command planned, and the
+    // prepare holds it to the order the offer fixed — so a second `go` before the first lands
+    // cannot start the first's start on the second's target (the first then refuses "that rig's
+    // orders moved on", and the told line never names a drive the world does not run).
+    let Some(to_word) = order_to_word(&plan.params) else {
+        tracing::error!(tv = rig.tv.0, "tacsim: a drive's end cell did not form");
+        return Err(dark());
+    };
+    ctx.submit_authoritative(
+        action,
+        PerceivedRef::SelfActor,
+        Vec::new(),
+        json!({
+            "tv": rig.tv.0.to_string(),
+            "act": wire_word(ActKind::Drive, false),
+            "ordinal": ordinal,
+            "to": to_word,
+        }),
+        key,
+    );
+    let line = if stand.from_bay {
+        tv::DRIVE_FILED_LAUNCH
+    } else {
+        tv::DRIVE_FILED
+    }
+    .replace("{n}", &n)
+    .replace("{ramp}", &ramp)
+    .replace("{target}", &target_text)
+    .replace("{when}", &when);
     crate::port::coop::say(ctx, line);
     Ok(())
 }
@@ -1568,7 +2317,7 @@ fn reading_preview(
     w: &World,
     plan: &ActPlan,
     scanner: &ScannerDef,
-    peeks: &mut BTreeMap<CanonicalId, SitePeek>,
+    peeks: &mut Peeks,
     words: PreviewWords<'_>,
 ) -> Option<String> {
     let launch = if plan.from_bay {
@@ -1666,7 +2415,7 @@ fn reading_preview(
                     .replace("{quiet}", if *quiet { " quiet" } else { "" }),
             )
         }
-        ActParams::None {} | ActParams::Dump { .. } => None,
+        ActParams::None {} | ActParams::Dump { .. } | ActParams::Drive { .. } => None,
     }
 }
 
@@ -1698,6 +2447,10 @@ struct FixedPlan {
     /// `MAX_CHART_SITES_PER_BODY`), whose chart rows the prepare reads for the body caps.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     body_sites: Vec<CanonicalId>,
+    /// **Doc 20 cut SM.4b** (the brief's decision P2): a drive's order's ordinal, which the
+    /// prepare binds to the invocation's (`Conflict` otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ordinal: Option<u32>,
 }
 
 impl FixedPlan {
@@ -1722,9 +2475,47 @@ impl FixedPlan {
                 from_bay: plan.from_bay,
                 goods: Vec::new(),
                 body_sites: Vec::new(),
+                ordinal: None,
             },
             Err(refusal) => FixedPlan::refused(refusal.word()),
         }
+    }
+}
+
+/// **The start's fixed plan of a drive** (doc 20 cut SM.4b; the brief's decision P2): the rig's
+/// [`DriveOrder`] — none for this rig and actor → `unplanned` — re-checked against the world:
+/// the same stand gate a scan runs (`stand_of`: from the bay the launch's whole order), and the
+/// rig's stand must be where the order's leg begins on the order's site (the ramp's cell from the
+/// bay), else `moved`. Then the order's plan with its ordinal. The offer reads no composite for a
+/// drive.
+fn drive_fixed(w: &World, actor: ObjId, rig: &RigAt) -> FixedPlan {
+    let Some(order) = order_of(w, rig.tv).filter(|order| order.actor == actor) else {
+        return FixedPlan::refused(Refusal::Unplanned.word());
+    };
+    let stand = match stand_of(w, actor, rig) {
+        Ok(stand) => stand,
+        Err(refusal) => return FixedPlan::refused(refusal.word()),
+    };
+    let start = order
+        .params
+        .leg()
+        .and_then(|(waypoints, _)| waypoints.first())
+        .map(|first| site_cell(first.x_cm, first.y_cm));
+    if stand.site != order.site || stand.from_bay != order.from_bay || start != Some(stand.cell) {
+        return FixedPlan::refused(Refusal::Moved.word());
+    }
+    FixedPlan {
+        ok: true,
+        code: None,
+        site: Some(order.site),
+        secs: order.secs,
+        cost_cu: order.cost_cu,
+        home_cu: order.home_cu,
+        params: Some(order.params),
+        from_bay: order.from_bay,
+        goods: Vec::new(),
+        body_sites: Vec::new(),
+        ordinal: Some(order.ordinal),
     }
 }
 
@@ -1935,8 +2726,18 @@ fn act_param(parameters: &Map<String, Value>) -> Result<(ActKind, bool), ActionE
         .and_then(Value::as_str)
         .and_then(act_of_word)
         .ok_or_else(|| {
-            invalid("a surface act names launch, recover, dump, scan, sound or sound_quiet")
+            invalid("a surface act names launch, recover, dump, scan, sound, sound_quiet or drive")
         })
+}
+
+/// **A drive start's `to` parameter** (the review's correctness/F5): the planned end cell's
+/// word ([`order_to_word`]), `None` when absent (every other act's start, and a forged drive
+/// start, which the prepare then refuses).
+fn to_word_of(parameters: &Map<String, Value>) -> Option<u32> {
+    parameters
+        .get("to")
+        .and_then(Value::as_u64)
+        .and_then(|word| u32::try_from(word).ok())
 }
 
 /// The fixed `now`.
@@ -2022,7 +2823,7 @@ fn reading_fixed(
     };
     let body = plan.as_ref().ok().and_then(|plan| match &plan.params {
         ActParams::Scan { body, .. } | ActParams::Sound { body, .. } => Some(body.clone()),
-        ActParams::None {} | ActParams::Dump { .. } => None,
+        ActParams::None {} | ActParams::Dump { .. } | ActParams::Drive { .. } => None,
     });
     let mut fixed = FixedPlan::of(plan);
     if let Some(body) = body {
@@ -2056,12 +2857,18 @@ impl ActionProvider for SurfaceActProvider {
             return Ok(None);
         }
         // Doc 20 cut SM.4a (the brief's reviewer finding F5): each site's composite is peeked
-        // once for the whole projection and shared by every rig's scan plan.
-        let mut peeks: BTreeMap<CanonicalId, SitePeek> = BTreeMap::new();
+        // once for the whole projection and shared by every rig's scan plan — and since cut
+        // SM.4b each site's home field too. The offer never wants a cold one (it cannot
+        // mutate): a cold peek is refused `ground_cold`, as the command's is.
+        let mut peeks = Peeks::default();
         let mut fixed_rigs: BTreeMap<String, FixedRig> = BTreeMap::new();
         for rig in &rigs {
             let battery_id = rig_battery_id(w, rig.tv);
             let scanner = rig_scanner_id(w, rig.tv).and_then(|id| scanner_of(&self.tools, &id));
+            let battery = battery_id
+                .as_ref()
+                .and_then(|id| battery_of(&self.tools, id));
+            let rates = rig_rates(w, rig.tv, battery);
             let mut plans: BTreeMap<String, FixedPlan> = BTreeMap::new();
             // A launch, a scan and a sounding need the battery (`needs_battery`: a launch
             // always, a reading act spends); a recover and a dump never do, so they plan whether
@@ -2075,9 +2882,20 @@ impl ActionProvider for SurfaceActProvider {
                     FixedPlan::refused("tv_dark")
                 },
             );
+            // Doc 20 cut SM.4b: a far recover plans its leg home the same way (a descent of the
+            // warm home field, O(path), no search).
             plans.insert(
                 wire_word(ActKind::Recover, false).to_owned(),
-                FixedPlan::of(recover_plan(w, actor, rig)),
+                FixedPlan::of(recover_plan(w, actor, rig, &mut peeks, rates)),
+            );
+            // Doc 20 cut SM.4b (the brief's decision P2): the drive's order, fixed.
+            plans.insert(
+                wire_word(ActKind::Drive, false).to_owned(),
+                if has_battery {
+                    drive_fixed(w, actor, rig)
+                } else {
+                    FixedPlan::refused("tv_dark")
+                },
             );
             let mut dump = FixedPlan::of(dump_plan(w, actor, rig));
             if dump.ok {
@@ -2089,13 +2907,16 @@ impl ActionProvider for SurfaceActProvider {
                 }
             }
             plans.insert(wire_word(ActKind::Dump, false).to_owned(), dump);
-            let scan = scanner.map(|scanner| scan_plan(w, actor, rig, scanner, &mut peeks));
+            let scan = scanner
+                .map(|scanner| scan_plan(w, actor, rig, scanner, &mut peeks, rates.as_ref()));
             plans.insert(
                 wire_word(ActKind::Scan, false).to_owned(),
                 reading_fixed(w, scan, has_battery),
             );
             for quiet in [false, true] {
-                let sound = scanner.map(|scanner| sound_plan(w, actor, rig, scanner, quiet));
+                let sound = scanner.map(|scanner| {
+                    sound_plan(w, actor, rig, scanner, quiet, &mut peeks, rates.as_ref())
+                });
                 plans.insert(
                     wire_word(ActKind::Sound, quiet).to_owned(),
                     reading_fixed(w, sound, has_battery),
@@ -2140,6 +2961,16 @@ impl ActionProvider for SurfaceActProvider {
                 ProjectedParameterKind::Integer {
                     minimum: 1,
                     maximum: i64::from(u32::MAX),
+                },
+            )?,
+            // Doc 20 cut SM.4b (the review's correctness/F5): a drive's planned end cell, which
+            // the prepare holds to the order the offer fixed.
+            parameter(
+                "to",
+                false,
+                ProjectedParameterKind::Integer {
+                    minimum: 0,
+                    maximum: 65_535,
                 },
             )?,
         ];
@@ -2230,14 +3061,28 @@ impl ActionProvider for SurfaceActProvider {
                 "that rig's orders moved on",
             ));
         }
+        // Doc 20 cut SM.4b (the brief's decision P2): a drive's fixed plan is its order, bound
+        // to the ordinal it was planned for — and (the review's correctness/F5) to the end cell
+        // the start names, so a start whose order a later `go` replaced never runs the later
+        // order's leg.
+        if kind == ActKind::Drive
+            && (plan.ordinal != Some(ordinal)
+                || plan.params.as_ref().and_then(order_to_word) != to_word_of(parameters))
+        {
+            return Err(port_error(
+                ActionErrorCode::Conflict,
+                "that rig's orders moved on",
+            ));
+        }
         // 3. One act at a time.
         if record.act.is_some() {
             return Err(port_error(ActionErrorCode::Conflict, "that rig is busy"));
         }
-        // 4. The launch's open excursion and the caps — a launch's, and a scan's or a
-        // sounding's that implies one (doc 20 cut SM.4a, lead ruling 2); a recover from the bay
-        // closes one.
-        let launches = kind == ActKind::Launch || (kind.reads_ground() && plan.from_bay);
+        // 4. The launch's open excursion and the caps — a launch's, and a scan's, a sounding's
+        // or (doc 20 cut SM.4b) a drive's that implies one (doc 20 cut SM.4a, lead ruling 2); a
+        // recover from the bay closes one.
+        let launches =
+            kind == ActKind::Launch || plan.params.as_ref().is_some_and(ActParams::launches);
         if launches {
             if record.excursion.is_some() {
                 return Err(port_error(
@@ -2323,13 +3168,24 @@ impl ActionProvider for SurfaceActProvider {
         // 6. The reserve rule (§4.1; lead ruling 3): here and nowhere else, from the charge the
         // act will spend from (an implied launch: the bay credited no further than the launch
         // half, D22). With no battery the act spends nothing (`needs_battery` refused every
-        // spend above), which the rule always passes.
-        if let Some(battery) = battery
+        // spend above), which the rule always passes. **Doc 20 cut SM.4b** (lead ruling 5,
+        // decision P6): a recover is never held to the floor — it IS the way home — and a
+        // recover with a leg must only afford its own leg, on the record's own value (no
+        // battery read). SM.11's idle return-and-park must treat that refusal as "parked where
+        // it stands".
+        if kind == ActKind::Recover {
+            if !leg_affordable(&record.charge, reserved_total(&record), plan.cost_cu) {
+                return Err(port_error(
+                    ActionErrorCode::ProviderRejected,
+                    code_of_word("leg_short"),
+                ));
+            }
+        } else if let Some(battery) = battery
             && reserve_check(
                 charge_for_act(
                     &record.charge,
                     now,
-                    kind.reads_ground() && plan.from_bay,
+                    plan.params.as_ref().is_some_and(ActParams::launches),
                     battery,
                 ),
                 reserved_total(&record),
@@ -2522,7 +3378,7 @@ fn write_reading(
     let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
     let body = match &act.params {
         ActParams::Scan { body, .. } | ActParams::Sound { body, .. } => body.clone(),
-        ActParams::None {} | ActParams::Dump { .. } => {
+        ActParams::None {} | ActParams::Dump { .. } | ActParams::Drive { .. } => {
             return Err(integrity("a reading act carries its reach"));
         }
     };
@@ -2568,7 +3424,7 @@ fn write_reading(
                 heard,
             }
         }
-        ActParams::None {} | ActParams::Dump { .. } => {
+        ActParams::None {} | ActParams::Dump { .. } | ActParams::Drive { .. } => {
             return Err(integrity("a reading act carries its reach"));
         }
     };
@@ -2777,6 +3633,7 @@ impl ActionProvider for SurfaceDoneProvider {
         // 2. Decide from the facts at landing and the kind (decision 5).
         let mut moved: BTreeMap<CanonicalId, u64> = BTreeMap::new();
         let mut span: Option<ReadSpan> = None;
+        let mut arrived: Option<[i64; 2]> = None;
         let result = match act.kind {
             ActKind::Launch => {
                 let beside = matches!(
@@ -2799,11 +3656,76 @@ impl ActionProvider for SurfaceDoneProvider {
             ActKind::Recover => {
                 if matches!(&rig.facts, Facts::Bay { hull } if *hull == act.hull) {
                     record.excursion = None;
-                    record.charge = settle(&record.charge, true)?;
+                    // Doc 20 cut SM.4b (§3.6 of the brief): a recover that drove home spends its
+                    // leg's charge off the record's own value — no battery read (§4.1) — and the
+                    // bay's recharge starts at its due instant.
+                    record.charge = if act.params.leg().is_some() {
+                        Charge {
+                            value_cu: record.charge.value_cu.saturating_sub(act.reserved_cu),
+                            at_ic: act.due_ic,
+                            in_bay: true,
+                        }
+                    } else {
+                        settle(&record.charge, true)?
+                    };
                     ActResult::Done
                 } else {
                     ActResult::Refused {
                         code: RefusedCode::NotBeside,
+                    }
+                }
+            }
+            // Doc 20 cut SM.4b (§3.7 of the brief): a drive is `Done` when the rig stands, at
+            // landing, on the act's site at the leg's end cell — the tick placed it there at the
+            // due instant — and then the charge settles: from the ground the reservation off the
+            // value (`settle_spent_out_of_bay`, no battery read: SM.4a's ground rule), from the bay
+            // the bay's credit to the end of the launch half and then the leg's cost
+            // (`spent_after_launch`). An implied launch whose rig never left the bay is
+            // `NeverLeft` (the excursion closes); a from-bay drive moved after leaving keeps its
+            // excursion and leaves the bay at the launch half (`left_after_launch`), `Moved`; a
+            // ground drive found anywhere but its end is `Moved`, nothing spent.
+            ActKind::Drive => {
+                let from_bay = act.params.launches();
+                let to = act.params.leg().map(|(_, to)| to);
+                let arrived_there = matches!(
+                    &rig.facts,
+                    Facts::Ground { site: Some(site), cell: Some(cell), .. }
+                        if *site == act.site && Some(*cell) == to
+                );
+                if arrived_there {
+                    record.charge = if from_bay {
+                        match battery {
+                            Some(battery) => spent_after_launch(&record.charge, &act, battery)?,
+                            None => {
+                                return Err(port_error(
+                                    ActionErrorCode::Integrity,
+                                    "that rig cannot be read",
+                                ));
+                            }
+                        }
+                    } else {
+                        settle_spent_out_of_bay(&record.charge, act.reserved_cu, act.due_ic)
+                            .ok_or_else(|| {
+                                port_error(
+                                    ActionErrorCode::Integrity,
+                                    "the act spent more than the charge",
+                                )
+                            })?
+                    };
+                    arrived = to;
+                    ActResult::Done
+                } else if from_bay && matches!(&rig.facts, Facts::Bay { hull } if *hull == act.hull)
+                {
+                    record.excursion = None;
+                    ActResult::Refused {
+                        code: RefusedCode::NeverLeft,
+                    }
+                } else {
+                    if from_bay && !matches!(&rig.facts, Facts::Bay { .. }) {
+                        record.charge = left_after_launch(&record.charge, &act, battery);
+                    }
+                    ActResult::Refused {
+                        code: RefusedCode::Moved,
                     }
                 }
             }
@@ -2971,6 +3893,7 @@ impl ActionProvider for SurfaceDoneProvider {
             result,
             moved,
             span,
+            arrived,
         });
         write_record(txn, &self.excursions, record, true)?;
         let outcome = RulesValue::new(
@@ -3079,6 +4002,37 @@ mod tests {
                 n: 1,
                 terrain: String::new(),
             },
+            // Doc 20 cut SM.4b: the drive's and the far recover's nine.
+            Refusal::OffSite {
+                site: String::new(),
+            },
+            Refusal::Here { n: 1 },
+            Refusal::NoPath {
+                n: 1,
+                target: String::new(),
+            },
+            Refusal::Winding {
+                n: 1,
+                target: String::new(),
+                needed: 33,
+            },
+            Refusal::NoWayHome {
+                n: 1,
+                target: String::new(),
+                ramp: String::new(),
+            },
+            Refusal::Unplanned,
+            Refusal::Moved,
+            Refusal::LegShort {
+                n: 1,
+                now: "2".to_owned(),
+                need: "3".to_owned(),
+                ramp: String::new(),
+            },
+            Refusal::RecoverDark {
+                n: 1,
+                ramp: String::new(),
+            },
         ];
         let mut words: Vec<&str> = refusals.iter().map(Refusal::word).collect();
         for refusal in &refusals {
@@ -3109,6 +4063,46 @@ mod tests {
         assert_eq!(code_of_word("nonsense"), "that rig cannot be read");
         assert_eq!(Refusal::NothingNew.line(), "You learn nothing new here.");
         assert_eq!(Refusal::NothingNew.code(), "you learn nothing new here");
+        // Doc 20 cut SM.4b: 24 → 33 words; the drive's lines verbatim.
+        assert_eq!(REFUSAL_CODES.len(), 33);
+        assert_eq!(
+            Refusal::NoWayHome {
+                n: 1,
+                target: "C117".to_owned(),
+                ramp: "stern ramp".to_owned()
+            }
+            .line(),
+            "Rig 1 could not get back to the stern ramp from C117, so it stays where it is."
+        );
+        assert_eq!(
+            Refusal::Winding {
+                n: 1,
+                target: "field C-NW".to_owned(),
+                needed: 33
+            }
+            .line(),
+            "The way to field C-NW winds too much to drive in one leg (32 waypoints at most). \
+             Drive to a nearer point first."
+        );
+        assert_eq!(
+            Refusal::Unplanned.code(),
+            "that drive was not planned; preview it again"
+        );
+        assert_eq!(
+            Refusal::Moved.code(),
+            "that rig has moved since the drive was planned"
+        );
+        assert_eq!(
+            Refusal::LegShort {
+                n: 2,
+                now: "2".to_owned(),
+                need: "3".to_owned(),
+                ramp: "stern ramp".to_owned()
+            }
+            .line(),
+            "Rig 2 has 2 % charge and the drive to the stern ramp needs 3 %; it cannot come in \
+             on its own."
+        );
     }
 
     /// **The start's `act` words parse** (doc 20 cut SM.4a, D23; the brief's reviewer finding
@@ -3140,9 +4134,9 @@ mod tests {
         };
         let refused = act_param(&parameters("probe")).expect_err("probe is retired");
         assert!(
-            refused
-                .to_string()
-                .contains("a surface act names launch, recover, dump, scan, sound or sound_quiet"),
+            refused.to_string().contains(
+                "a surface act names launch, recover, dump, scan, sound, sound_quiet or drive"
+            ),
             "{refused}"
         );
         assert_eq!(

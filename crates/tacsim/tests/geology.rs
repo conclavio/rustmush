@@ -1218,7 +1218,8 @@ fn sm1_geology_answers_staff_with_the_truth_and_refuses_everyone_else() {
     let events = tw.run(pat, "@geology ceres 1200,-340");
     assert_eq!(said(&tw, &events, pat), "Permission denied.");
 
-    let usage = "Usage: @geology <body> <x>,<y> [province|field|pocket]";
+    // Doc 20 cut SM.4b: the usage names the site form too.
+    let usage = "Usage: @geology <body> <x>,<y> [province|field|pocket]  or  @geology <site> <pocket>|<field> [province|field|pocket]";
     for bad in ["@geology ceres 1200", "@geology ceres 1200,-340 seam"] {
         let events = tw.run(GOD, bad);
         assert_eq!(said(&tw, &events, GOD), usage, "{bad}");
@@ -1246,6 +1247,152 @@ fn sm1_geology_answers_staff_with_the_truth_and_refuses_everyone_else() {
     assert_eq!(
         said(&keyless, &events, GOD),
         "Geology is disabled: no [tacsim.geology].key_dir is configured."
+    );
+}
+
+/// Ahuna Flank's spec from the lane and the world's installed Ceres table (`knowing.rs`'s
+/// `spec_of`).
+fn ahuna_spec(tw: &TestWorld) -> (SiteGeologySpec, std::sync::Arc<BodyGeology>) {
+    use tacsim::pack::PackEntry;
+    let pack = tacsim::pack::load_pack(tacsim::definitions::content::LANE_JSON).expect("the lane");
+    let def = match pack.entry(&cid("ahuna_port")) {
+        Some(PackEntry::Port(def)) => def.clone(),
+        other => panic!("ahuna_port is a port entry: {other:?}"),
+    };
+    let location = match pack.entry(&def.location) {
+        Some(PackEntry::Location(location)) => location.clone(),
+        other => panic!("{} is a location: {other:?}", def.location),
+    };
+    let body = tacsim::surface::body_geology(tw.world(), location.body.as_ref().expect("a body"))
+        .expect("the body's table is installed");
+    let spec =
+        tacsim::port::site::geology_spec(def.site.as_ref().expect("a site"), &location, &body)
+            .expect("a spec");
+    (spec, body)
+}
+
+/// **`@geology <site> <addr>` reads a site address** (doc 20 cut SM.4b; the brief's 3.12): on a
+/// keyed world with the lane's sites, `@geology ahuna flank C117` prints the header naming the
+/// site, the address, the lattice pocket, the key, the reading rule and the block's authored
+/// shift, then the province, field and pocket lines of that lattice pocket **under the shift** —
+/// built here from `field_ground` at the site's own field with the block's shift, never from the
+/// handler's formatter. `C-NW` prints the header, the province and the field; a level word
+/// narrows; `pocket` with a field address and an unknown site refuse; a non-staff actor is
+/// refused; nothing is written.
+#[test]
+fn sm4b_geology_reads_a_site_address() {
+    let mut tw = boot_keyed(Some(GeologyBoot::Key(secret(KEY_1))), HashMap::new(), true);
+    let _ = tw.take_module_ops();
+    let k = mac(KEY_1);
+    let (spec, body) = ahuna_spec(&tw);
+    // C117 is site pocket (36, 56): field (4, 7), block C (bx 2, by 3), shift index 14.
+    let (px, py) = (36_i64, 56_i64);
+    let (fx, fy) = (px / 8, py / 8);
+    let shift = spec.shifts[usize::try_from((fy / 2) * 4 + fx / 2).expect("a block")];
+    let ground = field_ground(
+        &k,
+        &body,
+        (spec.origin.0 / 8 + fx, spec.origin.1 / 8 + fy),
+        shift,
+    )
+    .expect("the field's ground");
+    let row = ground.pocket(px % 8, py % 8).expect("the pocket");
+    let lattice = (spec.origin.0 + px, spec.origin.1 + py);
+    let words = |words: [Word; 4], counts: Option<[u8; 4]>| -> String {
+        OreFamily::ALL
+            .iter()
+            .map(|family| {
+                let at = usize::from(family.code());
+                let label = family.label();
+                match counts {
+                    Some(counts) => {
+                        let n = counts[at];
+                        let noun = if n == 1 { "pocket" } else { "pockets" };
+                        format!("{label} {} ({n} {noun})", words[at].name())
+                    }
+                    None => format!("{label} {}", words[at].name()),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let pocket_words = {
+        let ore: Vec<String> = OreFamily::ALL
+            .iter()
+            .filter_map(|family| {
+                let at = usize::from(family.code());
+                (row.classes[at] != Word::Barren).then(|| {
+                    format!(
+                        "{} {} {} t",
+                        family.label(),
+                        row.classes[at].name(),
+                        row.tonnes[at]
+                    )
+                })
+            })
+            .collect();
+        if ore.is_empty() {
+            "barren".to_owned()
+        } else {
+            ore.join("; ")
+        }
+    };
+    let header = format!(
+        "Geology of Ahuna Flank C117 — pocket {},{} of ceres (key v1; reading rule v1; block C \
+         shift {shift}):",
+        lattice.0, lattice.1
+    );
+    let province = format!(
+        "  province {},{}: {}.",
+        ground.province.province.0,
+        ground.province.province.1,
+        words(ground.province.words, None)
+    );
+    let field = format!(
+        "  field {},{}: {}.",
+        ground.field.0,
+        ground.field.1,
+        words(ground.words, Some(ground.counts))
+    );
+    let pocket = format!("  pocket {},{}: {pocket_words}.", lattice.0, lattice.1);
+    let events = tw.run(GOD, "@geology ahuna flank C117");
+    assert_eq!(
+        said(&tw, &events, GOD),
+        [
+            header.clone(),
+            province.clone(),
+            field.clone(),
+            pocket.clone()
+        ]
+        .join("\n")
+    );
+    let events = tw.run(GOD, "@geology ahuna_port c117 pocket");
+    assert_eq!(said(&tw, &events, GOD), [header, pocket].join("\n"));
+    // The field form: header, province and field.
+    let events = tw.run(GOD, "@geology Ahuna Flank C-NW");
+    let field_header = format!(
+        "Geology of Ahuna Flank C-NW — field {},{} of ceres (key v1; reading rule v1; block C \
+         shift {shift}):",
+        ground.field.0, ground.field.1
+    );
+    assert_eq!(
+        said(&tw, &events, GOD),
+        [field_header, province, field].join("\n")
+    );
+    let usage = "Usage: @geology <body> <x>,<y> [province|field|pocket]  or  @geology <site> <pocket>|<field> [province|field|pocket]";
+    let events = tw.run(GOD, "@geology ahuna flank C-NW pocket");
+    assert_eq!(said(&tw, &events, GOD), usage);
+    let events = tw.run(GOD, "@geology nowhere at all C117");
+    assert_eq!(
+        said(&tw, &events, GOD),
+        "There is no mining site called nowhere at all."
+    );
+    let pat = tw.spawn_player("Pat");
+    let events = tw.run(pat, "@geology ahuna flank C117");
+    assert_eq!(said(&tw, &events, pat), "Permission denied.");
+    assert!(
+        tw.take_module_ops().iter().all(|op| op.ns != tacsim::NS),
+        "no command writes a document"
     );
 }
 

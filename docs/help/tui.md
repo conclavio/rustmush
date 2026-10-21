@@ -38,7 +38,8 @@ columns is the width it is happiest at. Narrower than that no screen is
 drawn: a short message names the floor and your terminal's own width, the
 input box stays, and the moment the window is wide enough again the screen
 you were on comes back as you left it. Line mode has no hard floor, though
-its maps and tables are drawn for 80 columns.
+its maps and tables are drawn for 120 columns: a map prints at most 118
+columns by 32 rows.
 
 ## Two modes: nav and input
 

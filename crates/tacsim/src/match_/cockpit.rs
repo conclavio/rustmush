@@ -257,7 +257,7 @@ pub use crate::arena::weapons::DEFAULT_WEAPON;
 
 /// How many cells of the arena window one `VIEW` carries, across.
 ///
-/// **16b cut B.4** (`B-24`): half the seventy-eight columns a line client prints
+/// **16b cut B.4** (`B-24`): half the 78 columns the cap was when the window was sized
 /// (`mush_ansi::panel::GRID_MAX_COLUMNS`), because each cell is drawn two columns
 /// wide so the ground is square — a terminal cell is about twice as tall as it is
 /// wide, and at one column a cell the window drew the ground four times wider than
@@ -266,8 +266,8 @@ pub use crate::arena::weapons::DEFAULT_WEAPON;
 /// ([`beyond_window_line`]) cover the rest of the sight.
 pub const VIEW_COLUMNS: u16 = 39;
 
-/// As [`VIEW_COLUMNS`], up the window: the twenty rows a line client prints
-/// (`mush_ansi::panel::GRID_MAX_ROWS`), one row a cell.
+/// As [`VIEW_COLUMNS`], up the window: the twenty rows a line client printed
+/// (`mush_ansi::panel::GRID_MAX_ROWS`, 20 when the window was sized), one row a cell.
 pub const VIEW_ROWS: u16 = 20;
 
 /// **How many printed columns a line client draws each window cell as** (16b cut

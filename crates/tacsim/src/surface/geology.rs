@@ -127,6 +127,21 @@ impl OreFamily {
     }
 }
 
+/// **A family by a word a player typed** (doc 20 cut SM.4b: `+tv/map [family]`; SM.7's
+/// `+tv/mine [family]` reuses it), case-insensitive: `metal`, `metals`, `metal_ore`; `ice`,
+/// `volatiles`, `ice_ore`; `carbon`, `carbon_ore`, `carbon_feedstock`; `strategic`,
+/// `strategic_ore`, `strategic_elements`. `None` for anything else.
+#[must_use]
+pub fn family_of_word(word: &str) -> Option<OreFamily> {
+    match word.to_ascii_lowercase().as_str() {
+        "metal" | "metals" | "metal_ore" => Some(OreFamily::Metals),
+        "ice" | "volatiles" | "ice_ore" => Some(OreFamily::Volatiles),
+        "carbon" | "carbon_ore" | "carbon_feedstock" => Some(OreFamily::CarbonFeedstock),
+        "strategic" | "strategic_ore" | "strategic_elements" => Some(OreFamily::StrategicElements),
+        _ => None,
+    }
+}
+
 /// The one word set (doc 20 §3.2): the code's P0–P3/A–D never reach a player.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

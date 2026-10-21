@@ -78,13 +78,15 @@ pub const TV_HELP: &str = "+tv  --  Your Dray-P's rigs: each bay slot's terrain 
 +tv/<n> lease return [go]  at the same counter: hand rig n back, its hopper empty, and the deposit is released.
 A lease past its term is re-debited at your next +tv/lease, or the deposit is forfeit.
 +tv/<n> launch [go]  with your Dray-P settled on a site's pad and you aboard: send rig n down the stern ramp onto the site (300 IC s).
-+tv/<n> recover [go]  bring rig n up the ramp into the bay from beside it (300 IC s).
++tv/<n> recover [go]  bring rig n up the ramp into the bay (300 IC s); a rig further off drives to the ramp first, even while the instruments are dark.
++tv/<n> drive <target> [go]  drive rig n over the ground to a pocket (C117), a field (C-NW), a block (C), a site cell (140,96) or a bearing (ne 300); the preview names the charge left after the trip home.
++tv[/<n>]/map [site] [family]  the site map around rig n, or the whole site: your own readings, the rigs and the hull.
 +tv/<n> dump [go]  empty rig n's hopper onto the site's spoil, for good.
 +tv/<n> scan [go]  (alias survey) read the nine fields around rig n by richness, sharper from rock than from regolith; nothing from ice (600 IC s, 1,000 cu).
 +tv/<n> sound [quiet] [go]  read every pocket of the field rig n stands in, heard across the site; quiet reads a quarter of it and nobody hears (1,200 IC s, 2,000 cu).
 +tv/quiet [on|off]  stop (or start) hearing other rigs' soundings.
 +tv/forget <site>|<body> [go]  strike your readings of a site, or of every site on a body, from your chart.
-From the bay, a scan or a sounding goes down the ramp first. Mining is help mining.
+From the bay, a scan, a sounding or a drive goes down the ramp first. Mining is help mining.
 Each act shows what it would do and commits nothing; go commits it. Without a number it addresses the rig you named last, or your only rig.";
 
 /// A hull with no bay: `{name}`, `{office}`, `{port}`.
@@ -141,7 +143,7 @@ pub const LEASE_FAILED: &str =
     "Occator could not complete it; nothing of the lease or the return was signed.";
 /// **The grammar** (doc 20 cut SM.3b; §10): the status, the three acts and the lease.
 /// Replaces SM.3a's `LEASE_USAGE`; no second constant is kept.
-pub const TV_USAGE: &str = "Usage: +tv[/<n>]  or  +tv[/<n>]/<launch|recover|dump|scan> [go]  or  +tv[/<n>]/sound [quiet] [go]  or  +tv[/<n>]/lease [return] [go]  or  +tv/forget <site>|<body> [go]  or  +tv/quiet [on|off]";
+pub const TV_USAGE: &str = "Usage: +tv[/<n>]  or  +tv[/<n>]/<launch|recover|dump|scan> [go]  or  +tv[/<n>]/sound [quiet] [go]  or  +tv/<n> drive <target> [go]  or  +tv[/<n>]/map [site] [family]  or  +tv[/<n>]/lease [return] [go]  or  +tv/forget <site>|<body> [go]  or  +tv/quiet [on|off]";
 /// A rig within its term (doc 20 cut SM.3b: where it is and its charge): `{n}`, `{mark}`,
 /// `{where}`, `{charge}`, `{span}`, `{hopper}`.
 pub const RIG_LINE: &str = "Rig {n}: {mark}, {where}; charge {charge} %; leased from Occator for {span} more; hopper {hopper}.";
@@ -404,6 +406,70 @@ pub const FORGET_WHICH: &str = "Forget which? +tv/forget <site> or +tv/forget <b
 pub const QUIET_ON: &str = "You will not hear other rigs' soundings.";
 /// Quiet off.
 pub const QUIET_OFF: &str = "You will hear other rigs' soundings again.";
+
+// ---- doc 20 cut SM.4b: driving and the map (§1 beats 4, 7 and 9, §8, §10; the brief's 3.5,
+// 3.6 and 3.10) ----------------------------------------------------------------------------------
+//
+// Placeholders beyond SM.4a's: `{target}` a drive's target in words (`C117`, `field C-NW`,
+// `block C`, `cell 140,96`, `300 m NE`), `{arg}` the target as typed, `{home}` the charge after
+// the trip home (whole percent), `{drive}`/`{climb}` a recover's two legs in IC seconds, `{need}`
+// a leg's charge (whole percent, rounded up), `{family}` an ore family's label, `{word}` a word as
+// typed.
+
+/// The drive's preview: `{n}`, `{mark}`, `{launch}`, `{m}`, `{target}`, `{time}`, `{real}`,
+/// `{now}`, `{after}` (after the drive), `{home}` (after the trip home), `{arg}`.
+pub const DRIVE_PREVIEW: &str = "Rig {n} ({mark}) would {launch}drive {m} m to {target}: {time}{real}; charge {now} → {after} %, {home} % after the trip home. +tv/{n} drive {arg} go sends it.";
+/// The drive, filed: `{n}`, `{target}`, `{when}`.
+pub const DRIVE_FILED: &str = "Rig {n} drives for {target}: there {when}.";
+/// The drive, filed from the bay: `{n}`, `{ramp}`, `{target}`, `{when}`.
+pub const DRIVE_FILED_LAUNCH: &str =
+    "Rig {n} starts down the {ramp} and drives for {target}: there {when}.";
+/// **The arrival** (the completion line of a drive): `{n}`, `{addr}` the end cell's pocket
+/// address, `{reading}` ` ({words})` where the operator's OWN chart has sounded that pocket, else
+/// empty — never from the ground.
+pub const ARRIVED: &str = "Rig {n} arrives at {addr}{reading}.";
+/// A target that does not parse: `{n}`.
+pub const DRIVE_USAGE: &str = "Drive where? +tv/{n} drive <pocket>|<field>|<block>|<x>,<y>|<bearing> <metres>, as C117, C-NW, C, 140,96 or ne 300.";
+/// The rig stands on the target's cell already: `{n}`.
+pub const DRIVE_HERE: &str = "Rig {n} is there already.";
+/// The target is off the site: `{site}`.
+pub const DRIVE_OFF_SITE: &str = "That point is off {site}.";
+/// No way over the ground: `{n}`, `{target}`.
+pub const NO_PATH: &str = "Rig {n} has no way over the ground to {target}.";
+/// More than 32 waypoints even at 80 m: `{target}`, `{cap}`.
+pub const TOO_WINDING: &str = "The way to {target} winds too much to drive in one leg ({cap} waypoints at most). Drive to a nearer point first.";
+/// The end stand has no way back to the ramp (R2; the drive queues nothing): `{n}`, `{ramp}`,
+/// `{target}`.
+pub const NO_WAY_HOME: &str =
+    "Rig {n} could not get back to the {ramp} from {target}, so it stays where it is.";
+/// A drive's start with no order behind it (a forged start, or one a restart lost).
+pub const DRIVE_UNPLANNED: &str = "That drive was not planned; preview it again.";
+/// A drive's start whose rig no longer stands where its leg begins.
+pub const DRIVE_MOVED: &str = "That rig has moved since the drive was planned; preview it again.";
+/// The recover's preview from farther than beside the ramp: `{n}`, `{mark}`, `{m}`, `{ramp}`,
+/// `{name}`, `{drive}`, `{climb}`, `{real}`, `{now}`, `{after}`, `{hopper}`.
+pub const RECOVER_DRIVE_PREVIEW: &str = "Rig {n} ({mark}) would drive {m} m to the {ramp} and climb into the {name}'s bay: {drive} IC s, then {climb} IC s{real}; charge {now} → {after} %; hopper {hopper}. +tv/{n} recover go brings it in.";
+/// The same with the rig's battery row unreadable: `{n}`, `{mark}`, `{m}`, `{ramp}`, `{name}`,
+/// `{drive}`, `{climb}`, `{real}`, `{hopper}`.
+pub const RECOVER_DRIVE_PREVIEW_UNREAD: &str = "Rig {n} ({mark}) would drive {m} m to the {ramp} and climb into the {name}'s bay: {drive} IC s, then {climb} IC s{real}; its charge cannot be read; hopper {hopper}. +tv/{n} recover go brings it in.";
+/// The recover with a leg, filed: `{n}`, `{ramp}`, `{when}`.
+pub const RECOVER_DRIVE_FILED: &str = "Rig {n} drives to the {ramp}: in the bay {when}.";
+/// The rig cannot afford its own leg home (lead ruling 5): `{n}`, `{now}`, `{need}`, `{ramp}`.
+pub const RECOVER_SHORT: &str = "Rig {n} has {now} % charge and the drive to the {ramp} needs {need} %; it cannot come in on its own.";
+/// The way home's terrain cannot be mapped this boot (R3): `{n}`, `{ramp}`.
+pub const RECOVER_DARK: &str =
+    "Rig {n}'s way back to the {ramp} cannot be mapped just now; staff can bring it in.";
+/// `+tv/map` with the hull not settled on a site.
+pub const MAP_NOT_SITE: &str =
+    "Your Dray-P is not settled on a site; +tv/map shows a site's ground.";
+/// `+tv/map` naming a rig neither on the site's ground nor in the bay: `{n}`, `{site}`.
+pub const MAP_NO_RIG: &str = "Rig {n} is not on {site}'s ground or in the bay.";
+/// `+tv/map` naming no rig, with none of the actor's rigs on the site's ground or in the bay
+/// (the review's conformance/F2: never a slot the actor may not hold): `{site}`.
+pub const MAP_NO_RIGS: &str = "None of your rigs is on {site}'s ground or in the bay.";
+/// `+tv/map` naming no ore family: `{word}`.
+pub const MAP_FAMILY_UNKNOWN: &str =
+    "There is no ore family called {word}: metals, volatiles, carbon or strategic.";
 
 /// **The quiet preference's document prefix** (doc 20 cut SM.4a; D10): `tacsim:tvpref:{char}`.
 /// Never a prefix of `tacsim:tv:`'s or `tacsim:tvlease:`'s keys, nor they of it: they differ at
@@ -734,7 +800,21 @@ fn hopper_load(
     tv: ObjId,
     pool_unit: Option<&CanonicalId>,
 ) -> Result<(u64, u64), String> {
-    let w: &World = ctx.w;
+    hopper_load_with(ctx.w, tv, pool_unit, &|endpoint, good| {
+        crate::port_tick::read_pool(ctx, endpoint, good)
+    })
+}
+
+/// **What a rig's hopper holds, through any pool reader** (doc 20 cut SM.4b: the map's feed reads
+/// through its query's typed snapshot, the hold's unreserved room through either; one rule,
+/// never a copy): `(kilograms, capacity kilograms)` of ore. `Err` when the rig has no hopper or a
+/// pool will not read.
+pub(crate) fn hopper_load_with(
+    w: &World,
+    tv: ObjId,
+    pool_unit: Option<&CanonicalId>,
+    read: &dyn Fn(EndpointRef, &CanonicalId) -> Result<u64, crate::port_tick::PoolReadError>,
+) -> Result<(u64, u64), String> {
     let goods = w
         .module_state::<TacsimStore>()
         .and_then(TacsimStore::goods)
@@ -749,7 +829,7 @@ fn hopper_load(
             .good(good)
             .and_then(crate::definitions::GoodDef::mass_kg_per_unit)
             .ok_or_else(|| format!("the goods table does not weigh {good}"))?;
-        let qty = crate::port_tick::read_pool(ctx, EndpointRef(vault), good)
+        let qty = read(EndpointRef(vault), good)
             .map_err(|error| format!("rig #{}'s hopper {good}: {error:?}", tv.0))?;
         kg = qty
             .checked_mul(per_unit)
@@ -817,8 +897,8 @@ fn economy_lease_live(w: &World, lessor: &PrincipalId, record: &TvLease) -> bool
 }
 
 /// The programme port's rig pool's unit (the unit a rig without a live unit record reads
-/// as).
-fn pool_unit(w: &World) -> Option<CanonicalId> {
+/// as). Doc 20 cut SM.4b: the drive's rates read it too (`crate::surface::act::rig_rates`).
+pub(crate) fn pool_unit(w: &World) -> Option<CanonicalId> {
     programme_port(w).and_then(|port| port.def.vehicles.as_deref().map(|pool| pool.unit.clone()))
 }
 
@@ -949,12 +1029,29 @@ enum Act {
         /// On, off, or toggle.
         set: Option<bool>,
     },
+    /// **Doc 20 cut SM.4b**: `+tv[/<n>]/drive <target…> [go]` — the words after the act as typed
+    /// (whitespace collapsed, case kept, `go` removed).
+    Drive {
+        /// The target's words.
+        words: String,
+        /// Committed.
+        go: bool,
+    },
+    /// **Doc 20 cut SM.4b**: `+tv[/<n>]/map [site] [family]` — a pure read.
+    Map {
+        /// The whole site rather than the drive view.
+        site: bool,
+        /// The family word, as typed (lowercased).
+        family: Option<String>,
+    },
 }
 
 /// The act words a `+tv` switch or first word may name (the lease's, the acts', and since doc
-/// 20 cut SM.4a `scan` with its alias `survey`, `sound`, `forget` and `quiet`).
-const ACT_WORDS: [&str; 9] = [
-    "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget", "quiet",
+/// 20 cut SM.4a `scan` with its alias `survey`, `sound`, `forget` and `quiet`; since SM.4b
+/// `drive` and `map`).
+const ACT_WORDS: [&str; 11] = [
+    "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget", "quiet", "drive",
+    "map",
 ];
 
 /// **The grammar** (doc 20 §10, cut SM.3b, replacing SM.3a's): `+tv[/<n>]` (status),
@@ -1034,6 +1131,27 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
             }
             return Ok((None, Act::Quiet { set }));
         }
+        // Doc 20 cut SM.4b: the drive's target is the raw text (case kept for the preview's
+        // `{arg}`); an empty target reaches the command, which answers `DRIVE_USAGE`.
+        "drive" => {
+            let (words, go) = act_words(raw, "drive", first_word);
+            return Ok((slot, Act::Drive { words, go }));
+        }
+        "map" => {
+            let mut site = false;
+            if next.as_deref() == Some("site") {
+                site = true;
+                next = words.next();
+            }
+            let family = next.take();
+            if family.is_some() && words.next().is_some() {
+                return Err(usage());
+            }
+            if family.as_deref() == Some("go") {
+                return Err(usage());
+            }
+            return Ok((slot, Act::Map { site, family }));
+        }
         _ => {}
     }
     let mut back = false;
@@ -1081,12 +1199,15 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
 /// a final `go` (any case) stripped, internal whitespace collapsed to single spaces — case
 /// kept. Returns the name and whether `go` was given.
 fn forget_name(raw: &str, first_word: bool) -> (String, bool) {
+    act_words(raw, "forget", first_word)
+}
+
+/// **An act's words, as typed** (doc 20 cut SM.4a's forget rule, shared since SM.4b with the
+/// drive's target): the raw text, a leading `act` word stripped when the act was typed as a
+/// first word, a final `go` (any case) stripped, whitespace collapsed — case kept.
+fn act_words(raw: &str, act: &str, first_word: bool) -> (String, bool) {
     let mut words: Vec<&str> = raw.split_whitespace().collect();
-    if first_word
-        && words
-            .first()
-            .is_some_and(|w| w.eq_ignore_ascii_case("forget"))
-    {
+    if first_word && words.first().is_some_and(|w| w.eq_ignore_ascii_case(act)) {
         words.remove(0);
     }
     let go = words.last().is_some_and(|w| w.eq_ignore_ascii_case("go"));
@@ -1161,6 +1282,15 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         Act::Forget { name, go } => forget(ctx, &name, go),
         Act::Quiet { set } => quiet(ctx, set),
+        // Doc 20 cut SM.4b (§3.5, §3.10 of the brief).
+        Act::Drive { words, go } => {
+            let rig = select(ctx, slot, crate::surface::excursion::ActKind::Drive)
+                .map_err(CmdError::msg)?;
+            crate::surface::act::drive_cmd(ctx, &rig, &words, go)
+        }
+        Act::Map { site, family } => {
+            crate::port::site_map::map_cmd(ctx, slot, site, family.as_deref())
+        }
     }
 }
 
@@ -1179,19 +1309,17 @@ struct ForgetTarget {
 /// **Resolve a forget's name** (doc 20 cut SM.4a; F10), case-insensitively: each lane site's
 /// name, location id and entry id, then each body's id and display name.
 fn forget_target(w: &World, name: &str) -> Option<ForgetTarget> {
-    let sites = crate::surface::chart::lane_sites(w);
-    let wanted = name.to_lowercase();
-    if let Some(site) = sites.iter().find(|site| {
-        site.name.to_lowercase() == wanted
-            || site.location.as_str() == wanted
-            || site.entry.as_str() == wanted
-    }) {
+    // Doc 20 cut SM.4b: the site half is `chart::site_named` (`@geology`'s site form reads it
+    // too); one rule, never a copy.
+    if let Some(site) = crate::surface::chart::site_named(w, name) {
         return Some(ForgetTarget {
             target: site.entry.clone(),
             what: site.name.clone(),
-            sites: vec![site.entry.clone()],
+            sites: vec![site.entry],
         });
     }
+    let sites = crate::surface::chart::lane_sites(w);
+    let wanted = name.to_lowercase();
     let body = sites.iter().map(|site| &site.body).find(|body| {
         body.as_str() == wanted || crate::port::site::body_name(body).to_lowercase() == wanted
     })?;
@@ -1499,7 +1627,7 @@ fn status_lines(
     let handles = w.module_state::<crate::port::families::PortHandles>();
     // Doc 20 cut SM.4a (the brief's reviewer finding F5): each site's composite is peeked at
     // most once for the whole status.
-    let mut peeks = std::collections::BTreeMap::new();
+    let mut peeks = crate::surface::Peeks::default();
     // Slots no live record names, in order: the first `unlisted.len()` are filled by
     // the unlisted rigs, the rest are empty.
     let free: Vec<u8> = (1..=max)
@@ -1648,7 +1776,7 @@ fn rig_state(
             ACT_LINE
                 .replace(
                     "{doing}",
-                    &crate::surface::act::doing_words(act.kind, &ramp),
+                    &crate::surface::act::doing_words(act.kind, &act.params, &ramp),
                 )
                 .replace("{when}", &due_words(w, act.due_ic))
         });
@@ -1680,7 +1808,7 @@ fn ground_line(
     handles: &crate::port::families::PortHandles,
     berth: &crate::surface::act::SiteBerth<'_>,
     tv: ObjId,
-    peeks: &mut std::collections::BTreeMap<CanonicalId, crate::surface::chart::SitePeek>,
+    peeks: &mut crate::surface::Peeks,
     wants: &mut Vec<CanonicalId>,
 ) -> Option<String> {
     use crate::surface::act::{Where, where_is};
@@ -2674,11 +2802,18 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
     // so a rig never goes back to the shed with an excursion still counted against the caps.
     match rig_flight(ctx, record.tv) {
         Ok(RigFlight::Idle) => {}
-        Ok(RigFlight::Busy { kind, due_ic }) => {
+        Ok(RigFlight::Busy {
+            kind,
+            due_ic,
+            params,
+        }) => {
             let ramp = crate::surface::act::ramp_label(w, record.hull);
             return Err(RIG_BUSY
                 .replace("{n}", &slot)
-                .replace("{doing}", &crate::surface::act::doing_words(kind, &ramp))
+                .replace(
+                    "{doing}",
+                    &crate::surface::act::doing_words(kind, &params, &ramp),
+                )
                 .replace("{when}", &due_words(w, due_ic)));
         }
         Ok(RigFlight::Out { site }) => {
@@ -3025,6 +3160,8 @@ pub(crate) enum RigFlight {
         kind: crate::surface::excursion::ActKind,
         /// Its due instant, IC seconds.
         due_ic: i64,
+        /// Its frozen parameters (doc 20 cut SM.4b: a drive's target names what it is doing).
+        params: crate::surface::excursion::ActParams,
     },
     /// No act, but an excursion open on `site` (the site port entry).
     Out {
@@ -3065,6 +3202,7 @@ pub(crate) fn rig_flight(ctx: &Ctx<'_>, tv: ObjId) -> Result<RigFlight, String> 
         (Some(act), _) => RigFlight::Busy {
             kind: act.kind,
             due_ic: act.due_ic,
+            params: act.params.clone(),
         },
         (None, Some(excursion)) => RigFlight::Out {
             site: excursion.site.clone(),
@@ -3301,6 +3439,80 @@ mod tests {
         assert_eq!(tv_pref_key_owner("tacsim:tv:42"), None);
         assert!(!"tacsim:tvpref:42".starts_with(crate::surface::excursion::TV_REC_PREFIX));
         assert!(!"tacsim:tvpref:42".starts_with(TV_LEASE_PREFIX));
+    }
+
+    /// **The drive's and the map's grammar** (doc 20 cut SM.4b; §3.5 and §3.10 of the brief):
+    /// `+tv[/<n>]/drive <target…> [go]` as a switch or a first word, the target as typed (case
+    /// kept, whitespace collapsed, `go` stripped), an empty target left for the command's
+    /// `DRIVE_USAGE`; `+tv[/<n>]/map [site] [family]`; a word past the family, or `go` after
+    /// `map`, is the usage line.
+    #[test]
+    fn sm4b_the_drive_and_map_grammar() {
+        let parse = |switches: &[&str], raw: &str| -> Result<(Option<u8>, Act), String> {
+            parse_parts(&|word| switches.contains(&word), raw).map_err(|e| e.to_string())
+        };
+        let drive = |words: &str, go| Act::Drive {
+            words: words.to_owned(),
+            go,
+        };
+        assert_eq!(
+            parse(&["1", "drive"], "C117"),
+            Ok((Some(1), drive("C117", false)))
+        );
+        assert_eq!(
+            parse(&["2"], "drive c-nw GO"),
+            Ok((Some(2), drive("c-nw", true)))
+        );
+        assert_eq!(
+            parse(&["drive"], "ne  300 m go"),
+            Ok((None, drive("ne 300 m", true)))
+        );
+        assert_eq!(
+            parse(&[], "Drive 140,96"),
+            Ok((None, drive("140,96", false)))
+        );
+        assert_eq!(parse(&["drive"], ""), Ok((None, drive("", false))));
+        assert_eq!(
+            parse(&["map"], ""),
+            Ok((
+                None,
+                Act::Map {
+                    site: false,
+                    family: None
+                }
+            ))
+        );
+        assert_eq!(
+            parse(&["1", "map"], "volatiles"),
+            Ok((
+                Some(1),
+                Act::Map {
+                    site: false,
+                    family: Some("volatiles".to_owned())
+                }
+            ))
+        );
+        assert_eq!(
+            parse(&[], "map Site Metals"),
+            Ok((
+                None,
+                Act::Map {
+                    site: true,
+                    family: Some("metals".to_owned())
+                }
+            ))
+        );
+        for (switches, raw) in [
+            (&["map"][..], "site metals extra"),
+            (&["map"][..], "go"),
+            (&["map", "drive"][..], ""),
+        ] {
+            assert_eq!(
+                parse(switches, raw),
+                Err(TV_USAGE.to_owned()),
+                "{switches:?} {raw:?}"
+            );
+        }
     }
 
     /// Doc 20 cut SM.3a (lead ruling 9): the terms due past the end are whole

@@ -421,24 +421,40 @@ pub fn build_site_ground(
     mac: &GeologyMac,
     key_version: u32,
 ) -> Result<SiteGround, String> {
+    let built = site_composite(input, &spec.body)?;
+    let geology = site_geology(mac, key_version, body, spec).map_err(|error| error.to_string())?;
+    Ok(SiteGround {
+        composite: Arc::new(built),
+        geology: Arc::new(geology),
+    })
+}
+
+/// **A site's terrain composite, shape-checked** — the one rule [`build_site_ground`] and
+/// [`site_terrain`] share (doc 20 cut SM.4b factored it out; one rule, never a copy): the
+/// captured region a surface of `body` (cut SM.2's lead override 4), then `composite()`, then a
+/// ground surface of 256 × 256 cells of 10 m.
+///
+/// # Errors
+///
+/// The region on another body or not a surface, the atlas's refusal, or another shape.
+fn site_composite(input: &CompositeInput, body: &CanonicalId) -> Result<Composite, String> {
     const WRONG_SHAPE: &str = "a site's ground is 256 by 256 cells of 10 m";
     // Doc 20 cut SM.2 (lead override 4): the captured region stands on the spec's body, or
     // the site's ground would read one body's terrain over another's geology.
     match &input.region.kind {
-        mush_atlas::record::RegionKind::Surface { body: on }
-            if on.as_str() == spec.body.as_str() => {}
+        mush_atlas::record::RegionKind::Surface { body: on } if on.as_str() == body.as_str() => {}
         mush_atlas::record::RegionKind::Surface { body: on } => {
             return Err(format!(
-                "the site names {}, but region {} is on {on}",
-                spec.body, input.region.key
+                "the site names {body}, but region {} is on {on}",
+                input.region.key
             ));
         }
         mush_atlas::record::RegionKind::Orbital { .. }
         | mush_atlas::record::RegionKind::System
         | mush_atlas::record::RegionKind::Interstellar => {
             return Err(format!(
-                "the site names {}, but region {} is not a surface",
-                spec.body, input.region.key
+                "the site names {body}, but region {} is not a surface",
+                input.region.key
             ));
         }
     }
@@ -452,11 +468,28 @@ pub fn build_site_ground(
     {
         return Err(WRONG_SHAPE.to_owned());
     }
-    let geology = site_geology(mac, key_version, body, spec).map_err(|error| error.to_string())?;
-    Ok(SiteGround {
-        composite: Arc::new(built),
-        geology: Arc::new(geology),
-    })
+    Ok(built)
+}
+
+/// **A lane site's terrain, keyless** (doc 20 cut SM.4b; the brief's reviewer resolution R3):
+/// the site's location through `crate::surface::chart::lane_sites` (no key read), its window
+/// (`chart::site_frame`), [`capture_site`] and `site_composite`'s one rule — **no geology key
+/// is read**, so a rig's way home is built even while the geology layer is dark. Its callers:
+/// the home field's warm when the site reads dark (`crate::surface::warm_one`) and the freeze
+/// census (`tests/driving.rs`). On-loop and as cheap as the warm's own composite half.
+///
+/// # Errors
+///
+/// Not a lane site, its window does not form, the capture's or the composite's refusal.
+pub fn site_terrain(w: &World, entry: &CanonicalId) -> Result<Composite, String> {
+    let site = crate::surface::chart::lane_sites(w)
+        .into_iter()
+        .find(|site| &site.entry == entry)
+        .ok_or_else(|| format!("{entry} is not a lane site"))?;
+    let frame = crate::surface::chart::site_frame(&site.location)
+        .ok_or_else(|| format!("{entry}'s window does not form"))?;
+    let input = capture_site(w, &frame)?;
+    site_composite(&input, &site.body)
 }
 
 /// One cached site: its key, its ground, what its revision was computed over (the captured input
