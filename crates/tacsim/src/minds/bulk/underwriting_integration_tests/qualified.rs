@@ -56,7 +56,8 @@ fn recall(w: &mut IcWorld, proof: &ConductTrialProof, n: u128) -> TestResult {
         GOD,
         &action,
         n,
-        json!({"filed":proof.filed().get().to_string(),"reason":"registry_review"}),
+        // `reason` is the recall offer's fixed parameter; only `filed` is public.
+        json!({"filed":proof.filed().get().to_string()}),
     )?;
     // Install another actual acknowledged owner transaction while Bind may
     // hold native custody. This creates no synthetic eligibility/status row.
