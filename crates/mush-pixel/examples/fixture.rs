@@ -9,7 +9,8 @@
 
 use std::time::Instant;
 
-use mush_pixel::raycast::{Camera, Ground, Map, Sprite, SpriteKind, render};
+use mush_pixel::cockpit::{contacts_as_sprites, draw_instruments};
+use mush_pixel::raycast::{Camera, Ground, Map, render};
 use mush_pixel::{Frame, kitty, png};
 use serde_json::Value;
 
@@ -74,28 +75,7 @@ fn main() {
         y_cm: cockpit["y_cm"].as_i64().unwrap_or(0),
         heading_mdeg: cockpit["heading_mdeg"].as_u64().unwrap_or(0) as u32,
     };
-    let sprites: Vec<Sprite> = cockpit["contacts"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|c| {
-            let kind = if c["reads_dead"].as_bool() == Some(true) {
-                SpriteKind::Wreck
-            } else if c["friendly"].as_bool() == Some(true) {
-                SpriteKind::Friendly
-            } else if c["class"].as_str().is_some_and(|s| s != "?" && !s.is_empty()) {
-                SpriteKind::Hostile
-            } else {
-                SpriteKind::Unknown
-            };
-            Sprite::at_bearing(
-                &cam,
-                c["bearing_deg"].as_f64().unwrap_or(0.0),
-                c["range_m"].as_f64().unwrap_or(0.0),
-                kind,
-            )
-        })
-        .collect();
+    let sprites = contacts_as_sprites(&cockpit, &cam);
 
     // 640x480: the target frame (the owner's ruling of 2026-10-21).
     let mut frame = Frame::new(640, 480);
@@ -103,6 +83,7 @@ fn main() {
     let t0 = Instant::now();
     for _ in 0..N {
         render(&mut frame, &map, &cam, &sprites);
+        draw_instruments(&mut frame, &map, &cockpit, Some(&map_json), &cam);
     }
     let render_us = t0.elapsed().as_micros() / u128::from(N);
     let t1 = Instant::now();

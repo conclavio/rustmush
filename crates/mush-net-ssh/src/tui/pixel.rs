@@ -23,7 +23,8 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use mush_pixel::raycast::{Camera, Ground, Map, Sprite, SpriteKind, render};
+use mush_pixel::cockpit::{contacts_as_sprites, draw_instruments};
+use mush_pixel::raycast::{Camera, Ground, Map, render};
 use mush_pixel::{Frame, kitty, png};
 use serde_json::Value;
 
@@ -337,8 +338,12 @@ impl PixelView {
         let (col, row, c, r) = image_box(cols, rows, self.frame.width(), self.frame.height());
 
         let t0 = Instant::now();
-        if let Some((_, map)) = &self.map {
-            render(&mut self.frame, map, &cam, &sprites);
+        if let Some((_, arena)) = &self.map {
+            render(&mut self.frame, arena, &cam, &sprites);
+            // The instruments, over the picture (the owner's 640x480 target
+            // of 2026-10-21): minimap, heat, weapons, the armour doll and the
+            // status strip, all from the frame the TUI's panes already read.
+            draw_instruments(&mut self.frame, arena, cockpit, map, &cam);
         }
         let render_us = t0.elapsed().as_micros();
 
@@ -450,37 +455,6 @@ pub fn image_box(cols: u16, rows: u16, w: usize, h: usize) -> (u16, u16, u16, u1
         (avail_cols, u16::try_from(tall).unwrap_or(avail_rows).clamp(1, avail_rows))
     };
     (1, 2, c, r)
-}
-
-/// The cockpit frame's contacts as sprites, placed by bearing and range.
-fn contacts_as_sprites(cockpit: &Value, cam: &Camera) -> Vec<Sprite> {
-    cockpit
-        .get("contacts")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(|c| {
-            let kind = if c.get("reads_dead").and_then(Value::as_bool) == Some(true) {
-                SpriteKind::Wreck
-            } else if c.get("friendly").and_then(Value::as_bool) == Some(true) {
-                SpriteKind::Friendly
-            } else if c
-                .get("class")
-                .and_then(Value::as_str)
-                .is_some_and(|s| s != "?" && !s.is_empty())
-            {
-                SpriteKind::Hostile
-            } else {
-                SpriteKind::Unknown
-            };
-            Sprite::at_bearing(
-                cam,
-                c.get("bearing_deg").and_then(Value::as_f64).unwrap_or(0.0),
-                c.get("range_m").and_then(Value::as_f64).unwrap_or(0.0),
-                kind,
-            )
-        })
-        .collect()
 }
 
 /// An `arena.map` keyframe (run-length rows, south row first, a legend of

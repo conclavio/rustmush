@@ -12,6 +12,11 @@
 //! - [`kitty`]: the kitty graphics protocol framing — the capability probe,
 //!   a PNG frame as chunked inline transmission with a fixed image id and
 //!   placement, wrapped in synchronized output.
+//! - [`overlay`]: the instruments drawn into the frame over the picture —
+//!   minimap, heat gauge, weapons, the armour doll, the status strip — from
+//!   a small fixed palette so the PNG stays indexed.
+//! - [`cockpit`]: the `arena.cockpit` keyframe read into the raycaster's
+//!   sprites and the instruments' inputs.
 //!
 //! Nothing here touches a terminal, a channel or the world: the SSH TUI owns
 //! the camera clock, the probe's state machine and the write.
@@ -29,8 +34,10 @@
     clippy::panic_in_result_fn
 )]
 
+pub mod cockpit;
 pub mod frame;
 pub mod kitty;
+pub mod overlay;
 pub mod png;
 pub mod raycast;
 
