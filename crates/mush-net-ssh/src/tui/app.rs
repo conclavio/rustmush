@@ -24,7 +24,7 @@
 //! by [`validate_screens`], and the exit walk is the one carve-out.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use mush_ansi::AnsiTheme;
 use mush_proto::{
@@ -40,6 +40,7 @@ use serde_json::Value;
 
 use super::keys::{Key, KeyParser};
 use super::mind_workshop::MindWorkshop;
+use super::pixel::PixelView;
 use super::panels::{
     ARENA_MAP_FEED, COCKPIT_FEED, ChanMsg, NOTICE_SENTENCE_TAG, OBSERVER_FEED, PanelOutcome,
     PanelStore, REPLAY_FEED, UNIT_FEED,
@@ -399,6 +400,9 @@ pub struct TuiApp {
     live_seen_at: Option<i64>,
     /// When the timer heal last asked `arena.observer` (16b cut I.4).
     live_asked_at: Option<i64>,
+    /// **The pixel cockpit view** (spike, 2026-10-21): the kitty graphics
+    /// probe, the camera on its leash, the frame clock's counters.
+    pixel: PixelView,
 }
 
 fn system_clock() -> i64 {
@@ -716,6 +720,7 @@ impl TuiApp {
             picture_switched: None,
             live_seen_at: None,
             live_asked_at: None,
+            pixel: PixelView::new(),
         })
     }
 
@@ -2301,6 +2306,30 @@ impl TuiApp {
     /// Act on one decoded key (tests drive this directly).
     pub fn handle_key(&mut self, key: Key, r: &mut InputResult) {
         r.redraw = true;
+        // Pixel cockpit spike (2026-10-21): the probe's replies are not keys
+        // a person pressed; `^G` opens or closes the view; while it is open
+        // it owns every key but the detach.
+        match key {
+            Key::GraphicsOk | Key::GraphicsErr => {
+                self.pixel.graphics_reply(key == Key::GraphicsOk);
+                r.redraw = false;
+                return;
+            }
+            Key::DeviceAttributes => {
+                self.pixel.device_attributes();
+                r.redraw = false;
+                return;
+            }
+            Key::Ctrl('g') => {
+                self.pixel.toggle(Instant::now());
+                return;
+            }
+            _ if self.pixel.is_active() && key != Key::Ctrl(']') => {
+                self.pixel.key(key);
+                return;
+            }
+            _ => {}
+        }
         if key != Key::Ctrl(']')
             && self.workshop.open
             && self.requests.is_empty()
@@ -3494,6 +3523,10 @@ impl TuiApp {
             self.draw_floor(frame, area);
             return;
         }
+        if self.pixel.is_active() {
+            self.draw_pixel(frame, area);
+            return;
+        }
         // The scene tail is the terminal's notice surface: while it is in view
         // (following the tail on a screen that shows the scrollback), notices
         // are seen as they land, so the unseen count clears (I11).
@@ -3572,6 +3605,78 @@ impl TuiApp {
     /// rather than being stuck behind keys that do nothing), and an ask the
     /// engine has not expired (it is answered from the keyboard, so it must be
     /// seen). Every piece of app state is left as it is.
+    /// The pixel view's chrome (spike, 2026-10-21): a status line on top,
+    /// the key legend at the bottom, and nothing between — the picture is
+    /// placed over those cells by the kitty bytes [`Self::pixel_paint`]
+    /// yields after the frame.
+    fn draw_pixel(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        let cockpit = self.panels.get(COCKPIT_FEED).cloned();
+        let (top, bottom) = self.pixel.hud(cockpit.as_ref(), Instant::now());
+        frame.render_widget(Clear, area);
+        let [top_area, _, bottom_area] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                top,
+                Style::default().add_modifier(Modifier::BOLD),
+            ))),
+            top_area,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(dim_span_owned(&bottom))),
+            bottom_area,
+        );
+    }
+
+    // ---- the pixel cockpit view (spike, 2026-10-21) ----------------------
+
+    /// Whether the pixel view is on screen (the pump then runs the frame
+    /// clock).
+    #[must_use]
+    pub fn pixel_active(&self) -> bool {
+        self.pixel.is_active()
+    }
+
+    /// The probe bytes went out: start its clock.
+    pub fn pixel_probe_sent(&mut self) {
+        self.pixel.probe_sent(Instant::now());
+    }
+
+    /// One frame-clock tick: advance the camera.
+    pub fn pixel_tick(&mut self) {
+        self.pixel.tick(Instant::now());
+    }
+
+    /// Whether the view closed since the last call (the caller frees the
+    /// image).
+    pub fn pixel_take_close(&mut self) -> bool {
+        self.pixel.take_close()
+    }
+
+    /// The kitty bytes that place this tick's picture, or nothing (closed,
+    /// unsupported, no frame held, or unchanged since the last send).
+    pub fn pixel_paint(&mut self) -> Vec<u8> {
+        let (w, h) = (self.caps.width, self.caps.height);
+        let TuiApp { pixel, panels, .. } = self;
+        pixel.paint(
+            panels.get(COCKPIT_FEED),
+            panels.get(ARENA_MAP_FEED),
+            w,
+            h,
+            Instant::now(),
+        )
+    }
+
+    /// The view's counters.
+    #[must_use]
+    pub fn pixel_stats(&self) -> super::pixel::Stats {
+        self.pixel.stats
+    }
+
     fn draw_floor(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let now = self.now();
         let [top, input_area] = Layout::vertical([

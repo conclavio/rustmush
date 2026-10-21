@@ -23,6 +23,7 @@ mod backend;
 pub mod keys;
 mod mind_workshop;
 pub mod panels;
+pub mod pixel;
 pub mod render;
 pub mod replay;
 pub mod screen;
@@ -121,7 +122,45 @@ impl TuiSession {
         // The only error path is a backend write error; `SshBackend` writes
         // into a `Vec` and never errors, so a failure just yields no bytes.
         let _ = terminal.draw(|frame| app.draw(frame));
-        terminal.backend_mut().take_output()
+        let mut bytes = terminal.backend_mut().take_output();
+        // Pixel cockpit spike (2026-10-21): free the image when the view
+        // closed, and place this tick's picture (if it changed) after the
+        // text frame it sits on.
+        if app.pixel_take_close() {
+            bytes.extend_from_slice(&mush_pixel::kitty::delete_bytes(pixel::IMAGE_ID));
+        }
+        bytes.extend(app.pixel_paint());
+        bytes
+    }
+
+    /// The kitty graphics capability probe (pixel cockpit spike), sent once
+    /// right after the first frame; starts the probe's clock.
+    #[must_use]
+    pub fn probe_bytes(&mut self) -> Vec<u8> {
+        self.app.pixel_probe_sent();
+        mush_pixel::kitty::probe_bytes()
+    }
+
+    /// Whether the pixel view is open (the pump then runs its frame clock).
+    #[must_use]
+    pub fn pixel_active(&self) -> bool {
+        self.app.pixel_active()
+    }
+
+    /// One frame-clock tick.
+    pub fn pixel_tick(&mut self) {
+        self.app.pixel_tick();
+    }
+
+    /// The bytes that free the picture's image when the view is open — to
+    /// send before leaving the alternate screen.
+    #[must_use]
+    pub fn pixel_close_bytes(&self) -> Vec<u8> {
+        if self.app.pixel_active() {
+            mush_pixel::kitty::delete_bytes(pixel::IMAGE_ID)
+        } else {
+            Vec::new()
+        }
     }
 
     /// Bytes that enter the alternate screen and hide the cursor.
@@ -164,7 +203,9 @@ pub fn frame_text(app: &mut TuiApp, w: u16, h: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mush_proto::{ClientKind, ColorDepth, NarrativeKind, ObjRef, RichText, WhoEntry};
+    use mush_proto::{
+        ClientKind, ColorDepth, NarrativeKind, ObjRef, PanelFrameKind, RichText, WhoEntry,
+    };
 
     fn caps() -> ClientCaps {
         ClientCaps {
@@ -301,5 +342,84 @@ mod tests {
         assert_eq!(text.lines().count(), 34);
         assert!(text.contains("hi there"));
         assert!(text.contains("rustmush"));
+    }
+
+    /// Pixel cockpit spike (2026-10-21): the probe goes out after `@tui`, its
+    /// answer comes back through the input path as marker keys, `^G` opens
+    /// the view only once the answer is OK, the painted bytes carry the HUD
+    /// and the kitty frame, an unchanged picture is not re-sent, a turn is,
+    /// and closing frees the image.
+    #[test]
+    fn the_probe_reply_opens_the_pixel_view_and_paint_carries_a_kitty_frame() {
+        let mut wide = caps();
+        wide.width = 120;
+        wide.height = 40;
+        let mut sess = TuiSession::new(wide, TuiManifest::default());
+        let probe = sess.probe_bytes();
+        assert!(probe.starts_with(b"\x1b_Gi=31,"), "{probe:?}");
+        assert!(probe.ends_with(b"\x1b[c"));
+        // Before the answer, ^G does nothing.
+        sess.feed_input(b"\x07");
+        assert!(!sess.pixel_active());
+        // The terminal answers OK then DA1, in one burst, as kitty does; the
+        // markers ask for no repaint.
+        let r = sess.feed_input(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+        assert!(!r.redraw && r.submit.is_empty());
+        // A seated cockpit frame and the arena map (the canonical fixtures).
+        let cockpit: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+        ))
+        .expect("cockpit fixture");
+        let map: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/arena_map.json"
+        ))
+        .expect("map fixture");
+        sess.apply_event(&OutputEvent::Panel {
+            feed: "arena.cockpit".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: cockpit,
+        });
+        sess.apply_event(&OutputEvent::Panel {
+            feed: "arena.map".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: map,
+        });
+        let r = sess.feed_input(b"\x07");
+        assert!(r.redraw && sess.pixel_active());
+        let bytes = sess.paint();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("PIXEL"), "the HUD: {text:?}");
+        assert!(
+            text.contains("\x1b[?2026h\x1b[2;1H\x1b_Ga=T,f=100,t=d,i=1,p=1,q=2,C=1,c=110,r=38,m="),
+            "the kitty frame scaled into 110 by 38 cells: {text:?}"
+        );
+        assert!(text.ends_with("\x1b[?2026l"));
+        // The same picture is not sent twice.
+        let again = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(!again.contains("\x1b_Ga=T"), "{again:?}");
+        // A turn, a tick with time on the clock, a new picture.
+        sess.feed_input(b"\x1b[C");
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        sess.pixel_tick();
+        let turned = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(turned.contains("\x1b_Ga=T"), "{turned:?}");
+        // Leaving the TUI with the view open frees the image first.
+        assert_eq!(
+            sess.pixel_close_bytes(),
+            b"\x1b_Ga=d,d=I,i=1,q=2;\x1b\\".to_vec()
+        );
+        // Esc closes it; the next paint carries the delete and no frame.
+        sess.feed_input(b"\x1b");
+        assert!(!sess.pixel_active());
+        let closed = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(closed.contains("\x1b_Ga=d,d=I,i=1,q=2;\x1b\\"), "{closed:?}");
+        assert!(!closed.contains("\x1b_Ga=T"));
+        assert!(sess.pixel_close_bytes().is_empty());
+        // A terminal that answers DA1 first never opens the view.
+        let mut plain = TuiSession::new(caps(), TuiManifest::default());
+        let _ = plain.probe_bytes();
+        plain.feed_input(b"\x1b[?62;22c\x1b_Gi=31;OK\x1b\\");
+        plain.feed_input(b"\x07");
+        assert!(!plain.pixel_active());
     }
 }

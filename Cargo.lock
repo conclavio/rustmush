@@ -2527,6 +2527,7 @@ dependencies = [
  "getrandom 0.4.3",
  "mush-ansi",
  "mush-contract-tests",
+ "mush-pixel",
  "mush-proto",
  "mush-session",
  "proptest",
@@ -2605,6 +2606,14 @@ dependencies = [
  "smol_str",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "mush-pixel"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "serde_json",
 ]
 
 [[package]]

@@ -745,6 +745,10 @@ impl ConnHandler {
             let mut tui = Box::new(TuiSession::new(caps, sh.manifest.clone()));
             let mut out = TuiSession::enter_bytes().to_vec();
             out.extend_from_slice(&tui.paint());
+            // Pixel cockpit spike (2026-10-21): ask the terminal whether it
+            // speaks the kitty graphics protocol; the answer comes back
+            // through the input path as marker keys.
+            out.extend_from_slice(&tui.probe_bytes());
             let queries = tui.entry_queries();
             sh.tui = Some(tui);
             sh.mode = Mode::Tui;
@@ -769,9 +773,16 @@ impl ConnHandler {
         };
         let bytes = {
             let mut sh = self.lock();
+            // Pixel cockpit spike (2026-10-21): free the picture's image
+            // before the screen it sits on goes away.
+            let mut out = sh
+                .tui
+                .as_ref()
+                .map(|t| t.pixel_close_bytes())
+                .unwrap_or_default();
             sh.tui = None;
             sh.mode = Mode::InGame;
-            let mut out = TuiSession::leave_bytes().to_vec();
+            out.extend_from_slice(TuiSession::leave_bytes());
             // Repaint the line editor's prompt + in-progress buffer so the
             // resumed line client is not left on a blank line.
             sh.editor.redraw(&mut out);
@@ -2016,11 +2027,18 @@ fn spawn_output_pump(
         // The first interval tick fires immediately; swallow it so the timer
         // does not kick a query before the connection even enters the TUI.
         who_timer.tick().await;
+        // Pixel cockpit spike (2026-10-21): the frame clock. It ticks for
+        // every TUI connection and costs a lock and a bool when the view is
+        // closed; a spike's price, noted in its NOTES.
+        let mut frame_timer = tokio::time::interval(crate::tui::pixel::FRAME_INTERVAL);
+        frame_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        frame_timer.tick().await;
 
         enum Wake {
             Event(Option<Arc<OutputEvent>>),
             Repaint,
             Tick,
+            Frame,
         }
 
         loop {
@@ -2029,6 +2047,7 @@ fn spawn_output_pump(
                 ev = rx.recv() => Wake::Event(ev),
                 () = repaint.notified() => Wake::Repaint,
                 _ = who_timer.tick() => Wake::Tick,
+                _ = frame_timer.tick() => Wake::Frame,
             };
 
             // WHO refresh: submit a read-only query while a TUI is active
@@ -2117,6 +2136,21 @@ fn spawn_output_pump(
                         }
                     }
                     Wake::Tick => Vec::new(), // handled above
+                    // The frame clock: advance the camera and paint, which
+                    // yields bytes only when the picture changed.
+                    Wake::Frame => {
+                        if matches!(sh.mode, Mode::Tui) {
+                            match sh.tui.as_mut() {
+                                Some(t) if t.pixel_active() => {
+                                    t.pixel_tick();
+                                    t.paint()
+                                }
+                                _ => Vec::new(),
+                            }
+                        } else {
+                            Vec::new()
+                        }
+                    }
                 };
                 let invokes = sh
                     .tui

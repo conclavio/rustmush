@@ -1,0 +1,19 @@
+[package]
+name = "mush-pixel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Pixel cockpit spike: a software raycaster over the arena grid, a palette PNG encoder and the kitty graphics protocol framing"
+
+[dependencies]
+# PNG's IDAT is a zlib stream; the workspace already carries flate2 (pure-Rust
+# zlib-rs) for the gateway, so no new dependency and no C toolchain.
+flate2.workspace = true
+
+[dev-dependencies]
+# The fixture example reads the canonical cockpit scene (web/src/lib/fixtures/cockpit).
+serde_json.workspace = true
+
+[lints]
+workspace = true

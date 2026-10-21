@@ -134,6 +134,9 @@ mush-ansi = { path = "crates/mush-ansi" }
 mush-store = { path = "crates/mush-store" }
 mush-session = { path = "crates/mush-session" }
 mush-net-ssh = { path = "crates/mush-net-ssh" }
+# 2026-10-21 pixel cockpit spike: the raycaster, the PNG encoder and the kitty
+# graphics framing the SSH TUI streams a first-person view with.
+mush-pixel = { path = "crates/mush-pixel" }
 mush-net-web = { path = "crates/mush-net-web" }
 mush-script = { path = "crates/mush-script" }
 # 17b cut M2.1 (doc 17 §7, D-UM-1): the game-neutral Rhai sandbox unit minds think in —

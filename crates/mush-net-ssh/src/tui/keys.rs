@@ -55,6 +55,17 @@ pub enum Key {
     PgDn,
     /// A function key, `F(1)`..=`F(12)`.
     F(u8),
+    /// **The kitty graphics probe answered OK** (pixel cockpit spike,
+    /// 2026-10-21): an APC `ESC _ G i=31…;OK ESC \` reply to the probe
+    /// image. Not a key a person pressed; the app feeds it to the probe's
+    /// state machine. Replies to other image ids are swallowed.
+    GraphicsOk,
+    /// The probe answered with an error (the terminal parsed the APC but
+    /// could not honour it).
+    GraphicsErr,
+    /// A primary device attributes reply (`CSI ? … c`), which every terminal
+    /// sends for `CSI c`: the probe's "no answer is the answer" marker.
+    DeviceAttributes,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +75,9 @@ enum EscState {
     Csi(String),
     /// After `ESC O`, waiting for the final byte.
     Ss3,
+    /// Inside `ESC _` (APC), accumulating the payload until `ESC \` (ST).
+    /// `esc` is true after the `ESC` of a possible terminator.
+    Apc { payload: String, esc: bool },
 }
 
 /// The stateful byte decoder; one per TUI session.
@@ -121,6 +135,40 @@ impl KeyParser {
                         keys.push(k);
                     }
                 }
+                EscState::Apc { mut payload, esc } => {
+                    if esc {
+                        if b == b'\\' {
+                            // ST: the sequence is whole.
+                            if let Some(k) = apc_key(&payload) {
+                                keys.push(k);
+                            }
+                        } else if i >= 2 && bytes[i - 2] == 0x1b {
+                            // `ESC` followed by anything else abandons the
+                            // APC; that `ESC` and this byte decode afresh.
+                            i -= 2;
+                        } else {
+                            // The `ESC` ended the previous burst: it is an
+                            // Esc, and this byte decodes afresh.
+                            i -= 1;
+                            keys.push(Key::Esc);
+                        }
+                    } else if b == 0x1b {
+                        self.esc = EscState::Apc { payload, esc: true };
+                    } else if b == 0x07 {
+                        // BEL terminates too (some terminals end replies so).
+                        if let Some(k) = apc_key(&payload) {
+                            keys.push(k);
+                        }
+                    } else {
+                        if payload.len() < APC_CAP {
+                            payload.push(b as char);
+                        }
+                        self.esc = EscState::Apc {
+                            payload,
+                            esc: false,
+                        };
+                    }
+                }
                 EscState::Ground => {
                     if !self.pending.is_empty() {
                         if (0x80..0xC0).contains(&b) {
@@ -150,6 +198,13 @@ impl KeyParser {
                             }
                             Some(b'O') => {
                                 self.esc = EscState::Ss3;
+                                i += 1;
+                            }
+                            Some(b'_') => {
+                                self.esc = EscState::Apc {
+                                    payload: String::new(),
+                                    esc: false,
+                                };
                                 i += 1;
                             }
                             Some(&n) if (0x20..=0x7e).contains(&n) => {
@@ -192,6 +247,29 @@ impl KeyParser {
     }
 }
 
+/// The most payload bytes an APC keeps; a graphics reply is a few dozen.
+const APC_CAP: usize = 256;
+
+/// A whole APC payload (between `ESC _` and `ESC \`) as a key, or nothing:
+/// only the kitty graphics probe's reply is one (its image id is
+/// `mush_pixel::kitty::PROBE_IMAGE_ID`); every other APC is swallowed.
+fn apc_key(payload: &str) -> Option<Key> {
+    let keys = payload.strip_prefix('G')?;
+    let probe_id = format!("i={}", mush_pixel::kitty::PROBE_IMAGE_ID);
+    let names_the_probe = keys
+        .split(';')
+        .next()
+        .is_some_and(|kv| kv.split(',').any(|kv| kv == probe_id));
+    if !names_the_probe {
+        return None;
+    }
+    Some(if mush_pixel::kitty::is_probe_ok(payload) {
+        Key::GraphicsOk
+    } else {
+        Key::GraphicsErr
+    })
+}
+
 /// `0x01` → `'a'`, … `0x1a` → `'z'`, `0x1c` → `'\\'`, `0x1d` → `']'`,
 /// `0x1e` → `'^'`, `0x1f` → `'_'`, `0x00` → `'@'`.
 fn ctrl_letter(b: u8) -> char {
@@ -215,6 +293,10 @@ fn csi_key(params: &str, fin: u8) -> Option<Key> {
         b'H' => Key::Home,
         b'F' => Key::End,
         b'Z' => Key::BackTab,
+        // A primary device attributes reply, `CSI ? 6 2 ; … c` (a `CSI > … c`
+        // is DA2 and `CSI c` alone is a request, neither of which a terminal
+        // sends us unasked).
+        b'c' if first.starts_with('?') => Key::DeviceAttributes,
         b'~' => match first {
             "1" | "7" => Key::Home,
             "4" | "8" => Key::End,
@@ -348,5 +430,53 @@ mod tests {
             "a stray continuation byte is dropped"
         );
         assert_eq!(keys(&[0xC3, b'x']), vec![Key::Char('x')]);
+    }
+
+    /// Pixel cockpit spike (2026-10-21): the kitty graphics probe's reply
+    /// and the DA1 reply decode as markers, every other APC vanishes, and a
+    /// reply split across bursts still assembles.
+    #[test]
+    fn graphics_replies_and_da1_are_markers_and_other_apcs_vanish() {
+        assert_eq!(keys(b"\x1b_Gi=31;OK\x1b\\"), vec![Key::GraphicsOk]);
+        assert_eq!(
+            keys(b"\x1b_Gi=31;ENOENT:unknown\x1b\\"),
+            vec![Key::GraphicsErr]
+        );
+        // A reply for a frame image (id 1) is not the probe's.
+        assert_eq!(keys(b"\x1b_Gi=1;OK\x1b\\"), vec![]);
+        // Another APC altogether.
+        assert_eq!(keys(b"\x1b_tmux;hello\x1b\\"), vec![]);
+        // DA1 reply; DA2 is not it; a request is not it.
+        assert_eq!(keys(b"\x1b[?62;22c"), vec![Key::DeviceAttributes]);
+        assert_eq!(keys(b"\x1b[>1;10;0c"), vec![]);
+        assert_eq!(keys(b"\x1b[c"), vec![]);
+        // The probe's two answers in one burst, in the order a kitty sends
+        // them, then a typed key.
+        assert_eq!(
+            keys(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;c1"),
+            vec![Key::GraphicsOk, Key::DeviceAttributes, Key::Char('1')]
+        );
+        // Split across bursts.
+        let mut p = KeyParser::new();
+        assert_eq!(p.feed(b"\x1b_Gi=3"), vec![]);
+        assert_eq!(p.feed(b"1;OK\x1b"), vec![]);
+        assert_eq!(p.feed(b"\\"), vec![Key::GraphicsOk]);
+        // BEL ends one too, and an abandoned APC (ESC then not ST) does not
+        // eat what follows.
+        assert_eq!(keys(b"\x1b_Gi=31;OK\x07"), vec![Key::GraphicsOk]);
+        assert_eq!(
+            keys(b"\x1b_Gi=31;OK\x1b[A"),
+            vec![Key::Up],
+            "the abandoning ESC opens the CSI after it"
+        );
+        let mut p = KeyParser::new();
+        assert_eq!(p.feed(b"\x1b_Gi=31;OK\x1b"), vec![]);
+        assert_eq!(
+            p.feed(b"x"),
+            vec![Key::Esc, Key::Char('x')],
+            "split: the ESC that ended the burst is an Esc"
+        );
+        // `ESC _` is never Alt+_.
+        assert!(!keys(b"\x1b_Gi=31;OK\x1b\\").contains(&Key::Alt('_')));
     }
 }
