@@ -375,12 +375,18 @@ pub(in super::super) fn exercise(registry: &Fixture, saved: &Durable) -> TestRes
     );
     let mut w = w.reboot_house(registry, &w.snapshot())?;
     assert!(w.held(first)? && w.held(second)?);
-    assert!(
-        w.ticket(GOD, third, original.id().get())
-            .and_then(|t| w.prepare(&t, FIRST + 19))
-            .is_err(),
-        "cold boot lost held seats"
-    );
+    {
+        // Probe on a separate cold boot of the same state: a refused Open
+        // leaves its intent pending in that host (no timeout cleanup), which
+        // must not block the real third-seat Open below.
+        let mut cold = w.reboot_house(registry, &w.snapshot())?;
+        assert!(
+            cold.ticket(GOD, third, original.id().get())
+                .and_then(|t| cold.prepare(&t, FIRST + 19))
+                .is_err(),
+            "cold boot lost held seats"
+        );
+    }
     close(&mut w, BUYER, FIRST + 10, FIRST + 20, first)?;
     let freed = w.ticket(GOD, third, original.id().get())?;
     w.land(&freed, FIRST + 21, third, false)?;
