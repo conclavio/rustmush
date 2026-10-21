@@ -61,7 +61,8 @@ pub mod moon;
 pub mod ore;
 pub mod rig;
 pub mod scripted;
-/// **Doc 20 cut SM.2**: the mining sites stripped away for the v8-shaped lane variants.
+/// **Doc 20 cut SM.2**: the mining sites stripped away for the v8-shaped lane variants; since
+/// SM.6 also the helpers that open a keyed site.
 pub mod sites;
 /// **Doc 20 cut SM.3a**: Occator's rigs and the refit row stripped away for the v9-shaped
 /// lane variants.

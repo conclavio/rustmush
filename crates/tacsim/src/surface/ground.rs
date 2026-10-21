@@ -209,6 +209,42 @@ impl SiteGeology {
     }
 }
 
+#[cfg(test)]
+impl SiteGeology {
+    /// **A synthetic table for unit tests** (doc 20 cut SM.6): every pocket barren and 0 t
+    /// except the listed `(site-local pocket, family, class, tonnes)` slots; fields blank.
+    /// What a pure consumer of the table (`crate::surface::opening::opening_plan`) reads,
+    /// with no key and no body.
+    pub(crate) fn for_test(ore: &[((i64, i64), OreFamily, Word, u8)]) -> Self {
+        let pocket_count = usize::try_from(SITE_POCKETS * SITE_POCKETS).unwrap_or(0);
+        let mut pockets = vec![[encode(Word::Barren, 0); 4]; pocket_count];
+        for ((px, py), family, class, tonnes) in ore {
+            let slot = OreFamily::ALL
+                .iter()
+                .position(|f| f == family)
+                .unwrap_or_else(|| panic!("a family"));
+            let index = local_index(*px, *py, SITE_POCKETS).unwrap_or_else(|| panic!("on site"));
+            if let Some(code) = pockets.get_mut(index).and_then(|row| row.get_mut(slot)) {
+                *code = encode(*class, *tonnes);
+            }
+        }
+        Self {
+            body: CanonicalId::new("ceres").unwrap_or_else(|_| panic!("an id")),
+            origin: (0, 0),
+            key_version: 1,
+            shifts: [0; 16],
+            fields: vec![
+                FieldCode {
+                    words: [Word::Barren; 4],
+                    counts: [0; 4],
+                };
+                64
+            ],
+            pockets,
+        }
+    }
+}
+
 /// Build one site's geology table: its 64 fields under their blocks' shifts, and their pockets.
 ///
 /// # Errors

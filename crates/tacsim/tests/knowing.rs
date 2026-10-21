@@ -484,7 +484,14 @@ fn stock(rig: &mut Rig) {
         let gated: Vec<&str> = out
             .lines()
             .filter(|line| {
-                line.ends_with(']') && !line.starts_with("sky: ") && !line.starts_with("geology: ")
+                // Doc 20 cut SM.6 (D2): a keyed site laid up and still opening is the site
+                // clerk's work, not the stock clerks'; a rig that hops to a site opens it.
+                line.ends_with(']')
+                    && !line.starts_with("sky: ")
+                    && !line.starts_with("geology: ")
+                    && !(line.contains(" site: ")
+                        && (line.contains("; opening, ")
+                            || line.contains("; opening: its ground is still being mapped")))
             })
             .collect();
         if gated.len() > 1 && gated.iter().all(|line| line.ends_with("[ready]")) {
@@ -737,6 +744,9 @@ fn on_pad_as(
     );
     board(rig, pilot);
     let hull = ObjId(row.hull);
+    // Doc 20 cut SM.6 (D2): a keyed site's pad is closed until its clerk has opened every
+    // deposit, so the site is opened first.
+    open_ahuna(rig);
     let t = file_and_launch(rig, pilot, hull, "+ship/undock ahuna");
     let _ = to_ic(rig, t.plan.depart_ic + t.plan.total_s);
     assert!(
@@ -750,6 +760,17 @@ fn on_pad_as(
     let tvs = rigs_of(&rig.tw, pilot);
     assert_eq!(tvs.len(), n_rigs);
     (pilot, row, tvs)
+}
+
+/// **Open Ahuna Flank** (doc 20 cut SM.6, D2; `support::sites::open_site`), keeping the landed
+/// bundles' typed post-images for a reboot; the port fires it took. A no-op once it is open.
+fn open_ahuna(rig: &mut Rig) -> u32 {
+    let mut kept = Vec::new();
+    let fires = support::sites::open_site_keeping(&mut rig.tw, AHUNA, &mut |ops| kept.push(ops));
+    for ops in kept {
+        keep(rig, ops);
+    }
+    fires
 }
 
 /// [`on_pad_as`] for the usual pilot.
@@ -3217,7 +3238,9 @@ fn sm4a_a_site_that_does_not_build_reads_dark_until_the_boot() {
         .module_state::<GeologyState>()
         .expect("the geology slot");
     assert_eq!(state.failed(), vec![cid(AHUNA)]);
-    assert!(state.wanted().is_empty());
+    // Doc 20 cut SM.6 (lead ruling 1): after a reboot every keyed site's clerk wants its own
+    // cold site, so the other sites may be wanted here; the failed one never is.
+    assert!(!state.wanted().contains(&cid(AHUNA)));
     no_refused_writes(&rig.tw);
 }
 

@@ -2872,18 +2872,26 @@ impl ActionProvider for SurfaceDoneProvider {
                         code: RefusedCode::SpoilGone,
                     }
                 } else {
-                    for (good, qty) in goods {
-                        // A refusal here cannot be recorded in this bundle (its debit may be
-                        // staged): the whole bundle is refused, nothing is written, and the
-                        // tick's next finish records `SpoilGone` (`failed`).
+                    // Doc 20 cut SM.6 (lead ruling 5; SM.3b's round F3): ONE
+                    // `transfer_many`, which stages the spoil's pool census once for every
+                    // new pool, so a two-ore hopper dumps onto a fresh spoil in one bundle.
+                    // A refusal here cannot be recorded in this bundle (a debit may be
+                    // staged): the whole bundle is refused, nothing is written, and the
+                    // tick's next finish records `SpoilGone` (`failed`).
+                    let moves: Vec<(CanonicalId, u64)> = goods
+                        .iter()
+                        .filter(|(_, qty)| **qty > 0)
+                        .map(|(good, qty)| (good.clone(), *qty))
+                        .collect();
+                    if !moves.is_empty() {
                         self.inventory
-                            .transfer(txn, hopper, spoil, good, *qty)
+                            .transfer_many(txn, hopper, spoil, &moves)
                             .map_err(|error| {
                                 tracing::warn!(
                                     tv = tv.0,
                                     act = ordinal,
                                     spoil = spoil_vault,
-                                    good = %good,
+                                    goods = moves.len(),
                                     %error,
                                     "tacsim: a dump's transfer onto the spoil refused; the next \
                                      finish records it refused"

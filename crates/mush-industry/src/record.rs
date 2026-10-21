@@ -383,6 +383,15 @@ pub struct OreDeposit {
     endpoint: EndpointRef,
     initial_reserve: u64,
     revision: u64,
+    /// Doc 20 cut SM.6 (§3.4, D-20-5): the provider that works this body, when
+    /// it is not industry's own `@extract` (`tacsim.surface` for a surface
+    /// block). Absent on every staff-opened body, so those encode byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    external: Option<SmolStr>,
+    /// Doc 20 cut SM.6 (§9.6, D-20-12): the issuer whose jurisdiction the body
+    /// lies in — the contest offer's jurisdiction row reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    jurisdiction: Option<PrincipalId>,
 }
 
 #[derive(Deserialize)]
@@ -399,6 +408,10 @@ struct OreDepositWire {
     endpoint: EndpointRef,
     initial_reserve: u64,
     revision: u64,
+    #[serde(default)]
+    external: Option<SmolStr>,
+    #[serde(default)]
+    jurisdiction: Option<PrincipalId>,
 }
 
 impl<'de> Deserialize<'de> for OreDeposit {
@@ -419,9 +432,25 @@ impl<'de> Deserialize<'de> for OreDeposit {
             wire.endpoint,
             wire.initial_reserve,
             wire.revision,
+            wire.external,
+            wire.jurisdiction,
         )
         .map_err(serde::de::Error::custom)
     }
+}
+
+/// Largest [`OreDeposit::external`] provider name, in bytes (doc 20 cut SM.6).
+pub const MAX_EXTERNAL_BYTES: usize = 64;
+
+/// Whether `name` is an external provider name: `1..=`[`MAX_EXTERNAL_BYTES`]
+/// bytes of `[a-z0-9_.]` (doc 20 cut SM.6).
+#[must_use]
+pub fn is_external_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_EXTERNAL_BYTES
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_.".contains(&byte))
 }
 
 impl OreDeposit {
@@ -455,6 +484,8 @@ impl OreDeposit {
             endpoint,
             initial_reserve,
             1,
+            None,
+            None,
         )
     }
 
@@ -471,7 +502,15 @@ impl OreDeposit {
         endpoint: EndpointRef,
         initial_reserve: u64,
         revision: u64,
+        external: Option<SmolStr>,
+        jurisdiction: Option<PrincipalId>,
     ) -> Result<Self, IndustryRecordError> {
+        if external
+            .as_ref()
+            .is_some_and(|name| !is_external_name(name))
+        {
+            return Err(IndustryRecordError::External);
+        }
         if initial_reserve == 0 || initial_reserve > MAX_ORE_RESERVE {
             return Err(IndustryRecordError::Reserve {
                 max: MAX_ORE_RESERVE,
@@ -492,7 +531,47 @@ impl OreDeposit {
             endpoint,
             initial_reserve,
             revision,
+            external,
+            jurisdiction,
         })
+    }
+
+    /// The same body worked by the external provider `name` (doc 20 cut SM.6,
+    /// §3.4): industry's own `@extract/start` and `@extract/cycle` then refuse
+    /// it, and the 60 s sweep asks the composed `ExternalDraws` to account for
+    /// its pool.
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::External`] for a name that is not
+    /// `1..=`[`MAX_EXTERNAL_BYTES`] bytes of `[a-z0-9_.]`.
+    pub fn with_external(mut self, name: &str) -> Result<Self, IndustryRecordError> {
+        if !is_external_name(name) {
+            return Err(IndustryRecordError::External);
+        }
+        self.external = Some(SmolStr::new(name));
+        Ok(self)
+    }
+
+    /// The same body recorded under `who`'s jurisdiction (doc 20 cut SM.6,
+    /// §9.6): the contest offer's default jurisdiction row
+    /// ([`ActsForJurisdiction`](crate::seams::ActsForJurisdiction)) reads it.
+    #[must_use]
+    pub fn with_jurisdiction(mut self, who: PrincipalId) -> Self {
+        self.jurisdiction = Some(who);
+        self
+    }
+
+    /// The external provider that works this body, if any (doc 20 cut SM.6).
+    #[must_use]
+    pub const fn external(&self) -> Option<&SmolStr> {
+        self.external.as_ref()
+    }
+
+    /// The issuer whose jurisdiction this body lies in, if recorded (doc 20
+    /// cut SM.6).
+    #[must_use]
+    pub const fn jurisdiction(&self) -> Option<&PrincipalId> {
+        self.jurisdiction.as_ref()
     }
 
     /// Identity.
@@ -889,6 +968,24 @@ pub struct ClaimRecord {
     transferability: Transferability,
     contest_state: ContestState,
     revision: u64,
+    /// Doc 20 cut SM.6 (§9.2–§9.4): the block's tenure epoch when this record
+    /// was staked, taken over or transferred; 0 when filed. Skipped at 0, so a
+    /// record that never moved encodes byte-identically to before.
+    #[serde(default, skip_serializing_if = "is_zero_epoch")]
+    epoch: u32,
+    /// Doc 20 cut SM.6 (§9.4): the holder's discovery stamp, priority by
+    /// discovery in a contest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    discovered_at: Option<ClockStamp>,
+    /// Doc 20 cut SM.6 (§9.2, D-20-12): set by a lapse — the record half of
+    /// `AssetLifecycle::Abandoned`, whose title half is the economy's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lapsed_at: Option<ClockStamp>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference
+const fn is_zero_epoch(epoch: &u32) -> bool {
+    *epoch == 0
 }
 
 #[derive(Deserialize)]
@@ -905,6 +1002,12 @@ struct ClaimRecordWire {
     transferability: Transferability,
     contest_state: ContestState,
     revision: u64,
+    #[serde(default)]
+    epoch: u32,
+    #[serde(default)]
+    discovered_at: Option<ClockStamp>,
+    #[serde(default)]
+    lapsed_at: Option<ClockStamp>,
 }
 
 impl<'de> Deserialize<'de> for ClaimRecord {
@@ -926,6 +1029,12 @@ impl<'de> Deserialize<'de> for ClaimRecord {
             wire.contest_state,
             wire.revision,
         )
+        .map(|record| Self {
+            epoch: wire.epoch,
+            discovered_at: wire.discovered_at,
+            lapsed_at: wire.lapsed_at,
+            ..record
+        })
         .map_err(serde::de::Error::custom)
     }
 }
@@ -996,6 +1105,9 @@ impl ClaimRecord {
             transferability,
             contest_state,
             revision,
+            epoch: 0,
+            discovered_at: None,
+            lapsed_at: None,
         })
     }
 
@@ -1084,6 +1196,390 @@ impl ClaimRecord {
             .checked_add(1)
             .ok_or(IndustryRecordError::RevisionOverflow)?;
         Ok(next)
+    }
+
+    // ---- doc 20 cut SM.6: tenure (§9.2–§9.4, D-20-12) ----
+
+    /// The block's tenure epoch when this record was staked, taken over or
+    /// transferred; 0 when filed ("since the block opened").
+    #[must_use]
+    pub const fn epoch(&self) -> u32 {
+        self.epoch
+    }
+    /// The holder's discovery stamp, if one was recorded (§9.4's priority).
+    #[must_use]
+    pub const fn discovered_at(&self) -> Option<&ClockStamp> {
+        self.discovered_at.as_ref()
+    }
+    /// When the claim lapsed, if it has (the record half of
+    /// `AssetLifecycle::Abandoned`).
+    #[must_use]
+    pub const fn lapsed_at(&self) -> Option<&ClockStamp> {
+        self.lapsed_at.as_ref()
+    }
+    /// Whether the claim has lapsed: a lapsed claim authorizes nothing and is
+    /// taken over, never renewed (§9.2).
+    #[must_use]
+    pub const fn is_lapsed(&self) -> bool {
+        self.lapsed_at.is_some()
+    }
+
+    fn bumped(&self) -> Result<Self, IndustryRecordError> {
+        let mut next = self.clone();
+        next.revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(IndustryRecordError::RevisionOverflow)?;
+        Ok(next)
+    }
+
+    /// The post-image of a renewal in place (`ClaimRenew`, §9.2): a new term,
+    /// nothing else.
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::RevisionOverflow`] at `u64::MAX`.
+    pub fn with_term(&self, term: ClockStamp) -> Result<Self, IndustryRecordError> {
+        let mut next = self.bumped()?;
+        next.term = term;
+        Ok(next)
+    }
+
+    /// The post-image of a lapse (§9.2): `lapsed_at = at`; holder, term and
+    /// contest state are kept (the last owner is kept, as `Abandoned` keeps it).
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::RevisionOverflow`] at `u64::MAX`.
+    pub fn lapsed(&self, at: ClockStamp) -> Result<Self, IndustryRecordError> {
+        let mut next = self.bumped()?;
+        next.lapsed_at = Some(at);
+        Ok(next)
+    }
+
+    /// The post-image of the Abandoned take-over (§9.2): a new holder, term,
+    /// discovery stamp and epoch, `lapsed_at` cleared, `Uncontested`.
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::RevisionOverflow`] at `u64::MAX`.
+    pub fn taken_over(
+        &self,
+        holder: PrincipalId,
+        term: ClockStamp,
+        discovered_at: Option<ClockStamp>,
+        epoch: u32,
+    ) -> Result<Self, IndustryRecordError> {
+        let mut next = self.bumped()?;
+        next.holder = holder;
+        next.term = term;
+        next.discovered_at = discovered_at;
+        next.epoch = epoch;
+        next.lapsed_at = None;
+        next.contest_state = ContestState::Uncontested;
+        Ok(next)
+    }
+
+    /// The post-image of a contest settled for the challenger (the
+    /// seize-transfers-tenure fix, §9.4): a new holder, discovery stamp and
+    /// epoch, `Uncontested`; the term is kept.
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::RevisionOverflow`] at `u64::MAX`.
+    pub fn transferred(
+        &self,
+        holder: PrincipalId,
+        discovered_at: Option<ClockStamp>,
+        epoch: u32,
+    ) -> Result<Self, IndustryRecordError> {
+        let mut next = self.bumped()?;
+        next.holder = holder;
+        next.discovered_at = discovered_at;
+        next.epoch = epoch;
+        next.contest_state = ContestState::Uncontested;
+        Ok(next)
+    }
+}
+
+// ---- doc 20 cut SM.6: the block's tenure record (§9.2–§9.4, D-20-12) ----
+
+/// Most cooling rows one [`TenureRecord`] keeps: one per holder (§9.2, §11).
+pub const MAX_COOLING_ROWS: usize = 4;
+
+/// What opened a [`TenureRecord`]'s current epoch. `None` on the record is
+/// epoch 0, "since the block opened".
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TenureMark {
+    /// A lapse opened it: the block is nobody's.
+    Lapsed,
+    /// A take-over or a transfer to this holder opened it.
+    Held {
+        /// The holder.
+        holder: PrincipalId,
+    },
+}
+
+/// One holder's cooling term (§9.2): they may not take the block again until
+/// `until`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoolingRow {
+    /// The lapsed holder.
+    pub holder: PrincipalId,
+    /// When the term ends: a take-over at `until` is accepted.
+    pub until: ClockStamp,
+}
+
+/// Whether `until` has run out at `now`: `now >= until` on one clock
+/// generation. A comparison across generations has **not** run out (fail
+/// closed: the row stands and is never pruned).
+fn ran_out(until: &ClockStamp, now: &ClockStamp) -> bool {
+    matches!(
+        now.checked_cmp(until),
+        Ok(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+    )
+}
+
+/// One **block place**'s tenure (doc 20 §9.2–§9.4, D-20-12), shared by the
+/// block's ≤ 4 `Deposit`-subject claims.
+///
+/// **Once per block event.** [`Self::mark`] records what opened the current
+/// epoch, so [`Self::on_lapse`] and [`Self::on_hold`] return `Ok(None)` when a
+/// sibling claim's call in the same block event changes nothing — and the
+/// seam then writes nothing. That is what lets a block's four claims lapse, be
+/// taken over or be transferred in one bundle (an `ActionTxn` refuses a second
+/// mutation of one key) or in four, with the epoch advancing once.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenureRecord {
+    place: ObjId,
+    epoch: u32,
+    since: Option<ClockStamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mark: Option<TenureMark>,
+    cooling: Vec<CoolingRow>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TenureRecordWire {
+    place: ObjId,
+    epoch: u32,
+    since: Option<ClockStamp>,
+    #[serde(default)]
+    mark: Option<TenureMark>,
+    cooling: Vec<CoolingRow>,
+}
+
+impl<'de> Deserialize<'de> for TenureRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = TenureRecordWire::deserialize(deserializer)?;
+        let record = Self {
+            place: wire.place,
+            epoch: wire.epoch,
+            since: wire.since,
+            mark: wire.mark,
+            cooling: wire.cooling,
+        };
+        record.check().map_err(serde::de::Error::custom)?;
+        Ok(record)
+    }
+}
+
+impl TenureRecord {
+    /// A block that has never moved: epoch 0, no mark, no cooling rows.
+    #[must_use]
+    pub const fn fresh(place: ObjId) -> Self {
+        Self {
+            place,
+            epoch: 0,
+            since: None,
+            mark: None,
+            cooling: Vec::new(),
+        }
+    }
+
+    /// The record's own invariants: at most [`MAX_COOLING_ROWS`] rows and one
+    /// row a holder.
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::Cooling`].
+    pub fn check(&self) -> Result<(), IndustryRecordError> {
+        if self.cooling.len() > MAX_COOLING_ROWS {
+            return Err(IndustryRecordError::Cooling {
+                max: MAX_COOLING_ROWS,
+            });
+        }
+        for (i, row) in self.cooling.iter().enumerate() {
+            if self
+                .cooling
+                .iter()
+                .take(i)
+                .any(|other| other.holder == row.holder)
+            {
+                return Err(IndustryRecordError::Cooling {
+                    max: MAX_COOLING_ROWS,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// The block place.
+    #[must_use]
+    pub const fn place(&self) -> ObjId {
+        self.place
+    }
+    /// The current tenure epoch; 0 is "since the block opened" (§9.4: evidence
+    /// stamped inside the current epoch counts).
+    #[must_use]
+    pub const fn epoch(&self) -> u32 {
+        self.epoch
+    }
+    /// When the current epoch began; `None` for epoch 0.
+    #[must_use]
+    pub const fn since(&self) -> Option<&ClockStamp> {
+        self.since.as_ref()
+    }
+    /// What opened the current epoch; `None` for epoch 0.
+    #[must_use]
+    pub const fn mark(&self) -> Option<&TenureMark> {
+        self.mark.as_ref()
+    }
+    /// The cooling rows, one per holder.
+    #[must_use]
+    pub fn cooling(&self) -> &[CoolingRow] {
+        &self.cooling
+    }
+
+    /// `holder`'s live cooling term at `now`, if any: live while `now <
+    /// until`. A stamp on another clock generation is treated as cooling (fail
+    /// closed: refuse).
+    #[must_use]
+    pub fn cooling_for(&self, holder: &PrincipalId, now: &ClockStamp) -> Option<&ClockStamp> {
+        self.cooling
+            .iter()
+            .find(|row| &row.holder == holder)
+            .map(|row| &row.until)
+            .filter(|until| !ran_out(until, now))
+    }
+
+    fn advanced(&self, at: &ClockStamp, mark: TenureMark) -> Result<Self, IndustryRecordError> {
+        let mut next = self.clone();
+        next.epoch = self
+            .epoch
+            .checked_add(1)
+            .ok_or(IndustryRecordError::EpochOverflow)?;
+        next.since = Some(at.clone());
+        next.mark = Some(mark);
+        Ok(next)
+    }
+
+    /// A lapse of a claim held by `holder` (§9.2). Advances the epoch (`since
+    /// = at`, mark [`TenureMark::Lapsed`]) **unless** a lapse already opened
+    /// it, and records `holder`'s cooling row to `cooling_until`: a row whose
+    /// `until` is not before `cooling_until` is kept unchanged, an earlier one
+    /// is raised to it, a holder with none gets one. When anything is written,
+    /// rows that ran out by `now` are pruned; a fifth live holder drops the
+    /// row with the **soonest** `until` — never the one just written — the
+    /// bounded fail-open of the shortest remaining term (refusing the lapse
+    /// instead would wedge the dormancy sweep with the claim live for ever),
+    /// which the seam logs.
+    ///
+    /// Returns `Ok(None)` when neither the epoch nor the holder's row changed,
+    /// so the seam writes nothing (a sibling claim of the same block event).
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::EpochOverflow`] at `u32::MAX`.
+    pub fn on_lapse(
+        &self,
+        at: &ClockStamp,
+        holder: &PrincipalId,
+        cooling_until: &ClockStamp,
+        now: &ClockStamp,
+    ) -> Result<Option<Self>, IndustryRecordError> {
+        let advance = self.mark != Some(TenureMark::Lapsed);
+        let raise = match self.cooling.iter().find(|row| &row.holder == holder) {
+            None => true,
+            // A stored row is raised only when it is strictly earlier on the
+            // same generation; across generations it is kept (fail closed).
+            Some(row) => matches!(
+                row.until.checked_cmp(cooling_until),
+                Ok(std::cmp::Ordering::Less)
+            ),
+        };
+        if !advance && !raise {
+            return Ok(None);
+        }
+        let mut next = if advance {
+            self.advanced(at, TenureMark::Lapsed)?
+        } else {
+            self.clone()
+        };
+        if raise {
+            next.cooling.retain(|row| &row.holder != holder);
+            next.cooling.push(CoolingRow {
+                holder: holder.clone(),
+                until: cooling_until.clone(),
+            });
+        }
+        next.cooling
+            .retain(|row| &row.holder == holder || !ran_out(&row.until, now));
+        while next.cooling.len() > MAX_COOLING_ROWS {
+            // The soonest-expiring row other than the one just written; a pair
+            // that does not compare (another generation) ranks as later.
+            let mut soonest: Option<usize> = None;
+            for (i, row) in next.cooling.iter().enumerate() {
+                if &row.holder == holder {
+                    continue;
+                }
+                soonest = match soonest.and_then(|j| next.cooling.get(j)) {
+                    Some(best)
+                        if !matches!(
+                            row.until.checked_cmp(&best.until),
+                            Ok(std::cmp::Ordering::Less)
+                        ) =>
+                    {
+                        soonest
+                    }
+                    _ => Some(i),
+                };
+            }
+            match soonest {
+                Some(i) => {
+                    next.cooling.remove(i);
+                }
+                None => break,
+            }
+        }
+        next.check()?;
+        Ok(Some(next))
+    }
+
+    /// A take-over or a transfer to `holder` (§9.2, §9.4). Advances the epoch
+    /// (`since = at`, mark [`TenureMark::Held`]) **unless** a hold by that
+    /// same holder already opened it; otherwise `Ok(None)` and the seam writes
+    /// nothing. Cooling rows that ran out by `at` are pruned when written.
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::EpochOverflow`] at `u32::MAX`.
+    pub fn on_hold(
+        &self,
+        at: &ClockStamp,
+        holder: &PrincipalId,
+    ) -> Result<Option<Self>, IndustryRecordError> {
+        if matches!(&self.mark, Some(TenureMark::Held { holder: held }) if held == holder) {
+            return Ok(None);
+        }
+        let mut next = self.advanced(
+            at,
+            TenureMark::Held {
+                holder: holder.clone(),
+            },
+        )?;
+        next.cooling.retain(|row| !ran_out(&row.until, at));
+        Ok(Some(next))
     }
 }
 
@@ -1730,4 +2226,18 @@ pub enum IndustryRecordError {
     /// output lines, which only a kernel prepare-seam closes.
     #[error("a work-order recipe that mints output must consume at least one input")]
     RecipeMintsFromNothing,
+    /// An external provider name that is not 1..=64 bytes of `[a-z0-9_.]`
+    /// (doc 20 cut SM.6).
+    #[error("an external provider name is 1..=64 bytes of [a-z0-9_.]")]
+    External,
+    /// A block's tenure epoch at `u32::MAX` (doc 20 cut SM.6).
+    #[error("a tenure epoch would overflow")]
+    EpochOverflow,
+    /// A tenure record past its cooling-row cap, or with two rows for one
+    /// holder (doc 20 cut SM.6).
+    #[error("a block keeps at most {max} cooling rows, one a holder")]
+    Cooling {
+        /// The cap.
+        max: usize,
+    },
 }

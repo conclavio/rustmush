@@ -380,6 +380,22 @@ impl InventoryFamilies {
         commodity: &CanonicalId,
         operation: ResourceOperation,
     ) -> Result<Moved, InventoryError> {
+        self.apply_counted(txn, endpoint, commodity, operation, CensusWrite::Write)
+    }
+
+    /// [`Self::apply`] with the census write named: [`CensusWrite::Write`]
+    /// counts a new pool here (every single-pool verb), [`CensusWrite::Staged`]
+    /// creates a new pair **without** touching `inventory.census`, because the
+    /// caller ([`Self::transfer_many`]) has already staged the count for every
+    /// new pool of its bundle (doc 20 cut SM.6, lead ruling 5).
+    fn apply_counted(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        commodity: &CanonicalId,
+        operation: ResourceOperation,
+        census: CensusWrite,
+    ) -> Result<Moved, InventoryError> {
         let (key, pair) = self.load_pair(txn, endpoint, commodity)?;
         let existed = pair.is_some();
         let (scalar, book) = match pair {
@@ -388,7 +404,10 @@ impl InventoryFamilies {
                 // E7c2 fold B8: `MAX_POOLS_PER_ENDPOINT` is counted HERE, on the
                 // create path only, so crediting one of the endpoint's existing
                 // pools still succeeds past the cap.
-                self.add_pool(txn, endpoint)?;
+                match census {
+                    CensusWrite::Write => self.add_pool(txn, endpoint)?,
+                    CensusWrite::Staged => {}
+                }
                 self.fresh_pair(endpoint, commodity)?
             }
         };
@@ -503,6 +522,104 @@ impl InventoryFamilies {
             moved: amount,
             ..moved
         })
+    }
+
+    /// Move several commodities between two endpoints in ONE bundle, staging the
+    /// destination's pool census once for every new pool (doc 20 cut SM.6, lead
+    /// ruling 5; SM.3b's round F3).
+    ///
+    /// **Why it exists.** [`Self::transfer`] counts a new destination pool by
+    /// writing `inventory.census` for that endpoint, and an [`ActionTxn`] refuses
+    /// a second mutation of one key (`ActionTxn::require_fresh_mutation`,
+    /// `mush-core/src/action_state.rs`, `ActionStateError::DuplicateMutation`).
+    /// So two `transfer`s that each open a new pool at one endpoint can never
+    /// share a bundle: a two-ore hopper dumped onto a fresh spoil refused. Here
+    /// the new pools are counted first and the census is staged **once**
+    /// (`PoolCensus::checked_add_n`), then each move runs as `transfer` does —
+    /// debit, credit (a new pair created without a second census write), carry
+    /// the lineage.
+    ///
+    /// Refused before anything is staged: `from == to`
+    /// ([`InventoryError::SameEndpoint`]), an empty list or a zero amount
+    /// ([`InventoryRecordError::ZeroQuantity`]), a commodity named twice
+    /// ([`InventoryError::DuplicateCommodity`]), more than
+    /// [`MAX_POOLS_PER_ENDPOINT`](crate::record::MAX_POOLS_PER_ENDPOINT) moves
+    /// or new pools past the destination's cap
+    /// ([`InventoryRecordError::EndpointPools`]).
+    ///
+    /// # Errors
+    /// Those, plus every refusal of the debit, the credit and the lineage carry;
+    /// **nothing is written on an error** (`ActionTxn` discards the bundle).
+    pub fn transfer_many(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        from: EndpointRef,
+        to: EndpointRef,
+        moves: &[(CanonicalId, u64)],
+    ) -> Result<Vec<Moved>, InventoryError> {
+        if from == to {
+            return Err(InventoryError::SameEndpoint);
+        }
+        if moves.is_empty() || moves.iter().any(|(_, amount)| *amount == 0) {
+            return Err(InventoryError::Record(InventoryRecordError::ZeroQuantity));
+        }
+        if moves.len() > crate::record::MAX_POOLS_PER_ENDPOINT {
+            return Err(InventoryError::Record(
+                InventoryRecordError::EndpointPools {
+                    max: crate::record::MAX_POOLS_PER_ENDPOINT,
+                },
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (commodity, _) in moves {
+            if !seen.insert(commodity) {
+                return Err(InventoryError::DuplicateCommodity);
+            }
+        }
+        // Which destination pairs are new: counted before any write, so the
+        // census is one staged mutation for the whole bundle.
+        let mut fresh = Vec::with_capacity(moves.len());
+        for (commodity, _) in moves {
+            let (_, pair) = self.load_pair(txn, to, commodity)?;
+            fresh.push(pair.is_none());
+        }
+        let new_pools = fresh.iter().filter(|is_new| **is_new).count();
+        if new_pools > 0 {
+            let n = u32::try_from(new_pools).map_err(|_| {
+                InventoryError::Record(InventoryRecordError::EndpointPools {
+                    max: crate::record::MAX_POOLS_PER_ENDPOINT,
+                })
+            })?;
+            let existing = txn.get(&self.census, &to)?.copied();
+            let next = existing.unwrap_or_default().checked_add_n(n)?;
+            if existing.is_some() {
+                txn.replace(&self.census, &to, next)?;
+            } else {
+                txn.insert(&self.census, &to, next)?;
+            }
+        }
+        let mut out = Vec::with_capacity(moves.len());
+        for ((commodity, amount), is_new) in moves.iter().zip(fresh) {
+            self.debit(txn, from, commodity, *amount)?;
+            let census = if is_new {
+                CensusWrite::Staged
+            } else {
+                CensusWrite::Write
+            };
+            let moved = self.apply_counted(
+                txn,
+                to,
+                commodity,
+                ResourceOperation::Increase { amount: *amount },
+                census,
+            )?;
+            self.carry_lineage(txn, from, to, commodity, *amount)?;
+            out.push(Moved {
+                moved: *amount,
+                ..moved
+            });
+        }
+        Ok(out)
     }
 
     /// ---- Doc 18 §4.3 / D-18-26, cut IC10 — a transfer that writes its own fact ----
@@ -1713,6 +1830,21 @@ pub enum InventoryError {
         "this endpoint has recorded too many moves in the last day to record another; try again later"
     )]
     MarkerRingFull,
+    /// A [`InventoryFamilies::transfer_many`] named one commodity twice (doc 20
+    /// cut SM.6): two moves of one pool would mutate one pair twice in the
+    /// bundle, so the list is refused before anything is staged.
+    #[error("that move names one commodity twice")]
+    DuplicateCommodity,
+}
+
+/// Whether a create path counts its new pool in `inventory.census` itself, or
+/// its caller staged the count for the whole bundle (doc 20 cut SM.6).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CensusWrite {
+    /// Count the new pool here (every single-pool verb).
+    Write,
+    /// The caller staged the census once for every new pool of its bundle.
+    Staged,
 }
 
 impl From<ReservationBookError> for InventoryError {

@@ -9,6 +9,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use static_assertions::assert_not_impl_any;
 use tacsim::surface::geology::{FieldGround, PocketRow, ProvinceGround};
 use tacsim::surface::ground::{SiteGeology, SiteGround};
+use tacsim::surface::opening::OpeningRow;
 
 assert_not_impl_any!(ResolvedActionInvocation: Serialize, DeserializeOwned);
 assert_not_impl_any!(ResolvedAuthoritativeOffer: Serialize, DeserializeOwned);
@@ -23,6 +24,10 @@ assert_not_impl_any!(PocketRow: Serialize, DeserializeOwned);
 assert_not_impl_any!(FieldGround: Serialize, DeserializeOwned);
 assert_not_impl_any!(SiteGeology: Serialize, DeserializeOwned);
 assert_not_impl_any!(SiteGround: Serialize, DeserializeOwned);
+// Doc 20 cut SM.6 (§3.4; reviewer F6): a site's opening plan row carries the gross and the
+// pockets' worked shares — derived truth, held server-side, never a wire value. (The pocket
+// cursor, `tacsim.pockets`, is a durable family and must serialise; it is never projected.)
+assert_not_impl_any!(OpeningRow: Serialize, DeserializeOwned);
 
 #[test]
 fn private_truth_wrappers_have_no_serde_contract() {
@@ -41,6 +46,8 @@ fn private_truth_wrappers_have_no_serde_contract() {
         std::any::type_name::<FieldGround>(),
         std::any::type_name::<SiteGeology>(),
         std::any::type_name::<SiteGround>(),
+        // Doc 20 cut SM.6: the opening plan's row.
+        std::any::type_name::<OpeningRow>(),
     ] {
         assert!(name.contains("Geology") || name.contains("Ground") || name.contains("Row"));
     }

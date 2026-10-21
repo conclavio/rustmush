@@ -510,6 +510,14 @@ impl GameModule for TacsimRuleset {
         // It must come before the first `reg.command`, or the production composition
         // refuses.
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        // Doc 20 cut SM.6 (D1): on the wired roster — the one that hands the inventory cell,
+        // which always composes `mush-industry` — this layer delegates its typed families to
+        // `industry`, so industry's sweep can read `tacsim.pockets` through its own module
+        // context (the composed `ExternalDraws`). It widens the bundle, never the gate:
+        // industry stages no write on a tacsim family.
+        if self.inventory.is_some() {
+            reg.delegate_state_families(mush_industry::NS)?;
+        }
         let packs = match &self.loaded {
             Ok(packs) => packs.clone(),
             Err(detail) => return Err(ModError::msg(detail.clone())),
@@ -529,6 +537,9 @@ impl GameModule for TacsimRuleset {
         // in after composition (`surface::install_geology`), the status the boot pass decides
         // once, the bodies' tables and the site ground cache. Never persisted.
         reg.state(surface::GeologyState::default());
+        // Doc 20 cut SM.6 (§3.4, D2): the sites' opening states the Site readiness line reads,
+        // RAM only, beside the geology slot (never `PortTickState`, which a fire takes whole).
+        reg.state(surface::opening::SiteOpenings::default());
         reg.state(
             match_::mind_tape::TapeStore::new(self.cfg.arena.tape_retained_max_bytes)
                 .map_err(|e| ModError::msg(e.to_string()))?,

@@ -937,7 +937,19 @@ impl PoolCensus {
     /// # Errors
     /// [`InventoryRecordError::EndpointPools`] past the cap.
     pub const fn checked_add(self) -> Result<Self, InventoryRecordError> {
-        let Some(pools) = self.0.checked_add(1) else {
+        self.checked_add_n(1)
+    }
+
+    /// `n` more pools at once (doc 20 cut SM.6, lead ruling 5): the count one
+    /// bundle that opens several new pools at one endpoint stages **once**,
+    /// because an `ActionTxn` mutates one census key once
+    /// ([`InventoryFamilies::transfer_many`](crate::InventoryFamilies::transfer_many)).
+    /// **Refuses past [`MAX_POOLS_PER_ENDPOINT`]**.
+    ///
+    /// # Errors
+    /// [`InventoryRecordError::EndpointPools`] past the cap.
+    pub const fn checked_add_n(self, n: u32) -> Result<Self, InventoryRecordError> {
+        let Some(pools) = self.0.checked_add(n) else {
             return Err(InventoryRecordError::EndpointPools {
                 max: MAX_POOLS_PER_ENDPOINT,
             });

@@ -2419,7 +2419,8 @@ fn refusal(kind: DepartRefusalKind, line: String) -> DepartRefusal {
 /// **The site gate** (doc 20 cut SM.2, lead override 3): the destination's site port, when
 /// it is one — refused with [`SITE_CLOSED`] when its readiness lines are not all ready.
 /// The one check `+ship/plan`, the filing and the queue's dry run (`executor::plan_queue`)
-/// share.
+/// share. Since doc 20 cut SM.6 (D2) that includes a keyed site still opening its deposits
+/// (warming, "opening, N of M", or failed): its pad admits no hull until its clerk is done.
 ///
 /// # Errors
 ///

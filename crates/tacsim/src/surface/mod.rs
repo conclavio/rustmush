@@ -50,6 +50,17 @@
 //! - the scan and the sounding are two new kinds on SM.3b's one start and one finish
 //!   (`crate::surface::act`), and the tick tells their readings and the site-wide heard line.
 //!
+//! **Doc 20 cut SM.6** makes a site's ore conserved industry quantity before anyone mines it
+//! (§3.4, D-20-5):
+//!
+//! - [`opening`](crate::surface::opening) — the site's opening plan, one deposit per (block,
+//!   family) with ore, its gross from the keyed site geology and the worked share per pocket,
+//!   and the RAM slot the Site readiness line reads; the site clerk acts on it on the port
+//!   tick (`crate::port::site::site_step`);
+//! - [`cursor`](crate::surface::cursor) — `tacsim.pockets`, the pocket cursor sidecar per
+//!   deposit, what industry's sweep reconciles each pool against and the lock's one home;
+//! - [`tenure`](crate::surface::tenure) — §9's numbers, which SM.10 reads.
+//!
 //! **The site ground is warmed off the act's path** (lead ruling 6, D11): the command, the
 //! start's offer and `+tv` status only peek the cache
 //! ([`ground::site_ground_cached`](crate::surface::ground::site_ground_cached)); a cold peek
@@ -70,11 +81,14 @@ pub mod act;
 pub mod address;
 pub mod chart;
 pub mod commands;
+pub mod cursor;
 pub mod excursion;
 pub mod geology;
 pub mod ground;
 pub mod key;
+pub mod opening;
 pub mod reading;
+pub mod tenure;
 pub mod tick;
 
 use std::collections::{BTreeMap, BTreeSet};

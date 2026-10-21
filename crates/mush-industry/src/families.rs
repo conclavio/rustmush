@@ -37,6 +37,7 @@ use thiserror::Error;
 use crate::record::{
     AppliedMarker, ClaimId, ClaimIndex, ClaimRecord, ClaimSubject, ExtractionRun,
     FACT_EXTRACTION_CYCLED, IndustryRecordError, OreDeposit, OreDepositId, PlaceCensus,
+    TenureRecord,
 };
 
 /// Domain tag of every derived industry id. One domain, one encoder.
@@ -123,6 +124,28 @@ pub struct IndustryFamilies {
     /// remain the durable replay guards, so the ring may retire an old marker the
     /// delivery path will never read again.
     pub wo_marker_ring: StateFamilyHandle<ObjId, crate::record::MarkerRing>,
+    /// `industry.tenure` — one [`TenureRecord`] per **block place** (doc 20
+    /// cut SM.6, §9.2–§9.4, D-20-12), shared by the place's ≤ 4
+    /// `Deposit`-subject claims: its epoch, what opened it, and the cooling
+    /// rows. Absent is [`TenureRecord::fresh`] (epoch 0, "since the block
+    /// opened").
+    ///
+    /// **The block-event contract.** The per-claim seams
+    /// ([`Self::lapse_claim`], [`Self::take_over_claim`],
+    /// [`Self::transfer_tenure`]) each write **the claim**, and write the
+    /// tenure **only when** [`TenureRecord::on_lapse`] /
+    /// [`TenureRecord::on_hold`] returns `Some`. A block event over the
+    /// block's claims may therefore run as **one bundle** — the first claim's
+    /// call stages the tenure and each sibling's call reads that staged
+    /// post-image back (`ActionTxn::get` reads the transaction's own
+    /// post-image), finds nothing to change and writes nothing — or as several;
+    /// either way the epoch advances **once** per block event. **One event per
+    /// bundle per block**: a bundle that would stage two *different* tenure
+    /// changes on one place (a lapse and a take-over; two holders) refuses
+    /// (`ActionStateError::DuplicateMutation`, surfaced as
+    /// [`IndustryError::State`]); siblings in one lapse pass the same
+    /// `cooling_until`.
+    pub tenure: StateFamilyHandle<ObjId, TenureRecord>,
 }
 
 /// The canonical token one claim subject is censused under.
@@ -170,16 +193,46 @@ pub fn derive_deposit_id(request: RequestUid, ordinal: u32) -> Result<OreDeposit
 }
 
 fn derive_u64(class: &str, request: RequestUid, ordinal: u32) -> Result<u64, IndustryError> {
-    let digest = CanonicalHash::for_canonical_value(
-        ID_DOMAIN,
-        1,
-        &json!({ "class": class, "request": request, "ordinal": ordinal }),
-        ID_BYTES,
-    )
-    .map_err(|_| IndustryError::Identity)?;
+    hash_u64(&json!({ "class": class, "request": request, "ordinal": ordinal }))
+}
+
+/// The first eight bytes of one canonical value's digest on [`ID_DOMAIN`].
+fn hash_u64(value: &serde_json::Value) -> Result<u64, IndustryError> {
+    let digest = CanonicalHash::for_canonical_value(ID_DOMAIN, 1, value, ID_BYTES)
+        .map_err(|_| IndustryError::Identity)?;
     let mut bytes = [0_u8; 8];
     bytes.copy_from_slice(&digest.as_bytes()[..8]);
     Ok(u64::from_be_bytes(bytes))
+}
+
+/// Largest system-opening receipt, in bytes (doc 20 cut SM.6, §3.4).
+pub const MAX_RECEIPT_BYTES: usize = 96;
+
+/// Whether `text` is a system-opening receipt: `1..=`[`MAX_RECEIPT_BYTES`]
+/// bytes of `[a-z0-9_./-]` (doc 20 cut SM.6; tacsim's are
+/// `"{entry}/{letter}/{family}"`).
+#[must_use]
+pub fn is_receipt(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= MAX_RECEIPT_BYTES
+        && text.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_./-".contains(&byte)
+        })
+}
+
+/// A system opening's deposit id, derived from its receipt alone (never the
+/// request), so a second opening of one receipt refuses `DepositExists`
+/// whoever submits it (doc 20 §3.4, cut SM.6 D5): the receipt is the replay
+/// guard, and a re-apply, a reboot or a lane re-latch opens nothing twice.
+///
+/// # Errors
+/// [`IndustryError::InvalidReceipt`] for a receipt [`is_receipt`] refuses;
+/// [`IndustryError::Identity`] if the canonical value cannot be hashed.
+pub fn derive_system_deposit_id(receipt: &str) -> Result<OreDepositId, IndustryError> {
+    if !is_receipt(receipt) {
+        return Err(IndustryError::InvalidReceipt);
+    }
+    hash_u64(&json!({ "class": "deposit.system", "receipt": receipt })).map(OreDepositId)
 }
 
 /// What one completed extraction cycle produced.
@@ -372,6 +425,274 @@ impl IndustryFamilies {
         }
         txn.replace(&self.claims, &claim.id(), claim)?;
         Ok(())
+    }
+
+    // ---- doc 20 cut SM.6: tenure (§9.2–§9.4, D-20-12; 10b §3.3's cut-3 handoffs) ----
+    //
+    // Every seam below writes nothing on an error (`ActionTxn` discards the
+    // bundle), takes its durations as arguments (the numbers are the ruleset's:
+    // tacsim's `surface::tenure`), and obeys the block-event contract stated on
+    // [`IndustryFamilies::tenure`]: the claim is always written, the tenure only
+    // when its transition returns `Some`. A first filing ([`Self::file_claim`])
+    // never touches the tenure: epoch 0 is "since the block opened".
+
+    /// The block place a claim's tenure is kept on: the subject's place, or the
+    /// place of its `Deposit` subject.
+    fn claim_place(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        claim: &ClaimRecord,
+    ) -> Result<ObjId, IndustryError> {
+        match claim.subject() {
+            ClaimSubject::Place { place } => Ok(place),
+            ClaimSubject::Deposit { deposit } => Ok(self
+                .deposit(txn, deposit)?
+                .ok_or(IndustryError::NoDeposit)?
+                .place()),
+        }
+    }
+
+    /// One claim at a checked revision.
+    fn claim_at(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        id: ClaimId,
+        expected_revision: u64,
+    ) -> Result<ClaimRecord, IndustryError> {
+        let claim = self.claim(txn, id)?.ok_or(IndustryError::NoClaim)?;
+        if claim.revision() != expected_revision {
+            return Err(IndustryError::StaleRevision);
+        }
+        Ok(claim)
+    }
+
+    /// Stage a tenure post-image (insert or replace).
+    fn put_tenure(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        record: TenureRecord,
+    ) -> Result<(), IndustryError> {
+        let place = record.place();
+        if txn.get(&self.tenure, &place)?.is_some() {
+            txn.replace(&self.tenure, &place, record)?;
+        } else {
+            txn.insert(&self.tenure, &place, record)?;
+        }
+        Ok(())
+    }
+
+    /// One block place's tenure: the stored record (or this bundle's staged
+    /// post-image), else [`TenureRecord::fresh`].
+    ///
+    /// # Errors
+    /// [`IndustryError::State`] if the family is unreadable.
+    pub fn tenure(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        place: ObjId,
+    ) -> Result<TenureRecord, IndustryError> {
+        Ok(txn
+            .get(&self.tenure, &place)?
+            .cloned()
+            .unwrap_or_else(|| TenureRecord::fresh(place)))
+    }
+
+    /// **`ClaimRenew` in place** (doc 20 §9.2): a live claim's term extended to
+    /// `term`, writing **the claim only** — the subject index and the tenure are
+    /// never touched, so a renewal never spends `MAX_CLAIMS_PER_SUBJECT` (a
+    /// lifetime bound: the index is add-only).
+    ///
+    /// # Errors
+    /// [`IndustryError::NoClaim`], [`IndustryError::StaleRevision`],
+    /// [`IndustryError::ClaimLapsed`] (a lapsed claim is taken over, never
+    /// renewed), [`IndustryError::ClaimNotLive`] (Suspended or Seized),
+    /// [`IndustryError::TermNotLater`] (`term` not after the current term, or
+    /// the two on different clock generations).
+    pub fn renew_claim(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        id: ClaimId,
+        expected_revision: u64,
+        term: ClockStamp,
+    ) -> Result<ClaimRecord, IndustryError> {
+        let claim = self.claim_at(txn, id, expected_revision)?;
+        if claim.is_lapsed() {
+            return Err(IndustryError::ClaimLapsed);
+        }
+        if !claim.contest_state().authorizes() {
+            return Err(IndustryError::ClaimNotLive);
+        }
+        if !matches!(
+            term.checked_cmp(claim.term()),
+            Ok(std::cmp::Ordering::Greater)
+        ) {
+            return Err(IndustryError::TermNotLater);
+        }
+        let next = claim.with_term(term)?;
+        txn.replace(&self.claims, &id, next.clone())?;
+        Ok(next)
+    }
+
+    /// **A lapse** (doc 20 §9.2, D-20-12): `lapsed_at = now` on the claim (the
+    /// record half of `AssetLifecycle::Abandoned`; the title half is the
+    /// economy's and the caller's), and the block's tenure through
+    /// [`TenureRecord::on_lapse`] — the epoch advanced once for the block event
+    /// and the holder's one cooling row to `cooling_until`, written only when
+    /// that returns `Some` (the block-event contract on
+    /// [`IndustryFamilies::tenure`]). A cooling row dropped at
+    /// [`MAX_COOLING_ROWS`](crate::record::MAX_COOLING_ROWS) is logged at warn.
+    /// Returns the claim's post-image and the tenure as it stands after the
+    /// call.
+    ///
+    /// # Errors
+    /// [`IndustryError::NoClaim`], [`IndustryError::StaleRevision`],
+    /// [`IndustryError::ClaimLapsed`] (already lapsed),
+    /// [`IndustryError::NoDeposit`] for a `Deposit` subject that is gone, and
+    /// any record refusal.
+    pub fn lapse_claim(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        id: ClaimId,
+        expected_revision: u64,
+        now: &ClockStamp,
+        cooling_until: &ClockStamp,
+    ) -> Result<(ClaimRecord, TenureRecord), IndustryError> {
+        let claim = self.claim_at(txn, id, expected_revision)?;
+        if claim.is_lapsed() {
+            return Err(IndustryError::ClaimLapsed);
+        }
+        let place = self.claim_place(txn, &claim)?;
+        let tenure = self.tenure(txn, place)?;
+        let after = match tenure.on_lapse(now, claim.holder(), cooling_until, now)? {
+            Some(next) => {
+                for row in tenure.cooling() {
+                    let still_live = tenure.cooling_for(&row.holder, now).is_some();
+                    if still_live && !next.cooling().iter().any(|kept| kept.holder == row.holder) {
+                        tracing::warn!(
+                            place = place.0,
+                            holder = %mush_economy::principal_token(&row.holder),
+                            "industry: a block's cooling rows are full; the soonest-ending term \
+                             was dropped to record this lapse (doc 20 §9.2, MAX_COOLING_ROWS)"
+                        );
+                    }
+                }
+                self.put_tenure(txn, next.clone())?;
+                next
+            }
+            None => tenure,
+        };
+        let next = claim.lapsed(now.clone())?;
+        txn.replace(&self.claims, &id, next.clone())?;
+        Ok((next, after))
+    }
+
+    /// `holder`'s live cooling term on one block place at `now`, if any — for a
+    /// first stake's check (doc 20 §9.2; the `acts_for` half is the caller's).
+    ///
+    /// # Errors
+    /// [`IndustryError::State`] if the family is unreadable.
+    pub fn cooling_until(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        place: ObjId,
+        holder: &PrincipalId,
+        now: &ClockStamp,
+    ) -> Result<Option<ClockStamp>, IndustryError> {
+        Ok(self.tenure(txn, place)?.cooling_for(holder, now).cloned())
+    }
+
+    /// **The Abandoned take-over** (doc 20 §9.2): a stake on a lapsed claim
+    /// takes the record over — a new holder, term, discovery stamp and the
+    /// block's new epoch, `Uncontested`, `lapsed_at` cleared — and never files
+    /// a new one, so stake, lapse and re-stake never spend
+    /// `MAX_CLAIMS_PER_SUBJECT`. The tenure advances through
+    /// [`TenureRecord::on_hold`], written only when it returns `Some` (the
+    /// block-event contract). The index is untouched.
+    ///
+    /// The title half — `AssetOp::TransferTitle` on [`ClaimRecord::object`] —
+    /// is the caller's (SM.10), as [`Self::file_claim`]'s title half is the
+    /// command handler's.
+    ///
+    /// # Errors
+    /// [`IndustryError::NoClaim`], [`IndustryError::StaleRevision`],
+    /// [`IndustryError::ClaimNotLapsed`], [`IndustryError::Cooling`] (a holder
+    /// with a live cooling row on this block), [`IndustryError::NoDeposit`],
+    /// and any record refusal.
+    #[allow(clippy::too_many_arguments)]
+    pub fn take_over_claim(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        id: ClaimId,
+        expected_revision: u64,
+        holder: PrincipalId,
+        term: ClockStamp,
+        discovered_at: Option<ClockStamp>,
+        now: &ClockStamp,
+    ) -> Result<ClaimRecord, IndustryError> {
+        let claim = self.claim_at(txn, id, expected_revision)?;
+        if !claim.is_lapsed() {
+            return Err(IndustryError::ClaimNotLapsed);
+        }
+        let place = self.claim_place(txn, &claim)?;
+        let tenure = self.tenure(txn, place)?;
+        if let Some(until) = tenure.cooling_for(&holder, now) {
+            return Err(IndustryError::Cooling {
+                until: until.clone(),
+            });
+        }
+        let epoch = match tenure.on_hold(now, &holder)? {
+            Some(next) => {
+                let epoch = next.epoch();
+                self.put_tenure(txn, next)?;
+                epoch
+            }
+            None => tenure.epoch(),
+        };
+        let next = claim.taken_over(holder, term, discovered_at, epoch)?;
+        txn.replace(&self.claims, &id, next.clone())?;
+        Ok(next)
+    }
+
+    /// **The seize-transfers-tenure fix** (10b §3.3's "a contest settling for
+    /// the challenger transfers the claim once, idempotently"; doc 20 §9.4): the
+    /// claim passes to `to` with `discovered_at`, `Uncontested`, at the
+    /// block's epoch — advanced through [`TenureRecord::on_hold`] once for the
+    /// block event, written only when it returns `Some`. A replay refuses at
+    /// the checked revision. The seam checks no authority, title,
+    /// transferability or pledge: its caller does — the contest offer exposes
+    /// it to staff only (`holder` on a staff seizure), and SM.10's contest
+    /// carries its challenger as a server-authored row of its own.
+    ///
+    /// # Errors
+    /// [`IndustryError::NoClaim`], [`IndustryError::StaleRevision`],
+    /// [`IndustryError::ClaimLapsed`], [`IndustryError::NoDeposit`], and any
+    /// record refusal.
+    pub fn transfer_tenure(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        id: ClaimId,
+        expected_revision: u64,
+        to: PrincipalId,
+        discovered_at: Option<ClockStamp>,
+        now: &ClockStamp,
+    ) -> Result<ClaimRecord, IndustryError> {
+        let claim = self.claim_at(txn, id, expected_revision)?;
+        if claim.is_lapsed() {
+            return Err(IndustryError::ClaimLapsed);
+        }
+        let place = self.claim_place(txn, &claim)?;
+        let tenure = self.tenure(txn, place)?;
+        let epoch = match tenure.on_hold(now, &to)? {
+            Some(next) => {
+                let epoch = next.epoch();
+                self.put_tenure(txn, next)?;
+                epoch
+            }
+            None => tenure.epoch(),
+        };
+        let next = claim.transferred(to, discovered_at, epoch)?;
+        txn.replace(&self.claims, &id, next.clone())?;
+        Ok(next)
     }
 
     // ---- runs ----
@@ -1024,6 +1345,31 @@ pub enum IndustryError {
     /// That work order already exists.
     #[error("that work order already exists")]
     WorkOrderExists,
+    /// A system-opening receipt that is not 1..=96 bytes of `[a-z0-9_./-]`
+    /// (doc 20 cut SM.6).
+    #[error("that opening receipt is malformed")]
+    InvalidReceipt,
+    /// The claim has lapsed: it is taken over, never renewed or transferred
+    /// (doc 20 cut SM.6, §9.2).
+    #[error("that claim has lapsed: take it over")]
+    ClaimLapsed,
+    /// The claim is suspended or seized and authorizes nothing (doc 20 cut
+    /// SM.6).
+    #[error("that claim is suspended or seized")]
+    ClaimNotLive,
+    /// A renewal's term is not after the current one (doc 20 cut SM.6).
+    #[error("a renewal's term must be later than the current term")]
+    TermNotLater,
+    /// A take-over of a claim that has not lapsed (doc 20 cut SM.6, §9.2).
+    #[error("that claim has not lapsed")]
+    ClaimNotLapsed,
+    /// The holder is in their cooling term on this block (doc 20 cut SM.6,
+    /// §9.2).
+    #[error("that holder may not take this block again until its cooling term ends")]
+    Cooling {
+        /// When the term ends.
+        until: ClockStamp,
+    },
 }
 
 impl From<ActionStateError> for IndustryError {

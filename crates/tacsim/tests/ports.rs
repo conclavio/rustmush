@@ -1709,8 +1709,11 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
             map.domain.expect("a domain")
         ));
         if def.site.is_some() {
+            // Doc 20 cut SM.6 (D2, D3): the block vaults counted; this world's geology layer
+            // is dark, so nothing opens and the pad stays open.
             want.push(format!(
-                "  {entry} site: 16 block places, the site clerk and the spoil laid up. [ready]"
+                "  {entry} site: 16 block places, the site clerk, the spoil and 16 block vaults \
+                 laid up; no deposits while the geology layer is dark. [ready]"
             ));
         }
         for org in &def.orgs {

@@ -489,6 +489,11 @@ pub struct PortFamilies {
     /// **`tacsim.chart`** (doc 20 cut SM.4a; §5, D-20-8): one chart row per (character, site).
     pub charts:
         StateFamilyHandle<crate::surface::chart::ChartKey, crate::surface::chart::ChartRecord>,
+    /// **`tacsim.pockets`** (doc 20 cut SM.6; §3.4, D-20-5): one pocket cursor per surface
+    /// deposit, keyed by the deposit's id — what the surface provider drew, and the lock's
+    /// one home. Derived truth, never projected.
+    pub pockets:
+        StateFamilyHandle<mush_industry::OreDepositId, crate::surface::cursor::PocketCursor>,
 }
 
 /// Published in module state by `crate::port_tick::register` — read-only capabilities, the
@@ -525,6 +530,10 @@ pub struct PortHandles {
     /// own, `crate::surface::chart::ChartForgetProvider`); registered on every roster, since it
     /// needs only the chart family.
     pub chart_forget: Option<mush_core::DefinitionRef>,
+    /// **Doc 20 cut SM.6** (§3.4): the registered `tacsim_site_work` action (the site clerk's
+    /// worked transfer, `crate::port::site::SiteWorkProvider`); `Some` exactly when its
+    /// provider registered (the inventory cell filled).
+    pub site_work: Option<mush_core::DefinitionRef>,
 }
 
 pub(crate) fn canonical(text: &str) -> Result<CanonicalId, ModError> {
@@ -551,8 +560,9 @@ pub(crate) fn family_descriptor(
     .map_err(|error| ModError::msg(error.to_string()))
 }
 
-/// Register the four production families (doc 18 cut IC5; doc 20 cut SM.3b's
-/// `tacsim.excursion`; doc 20 cut SM.4a's `tacsim.chart`), unconditionally.
+/// Register the five production families (doc 18 cut IC5; doc 20 cut SM.3b's
+/// `tacsim.excursion`; doc 20 cut SM.4a's `tacsim.chart`; doc 20 cut SM.6's
+/// `tacsim.pockets`), unconditionally.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError> {
     let port_stock = reg.state_family::<StockIssueId, StockReceipt, _, _, _, _>(
         family_descriptor(
@@ -620,11 +630,34 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
             serde_json::to_value(value).map_err(|e| e.to_string())
         },
     )?;
+    // Doc 20 cut SM.6 (§3.4, D-20-5): the pocket cursor sidecar, keyed by the deposit id in
+    // industry's own `{:016x}` text, strict on parse.
+    let pockets = reg.state_family::<
+        mush_industry::OreDepositId,
+        crate::surface::cursor::PocketCursor,
+        _,
+        _,
+        _,
+        _,
+    >(
+        family_descriptor(
+            crate::surface::cursor::POCKETS_FAMILY,
+            "tacsim.pockets_key.v1",
+            "tacsim.pockets",
+        )?,
+        |key: &mush_industry::OreDepositId| Ok(crate::surface::cursor::cursor_key_text(key)),
+        |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+        |value: &crate::surface::cursor::PocketCursor| value.check(),
+        |value: &crate::surface::cursor::PocketCursor| {
+            serde_json::to_value(value).map_err(|e| e.to_string())
+        },
+    )?;
     Ok(PortFamilies {
         port_stock,
         tickets,
         excursions,
         charts,
+        pockets,
     })
 }
 

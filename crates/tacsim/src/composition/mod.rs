@@ -57,6 +57,7 @@ pub mod econ_alerts;
 pub mod econ_canon;
 pub mod econ_inbox;
 pub mod industry_recipes;
+pub mod industry_seams;
 pub mod salvage_source;
 pub mod seat_audit;
 pub mod sim_routes;
@@ -222,6 +223,10 @@ fn compose_server_modules(
     // order it already fixes. `mush-inventory` fills it while registering;
     // `mush-industry`, composed after it, takes the handles out.
     let inventory_handles: mush_inventory::InventoryHandleCell = Arc::default();
+    // Doc 20 cut SM.6 (§3.4): `mush-industry`'s own cell, the same wire the other way round —
+    // industry fills it while registering, and the site opener composed onto it reads
+    // deposits through it.
+    let industry_handles: mush_industry::IndustryHandleCell = Arc::default();
     // Doc 18 cut IC5 (D-18-33; §4.4 "Offline execution" prerequisite): the
     // quantity delegates. `tacsim` joins only on a roster that composes the TacSim
     // layer ([`server_modules_with_tacsim`]): the state-family freeze refuses a
@@ -545,7 +550,14 @@ fn compose_server_modules(
                 // answer Ok. Wired only on the roster that composes the TacSim
                 // layer, whose sheet module registers the instrument at boot; on
                 // every other roster industry still answers `NoLicenceInstrument`.
-                .with_licence_if(tacsim_delegate),
+                .with_licence_if(tacsim_delegate)
+                // Doc 20 cut SM.6 (§3.4): the handle cell, on every roster.
+                .with_handle_cell(Arc::clone(&industry_handles))
+                // Doc 20 cut SM.6 (§3.4, D-20-5, D1, D11, D13): on the roster that composes
+                // the TacSim layer, the site clerks' system opener, the surface draws the
+                // sweep reconciles each surface pool against, and the typed-state delegation
+                // to `tacsim` (the port tick and readiness read deposits).
+                .with_surface_seams_if(tacsim_delegate, &industry_handles),
         ),
         // E7 cut 9 (10b §3.9, D-E7-18/-19/-20/-30/-32): the campaign layer. It
         // composes **after `mush-economy`, `mush-org` and `mush-canon`** — its
@@ -717,6 +729,29 @@ impl IndustryLicenceExt for mush_industry::IndustryModule {
         match (on, crate::economy::licence_instrument()) {
             (true, Some(id)) => self.with_extraction_licence(id),
             _ => self,
+        }
+    }
+}
+
+/// **Doc 20 cut SM.6's industry seams, composed only where the TacSim layer is** (the
+/// [`IndustryLicenceExt`] shape): [`industry_seams::SiteOpener`] as the system opener,
+/// [`industry_seams::SurfaceDraws`] as the external draws, and the typed-state delegation of
+/// industry's families to `tacsim` (D1) — a capability to read deposits, which tacsim's source
+/// tripwire (`tests/deposits.rs`, D10) holds to reads. Unwired, `DepositOpen` stays staff-only,
+/// the delegation is absent, and a surface deposit (none exists there) would read
+/// `ExternalUnwired`.
+trait IndustrySurfaceExt: Sized {
+    fn with_surface_seams_if(self, on: bool, cell: &mush_industry::IndustryHandleCell) -> Self;
+}
+
+impl IndustrySurfaceExt for mush_industry::IndustryModule {
+    fn with_surface_seams_if(self, on: bool, cell: &mush_industry::IndustryHandleCell) -> Self {
+        if on {
+            self.with_system_opener(Arc::new(industry_seams::SiteOpener::new(Arc::clone(cell))))
+                .with_external_draws(Arc::new(industry_seams::SurfaceDraws))
+                .with_state_delegates([crate::NS])
+        } else {
+            self
         }
     }
 }

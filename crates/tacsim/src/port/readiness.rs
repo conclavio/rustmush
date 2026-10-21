@@ -87,7 +87,8 @@ pub enum Binding {
     /// Doc 20 cut SM.1: the geology key's state; reported, never gated, in
     /// D-18-50's sky manner (`crate::surface::key::geology_line`).
     Geology,
-    /// Doc 20 cut SM.2: a site's block places and clerk; reported, never gated
+    /// Doc 20 cut SM.2: a site's block places and clerk (since SM.6 also its block vaults
+    /// and its opening); reported, never gated on the desk, but closing the site's own pad
     /// (`crate::port::site::site_line`).
     Site,
     /// Doc 20 cut SM.3a: a lessor's rig pool; reported, never gated
@@ -1173,7 +1174,10 @@ pub(crate) fn report_ports<'a>(
 /// the lines [`readiness`] reports for `entry` of the report's lane pack — its map,
 /// rooms, domain, site, institutions, programme and hulls — every one Ready. A port the
 /// report's pack does not author is not ready. What a departure to a site asks before
-/// it plans ([`crate::port::voyage`]'s `SITE_CLOSED`).
+/// it plans ([`crate::port::voyage`]'s `SITE_CLOSED`). **Since doc 20 cut SM.6 (D2)** the
+/// site's line is Ready only once its block vaults are laid and its clerk has opened every
+/// deposit (or the geology layer is dark, when nothing can open), so a site that is
+/// opening, warming or failed refuses departures: "the site admits no TV before" (§3.4).
 #[must_use]
 pub(crate) fn port_ready(w: &World, entry: &CanonicalId) -> bool {
     let Some(store) = w.module_state::<TacsimStore>() else {
@@ -1332,7 +1336,8 @@ fn port_lines(
     };
     report.push(port, Binding::Domain, state, text);
 
-    // ---- doc 20 cut SM.2: the site's block places and clerk ----
+    // ---- doc 20 cut SM.2: the site's block places and clerk; SM.6: its block vaults and
+    // its opening (D2, D3) ----
     if def.is_some_and(|def| def.site.is_some()) {
         let (state, text) = crate::port::site::site_line(w, entry, map);
         report.push(port, Binding::Site, state, text);

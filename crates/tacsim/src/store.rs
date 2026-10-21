@@ -361,6 +361,23 @@ impl TacsimStore {
         self.cfg.minds = minds;
     }
 
+    /// **Test hook** (doc 20 cut SM.6, review F3): drop one org's row from every RAM port
+    /// map of the lane — a port map that lost its issuer — so a test can prove a site whose
+    /// issuer does not resolve opens nothing. Persists nothing; the count of rows dropped.
+    /// Nothing in the shipped lane calls it.
+    #[doc(hidden)]
+    pub fn drop_lane_org_for_tests(&mut self, org: &CanonicalId) -> usize {
+        let mut dropped = 0_usize;
+        for map in self.port_maps.values_mut() {
+            if map.pack.as_str() == crate::definitions::content::LANE_PACK
+                && map.orgs.remove(org).is_some()
+            {
+                dropped = dropped.saturating_add(1);
+            }
+        }
+        dropped
+    }
+
     /// Whether the layer is enabled at all.
     #[must_use]
     pub fn enabled(&self) -> bool {

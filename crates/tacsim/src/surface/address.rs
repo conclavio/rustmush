@@ -150,6 +150,14 @@ pub fn pocket_in_block(px: i64, py: i64) -> Option<(char, usize)> {
     Some((letter, usize::try_from(n).ok()?))
 }
 
+/// **A pocket's number in its block** (doc 20 cut SM.6: the pocket cursor's key): the number
+/// part of [`pocket_address`], `1..=256` row-major from the block's north-west.
+#[must_use]
+pub fn pocket_number(px: i64, py: i64) -> Option<u16> {
+    let (_, index) = pocket_in_block(px, py)?;
+    u16::try_from(index.checked_add(1)?).ok()
+}
+
 /// The inverse of [`pocket_in_block`]: the site pocket of `letter`'s `index`th cell.
 #[must_use]
 pub fn pocket_of_block_index(letter: char, index: usize) -> Option<(i64, i64)> {
@@ -453,5 +461,24 @@ mod tests {
         assert_eq!(Octant::of(i64::MAX, i64::MIN), Some(Octant::SE));
         assert_eq!(Octant::NW.abbrev(), "NW");
         assert_eq!(Octant::SW.word(), "southwest");
+    }
+
+    /// Doc 20 cut SM.6: `pocket_number` is `pocket_address`'s number part over the whole site.
+    #[test]
+    fn sm6_pocket_number_is_the_address_number() {
+        for py in 0..SITE_POCKETS {
+            for px in 0..SITE_POCKETS {
+                let address = pocket_address(px, py).unwrap_or_default();
+                let number = pocket_number(px, py).unwrap_or_default();
+                assert_eq!(
+                    address[1..].parse::<u16>().ok(),
+                    Some(number),
+                    "({px}, {py})"
+                );
+                assert!((1..=256).contains(&number));
+            }
+        }
+        assert_eq!(pocket_number(64, 0), None);
+        assert_eq!(pocket_number(-1, 0), None);
     }
 }

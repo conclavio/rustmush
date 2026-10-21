@@ -677,7 +677,14 @@ fn stock(rig: &mut Rig) {
         let gated: Vec<&str> = out
             .lines()
             .filter(|line| {
-                line.ends_with(']') && !line.starts_with("sky: ") && !line.starts_with("geology: ")
+                // Doc 20 cut SM.6 (D2): a keyed site laid up and still opening is the site
+                // clerk's work, not the stock clerks'; a rig that hops to a site opens it.
+                line.ends_with(']')
+                    && !line.starts_with("sky: ")
+                    && !line.starts_with("geology: ")
+                    && !(line.contains(" site: ")
+                        && (line.contains("; opening, ")
+                            || line.contains("; opening: its ground is still being mapped")))
             })
             .collect();
         if gated.len() > 1 && gated.iter().all(|line| line.ends_with("[ready]")) {
@@ -1823,8 +1830,12 @@ fn sm2_each_site_lays_up_sixteen_places_and_a_clerk() {
             (line.state, line.text.as_str()),
             (
                 LineState::Ready,
-                format!("{entry} site: 16 block places, the site clerk and the spoil laid up.")
-                    .as_str()
+                // Doc 20 cut SM.6 (D2, D3): the block vaults counted; the layer is dark here.
+                format!(
+                    "{entry} site: 16 block places, the site clerk, the spoil and 16 block \
+                     vaults laid up; no deposits while the geology layer is dark."
+                )
+                .as_str()
             )
         );
         assert!(report.sites.contains(&cid(entry)), "{entry}");
@@ -1877,7 +1888,9 @@ fn sm2_a_site_update_lays_up_nothing_and_a_gone_place_refuses() {
         (line.state, line.text.as_str()),
         (
             LineState::Missing,
-            "kerwan_port site: 15 of 16 block places, the site clerk and the spoil laid up."
+            // Doc 20 cut SM.6 (D3): a block's vault counts only with its place live.
+            "kerwan_port site: 15 of 16 block places, the site clerk, the spoil and 15 of 16 \
+             block vaults laid up."
         )
     );
     assert!(!report.is_ready(), "the summary counts it");
@@ -1906,7 +1919,8 @@ fn sm2_a_site_update_lays_up_nothing_and_a_gone_place_refuses() {
         (line.state, line.text.as_str()),
         (
             LineState::Missing,
-            "kerwan_port site: 16 of 16 block places, no site clerk and the spoil laid up."
+            "kerwan_port site: 16 of 16 block places, no site clerk, the spoil and 16 of 16 \
+             block vaults laid up."
         )
     );
     assert!(tacsim::port::enrol_gate(&report).is_ok());

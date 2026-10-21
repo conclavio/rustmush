@@ -282,6 +282,13 @@ pub struct IndustryProvider {
     /// nothing about what a recipe is: `@wo/draft` already refuses there, and the
     /// offer follows it.
     recipes: Option<std::sync::Arc<dyn crate::workorder::RecipeAuthority>>,
+    /// Doc 20 cut SM.6 (§3.4, D-20-5): the composed system opener that admits a
+    /// non-staff actor to `DepositOpen` for exactly the one server-authored
+    /// opening it makes next. `None` keeps `DepositOpen` staff-only.
+    opener: Option<std::sync::Arc<dyn crate::seams::SystemOpener>>,
+    /// Doc 20 cut SM.6 (§9.6, D-20-12): the contest offer's jurisdiction row,
+    /// [`crate::seams::ActsForJurisdiction`] unless the root composed another.
+    jurisdiction: std::sync::Arc<dyn crate::seams::JurisdictionAuthority>,
     /// The hashed catalog, keyed on [`crate::workorder::RecipeAuthority::catalog_revision`]. The
     /// walk and the hashing happen once per pack publish, not once per
     /// projection — and `project_legal_actions` runs every provider on every
@@ -323,6 +330,25 @@ pub const CLAIM_FILE_STAFF: &str = "claim_file_staff";
 /// The `principal_token` spellings of the authorities a non-staff actor may file
 /// under, published as a fixed parameter beside the offer's own `Choice`.
 pub const CLAIM_ISSUERS: &str = "claim_issuers";
+
+/// Doc 20 cut SM.6 (§3.4): the actor a system opening was offered to, published
+/// as a fixed parameter so `open()` can tell its own offer from somebody else's.
+pub const SYSTEM_OPENER: &str = "system_opener";
+/// Doc 20 cut SM.6 (§3.4): the server-authored opening the offer carries, an
+/// object of **one** key — the opening's receipt → its
+/// [`SystemOpening`](crate::seams::SystemOpening) — so the prepare reads
+/// `system_openings[receipt]` exactly as a multi-row offer would (reviewer F5:
+/// one row an offer).
+pub const SYSTEM_OPENINGS: &str = "system_openings";
+/// Doc 20 cut SM.6 (§9.6): the actor the `ClaimContest` offer was projected to.
+pub const CLAIM_CONTEST_BY: &str = "claim_contest_by";
+/// Doc 20 cut SM.6: whether that actor was staff when the offer was projected.
+pub const CLAIM_CONTEST_STAFF: &str = "claim_contest_staff";
+/// Doc 20 cut SM.6 (§9.6, D-20-12): the claims a non-staff actor may move the
+/// contest state of — `administrable_claims` ∪ the jurisdiction row — as
+/// strings, published beside the offer's `Choice` (the issuer gate's layer-3
+/// shape).
+pub const CLAIM_ADMINISTRABLE: &str = "claim_administrable";
 
 /// The actor the `WoDraft` offer was projected to, published as a fixed
 /// parameter so the prepare can tell its own offer from somebody else's.
@@ -738,6 +764,14 @@ pub fn authorized_deposits(
             if crate::store::is_quarantined(world, deposit.id()) {
                 continue;
             }
+            // Doc 20 §3.4, D-20-5, cut SM.6: a body an external provider works
+            // (a surface block) is never offered to industry's own `@extract`,
+            // so nothing drains its pool behind the provider's cursor. This
+            // closes SM.5's residual F12 (ii): a staff-seeded surface claim
+            // could otherwise extract here.
+            if deposit.external().is_some() {
+                continue;
+            }
             let remaining = state
                 .get(&families.inventory.pools, &{
                     match mush_inventory::pool_key(deposit.endpoint(), deposit.commodity()) {
@@ -836,6 +870,93 @@ pub fn administrable_claims(
     out.dedup();
     out.truncate(MAX_DEPOSIT_CHOICES);
     out
+}
+
+/// **The jurisdiction row** (doc 20 §9.6, D-20-12; cut SM.6): every claim over
+/// a `Deposit` whose recorded [`OreDeposit::jurisdiction`] `actor` `acts_for`,
+/// whoever issued it — so an issuer may move the contest state of a foreign
+/// claim at its own sites, and nowhere else. A deposit with no jurisdiction
+/// never matches. Bounded like [`administrable_claims`]: the claims come from
+/// the same bounded walk, each deposit by one point lookup through
+/// `engine.action_state()`; sorted, deduped, capped at
+/// [`MAX_DEPOSIT_CHOICES`]. The default
+/// [`ActsForJurisdiction`](crate::seams::ActsForJurisdiction) answers this; a
+/// composed [`JurisdictionAuthority`](crate::seams::JurisdictionAuthority) may
+/// call it to extend rather than replace the row.
+#[must_use]
+pub fn jurisdiction_claims(
+    engine: &Engine,
+    families: &IndustryFamilies,
+    actor: ObjId,
+) -> Vec<ClaimId> {
+    let state = engine.action_state();
+    let mut verdicts: BTreeMap<OreDepositId, bool> = BTreeMap::new();
+    let mut out: Vec<ClaimId> = Vec::new();
+    for claim in scan_all_claims(engine, families) {
+        let ClaimSubject::Deposit { deposit } = claim.subject() else {
+            continue;
+        };
+        let reaches = match verdicts.get(&deposit) {
+            Some(verdict) => *verdict,
+            None => {
+                let verdict = state
+                    .get(&families.deposits, &deposit)
+                    .ok()
+                    .flatten()
+                    .and_then(|body| body.jurisdiction().cloned())
+                    .is_some_and(|who| mush_economy::acts_for(&engine.world, actor, &who));
+                verdicts.insert(deposit, verdict);
+                verdict
+            }
+        };
+        if reaches {
+            out.push(claim.id());
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out.truncate(MAX_DEPOSIT_CHOICES);
+    out
+}
+
+/// The contest offer's structural half (doc 20 cut SM.6, §9.6; the issuer
+/// gate's layer-3 shape, [`authorize_claim_file`]): run inside `contest()`
+/// before anything is written. The invocation must carry the offer's own
+/// [`CLAIM_CONTEST_BY`] naming this actor; staff ([`CLAIM_CONTEST_STAFF`]) may
+/// move any claim; every other actor only a claim listed in
+/// [`CLAIM_ADMINISTRABLE`]. An invocation with no such list refuses outright.
+/// Every arm answers the one `REFUSED` line.
+fn authorize_claim_contest(
+    actor: ObjId,
+    parameters: &serde_json::Map<String, Value>,
+    claim: ClaimId,
+) -> Result<(), ActionError> {
+    let unauthorized = || error(ActionErrorCode::Unauthorized, REFUSED);
+    let by = parameters
+        .get(CLAIM_CONTEST_BY)
+        .and_then(Value::as_u64)
+        .and_then(|id| u32::try_from(id).ok())
+        .map(ObjId);
+    if by != Some(actor) {
+        return Err(unauthorized());
+    }
+    if parameters
+        .get(CLAIM_CONTEST_STAFF)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let token = claim.to_string();
+    let listed = parameters
+        .get(CLAIM_ADMINISTRABLE)
+        .and_then(Value::as_array)
+        .is_some_and(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .any(|allowed| allowed == token.as_str())
+        });
+    if listed { Ok(()) } else { Err(unauthorized()) }
 }
 
 /// The authorities a **non-staff** actor may file a claim under: the
@@ -1445,13 +1566,37 @@ impl ActionProvider for IndustryProvider {
         // The `WoDraft` offer's server-authored books, published the same way and
         // for the same reason.
         let mut wo_books: Option<WoOfferBooks> = None;
+        // Doc 20 cut SM.6: the one server-authored system opening (§3.4), and
+        // the contest offer's administrable union (§9.6), published below as
+        // fixed parameters.
+        let mut system_opening: Option<crate::seams::SystemOpening> = None;
+        let mut contest_claims: Option<Vec<String>> = None;
         match self.verb {
-            IndustryVerb::DepositOpen => {
+            IndustryVerb::DepositOpen if !staff => {
                 // Opening an ore body is a staff act: it credits a pool from
-                // nothing, which is the one thing no player may do.
-                if !staff {
+                // nothing, which is the one thing no player may do. **Doc 20
+                // §3.4, D-20-5 (cut SM.6):** the one exception is a composed
+                // system opener — a site clerk on the port tick — admitted for
+                // exactly the ONE server-authored opening it makes next, carried
+                // as a fixed parameter `merge_parameters` will not let a
+                // submission overwrite, with the receipt its only `Choice`.
+                let Some(opening) = self
+                    .opener
+                    .as_ref()
+                    .and_then(|opener| opener.next_opening(engine, actor))
+                else {
                     return Ok(None);
-                }
+                };
+                parameters.push(parameter(
+                    "receipt",
+                    true,
+                    mush_core::ProjectedParameterKind::Choice {
+                        choices: vec![opening.receipt.to_string()],
+                    },
+                )?);
+                system_opening = Some(opening);
+            }
+            IndustryVerb::DepositOpen => {
                 parameters.push(integer("place", 0, i64::from(u32::MAX))?);
                 parameters.push(text("commodity", MAX_COMMODITY_BYTES)?);
                 parameters.push(integer("grade", 0, i64::from(mush_inventory::MAX_GRADE))?);
@@ -1545,20 +1690,33 @@ impl ActionProvider for IndustryProvider {
                 // a foreign claim is refused identically whether it exists or not,
                 // and no griefer can forge an issuer's suspension or seizure or
                 // undo a real authority's.
+                //
+                // Doc 20 §9.6, D-20-12 (cut SM.6): the non-staff `Choice` is the
+                // union of the issuer's own claims and the composed jurisdiction
+                // row (by default every claim over a deposit whose jurisdiction
+                // the actor acts for), published again as the fixed
+                // `CLAIM_ADMINISTRABLE` list `contest()` re-checks.
                 if staff {
                     parameters.push(text("claim", 32)?);
+                    contest_claims = Some(Vec::new());
                 } else {
-                    let claims = administrable_claims(engine, &self.families, actor);
+                    let mut claims = administrable_claims(engine, &self.families, actor);
+                    claims.extend(self.jurisdiction.claims(engine, &self.families, actor));
+                    claims.sort_unstable();
+                    claims.dedup();
+                    claims.truncate(MAX_DEPOSIT_CHOICES);
                     if claims.is_empty() {
                         return Ok(None);
                     }
+                    let choices: Vec<String> = claims.iter().map(ToString::to_string).collect();
                     parameters.push(parameter(
                         "claim",
                         true,
                         mush_core::ProjectedParameterKind::Choice {
-                            choices: claims.iter().map(ToString::to_string).collect(),
+                            choices: choices.clone(),
                         },
                     )?);
+                    contest_claims = Some(choices);
                 }
                 parameters.push(text("state", 16)?);
                 parameters.push(integer("revision", 1, i64::MAX)?);
@@ -1570,6 +1728,31 @@ impl ActionProvider for IndustryProvider {
                         maximum: i64::MAX,
                     },
                 )?);
+                // Doc 20 §9.4 (cut SM.6, the seize-transfers-tenure fix): a
+                // **staff** seizure may name the holder the claim passes to,
+                // and the discovery stamp it carries. Never on the non-staff
+                // offer: an issuer or jurisdiction agent may suspend or seize
+                // (it administers the paper), but naming a holder rewrites
+                // `record.holder` with no title, transferability or pledge
+                // check — the split ClaimMove's own gate (fold C4) exists to
+                // prevent. SM.10's contest carries its challenger as a
+                // server-authored row of its own; `contest()` refuses a
+                // non-staff holder structurally.
+                if staff {
+                    parameters.push(parameter(
+                        "holder",
+                        false,
+                        mush_core::ProjectedParameterKind::Text { maximum_bytes: 64 },
+                    )?);
+                    parameters.push(parameter(
+                        "discovered",
+                        false,
+                        mush_core::ProjectedParameterKind::Integer {
+                            minimum: 0,
+                            maximum: i64::MAX,
+                        },
+                    )?);
+                }
             }
             IndustryVerb::ExtractStart | IndustryVerb::ExtractCycle => {
                 let operator = PrincipalId::Object(actor);
@@ -1778,6 +1961,30 @@ impl ActionProvider for IndustryProvider {
             map.insert(CLAIM_FILE_STAFF.to_owned(), json!(staff));
             map.insert(CLAIM_ISSUERS.to_owned(), json!(claim_issuers));
         }
+        // ---- Doc 20 cut SM.6: the contest gate's structural half (§9.6) ----
+        if let Some(claims) = contest_claims
+            && let Some(map) = fixed.as_object_mut()
+        {
+            map.insert(CLAIM_CONTEST_BY.to_owned(), json!(actor.0));
+            map.insert(CLAIM_CONTEST_STAFF.to_owned(), json!(staff));
+            map.insert(CLAIM_ADMINISTRABLE.to_owned(), json!(claims));
+        }
+        // ---- Doc 20 cut SM.6: the one server-authored system opening (§3.4) ----
+        if let Some(opening) = system_opening
+            && let Some(map) = fixed.as_object_mut()
+        {
+            let receipt = opening.receipt.to_string();
+            let row = serde_json::to_value(&opening).map_err(|_| {
+                error(
+                    ActionErrorCode::Integrity,
+                    "industry system opening cannot be encoded",
+                )
+            })?;
+            map.insert(SYSTEM_OPENER.to_owned(), json!(actor.0));
+            let mut openings = serde_json::Map::new();
+            openings.insert(receipt, row);
+            map.insert(SYSTEM_OPENINGS.to_owned(), Value::Object(openings));
+        }
         // ---- The facility gate, layer 3: the structural half (WS02-S4) ----
         //
         // Same trick, same reason: `merge_parameters` refuses a submitted key
@@ -1933,6 +2140,9 @@ impl IndustryProvider {
         parameters: &serde_json::Map<String, Value>,
         data: &mut BTreeMap<String, Value>,
     ) -> Result<String, ActionError> {
+        if parameters.contains_key(SYSTEM_OPENINGS) {
+            return self.open_system(txn, invocation, parameters, data);
+        }
         let place = obj_field(parameters, "place")?;
         let commodity = commodity_field(parameters)?;
         let grade = parameters
@@ -1965,6 +2175,87 @@ impl IndustryProvider {
             .open_deposit(txn, deposit)
             .map_err(|source| refuse(&source))?;
         data.insert("deposit".to_owned(), json!(id.to_string()));
+        Ok(format!("Opened {id}."))
+    }
+
+    /// **Doc 20 §3.4, D-20-5 (cut SM.6): a system opening.** The composed
+    /// [`SystemOpener`](crate::seams::SystemOpener)'s one server-authored row,
+    /// read back from the offer's own fixed parameters: the opener must be this
+    /// actor, the receipt its row's key, the id derived from the receipt alone
+    /// (so a second opening refuses `DepositExists` whoever submits it), and
+    /// the body opened with its `external` provider and `jurisdiction`. **The
+    /// reserve never goes in the outcome.**
+    fn open_system(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        invocation: &ActionInvocation,
+        parameters: &serde_json::Map<String, Value>,
+        data: &mut BTreeMap<String, Value>,
+    ) -> Result<String, ActionError> {
+        let unauthorized = || error(ActionErrorCode::Unauthorized, REFUSED);
+        let opener = parameters
+            .get(SYSTEM_OPENER)
+            .and_then(Value::as_u64)
+            .and_then(|id| u32::try_from(id).ok())
+            .map(ObjId);
+        if opener != Some(invocation.actor()) {
+            return Err(unauthorized());
+        }
+        let Some(rows) = parameters.get(SYSTEM_OPENINGS).and_then(Value::as_object) else {
+            return Err(unauthorized());
+        };
+        // The offer never makes more than one row (reviewer F5).
+        if rows.len() != 1 {
+            return Err(unauthorized());
+        }
+        let receipt = text_field(parameters, "receipt")?;
+        let Some(row) = rows.get(&receipt) else {
+            return Err(unauthorized());
+        };
+        if !crate::families::is_receipt(&receipt) {
+            return Err(unauthorized());
+        }
+        let opening: crate::seams::SystemOpening = serde_json::from_value(row.clone())
+            .map_err(|_| error(ActionErrorCode::Integrity, REFUSED))?;
+        if opening.receipt.as_str() != receipt {
+            return Err(unauthorized());
+        }
+        let id = crate::families::derive_system_deposit_id(&receipt)
+            .map_err(|source| refuse(&source))?;
+        let invalid = |source: crate::record::IndustryRecordError| {
+            error(ActionErrorCode::InvalidRequest, source.to_string())
+        };
+        let grade = mush_inventory::Grade::new(opening.grade)
+            .map_err(|_| error(ActionErrorCode::InvalidRequest, "that is not a grade"))?;
+        let mut deposit = OreDeposit::new(
+            id,
+            opening.place,
+            opening.commodity.clone(),
+            grade,
+            Accessibility::new(opening.accessibility).map_err(invalid)?,
+            BandId::new(&opening.grade_class).map_err(invalid)?,
+            BandId::new(&opening.reserve_class).map_err(invalid)?,
+            YieldCurve::new(opening.curve.clone()).map_err(invalid)?,
+            opening.endpoint,
+            opening.reserve,
+        )
+        .map_err(invalid)?
+        .with_external(&opening.external)
+        .map_err(invalid)?;
+        if let Some(jurisdiction) = opening.jurisdiction.clone() {
+            deposit = deposit.with_jurisdiction(jurisdiction);
+        }
+        self.families
+            .open_deposit(txn, deposit)
+            .map_err(|source| match source {
+                IndustryError::DepositExists => error(
+                    ActionErrorCode::ProviderRejected,
+                    "that opening is already made",
+                ),
+                other => refuse(&other),
+            })?;
+        data.insert("deposit".to_owned(), json!(id.to_string()));
+        data.insert("receipt".to_owned(), json!(receipt));
         Ok(format!("Opened {id}."))
     }
 
@@ -2077,6 +2368,17 @@ impl IndustryProvider {
                 && (exclusivity == Exclusivity::Exclusive
                     || existing.exclusivity() == Exclusivity::Exclusive)
             {
+                // Doc 20 §9.2 (cut SM.6, reviewer F4): a LAPSED exclusive claim
+                // still blocks, because the remedy is the take-over
+                // (`IndustryFamilies::take_over_claim`), which never spends
+                // `MAX_CLAIMS_PER_SUBJECT` — a lifetime bound, the index being
+                // add-only. Only the line differs.
+                if existing.is_lapsed() {
+                    return Err(error(
+                        ActionErrorCode::ProviderRejected,
+                        "that claim has lapsed: take it over",
+                    ));
+                }
                 return Err(error(
                     ActionErrorCode::ProviderRejected,
                     "that authority already holds an exclusive claim over that subject",
@@ -2156,7 +2458,59 @@ impl IndustryProvider {
         data: &mut BTreeMap<String, Value>,
     ) -> Result<String, ActionError> {
         let id = claim_field(parameters, "claim")?;
+        // Doc 20 cut SM.6 (§9.6): the offer's own fixed list, before anything is
+        // read or written — a hand-built contest of a claim the projection never
+        // offered this actor refuses here.
+        authorize_claim_contest(actor, parameters, id)?;
+        // The seize-transfers-tenure parameters are staff-only (the offer
+        // declares them only for staff): a non-staff invocation carrying either
+        // refuses before anything is read, with the one `REFUSED` line.
+        let staff = parameters
+            .get(CLAIM_CONTEST_STAFF)
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let carries = |key: &str| !matches!(parameters.get(key), None | Some(Value::Null));
+        if !staff && (carries("holder") || carries("discovered")) {
+            return Err(error(ActionErrorCode::Unauthorized, REFUSED));
+        }
         let revision = revision_field(parameters)?;
+        let holder = match parameters.get("holder") {
+            None | Some(Value::Null) => None,
+            Some(_) => {
+                let raw = text_field(parameters, "holder")?;
+                if raw.len() > 64 {
+                    return Err(error(
+                        ActionErrorCode::InvalidRequest,
+                        "an industry action needs a principal for holder",
+                    ));
+                }
+                Some(principal_field(parameters, "holder")?)
+            }
+        };
+        let discovered = match parameters.get("discovered") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                value
+                    .as_i64()
+                    .filter(|at| *at >= 0)
+                    .map(|at| ClockStamp {
+                        clock: now.clock.clone(),
+                        at,
+                    })
+                    .ok_or_else(|| {
+                        error(
+                            ActionErrorCode::InvalidRequest,
+                            "a discovery is the IC second it was made",
+                        )
+                    })?,
+            ),
+        };
+        if discovered.is_some() && holder.is_none() {
+            return Err(error(
+                ActionErrorCode::InvalidRequest,
+                "a discovery stamp goes with a holder",
+            ));
+        }
         let live = self
             .families
             .claim(txn, id)
@@ -2168,7 +2522,52 @@ impl IndustryProvider {
         // issuer, so the acting object is the honest author of a suspension or
         // seizure — the previous `by: live.issuer()` attributed every griefed
         // suspension to an authority that never acted.
-        let state = match text_field(parameters, "state")?.as_str() {
+        let state_word = text_field(parameters, "state")?;
+        if holder.is_some() && state_word != "seized" {
+            return Err(error(
+                ActionErrorCode::InvalidRequest,
+                "a holder goes with a seizure",
+            ));
+        }
+        // ---- Doc 20 §9.4, cut SM.6: the seize-transfers-tenure fix ----
+        //
+        // A staff seizure that names a holder settles the contest for the challenger:
+        // the claim passes to `holder`, `Uncontested`, at the block's tenure
+        // epoch advanced once for the block event
+        // (`IndustryFamilies::transfer_tenure`), carrying `discovered` — the
+        // challenger's own heard-sounding stamp, which SM.10's contest passes so
+        // priority by discovery carries over. **Absent, the stamp is `now`**:
+        // the conservative choice for a staff seizure with no evidence row,
+        // which narrows later contests to soundings after the seizure. The title
+        // half (`TransferTitle` on `claim.object()`) is the command's, and the
+        // pledged-claim refusal stays the command's (`commands.rs`). The outcome
+        // names the holder and the actor, never the stamp.
+        if let Some(to) = holder {
+            let stamp = discovered.unwrap_or_else(|| now.clone());
+            if !matches!(
+                stamp.checked_cmp(now),
+                Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+            ) {
+                return Err(error(
+                    ActionErrorCode::InvalidRequest,
+                    "a discovery cannot postdate the seizure",
+                ));
+            }
+            self.families
+                .transfer_tenure(txn, id, revision, to.clone(), Some(stamp), now)
+                .map_err(|source| refuse(&source))?;
+            data.insert("claim".to_owned(), json!(id.to_string()));
+            data.insert(
+                "holder".to_owned(),
+                json!(mush_economy::principal_token(&to).to_string()),
+            );
+            data.insert(
+                "by".to_owned(),
+                json!(mush_economy::principal_token(&PrincipalId::Object(actor)).to_string()),
+            );
+            return Ok(format!("{id} moved."));
+        }
+        let state = match state_word.as_str() {
             "uncontested" => ContestState::Uncontested,
             "contested" => {
                 let contract = parameters
@@ -2218,13 +2617,17 @@ impl IndustryProvider {
     ) -> Result<String, ActionError> {
         let deposit = deposit_field(parameters, "deposit")?;
         let endpoint = endpoint_field(parameters, "endpoint")?;
-        if self
+        // Doc 20 §3.4, D-20-5 (cut SM.6): a body an external provider works is
+        // refused here too — the structural half, for an invocation that did
+        // not come from a regenerated offer (`authorized_deposits` already
+        // drops it) — in the one sentence a missing body answers.
+        match self
             .families
             .deposit(txn, deposit)
             .map_err(|source| refuse(&source))?
-            .is_none()
         {
-            return Err(error(ActionErrorCode::ProviderRejected, REFUSED));
+            Some(body) if body.external().is_none() => {}
+            _ => return Err(error(ActionErrorCode::ProviderRejected, REFUSED)),
         }
         let run = ExtractionRun::new(deposit, PrincipalId::Object(actor), endpoint)
             .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
@@ -2251,6 +2654,11 @@ impl IndustryProvider {
             .deposit(txn, deposit_id)
             .map_err(|source| refuse(&source))?
             .ok_or_else(|| error(ActionErrorCode::ProviderRejected, REFUSED))?;
+        // Doc 20 §3.4, D-20-5 (cut SM.6): the structural half of the external
+        // refusal, as in `start()`.
+        if deposit.external().is_some() {
+            return Err(error(ActionErrorCode::ProviderRejected, REFUSED));
+        }
         let run = self
             .families
             .run(txn, deposit_id)
@@ -3330,6 +3738,8 @@ pub fn register(
     reg: &mut Registrar<'_>,
     families: &IndustryFamilies,
     recipes: Option<std::sync::Arc<dyn crate::workorder::RecipeAuthority>>,
+    opener: Option<std::sync::Arc<dyn crate::seams::SystemOpener>>,
+    jurisdiction: std::sync::Arc<dyn crate::seams::JurisdictionAuthority>,
 ) -> Result<(), ModError> {
     let outcome_descriptor = descriptor(
         "outcome",
@@ -3372,6 +3782,8 @@ pub fn register(
                 outcome: outcome.clone(),
                 families: families.clone(),
                 recipes: recipes.clone(),
+                opener: opener.clone(),
+                jurisdiction: std::sync::Arc::clone(&jurisdiction),
                 catalog: std::sync::Mutex::new(None),
                 truncation_warned: std::sync::Mutex::new(None),
             },

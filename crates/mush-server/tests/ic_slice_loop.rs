@@ -487,9 +487,14 @@ async fn walk(rig: &mut Rig, pilot: ObjId, word: &str, to: ObjId) {
 }
 
 /// The port tick, until the whole readiness report reads Ready (the clerks stock and
-/// list both ports; background work, not a staff act).
+/// list both ports; background work, not a staff act). **Doc 20 cut SM.6 (D2):** with the
+/// geology key configured, Ready also waits for the six sites' clerks to open every deposit
+/// and move the Commons's worked share, one act a clerk a fire — 97 fires for the worked
+/// Commons on the shipped tables, the warm included — so the bound is 300 fires: twice the
+/// worst case of 64 opens and 64 transfers, plus the warms and slack for the shared
+/// `MAX_AGENTS_WORKED_PER_FIRE`.
 async fn stock(rig: &mut Rig) {
-    for _ in 0..40 {
+    for _ in 0..300 {
         let out = run(rig, GOD, "@tacsim/port status").await;
         if out.lines().last() == Some("Ready: every binding above is in place.") {
             return;
@@ -498,7 +503,7 @@ async fn stock(rig: &mut Rig) {
         land_all(rig, &queued).await;
     }
     let out = run(rig, GOD, "@tacsim/port status").await;
-    panic!("the report did not read Ready within 40 fires:\n{out}");
+    panic!("the report did not read Ready within 300 fires:\n{out}");
 }
 
 /// **A character on a gateway account of their own** (the world task's create path:

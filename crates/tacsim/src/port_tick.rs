@@ -183,11 +183,16 @@ pub fn register(
         .get(crate::surface::chart::CHART_FORGET_OUTCOME)
         .cloned()
         .ok_or_else(|| ModError::msg("the chart forget's outcome did not register"))?;
+    let site_work_outcome = outcome_refs
+        .get(crate::port::site::SITE_WORK_OUTCOME)
+        .cloned()
+        .ok_or_else(|| ModError::msg("the site work's outcome did not register"))?;
     let actions = action_descriptors(
         &stock_outcome,
         &burn_outcome,
         (&surface_act_outcome, &surface_done_outcome),
         &chart_forget_outcome,
+        &site_work_outcome,
         probe_outcome.as_ref(),
     )?;
     reg.definition_validator(
@@ -326,6 +331,30 @@ pub fn register(
         }
         None => None,
     };
+    // Doc 20 cut SM.6 (§3.4): `tacsim_site_work`, the site clerk's worked transfer —
+    // registered when the inventory cell is filled (the transfer rides the delegated
+    // families; the stock provider's rule); the definitions register regardless.
+    let site_work = match (
+        action_refs
+            .get(crate::port::site::SITE_WORK_ACTION)
+            .cloned(),
+        inventory_families.clone(),
+    ) {
+        (Some(action), Some(inventory)) => {
+            reg.action_provider(
+                action.clone(),
+                crate::port::site::SiteWorkProvider {
+                    action: action.clone(),
+                    outcome: site_work_outcome,
+                    pockets: port_families.pockets.clone(),
+                    inventory,
+                    warned: std::sync::Mutex::new(BTreeSet::new()),
+                },
+            )?;
+            Some(action)
+        }
+        _ => None,
+    };
     reg.state(PortHandles {
         families: port_families,
         inventory: inventory_families,
@@ -335,6 +364,7 @@ pub fn register(
         surface_done,
         surface_tools,
         chart_forget,
+        site_work,
     });
     reg.state(PortTickState::new(probe_action, stock_action));
     reg.tick(
@@ -399,6 +429,12 @@ fn outcome_descriptors(test_world: bool) -> Result<Vec<DefinitionDescriptor>, Mo
             crate::surface::chart::CHART_FORGET_OUTCOME,
             json!({ "fields": ["actor", "rows"] }),
         )?,
+        // Doc 20 cut SM.6 (§3.4): the site clerk's worked transfer — never a tonne.
+        descriptor(
+            "outcome",
+            crate::port::site::SITE_WORK_OUTCOME,
+            json!({ "fields": ["actor", "deposit", "receipt"] }),
+        )?,
     ];
     if test_world {
         descriptors.push(descriptor(
@@ -420,6 +456,7 @@ fn action_descriptors(
     burn_outcome: &DefinitionRef,
     surface_outcomes: (&DefinitionRef, &DefinitionRef),
     chart_forget_outcome: &DefinitionRef,
+    site_work_outcome: &DefinitionRef,
     probe_outcome: Option<&DefinitionRef>,
 ) -> Result<Vec<DefinitionDescriptor>, ModError> {
     let mut descriptors = vec![
@@ -476,6 +513,18 @@ fn action_descriptors(
             }),
         )?
         .with_references(vec![chart_forget_outcome.clone()]),
+        // Doc 20 cut SM.6 (§3.4): the site clerk's worked transfer writes the deposit's
+        // `tacsim.pockets` cursor.
+        descriptor(
+            "action",
+            crate::port::site::SITE_WORK_ACTION,
+            json!({
+                "subject": "self_actor",
+                "targets": 0,
+                "family": crate::surface::cursor::POCKETS_FAMILY,
+            }),
+        )?
+        .with_references(vec![site_work_outcome.clone()]),
     ];
     if let Some(outcome) = probe_outcome {
         descriptors.push(
@@ -905,6 +954,10 @@ enum Arm {
         /// The hull, `ObjId.0`.
         hull: u32,
     },
+    /// Doc 20 cut SM.6 (§3.4, D-20-5): a latched lane site's clerk — open its next deposit or
+    /// move its next worked share ([`crate::port::site::site_step`]); agent and principal the
+    /// clerk.
+    Site,
     /// The test world's probe (lead ruling L3).
     Probe,
 }
@@ -974,6 +1027,7 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
                 .collect()
         })
         .unwrap_or_default();
+    let site_clerks = crate::port::site::site_clerks(ctx.w);
     let release = crate::port::stock::release_agent(ctx.w, state);
     let launches = crate::port::voyage::launch_agents(ctx.w, state);
     // Doc 18 cut IC13 (lead ruling L12): the recall agents read tickets (`&Ctx`), and
@@ -1001,6 +1055,10 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     };
     for clerk in clerks {
         offer(clerk, clerk, Arm::Stock);
+    }
+    // Doc 20 cut SM.6 (§3.4): every latched lane site's live clerk, agent and principal both.
+    for clerk in site_clerks {
+        offer(clerk, clerk, Arm::Site);
     }
     // One per fire: a holder already offered this fire is refused by the
     // duplicate rule above and waits for the next.
@@ -1120,6 +1178,7 @@ fn step(
         Arm::Order { hull } => {
             crate::port::executor::order_step(ctx, state, fire, ObjId(hull), principal)
         }
+        Arm::Site => crate::port::site::site_step(ctx, fire, agent),
         Arm::Probe => match state.probe_action.clone() {
             Some(action) => probe_step(ctx, state, fire, &action, agent, principal),
             None => Step::Idle,

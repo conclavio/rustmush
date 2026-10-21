@@ -408,7 +408,14 @@ fn stock(rig: &mut Rig) {
         let gated: Vec<&str> = out
             .lines()
             .filter(|line| {
-                line.ends_with(']') && !line.starts_with("sky: ") && !line.starts_with("geology: ")
+                // Doc 20 cut SM.6 (D2): a keyed site laid up and still opening is the site
+                // clerk's work, not the stock clerks'; a rig that hops to a site opens it.
+                line.ends_with(']')
+                    && !line.starts_with("sky: ")
+                    && !line.starts_with("geology: ")
+                    && !(line.contains(" site: ")
+                        && (line.contains("; opening, ")
+                            || line.contains("; opening: its ground is still being mapped")))
             })
             .collect();
         if gated.len() > 1 && gated.iter().all(|line| line.ends_with("[ready]")) {
@@ -674,6 +681,9 @@ fn on_pad_as(
     );
     board(rig, pilot);
     let hull = ObjId(row.hull);
+    // Doc 20 cut SM.6 (D2): a keyed site's pad is closed until its clerk has opened every
+    // deposit (an unkeyed site reads Ready at once, and this fires nothing).
+    open_ahuna(rig);
     let t = file_and_launch(rig, pilot, hull, "+ship/undock ahuna");
     let _ = to_ic(rig, arrival_of(&t));
     assert!(
@@ -686,6 +696,19 @@ fn on_pad_as(
     let tvs = rigs_of(&rig.tw, pilot);
     assert_eq!(tvs.len(), n_rigs);
     (pilot, row, tvs)
+}
+
+/// **Open Ahuna Flank** (doc 20 cut SM.6, D2; `support::sites::open_site`), keeping the landed
+/// bundles' typed post-images for a reboot; the port fires it took (0 when it is open already,
+/// as an unkeyed site always is).
+fn open_ahuna(rig: &mut Rig) -> u32 {
+    let mut kept = Vec::new();
+    let fires =
+        support::sites::open_site_keeping(&mut rig.tw, "ahuna_port", &mut |ops| kept.push(ops));
+    for ops in kept {
+        keep(rig, ops);
+    }
+    fires
 }
 
 /// [`on_pad_as`] for the usual pilot.
@@ -1954,13 +1977,15 @@ fn sm3b_the_slot_selector() {
 /// and `may_take` refuses it; a reboot lays nothing twice, and nor does the real lay-up pass
 /// run again — the `PortApplier`'s update over each of the six site entries of the shipped
 /// lane, the path a lane version that touches a site takes (the fixer round's item 10a):
-/// objects, vaults, the six spoil vaults and the map rows all as they were.
+/// objects, vaults, the six spoil vaults and the map rows all as they were. Since doc 20 cut
+/// SM.6 the same holds for each site's sixteen block vaults (D3), each backed by its block place.
 #[test]
 fn sm3b_a_site_lays_up_its_spoil_and_no_player_may_take_from_it() {
     let mut rig = stocked();
     let owner = PrincipalId::System(SystemPrincipalId::new("tacsim.sites").expect("an id"));
     let report = tacsim::port::readiness(rig.tw.world());
     let mut spoils = Vec::new();
+    let mut blocks = Vec::new();
     for entry in [
         "commons_port",
         "kerwan_port",
@@ -2012,19 +2037,57 @@ fn sm3b_a_site_lays_up_its_spoil_and_no_player_may_take_from_it() {
                     && line.port.as_ref().is_some_and(|p| p.as_str() == entry)
             })
             .expect("the site line");
+        // Doc 20 cut SM.6 (D2, D3): the line counts the block vaults too, and this unkeyed
+        // world's layer is dark, so nothing opens and the pad stays open.
         assert_eq!(
             line.text,
-            format!("{entry} site: 16 block places, the site clerk and the spoil laid up.")
+            format!(
+                "{entry} site: 16 block places, the site clerk, the spoil and 16 block vaults \
+                 laid up; no deposits while the geology layer is dark."
+            )
         );
         spoils.push(vault.id);
+        // Doc 20 cut SM.6 (D3; review T7): the sixteen block vaults — every surface
+        // deposit's pool — are the sites' too, each backed by its own block place.
+        assert_eq!(row.vaults.len(), 16, "{entry}: sixteen block vaults");
+        for (letter, id) in &row.vaults {
+            let place = ObjId(*row.blocks.get(letter).expect("the block's place"));
+            let vault = economy(&rig.tw)
+                .snapshot()
+                .vault(VaultId(*id))
+                .cloned()
+                .expect("the block vault");
+            assert_eq!(vault.owner, owner, "{entry} {letter}");
+            assert_eq!(vault.scope, None, "{entry} {letter}");
+            assert_eq!(
+                vault.backing,
+                mush_economy::CustodyRef::Container(place),
+                "{entry} {letter}"
+            );
+            assert_eq!(vault.status, mush_economy::VaultStatus::Active);
+            blocks.push(vault.id);
+        }
     }
     assert_eq!(spoils.len(), 6, "six sites");
+    assert_eq!(blocks.len(), 6 * 16, "96 block vaults");
     let (pilot, _) = prospector(&mut rig, "Pilot", 1, "Salt Moth");
     let stranger = rig.tw.spawn_player("Stranger");
     for who in [pilot, stranger] {
         let endpoints = mush_inventory::provider::live_endpoints(rig.tw.world(), who);
         for vault in &spoils {
             assert!(!endpoints.contains(vault), "#{} reaches a spoil", who.0);
+            assert!(!mush_economy::may_take_from_vault(
+                rig.tw.world(),
+                who,
+                *vault
+            ));
+        }
+        for vault in &blocks {
+            assert!(
+                !endpoints.contains(vault),
+                "#{} reaches a block vault",
+                who.0
+            );
             assert!(!mush_economy::may_take_from_vault(
                 rig.tw.world(),
                 who,
@@ -2053,7 +2116,13 @@ fn sm3b_a_site_lays_up_its_spoil_and_no_player_may_take_from_it() {
         )
     };
     let before = census(&rig.tw);
-    assert_eq!(before.2.len(), 6, "six spoil vaults, owned by the sites");
+    // Doc 20 cut SM.6 (D3): six spoil vaults and sixteen block vaults a site, owned by the
+    // sites.
+    assert_eq!(
+        before.2.len(),
+        6 * 17,
+        "six spoil vaults and 96 block vaults, owned by the sites"
+    );
     let mut rig = reboot(rig);
     assert_eq!(census(&rig.tw), before, "a reboot lays nothing");
     // The real lay-up pass, run again over every site entry.
@@ -3000,11 +3069,16 @@ fn sm3b_a_rig_is_never_stranded_by_its_battery() {
 ///   finish lands `Refused { SpoilGone }` at the act's own instant, nothing moved, the pilot
 ///   hears `ACT_FAILED` with `WHY_SPOIL_GONE` once, the rig is free (a later dump, the spoil
 ///   mended, starts and finishes `Done`) and the hull reads `HOPPER_LOADED`, never `TV_BUSY`;
-/// - (b) a transfer the spoil side refuses mid-bundle — two ores the site's spoil has never
-///   held, so the inventory would mint two pools on one endpoint in one bundle and refuses the
-///   second: the first finish does not land and writes nothing (the hopper's two pools exact,
-///   the act still in flight); the next fire's finish records `SpoilGone` and lands, the hopper
-///   still exact, the act released, the hull held only by `HOPPER_LOADED`.
+/// - (b1) **doc 20 cut SM.6 (lead ruling 5; SM.3b's round F3, fixed inventory-side)**: two ores
+///   the site's spoil has never held now land in **one** bundle (`transfer_many` stages the
+///   spoil's pool census once): the first finish lands `Done`, the spoil holds 2 and 1, the
+///   hopper is empty;
+/// - (b2) a transfer the spoil side refuses mid-bundle, by another real cause: the spoil's pool
+///   census filled to `MAX_POOLS_PER_ENDPOINT − 1` with seeded test commodities, two ores it has
+///   never held would make it 65: the first finish does not land and writes nothing (the
+///   hopper's two pools exact, the act still in flight); the next fire's finish records
+///   `SpoilGone` and lands, the hopper still exact, the act released, the hull held only by
+///   `HOPPER_LOADED`.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn sm3b_a_dump_the_spoil_will_not_take_is_refused_and_never_wedges() {
@@ -3068,7 +3142,7 @@ fn sm3b_a_dump_the_spoil_will_not_take_is_refused_and_never_wedges() {
     assert_eq!(pool(&mut rig.tw, hopper_v, "metal_ore"), 0);
     assert_eq!(pool(&mut rig.tw, spoil, "metal_ore"), 2);
 
-    // (b)
+    // (b1) Doc 20 cut SM.6: two new pools on the spoil land in one bundle.
     let mut rig = stocked();
     let (pilot, _, tvs) = on_pad(&mut rig, 1);
     let tv = tvs[0];
@@ -3079,6 +3153,56 @@ fn sm3b_a_dump_the_spoil_will_not_take_is_refused_and_never_wedges() {
             .and_then(|row| row.spoil_vault)
             .expect("the spoil vault"),
     );
+    fill_hopper(&mut rig, tv, 2, 9_870);
+    seed_pool(&mut rig, hopper_v, "ice_ore", 1, LotId(9_875));
+    let held = |rig: &mut Rig| {
+        (
+            pool(&mut rig.tw, hopper_v, "metal_ore"),
+            pool(&mut rig.tw, hopper_v, "ice_ore"),
+            pool(&mut rig.tw, spoil, "metal_ore"),
+            pool(&mut rig.tw, spoil, "ice_ore"),
+        )
+    };
+    assert_eq!(held(&mut rig), (2, 1, 0, 0));
+    let _ = act_go(&mut rig, pilot, "+tv/1 dump go");
+    let due = due_of(&mut rig.tw, tv);
+    let (_, queued) = advance_to(&mut rig, due);
+    let done = finishes(&queued);
+    assert_eq!(done.len(), 1);
+    land(&mut rig, done[0]).expect("a two-ore dump onto a fresh spoil lands in one bundle");
+    let record = record_of(&mut rig.tw, tv).expect("the record");
+    assert_eq!(record.act, None, "the act is released");
+    assert_eq!(
+        record.last.map(|last| last.result),
+        Some(ActResult::Done),
+        "the dump is done"
+    );
+    assert_eq!(
+        held(&mut rig),
+        (0, 0, 2, 1),
+        "the spoil holds both, the hopper is empty"
+    );
+
+    // (b2) The spoil's pool census one short of the cap: two new ores refuse mid-bundle.
+    let mut rig = stocked();
+    let (pilot, _, tvs) = on_pad(&mut rig, 1);
+    let tv = tvs[0];
+    let hopper_v = hopper(&rig.tw, tv);
+    let spoil = VaultId(
+        port_map(&rig.tw, "ahuna_port")
+            .site
+            .and_then(|row| row.spoil_vault)
+            .expect("the spoil vault"),
+    );
+    for n in 0..(mush_inventory::MAX_POOLS_PER_ENDPOINT - 1) {
+        seed_pool(
+            &mut rig,
+            spoil,
+            &format!("filler_{n:02}"),
+            1,
+            LotId(9_900 + u64::try_from(n).expect("small")),
+        );
+    }
     fill_hopper(&mut rig, tv, 2, 9_870);
     seed_pool(&mut rig, hopper_v, "ice_ore", 1, LotId(9_875));
     let held = |rig: &mut Rig| {
