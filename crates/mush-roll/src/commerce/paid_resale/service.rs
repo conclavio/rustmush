@@ -92,6 +92,7 @@ impl Intent {
             || now.at < self.observed.at
             || w.now() < self.observed_utc
         {
+            if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG resale fresh: live={} clock_eq={} now_at={} observed_at={} utc={} observed_utc={}", live(w, self.actor), now.clock == self.observed.clock, now.at, self.observed.at, w.now(), self.observed_utc); } // TEMP M7 diag
             return Err(PublicationError::Unavailable);
         }
         let e = w
@@ -101,6 +102,7 @@ impl Intent {
         if actual.terminal().is_some()
             || actual.outcome() != mush_economy::managed_paid_resale::PaidResaleOutcome::Funded
         {
+            if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG resale fresh: terminal={} outcome={:?}", actual.terminal().is_some(), actual.outcome()); } // TEMP M7 diag
             return Err(PublicationError::Unavailable);
         }
         let c = actual.consent();
@@ -111,6 +113,7 @@ impl Intent {
         if let Some(expected) = &self.claims {
             let id = crate::commerce::LicenceId::new(c.terms.basis.licence).map_err(bad)?;
             if &roll.paid_resale_claims(id).map_err(bad)? != expected {
+                if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG resale fresh: claims changed since the intent"); } // TEMP M7 diag
                 return Err(PublicationError::Mismatch);
             }
         }
@@ -171,7 +174,10 @@ impl Intent {
             {
                 ()
             }
-            _ => return Err(PublicationError::Unavailable),
+            _ => {
+                if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG resale fresh: reason={:?} deadline_reached={:?} availability={:?} same={same} now_at={} accepted_at={} claims={}", self.reason, c.deadline_reached(&now), e.paid_resale_availability(w, self.acceptance), now.at, c.accepted_at_ic.at, self.claims.as_ref().map(|v| (v.open_paid(), v.next_transition())).map_or("none".to_string(), |v| format!("{v:?}"))); } // TEMP M7 diag
+                return Err(PublicationError::Unavailable);
+            }
         }
         Ok(())
     }
@@ -206,6 +212,7 @@ impl Runtime {
             .as_ref()
             .is_none_or(|p| &p.intent != intent)
         {
+            if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG resale runtime require: no matching pending intent"); } // TEMP M7 diag
             return Err(PublicationError::Unavailable);
         }
         Ok(())
