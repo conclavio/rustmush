@@ -154,6 +154,11 @@ impl RenewalWriter {
         reg.delegate_state_family(&families.paid_licences, "market")?;
         reg.delegate_state_family(&families.paid_terms, "market")?;
         reg.delegate_state_family(&families.house_economics, "market")?;
+        // `absent_next` proves the next generation has no term, House economics
+        // or entitlement economics yet, inside Market's transaction; the
+        // entitlement and plain renewal writers delegate this family too, but a
+        // House-only composition composes neither.
+        reg.delegate_state_family(&families.term_economics, "market")?;
         self.0
             .set(Registration {
                 families,
