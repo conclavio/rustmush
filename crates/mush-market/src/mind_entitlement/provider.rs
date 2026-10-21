@@ -283,7 +283,7 @@ impl ActionProvider for Provider {
     fn validate_invocation(&self, inv: &ActionInvocation) -> Result<(), ActionError> {
         self.request(inv)
             .map(|_| ())
-            .map_err(|_| self.refusal.clone())
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs validate: {e}"); } self.refusal.clone() }) // TEMP M7 diag
     }
     fn prepare_authoritative_with_context(
         &self,
@@ -292,7 +292,7 @@ impl ActionProvider for Provider {
         ctx: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         self.prepare(inv, txn, ctx)
-            .map_err(|_| self.refusal.clone())
+            .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG entitlement provider.rs prepare: {e}"); } self.refusal.clone() }) // TEMP M7 diag
     }
     fn project_offer(
         &self,
