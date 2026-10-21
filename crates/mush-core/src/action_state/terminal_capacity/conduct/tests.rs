@@ -68,7 +68,7 @@ impl Fixture {
             format: 1,
             funding: self.job.id,
             effect: self.job.action.clone(),
-            sponsor: key(JOB, self.job.id)?,
+            sponsor: key(EXECUTION, self.job.id)?,
             targets: targets(self.job.id)?,
             protocol_fingerprint: Some(self.job.digest()?),
         })

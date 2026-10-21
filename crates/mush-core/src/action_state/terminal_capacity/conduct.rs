@@ -117,7 +117,7 @@ pub(super) fn verify(
     ready(view)?;
     let id = CommitToken::from_hex(&reservation.sponsor.encoded).map_err(bad)?;
     let (job, execution) = pair(view, id)?;
-    if reservation.sponsor != key(JOB, id)?
+    if reservation.sponsor != key(EXECUTION, id)?
         || reservation.funding != id
         || reservation.effect != job.action
         || reservation.targets != targets(id)?

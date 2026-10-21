@@ -40,7 +40,7 @@ pub(in crate::action_state) fn conduct_change(
                 format: 1,
                 funding: commit,
                 effect: job.action.clone(),
-                sponsor: key(JOB, commit)?,
+                sponsor: key(EXECUTION, commit)?,
                 targets: targets(commit)?,
                 protocol_fingerprint: Some(job.digest()?),
             };
