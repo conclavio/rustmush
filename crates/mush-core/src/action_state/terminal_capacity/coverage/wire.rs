@@ -327,6 +327,14 @@ impl Row {
         let o = basis
             .as_object_mut()
             .ok_or_else(|| refused("coverage risk"))?;
+        // A qualified quote binds the digest of its Conduct selection, exactly as
+        // tacsim's `CoverageBasis` records it (`ConductSelection::digest`).
+        let qualified = field(risk, "qualified")?;
+        let role = if qualified.is_null() {
+            Value::Null
+        } else {
+            json!(digest("tacsim.coverage.qualified_role.v1", qualified, 4096)?)
+        };
         for (n, v) in [
             ("format", json!(1)),
             ("product", json!(pubid)),
@@ -343,7 +351,7 @@ impl Row {
                 "quote_digest",
                 json!(digest("tacsim.coverage.quote.v1", &q, 16384)?),
             ),
-            ("qualified_role", Value::Null),
+            ("qualified_role", role),
         ] {
             o.insert(n.into(), v);
         }
@@ -373,7 +381,6 @@ impl Row {
             || field(&self.raw, "quote_digest")? != field(&basis, "quote_digest")?
             || self.basis()? != &basis
             || self.terms()? != &terms
-            || !field(risk, "qualified")?.is_null()
         {
             return Err(refused("coverage frozen quote/publication affinity"));
         }
