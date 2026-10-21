@@ -40,17 +40,42 @@ core on this box before the frame clock starts missing ticks. The skip-if-
 unchanged check means a still camera with still contacts costs the render only
 (1.7 ms) and no bytes.
 
-What this does not measure: the picture in a real terminal. No kitty-capable
-terminal, no Redis and no running game were available on this box, so the
-end-to-end path (probe reply → `^G` → frames in WezTerm or Ghostty over SSH)
-is proven only as unit tests of each stage plus the fixture PNG, which is
-viewable at `fixture.png` from the example. The two owed checks are:
+## In real terminals (2026-10-21, later the same day)
 
-1. `cat fixture.kitty` in WezTerm (and Ghostty, kitty) to see the terminal's
-   own decoder draw the frame and to confirm the placement keys scale it.
-2. A live `@tui` → `^G` session on dev1 or a local mushd, watching for flicker
-   on frame replacement (WezTerm is the laggard implementation) and for the
-   probe reply arriving as marker keys rather than stray characters.
+The owner installed WezTerm (20240203) and Windows Terminal Preview 1.26, so
+the frame was tried for real. The stream file is the example's `fixture.kitty`
+with the `CUP` removed and the box set to 80x20 so a plain `cat` places it at
+the cursor.
+
+| path | result |
+|---|---|
+| `type fixture.kitty` in a local cmd under WezTerm | **nothing drawn** |
+| `type fixture.kitty` in a local cmd under Windows Terminal Preview 1.26 | **nothing drawn** |
+| `cat fixture.kitty` on conclav.io inside `wezterm ssh` (WezTerm's own SSH client) | **drawn correctly**, scaled into 80x20 cells: sky, grid, wall block, contacts |
+| `type mw2.six` (sixel) in a local cmd under Windows Terminal Preview 1.26 | **drawn correctly** |
+
+What that means:
+
+- **ConPTY strips the kitty APC.** Anything that runs as a Windows console
+  process — `cmd`, `ssh.exe`, PowerShell — has its output re-encoded by
+  ConPTY, which drops `ESC _ … ESC \`. WezTerm's bundled ConPTY and Windows
+  Terminal's both do. So on Windows, kitty graphics over SSH work only through
+  a terminal's **own** SSH client that bypasses ConPTY (`wezterm ssh`, or a
+  WezTerm SSH domain). A player typing `ssh` in a Windows shell will not get
+  them, whatever the terminal.
+- **Windows Terminal has no kitty graphics.** 1.25 added the kitty *keyboard*
+  protocol (release notes #19817); the graphics request, microsoft/terminal
+  #8389, is still open with a design spec from July 2026. It does speak sixel
+  through ConPTY, and that worked first time.
+- So **the sixel encoder is not the fallback, it is the Windows path**, and
+  the second encoder to build. The web canvas is the third.
+
+The frame-placement scaling (`c=…,r=…`) worked as intended in WezTerm: the
+320x220 picture filled the 80x20 cell box.
+
+Still owed: a live `@tui` → `^G` session against a running game (dev2 is
+offered), watching for flicker on frame replacement in WezTerm and for the
+probe reply arriving as marker keys rather than stray characters.
 
 ## What it looked like
 
