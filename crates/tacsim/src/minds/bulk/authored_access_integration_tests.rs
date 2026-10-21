@@ -295,6 +295,7 @@ async fn working(f: &PurchaseFixture, saved: &Durable) -> TestResult<Durable> {
             assert_eq!(disk(&world), before);
             assert_eq!(roll(&world)?.mind(BUYER, "child")?, &edited);
         }
+        eprintln!("M7_STORY_DIAG b1 step=after_loop"); // TEMP M7 diag
         // Exact original helpers still deny, even after lawful working edits.
         let store = roll(&world)?;
         let source = world
@@ -311,6 +312,7 @@ async fn working(f: &PurchaseFixture, saved: &Durable) -> TestResult<Durable> {
             )
             .is_err()
         );
+        eprintln!("M7_STORY_DIAG b1 step=after_owned_copy"); // TEMP M7 diag
         // A real disconnect/reconnect changes the physical lease. A held source
         // observation cannot emit into the replacement session or its sibling.
         probe(&mut world, "capture-source", true)?;
@@ -331,11 +333,13 @@ async fn working(f: &PurchaseFixture, saved: &Durable) -> TestResult<Durable> {
             draft.source,
             "fresh request can use the new session"
         );
+        eprintln!("M7_STORY_DIAG b1 step=before_cold"); // TEMP M7 diag
         let edited_disk = disk(&world);
         let retained = capture(&world, &edited_disk);
         let cold = PlayerWorld::boot_forks(f, &retained, true)?;
         assert_eq!(roll(&cold)?.mind(BUYER, "child")?, &edited);
         cold.tasks.shutdown(Duration::from_secs(5)).await;
+        eprintln!("M7_STORY_DIAG b1 step=after_cold"); // TEMP M7 diag
         // Same timestamp, changed actual clock generation invalidates a held view.
         probe(&mut world, "capture-source", true)?;
         let before = world.engine.world.world_ic_now();
