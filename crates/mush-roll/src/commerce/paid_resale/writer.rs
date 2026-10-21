@@ -110,6 +110,10 @@ impl PaidResaleWriter {
         reg.grant_state_family_read(&families.renewal_operations, "market")?;
         reg.grant_state_family_read(&families.house_renewal_operations, "market")?;
         reg.grant_state_family_read(&ratings.receipts, "market")?;
+        // The service's settle and refund (`observe_terminal`) read the
+        // licence's revocation status inside Market's transaction.
+        reg.grant_state_family_read(&families.revoked_terms, "market")?;
+        reg.grant_state_family_read(&families.registry_revocations, "market")?;
         if service_actor.0 == 0 {
             return Err(ModError::msg("paid resale service actor differs"));
         }
