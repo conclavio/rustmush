@@ -112,6 +112,16 @@ impl TuiSession {
     /// drops it before the async write (invariant T2).
     #[must_use]
     pub fn paint(&mut self) -> Vec<u8> {
+        let mut bytes = self.paint_text();
+        // Pixel cockpit spike (2026-10-21): place this tick's picture (if it
+        // changed) after the text frame it sits on.
+        bytes.extend(self.app.pixel_paint());
+        bytes
+    }
+
+    /// The text frame alone: the ratatui diff, plus the image free when the
+    /// pixel view closed since the last paint.
+    fn paint_text(&mut self) -> Vec<u8> {
         // Keep the backend geometry in step with the app caps every frame so
         // a resize that arrived between paints is honored here.
         let caps = self.app.caps();
@@ -123,13 +133,25 @@ impl TuiSession {
         // into a `Vec` and never errors, so a failure just yields no bytes.
         let _ = terminal.draw(|frame| app.draw(frame));
         let mut bytes = terminal.backend_mut().take_output();
-        // Pixel cockpit spike (2026-10-21): free the image when the view
-        // closed, and place this tick's picture (if it changed) after the
-        // text frame it sits on.
         if app.pixel_take_close() {
             bytes.extend_from_slice(&mush_pixel::kitty::delete_bytes(pixel::IMAGE_ID));
         }
-        bytes.extend(app.pixel_paint());
+        bytes
+    }
+
+    /// **One frame-clock tick's bytes** (pixel cockpit spike): the picture
+    /// when it changed, with the text frame refreshed under it (the HUD's
+    /// counters moved); NOTHING when it did not — not a cursor move, not a
+    /// cell. The frame clock runs twenty times a second, and a tick that
+    /// wrote even a few bytes would fill a stalled client's SSH window.
+    #[must_use]
+    pub fn pixel_frame(&mut self) -> Vec<u8> {
+        let picture = self.app.pixel_paint();
+        if picture.is_empty() {
+            return Vec::new();
+        }
+        let mut bytes = self.paint_text();
+        bytes.extend(picture);
         bytes
     }
 
@@ -394,17 +416,19 @@ mod tests {
             "the kitty frame scaled into 110 by 38 cells: {text:?}"
         );
         assert!(text.ends_with("\x1b[?2026l"));
-        // The same picture is not sent twice — and an idle tick writes NOTHING,
-        // not even a HUD cell: a counter that moved every 50 ms would be twenty
-        // small writes a second into a client that may not be reading.
+        // The same picture is not sent twice — and an idle frame tick writes
+        // NOTHING, not even a cursor move: twenty small writes a second would
+        // fill a stalled client's SSH window (dev2's first live smoke).
         sess.pixel_tick();
-        let again = sess.paint();
+        let again = sess.pixel_frame();
         assert!(again.is_empty(), "{:?}", String::from_utf8_lossy(&again));
+        let repaint = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(!repaint.contains("\x1b_Ga=T"), "an event repaint re-sends no picture");
         // A turn, a tick with time on the clock, a new picture.
         sess.feed_input(b"\x1b[C");
         std::thread::sleep(std::time::Duration::from_millis(80));
         sess.pixel_tick();
-        let turned = String::from_utf8_lossy(&sess.paint()).into_owned();
+        let turned = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
         assert!(turned.contains("\x1b_Ga=T"), "{turned:?}");
         // Leaving the TUI with the view open frees the image first.
         assert_eq!(

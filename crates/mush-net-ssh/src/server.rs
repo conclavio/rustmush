@@ -2136,14 +2136,14 @@ fn spawn_output_pump(
                         }
                     }
                     Wake::Tick => Vec::new(), // handled above
-                    // The frame clock: advance the camera and paint, which
-                    // yields bytes only when the picture changed.
+                    // The frame clock: advance the camera and take the tick's
+                    // bytes, which are NOTHING unless the picture changed.
                     Wake::Frame => {
                         if matches!(sh.mode, Mode::Tui) {
                             match sh.tui.as_mut() {
                                 Some(t) if t.pixel_active() => {
                                     t.pixel_tick();
-                                    t.paint()
+                                    t.pixel_frame()
                                 }
                                 _ => Vec::new(),
                             }
