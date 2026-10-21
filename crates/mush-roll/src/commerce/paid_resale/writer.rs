@@ -583,8 +583,13 @@ impl RegisteredPaidResaleWriter {
         if intent.action != self.action || intent.actor != actor {
             return Ok(None);
         }
-        r.runtime.require(&intent)?;
-        intent.fresh(world)?;
+        // A projected intent that is no longer pending or fresh (the service
+        // has already settled or refunded it) offers nothing; it must not fail
+        // the whole projection for the service actor. Invocation and prepare
+        // re-check both.
+        if r.runtime.require(&intent).is_err() || intent.fresh(world).is_err() {
+            return Ok(None);
+        }
         Ok(Some(PaidResaleServiceOffer { intent }))
     }
     pub fn check_service_invocation(
