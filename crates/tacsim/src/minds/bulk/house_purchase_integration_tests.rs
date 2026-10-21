@@ -759,7 +759,7 @@ fn selection(w: &mut PlayerWorld, licence: LicenceId, allowed: bool) -> TestResu
     assert_eq!(
         text.contains("Your slot will carry"),
         allowed,
-        "house selection disposition"
+        "house selection disposition: {text}"
     );
     if allowed {
         let c = match_::centre_of(&w.engine.world).ok_or("centre")?;
