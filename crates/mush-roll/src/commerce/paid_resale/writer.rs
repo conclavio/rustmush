@@ -96,6 +96,20 @@ impl PaidResaleWriter {
         reg.delegate_state_family(&families.paid_resale_heads, "market")?;
         reg.delegate_state_family(&families.paid_holders, "market")?;
         reg.delegate_state_family(&families.paid_licences, "market")?;
+        // Market's paid-resale boot audit re-proves each offer's and
+        // operation's binding (`binding_for_boot` / `operation_for_boot`) from
+        // its own ModuleCtx, and the birth resolver reads every birth route
+        // whichever purchase writers are composed: read-only grants.
+        reg.grant_state_family_read(&families.paid_allocations, "market")?;
+        reg.grant_state_family_read(&families.entitlement_allocations, "market")?;
+        reg.grant_state_family_read(&families.house_allocations, "market")?;
+        reg.grant_state_family_read(&families.paid_terms, "market")?;
+        reg.grant_state_family_read(&families.term_economics, "market")?;
+        reg.grant_state_family_read(&families.house_economics, "market")?;
+        reg.grant_state_family_read(&families.filed_royalties, "market")?;
+        reg.grant_state_family_read(&families.renewal_operations, "market")?;
+        reg.grant_state_family_read(&families.house_renewal_operations, "market")?;
+        reg.grant_state_family_read(&ratings.receipts, "market")?;
         if service_actor.0 == 0 {
             return Err(ModError::msg("paid resale service actor differs"));
         }
