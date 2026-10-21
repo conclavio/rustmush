@@ -281,9 +281,11 @@ async fn working(f: &PurchaseFixture, saved: &Durable) -> TestResult<Durable> {
             selector
         );
         assert_eq!(rows(&disk(&world), "roll", "roll_mind_paid_term"), terms);
-        // Copy and destructive lifecycle remain closed;
-        // the separate B2 child exercises actual current-rights Check/Save.
-        for command in ["@mind/localcopy child=copy", "@mind/remove child"] {
+        // Copy remains closed; removal of a draft is the authoritative draft
+        // retirement (its own stories), queued rather than refused, and not
+        // issued here because this child is used below. The separate B2 child
+        // exercises actual current-rights Check/Save.
+        for command in ["@mind/localcopy child=copy"] {
             let before = disk(&world);
             let events = line(&mut world, command)?;
             let text = PlayerWorld::private_text(&events, BUYER);
