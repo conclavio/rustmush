@@ -392,29 +392,20 @@ pub(super) async fn exercise(f: &PurchaseFixture, saved: &Durable) -> TestResult
     }.await;
     tasks.shutdown(Duration::from_secs(5)).await;
     result?;
-    for (field, allowed) in [("withdrawn_by", true), ("recalled_by", false)] {
+    // A withdrawal or recall is a retained cause record (`withdrawal::audit`,
+    // `registry_recall::audit`), so a status naming one that does not exist is
+    // forged history and refuses at boot. The real withdrawal (paid Pins keep
+    // reading) and recall (refused) flows are their own stories.
+    for field in ["withdrawn_by", "recalled_by"] {
         let mut changed = edited.clone();
         change_one_family(&mut changed, "roll", "roll_mind_status", |row| {
             *row.get_mut(field).ok_or("status")? = json!(token(4_000_200));
             Ok(())
         })?;
-        let mut world = PlayerWorld::boot_forks(f, &changed, true)?;
-        let tasks = world.tasks.clone();
-        let result = invoke(
-            &mut world,
-            BUYER,
-            BUYER_CONN,
-            MindRequest::Read {
-                name: "child".into(),
-                revision: None,
-            },
+        assert!(
+            PlayerWorld::boot_forks(f, &changed, true).is_err(),
+            "a forged {field} cause loaded"
         );
-        tasks.shutdown(Duration::from_secs(5)).await;
-        if allowed {
-            assert!(matches!(result?, MindResponse::Read { .. }));
-        } else {
-            refused(result?);
-        }
     }
     Ok(())
 }
