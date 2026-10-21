@@ -226,6 +226,7 @@ fn quote_other_profile(
         payer,
         Amount::from_minor(10_000),
     )?;
+    other.engine.set_submission_runtime(Arc::new(Runtime))?;
     observed_quote(other, quote, N + 3)?;
     let row = quote_row(other, N + 3)?;
     assert_eq!(row["terms"]["premium"], json!(100));
@@ -335,6 +336,8 @@ fn quote_and_bind(
             .ok_or("actual Transit Open")?,
     );
     let h = host(w)?;
+    // One stateless observed-submission runtime serves every quote below.
+    w.engine.set_submission_runtime(Arc::new(Runtime))?;
     for (publication, n, premium, discount) in [(N, N + 5, 100, 0), (N + 1, N + 6, 90, 10)] {
         let t = h.quote(
             &w.engine.world,

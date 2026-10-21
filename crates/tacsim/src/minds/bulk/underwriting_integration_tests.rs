@@ -257,8 +257,8 @@ fn observed_quote(
 ) -> TestResult<CoverageCompletion> {
     use crate::underwriting::CoverageSubmissionState as State;
     let h = host(w)?;
+    // The caller installs the observed-submission runtime once per engine.
     let t = Arc::new(ticket);
-    w.engine.set_submission_runtime(Arc::new(Runtime))?;
     let (hc, tc) = (h.clone(), t.clone());
     assert_eq!(
         context(w, BUYER, move |ctx| hc.submit(ctx, &tc))?,
@@ -496,6 +496,7 @@ pub(super) fn exercise(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> 
         payer,
         Amount::from_minor(10_000),
     )?;
+    w.engine.set_submission_runtime(Arc::new(Runtime))?;
     let quoted = observed_quote(&mut w, quote, FIRST + 3)?;
     assert_eq!(quoted.kind(), "quoted");
     let value = one(rows(&w.disk, "tacsim", "tacsim_coverage_quotes"))?;
