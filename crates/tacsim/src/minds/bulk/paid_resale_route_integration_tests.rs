@@ -113,6 +113,14 @@ fn connect(w: &mut PlayerWorld, buyer: ObjId) -> TestResult {
     })?;
     Ok(())
 }
+/// The resale successor holds the licence: the current paid-licence pointer
+/// names them. `SIM MIND /filed` lists original-owner holdings only (a paid
+/// holder's listing is a separate, not-yet-built feature), so it is no test of
+/// a buyer's holding.
+fn holds(w: &PlayerWorld, actor: ObjId, id: LicenceId) -> TestResult {
+    assert_eq!(pointer(w, id)?.holder(), actor, "actual current paid holder");
+    Ok(())
+}
 fn visible(w: &mut PlayerWorld, actor: ObjId, id: LicenceId, expected: bool) -> TestResult {
     let lobby =
         match_::centre_object(&w.engine.world, match_::LOBBY_ENTRY).ok_or("actual lobby")?;
@@ -617,7 +625,7 @@ pub(super) fn exercise(
         )
     );
     visible(&mut w, seller, id, false)?;
-    visible(&mut w, buyer, id, true)?;
+    holds(&w, buyer, id)?;
     let open = predecessor.terms().form() != mush_roll::commerce::paid::PaidForm::Sealed {};
     source(&mut w, seller, &predecessor, false)?;
     source(&mut w, buyer, &predecessor, open)?;
@@ -628,7 +636,7 @@ pub(super) fn exercise(
     paired(&w, accepted)?;
     renewal(&w, house, start + 30)?;
     assert_eq!(pointer(&w, id)?, transferred);
-    visible(&mut w, buyer, id, true)?;
+    holds(&w, buyer, id)?;
     source(&mut w, buyer, &predecessor, open)?;
     let mut missing = transferred_image.clone();
     assert!(remove_family(&mut missing, "roll", HOLDER) > 0);
@@ -752,7 +760,7 @@ pub(super) fn exercise(
     assert_eq!(current.operation(), token(retry));
     assert_eq!(current.terms(), predecessor.terms());
     visible(&mut w, seller, id, false)?;
-    visible(&mut w, buyer, id, true)?;
+    holds(&w, buyer, id)?;
     let complete = saved(&w);
     drop(w);
     let mut cold = boot(&complete)?;
@@ -762,7 +770,7 @@ pub(super) fn exercise(
     renewal(&cold, house, automatic)?;
     renewal(&cold, house, retry)?;
     assert_eq!(pointer(&cold, id)?, renewed);
-    visible(&mut cold, buyer, id, true)?;
+    holds(&cold, buyer, id)?;
     source(&mut cold, buyer, &current, open)?;
     eprintln!("M7_STORY phase=paidresale.route event=complete house={house}");
     Ok(())
