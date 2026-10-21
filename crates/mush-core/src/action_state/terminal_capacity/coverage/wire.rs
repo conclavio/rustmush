@@ -294,19 +294,26 @@ impl Row {
         )?;
         let pubid: CommitToken = parsed(field(&q, "publication")?)?;
         let publication = required(view, &key(PRODUCT, pubid.to_hex())?)?;
-        shape(
-            &publication,
-            &[
-                "format",
-                "operation",
-                "action",
-                "protocol",
-                "publisher",
-                "authorization",
-                "product",
-                "posted_at_utc",
-            ],
-        )?;
+        // A qualified product's publication also carries its approved Conduct
+        // terms; a qualified quote must come from one, an ordinary quote not.
+        let qualified_quote = !field(field(&q, "risk")?, "qualified")?.is_null();
+        const PUBLICATION: [&str; 8] = [
+            "format",
+            "operation",
+            "action",
+            "protocol",
+            "publisher",
+            "authorization",
+            "product",
+            "posted_at_utc",
+        ];
+        if qualified_quote {
+            let mut names = PUBLICATION.to_vec();
+            names.push("conduct");
+            shape(&publication, &names)?;
+        } else {
+            shape(&publication, &PUBLICATION)?;
+        }
         let risk = field(&q, "risk")?;
         shape(
             risk,
