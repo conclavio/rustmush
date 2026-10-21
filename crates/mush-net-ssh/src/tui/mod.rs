@@ -112,11 +112,12 @@ impl TuiSession {
     /// drops it before the async write (invariant T2).
     #[must_use]
     pub fn paint(&mut self) -> Vec<u8> {
-        let mut bytes = self.paint_text();
-        // Pixel cockpit spike (2026-10-21): place this tick's picture (if it
-        // changed) after the text frame it sits on.
-        bytes.extend(self.app.pixel_paint());
-        bytes
+        // Pixel cockpit spike (2026-10-21): an event or key repaint carries
+        // NO picture. Pictures go out on the frame clock alone
+        // ([`Self::pixel_frame`]): on dev2's first live turn the arena's
+        // per-pulse events each repainted a moved camera too, and the wire
+        // carried ~35 frames a second against a 20 Hz clock.
+        self.paint_text()
     }
 
     /// The text frame alone: the ratatui diff, plus the image free when the
@@ -408,9 +409,14 @@ mod tests {
         });
         let r = sess.feed_input(b"\x07");
         assert!(r.redraw && sess.pixel_active());
-        let bytes = sess.paint();
+        // The key's repaint draws the HUD and no picture; the picture comes on
+        // the first frame-clock tick, with the text frame refreshed under it.
+        let hud = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(hud.contains("PIXEL"), "the HUD: {hud:?}");
+        assert!(!hud.contains("\x1b_Ga=T"), "no picture on a repaint: {hud:?}");
+        sess.pixel_tick();
+        let bytes = sess.pixel_frame();
         let text = String::from_utf8_lossy(&bytes);
-        assert!(text.contains("PIXEL"), "the HUD: {text:?}");
         assert!(
             text.contains("\x1b[?2026h\x1b[2;1H\x1b_Ga=T,f=100,t=d,i=1,p=1,q=2,C=1,c=110,r=38,m="),
             "the kitty frame scaled into 110 by 38 cells: {text:?}"
