@@ -762,13 +762,21 @@ impl PlayerWorld {
     }
     fn select(&mut self) -> TestResult {
         let team = self.say(BUYER, "SIM TEAM red")?;
-        let joined = Self::private_text(&team, BUYER);
-        if !joined.contains("red slot 1") {
-            // TEMP M7 diag: every event, any audience.
-            let all: Vec<_> = team.iter().map(|(a, e)| format!("{a:?} => {}", mush_testkit::text_of(e))).collect();
-            let at = self.engine.world.get(BUYER).and_then(|o| o.location);
-            panic!("SIM TEAM red: {joined:?}; buyer at {at:?}; events {all:?}");
-        }
+        // The lobby announces a claimed slot to its rooms, the buyer's
+        // included; it is not a private reply.
+        let here = self.engine.world.get(BUYER).and_then(|o| o.location);
+        let heard = team
+            .iter()
+            .filter(|(audience, _)| {
+                matches!(audience, Audience::Actor(who) if *who == BUYER)
+                    || matches!(audience, Audience::Conn(id) if *id == BUYER_CONN)
+                    || matches!(audience, Audience::Room { room, .. } if Some(*room) == here)
+            })
+            .map(|(_, event)| mush_testkit::text_of(event))
+            .collect::<Vec<_>>()
+            .join("
+");
+        assert!(heard.contains("red slot 1"), "SIM TEAM red: {heard}");
         self.say(BUYER, "SIM AI 1")?;
         self.say(BUYER, "SIM UNIT heavy_mk1")?;
         let selected = self.say(BUYER, "SIM MIND filed:2 PROFILE Default")?;
