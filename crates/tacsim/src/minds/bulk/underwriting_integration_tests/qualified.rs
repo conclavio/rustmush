@@ -256,18 +256,23 @@ fn recall_bind_fences(
             recall(&mut probe, retained, N + 10)?;
             assert!(prepare(&mut probe, BUYER, bind.action(), N + 11, json!({})).is_err());
         } else {
+            // Core admits one pending commit, so a Recall cannot land between a
+            // prepared (phase 1) or staged (phase 2) Bind and its install: the
+            // recall itself is refused while the Bind holds custody, and the
+            // abandoned Bind moves no policy or money.
             let (p, o, inv) = prepare(&mut probe, BUYER, bind.action(), N + 11, json!({}))?;
             if phase == 1 {
-                recall(&mut probe, retained, N + 10)?;
                 assert!(
-                    probe
-                        .stage_action(bind.action(), N + 11, p, o, &inv)
-                        .is_err()
+                    recall(&mut probe, retained, N + 10).is_err(),
+                    "recall landed under a prepared Bind"
                 );
+                drop((p, o, inv));
             } else {
                 probe.stage_action(bind.action(), N + 11, p, o, &inv)?;
-                recall(&mut probe, retained, N + 10)?;
-                assert!(probe.engine.take_staged_action().is_err());
+                assert!(
+                    recall(&mut probe, retained, N + 10).is_err(),
+                    "recall landed under a staged Bind"
+                );
             }
         }
         assert!(rows(&probe.disk, "tacsim", "tacsim_coverage_policies").is_empty());
