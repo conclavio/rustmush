@@ -2046,13 +2046,14 @@ fn spawn_output_pump(
         }
 
         loop {
-            let frame_wait = {
-                let sh = shared.lock().expect("conn state poisoned");
+            // A poisoned lock here only picks the idle wait; the next wake's
+            // own lock reports it.
+            let frame_wait = shared.lock().map_or(crate::tui::pixel::FRAME_INTERVAL, |sh| {
                 match (&sh.mode, sh.tui.as_ref()) {
                     (Mode::Tui, Some(t)) if t.pixel_active() => t.pixel_interval(),
                     _ => crate::tui::pixel::FRAME_INTERVAL,
                 }
-            };
+            });
             let wake = tokio::select! {
                 biased;
                 ev = rx.recv() => Wake::Event(ev),
