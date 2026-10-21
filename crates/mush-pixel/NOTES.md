@@ -106,3 +106,67 @@ cut will want a zoom or a bigger sprite scale for the lock.
   before SSH compression, which is still under 15 KB a frame.
 - Heightfield terrain (the MechWarrior horizon) needs a heightmap the arena
   does not carry; the Comanche-style voxel renderer is the cheap route.
+
+## Live on dev2 (2026-10-21, evening)
+
+The owner offered the unused dev2 instance on conclav.io. It now runs main as
+a split (gateway + server) TacSim instance on a fresh store at rate 24, with
+the `deploy/dev2` and `deploy/dev2-split` sets committed beside dev1's. dev1
+was not touched. A test account `pixeltest` with a registered SSH key sat in
+Red Pod 1 on a two-target range and drove the view from WezTerm's own SSH
+client on the owner's Windows box.
+
+What worked, first time, over the real path:
+
+- the probe answered OK (HUD `kitty graphics OK`) and nothing of the reply
+  leaked into the input line;
+- `^G` placed the picture in the cell box at once, scaled to 133 by 46 cells
+  of a 170 by 48 terminal (aspect-bound);
+- toggle-turn swung the camera at 45°/s and the picture tracked it; no
+  flicker on frame replacement in WezTerm; the match even resumed across a
+  gateway restart and `BOARD` took the tank back.
+
+Measured on the box (`top` over the two halves, `ss -ti` bytes on :6792) for
+one viewer turning continuously, after the fixes below:
+
+| what | value |
+|---|---|
+| frames on the wire | 20–21 a second (the HUD's measured `fps`) |
+| render / encode a frame | 0.5–2.6 ms / 0.3–1.4 ms (release, 4-vCPU VPS) |
+| PNG / wire a frame | 1.1–2.4 KB / 1.5–3.3 KB |
+| bytes on the SSH channel | 24–44 KB/s depending on the scene |
+| gateway CPU | 4–8 % of one vCPU |
+| server CPU | under 1 % (the view costs the world nothing) |
+| idle viewer (camera still) | 0 bytes, no writes |
+
+So one viewer costs about a twentieth of a core and a 30 KB/s link, and the
+earlier estimate of 20 viewers a core holds on this box.
+
+Three spike debts the smoke found and fixed on the spot (commits after
+1458a421):
+
+1. **An idle tick wrote bytes.** The HUD printed a skipped-tick counter, so
+   the text frame repainted twenty times a second; and a plain ratatui
+   `draw` hides the cursor and repositions on every pass. On the first live
+   run the client froze (below) and those small writes filled its 2 MB SSH
+   window in twelve minutes, at which point the gateway's 5 s write timeout
+   closed the connection. Now `pixel_frame()` returns nothing on an idle
+   tick, pinned by the session test.
+2. **Pictures went out off the clock.** Every event repaint (the arena's
+   per-pulse cockpit frames) also emitted a picture while the camera moved,
+   so the wire carried ~35 frames a second. Now only the frame clock sends.
+3. **The `sent` total said nothing about rate.** The HUD reads a measured
+   frames-per-second (frames in the last second).
+
+The Windows-side incident: on the first `^G`, the owner's PC froze (mouse
+and keyboard dead, caps lock still toggling: a GPU driver hang signature)
+with WezTerm 20240203 on its OpenGL front end. Every later run used
+`--config front_end="Software"` and was uneventful. Not root-caused; the
+owner will investigate if it recurs. WezTerm's CLI (`wezterm cli send-text
+--no-paste` against the GUI's `gui-sock-<pid>`) drove the pane without
+synthetic keystrokes for the later runs.
+
+Deploy gotcha for the record: a re-ship with `git archive` stamps files at
+the commit time, which can be OLDER than the previous on-box build, so cargo
+keeps the stale object; `touch` the shipped crate's sources before the
+incremental rebuild.
