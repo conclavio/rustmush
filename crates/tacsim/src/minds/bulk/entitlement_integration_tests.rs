@@ -415,20 +415,23 @@ fn title_fences(f: &PurchaseFixture, filed: &Durable, owner: LicenceId) -> TestR
             number,
             params.clone(),
         )?;
+        // Core admits one pending commit: no title transfer can land between
+        // a prepared (or staged) listing and its install, so the transfer is
+        // refused, the seller keeps the title and no listing row is written.
         if after_stage {
             stage(
                 &mut world, definition, BUYER, number, params, prepared, output,
             )?;
-            world.transfer_charter(charter, GOD, 49_000_080)?;
-            assert!(world.engine.take_staged_action().is_err());
-        } else {
-            world.transfer_charter(charter, GOD, 49_000_090)?;
             assert!(
-                stage(
-                    &mut world, definition, BUYER, number, params, prepared, output
-                )
-                .is_err()
+                world.transfer_charter(charter, GOD, 49_000_080).is_err(),
+                "title moved under a staged listing"
             );
+        } else {
+            assert!(
+                world.transfer_charter(charter, GOD, 49_000_090).is_err(),
+                "title moved under a prepared listing"
+            );
+            drop((definition, params, prepared, output));
         }
         assert_eq!(
             world
@@ -440,7 +443,7 @@ fn title_fences(f: &PurchaseFixture, filed: &Durable, owner: LicenceId) -> TestR
                 .asset(charter)
                 .ok_or("title")?
                 .title_owner,
-            EconomicOwner::Object(GOD)
+            EconomicOwner::Object(BUYER)
         );
         assert!(rows(&disk(&world), "market", "market_mind_entitlement_listing").is_empty());
         assert!(rows(&disk(&world), "roll", "roll_mind_filed_royalty_terms").is_empty());
