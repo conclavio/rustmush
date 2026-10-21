@@ -472,6 +472,8 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
         .set_now(accepted_term.window().term_end().get());
     r.flush();
     use mush_roll::commerce::house_renewal::protocol::Transition as HouseRenewal;
+    // `fence` starts from a member and proves each loss; rejoin first.
+    member(&mut r, true)?;
     fence(
         &mut r,
         HouseRenewal::Draft.id(),
