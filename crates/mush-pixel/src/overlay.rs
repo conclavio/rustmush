@@ -369,8 +369,12 @@ pub fn draw_heat(frame: &mut Frame, heat: &Heat) {
         GOOD
     };
     fill_rect(frame, x0, y0, fill, h, colour);
+    // A hull without a heat model (the frame's `heat` is null, drawn here as
+    // zeros) keeps the gauge's place with a dash, so the layout never jumps.
     let label = if heat.overheated {
         "OVERHEAT".to_string()
+    } else if heat.max <= 0 {
+        "HEAT --".to_string()
     } else {
         format!("HEAT {}/{}", heat.heat, heat.max)
     };

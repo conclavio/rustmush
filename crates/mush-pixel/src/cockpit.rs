@@ -93,17 +93,20 @@ pub fn draw_instruments(
     let you = cell_of(cockpit.get("cell")).unwrap_or((cam.x_cm / cell, cam.y_cm / cell));
     overlay::draw_minimap(frame, arena, you, cam.heading_mdeg, &marks, &spots);
 
-    // Heat.
-    if let Some(heat) = cockpit.get("heat").filter(|h| !h.is_null()) {
-        overlay::draw_heat(
-            frame,
-            &Heat {
-                heat: num(heat.get("heat")),
-                max: num(heat.get("max")),
-                overheated: heat.get("overheated").and_then(Value::as_bool) == Some(true),
-            },
-        );
-    }
+    // Heat: the stock tanks on dev2 carry no heat model (`heat` is null), so
+    // the gauge is drawn empty with a dash rather than left out.
+    let heat = cockpit.get("heat").filter(|h| !h.is_null());
+    overlay::draw_heat(
+        frame,
+        &Heat {
+            heat: num(heat.and_then(|h| h.get("heat"))),
+            max: num(heat.and_then(|h| h.get("max"))),
+            overheated: heat
+                .and_then(|h| h.get("overheated"))
+                .and_then(Value::as_bool)
+                == Some(true),
+        },
+    );
 
     // Weapons.
     let rows: Vec<WeaponRow> = cockpit

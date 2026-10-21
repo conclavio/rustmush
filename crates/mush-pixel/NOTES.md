@@ -226,3 +226,32 @@ weapon recycle states, the armour-status doll — rather than as separate
 placed images. The view's default is now 640x480 (commit 8732d107) and `r`
 steps down to 320x220 for a slow link; dev2 keeps the 320-default build
 until it is next redeployed.
+
+## The instruments (2026-10-21, the owner's next ask)
+
+Drawn into the frame after the raycaster, from the same `arena.cockpit`
+keyframe and `arena.map` the TUI's panes read (`mush_pixel::overlay` draws,
+`mush_pixel::cockpit` reads the JSON; the SSH view and the fixture example
+share both):
+
+- **minimap**, bottom-left: a 60-cell window around the pilot, north up,
+  ground coloured by cell, the pilot a white dot with a heading line,
+  contacts coloured by kind, the named spots as letters;
+- **heat**, bottom centre: a bar green to amber to red, `OVERHEAT` when the
+  frame says so, `HEAT --` for a hull with no heat model (dev2's stock tanks);
+- **weapons**, top right under the status strip: a row each — name, a
+  recycle bar (full when ready, the countdown while it cycles), rounds
+  coloured by what is left, the hit chance when there is a lock;
+- **the armour doll**, bottom right: a top-down tank — hull plates front,
+  rear, left, right and top, the turret with its barrel, the tracks as bars
+  beside the hull, the engine as a block at the rear — each green, amber,
+  red or gone by its armour or internals;
+- **the status strip**, top left: callsign, speed, camera heading, power,
+  the lock and its range.
+
+A 5x7 bitmap font (capitals, digits, a little punctuation) at 1x for
+320x220 and 2x for 640x480; everything opaque from a fixed set of colours,
+and a test holds the whole frame under the palette PNG's 256 at both sizes.
+Live on dev2 at 640x480 the instruments add ~2 ms of render (7.6–8.6 ms a
+frame) and ~1.5 KB of PNG (6.6 KB; 8.9 KB on the wire) and the clock holds
+21 fps.
