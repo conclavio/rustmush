@@ -79,53 +79,68 @@ macro_rules! check {
 }
 
 /// `assert_eq!` for a function that returns `Result<_, Box<dyn Error>>`.
+///
+/// The operands are matched, not `let`-bound, as `assert_eq!` does: a
+/// temporary either side borrows (`f()?.as_ref()`) lives to the comparison.
 macro_rules! check_eq {
-    ($left:expr, $right:expr $(,)?) => {{
-        let (left_val, right_val) = (&$left, &$right);
-        if !(*left_val == *right_val) {
-            return Err($crate::test_checks::CheckFailed::new(format!(
-                "assertion `left == right` failed\n  left: {:?}\n right: {:?}",
-                left_val, right_val
-            ))
-            .into());
+    ($left:expr, $right:expr $(,)?) => {
+        match (&$left, &$right) {
+            (left_val, right_val) => {
+                if !(*left_val == *right_val) {
+                    return Err($crate::test_checks::CheckFailed::new(format!(
+                        "assertion `left == right` failed\n  left: {:?}\n right: {:?}",
+                        left_val, right_val
+                    ))
+                    .into());
+                }
+            }
         }
-    }};
-    ($left:expr, $right:expr, $($arg:tt)+) => {{
-        let (left_val, right_val) = (&$left, &$right);
-        if !(*left_val == *right_val) {
-            return Err($crate::test_checks::CheckFailed::new(format!(
-                "assertion `left == right` failed: {}\n  left: {:?}\n right: {:?}",
-                format_args!($($arg)+),
-                left_val,
-                right_val
-            ))
-            .into());
+    };
+    ($left:expr, $right:expr, $($arg:tt)+) => {
+        match (&$left, &$right) {
+            (left_val, right_val) => {
+                if !(*left_val == *right_val) {
+                    return Err($crate::test_checks::CheckFailed::new(format!(
+                        "assertion `left == right` failed: {}\n  left: {:?}\n right: {:?}",
+                        format_args!($($arg)+),
+                        left_val,
+                        right_val
+                    ))
+                    .into());
+                }
+            }
         }
-    }};
+    };
 }
 
 /// `assert_ne!` for a function that returns `Result<_, Box<dyn Error>>`.
 macro_rules! check_ne {
-    ($left:expr, $right:expr $(,)?) => {{
-        let (left_val, right_val) = (&$left, &$right);
-        if *left_val == *right_val {
-            return Err($crate::test_checks::CheckFailed::new(format!(
-                "assertion `left != right` failed\n  left: {:?}\n right: {:?}",
-                left_val, right_val
-            ))
-            .into());
+    ($left:expr, $right:expr $(,)?) => {
+        match (&$left, &$right) {
+            (left_val, right_val) => {
+                if *left_val == *right_val {
+                    return Err($crate::test_checks::CheckFailed::new(format!(
+                        "assertion `left != right` failed\n  left: {:?}\n right: {:?}",
+                        left_val, right_val
+                    ))
+                    .into());
+                }
+            }
         }
-    }};
-    ($left:expr, $right:expr, $($arg:tt)+) => {{
-        let (left_val, right_val) = (&$left, &$right);
-        if *left_val == *right_val {
-            return Err($crate::test_checks::CheckFailed::new(format!(
-                "assertion `left != right` failed: {}\n  left: {:?}\n right: {:?}",
-                format_args!($($arg)+),
-                left_val,
-                right_val
-            ))
-            .into());
+    };
+    ($left:expr, $right:expr, $($arg:tt)+) => {
+        match (&$left, &$right) {
+            (left_val, right_val) => {
+                if *left_val == *right_val {
+                    return Err($crate::test_checks::CheckFailed::new(format!(
+                        "assertion `left != right` failed: {}\n  left: {:?}\n right: {:?}",
+                        format_args!($($arg)+),
+                        left_val,
+                        right_val
+                    ))
+                    .into());
+                }
+            }
         }
-    }};
+    };
 }
