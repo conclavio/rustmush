@@ -18,6 +18,11 @@
   // the server sent this pilot, never a lookup; the notice sentences' own
   // copies are kept out of it.)
   //
+  // Doc 21 cut G.3c adds the first-person picture above the map
+  // (`PictureView.svelte`): drawn by the gateway from this pilot's own feeds,
+  // so it shows exactly what this screen does, and its arrow keys are the one
+  // place this tab SENDS an order (`HEADING`, as the SSH TUI's view does).
+  //
   // Every string printed here comes out of `cockpitView`, and the canvas draws
   // from `composeWindow` — both pure, both pinned by vitest against the
   // committed fixtures, so what the test reads is what the player sees.
@@ -40,6 +45,7 @@
     type Marker,
   } from "$lib/cockpit";
   import { TERRAIN_COLOURS } from "$lib/stores/map.svelte";
+  import PictureView from "./PictureView.svelte";
 
   let { app }: { app: GameApp } = $props();
 
@@ -232,6 +238,8 @@
   {#if frame === null || view === null}
     <p class="muted pad">{NOT_IN_A_COCKPIT}</p>
   {:else}
+    <!-- Doc 21 cut G.3c: the first-person picture, above the map. -->
+    <PictureView {app} headingDeg={frame.heading_deg} />
     <section class="mapbox" aria-label="arena map">
       <header>
         <strong>{view.heading}</strong>

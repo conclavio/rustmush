@@ -759,6 +759,13 @@ happening it drops to a narrower picture ten times a second (the line over the
 picture says `slow link: stepped down`), coming back up once the link has kept
 up for ten seconds. `r` picks the narrower picture yourself.
 
+**In the web client** the cockpit tab has the same picture above its map:
+`Show the picture` asks for it (the browser remembers your choice), and it
+stops while the tab is hidden or you leave the seat. Click the picture to give
+it the keys: the arrows turn the tank (hold), `,` and `.` swing your look (again
+to stop), `c` centres it, space stops both. The map, the panes and the orders
+below it work as before.
+
 `@pixel/stats` tells this connection's picture in numbers: what your terminal
 showed and what it draws, the picture's size and clock, what the last frame
 cost to draw and send, and how many were sent, unchanged, skipped on a slow

@@ -37,6 +37,8 @@ import { isOwnRoll } from "./roll";
 import { ARENA_MAP_FEED, COCKPIT_FEED, decodeArenaMap, isNoticeSentence } from "./cockpit";
 import { SKY_CHART_FEED } from "./chart";
 import { ChartStore } from "./stores/chart.svelte";
+import { PictureStore } from "./stores/picture.svelte";
+import { pictureCommand } from "./picture";
 import { BODY_GROUND_FEED, SITE_MAP_FEED, TV_STATUS_FEED, groundParams, rigPrefill, siteParams } from "./quarry";
 import { QuarryStore } from "./stores/quarry.svelte";
 import { OBSERVER_FEED, REPLAY_FEED, decodeReplayGrid } from "./replay";
@@ -256,6 +258,9 @@ export class GameApp {
   replay = new ReplayStore();
   /** The sky chart (doc 19 cut A.3b): the `sky.chart` keyframe. */
   chart = new ChartStore();
+  /** The cockpit's picture (doc 21 cut G.3c): asked for, its look, its last
+   * frame. */
+  picture = new PictureStore();
   /** The quarry (doc 20 cut SM.9): the `site.map` and `body.ground` keyframes and the
    * screen's view. */
   quarry = new QuarryStore();
@@ -317,6 +322,13 @@ export class GameApp {
       onStatus: (s) => {
         this.session.status = s;
         if (s !== "connected") this.#clearMinds();
+        // Doc 21 cut G.3c: the gateway's picture is per connection, so a
+        // reconnect asks for it again; while away, nothing is shown.
+        if (s === "connected" && this.picture.on) {
+          this.client.send(pictureCommand(true, this.picture.lookMdeg));
+        } else if (s !== "connected") {
+          this.picture.clear();
+        }
         if (s === "closed") {
           // A clean close never reconnects on its own: nothing will answer
           // the heal's asks, so it stops with the socket (16b cut B.2).
@@ -326,6 +338,7 @@ export class GameApp {
       onTokenCooloff: () => {
         this.#localNotice("Too many reconnects from this network; retrying in one minute.");
       },
+      onBinary: (data) => this.picture.receive(data),
       onFullRehydrate: () => {
         // Resume gap outgrew the ring: the server fell back to a fresh
         // attach; fresh Room output follows and the hello-pass re-requested
@@ -1753,6 +1766,24 @@ export class GameApp {
   }
 
   // -- input --------------------------------------------------------------
+
+  /** Ask for the cockpit's picture, at a look, or stop it (doc 21 cut
+   * G.3c). The look changes by asking again. */
+  setPicture(on: boolean, lookMdeg: number): void {
+    const changed = on !== this.picture.on || lookMdeg !== this.picture.lookMdeg;
+    this.picture.on = on;
+    this.picture.lookMdeg = lookMdeg;
+    if (!on) this.picture.clear();
+    if (changed) this.client.send(pictureCommand(on, lookMdeg));
+  }
+
+  /** A helm order from the picture's arrow keys (doc 21 cut G.3c): a
+   * `HEADING` line sent as a typed one, without the echo. */
+  helm(line: string): void {
+    if (!this.client.sendLine(line)) {
+      this.#localNotice("Not connected — command dropped.");
+    }
+  }
 
   /** Submit a line from the main input. Handles client-local /commands. */
   submit(line: string): void {

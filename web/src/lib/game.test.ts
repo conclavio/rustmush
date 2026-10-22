@@ -1831,6 +1831,22 @@ describe("the cockpit feeds", () => {
       expect(src, `CockpitScreen calls ${send}`).not.toContain(send);
     }
   });
+
+  it("PictureView.svelte touches nothing on the app but its picture and the helm", () => {
+    // Doc 21 cut G.3c: the first-person picture the cockpit screen mounts. It
+    // reads its own store, asks for the picture or stops it, and sends the
+    // arrow keys' `HEADING` orders through `helm` — the one send the cockpit
+    // tab makes, as the SSH TUI's view does (G.4). Nothing else.
+    const src = readFileSync(
+      resolve(process.cwd(), "src/components/PictureView.svelte"),
+      "utf8",
+    );
+    const reached = new Set([...src.matchAll(/\bapp\.(\w+)/g)].map((m) => m[1]));
+    expect([...reached].sort()).toEqual(["helm", "picture", "setPicture"]);
+    for (const send of ["app.submit", "app.runBinding", "app.client", "app.act("]) {
+      expect(src, `PictureView calls ${send}`).not.toContain(send);
+    }
+  });
 });
 
 // The 2026-09-20 incident's client half. A gateway restart leaves an open tab
