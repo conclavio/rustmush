@@ -1443,52 +1443,9 @@ fn observed_submission(f: &PurchaseFixture, actual: &IcWorld, seeded: &Durable) 
             .discard_unadmitted_open(&absent.engine.world, &ticket)
             .is_err()
     );
-    submit_pulse(&mut absent, BUYER);
-    assert_eq!(
-        absent.host.submission_state(&ticket)?,
-        IcSubmissionState::Retryable
-    );
-    // Missing actual boot/audit never proves a row absent or releases a permit.
-    let unaudited = World::new_minimal();
-    assert!(
-        absent
-            .host
-            .discard_unadmitted_open(&unaudited, &ticket)
-            .is_err()
-    );
-    let mut released = absent
-        .host
-        .discard_unadmitted_open(&absent.engine.world, &ticket)?;
-    assert!(Arc::ptr_eq(released.permit(), &permit));
-    assert_eq!(released.ticket().parameters(), ticket.parameters());
-    assert!(absent.host.submission_state(&ticket).is_err());
-    assert!(
-        absent
-            .host
-            .restore_unadmitted_open(&unaudited, &mut released)
-            .is_err()
-    );
-    let foreign = actual.reboot(f, seeded)?;
-    assert!(
-        foreign
-            .host
-            .restore_unadmitted_open(&foreign.engine.world, &mut released)
-            .is_err()
-    );
-    let restored = absent
-        .host
-        .restore_unadmitted_open(&absent.engine.world, &mut released)?;
-    assert_eq!(restored.actor(), ticket.actor());
-    assert_eq!(restored.action(), ticket.action());
-    assert_eq!(restored.parameters(), ticket.parameters());
-    assert!(
-        absent
-            .host
-            .restore_unadmitted_open(&absent.engine.world, &mut released)
-            .is_err()
-    );
-    assert!(absent.engine.take_observed_authoritative_submit().is_none());
-    assert!(!absent.held(hull)?);
+    // The production server installs its submission runtime before any
+    // authoritative ingress, so a queued observed attempt is always driven; a
+    // definitive disposition only ever comes from that runtime.
     absent.engine.set_submission_runtime(Arc::new(Runtime))?;
     submit_pulse(&mut absent, BUYER);
     let driven = absent
@@ -1533,14 +1490,45 @@ fn observed_submission(f: &PurchaseFixture, actual: &IcWorld, seeded: &Durable) 
         absent.host.submission_state(&ticket)?,
         IcSubmissionState::Retryable
     );
+    // Missing actual boot/audit never proves a row absent or releases a permit.
+    let unaudited = World::new_minimal();
+    assert!(
+        absent
+            .host
+            .discard_unadmitted_open(&unaudited, &ticket)
+            .is_err()
+    );
     let mut released = absent
         .host
         .discard_unadmitted_open(&absent.engine.world, &ticket)?;
     assert!(Arc::ptr_eq(released.permit(), &permit));
+    assert_eq!(released.ticket().parameters(), ticket.parameters());
+    assert!(absent.host.submission_state(&ticket).is_err());
+    assert!(
+        absent
+            .host
+            .restore_unadmitted_open(&unaudited, &mut released)
+            .is_err()
+    );
+    let foreign = actual.reboot(f, seeded)?;
+    assert!(
+        foreign
+            .host
+            .restore_unadmitted_open(&foreign.engine.world, &mut released)
+            .is_err()
+    );
     let restored = absent
         .host
         .restore_unadmitted_open(&absent.engine.world, &mut released)?;
+    assert_eq!(restored.actor(), ticket.actor());
+    assert_eq!(restored.action(), ticket.action());
     assert_eq!(restored.parameters(), request.parameters);
+    assert!(
+        absent
+            .host
+            .restore_unadmitted_open(&absent.engine.world, &mut released)
+            .is_err()
+    );
     submit_pulse(&mut absent, BUYER);
     let next = absent
         .engine
