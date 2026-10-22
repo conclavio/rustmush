@@ -241,6 +241,7 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
             hex(head, 64, false) && parts.next().is_none()
         }
         "roll_registry_revoked_terms"
+        | "roll_mind_lapse_occurrences"
         | "roll_mind_owner_term"
         | "roll_mind_paid_term"
         | "roll_mind_paid_term_economics"
@@ -319,5 +320,21 @@ pub(crate) fn valid_key(family: &str, key: &str) -> bool {
                 && parts.next().is_none()
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_key;
+
+    #[test]
+    fn lapse_occurrences_are_keyed_by_licence_term() {
+        let key = format!(
+            "{}/{}",
+            super::super::LicenceId::new(4).expect("licence").key(),
+            super::super::TermGeneration::new(1).expect("term").key()
+        );
+        assert!(valid_key("roll_mind_lapse_occurrences", &key));
+        assert!(!valid_key("roll_mind_lapse_occurrences", "licence/0000000000000004"));
     }
 }
