@@ -408,6 +408,8 @@ C->S  { "t":"resume", "d":{ "last_seq": 4180 } }        // or omitted for fresh 
 S->C  ...replayed events... then live stream
 ```
 
+**Binary frames: the picture** (doc 21 cut G.3, 2026-10-22). The one exception to "JSON text frames": a client that sends `{"t":"picture","d":{"on":true,"look_mdeg":0}}` gets the first-person cockpit picture as **binary** messages, each one PNG (640x480), drawn in the gateway from the `arena.cockpit` and `arena.map` keyframes this same socket carries, sent only when the picture changed, at most 20 a second; `"on":false` stops them, and a new `look_mdeg` (the camera's offset from the tank's heading) redraws. A client still may not send binary frames (close 1008). The request is transport-local and never reaches the world.
+
 Versioning: `proto` integer bumped only on breaking change; additive fields/events are always allowed (clients ignore unknown `t`). `ts-rs` generates TypeScript types from the proto crate at build time so the frontend never hand-mirrors the enum (drop it if it fights us — the surface is small).
 
 ### 6.4 WS keepalive & reconnect

@@ -151,6 +151,22 @@ pub enum ClientCommand {
         /// The nonce from the server's ping.
         nonce: u64,
     },
+    /// The web client's pixel view (doc 21 cut G.3): ask the gateway for the
+    /// first-person picture of the cockpit, change its look, or stop it.
+    /// While it is on, the gateway sends binary WebSocket messages, each one
+    /// PNG frame (640x480) drawn from this connection's own `arena.cockpit`
+    /// and `arena.map` keyframes, only when the picture changed and at most
+    /// at the picture's clock (20 a second). Handled by the web transport; it
+    /// never reaches the world.
+    Picture {
+        /// Whether the picture is wanted.
+        on: bool,
+        /// The look: the camera's offset from the tank's heading,
+        /// millidegrees. A look, not a turn: turning the tank is a
+        /// `HEADING` line like any other.
+        #[serde(default)]
+        look_mdeg: i64,
+    },
     /// Declare or update this connection's capabilities. The web transport
     /// sends it on connect and again on viewport resize; SSH never sends it
     /// (the server derives caps from the PTY request and window-change).

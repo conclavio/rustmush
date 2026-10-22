@@ -729,3 +729,125 @@ fn assert_http_status(err: WsError, expected: u16) {
         other => panic!("expected HTTP {expected}, got {other:?}"),
     }
 }
+
+/// Doc 21 cut G.3: a `picture` request turns on PNG frames as binary
+/// messages, drawn from the cockpit and map keyframes this connection's own
+/// stream carries; an unchanged picture sends nothing more, and `off` stops
+/// them. The text envelopes still go through untouched.
+#[tokio::test]
+async fn a_picture_request_gets_png_frames_from_the_connections_own_feeds() {
+    let hooks = Arc::new(MockWebHooks::new());
+    let addr = spawn_server(hooks.clone(), test_config()).await;
+    let (mut ws, _) = connect_ws(addr, "char=7").await.unwrap();
+    expect_hello(&recv_env(&mut ws).await);
+    send_cmd(
+        &mut ws,
+        &ClientCommand::Picture {
+            on: true,
+            look_mdeg: 0,
+        },
+    )
+    .await;
+
+    let tx = {
+        let st = hooks.state();
+        st.conns.values().next().unwrap().clone()
+    };
+    let panel = |seq: u64, feed: &str, text: &str| {
+        Arc::new(Envelope::new(
+            seq,
+            1_756_300_000_000,
+            OutputEvent::Panel {
+                feed: feed.into(),
+                kind: mush_proto::PanelFrameKind::Keyframe,
+                data: serde_json::from_str(text).unwrap(),
+            },
+        ))
+    };
+    tx.send(panel(
+        1,
+        "arena.cockpit",
+        include_str!("../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"),
+    ))
+    .await
+    .unwrap();
+    tx.send(panel(
+        2,
+        "arena.map",
+        include_str!("../../../web/src/lib/fixtures/cockpit/arena_map.json"),
+    ))
+    .await
+    .unwrap();
+
+    // The two envelopes arrive as text, and a frame as binary.
+    let mut texts = 0;
+    let png = loop {
+        let msg = tokio::time::timeout(Duration::from_secs(3), ws.next())
+            .await
+            .expect("timed out waiting for a frame")
+            .expect("stream ended")
+            .expect("ws error");
+        match msg {
+            Message::Text(_) => texts += 1,
+            Message::Binary(bytes) => break bytes,
+            Message::Close(frame) => panic!("unexpected close: {frame:?}"),
+            _ => {}
+        }
+    };
+    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"), "a PNG frame");
+    assert!(texts <= 2, "the envelopes are forwarded as before");
+
+    // Nothing changes: no more frames (only pings or the rest of the text).
+    let quiet = tokio::time::timeout(Duration::from_millis(400), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Binary(_))) => return true,
+                Some(Ok(_)) => {}
+                _ => return false,
+            }
+        }
+    })
+    .await;
+    assert!(quiet.is_err(), "an unchanged picture sends nothing");
+
+    // A new look: one new frame. Then off: none.
+    send_cmd(
+        &mut ws,
+        &ClientCommand::Picture {
+            on: true,
+            look_mdeg: 45_000,
+        },
+    )
+    .await;
+    let again = loop {
+        if let Message::Binary(bytes) = tokio::time::timeout(Duration::from_secs(3), ws.next())
+            .await
+            .expect("timed out")
+            .expect("stream ended")
+            .expect("ws error")
+        {
+            break bytes;
+        }
+    };
+    assert_ne!(again, png, "the look turned the camera");
+    send_cmd(
+        &mut ws,
+        &ClientCommand::Picture {
+            on: false,
+            look_mdeg: 45_000,
+        },
+    )
+    .await;
+    tx.send(sys_env(3, "still here")).await.unwrap();
+    let after = tokio::time::timeout(Duration::from_millis(400), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Binary(_))) => return true,
+                Some(Ok(_)) => {}
+                _ => return false,
+            }
+        }
+    })
+    .await;
+    assert!(after.is_err(), "off: no frames");
+}

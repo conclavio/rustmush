@@ -237,6 +237,14 @@ fn roundtrip_every_client_command_variant() {
         },
         ClientCommand::Composing { active: true },
         ClientCommand::Composing { active: false },
+        ClientCommand::Picture {
+            on: true,
+            look_mdeg: -30_000,
+        },
+        ClientCommand::Picture {
+            on: false,
+            look_mdeg: 0,
+        },
         ClientCommand::Resume { last_seq: 4180 },
         ClientCommand::Ack {
             commit: ProjectedCommitToken::new("0123456789abcdef0123456789abcdef").unwrap(),

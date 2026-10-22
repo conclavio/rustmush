@@ -33,6 +33,15 @@
 //! connection-scoped, not part of the session's resumable stream, and carry
 //! `seq: 0`; clients must not treat 0 as a resume point.
 //!
+//! ## The picture (doc 21 cut G.3)
+//!
+//! A [`ClientCommand::Picture`] turns on the first-person cockpit picture
+//! for this connection: the pump keeps the latest `arena.cockpit` and
+//! `arena.map` keyframes from the envelopes it forwards, runs a frame clock
+//! while the picture is on, and sends each changed frame as a PNG in a
+//! **binary** message (the only binary frames on the socket; the client
+//! still may not send any). See [`crate::picture`].
+//!
 //! ## Keepalive & backpressure
 //!
 //! App-level `ping` every `ping_interval_ms` (proxies eat WS protocol
@@ -111,6 +120,7 @@ use crate::app::AppState;
 use crate::config::WebConfig;
 use crate::hooks::{AttachErr, NewWebConn, ResumeErr, TokenVerdict, WebHooks};
 use crate::ip::client_ip;
+use crate::picture::WebPicture;
 
 /// Subprotocol prefix carrying the auth token.
 const SUBPROTO_PREFIX: &str = "rustmush.v1.";
@@ -456,11 +466,16 @@ async fn pump(
     ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut last_nonce: u64 = 0;
     let mut outstanding_pings: u32 = 0;
+    // Doc 21 cut G.3: the picture and its frame clock (a deadline, resynced
+    // when behind, polled only while the picture is on).
+    let mut picture = WebPicture::new();
+    let mut next_frame = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
             out = rx.recv() => match out {
                 Some(env) => {
+                    picture.observe(&env.event);
                     if !send_env(socket, &env, send_timeout).await {
                         tracing::info!(conn = conn_id, "closing slow/broken web client");
                         close(socket, close_code::SLOW, "too slow").await;
@@ -507,6 +522,12 @@ async fn pump(
                             // yet (rendering is client-side); logged for later.
                             tracing::debug!(conn = conn_id, ?caps, "client caps declared (ignored)");
                         }
+                        Ok(ClientCommand::Picture { on, look_mdeg }) => {
+                            // Transport-local (doc 21 cut G.3): the next tick
+                            // draws whatever the new request wants.
+                            picture.request(on, look_mdeg);
+                            next_frame = tokio::time::Instant::now();
+                        }
                         Ok(ClientCommand::Composing { active }) => {
                             // A presence hint (interface plan I4, D-I-11): the
                             // binary rate-limits and fans it out; never an
@@ -541,6 +562,19 @@ async fn pump(
                 // uninteresting (keepalive is app-level).
                 Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
             },
+            () = tokio::time::sleep_until(next_frame), if picture.is_on() => {
+                next_frame = std::cmp::max(
+                    next_frame + picture.interval(),
+                    tokio::time::Instant::now(),
+                );
+                if let Some(png) = picture.frame()
+                    && !send_bin(socket, png, send_timeout).await
+                {
+                    tracing::info!(conn = conn_id, "closing slow/broken web client (picture)");
+                    close(socket, close_code::SLOW, "too slow").await;
+                    return;
+                }
+            }
             _ = ping.tick() => {
                 if outstanding_pings >= cfg.max_missed_pongs {
                     tracing::info!(conn = conn_id, "keepalive timeout ({outstanding_pings} unanswered pings)");
@@ -576,6 +610,15 @@ async fn send_env(socket: &mut WebSocket, env: &Envelope, timeout: Duration) -> 
         }
         Err(_elapsed) => false,
     }
+}
+
+/// Sends one picture frame as a binary message; `false` means the
+/// connection is done for (send error or slow-client timeout).
+async fn send_bin(socket: &mut WebSocket, png: Vec<u8>, timeout: Duration) -> bool {
+    matches!(
+        tokio::time::timeout(timeout, socket.send(Message::Binary(png.into()))).await,
+        Ok(Ok(()))
+    )
 }
 
 /// Closes an upgraded socket for a refused fresh attach, spending 4401 —

@@ -1,5 +1,11 @@
 # 21. The graphics engine — one frame, three encoders
 
+**Draft 0.9 — 2026-10-22, G.3a: the web frame's gateway half.** A `picture` client command turns
+on PNG frames as binary WebSocket messages, drawn per connection in the gateway (`mush-net-web`)
+from the cockpit and map keyframes that connection's own stream carries; the web client's canvas
+(G.3c; G.3b stays the WebAssembly render) waits for the mining session's SM.10, which holds the web client's
+files (cut notes §G.3a).
+
 **Draft 0.8 — 2026-10-22, G.4: the camera on a leash.** The turn keys steer the tank with
 `HEADING` orders; the picture predicts the tank's heading between pulses from the order, the last
 frame and a turn rate measured from frames; `,` and `.` are a look that orders nothing; on a
@@ -369,7 +375,7 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
 | **G.0** | This document; the README row; the cut notes started; `help cockpit` names `^G`, the keys, the terminals that work and tmux that does not | S | — | the README row; help text |
 | **G.1 the engine from the spike** | `mush_pixel` promoted: the producer seam (`Picture` = producer + overlay + clock interval), the step-down on back-pressure (§3.4), `[pixel]` config, `@pixel/stats`, the floor-cast per-row lookup, the `u` key behind a privilege, the probe's attribute set. **Split 2026-10-22:** **G.1a (landed)** the seam, the two-pass render, the attribute set and the help; **G.1b** the step-down, `[pixel]`, `@pixel/stats` and the `u` gate | M | — | 640x480 render ≤4 ms on the VPS (G.1a: 0.95 ms on the owner's box, the VPS figure owed to G.1b's dev2 smoke); a client that stops reading costs one frame; the step-down test; the contract gates |
 | **G.2 sixel** | the sixel encoder from the same frame; DA1 attribute 4 detection; the 10 Hz default; the encoder choice (§4.4); smoked in Windows Terminal over `ssh.exe`. **Landed 2026-10-22** at 20 Hz (D-21-3 amended), with the `CSI 16 t` cell size, the frame sized to the box, the resend after text and the wipe on close, and `@pixel/encoder` per connection | M | G.1 | the MW2 fixture frame and the cockpit frame byte-compared against a reference encoder; the live smoke in Windows Terminal (as built: a decoder round trip in place of a reference encoder; the fixture shown in Windows Terminal through ConPTY; the live SSH smoke owed) |
-| **G.3 the web frame** | the gateway's PNG over the websocket as a binary message; the cockpit tab's canvas; the same clock and hash | S | G.1 | the web cockpit shows the picture the TUI shows, pinned by a fixture test |
+| **G.3 the web frame** | the gateway's PNG over the websocket as a binary message; the cockpit tab's canvas; the same clock and hash. **Split 2026-10-22:** **G.3a (landed)** the gateway half — the `picture` command, the per-connection feed cache, the frame clock, the binary PNG; **G.3c** the cockpit tab's canvas in the web client, after SM.10 | S | G.1 | the web cockpit shows the picture the TUI shows, pinned by a fixture test |
 | **G.3b the web render** | `mush-pixel` to WebAssembly; the client renders from its own feeds; the socket frame as the fallback | M | G.3 | the fixture renders pixel-equal in the browser and the TUI; zero gateway CPU for a web viewer |
 | **G.4 the leash and the keys** | the turn as a helm order through the control channel; interpolation between pulses; the kitty keyboard protocol for hold-to-turn. **Landed 2026-10-22**: `HEADING` orders a pulse and a half ahead, the heading predicted from the order and a measured turn rate, `,`/`.` a look, the protocol pushed only while the view is open | M | G.1 | the sim's heading and the camera's reconcile within one pulse; a release event stops a turn |
 | **G.5 the scene model and the orbital view** | `scene` (§3.3) and its rasteriser; the first builder: `sky.chart` as a picture with the plan's legs, the ship's dot and light-lag rings; the minimap re-based on `scene` | L | G.1 | `+chart` draws the picture in every encoder; the minimap pixel-equal before and after |

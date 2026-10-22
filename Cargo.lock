@@ -2546,6 +2546,7 @@ dependencies = [
  "axum-server",
  "futures",
  "mush-config",
+ "mush-pixel",
  "mush-proto",
  "rcgen",
  "reqwest",

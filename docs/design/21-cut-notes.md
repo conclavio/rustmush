@@ -113,3 +113,19 @@ The camera on a leash (D-21-14), taken while SM.10 holds `mush-config` and the w
 **Not done, recorded.** The cockpit frame does not carry the ordered heading or the turn rate; carrying both would let a second connection draw the same prediction and remove the measurement, a small `tacsim` change for after the mining train. A disconnect mid-turn leaves the last order standing (the tank finishes at most a lead of turn). Doc 17's §6, which doc 21 §14 names for this amendment, is the scheduling section; the amendment is held for the owner to place.
 
 **Verified.** `tui::helm` (six tests: short arcs, no frame no order, the lead and the release, the measured rate only short of the order, an unanswered order let go a second past its pulse, a held turn extended before it runs out); the view (the look orders nothing; toggled and held arrows, repeat and another key's release ignored, the push and pop bytes); the parser (the flags reply, an arrow's press, repeat and release, Esc and `^]` and `^G` in the `CSI u` form, a Delete release swallowed); `mush-net-ssh` every suite; clippy, rustfmt, rustdoc.
+
+## G.3a
+
+The gateway half of G.3, taken while SM.10 holds the web client's files (`web/src/lib/game.svelte.ts`, `stores/screens.svelte.ts` and others in its uncommitted diff); the canvas in the cockpit tab is **G.3c**, after SM.10 lands (G.3b stays the WebAssembly render).
+
+**What landed.**
+
+- **`ClientCommand::Picture { on, look_mdeg }`** (`mush-proto`, additive; the TypeScript binding regenerated, `web/src/lib/proto/ClientCommand.ts` the only web file touched): the web client asks for the picture, changes its look (the camera's offset; turning the tank is a `HEADING` line), or stops it. Transport-local: the web pump answers it and the world never sees it.
+- **`mush_net_web::picture::WebPicture`**, one a connection, in the socket's pump (`ws.rs`): every envelope bound for the socket passes `observe` on its way out, which keeps the latest `arena.cockpit` and `arena.map` **keyframes** (pushed or in a query's `Reply`), so the picture shows what this connection's own stream carries (D-21-1); a delta is ignored (these two feeds send keyframes; the client asks for one on a delta, and it passes through the same pump), and a cockpit keyframe with `seated: false` drops the held one.
+- **The frame clock** is a `sleep_until` deadline in the pump's `select!`, resynced when behind and polled only while the picture is on, at the picture's interval (20 Hz); a frame is drawn with the engine's `CockpitPicture` at 640x480 and sent as a **binary** message only when its hash changed. A send that misses the socket's `send_timeout_ms` closes the connection as slow, as an envelope's would (G.1b's step-down will soften both).
+- **No feature flag in `hello`**: the web client ships embedded in the same gateway binary, so the two always match; the hello's feature list stays the server's.
+- Doc 02 §6.3 records the binary frames.
+
+**Verified.** `WebPicture` (off, held, unchanged, look moved, on again; a `Reply`'s keyframe held, a delta and another feed not, an unseated cockpit dropped); a real-socket test in `tests/ws.rs` (the request, the two keyframes pushed down the connection, the text envelopes forwarded, a PNG binary frame, nothing more while unchanged, a new frame for a new look, none after `off`); `mush-proto`'s wire round trip with both `Picture` shapes; the TypeScript export; `svelte-check` over the web client (535 files, 0 errors); clippy, rustfmt, rustdoc.
+
+**Owed (G.3c).** The cockpit tab's `<canvas>`: send `picture` when the tab is shown and the window visible, `off` when not, draw each binary message with `createImageBitmap`, map `,`/`.` to the look and the arrows to `HEADING` lines (the TUI's helm logic is Rust; the web's would be its own or a later WebAssembly build of it, G.3b); a fixture test pinning the web's picture to the TUI's.
