@@ -621,7 +621,7 @@ fn plan_term_lapse(
     ParticipantError,
 > {
     let result = (
-        state.prepare_term_lapse_root(request).map_err(refusal)?,
+        state.prepare_term_lapse_root(request).map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -639,7 +639,7 @@ fn plan_ic(
     ParticipantError,
 > {
     let result = (
-        state.prepare_ic_claim_roots(request).map_err(refusal)?,
+        state.prepare_ic_claim_roots(request).map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -657,7 +657,7 @@ fn plan_initial_filing(
     ParticipantError,
 > {
     let result = (
-        state.prepare_commercial_roots(request).map_err(refusal)?,
+        state.prepare_commercial_roots(request).map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -675,7 +675,7 @@ fn plan_compatible_update(
     ParticipantError,
 > {
     let result = (
-        state.prepare_line_update_roots(request).map_err(refusal)?,
+        state.prepare_line_update_roots(request).map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -695,7 +695,7 @@ fn plan_dependent_filing(
     let result = (
         state
             .prepare_commercial_roots(request.roots())
-            .map_err(refusal)?,
+            .map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -712,7 +712,7 @@ fn plan_conduct(
     )>,
     ParticipantError,
 > {
-    let result = { (state.prepare_conduct_root(request).map_err(refusal)?, None) };
+    let result = { (state.prepare_conduct_root(request).map_err(|e| refusal(e))?, None) };
     Ok(Box::new(result))
 }
 
@@ -727,7 +727,7 @@ fn plan_rating(
     )>,
     ParticipantError,
 > {
-    let result = { (state.prepare_rating_roots(request).map_err(refusal)?, None) };
+    let result = { (state.prepare_rating_roots(request).map_err(|e| refusal(e))?, None) };
     Ok(Box::new(result))
 }
 
@@ -742,7 +742,7 @@ fn plan_paid(
     )>,
     ParticipantError,
 > {
-    let result = { (state.prepare_paid_roots(request).map_err(refusal)?, None) };
+    let result = { (state.prepare_paid_roots(request).map_err(|e| refusal(e))?, None) };
     Ok(Box::new(result))
 }
 
@@ -758,7 +758,7 @@ fn plan_entitlement(
     ParticipantError,
 > {
     let result = (
-        state.prepare_entitlement_roots(request).map_err(refusal)?,
+        state.prepare_entitlement_roots(request).map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -775,7 +775,7 @@ fn plan_house(
     )>,
     ParticipantError,
 > {
-    let result = { (state.prepare_house_roots(request).map_err(refusal)?, None) };
+    let result = { (state.prepare_house_roots(request).map_err(|e| refusal(e))?, None) };
     Ok(Box::new(result))
 }
 
@@ -791,7 +791,7 @@ fn plan_coverage(
     ParticipantError,
 > {
     let result = (
-        state.prepare_coverage_roots(request).map_err(refusal)?,
+        state.prepare_coverage_roots(request).map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -808,7 +808,7 @@ fn plan_renewal(
     )>,
     ParticipantError,
 > {
-    let result = { (state.prepare_renewal_roots(request).map_err(refusal)?, None) };
+    let result = { (state.prepare_renewal_roots(request).map_err(|e| refusal(e))?, None) };
     Ok(Box::new(result))
 }
 
@@ -826,7 +826,7 @@ fn plan_house_renewal(
     let result = (
         state
             .prepare_house_renewal_roots(request)
-            .map_err(refusal)?,
+            .map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -846,7 +846,7 @@ fn plan_owner_attestation(
     let result = (
         state
             .prepare_owner_attestation_roots(request)
-            .map_err(refusal)?,
+            .map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -866,7 +866,7 @@ fn plan_owner_qualification(
     let result = (
         state
             .prepare_owner_qualification_root(request)
-            .map_err(refusal)?,
+            .map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -886,7 +886,7 @@ fn plan_registry_recall(
     let result = (
         state
             .prepare_registry_recall_root(request)
-            .map_err(refusal)?,
+            .map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -906,7 +906,7 @@ fn plan_measured_recall(
     let result = (
         state
             .prepare_measured_recall_root(request)
-            .map_err(refusal)?,
+            .map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -926,7 +926,7 @@ fn plan_registry_revocation(
     let result = (
         state
             .prepare_registry_revocation_root(request)
-            .map_err(refusal)?,
+            .map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -944,7 +944,7 @@ fn plan_paid_resale(
     ParticipantError,
 > {
     let result = (
-        state.prepare_paid_resale_roots(request).map_err(refusal)?,
+        state.prepare_paid_resale_roots(request).map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -964,7 +964,7 @@ fn plan_charter_pending(
     let result = (
         state
             .prepare_charter_pending_roots(request)
-            .map_err(refusal)?,
+            .map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -984,7 +984,7 @@ fn plan_charter_transfer(
     let result = (
         state
             .prepare_charter_transfer_root(request)
-            .map_err(refusal)?,
+            .map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -1002,7 +1002,7 @@ fn plan_withdrawal(
     ParticipantError,
 > {
     let result = (
-        state.prepare_withdrawal_root(request).map_err(refusal)?,
+        state.prepare_withdrawal_root(request).map_err(|e| refusal(e))?,
         None,
     );
     Ok(Box::new(result))
@@ -1023,7 +1023,7 @@ fn plan_retirement(
     let result = {
         let (change, output) = state
             .prepare_authored_retirement(request)
-            .map_err(refusal)?;
+            .map_err(|e| refusal(e))?;
         *retired = Some(output);
         (change, None)
     };
@@ -1042,7 +1042,7 @@ fn plan_authored_fork(
     ParticipantError,
 > {
     let result = {
-        let (change, selection) = state.prepare_authored_fork(request).map_err(refusal)?;
+        let (change, selection) = state.prepare_authored_fork(request).map_err(|e| refusal(e))?;
         (change, Some(selection))
     };
     Ok(Box::new(result))
@@ -1153,7 +1153,7 @@ impl OwnerParticipant for RootParticipant {
         if let Some(follow) = follow {
             state
                 .prepare_follow(&mut change, &follow)
-                .map_err(refusal)?;
+                .map_err(|e| refusal(e))?;
         }
         let usage = change.usage().ok_or(ParticipantError::NotReady)?;
         let writes = change
@@ -1357,7 +1357,7 @@ impl OwnerParticipant for RootParticipant {
         }
         state
             .check_commercial_prepared(&patch.change)
-            .map_err(refusal)
+            .map_err(|e| refusal(e))
     }
 
     fn bind<'a>(
@@ -1365,7 +1365,7 @@ impl OwnerParticipant for RootParticipant {
         state: &'a mut RollStore,
         patch: RootPatch,
     ) -> Result<BoundCommercialRoots<'a>, ParticipantError> {
-        state.bind_commercial_roots(patch.change).map_err(refusal)
+        state.bind_commercial_roots(patch.change).map_err(|e| refusal(e))
     }
 
     fn accepts_write(&self, write: &ReplayWrite) -> bool {
@@ -1498,7 +1498,11 @@ fn retains(anchor: &RootAnchor) -> bool {
     }
 }
 
-fn refusal(_: crate::RollError) -> ParticipantError {
+#[track_caller]
+fn refusal(e: crate::RollError) -> ParticipantError {
+    if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+        eprintln!("M7_CONDUCT_DIAG roll roots refusal at {}: {e:?}", std::panic::Location::caller()); // TEMP M7 diag
+    }
     // Diagnostics never expose source-owner keys or another actor's records.
     ParticipantError::refused("commercial retention is unavailable or stale")
 }
