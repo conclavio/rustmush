@@ -121,9 +121,11 @@ fn prepare_public(
     let mut matching = projected
         .iter()
         .filter(|offer| offer.presentation().verb.eq_ignore_ascii_case(verb));
-    let offer = matching
-        .next()
-        .ok_or("signed personal licence public offer")?;
+    let offer = matching.next().ok_or_else(|| {
+        let verbs: Vec<_> = projected.iter().map(|o| o.presentation().verb.to_string()).collect();
+        let room = world.engine.world.get(actor).and_then(|o| o.location);
+        format!("signed personal licence public offer: wanted {verb} for {id} as {actor:?} in {room:?}; projected {verbs:?}")
+    })?;
     assert!(
         matching.next().is_none(),
         "ambiguous actual personal licence line offer"
