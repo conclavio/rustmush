@@ -116,7 +116,7 @@ pub fn draw_panel(
         .filter(|c| c.get("seated").and_then(Value::as_bool) != Some(false));
     let (armour_lines, weapon_lines, contact_lines, title) = match seated {
         Some(c) => (
-            armour_rows(c, panel.utf8),
+            armour_rows(c, panel.utf8, usize::from(armour.height.saturating_sub(1))),
             weapon_rows(c, panel.utf8),
             contact_rows(c, panel.camera_mdeg, panel.utf8),
             format!(
@@ -368,16 +368,38 @@ fn short(id: &str) -> String {
 }
 
 /// The armour column: the doll from the unit's look ([`doll_rows`]) and a
-/// row a section — its name, a bar of its internals, and the numbers.
+/// row a section — its name, a bar of its internals, and the numbers — or,
+/// where those would not fit in `rows`, two sections a row with shorter
+/// bars and no numbers (the dev2 smoke: a biped's eight doll rows and six
+/// sections left its torso off the bottom).
 #[must_use]
-pub fn armour_rows(cockpit: &Value, utf8: bool) -> Vec<Line<'static>> {
+pub fn armour_rows(cockpit: &Value, utf8: bool, rows: usize) -> Vec<Line<'static>> {
     let mut lines = doll_rows(cockpit, usize::from(ARMOUR_W), utf8);
-    for sec in cockpit
+    let sections: Vec<&Value> = cockpit
         .get("sections")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-    {
+        .collect();
+    if lines.len() + sections.len() > rows {
+        for pair in sections.chunks(2) {
+            let mut spans = Vec::new();
+            for sec in pair {
+                let (left, max) = internals(sec);
+                let id = sec.get("id").and_then(Value::as_str).unwrap_or("?");
+                let name: String = short(id).chars().take(8).collect();
+                spans.push(Span::raw(format!("{name:<8} ")));
+                spans.push(Span::styled(
+                    glyphs(&bar(left, max, 3), utf8),
+                    Style::default().fg(ramp(left, max)),
+                ));
+                spans.push(Span::raw(" "));
+            }
+            lines.push(Line::from(spans));
+        }
+        return lines;
+    }
+    for sec in sections {
         let (left, max) = internals(sec);
         let id = sec.get("id").and_then(Value::as_str).unwrap_or("?");
         lines.push(Line::from(vec![
@@ -620,7 +642,7 @@ mod tests {
     fn the_doll_is_the_looks_grid_coloured_by_what_is_left() {
         let mut c = fixture();
         c["unit_type"] = "tacsim.unit.line_tank".into();
-        let lines = armour_rows(&c, true);
+        let lines = armour_rows(&c, true, 99);
         let rows = texts(&lines);
         assert_eq!(rows.len(), 8 + 5, "the doll and a row a section");
         let top = "\u{2580}";
@@ -642,7 +664,7 @@ mod tests {
         );
         let mut worn = c.clone();
         worn["sections"][1]["facets"][0]["armor"] = 40.into();
-        let worn = armour_rows(&worn, true);
+        let worn = armour_rows(&worn, true, 99);
         assert_eq!(cell_colours(&worn[0], 5).0, Some(Color::Yellow), "40 of 80");
         assert_eq!(
             rows[8],
@@ -652,7 +674,7 @@ mod tests {
             rows[10],
             "L track    \u{2588}\u{2588}\u{2591}\u{2591}\u{2591} 6/24"
         );
-        let ascii = texts(&armour_rows(&c, false));
+        let ascii = texts(&armour_rows(&c, false, 99));
         assert!(ascii.iter().all(|r| r.is_ascii()), "{ascii:?}");
     }
 
@@ -668,7 +690,7 @@ mod tests {
                 section("right_arm", 100), section("left_leg", 100), section("right_leg", 100)
             ]
         });
-        let lines = armour_rows(&biped, true);
+        let lines = armour_rows(&biped, true, 99);
         assert_eq!(lines.len(), 8 + 6);
         // Row 1 holds grid rows 2 and 3: the left arm at cells 3..7, red.
         // The arm is red at either tone; the whole torso beside it is green,
@@ -687,10 +709,15 @@ mod tests {
             cell_colours(&lines[0], 10).0,
             "the head and the torso touch, so their tones differ"
         );
+        // In the smoke's 13 rows the six sections pair up, so the torso
+        // shows.
+        let fitted = texts(&armour_rows(&biped, true, 13));
+        assert_eq!(fitted.len(), 8 + 3);
+        assert!(fitted.iter().any(|r| r.contains("torso")), "{fitted:?}");
         let mut hauler = biped.clone();
         hauler["unit_type"] = "tacsim.unit.dray".into();
         assert_eq!(
-            armour_rows(&hauler, true).len(),
+            armour_rows(&hauler, true, 99).len(),
             6,
             "no look: sections only"
         );

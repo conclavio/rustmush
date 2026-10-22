@@ -555,6 +555,16 @@ fn draw_section_bars(frame: &mut Frame, sections: &[Section], s: i64) {
     }
 }
 
+/// A plain card: the whole frame dark, `words` in the middle (a picture with
+/// nothing to show, so the last one is not left standing).
+pub fn draw_card(frame: &mut Frame, words: &str) {
+    let s = scale_for(frame) as i64;
+    let (w, h) = (frame.width() as i64, frame.height() as i64);
+    fill_rect(frame, 0, 0, w, h, PANEL);
+    let tw = words.chars().count() as i64 * 6 * s - s;
+    text(frame, (w - tw) / 2, (h - 7 * s) / 2, words, DIM, s as usize);
+}
+
 /// The status strip, top left.
 pub fn draw_status(frame: &mut Frame, status: &Status) {
     let s = scale_for(frame) as i64;

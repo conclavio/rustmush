@@ -114,6 +114,13 @@ impl Picture for CockpitPicture {
         let Some(cockpit) = feeds.feed(COCKPIT_FEED) else {
             return false;
         };
+        // Out of the seat (the match ended, or the pilot climbed out), the
+        // frame's pose is no pose: the picture says so rather than drawing
+        // from the map's corner.
+        if cockpit.get("seated").and_then(Value::as_bool) == Some(false) {
+            overlay::draw_card(frame, "NOT IN A COCKPIT");
+            return true;
+        }
         let map = feeds.feed(ARENA_MAP_FEED);
         let cam = camera(cockpit, look);
         self.draws = self.draws.wrapping_add(1);
@@ -627,6 +634,21 @@ mod tests {
         render(&mut frame, &arena, &cam, &sprites);
         draw_instruments(&mut frame, &arena, &cockpit, None, &cam);
         assert!(frame.count_colours(256) <= 256);
+    }
+
+    /// The dev2 smoke of 2026-10-22: out of the seat the picture is a plain
+    /// card, not a view from the map's corner, and it does replace the last
+    /// picture sent.
+    #[test]
+    fn an_unseated_frame_draws_a_card() {
+        let mut feeds = std::collections::HashMap::new();
+        feeds.insert(
+            COCKPIT_FEED.to_string(),
+            serde_json::json!({ "seated": false }),
+        );
+        let mut frame = Frame::new(320, 128);
+        assert!(CockpitPicture::new().draw(&mut frame, &feeds, &Look::default()));
+        assert!(frame.count_colours(8) <= 3, "the card and its words");
     }
 
     /// The flight HUD (the text cockpit, 2026-10-22): the lock ahead is

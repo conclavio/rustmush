@@ -39,3 +39,16 @@ The sprite sheets.
 
 **Verified.** `mush-pixel` (the budget is 256; a sheet sprite is drawn in its team's colour, mirrored for its left face, with a shadow, a wreck without team colour; a sheet's check refuses what §3.2 says and picks its frames), `mush-net-ssh`, `mush-net-web`, the contract test, clippy, rustdoc. Not smoked live.
 
+## Smoked live on dev2 (2026-10-22, at 34e4d24e)
+
+Both halves rebuilt from origin/main (U.1–U.3 and G.1b on top of SM.10), full restart, kept store. Hand-played in w11term (kitty, 170x48) and Windows Terminal 1.24 over `ssh.exe` (forced sixel).
+
+- **Team colours and sprites**: in a red-side match with the machines filling three a side, the two red teammates were identified at once and drawn **red** from the tank sheet, labelled `friend` in the contacts list, with red pips on the tape: RB head-on at 150 m ahead, RC side-on (the right frame, barrel forward) at 50 m when the look swung to it, RB's left face (the right frame mirrored) when it pulled ahead-left; shadows under each. Blue contacts arrived as `BB blue` and `X4 unknown` at 550–600 m.
+- **The biped's doll**: fielding `biped_mk1` (`SIM UNIT`), the armour column drew the upright doll (head, arms, legs, toned) and its section rows; under fire the left arm went to 77/120 and the right arm grey at 0/120, as the bars said.
+- **Windows Terminal**: the same screen over sixel at 640x232 shown 1700x616; the tank's top-down doll in half-blocks.
+
+**What the smoke found, fixed at once (the commit after 34e4d24e).**
+
+- **A far contact was invisible**: BB at 550 m dead ahead was drawn — three pixels fogged nearly to the horizon's colour — under the reticle's centre, so the bracket rule (which fired only when *nothing* was drawn) never fired. A contact drawn under 10 pixels tall, or in the last third of the fog, is now bracketed as well, at least 10 pixels a side in its unfogged team colour (`raycast::MARK_FAR_PX`).
+- **The picture drew from the map's corner after the match**: a frame with `seated: false` carries no pose, and the camera fell back to 0,0. The cockpit picture now draws a plain `NOT IN A COCKPIT` card (`overlay::draw_card`), which also replaces the last picture on screen.
+- **The biped's torso fell off the armour column**: eight doll rows and six sections are fourteen rows, one more than a 48-row terminal's panel holds. Where they do not fit, the sections now pair up two a row with shorter bars (`armour_rows`' `rows`).

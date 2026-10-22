@@ -448,6 +448,11 @@ const MAX_SPANS: usize = 4;
 /// covers, or too far off to draw, is bracketed at least this many pixels a
 /// side.
 const MARK_MIN_PX: f32 = 6.0;
+/// A contact drawn but too small or too fogged to read — under this many
+/// pixels tall, or in the last third of the fog — is bracketed as well, at
+/// least this many pixels a side (the dev2 smoke of 2026-10-22: a tank at
+/// 550 m was three fogged pixels under the reticle's centre).
+const MARK_FAR_PX: f32 = 10.0;
 /// Half the field of view as the camera plane's length (66 degrees).
 pub(crate) const PLANE: f32 = 0.66;
 
@@ -841,9 +846,11 @@ pub(crate) fn draw_sprite(
             }
         };
     }
-    if drawn == 0 {
-        let bw = at.width.max(MARK_MIN_PX);
-        let bh = at.height.max(MARK_MIN_PX);
+    let faint = at.height < MARK_FAR_PX || fog_step(at.depth) >= FOG_STEPS * 2 / 3;
+    if drawn == 0 || faint {
+        let least = if drawn == 0 { MARK_MIN_PX } else { MARK_FAR_PX };
+        let bw = at.width.max(least);
+        let bh = at.height.max(least);
         let cy = at.bottom - at.height / 2.0;
         mark(
             frame,
@@ -1238,6 +1245,32 @@ mod tests {
         assert_eq!((east.x_cm, east.y_cm), (1000, 0));
         let north = Sprite::at_bearing(&cam, 0.0, 10.0, SpriteKind::Unknown);
         assert_eq!((north.x_cm, north.y_cm), (0, 1000));
+    }
+
+    /// The dev2 smoke of 2026-10-22: a contact drawn but too far to read —
+    /// a few fogged pixels — is bracketed in its unfogged team colour too.
+    #[test]
+    fn a_far_contact_is_bracketed_even_when_drawn() {
+        let mut map = Map::new(96, 96, 1000);
+        for y in 0..96 {
+            for x in 0..96 {
+                map.set(x, y, Ground::Grass);
+            }
+        }
+        let cam = Camera {
+            x_cm: 48_000,
+            y_cm: 10_000,
+            heading_mdeg: 0,
+        };
+        let far = Sprite::at_bearing(&cam, 0.0, 550.0, SpriteKind::Blue);
+        let mut f = Frame::new(640, 220);
+        render(&mut f, &map, &cam, &[far]);
+        let unfogged = sprite_colour(&Shades::new(), SpriteKind::Blue, Material::Team, 0);
+        let marked = (0..f.width())
+            .flat_map(|x| (0..f.height()).map(move |y| (x, y)))
+            .filter(|&(x, y)| f.get(x, y) == unfogged)
+            .count();
+        assert!(marked >= 8, "bracketed: {marked} pixels");
     }
 
     /// The shade table, the sky and the sprites' paints together are the
