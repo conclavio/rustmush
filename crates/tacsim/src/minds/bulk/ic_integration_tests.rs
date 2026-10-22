@@ -1175,7 +1175,12 @@ fn chartered_owner(f: &PurchaseFixture, owned: &mut IcWorld, hull: ObjId) -> Tes
     let charter: mush_roll::commerce::CharterId =
         serde_json::from_value(birth.get("charter").cloned().ok_or("actual charter")?)?;
     // Actual staff command cannot bypass the permanent managed title history.
-    owned.command(&format!("@asset/transfer #{}=#{}", charter.get(), BUYER.0))?;
+    assert!(
+        owned
+            .command(&format!("@asset/transfer #{}=#{}", charter.get(), BUYER.0))
+            .is_err(),
+        "staff transfer bypassed the managed title"
+    );
     assert_eq!(
         owned
             .engine
