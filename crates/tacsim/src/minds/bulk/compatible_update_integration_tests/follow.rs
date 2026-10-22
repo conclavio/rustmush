@@ -84,7 +84,25 @@ fn install(w: &mut PlayerWorld, p: PreparedComposedTxn) -> TestResult {
     let (writes, installation) = p.into_parts();
     captured::apply(w, &writes, installation)
 }
+/// Listing happens at the market venue (ROOM); SIM selection happens in the
+/// lobby a fresh boot seats GOD in. Returns GOD's prior location.
+fn to_market(w: &mut PlayerWorld) -> TestResult<ObjId> {
+    let back = w
+        .engine
+        .world
+        .get(GOD)
+        .and_then(|o| o.location)
+        .ok_or("GOD location")?;
+    w.engine.world.move_to(GOD, ROOM)?;
+    w.commit()?;
+    Ok(back)
+}
+fn back_from_market(w: &mut PlayerWorld, back: ObjId) -> TestResult {
+    w.engine.world.move_to(GOD, back)?;
+    w.commit()
+}
 fn listing(w: &mut PlayerWorld, n: u128, expected: &FiledRecord) -> TestResult {
+    let back = to_market(w)?;
     let (p, _) = signed(
         w,
         "market",
@@ -94,6 +112,7 @@ fn listing(w: &mut PlayerWorld, n: u128, expected: &FiledRecord) -> TestResult {
         json!({"owner_licence":"1"}),
     )?;
     install(w, p)?;
+    back_from_market(w, back)?;
     let row: MindListing = serde_json::from_value(
         rows(&disk(w), "market", LISTINGS)
             .into_iter()
@@ -105,6 +124,7 @@ fn listing(w: &mut PlayerWorld, n: u128, expected: &FiledRecord) -> TestResult {
     Ok(())
 }
 fn unavailable(w: &mut PlayerWorld, n: u128) -> TestResult {
+    let back = to_market(w)?;
     let before = disk(w);
     assert!(
         signed(
@@ -118,6 +138,7 @@ fn unavailable(w: &mut PlayerWorld, n: u128) -> TestResult {
         .is_err()
     );
     assert!(disk(w) == before, "refused Follow changed durable records");
+    back_from_market(w, back)?;
     let events = w.say(GOD, "SIM MIND /filed")?;
     assert!(!PlayerWorld::private_text(&events, GOD).contains("filed:1:"));
     Ok(())
