@@ -255,3 +255,26 @@ and a test holds the whole frame under the palette PNG's 256 at both sizes.
 Live on dev2 at 640x480 the instruments add ~2 ms of render (7.6–8.6 ms a
 frame) and ~1.5 KB of PNG (6.6 KB; 8.9 KB on the wire) and the clock holds
 21 fps.
+
+## w11term, the owner's terminal (2026-10-21, late)
+
+The owner built w11term (`codexprojs/w11term`: wezterm-term + a windows-reactor front end, no
+ConPTY, its own SSH client) and gave it a control pipe with `list`, raw `send-text`, `get-text` and
+`screenshot`. The whole dev2 smoke then ran as a script, with no synthetic keystrokes and no focus
+change, and the HUD was read as text instead of from a screenshot:
+
+```powershell
+$W = 'C:\Users\faeni\codexprojs\w11term\target\release'; $ctl = "$W\w11term-cli.exe"
+& "$W\w11term.exe" --cols 170 --rows 48 ssh pixeltest@conclav.io --port 6792 --identity <key>
+$pane = ((& $ctl list | ConvertFrom-Json).result.sessions[0]).id
+& $ctl send-text --pane $pane --no-paste "BOARD`r"            # literal text
+& $ctl send-text --pane $pane --no-paste --base64 'Bw=='      # Ctrl+G
+& $ctl send-text --pane $pane --no-paste --base64 'G1tD'      # CSI C, the right arrow
+((& $ctl get-text --pane $pane | ConvertFrom-Json).result.text -split "`n")[0]   # the HUD line
+& $ctl screenshot --pane $pane .\frame.png
+```
+
+Results: the probe answered OK (w11term speaks the kitty graphics protocol), the 640x480 frame with
+the instruments drew in the cell box, a turn held `fps 21` by the HUD, and `screenshot` exported the
+pane's grid with the picture in it (850x480 at the pane's negotiated cell size, so the frame is
+shown scaled). This is the reference Windows client and the harness for every later cut's smoke.
