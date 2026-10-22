@@ -545,8 +545,8 @@ mod tests {
         sess.pixel_tick();
         let first = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
         assert!(
-            first.contains("\x1b[2;1H\x1bP0;1;0q\"1;1;640;480"),
-            "a 640x480 sixel at the box's corner"
+            first.contains("\x1b[2;1H\x1bP0;1;0q\"1;1;1013;760"),
+            "the 640x480 frame shown at 1013x760, filling the box"
         );
         assert!(!first.contains("\x1b_G"), "no kitty bytes");
         sess.pixel_tick();

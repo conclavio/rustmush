@@ -101,4 +101,19 @@ fn main() {
         squeeze(&stream),
         squeeze(&six_stream)
     );
+    // Sixel filling a box (G.2b): Windows Terminal's 120x40 at its virtual
+    // 10x20 cell, and a high-DPI w11term pane of 240x48 at 15x28.
+    for (ow, oh) in [(1013, 760), (1717, 1288)] {
+        let t = Instant::now();
+        let mut scaled = Vec::new();
+        for _ in 0..N / 4 {
+            scaled = sixel::encode_scaled(&frame, ow, oh);
+        }
+        let us = t.elapsed().as_micros() / u128::from(N / 4);
+        println!(
+            "sixel shown {ow}x{oh}: encode {us} us, {} bytes, {} after zlib",
+            scaled.len(),
+            squeeze(&scaled)
+        );
+    }
 }

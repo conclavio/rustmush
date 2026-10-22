@@ -62,3 +62,26 @@ Sixel, started while the mining session's SM.10 holds `mush-config` (G.1b waits 
 **Owed.** The auto path in Windows Terminal typed by hand; the MW2 comparison frame; the VPS render figure for G.1's ≤ 4 ms on a quiet box (G.1b's smoke).
 
 **Verified.** `cargo test -p mush-pixel`, `cargo test -p mush-net-ssh` (every suite; the session test drives a Windows-Terminal-shaped probe through a sixel picture, a resize's clear and resend, and the wipe on close), the help and restriction-lint contract tests; clippy with warnings denied, rustfmt, rustdoc with private items.
+
+## G.2b
+
+Sixel fills its box. The owner, on the smoke's finding that a sixel picture is drawn at its own pixel size: "if we want to support sixel, we're going to have to render the frames larger to fill the space … the tiny little box in the corner won't work".
+
+**The lead's choice: scale in the encoder, not a larger render.** A kitty terminal does not get a larger frame either — it stretches the 640x480 PNG over the cell box. So the sixel picture is the same frame, rendered at the same size, and `sixel::encode_scaled(frame, out_w, out_h)` writes it nearest-neighbour at the box's size: output pixel (`x`, `y`) is source pixel (`x·w/out_w`, `y·h/out_h`). The encoder works at the source width — each source column carries the count of output columns it covers, so a wider picture only lengthens runs `!n` already writes in a few bytes — and maps each output row to its source row, so its time and bytes grow with the rows shown, not the area. Rendering larger was the alternative: a sharper picture at a render cost growing with the area (7× at 1717x1288), and the instruments' 5x7 font would need a scale per size.
+
+- `sixel::fill(frame, avail, max_scale)`: the largest size of the frame's aspect inside the box, at most `max_scale` times the frame. `SIXEL_MAX_SCALE` is 3 (1920x1440 at most; for `[pixel]` in G.1b).
+- `sixel_box` now returns the render size, the shown size and the cell box: the frame renders at `want` when the box is larger and at the shown size when it is smaller (a small terminal still gets the instruments' text drawn at the size it is seen, as G.2 did); the box is the shown size in whole cells.
+- The sent-picture key carries the shown size, so a cell-size answer that changes it resends; the HUD prints `640x480 shown 1013x760` when they differ. `Pixels`, `CellBox` and `SentKey` name the view's tuples.
+- `encode` is `encode_scaled` at the frame's own size, byte for byte (the pinned five-by-seven frame unchanged).
+
+**Measured** (the fixture, release, the owner's box; render unchanged at ~0.95 ms):
+
+| shown | encode | raw | after zlib |
+|---|---|---|---|
+| 640x480 (G.2) | 1.28 ms | 20,631 B | 6,594 B |
+| 1013x760 (Windows Terminal, 120x40, its 10x20 virtual cell) | 2.02 ms | 31,294 B | 9,614 B |
+| 1717x1288 (w11term, 240x48 high-DPI, 15x28 cells) | 2.85 ms | 47,050 B | 12,091 B |
+
+At 20 Hz the largest is ~940 KB/s raw and ~240 KB/s compressed: `ssh -C` matters more for a big sixel box, and G.1b's step-down is its guard.
+
+**Verified.** The scaled round trip (six output sizes up, down and uneven, each pixel the nearest-neighbour source; the cockpit at 1600x1200 under four times the native bytes and every pixel painted), `fill`'s cases (w11term high-DPI, Windows Terminal, a shrink, the cap), the view's box table and the session test (the 640x480 frame shown at 1013x760 at 120x40); clippy, rustfmt, rustdoc, `mush-pixel` 34 and `mush-net-ssh` every suite, the restriction-lint gate.

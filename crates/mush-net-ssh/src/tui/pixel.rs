@@ -71,6 +71,14 @@ pub const FRAME_INTERVAL: Duration = BUCKET_A_INTERVAL;
 /// How fast a toggled turn swings the camera, millidegrees a second (45°/s).
 const TURN_MDEG_PER_S: i64 = 45_000;
 
+/// A size in pixels, `(width, height)`.
+pub type Pixels = (usize, usize);
+/// A cell box, `(col, row, cols, rows)`, 1-based as `CUP` counts.
+pub type CellBox = (u16, u16, u16, u16);
+/// What makes two sent pictures the same: the frame hash, the box's
+/// `cols` and `rows`, the encoder, the shown size.
+type SentKey = (u64, u16, u16, Encoder, Pixels);
+
 /// Where the capability probe stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Probe {
@@ -120,9 +128,13 @@ pub struct PixelView {
     /// The camera's heading offset from the sim's, millidegrees.
     offset_mdeg: i64,
     last_tick: Option<Instant>,
-    /// The hash of the last frame sent, with the cell box it went into and
-    /// its encoder.
-    last_sent: Option<(u64, u16, u16, Encoder)>,
+    /// What the last picture sent was: its frame hash, the cell box it went
+    /// into, its encoder and the size it was shown at.
+    last_sent: Option<SentKey>,
+    /// The size the last picture was shown at: the frame's own for kitty
+    /// (the terminal scales it), the box-filling size a sixel frame was
+    /// encoded up to.
+    shown_size: (usize, usize),
     /// The frame `r` asks for: 640x480, or 320x220.
     want: (usize, usize),
     frame: Frame,
@@ -169,6 +181,7 @@ impl PixelView {
             last_tick: None,
             last_sent: None,
             want: (FRAME_W, FRAME_H),
+            shown_size: (FRAME_W, FRAME_H),
             frame: Frame::new(FRAME_W, FRAME_H),
             shown: None,
             wipe_pending: false,
@@ -451,8 +464,12 @@ impl PixelView {
         let Some(encoder) = self.encoder(now) else {
             return Vec::new();
         };
-        let (size, placed) = match encoder {
-            Encoder::Kitty => (self.want, image_box(cols, rows, self.want.0, self.want.1)),
+        let (size, shown, placed) = match encoder {
+            Encoder::Kitty => (
+                self.want,
+                self.want,
+                image_box(cols, rows, self.want.0, self.want.1),
+            ),
             Encoder::Sixel => sixel_box(
                 cols,
                 rows,
@@ -473,7 +490,7 @@ impl PixelView {
         let render_us = t0.elapsed().as_micros();
         let (col, row, c, r) = placed;
 
-        let key = (self.frame.hash(), c, r, encoder);
+        let key = (self.frame.hash(), c, r, encoder, shown);
         if self.last_sent == Some(key) {
             self.stats.skipped += 1;
             return Vec::new();
@@ -487,12 +504,13 @@ impl PixelView {
                 (png.len(), wire)
             }
             Encoder::Sixel => {
-                let stream = sixel::encode(&self.frame);
+                let stream = sixel::encode_scaled(&self.frame, shown.0, shown.1);
                 let wire = sixel::frame_bytes(&stream, col, row);
                 (stream.len(), wire)
             }
         };
         self.stats.encode_us = t1.elapsed().as_micros();
+        self.shown_size = shown;
         self.stats.image_bytes = image;
         self.stats.wire_bytes = wire.len();
         self.stats.sent += 1;
@@ -551,8 +569,13 @@ impl PixelView {
             format!("{} Hz", 1_000 / self.interval().as_millis().max(1))
         };
         let (w, h) = self.size();
+        let size = if self.shown_size == (w, h) || self.shown() != Some(Encoder::Sixel) {
+            format!("{w}x{h}")
+        } else {
+            format!("{w}x{h} shown {}x{}", self.shown_size.0, self.shown_size.1)
+        };
         let top = format!(
-            "PIXEL VIEW  camera {camera:03}° (sim {:03}° {:+}°)  {turning}  |  {probe}, drawing {drawing}  {w}x{h} {clock}  render {:.1} ms  encode {:.1} ms  image {} B  wire {} B  sent {}  fps {fps}",
+            "PIXEL VIEW  camera {camera:03}° (sim {:03}° {:+}°)  {turning}  |  {probe}, drawing {drawing}  {size} {clock}  render {:.1} ms  encode {:.1} ms  image {} B  wire {} B  sent {}  fps {fps}",
             heading / 1_000,
             self.offset_mdeg() / 1_000,
             s.render_us as f64 / 1000.0,
@@ -571,29 +594,35 @@ impl PixelView {
     }
 }
 
-/// A sixel picture's frame size and cell box (D-21-10 for sixel): `want`, or
-/// the largest frame of its aspect that fits below the top HUD line and above
-/// the bottom one in `cell`'s pixels, placed at the box's top left. The box
-/// is the frame rounded up to whole cells, so the picture never reaches the
-/// key legend and the terminal never scrolls under it. Returns the frame size
-/// and `(col, row, cols, rows)`, 1-based.
+/// How far a sixel frame is scaled up to fill its box, at most: three
+/// times 640x480 is 1920x1440, and the bytes grow with the rows shown.
+pub const SIXEL_MAX_SCALE: usize = 3;
+
+/// A sixel picture's render size, shown size and cell box (D-21-10 for
+/// sixel; G.2b fills the box). The picture is shown as large as the space
+/// between the HUD lines holds at `want`'s aspect, in `cell`'s pixels, up to
+/// [`SIXEL_MAX_SCALE`] times `want`: a kitty terminal stretches its image
+/// over the box, and a sixel one shows pixels as sent, so the encoder scales
+/// the frame up. A frame is rendered at `want`, or at the shown size when
+/// that is smaller (the instruments' text then drawn at the size it is
+/// seen). The box is the shown size in whole cells, placed at the box's top
+/// left, so the picture never reaches the key legend and the terminal never
+/// scrolls under it. Returns the render size, the shown size and
+/// `(col, row, cols, rows)`, 1-based.
 #[must_use]
-pub fn sixel_box(
-    cols: u16,
-    rows: u16,
-    want: (usize, usize),
-    cell: CellSize,
-) -> ((usize, usize), (u16, u16, u16, u16)) {
+pub fn sixel_box(cols: u16, rows: u16, want: Pixels, cell: CellSize) -> (Pixels, Pixels, CellBox) {
     let (cw, ch) = (
         usize::from(cell.width.max(1)),
         usize::from(cell.height.max(1)),
     );
     let avail_cols = usize::from(cols.max(1));
     let avail_rows = usize::from(rows.saturating_sub(2).max(1));
-    let (w, h) = sixel::fit(want, (avail_cols * cw, avail_rows * ch));
+    let (w, h) = sixel::fill(want, (avail_cols * cw, avail_rows * ch), SIXEL_MAX_SCALE);
+    let render = if w <= want.0 { (w, h) } else { want };
     let c = w.div_ceil(cw).clamp(1, avail_cols);
     let r = h.div_ceil(ch).clamp(1, avail_rows);
     (
+        render,
         (w, h),
         (
             1,
@@ -742,7 +771,7 @@ mod tests {
         assert_eq!(wt.interval(), FRAME_INTERVAL, "sixel runs at 20 Hz too");
         let first = String::from_utf8_lossy(&wt.paint(&both_feeds, 120, 40, t0)).into_owned();
         assert!(
-            first.starts_with("\x1b[?2026h\x1b[2;1H\x1bP0;1;0q\"1;1;640;480"),
+            first.starts_with("\x1b[?2026h\x1b[2;1H\x1bP0;1;0q\"1;1;1013;760"),
             "{}",
             &first[..60.min(first.len())]
         );
@@ -753,7 +782,7 @@ mod tests {
         );
         let (top, _) = wt.hud(Some(&cockpit), t0);
         assert!(top.contains("sixel graphics OK, drawing sixel"), "{top}");
-        assert!(top.contains("20 Hz"), "{top}");
+        assert!(top.contains("640x480 shown 1013x760 20 Hz"), "{top}");
         // Both: kitty OK, then DA1 with 4.
         let mut both = supported(t0);
         both.device_attributes(da1("?62;4;22"));
@@ -798,36 +827,47 @@ mod tests {
         assert_eq!(v.shown(), None);
     }
 
-    /// The sixel frame is the wanted frame, or the largest of its aspect the
-    /// box holds in the terminal's cell pixels, and the box is that frame in
-    /// whole cells below the HUD line.
+    /// A sixel picture fills the space between the HUD lines at the frame's
+    /// aspect, up to three times the frame, in the terminal's cell pixels;
+    /// the frame is rendered at its own size and scaled up, or rendered
+    /// smaller when the box is smaller.
     #[test]
-    fn a_sixel_frame_is_sized_by_the_cell_box() {
+    fn a_sixel_picture_fills_its_cell_box() {
         let ten_by_twenty = CellSize::DEFAULT;
-        // 120x40 at 10x20: 1200 by 760 pixels of room, the 640x480 fits in
-        // 64 by 24 cells.
+        // 120x40 at 10x20: 1200 by 760 pixels of room, height-bound: the
+        // 640x480 frame shown at 1013x760 in 102 by 38 cells.
         assert_eq!(
             sixel_box(120, 40, (640, 480), ten_by_twenty),
-            ((640, 480), (1, 2, 64, 24))
+            ((640, 480), (1013, 760), (1, 2, 102, 38))
         );
-        // A terminal that reported 8x16 cells: 80 by 30.
+        // A terminal that reported 8x16 cells: 960 by 608 of room.
         let small = CellSize {
             width: 8,
             height: 16,
         };
         assert_eq!(
             sixel_box(120, 40, (640, 480), small),
-            ((640, 480), (1, 2, 80, 30))
+            ((640, 480), (810, 608), (1, 2, 102, 38))
         );
-        // 80x20: 18 rows of 20 px = 360, so 480x360.
+        // w11term at 240x48 on a high-DPI screen, 15x28 cells.
+        let hidpi = CellSize {
+            width: 15,
+            height: 28,
+        };
+        assert_eq!(
+            sixel_box(240, 48, (640, 480), hidpi),
+            ((640, 480), (1717, 1288), (1, 2, 115, 46))
+        );
+        // 80x20: 18 rows of 20 px = 360, smaller than the frame: rendered
+        // at 480x360 and shown as rendered.
         assert_eq!(
             sixel_box(80, 20, (640, 480), ten_by_twenty),
-            ((480, 360), (1, 2, 48, 18))
+            ((480, 360), (480, 360), (1, 2, 48, 18))
         );
-        // `r`'s frame.
+        // `r`'s frame, capped at three times its size.
         assert_eq!(
             sixel_box(120, 40, (320, 220), ten_by_twenty),
-            ((320, 220), (1, 2, 32, 11))
+            ((320, 220), (960, 660), (1, 2, 96, 33))
         );
     }
 
@@ -846,7 +886,7 @@ mod tests {
         });
         wt.toggle(t0);
         assert!(!wt.paint(&both_feeds, 120, 40, t0).is_empty());
-        assert_eq!(wt.sixel_box(), Some((0, 1, 80, 30)));
+        assert_eq!(wt.sixel_box(), Some((0, 1, 102, 38)));
         assert!(!wt.take_wipe(), "the first picture moves nothing");
         assert!(wt.paint(&both_feeds, 120, 40, t0).is_empty());
         wt.text_touched();
