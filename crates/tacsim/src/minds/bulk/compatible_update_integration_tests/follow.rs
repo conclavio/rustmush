@@ -237,11 +237,14 @@ pub(super) async fn exercise(
         assert!(new.content().filed_at().get() > old.content().filed_at().get());
         listing(&mut w, START + 2, &new)?;
         let updated = Durable::capture(&w.engine, &disk(&w));
-        // Root installation and the retained owner-read observation both matter:
-        // a status change after preparation cannot publish an obsolete selection.
+        // A status change after preparation cannot publish an obsolete
+        // selection. Core admits one pending commit, so the withdrawal cannot
+        // land under a prepared or staged listing at all, and nothing is
+        // published; the withdrawn-then-unavailable order is proved below.
         for after_stage in [false, true] {
             let mut fence = boot(f, &updated, None)?;
             tasks.push(fence.tasks.clone());
+            to_market(&mut fence)?;
             let n = START + 10 + u128::from(after_stage);
             let (p, o) = signed(
                 &mut fence,
@@ -253,15 +256,21 @@ pub(super) async fn exercise(
             )?;
             if after_stage {
                 stage_listing(&mut fence, n, p, o)?;
-                withdraw(
-                    &mut fence,
-                    START + 12 + u128::from(after_stage),
-                    new.content().id(),
-                )?;
-                assert!(fence.engine.take_staged_action().is_err());
+                assert!(
+                    withdraw(
+                        &mut fence,
+                        START + 12 + u128::from(after_stage),
+                        new.content().id(),
+                    )
+                    .is_err(),
+                    "withdrawal landed under a staged listing"
+                );
             } else {
-                withdraw(&mut fence, START + 12, new.content().id())?;
-                assert!(stage_listing(&mut fence, n, p, o).is_err());
+                assert!(
+                    withdraw(&mut fence, START + 12, new.content().id()).is_err(),
+                    "withdrawal landed under a prepared listing"
+                );
+                drop((p, o));
             }
             assert!(
                 !rows(&disk(&fence), "market", LISTINGS)
