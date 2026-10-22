@@ -17,6 +17,8 @@
 //! - [`png`]: a minimal PNG encoder (palette when the frame has at most 256
 //!   colours, which the raycaster guarantees by construction; truecolor
 //!   otherwise). IDAT is zlib via `flate2`.
+//! - [`heightfield`]: the voxel-space producer for ground with relief
+//!   (G.7a), beside the raycaster.
 //! - [`sixel`]: the same frame as a DEC sixel stream (G.2), for the
 //!   terminals that draw sixel and not kitty — Windows Terminal above all.
 //! - [`kitty`]: the kitty graphics protocol framing — the capability probe,
@@ -48,6 +50,7 @@
 pub mod caps;
 pub mod cockpit;
 pub mod frame;
+pub mod heightfield;
 pub mod kitty;
 pub mod overlay;
 pub mod picture;

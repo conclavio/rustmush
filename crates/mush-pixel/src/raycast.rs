@@ -211,7 +211,7 @@ impl Sprite {
 
 /// The closed set of things a pixel can be, before fog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Base {
+pub(crate) enum Base {
     Open,
     Grass,
     Water,
@@ -255,7 +255,7 @@ impl Base {
         }
     }
 
-    fn floor(ground: Ground, line: bool) -> Base {
+    pub(crate) fn floor(ground: Ground, line: bool) -> Base {
         match (ground, line) {
             (Ground::Grass, false) => Base::Grass,
             (Ground::Grass, true) => Base::GrassLine,
@@ -275,20 +275,20 @@ pub const FOG_STEPS: usize = 12;
 pub const SKY_STEPS: usize = 16;
 /// Where fog is total, in cells (600 m at 10 m a cell: the cockpit's
 /// `sight_m`).
-const FOG_CELLS: f32 = 60.0;
+pub(crate) const FOG_CELLS: f32 = 60.0;
 /// The colour at the horizon, what fog fades to.
-const HORIZON: Rgb = [150, 165, 185];
+pub(crate) const HORIZON: Rgb = [150, 165, 185];
 /// The colour at the top of the sky.
 const ZENITH: Rgb = [24, 36, 72];
 /// The eye's height above the ground, in cells (2.5 m).
-const EYE: f32 = 0.25;
+pub(crate) const EYE: f32 = 0.25;
 /// A wall's height, in cells (8 m).
-const WALL_H: f32 = 0.8;
+pub(crate) const WALL_H: f32 = 0.8;
 /// A sprite's height and width, in cells (3.5 m tall, 5 m wide).
-const SPRITE_H: f32 = 0.35;
-const SPRITE_W: f32 = 0.5;
+pub(crate) const SPRITE_H: f32 = 0.35;
+pub(crate) const SPRITE_W: f32 = 0.5;
 /// Half the field of view as the camera plane's length (66 degrees).
-const PLANE: f32 = 0.66;
+pub(crate) const PLANE: f32 = 0.66;
 /// How far a ray walks before giving up (cells).
 const MAX_STEPS: usize = 160;
 /// How wide the floor's cell lines are, as a fraction of a cell.
@@ -299,7 +299,7 @@ fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
     [mix(a[0], b[0]), mix(a[1], b[1]), mix(a[2], b[2])]
 }
 
-fn fog_step(dist: f32) -> usize {
+pub(crate) fn fog_step(dist: f32) -> usize {
     ((dist / FOG_CELLS) * FOG_STEPS as f32)
         .floor()
         .clamp(0.0, (FOG_STEPS - 1) as f32) as usize
@@ -316,13 +316,13 @@ fn sky(step: usize) -> Rgb {
 /// Every colour a render can draw, worked out once: each base at each fog
 /// step, and each sky band. The values are exactly [`shade`] and [`sky`]
 /// (built by calling them), so a table read and a lerp agree to the bit.
-struct Shades {
+pub(crate) struct Shades {
     base: [[Rgb; FOG_STEPS]; Base::COUNT],
     sky: [Rgb; SKY_STEPS],
 }
 
 impl Shades {
-    fn new() -> Shades {
+    pub(crate) fn new() -> Shades {
         const ALL: [Base; Base::COUNT] = [
             Base::Open,
             Base::Grass,
@@ -356,7 +356,7 @@ impl Shades {
 
     /// `base` at fog `step` (the horizon colour past the last step, which
     /// [`fog_step`] never yields).
-    fn shade(&self, base: Base, step: usize) -> Rgb {
+    pub(crate) fn shade(&self, base: Base, step: usize) -> Rgb {
         self.base
             .get(base as usize)
             .and_then(|row| row.get(step))
@@ -365,7 +365,7 @@ impl Shades {
     }
 
     /// Sky band `step` (the horizon colour past the last band).
-    fn sky(&self, step: usize) -> Rgb {
+    pub(crate) fn sky(&self, step: usize) -> Rgb {
         self.sky.get(step).copied().unwrap_or(HORIZON)
     }
 }
@@ -583,7 +583,7 @@ fn draw_sprites(frame: &mut Frame, eye: &Eye, sprites: &[Sprite], zbuf: &[f32], 
 /// The silhouette: a hull across the lower half, a turret on top, a barrel
 /// out to the right. `u` runs left to right and `v` top to bottom, both
 /// `0..1` over the sprite's box.
-fn tank(u: f32, v: f32) -> bool {
+pub(crate) fn tank(u: f32, v: f32) -> bool {
     if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
         return false;
     }

@@ -296,3 +296,11 @@ runs). On the fixture at 640x480: encode 1.11 ms, 20,631 bytes raw (kitty's stre
 and `ssh -C` matters for it. `fixture.sixel` typed in Windows Terminal 1.24 through ConPTY draws the
 cockpit; WT scales sixel to its own cells, hence the frame is sized from `CSI 16 t`'s cell. Details in
 `docs/design/21-cut-notes.md` §G.2.
+
+## G.7a: the heightfield (2026-10-22)
+
+`heightfield::render` is a voxel-space producer over a `Terrain` (the arena's cells plus an
+elevation a cell). Over the proving ground's shipped relief, decoded by `tests/support/atlas.rs`, a
+640x480 frame takes ~2.45 ms on the owner's box (the raycaster: 0.95 ms); `relief.png` from the
+fixture example is the look. The feed half (`arena.map` with elevations) is G.7b, after the mining
+train. Details in `docs/design/21-cut-notes.md` §G.7a.

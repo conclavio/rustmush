@@ -1,5 +1,14 @@
 # 21. The graphics engine — one frame, three encoders
 
+**Draft 0.10 — 2026-10-22, G.7a: the heightfield producer.** `mush_pixel::heightfield`, a voxel-space
+renderer over a `Terrain` (the arena's cell grid plus an elevation a cell), tested on the proving
+ground's shipped relief and a synthetic crater; 2.45 ms a frame at 640x480 on the owner's box. The
+proving ground already has relief the sim uses (doc 16 §11, cut X.6); only `arena.map` leaves it out,
+so G.7b gives the feed its elevations and, the owner's word, iterates the arena's relief, which "was
+just an initial placeholder" — both in `tacsim`, after the mining train (cut notes §G.7a). D-21-20's
+Ceres site stays the owner's first-map choice for the surface vehicle's windscreen; the arena is now
+the nearer first map for the cockpit.
+
 **Draft 0.9 — 2026-10-22, G.3a: the web frame's gateway half.** A `picture` client command turns
 on PNG frames as binary WebSocket messages, drawn per connection in the gateway (`mush-net-web`)
 from the cockpit and map keyframes that connection's own stream carries; the web client's canvas
@@ -380,7 +389,7 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
 | **G.4 the leash and the keys** | the turn as a helm order through the control channel; interpolation between pulses; the kitty keyboard protocol for hold-to-turn. **Landed 2026-10-22**: `HEADING` orders a pulse and a half ahead, the heading predicted from the order and a measured turn rate, `,`/`.` a look, the protocol pushed only while the view is open | M | G.1 | the sim's heading and the camera's reconcile within one pulse; a release event stops a turn |
 | **G.5 the scene model and the orbital view** | `scene` (§3.3) and its rasteriser; the first builder: `sky.chart` as a picture with the plan's legs, the ship's dot and light-lag rings; the minimap re-based on `scene` | L | G.1 | `+chart` draws the picture in every encoder; the minimap pixel-equal before and after |
 | **G.6 the doll and the fitting screen** | the armour doll as a standalone bucket-B picture with a legend; the fitting paper doll with hardpoints and arcs embedded in the sheet (bucket C) | M | G.5 | the fixture doll; the fitting screen on the TUI and the web |
-| **G.7 the heightfield** | the voxel-space producer; the first map with relief (Q-21-5) | M | G.1, a map with height | a crater rim on the proving ground or a Ceres site at ≤6 ms a frame |
+| **G.7 the heightfield** | the voxel-space producer; the first map with relief (Q-21-5). **Split 2026-10-22:** **G.7a (landed)** the producer, tested on the proving ground's shipped relief; **G.7b** `arena.map` carries elevations, the cockpit picture draws them, the arena's relief reworked (owner: the arena map is a placeholder), after the mining train | M | G.1, a map with height | a crater rim on the proving ground or a Ceres site at ≤6 ms a frame (G.7a: 2.45 ms on the owner's box over the proving ground; the VPS figure with G.7b's smoke) |
 | **G.8 debrief and replay** | the replay document (16b I.2) as a bucket-B picture with a scrubbable timeline | M | G.5 | `SIM REPLAY` draws the match; `,`/`.` scrub it |
 | **G.9 the boards** | the strategic board and the investigation board; the player annotation store they share | L | G.5, an annotation store | two players see each other's pins |
 | **G.10 bells and sounds** | the cockpit's notice kinds as sound names (`contact-gained`, `contact-lost`, `hit`, `overheat`, `power-online`, …; 1–64 of `[A-Za-z0-9_-]`); BEL for every terminal; **w11term's OSC 440, wire version 1** — `ESC ] 440 ; 1 ; play ; <name> ST` and `ESC ] 440 ; 1 ; pack ; <pack_version> ST`, four fields, no options, no loop (w11term's `docs/game-client-protocol.md`; mintty's older `440;file` form is NOT this and mintty gets BEL) — only for a terminal whose `XTVERSION` reply names w11term; kitty's OSC 99 with its `s=` sound for kitty; the client plays serially at a 40 ms floor with a 16-deep queue and ≤5 s clips, so an alarm is the server re-sending its name on a cadence, debounced server-side at one sound a kind per two seconds; `@sounds on|off`; **`XTVERSION` joins the `@tui` probe, which first needs the TUI key parser to swallow DCS (`ESC P … ESC \`) the way it swallows APC** — today that reply would decode as F1 plus typed text (D-21-24) | S | G.1 | a contact gained rings in w11term and in Windows Terminal's bell; the overheat alarm repeats while the frame says so and stops when it clears; the sound names are the notice kinds; a DCS reply never reaches the input line |

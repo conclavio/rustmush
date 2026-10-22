@@ -13,8 +13,15 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use mush_pixel::cockpit::{ARENA_MAP_FEED, COCKPIT_FEED, CockpitPicture, map_from_feed};
+use mush_pixel::heightfield;
 use mush_pixel::picture::{Look, Picture};
+use mush_pixel::raycast::{Camera, Sprite, SpriteKind};
 use mush_pixel::{Frame, kitty, png, sixel};
+
+/// The proving ground's shipped relief, decoded as the heightfield test does
+/// (doc 21 cut G.7a).
+#[path = "../tests/support/atlas.rs"]
+mod atlas;
 use serde_json::Value;
 
 const MAP: &str = include_str!("../../../web/src/lib/fixtures/cockpit/arena_map.json");
@@ -75,6 +82,30 @@ fn main() {
     if let Err(err) = std::fs::write(format!("{out_dir}/fixture.sixel"), &six_stream) {
         eprintln!("fixture.sixel: {err}");
     }
+
+    // G.7a: the heightfield producer over the proving ground's real relief,
+    // from the middle of the ground looking north, a tank 300 m out.
+    let ground = atlas::proving_ground();
+    let cam = Camera {
+        x_cm: 128_000,
+        y_cm: 96_000,
+        heading_mdeg: 20_000,
+    };
+    let tank = Sprite {
+        x_cm: 138_000,
+        y_cm: 124_000,
+        kind: SpriteKind::Hostile,
+    };
+    let mut relief = Frame::new(640, 480);
+    let t3 = Instant::now();
+    for _ in 0..N {
+        heightfield::render(&mut relief, &ground, &cam, None, &[tank]);
+    }
+    let relief_us = t3.elapsed().as_micros() / u128::from(N);
+    let relief_png = png::encode(&relief);
+    if let Err(err) = std::fs::write(format!("{out_dir}/relief.png"), &relief_png) {
+        eprintln!("relief.png: {err}");
+    }
     println!(
         "map {}x{} cells, {contacts} contacts, frame {}x{}, {} colours",
         map.width(),
@@ -100,6 +131,11 @@ fn main() {
         six_stream.len(),
         squeeze(&stream),
         squeeze(&six_stream)
+    );
+    println!(
+        "heightfield 640x480 over the proving ground: render {relief_us} us, {} colours, png {} bytes",
+        relief.count_colours(300),
+        relief_png.len()
     );
     // Sixel filling a box (G.2b): Windows Terminal's 120x40 at its virtual
     // 10x20 cell, and a high-DPI w11term pane of 240x48 at 15x28.
