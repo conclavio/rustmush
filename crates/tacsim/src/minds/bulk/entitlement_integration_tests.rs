@@ -844,7 +844,9 @@ fn source_answer(
                     assert_eq!(Some(source_sha256.clone()), expected.map(|h| h.to_hex()));
                     assert!(!lines.is_empty());
                 }
-                MindResponse::Error { .. } => assert!(expected.is_none()),
+                MindResponse::Error { message, .. } => {
+                    assert!(expected.is_none(), "paid source refused: {message}")
+                }
                 _ => return Err("unexpected paid source response".into()),
             }
         }
