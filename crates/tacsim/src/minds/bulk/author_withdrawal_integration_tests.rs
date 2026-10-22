@@ -427,8 +427,9 @@ fn eligible_withdrawal(
         .is_err()
     );
     source_answer(&mut world, GOD, a.licence(), Some(a.revision().source()))?;
-    // Withdrawn Pin still belongs to the author too; no recall is implied.
-    source_answer(&mut world, BUYER, owner, Some(a.revision().source()))?;
+    // The author's owner licence Follows its line, and withdrawal excludes the
+    // revision from follow resolution; only Pin holders keep it.
+    source_answer(&mut world, BUYER, owner, None)?;
     let saved = capture(&world, &disk(&world));
     assert!(PlayerWorld::boot_withdrawal(f, &saved).is_ok());
     Ok(saved)
