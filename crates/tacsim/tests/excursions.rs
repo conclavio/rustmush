@@ -3032,6 +3032,8 @@ fn sm3b_a_rig_is_never_stranded_by_its_battery() {
             .replace("{secs}", "300")
             .replace("{real}", ", about 5 min")
             .replace("{hopper}", "empty")
+            // Doc 20 cut SM.8: an empty hopper's recover names no unload.
+            .replace("{then}", "")
     );
     assert!(queued.is_empty());
     let _ = act_go(&mut rig, pilot, "+tv/1 recover go");

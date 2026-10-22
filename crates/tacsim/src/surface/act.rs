@@ -62,7 +62,22 @@
 //! raised by the same tonnes, the charge spent, the operator's core written to the chart, and the
 //! run re-armed or closed — one bundle. While a run drills only a scan or a sounding may start.
 //!
-//! Neither provider ever reads `World::now`: `now` is the offer's IC instant.
+//! **Doc 20 cut SM.8** adds the **unload** on the same two actions (`act` word `unload`; no
+//! third action): a `Done` recover with ore in the hopper writes a durable queued unload on the
+//! rig's record in its own bundle, which the surface tick starts as the operator (`how: queued`,
+//! keyed `tacsim.surface/{tv}/{ordinal}/queued`); `unload_cmd` (`+tv/<n> unload [<t>] [go]`)
+//! files one by hand (`how: whole` or `part` with `qty`, after writing an `ActOrders` entry). The
+//! start's offer fixes both possible sources and the prepare runs the one `how` names,
+//! re-checking the hopper and the hold's unreserved room in the transaction; the finish moves the
+//! hopper's goods into the hold by ONE `InventoryFamilies::transfer_many_marked` (a marker a
+//! good). No act of the unload reads a licence, a tenure, a lease or the battery. Every start
+//! clears a queued unload.
+//!
+//! Neither provider's prepare reads a clock: `now` is the offer's IC instant. The start's offer
+//! never reads `World::now`; since cut SM.8 the finish's offer fixes the real second (`wall`) as
+//! well as the IC `clock` — the market lot offer's precedent — for the hopper's marker ring
+//! (`InventoryFamilies::transfer_many_marked` stamps its ring entries with it), so the finish's
+//! fixed parameters are not a pure function of IC time.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -107,6 +122,7 @@ use crate::surface::excursion::{
     ramp_pose, reserve_check, reserved_total, settle_free, settle_spent_out_of_bay, site_cell,
 };
 use crate::surface::excursion::{DarkCause, LicenceEnd, LockRow, MAX_LOCK_ROWS, Mined, Run};
+use crate::surface::excursion::{Queued, UNLOAD_S, UnloadHow};
 use crate::surface::geology::{OreFamily, Word, by_family};
 use crate::surface::mine::{
     Bound, MineChoice, MinePlan, RightsVerdict, TenureRead, blind_room_t, class_yield,
@@ -114,6 +130,7 @@ use crate::surface::mine::{
     pocket_yields, run_end,
 };
 use crate::surface::reading::Footing;
+use crate::surface::unload::{Bound as ShortBound, Short};
 use crate::surface::{HomePeek, Peeks};
 
 /// The start's action id (lead ruling 3, "the planner's call"; doc 20 §6 names the mining
@@ -130,8 +147,8 @@ pub const SURFACE_DONE_OUTCOME: &str = "tacsim_surface_done_result";
 /// the finish `tacsim.surface/{tv}/{ordinal}/done`.
 pub const SURFACE_KEY_PREFIX: &str = "tacsim.surface/";
 /// **The start's `act` words** (doc 20 cut SM.4a, D23): the offer's Choice and the plans' keys,
-/// sorted. Doc 20 cut SM.7 adds `mine` and `mine_stop`.
-pub const ACT_WIRE_WORDS: [&str; 9] = [
+/// sorted. Doc 20 cut SM.7 adds `mine` and `mine_stop`; doc 20 cut SM.8 `unload`.
+pub const ACT_WIRE_WORDS: [&str; 10] = [
     "drive",
     "dump",
     "launch",
@@ -141,17 +158,18 @@ pub const ACT_WIRE_WORDS: [&str; 9] = [
     "scan",
     "sound",
     "sound_quiet",
+    "unload",
 ];
 
 /// **The start's `act` parameter** (doc 20 cut SM.4a; the brief's reviewer finding F6, D23):
 /// `launch`, `recover`, `dump`, `scan`, `sound` and `sound_quiet` — the kind and the sounding's
-/// quiet flag — and since doc 20 cut SM.4b `drive`, since SM.7 `mine`. `mine_stop` is no act
-/// ([`start_word`]).
+/// quiet flag — and since doc 20 cut SM.4b `drive`, since SM.7 `mine`, since SM.8 `unload`.
+/// `mine_stop` is no act ([`start_word`]).
 #[must_use]
 pub(crate) fn act_of_word(word: &str) -> Option<(ActKind, bool)> {
     match word {
         "sound_quiet" => Some((ActKind::Sound, true)),
-        "launch" | "recover" | "dump" | "scan" | "sound" | "drive" | "mine" => {
+        "launch" | "recover" | "dump" | "scan" | "sound" | "drive" | "mine" | "unload" => {
             ActKind::from_word(word).map(|kind| (kind, false))
         }
         _ => None,
@@ -220,6 +238,16 @@ pub fn cycle_key(tv: ObjId, ordinal: u32, k: u8) -> Option<IdempotencyKeyText> {
 #[must_use]
 pub fn stop_key(tv: ObjId, ordinal: u32) -> Option<IdempotencyKeyText> {
     IdempotencyKeyText::parse_canonical(format!("{SURFACE_KEY_PREFIX}{}/{ordinal}/stop", tv.0)).ok()
+}
+
+/// **A queued unload's start key** (doc 20 cut SM.8; the brief's decision R15):
+/// `tacsim.surface/{tv}/{ordinal}/queued` — the surface tick's own request, so it never meets a
+/// hand `+tv/unload go`'s under [`act_key`] (the two race as distinct requests and the prepare's
+/// ordinal check settles them).
+#[must_use]
+pub fn queued_key(tv: ObjId, ordinal: u32) -> Option<IdempotencyKeyText> {
+    IdempotencyKeyText::parse_canonical(format!("{SURFACE_KEY_PREFIX}{}/{ordinal}/queued", tv.0))
+        .ok()
 }
 
 // ---- the actor's rigs and where a rig is ----------------------------------------------
@@ -739,11 +767,68 @@ pub enum Refusal {
     /// `MINE_CHANGED` (the brief's 3.4): the start's re-plan differs from the order's — `go`
     /// commits exactly the preview or nothing.
     MineChanged,
+    /// `UNLOAD_UNDER_WAY` (doc 20 cut SM.8).
+    UnloadUnderWay {
+        /// The hull's name.
+        name: String,
+    },
+    /// `UNLOAD_NOT_SITE` (doc 20 cut SM.8; decision R5): an unload works only on a site's pad.
+    UnloadNotSite {
+        /// The slot.
+        n: u8,
+        /// The hull's name.
+        name: String,
+    },
+    /// `UNLOAD_OUT` (doc 20 cut SM.8; decision R9): the rig stands on the site's ground.
+    UnloadOut {
+        /// The slot.
+        n: u8,
+        /// The site's name.
+        site: String,
+    },
+    /// `UNLOAD_NO_ROOM` (doc 20 cut SM.8; decision R18): the hold takes nothing of it.
+    UnloadNoRoom {
+        /// The slot.
+        n: u8,
+        /// The hull's name.
+        name: String,
+        /// The hopper's load in words.
+        load: String,
+    },
+    /// `UNLOAD_NO_FIT` (doc 20 cut SM.8; decisions R10, R18): a named tonnage past the fit, which
+    /// is at least 1.
+    UnloadNoFit {
+        /// The slot.
+        n: u8,
+        /// The tonnes named.
+        q: u64,
+        /// The tonnes that fit.
+        fit: u64,
+        /// The good's label.
+        ore: String,
+    },
+    /// `UNLOAD_NO_STOCK` (doc 20 cut SM.8; the lead's pre-commit round, item 4): a named tonnage
+    /// past the hopper's own stock of the first good, which is at least 1 — the hold's room was
+    /// not what bound it.
+    UnloadNoStock {
+        /// The slot.
+        n: u8,
+        /// The tonnes of the good the hopper holds.
+        fit: u64,
+        /// The good's label.
+        ore: String,
+    },
+    /// `UNLOAD_CHANGED` (doc 20 cut SM.8; §7.1 "re-checked at prepare"): the hopper or the hold's
+    /// room changed between the preview and the start.
+    UnloadChanged {
+        /// The slot.
+        n: u8,
+    },
 }
 
 /// The offer-wire words and the start's messages, in one table (the prepare's
 /// `port_error` needs a `&'static str`).
-const REFUSAL_CODES: [(&str, &str); 49] = [
+const REFUSAL_CODES: [(&str, &str); 56] = [
     ("tv_dark", "that rig cannot be read"),
     ("tv_unwired", "rigs cannot be worked on this server"),
     ("not_aboard", "the operator is not aboard the hull"),
@@ -814,6 +899,17 @@ const REFUSAL_CODES: [(&str, &str); 49] = [
         "mine_changed",
         "that run changed since its preview; preview it again",
     ),
+    // Doc 20 cut SM.8: unloading's seven (the lead's pre-commit round added `unload_no_stock`).
+    ("unload_under_way", "the hull is under way"),
+    ("unload_not_site", "the hull is not on a site's pad"),
+    ("unload_out", "the rig is not in the bay"),
+    ("unload_no_room", "the hold has no room"),
+    ("unload_no_fit", "that much does not fit the hold"),
+    ("unload_no_stock", "the hopper holds less than that"),
+    (
+        "unload_changed",
+        "the hopper or the hold's room changed; preview it again",
+    ),
 ];
 
 /// The start's message for an offer-wire word; an unknown word reads as dark.
@@ -879,6 +975,13 @@ impl Refusal {
             Refusal::MineForfeit { .. } => "mine_forfeit",
             Refusal::MineEnded { .. } => "mine_ended",
             Refusal::MineChanged => "mine_changed",
+            Refusal::UnloadUnderWay { .. } => "unload_under_way",
+            Refusal::UnloadNotSite { .. } => "unload_not_site",
+            Refusal::UnloadOut { .. } => "unload_out",
+            Refusal::UnloadNoRoom { .. } => "unload_no_room",
+            Refusal::UnloadNoFit { .. } => "unload_no_fit",
+            Refusal::UnloadNoStock { .. } => "unload_no_stock",
+            Refusal::UnloadChanged { .. } => "unload_changed",
         }
     }
 
@@ -1040,6 +1143,27 @@ impl Refusal {
                 .replace("{counter}", counter)
                 .replace("{port}", port),
             Refusal::MineChanged => tv::MINE_CHANGED.to_owned(),
+            Refusal::UnloadUnderWay { name } => tv::UNLOAD_UNDER_WAY.replace("{name}", name),
+            Refusal::UnloadNotSite { n, name } => tv::UNLOAD_NOT_SITE
+                .replace("{name}", name)
+                .replace("{n}", &n.to_string()),
+            Refusal::UnloadOut { n, site } => tv::UNLOAD_OUT
+                .replace("{n}", &n.to_string())
+                .replace("{site}", site),
+            Refusal::UnloadNoRoom { n, name, load } => tv::UNLOAD_NO_ROOM
+                .replace("{name}", name)
+                .replace("{n}", &n.to_string())
+                .replace("{load}", load),
+            Refusal::UnloadNoFit { n, q, fit, ore } => tv::UNLOAD_NO_FIT
+                .replace("{q}", &q.to_string())
+                .replace("{n}", &n.to_string())
+                .replace("{fit}", &fit.to_string())
+                .replace("{ore}", ore),
+            Refusal::UnloadNoStock { n, fit, ore } => tv::UNLOAD_NO_STOCK
+                .replace("{n}", &n.to_string())
+                .replace("{fit}", &fit.to_string())
+                .replace("{ore}", ore),
+            Refusal::UnloadChanged { n } => tv::UNLOAD_CHANGED.replace("{n}", &n.to_string()),
         }
     }
 }
@@ -1348,6 +1472,151 @@ pub(crate) fn dump_plan(w: &World, actor: ObjId, rig: &RigAt) -> Result<ActPlan,
             goods: BTreeMap::new(),
         },
         from_bay: false,
+    })
+}
+
+/// **The unload's world-side gate, in order** (doc 20 cut SM.8; §7.1, §8; the brief's 3.5,
+/// decisions R5, R6, R9 and R14), cheap first: the layer and the view (dark or held →
+/// `TV_DARK`); under way → `UNLOAD_UNDER_WAY`; not on a site's pad → `UNLOAD_NOT_SITE` (an
+/// unload is a surface act, the dump's rule — R5); **aboard, for the hand unload only** (`queued`
+/// false: `TV_NOT_ABOARD`; a queued unload is the recover's second half, committed aboard by its
+/// `go` — R6); the rig in this hull's bay (on the site's ground → `UNLOAD_OUT`; anywhere else →
+/// `RECOVER_ELSEWHERE`); the rig's hopper vault and the hull's hold vault (either missing →
+/// `TV_DARK`, logged). `UNLOAD_S`, no cost, no trip home; `params` names the two vaults, the
+/// goods empty (the command and the offer split the hopper; the prepare re-checks). **No
+/// licence, no tenure, no lease, no battery is read** (§8 rights per act; §19 item 3; §4.1).
+///
+/// # Errors
+///
+/// The first [`Refusal`] in that order.
+pub(crate) fn unload_plan(
+    w: &World,
+    actor: ObjId,
+    rig: &RigAt,
+    queued: bool,
+) -> Result<ActPlan, Refusal> {
+    let (view, name) = view_of(w, rig)?;
+    if matches!(berth_of(w, rig.hull), Berth::UnderWay) {
+        return Err(Refusal::UnloadUnderWay { name });
+    }
+    let berth = site_berth(w, &view).map_err(|refusal| match refusal {
+        Refusal::NotSite { name } => Refusal::UnloadNotSite { n: rig.slot, name },
+        Refusal::UnderWay { name } => Refusal::UnloadUnderWay { name },
+        other => other,
+    })?;
+    if !queued && !crate::port::voyage::aboard(w, rig.hull, actor) {
+        return Err(Refusal::NotAboard { name });
+    }
+    match where_is(w, rig.tv) {
+        Where::Bay { hull } if hull == rig.hull => {}
+        Where::Ground { domain, .. } if domain == berth.domain => {
+            return Err(Refusal::UnloadOut {
+                n: rig.slot,
+                site: berth.name,
+            });
+        }
+        Where::Bay { .. } | Where::Ground { .. } | Where::Elsewhere => {
+            return Err(Refusal::Elsewhere { n: rig.slot, name });
+        }
+    }
+    let Some(hopper) = crate::port::vehicle::hopper_of(w, rig.tv) else {
+        tracing::warn!(tv = rig.tv.0, "tacsim: an unload found no hopper vault");
+        return Err(Refusal::Dark { name });
+    };
+    let Some(hold) = crate::port::ship::hold_vault(w, &view) else {
+        tracing::warn!(hull = rig.hull.0, "tacsim: an unload found no hold vault");
+        return Err(Refusal::Dark { name });
+    };
+    Ok(ActPlan {
+        site: berth.entry,
+        secs: UNLOAD_S,
+        cost_cu: 0,
+        home_cu: 0,
+        params: ActParams::Unload {
+            hopper: hopper.0,
+            hold: hold.0,
+            goods: BTreeMap::new(),
+            how: if queued {
+                UnloadHow::Queued
+            } else {
+                UnloadHow::Whole
+            },
+            excursion: None,
+        },
+        from_bay: false,
+    })
+}
+
+/// **The hold's room an unload weighs against** (doc 20 cut SM.8; lead ruling 3, decision R16).
+#[derive(Clone, Debug)]
+pub(crate) struct UnloadRoom {
+    /// The hull's hold plan (`crate::port::market::hold_plan`).
+    pub plan: crate::port::market::HoldPlan,
+    /// The plan's goods table (`crate::port::market::plan_goods`).
+    pub goods: &'static crate::definitions::GoodsTable,
+    /// The hold's ore compartment.
+    pub compartment: crate::port::capacity::Compartment,
+    /// The hold's unreserved room, per measure, with the unloading rig's own hopper left out.
+    pub room: Load,
+    /// The hull's other rigs (their hoppers and runs are the reservation).
+    pub siblings: Vec<ObjId>,
+}
+
+/// **The hold's room for `tv`'s unload** (doc 20 cut SM.8; the brief's 3.5, lead ruling 3,
+/// decisions R4 and R16) — one function, the command, the start's offer and the recover's preview
+/// all call it: the hull's [`crate::port::market::hold_plan`], its goods table
+/// ([`crate::port::market::plan_goods`]; a store table loaded and unequal to it is a dark plan,
+/// logged, never a preview the prepare then refuses), the hold's ONE ore compartment
+/// (`capacity::compartment_for` over the plan's compartments for the ore stowage tag; a hull
+/// whose ores route to none or several is dark), and
+/// `crate::port::ship::hold_unreserved_with` over that table with **the unloading rig left out**
+/// (its hopper is the source; a rig in the bay has no run) — the hull's rigs as the departure's
+/// bay gate collects them (`rigs_in_bay` ∪ `live_on_hull`), less `tv`. With one ore compartment
+/// the summed room `hold_unreserved_with` computes is that compartment's. `None` when any of it
+/// will not read.
+pub(crate) fn unload_room(
+    w: &World,
+    view: &HullView<'_>,
+    tv: ObjId,
+    read_pool: &dyn Fn(EndpointRef, &CanonicalId) -> Result<u64, crate::port_tick::PoolReadError>,
+    read_rig: &dyn Fn(ObjId) -> Result<Option<RigRecord>, String>,
+) -> Option<UnloadRoom> {
+    let plan = crate::port::market::hold_plan(view)?;
+    let goods = crate::port::market::plan_goods(&plan)?;
+    if let Some(stored) = w.module_state::<TacsimStore>().and_then(TacsimStore::goods)
+        && stored != goods
+    {
+        tracing::error!(
+            hull = view.hull().0,
+            "tacsim: the store's goods table differs from the hold plan's; the unload reads dark"
+        );
+        return None;
+    }
+    let ore = CanonicalId::new("metal_ore").ok()?;
+    let compartment = crate::port::capacity::compartment_for(
+        goods,
+        &crate::port::market::plan_compartments(&plan),
+        &ore,
+    )?;
+    let mut siblings: Vec<ObjId> = crate::port::vehicle::rigs_in_bay(w, view)
+        .iter()
+        .map(|rig| rig.tv)
+        .collect();
+    for record in tv::live_on_hull(w, view.hull()) {
+        if !siblings.contains(&record.tv) {
+            siblings.push(record.tv);
+        }
+    }
+    siblings.retain(|other| *other != tv);
+    siblings.sort_unstable();
+    let room =
+        crate::port::ship::hold_unreserved_with(goods, w, view, &siblings, read_pool, read_rig)?;
+    Some(UnloadRoom {
+        plan,
+        goods,
+        compartment,
+        room,
+        siblings,
     })
 }
 
@@ -1731,7 +2000,10 @@ impl Reach {
                 stand: *cell,
                 pockets: pockets_in_reach((cell[0], cell[1]), i64::from(*radius)),
             }),
-            ActParams::None {} | ActParams::Dump { .. } | ActParams::Drive { .. } => None,
+            ActParams::None {}
+            | ActParams::Dump { .. }
+            | ActParams::Drive { .. }
+            | ActParams::Unload { .. } => None,
         }
     }
 
@@ -1829,6 +2101,8 @@ pub(crate) fn doing_words(kind: ActKind, params: &ActParams, ramp: &str) -> Stri
         (ActKind::Sound, _) => "sounding".to_owned(),
         // Doc 20 cut SM.7: a run never sits in the act slot; the word is the status's.
         (ActKind::Mine, _) => "drilling".to_owned(),
+        // Doc 20 cut SM.8.
+        (ActKind::Unload, _) => "unloading its hopper into the hold".to_owned(),
     }
 }
 
@@ -1884,11 +2158,13 @@ fn hopper_contents(ctx: &Ctx<'_>, tv: ObjId) -> Result<BTreeMap<CanonicalId, u64
     Ok(out)
 }
 
-/// `{load}`: `"{q} t of {good label}"` joined `", "`.
+/// `{load}`: `"{q} t of {good label}"` per good, joined as a list ([`and_list`]: `a`, `a and b`,
+/// `a, b and c`). The SM.8 lead's pre-commit round, item 5: goods v3's labels carry commas
+/// ("ice ore, run-of-mine"), so a plain `", "` join read two ores as four words.
 #[must_use]
 pub(crate) fn load_words(w: &World, goods: &BTreeMap<CanonicalId, u64>) -> String {
     let table = w.module_state::<TacsimStore>().and_then(TacsimStore::goods);
-    goods
+    let words: Vec<String> = goods
         .iter()
         .map(|(good, qty)| {
             let label = table
@@ -1896,8 +2172,18 @@ pub(crate) fn load_words(w: &World, goods: &BTreeMap<CanonicalId, u64>) -> Strin
                 .map_or_else(|| good.to_string(), |def| def.label.clone());
             format!("{qty} t of {label}")
         })
-        .collect::<Vec<_>>()
-        .join(", ")
+        .collect();
+    and_list(&words)
+}
+
+/// `a`, `a and b`, `a, b and c` — the goods a load line names (the cockpit's `join_names` shape);
+/// empty for none.
+fn and_list(words: &[String]) -> String {
+    match words {
+        [] => String::new(),
+        [one] => one.clone(),
+        [head @ .., last] => format!("{} and {last}", head.join(", ")),
+    }
 }
 
 /// **The rig's battery row** (finding F5: the one tools table), whether or not the act needs it.
@@ -2138,7 +2424,7 @@ pub(crate) fn act_cmd(
             }
         }
         // A drive names its target: `drive_cmd`; a run is `mine_cmd`'s.
-        ActKind::Drive | ActKind::Mine => return Err(dark()),
+        ActKind::Drive | ActKind::Mine | ActKind::Unload => return Err(dark()),
     };
     let plan = match planned {
         Ok(plan) => plan,
@@ -2198,7 +2484,10 @@ pub(crate) fn act_cmd(
         }
         let body = match &plan.params {
             ActParams::Scan { body, .. } | ActParams::Sound { body, .. } => body.clone(),
-            ActParams::None {} | ActParams::Dump { .. } | ActParams::Drive { .. } => {
+            ActParams::None {}
+            | ActParams::Dump { .. }
+            | ActParams::Drive { .. }
+            | ActParams::Unload { .. } => {
                 return Err(dark());
             }
         };
@@ -2319,6 +2608,8 @@ pub(crate) fn act_cmd(
                 .replace("{climb}", &RECOVER_S.to_string())
                 .replace("{real}", &real)
                 .replace("{hopper}", &hopper)
+                // Doc 20 cut SM.8 (lead ruling 1): the unload the recover's `Done` will queue.
+                .replace("{then}", &recover_then(ctx, rig))
             }
             ActKind::Dump => tv::DUMP_PREVIEW
                 .replace("{n}", &n)
@@ -2350,7 +2641,7 @@ pub(crate) fn act_cmd(
                 )
                 .ok_or_else(dark)?
             }
-            ActKind::Drive | ActKind::Mine => return Err(dark()),
+            ActKind::Drive | ActKind::Mine | ActKind::Unload => return Err(dark()),
         };
         crate::port::coop::say(ctx, line);
         return Ok(());
@@ -2403,9 +2694,293 @@ pub(crate) fn act_cmd(
                 .replace("{ramp}", &ramp)
                 .replace("{when}", &when)
         }
-        ActKind::Drive | ActKind::Mine => return Err(dark()),
+        ActKind::Drive | ActKind::Mine | ActKind::Unload => return Err(dark()),
     };
     crate::port::coop::say(ctx, line);
+    Ok(())
+}
+
+// ---- doc 20 cut SM.8: `+tv/unload` and the recover's unload clause -----------------------------
+
+/// **An unload's split against its room** (doc 20 cut SM.8; the brief's 3.4): the whole unload
+/// (`qty` `None`) or a part one, through [`crate::surface::unload`]; `Err(())` when the capacity
+/// function refuses the question (a good the plan's table does not weigh — never expected).
+fn unload_split(
+    room: &UnloadRoom,
+    hopper: &BTreeMap<CanonicalId, u64>,
+    qty: Option<u64>,
+) -> Result<Result<crate::surface::unload::Split, Short>, ()> {
+    match qty {
+        None => crate::surface::unload::whole(room.goods, &room.compartment, hopper, &room.room)
+            .map(Ok)
+            .map_err(|_| ()),
+        Some(qty) => {
+            crate::surface::unload::part(room.goods, &room.compartment, hopper, &room.room, qty)
+                .map_err(|_| ())
+        }
+    }
+}
+
+/// **The hold's unreserved mass after `moves`**, whole tonnes floored (the previews' `{room}`).
+fn room_after_t(room: &UnloadRoom, moves: &BTreeMap<CanonicalId, u64>) -> Option<u64> {
+    let mut after = room.room.clone();
+    for (good, qty) in moves {
+        crate::port::capacity::take_room(room.goods, &room.compartment, &mut after, good, *qty)
+            .ok()?;
+    }
+    let mass = CanonicalId::new(crate::definitions::logistics::MASS_KG).ok()?;
+    Some(after.get(&mass).copied().unwrap_or(0) / 1_000)
+}
+
+/// **A recover's `{then}`** (doc 20 §1 beat 9; cut SM.8 lead rulings 1 and 3): empty for an empty
+/// hopper; else the unload the recover's `Done` will queue, split against the hold's room now —
+/// `RECOVER_THEN` (all of it, and the room after), `RECOVER_THEN_PART` (what fits and what
+/// stays) or `RECOVER_THEN_NONE` (none of it: the dump named). A hopper or a room that will not
+/// read leaves it empty, logged: a recover is never refused for it (the way home is never barred).
+fn recover_then(ctx: &Ctx<'_>, rig: &RigAt) -> String {
+    let w: &World = ctx.w;
+    let hopper = match hopper_contents(ctx, rig.tv) {
+        Ok(hopper) => hopper,
+        Err(error) => {
+            tracing::warn!(tv = rig.tv.0, %error, "tacsim: a recover's preview could not read the hopper");
+            return String::new();
+        }
+    };
+    if hopper.is_empty() {
+        return String::new();
+    }
+    let Some(view) = hull_view(w, rig.hull) else {
+        return String::new();
+    };
+    let read_pool = |endpoint: EndpointRef, good: &CanonicalId| {
+        crate::port_tick::read_pool(ctx, endpoint, good)
+    };
+    let read_rig = |tv: ObjId| SurfaceReads::rig(ctx, tv);
+    let Some(room) = unload_room(w, &view, rig.tv, &read_pool, &read_rig) else {
+        tracing::warn!(
+            tv = rig.tv.0,
+            "tacsim: a recover's preview could not read the hold's room"
+        );
+        return String::new();
+    };
+    let Ok(Ok(split)) = unload_split(&room, &hopper, None) else {
+        return String::new();
+    };
+    if split.moves.is_empty() {
+        tv::RECOVER_THEN_NONE
+            .replace("{stays}", &load_words(w, &split.stays))
+            .replace("{n}", &rig.slot.to_string())
+    } else if split.stays.is_empty() {
+        tv::RECOVER_THEN
+            .replace("{load}", &load_words(w, &split.moves))
+            .replace(
+                "{room}",
+                &room_after_t(&room, &split.moves).unwrap_or(0).to_string(),
+            )
+    } else {
+        tv::RECOVER_THEN_PART
+            .replace("{load}", &load_words(w, &split.moves))
+            .replace("{stays}", &load_words(w, &split.stays))
+    }
+}
+
+/// **`+tv/<n> unload [<t>] [go]`** (doc 20 §1 beat 9, §7.1, §10; cut SM.8, the brief's 3.5; lead
+/// rulings 2 and 3, decisions R4, R10, R18): [`unload_plan`] (`queued` false: the hand unload
+/// reads aboard); the typed record (unreadable → `TV_DARK`); an act in flight → `RIG_BUSY`; a
+/// run → `MINE_RUNNING`; the hopper's available goods (unreadable → `TV_DARK`; empty →
+/// `DUMP_EMPTY`); the hold's room ([`unload_room`]; `None` → `TV_DARK`, logged); then the split:
+/// bare, every good up to the room (none fits → `UNLOAD_NO_ROOM`); `<t>`, that much of the first
+/// good, past the fit `UNLOAD_NO_FIT` naming it — a fit of 0 is `UNLOAD_NO_ROOM`, so the suggested
+/// command always parses. Bare, the preview (`UNLOAD_PREVIEW`), nothing written; with `go`, the
+/// order written ([`ActOrders`]: `ActOrder::Unload`), then ONE `tacsim_surface_act` with `act:
+/// unload` and `how` (`whole`, or `part` with `qty`) keyed `tacsim.surface/{tv}/{ordinal}/act`,
+/// and `UNLOAD_FILED`. No licence, tenure, lease or battery is read.
+///
+/// # Errors
+///
+/// Every refusal is a [`CmdError`] line.
+#[allow(clippy::too_many_lines)] // one ordered refusal list, then the preview or the go
+pub(crate) fn unload_cmd(
+    ctx: &mut Ctx<'_>,
+    rig: &RigAt,
+    qty: Option<u64>,
+    go: bool,
+) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let handles = ctx
+        .w
+        .module_state::<PortHandles>()
+        .cloned()
+        .ok_or_else(|| CmdError::msg(tv::TV_UNWIRED))?;
+    let Some(action) = handles.surface_act.clone() else {
+        return Err(CmdError::msg(tv::TV_UNWIRED));
+    };
+    let name = name_of(ctx.w, rig.hull);
+    let dark = || CmdError::msg(tv::TV_DARK.replace("{name}", &name));
+    // 1. The world plan (the start's offer runs the same function).
+    let plan =
+        unload_plan(ctx.w, actor, rig, false).map_err(|refusal| CmdError::msg(refusal.line()))?;
+    // 2. The record: busy, then a run.
+    let battery = rig_battery(ctx.w, &handles, rig);
+    let record = record_of(ctx, &handles, rig.tv, battery.as_ref()).map_err(|()| dark())?;
+    if let Some(busy) = busy_refusal(ctx.w, rig, &record) {
+        return Err(CmdError::msg(busy.line()));
+    }
+    if let Some(running) = run_refusal(ctx.w, rig, &record) {
+        return Err(CmdError::msg(running.line()));
+    }
+    // 3. The hopper, then the hold's room.
+    let hopper = hopper_contents(ctx, rig.tv).map_err(|error| {
+        tracing::warn!(tv = rig.tv.0, %error, "tacsim: an unload could not read the hopper");
+        dark()
+    })?;
+    if hopper.is_empty() {
+        return Err(CmdError::msg(Refusal::Empty { n: rig.slot }.line()));
+    }
+    let w: &World = ctx.w;
+    let view = hull_view(w, rig.hull).ok_or_else(dark)?;
+    let read_pool = |endpoint: EndpointRef, good: &CanonicalId| {
+        crate::port_tick::read_pool(ctx, endpoint, good)
+    };
+    let read_rig = |tv: ObjId| SurfaceReads::rig(&*ctx, tv);
+    let Some(room) = unload_room(w, &view, rig.tv, &read_pool, &read_rig) else {
+        tracing::warn!(
+            tv = rig.tv.0,
+            "tacsim: an unload could not read the hold's room"
+        );
+        return Err(dark());
+    };
+    // 4. The split.
+    let no_room = || {
+        CmdError::msg(
+            Refusal::UnloadNoRoom {
+                n: rig.slot,
+                name: name.clone(),
+                load: load_words(w, &hopper),
+            }
+            .line(),
+        )
+    };
+    let split = match unload_split(&room, &hopper, qty).map_err(|()| dark())? {
+        Ok(split) if split.moves.is_empty() => return Err(no_room()),
+        Ok(split) => split,
+        Err(Short { fit: 0, .. }) => return Err(no_room()),
+        Err(Short { fit, bound }) => {
+            let first = hopper.keys().next().cloned().ok_or_else(dark)?;
+            // SM.7's `{ore}` (`ore_words`: `metal ore`), the mining lines' own word.
+            let ore = tv::ore_words(first.as_str());
+            // The lead's pre-commit round, item 4: the line names the term that bound the fit
+            // — the hopper's own stock, or the hold's room.
+            let refusal = match bound {
+                ShortBound::Stock => Refusal::UnloadNoStock {
+                    n: rig.slot,
+                    fit,
+                    ore,
+                },
+                ShortBound::Room => Refusal::UnloadNoFit {
+                    n: rig.slot,
+                    q: qty.unwrap_or(0),
+                    fit,
+                    ore,
+                },
+            };
+            return Err(CmdError::msg(refusal.line()));
+        }
+    };
+    let n = rig.slot.to_string();
+    let now_ic = w.world_ic_now().at;
+    if !go {
+        let (kg, cap_kg) = tv::hopper_load_of(ctx, rig.tv).map_err(|error| {
+            tracing::warn!(tv = rig.tv.0, %error, "tacsim: an unload could not weigh the hopper");
+            dark()
+        })?;
+        let mut moved_kg: u64 = 0;
+        for (good, qty) in &split.moves {
+            let per = room
+                .goods
+                .good(good)
+                .and_then(crate::definitions::GoodDef::mass_kg_per_unit)
+                .ok_or_else(dark)?;
+            moved_kg = moved_kg.saturating_add(qty.saturating_mul(per));
+        }
+        let real =
+            match crate::port::voyage::real_until(w, now_ic.saturating_add(i64::from(plan.secs))) {
+                Some(real) => format!(", about {}", tv::span_words(real)),
+                None => String::new(),
+            };
+        let stays = if qty.is_none() && !split.stays.is_empty() {
+            tv::UNLOAD_STAYS.replace("{stays}", &load_words(w, &split.stays))
+        } else {
+            String::new()
+        };
+        let line = tv::UNLOAD_PREVIEW
+            .replace("{n}", &n)
+            .replace("{mark}", &rig.mark)
+            .replace("{load}", &load_words(w, &split.moves))
+            .replace("{name}", &name)
+            .replace("{secs}", &plan.secs.to_string())
+            .replace("{real}", &real)
+            .replace("{hop0}", &(kg / 1_000).to_string())
+            .replace("{hop1}", &(kg.saturating_sub(moved_kg) / 1_000).to_string())
+            .replace("{cap}", &(cap_kg / 1_000).to_string())
+            .replace(
+                "{room}",
+                &room_after_t(&room, &split.moves)
+                    .ok_or_else(dark)?
+                    .to_string(),
+            )
+            .replace("{stays}", &stays)
+            .replace("{arg}", &qty.map_or_else(String::new, |q| format!(" {q}")));
+        crate::port::coop::say(ctx, line);
+        return Ok(());
+    }
+    // `go`: the order, then ONE submission as the actor (the drive's `to` precedent: `how` and
+    // `qty` bind the start to the order it was planned from — decision R15).
+    let Some(ordinal) = record.ordinal.checked_add(1) else {
+        tracing::error!(tv = rig.tv.0, "tacsim: a rig's act ordinal is exhausted");
+        return Err(dark());
+    };
+    let Some(key) = act_key(rig.tv, ordinal) else {
+        tracing::error!(tv = rig.tv.0, "tacsim: a rig act's key did not form");
+        return Err(dark());
+    };
+    let how = if qty.is_some() {
+        UnloadHow::Part
+    } else {
+        UnloadHow::Whole
+    };
+    let when = tv::due_words(w, now_ic.saturating_add(i64::from(plan.secs)));
+    put_order(
+        ctx,
+        rig.tv,
+        ActOrder::Unload(UnloadOrder {
+            actor,
+            ordinal,
+            goods: split.moves,
+            how,
+            qty,
+        }),
+    );
+    let parameters = match qty {
+        Some(qty) => json!({
+            "tv": rig.tv.0.to_string(),
+            "act": wire_word(ActKind::Unload, false),
+            "ordinal": ordinal,
+            "how": how.word(),
+            "qty": qty,
+        }),
+        None => json!({
+            "tv": rig.tv.0.to_string(),
+            "act": wire_word(ActKind::Unload, false),
+            "ordinal": ordinal,
+            "how": how.word(),
+        }),
+    };
+    ctx.submit_authoritative(action, PerceivedRef::SelfActor, Vec::new(), parameters, key);
+    crate::port::coop::say(
+        ctx,
+        tv::UNLOAD_FILED.replace("{n}", &n).replace("{when}", &when),
+    );
     Ok(())
 }
 
@@ -2457,14 +3032,36 @@ pub(crate) struct MineOrder {
     pub plan: crate::surface::mine::MinePlan,
 }
 
-/// **One rig's order** (doc 20 cut SM.7): a drive's or a mining run's; the newer of a rig's orders
-/// replaces the older (one slot).
+/// **One planned hand unload, waiting for its start** (doc 20 cut SM.8; the brief's decisions R4
+/// and R15, SM.7's `MineOrder` precedent): the command splits the hopper against the hold's room
+/// and writes this order; the start's offer fixes it — only for the ordinal it was planned for
+/// (RAM orders are never removed on landing) — and the prepare holds the start's `how` and `qty`
+/// to it, then re-checks the hopper and the room in the transaction. RAM only: a restart loses an
+/// unlanded order ("that act was not planned; preview it again").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct UnloadOrder {
+    /// Who planned it.
+    pub actor: ObjId,
+    /// The ordinal its start carries.
+    pub ordinal: u32,
+    /// What moves (the preview's split).
+    pub goods: BTreeMap<CanonicalId, u64>,
+    /// `Whole` or `Part`.
+    pub how: UnloadHow,
+    /// The tonnes named (`Part` only).
+    pub qty: Option<u64>,
+}
+
+/// **One rig's order** (doc 20 cut SM.7): a drive's or a mining run's — and since doc 20 cut SM.8
+/// a hand unload's; the newer of a rig's orders replaces the older (one slot).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ActOrder {
     /// `+tv/drive … go`.
     Drive(DriveOrder),
     /// `+tv/mine … go` (boxed: the plan is large beside a drive's order).
     Mine(Box<MineOrder>),
+    /// `+tv/unload … go` (doc 20 cut SM.8).
+    Unload(UnloadOrder),
 }
 
 /// **The act orders** (doc 20 cut SM.4b's `DriveOrders`, generalised by cut SM.7 to every act
@@ -2509,7 +3106,18 @@ fn order_of(w: &World, tv: ObjId) -> Option<DriveOrder> {
         .and_then(|orders| orders.0.get(&tv))
     {
         Some(ActOrder::Drive(order)) => Some(order.clone()),
-        Some(ActOrder::Mine(_)) | None => None,
+        Some(ActOrder::Mine(_) | ActOrder::Unload(_)) | None => None,
+    }
+}
+
+/// The hand unload order planned for `tv`, if its slot holds one (doc 20 cut SM.8).
+fn unload_order_of(w: &World, tv: ObjId) -> Option<UnloadOrder> {
+    match w
+        .module_state::<ActOrders>()
+        .and_then(|orders| orders.0.get(&tv))
+    {
+        Some(ActOrder::Unload(order)) => Some(order.clone()),
+        Some(ActOrder::Drive(_) | ActOrder::Mine(_)) | None => None,
     }
 }
 
@@ -2518,8 +3126,8 @@ fn order_of(w: &World, tv: ObjId) -> Option<DriveOrder> {
 /// rig with no record in `records`) — its start landed, or another act overtook it — is dropped,
 /// so no later offer re-plans it. The surface tick calls it with a **complete** scan of the
 /// family (a capped scan prunes nothing). A drive's order is kept as SM.4b left it: its stale
-/// start answers "that rig's orders moved on" at the prepare (`tests/driving.rs` D9). The number
-/// of orders dropped.
+/// start answers "that rig's orders moved on" at the prepare (`tests/driving.rs` D9). **Doc 20
+/// cut SM.8**: a hand unload's order is pruned the same way. The number of orders dropped.
 pub(crate) fn prune_mine_orders(w: &mut World, records: &[RigRecord]) -> usize {
     let next: BTreeMap<ObjId, u32> = records
         .iter()
@@ -2532,6 +3140,7 @@ pub(crate) fn prune_mine_orders(w: &mut World, records: &[RigRecord]) -> usize {
     orders.0.retain(|tv, order| match order {
         ActOrder::Drive(_) => true,
         ActOrder::Mine(mine) => next.get(tv).copied().unwrap_or(1) == mine.ordinal,
+        ActOrder::Unload(unload) => next.get(tv).copied().unwrap_or(1) == unload.ordinal,
     });
     before.saturating_sub(orders.0.len())
 }
@@ -2545,6 +3154,16 @@ pub fn mine_order_for_tests(w: &World, tv: ObjId) -> Option<u32> {
     mine_order_of(w, tv).map(|order| order.ordinal)
 }
 
+/// **Test hook** (doc 20 cut SM.8; the fix round's tests/T4): the ordinal of the hand unload
+/// order `tv`'s RAM slot holds, if any — so a test can pin the offer's ordinal filter on a stale
+/// order still in the slot, and the prune that drops it. Reads only; nothing in the shipped lane
+/// calls it.
+#[doc(hidden)]
+#[must_use]
+pub fn unload_order_for_tests(w: &World, tv: ObjId) -> Option<u32> {
+    unload_order_of(w, tv).map(|order| order.ordinal)
+}
+
 /// The mining order planned for `tv`, if its slot holds one.
 fn mine_order_of(w: &World, tv: ObjId) -> Option<MineOrder> {
     match w
@@ -2552,7 +3171,7 @@ fn mine_order_of(w: &World, tv: ObjId) -> Option<MineOrder> {
         .and_then(|orders| orders.0.get(&tv))
     {
         Some(ActOrder::Mine(order)) => Some(MineOrder::clone(order)),
-        Some(ActOrder::Drive(_)) | None => None,
+        Some(ActOrder::Drive(_) | ActOrder::Unload(_)) | None => None,
     }
 }
 
@@ -2848,7 +3467,10 @@ fn reading_preview(
                     .replace("{quiet}", if *quiet { " quiet" } else { "" }),
             )
         }
-        ActParams::None {} | ActParams::Dump { .. } | ActParams::Drive { .. } => None,
+        ActParams::None {}
+        | ActParams::Dump { .. }
+        | ActParams::Drive { .. }
+        | ActParams::Unload { .. } => None,
     }
 }
 
@@ -3912,6 +4534,62 @@ struct FixedPlan {
     /// server-only, never projected to a player).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mine: Option<MineFixed>,
+    /// **Doc 20 cut SM.8**: an unload's two possible sources, fixed (the offer cannot see the
+    /// start's `how`; the prepare picks by it — the brief's decision R15).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unload: Option<UnloadFixed>,
+}
+
+/// **An unload's server facts, as the start's offer fixes them** (doc 20 cut SM.8; the brief's
+/// 3.7, decisions R4, R15 and R16): the vaults, both variants the prepare may run, the hull's
+/// hold plan (so the prepare weighs with the one table and compartment the preview did, with no
+/// World), the goods the hold's ore compartment accepts (table order) and the hull's other rigs
+/// (their hoppers and runs are the reservation the prepare re-reads in its transaction).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UnloadFixed {
+    hopper: u64,
+    hold: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hand: Option<HandFixed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    queued: Option<QueuedFixed>,
+    plan: crate::port::market::HoldPlan,
+    goods_of_hold: Vec<CanonicalId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    siblings: Vec<Sibling>,
+}
+
+/// **The hand variant**: the operator's `+tv/unload go` order for the rig's next ordinal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HandFixed {
+    ordinal: u32,
+    how: UnloadHow,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    qty: Option<u64>,
+    goods: BTreeMap<CanonicalId, u64>,
+}
+
+/// **The queued variant**: the recover's queued unload, split against the hold's room now
+/// (possibly moving nothing).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QueuedFixed {
+    ordinal: u32,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    goods: BTreeMap<CanonicalId, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    excursion: Option<ExcursionId>,
+}
+
+/// One of the hull's other rigs, as the unload's re-check reads it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Sibling {
+    tv: ObjId,
+    hopper: u64,
+    goods: Vec<CanonicalId>,
 }
 
 /// **A run's server facts, as the start's offer fixes them** (doc 20 cut SM.7; the brief's 3.4):
@@ -4001,6 +4679,7 @@ impl FixedPlan {
                 body_sites: Vec::new(),
                 ordinal: None,
                 mine: None,
+                unload: None,
             },
             Err(refusal) => FixedPlan::refused(refusal.word()),
         }
@@ -4042,6 +4721,7 @@ fn drive_fixed(w: &World, actor: ObjId, rig: &RigAt) -> FixedPlan {
         body_sites: Vec::new(),
         ordinal: Some(order.ordinal),
         mine: None,
+        unload: None,
     }
 }
 
@@ -4103,6 +4783,180 @@ fn mine_fixed(
         },
         ordinal: Some(order.ordinal),
         mine: Some(MineFixed::of(&plan)),
+        unload: None,
+    }
+}
+
+/// **One pool's availability through the engine's own snapshot** (doc 20 cut SM.8): the start's
+/// offer holds the engine, not a `Ctx`, so it reads `crate::port_tick::read_available`'s figure —
+/// the balance less every live hold — through the same families and the same rule (absent is 0, a
+/// half pool or a refusal is never 0), so the queued unload's split names what its prepare can
+/// move.
+fn engine_available(
+    engine: &mush_core::Engine,
+    endpoint: EndpointRef,
+    good: &CanonicalId,
+) -> Result<u64, crate::port_tick::PoolReadError> {
+    use crate::port_tick::PoolReadError;
+    let Some(inventory) = engine
+        .world
+        .module_state::<PortHandles>()
+        .and_then(|handles| handles.inventory.as_ref())
+    else {
+        return Err(PoolReadError::Unwired);
+    };
+    let key = mush_inventory::pool_key(endpoint, good)
+        .map_err(|error| PoolReadError::Key(error.to_string()))?;
+    let state = engine.action_state();
+    let scalar = state
+        .get(&inventory.pools, &key)
+        .map_err(|error| PoolReadError::Unreadable(error.to_string()))?;
+    let book = state
+        .get(&inventory.books, &key)
+        .map_err(|error| PoolReadError::Unreadable(error.to_string()))?;
+    match (scalar, book) {
+        (None, None) => Ok(0),
+        (Some(scalar), Some(book)) => book
+            .checked_available(*scalar)
+            .map_err(|_| PoolReadError::Corrupt),
+        (None, Some(_)) | (Some(_), None) => Err(PoolReadError::Corrupt),
+    }
+}
+
+/// **The start's fixed plan of an unload** (doc 20 cut SM.8; the brief's 3.7, decisions R4, R6,
+/// R15): both possible sources, since the legal-action query carries no parameters and the
+/// prepare picks by the start's `how`:
+///
+/// - **the hand variant** — the actor's [`UnloadOrder`] for this rig **planned for the rig's next
+///   ordinal** (an order left from an earlier, landed unload is stale and ignored: RAM orders are
+///   never removed on landing), [`unload_plan`] re-run (`queued` false);
+/// - **the queued variant** — the record's [`Queued`] for this actor, [`unload_plan`] re-run
+///   (`queued` true: no aboard gate) and the hopper's available goods split against the hold's
+///   room now ([`unload_room`], `crate::surface::unload::whole`) — possibly moving nothing.
+///
+/// `ok` when either variant planned; otherwise refused with the hand variant's word, else the
+/// queued's, else `unplanned`. The plan names the site, `UNLOAD_S`, and the server facts
+/// ([`UnloadFixed`]); its `params` are `None` — the prepare builds the act's parameters from the
+/// chosen variant.
+fn unload_fixed(engine: &mush_core::Engine, actor: ObjId, rig: &RigAt) -> FixedPlan {
+    let w: &World = &engine.world;
+    let reads = crate::port::site_map::EngineReads(engine);
+    let Ok(record) = reads.rig(rig.tv) else {
+        return FixedPlan::refused("tv_dark");
+    };
+    let Some(next) = record
+        .as_ref()
+        .map_or(Some(1), |record| record.ordinal.checked_add(1))
+    else {
+        return FixedPlan::refused("tv_dark");
+    };
+    let order =
+        unload_order_of(w, rig.tv).filter(|order| order.actor == actor && order.ordinal == next);
+    let queued = record
+        .as_ref()
+        .and_then(|record| record.queued.clone())
+        .filter(|queued| queued.operator == actor && queued.kind == ActKind::Unload);
+    if order.is_none() && queued.is_none() {
+        return FixedPlan::refused(Refusal::Unplanned.word());
+    }
+    let hand_plan = order.as_ref().map(|_| unload_plan(w, actor, rig, false));
+    let queued_plan = queued.as_ref().map(|_| unload_plan(w, actor, rig, true));
+    let base = match (&hand_plan, &queued_plan) {
+        (Some(Ok(plan)), _) | (_, Some(Ok(plan))) => plan.clone(),
+        (Some(Err(refusal)), _) | (None, Some(Err(refusal))) => {
+            return FixedPlan::refused(refusal.word());
+        }
+        (None, None) => return FixedPlan::refused(Refusal::Unplanned.word()),
+    };
+    let ActParams::Unload { hopper, hold, .. } = &base.params else {
+        return FixedPlan::refused("tv_dark");
+    };
+    let (hopper, hold) = (*hopper, *hold);
+    let Some(view) = hull_view(w, rig.hull) else {
+        return FixedPlan::refused("tv_dark");
+    };
+    let read_pool = |endpoint: EndpointRef, good: &CanonicalId| reads.pool(endpoint, good);
+    let read_rig = |tv: ObjId| reads.rig(tv);
+    let Some(room) = unload_room(w, &view, rig.tv, &read_pool, &read_rig) else {
+        return FixedPlan::refused("tv_dark");
+    };
+    let mut siblings = Vec::with_capacity(room.siblings.len());
+    for other in &room.siblings {
+        let (Some(vault), Some((goods, _))) = (
+            crate::port::vehicle::hopper_of(w, *other),
+            tv::hopper_goods_of(w, *other),
+        ) else {
+            return FixedPlan::refused("tv_dark");
+        };
+        siblings.push(Sibling {
+            tv: *other,
+            hopper: vault.0,
+            goods,
+        });
+    }
+    let goods_of_hold: Vec<CanonicalId> = room
+        .goods
+        .goods
+        .iter()
+        .filter(|good| room.compartment.accepts.contains(&good.stowage))
+        .map(|good| good.id.clone())
+        .collect();
+    let hand = match (order, &hand_plan) {
+        (Some(order), Some(Ok(_))) => Some(HandFixed {
+            ordinal: next,
+            how: order.how,
+            qty: order.qty,
+            goods: order.goods,
+        }),
+        _ => None,
+    };
+    let queued = match (queued, &queued_plan) {
+        (Some(queued), Some(Ok(_))) => {
+            let pool_unit = tv::pool_unit(w);
+            let available = |endpoint: EndpointRef, good: &CanonicalId| {
+                engine_available(engine, endpoint, good)
+            };
+            let split = tv::hopper_contents_with(w, rig.tv, pool_unit.as_ref(), &available)
+                .ok()
+                .and_then(|contents| unload_split(&room, &contents, None).ok())
+                .and_then(Result::ok);
+            split.map(|split| QueuedFixed {
+                ordinal: next,
+                goods: split.moves,
+                excursion: queued.excursion,
+            })
+        }
+        _ => None,
+    };
+    if hand.is_none() && queued.is_none() {
+        let word = match (&hand_plan, &queued_plan) {
+            (Some(Err(refusal)), _) | (None, Some(Err(refusal))) => refusal.word(),
+            _ => "tv_dark",
+        };
+        return FixedPlan::refused(word);
+    }
+    FixedPlan {
+        ok: true,
+        code: None,
+        site: Some(base.site),
+        secs: UNLOAD_S,
+        cost_cu: 0,
+        home_cu: 0,
+        params: None,
+        from_bay: false,
+        goods: Vec::new(),
+        body_sites: Vec::new(),
+        ordinal: Some(next),
+        mine: None,
+        unload: Some(UnloadFixed {
+            hopper,
+            hold,
+            hand,
+            queued,
+            plan: room.plan,
+            goods_of_hold,
+            siblings,
+        }),
     }
 }
 
@@ -4169,6 +5023,30 @@ struct DoneRig {
     /// act"; the brief's 3.7): `Some` for a rig whose record holds a run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rights: Option<RightsVerdict>,
+    /// **The rig's hopper at landing** (doc 20 cut SM.8): its vault and the goods it accepts — a
+    /// `Done` recover reads them to queue the unload; the unload reads them to stay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hopper: Option<HopperFacts>,
+    /// **The hold of the rig's lease record's hull at landing** (doc 20 cut SM.8): its vault and
+    /// its plan — the unload's finish re-checks the hold against it with no World.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hold: Option<HoldFacts>,
+}
+
+/// A rig's hopper, as the finish's offer fixes it (doc 20 cut SM.8).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HopperFacts {
+    vault: u64,
+    goods: Vec<CanonicalId>,
+}
+
+/// A hull's hold, as the finish's offer fixes it (doc 20 cut SM.8).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HoldFacts {
+    vault: u64,
+    plan: crate::port::market::HoldPlan,
 }
 
 /// The live spoil vault of the site `hull` is settled on (`crate::port::site::spoil_vault`).
@@ -4321,8 +5199,8 @@ fn act_param(parameters: &Map<String, Value>) -> Result<StartWord, ActionError> 
         .and_then(start_word)
         .ok_or_else(|| {
             invalid(
-                "a surface act names launch, recover, dump, scan, sound, sound_quiet, drive, mine \
-                 or mine_stop",
+                "a surface act names launch, recover, dump, scan, sound, sound_quiet, drive, mine, \
+                 mine_stop or unload",
             )
         })
 }
@@ -4349,6 +5227,24 @@ fn to_word_of(parameters: &Map<String, Value>) -> Option<u32> {
         .get("to")
         .and_then(Value::as_u64)
         .and_then(|word| u32::try_from(word).ok())
+}
+
+/// **An unload start's `how` parameter** (doc 20 cut SM.8; decision R15): `None` when absent or
+/// not one of the three words.
+fn how_of(parameters: &Map<String, Value>) -> Option<UnloadHow> {
+    parameters
+        .get("how")
+        .and_then(Value::as_str)
+        .and_then(UnloadHow::from_word)
+}
+
+/// **A part unload's `qty` parameter** (doc 20 cut SM.8): whole tonnes `1..=99`, `None` when
+/// absent or out of range.
+fn qty_of(parameters: &Map<String, Value>) -> Option<u64> {
+    parameters
+        .get("qty")
+        .and_then(Value::as_u64)
+        .filter(|qty| (1..=tv::MAX_TYPED_TONNES).contains(qty))
 }
 
 /// The fixed `now`.
@@ -4436,7 +5332,10 @@ fn reading_fixed(
     };
     let body = plan.as_ref().ok().and_then(|plan| match &plan.params {
         ActParams::Scan { body, .. } | ActParams::Sound { body, .. } => Some(body.clone()),
-        ActParams::None {} | ActParams::Dump { .. } | ActParams::Drive { .. } => None,
+        ActParams::None {}
+        | ActParams::Dump { .. }
+        | ActParams::Drive { .. }
+        | ActParams::Unload { .. } => None,
     });
     let mut fixed = FixedPlan::of(plan);
     if let Some(body) = body {
@@ -4565,6 +5464,12 @@ impl ActionProvider for SurfaceActProvider {
                     ..FixedPlan::default()
                 },
             );
+            // Doc 20 cut SM.8 (the brief's 3.7): the unload's two sources, fixed; the prepare
+            // picks by the start's `how`.
+            plans.insert(
+                wire_word(ActKind::Unload, false).to_owned(),
+                unload_fixed(engine, actor, rig),
+            );
             fixed_rigs.insert(
                 rig.tv.0.to_string(),
                 FixedRig {
@@ -4616,6 +5521,27 @@ impl ActionProvider for SurfaceActProvider {
                     maximum: 65_535,
                 },
             )?,
+            // Doc 20 cut SM.8 (the brief's 3.7, decision R15; the drive's `to` precedent): how an
+            // unload was planned, and a part unload's tonnes — the prepare holds the start to the
+            // variant they name.
+            parameter(
+                "how",
+                false,
+                ProjectedParameterKind::Choice {
+                    choices: ["part", "queued", "whole"]
+                        .iter()
+                        .map(|w| (*w).to_owned())
+                        .collect(),
+                },
+            )?,
+            parameter(
+                "qty",
+                false,
+                ProjectedParameterKind::Integer {
+                    minimum: 1,
+                    maximum: i64::try_from(tv::MAX_TYPED_TONNES).unwrap_or(99),
+                },
+            )?,
         ];
         offer_draft(
             action,
@@ -4625,8 +5551,8 @@ impl ActionProvider for SurfaceActProvider {
             (
                 "tacsim-surface-act",
                 "Work a rig",
-                "Send a rig down the ramp, scan, sound or mine the ground, bring it in, or empty \
-                 its hopper onto the spoil.",
+                "Send a rig down the ramp, scan, sound or mine the ground, bring it in, unload its \
+                 hopper into the hold, or empty it onto the spoil.",
             ),
         )
         .map(Some)
@@ -4645,6 +5571,17 @@ impl ActionProvider for SurfaceActProvider {
         let ordinal = ordinal_of(parameters)?;
         let now = now_of(parameters)?;
         let word = act_param(parameters)?;
+        // Doc 20 cut SM.8 (decision R15): `how` and `qty` belong to an unload's start alone.
+        let unloading = matches!(
+            word,
+            StartWord::Act {
+                kind: ActKind::Unload,
+                ..
+            }
+        );
+        if !unloading && (parameters.contains_key("how") || parameters.contains_key("qty")) {
+            return Err(invalid("an unload names how it was planned"));
+        }
         // 1. The rig is the actor's and the act's fixed plan is ok.
         let rigs: BTreeMap<String, FixedRig> = parameters
             .get("rigs")
@@ -4690,6 +5627,10 @@ impl ActionProvider for SurfaceActProvider {
                 &plan,
                 &world,
             );
+        }
+        // Doc 20 cut SM.8: an unload starts on its own path too.
+        if kind == ActKind::Unload {
+            return self.start_unload(invocation, txn, (actor, tv, ordinal, now), rig, &plan);
         }
         let site = plan
             .site
@@ -4920,6 +5861,8 @@ impl ActionProvider for SurfaceActProvider {
             reserved_cu: plan.cost_cu,
             params,
         });
+        // Doc 20 cut SM.8 (lead ruling 1): any start that lands supersedes a queued unload.
+        record.queued = None;
         if launches {
             record.excursion = Some(Excursion {
                 id: ExcursionId { tv, launch_ic: now },
@@ -5225,6 +6168,9 @@ impl SurfaceActProvider {
             due_ic,
             reserved_cu: plan.cost_cu,
         });
+        // Doc 20 cut SM.8 (lead ruling 1): a run's start supersedes a queued unload too (a run is
+        // never started from the bay, so none is expected).
+        record.queued = None;
         let lock = PocketLock { tv, ordinal };
         for row in &fixed.lock_rows {
             let before = read_cursor(txn, &self.pockets, row.deposit)?;
@@ -5243,6 +6189,237 @@ impl SurfaceActProvider {
             self.outcome.clone(),
             json!({
                 "act": wire_word(ActKind::Mine, false),
+                "actor": actor.0,
+                "due_ic": due_ic,
+                "ordinal": ordinal,
+                "tv": tv.0,
+            }),
+        )
+        .map_err(|_| {
+            port_error(
+                ActionErrorCode::BoundsExceeded,
+                "the surface act's outcome exceeds canonical bounds",
+            )
+        })?;
+        Ok(AuthoritativeActionOutput::new(outcome)
+            .with_eligible_witnesses(vec![invocation.principal().clone()]))
+    }
+
+    /// **An unload's start** (doc 20 cut SM.8; §7.1 "re-checked at prepare"; the brief's 3.7,
+    /// decisions R4, R7, R15 and R16), one bundle:
+    ///
+    /// 1. **the parameters** — `how` names the variant and `qty` comes exactly with `part` (else
+    ///    `InvalidRequest` "an unload names how it was planned");
+    /// 2. **the ordinal** — the record's next (`Conflict` "that rig's orders moved on");
+    /// 3. **the variant, held to the parameter** — `queued`: the offer's queued variant for this
+    ///    ordinal and the record still holding its queue; `whole`/`part`: the offer's hand variant
+    ///    for this ordinal with the same `how` and `qty`; anything else `Conflict` "that rig's
+    ///    orders moved on" (a queued start never runs a hand order's goods, a hand `go` never a
+    ///    queued plan or another `go`'s; a race of the two is settled here, whichever prepares
+    ///    first);
+    /// 4. **idle** — no act and no run (`Conflict` "that rig is busy");
+    /// 5. **the re-check** — this hopper's pools, read here, hold each frozen good (`available`),
+    ///    and the hold's room recomputed here with the one rule (`capacity::room_less` over the
+    ///    hold's ore compartment of the fixed plan — the plan's own goods table — its contents,
+    ///    and every sibling rig's hopper and outstanding run) admits the frozen goods in id order;
+    ///    either failing → `ProviderRejected` `unload_changed`;
+    /// 6. **the write** — the ordinal, the act (`UNLOAD_S`, or 0 s when a queued unload moves
+    ///    nothing: told once, R7), the queue cleared.
+    ///
+    /// No licence, tenure, lease or battery is read (the battery's row names only a fresh record's
+    /// charge). The outcome is the start's own shape.
+    #[allow(clippy::too_many_lines)] // one ordered refusal list, then one bundle
+    fn start_unload(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        (actor, tv, ordinal, now): (ObjId, ObjId, u32, i64),
+        rig: &FixedRig,
+        plan: &FixedPlan,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
+        let conflict = |message: &'static str| port_error(ActionErrorCode::Conflict, message);
+        let changed = || {
+            port_error(
+                ActionErrorCode::ProviderRejected,
+                code_of_word("unload_changed"),
+            )
+        };
+        let parameters = parameters_of(invocation)?;
+        // 1. The parameters.
+        let how =
+            how_of(parameters).ok_or_else(|| invalid("an unload names how it was planned"))?;
+        let qty = qty_of(parameters);
+        let named = parameters.contains_key("qty");
+        if (how == UnloadHow::Part) != named || (named && qty.is_none()) {
+            return Err(invalid("an unload names how it was planned"));
+        }
+        let fixed = plan
+            .unload
+            .clone()
+            .ok_or_else(|| invalid("an unload's plan names its vaults"))?;
+        let site = plan
+            .site
+            .clone()
+            .ok_or_else(|| invalid("an act's plan names its site"))?;
+        if fixed.siblings.len()
+            > usize::try_from(crate::definitions::logistics::MAX_BAY_ITEMS).unwrap_or(usize::MAX)
+            || fixed.goods_of_hold.len() > mush_inventory::MAX_POOLS_PER_ENDPOINT
+        {
+            return Err(invalid(
+                "an unload's plan names a bounded set of rigs and goods",
+            ));
+        }
+        // 2. The record and the ordinal.
+        let battery = rig
+            .battery_id
+            .as_ref()
+            .and_then(|id| battery_of(&self.tools, id));
+        let existing = read_record(txn, &self.excursions, tv)?;
+        let existed = existing.is_some();
+        let mut record = existing.unwrap_or_else(|| {
+            battery.map_or_else(
+                || RigRecord::fresh_unread(tv),
+                |battery| RigRecord::fresh(tv, battery),
+            )
+        });
+        if record.ordinal.checked_add(1) != Some(ordinal) {
+            return Err(conflict("that rig's orders moved on"));
+        }
+        // 3. The variant, held to the parameter.
+        let (goods, excursion) = match how {
+            UnloadHow::Queued => match (&fixed.queued, &record.queued) {
+                (Some(queued), Some(_)) if queued.ordinal == ordinal => {
+                    (queued.goods.clone(), queued.excursion)
+                }
+                _ => return Err(conflict("that rig's orders moved on")),
+            },
+            UnloadHow::Whole | UnloadHow::Part => match &fixed.hand {
+                Some(hand) if hand.ordinal == ordinal && hand.how == how && hand.qty == qty => {
+                    (hand.goods.clone(), None)
+                }
+                _ => return Err(conflict("that rig's orders moved on")),
+            },
+        };
+        if goods.len() > MAX_DUMP_GOODS || goods.values().any(|qty| *qty == 0) {
+            return Err(invalid(
+                "an unload moves a bounded set of positive quantities",
+            ));
+        }
+        // 4. Idle: no act and no run.
+        if record.act.is_some() || record.run.is_some() {
+            return Err(conflict("that rig is busy"));
+        }
+        // 5. The re-check: the hopper holds the frozen goods; the hold's room admits them.
+        let hopper = EndpointRef(VaultId(fixed.hopper));
+        for (good, qty) in &goods {
+            let available = self
+                .inventory
+                .pool(txn, hopper, good)
+                .map_err(|_| integrity("the hopper cannot be read"))?
+                .map_or(0, |pool| pool.available);
+            if available < *qty {
+                return Err(changed());
+            }
+        }
+        if !goods.is_empty() {
+            let table = crate::port::market::plan_goods(&fixed.plan).ok_or_else(|| {
+                tracing::error!(
+                    tv = tv.0,
+                    "tacsim: an unload's hold plan has no goods table"
+                );
+                integrity("the hold's plan cannot be read")
+            })?;
+            let ore = CanonicalId::new("metal_ore").map_err(|_| integrity("the ore id"))?;
+            let compartment = crate::port::capacity::compartment_for(
+                table,
+                &crate::port::market::plan_compartments(&fixed.plan),
+                &ore,
+            )
+            .ok_or_else(|| {
+                tracing::error!(
+                    tv = tv.0,
+                    "tacsim: an unload's hold has no one ore compartment"
+                );
+                integrity("the hold's plan cannot be read")
+            })?;
+            let hold = EndpointRef(VaultId(fixed.hold));
+            let mut contents: BTreeMap<CanonicalId, u64> = BTreeMap::new();
+            for good in &fixed.goods_of_hold {
+                let held = self
+                    .inventory
+                    .pool(txn, hold, good)
+                    .map_err(|_| integrity("the hold cannot be read"))?
+                    .map_or(0, |pool| pool.quantity);
+                if held > 0 {
+                    contents.insert(good.clone(), held);
+                }
+            }
+            let mut reserved: Vec<BTreeMap<CanonicalId, u64>> = Vec::new();
+            for sibling in &fixed.siblings {
+                let mut theirs: BTreeMap<CanonicalId, u64> = BTreeMap::new();
+                for good in &sibling.goods {
+                    let held = self
+                        .inventory
+                        .pool(txn, EndpointRef(VaultId(sibling.hopper)), good)
+                        .map_err(|_| integrity("a rig's hopper cannot be read"))?
+                        .map_or(0, |pool| pool.quantity);
+                    if held > 0 {
+                        theirs.insert(good.clone(), held);
+                    }
+                }
+                if let Some(run) =
+                    read_record(txn, &self.excursions, sibling.tv)?.and_then(|record| record.run)
+                {
+                    let slot = theirs.entry(run.good.clone()).or_insert(0);
+                    *slot = slot.saturating_add(run.outstanding_t());
+                }
+                reserved.push(theirs);
+            }
+            let mut room =
+                crate::port::capacity::room_less(table, &compartment, &contents, &reserved)
+                    .map_err(|_| integrity("the hold's room cannot be weighed"))?;
+            for (good, qty) in &goods {
+                let fits = crate::port::capacity::units_in(table, &compartment, &room, good)
+                    .map_err(|_| integrity("the hold's room cannot be weighed"))?;
+                if fits < *qty {
+                    return Err(changed());
+                }
+                crate::port::capacity::take_room(table, &compartment, &mut room, good, *qty)
+                    .map_err(|_| integrity("the hold's room cannot be weighed"))?;
+            }
+        }
+        // 6. The write: the act (a queued unload that moves nothing is a 0 s act, told once —
+        // decision R7), the queue cleared.
+        let secs = if goods.is_empty() { 0 } else { UNLOAD_S };
+        let due_ic = now
+            .checked_add(i64::from(secs))
+            .ok_or_else(|| integrity("the act's due instant overflows"))?;
+        record.ordinal = ordinal;
+        record.act = Some(Act {
+            ordinal,
+            kind: ActKind::Unload,
+            operator: actor,
+            hull: rig.hull,
+            slot: rig.slot,
+            site,
+            started_ic: now,
+            due_ic,
+            reserved_cu: 0,
+            params: ActParams::Unload {
+                hopper: fixed.hopper,
+                hold: fixed.hold,
+                goods,
+                how,
+                excursion,
+            },
+        });
+        record.queued = None;
+        write_record(txn, &self.excursions, record, existed)?;
+        let outcome = RulesValue::new(
+            self.outcome.clone(),
+            json!({
+                "act": wire_word(ActKind::Unload, false),
                 "actor": actor.0,
                 "due_ic": due_ic,
                 "ordinal": ordinal,
@@ -5405,7 +6582,10 @@ fn write_reading(
     let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
     let body = match &act.params {
         ActParams::Scan { body, .. } | ActParams::Sound { body, .. } => body.clone(),
-        ActParams::None {} | ActParams::Dump { .. } | ActParams::Drive { .. } => {
+        ActParams::None {}
+        | ActParams::Dump { .. }
+        | ActParams::Drive { .. }
+        | ActParams::Unload { .. } => {
             return Err(integrity("a reading act carries its reach"));
         }
     };
@@ -5451,7 +6631,10 @@ fn write_reading(
                 heard,
             }
         }
-        ActParams::None {} | ActParams::Dump { .. } | ActParams::Drive { .. } => {
+        ActParams::None {}
+        | ActParams::Dump { .. }
+        | ActParams::Drive { .. }
+        | ActParams::Unload { .. } => {
             return Err(integrity("a reading act carries its reach"));
         }
     };
@@ -5562,6 +6745,22 @@ impl ActionProvider for SurfaceDoneProvider {
                     },
                     lease: lease_gate(w, record).map_err(|bar| bar == LeaseBar::Forfeit),
                 });
+            // Doc 20 cut SM.8: the hopper (a recover queues its unload from it) and the hull's
+            // hold (an unload's finish re-checks against its plan).
+            let hopper = crate::port::vehicle::hopper_of(w, record.tv).and_then(|vault| {
+                tv::hopper_goods_of(w, record.tv).map(|(goods, _)| HopperFacts {
+                    vault: vault.0,
+                    goods,
+                })
+            });
+            let hold = hull_view(w, record.hull).and_then(|view| {
+                let vault = crate::port::ship::hold_vault(w, &view)?;
+                let plan = crate::port::market::hold_plan(&view)?;
+                Some(HoldFacts {
+                    vault: vault.0,
+                    plan,
+                })
+            });
             rigs.insert(
                 record.tv.0.to_string(),
                 DoneRig {
@@ -5570,12 +6769,18 @@ impl ActionProvider for SurfaceDoneProvider {
                     spoil: spoil_of(w, record.hull),
                     failed: crate::surface::tick::finish_retried(w, record.tv),
                     rights,
+                    hopper,
+                    hold,
                 },
             );
         }
         let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
+        // Doc 20 cut SM.8: the IC clock stamp and the real second beside `now` (the market lot
+        // offer's precedent) — an unload's marked transfer stamps its markers with them.
         let fixed = json!({
             "now": w.world_ic_now().at,
+            "clock": w.world_ic_now(),
+            "wall": w.now(),
             "rigs": serde_json::to_value(&rigs)
                 .map_err(|_| integrity("the rigs' facts do not encode"))?,
         });
@@ -5712,6 +6917,7 @@ impl ActionProvider for SurfaceDoneProvider {
         let mut moved: BTreeMap<CanonicalId, u64> = BTreeMap::new();
         let mut span: Option<ReadSpan> = None;
         let mut arrived: Option<[i64; 2]> = None;
+        let mut stays: BTreeMap<CanonicalId, u64> = BTreeMap::new();
         let result = match act.kind {
             ActKind::Launch => {
                 let beside = matches!(
@@ -5733,6 +6939,46 @@ impl ActionProvider for SurfaceDoneProvider {
             }
             ActKind::Recover => {
                 if matches!(&rig.facts, Facts::Bay { hull } if *hull == act.hull) {
+                    // Doc 20 cut SM.8 (lead ruling 1, decision R1): the recover's `Done` files the
+                    // unload when the hopper holds ore — a durable queue on the record the surface
+                    // tick starts as the operator (a provider never submits). A hopper that will
+                    // not read queues nothing (the departure's `HOPPER_LOADED` then names the hand
+                    // unload).
+                    let loaded = match &rig.hopper {
+                        Some(hopper) => {
+                            let mut any = false;
+                            for good in &hopper.goods {
+                                match self.inventory.pool(
+                                    txn,
+                                    EndpointRef(VaultId(hopper.vault)),
+                                    good,
+                                ) {
+                                    Ok(found) => {
+                                        any |= found.is_some_and(|pool| pool.available > 0);
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(tv = tv.0, %error, "tacsim: a recover's finish could not read the hopper; no unload is queued");
+                                        any = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            any
+                        }
+                        None => false,
+                    };
+                    if loaded {
+                        record.queued = Some(Queued {
+                            kind: ActKind::Unload,
+                            operator: act.operator,
+                            hull: act.hull,
+                            slot: act.slot,
+                            site: act.site.clone(),
+                            after: ordinal,
+                            at_ic: act.due_ic,
+                            excursion: record.excursion.as_ref().map(|open| open.id),
+                        });
+                    }
                     record.excursion = None;
                     // Doc 20 cut SM.4b (§3.6 of the brief): a recover that drove home spends its
                     // leg's charge off the record's own value — no battery read (§4.1) — and the
@@ -5966,6 +7212,22 @@ impl ActionProvider for SurfaceDoneProvider {
                     "a run finishes by its cycle",
                 ));
             }
+            // Doc 20 cut SM.8 (§7.1; the brief's 3.8).
+            ActKind::Unload => {
+                let (result, done_moved, done_stays) =
+                    self.finish_unload(txn, (tv, ordinal), &act, rig, parameters)?;
+                // The unload spends nothing; in the bay the charge recharges through it (SM.3b's
+                // lazy charge: with the battery `spent` of a zero reservation, so the bay credits
+                // the whole act; without it `settle_free`, unchanged in the bay — §4.1 "never
+                // stranded by its battery"). A rig a staff move took out of the bay settles as it
+                // stands; leaving the bay with no battery row reads no credit (the stored value
+                // stands, `left_after_launch`'s rule).
+                let in_bay = matches!(&rig.facts, Facts::Bay { .. });
+                record.charge = settle(&record.charge, in_bay).unwrap_or(record.charge);
+                moved = done_moved;
+                stays = done_stays;
+                result
+            }
         };
         // 3. The act clears; the outcome is stamped at the act's own due instant.
         record.act = None;
@@ -5981,6 +7243,7 @@ impl ActionProvider for SurfaceDoneProvider {
             span,
             arrived,
             mined: None,
+            stays,
         });
         write_record(txn, &self.excursions, record, true)?;
         let outcome = RulesValue::new(
@@ -6007,6 +7270,255 @@ impl ActionProvider for SurfaceDoneProvider {
 }
 
 impl SurfaceDoneProvider {
+    /// **An unload's finish** (doc 20 §7.1; cut SM.8, the brief's 3.8; lead rulings 2 and 3,
+    /// decisions R3 and R8), decided before anything is staged, then at most ONE inventory call:
+    ///
+    /// 1. **in the bay** — the rig in its act's hull's bay at landing, else `Refused { LeftBay }`;
+    /// 2. **the hopper** — each frozen good's `available`, read here, at least its quantity, else
+    ///    `Refused { HopperChanged }`;
+    /// 3. **the hold** — the hull's hold facts present with the frozen vault, the plan's goods
+    ///    table and its one ore compartment, the compartment admitting every frozen good
+    ///    cumulatively on top of the hold's pools read here (`capacity::admits`), and no earlier
+    ///    finish of this unload refused mid-bundle (`DoneRig::failed` holding `(ordinal, 0)`: the
+    ///    dump's `SpoilGone` precedent) — any failing → `Refused { HoldRefused }`, nothing staged,
+    ///    paged (staff state only: §6's gate keeps an honest fill inside the hold's room);
+    /// 4. **the move** — ONE `InventoryFamilies::transfer_many_marked` hopper → hold, one
+    ///    `inventory.transferred` marker a good under `crate::surface::unload::marker`'s id, stamped
+    ///    at the act's due on the offer's IC clock; the hopper's marker ring full of young markers
+    ///    (`MarkerRingFull`, decided there before anything is staged) is `Refused { MarkersFull }`
+    ///    (the fix round's correctness/F2: never told as a hold that would not take the load);
+    ///    any other refusal there refuses the whole bundle (nothing is written) and the next
+    ///    finish records `HoldRefused` through `failed`.
+    ///
+    /// Returns the result, what moved and — for a `Done` queued or whole unload — what stayed:
+    /// each hopper good's availability before the move less what moved, when positive. A queued
+    /// unload with nothing to move (the hold had no room) is `Done` with every good staying.
+    #[allow(clippy::type_complexity)]
+    fn finish_unload(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        (tv, ordinal): (ObjId, u32),
+        act: &Act,
+        rig: &DoneRig,
+        parameters: &Map<String, Value>,
+    ) -> Result<
+        (
+            ActResult,
+            BTreeMap<CanonicalId, u64>,
+            BTreeMap<CanonicalId, u64>,
+        ),
+        ActionError,
+    > {
+        let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
+        let refused = |code: RefusedCode| {
+            Ok((
+                ActResult::Refused { code },
+                BTreeMap::new(),
+                BTreeMap::new(),
+            ))
+        };
+        let ActParams::Unload {
+            hopper,
+            hold,
+            goods,
+            how,
+            excursion,
+        } = &act.params
+        else {
+            return Err(integrity("an unload carries its frozen goods"));
+        };
+        // 1. In the bay.
+        if !matches!(&rig.facts, Facts::Bay { hull } if *hull == act.hull) {
+            return refused(RefusedCode::LeftBay);
+        }
+        // 2. The hopper: every good's availability now (the frozen ones must hold).
+        let source = EndpointRef(VaultId(*hopper));
+        let mut accepted: Vec<CanonicalId> = rig
+            .hopper
+            .as_ref()
+            .filter(|facts| facts.vault == *hopper)
+            .map(|facts| facts.goods.clone())
+            .unwrap_or_default();
+        for good in goods.keys() {
+            if !accepted.contains(good) {
+                accepted.push(good.clone());
+            }
+        }
+        if accepted.len() > mush_inventory::MAX_POOLS_PER_ENDPOINT {
+            return Err(invalid(
+                "a finish's offer fixes a bounded set of hopper goods",
+            ));
+        }
+        let mut before: BTreeMap<CanonicalId, u64> = BTreeMap::new();
+        for good in &accepted {
+            let available = self
+                .inventory
+                .pool(txn, source, good)
+                .map_err(|_| integrity("the hopper cannot be read"))?
+                .map_or(0, |pool| pool.available);
+            before.insert(good.clone(), available);
+        }
+        if goods
+            .iter()
+            .any(|(good, qty)| before.get(good).copied().unwrap_or(0) < *qty)
+        {
+            return refused(RefusedCode::HopperChanged);
+        }
+        if !goods.is_empty() {
+            // 3. The hold, before anything is staged.
+            let destination = EndpointRef(VaultId(*hold));
+            let why = match rig.hold.as_ref() {
+                None => Some("the hull's hold cannot be read"),
+                Some(facts) if facts.vault != *hold => {
+                    Some("the hull's hold is no longer that vault")
+                }
+                Some(_) if rig.failed.contains(&(act.ordinal, 0)) => {
+                    Some("an earlier finish of this unload refused mid-transfer")
+                }
+                Some(facts) => {
+                    match crate::port::market::plan_goods(&facts.plan).and_then(|table| {
+                        let ore = CanonicalId::new("metal_ore").ok()?;
+                        crate::port::capacity::compartment_for(
+                            table,
+                            &crate::port::market::plan_compartments(&facts.plan),
+                            &ore,
+                        )
+                        .map(|compartment| (table, compartment))
+                    }) {
+                        None => Some("the hold's plan cannot be read"),
+                        Some((table, compartment)) => {
+                            let mut contents: BTreeMap<CanonicalId, u64> = BTreeMap::new();
+                            let mut unread = false;
+                            for good in table
+                                .goods
+                                .iter()
+                                .filter(|good| compartment.accepts.contains(&good.stowage))
+                            {
+                                match self.inventory.pool(txn, destination, &good.id) {
+                                    Ok(found) => {
+                                        let held = found.map_or(0, |pool| pool.quantity);
+                                        if held > 0 {
+                                            contents.insert(good.id.clone(), held);
+                                        }
+                                    }
+                                    Err(_) => unread = true,
+                                }
+                            }
+                            let mut admitted = !unread;
+                            for (good, qty) in goods {
+                                if !admitted {
+                                    break;
+                                }
+                                match crate::port::capacity::admits(
+                                    table,
+                                    &compartment,
+                                    &contents,
+                                    (good, *qty),
+                                ) {
+                                    crate::port::capacity::Admission::Admitted(_) => {
+                                        let slot = contents.entry(good.clone()).or_insert(0);
+                                        *slot = slot.saturating_add(*qty);
+                                    }
+                                    crate::port::capacity::Admission::Refused(_)
+                                    | crate::port::capacity::Admission::Error(_) => {
+                                        admitted = false
+                                    }
+                                }
+                            }
+                            (!admitted).then_some(if unread {
+                                "a hold pool will not read"
+                            } else {
+                                "the hold's ore compartment would not admit the load"
+                            })
+                        }
+                    }
+                }
+            };
+            if let Some(why) = why {
+                tracing::error!(
+                    tv = tv.0,
+                    act = ordinal,
+                    hold = *hold,
+                    why,
+                    "tacsim: an unload's hold would not take the load; the finish records it \
+                     refused (HoldRefused) and nothing moved; staff check the hull's hold and the \
+                     rig's hopper"
+                );
+                return refused(RefusedCode::HoldRefused);
+            }
+            // 4. The move: ONE marked transfer, one marker a good.
+            let clock = parameters
+                .get("clock")
+                .and_then(|value| {
+                    serde_json::from_value::<mush_core::ClockStamp>(value.clone()).ok()
+                })
+                .ok_or_else(|| invalid("a finish's offer fixes the clock"))?;
+            let wall = parameters
+                .get("wall")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| invalid("a finish's offer fixes the real second"))?;
+            let mut moves: Vec<(CanonicalId, u64, smol_str::SmolStr)> = Vec::new();
+            for (good, qty) in goods {
+                let id = crate::surface::unload::marker(tv, *excursion, ordinal, good, act.due_ic)
+                    .map_err(|_| integrity("an unload's marker did not form"))?;
+                moves.push((good.clone(), *qty, id));
+            }
+            let stamp = mush_core::ClockStamp {
+                clock: clock.clock,
+                at: act.due_ic,
+            };
+            let moved = self.inventory.transfer_many_marked(
+                txn,
+                source,
+                destination,
+                &moves,
+                act.operator,
+                &stamp,
+                wall,
+            );
+            if matches!(moved, Err(mush_inventory::InventoryError::MarkerRingFull)) {
+                // Decided before anything was staged (`transfer_many_marked`'s contract), so the
+                // refusal is this finish's outcome. The ring is the hopper vault's and outlives a
+                // lease (the fix round's correctness/F2; the brief's ring-bound residual).
+                tracing::error!(
+                    tv = tv.0,
+                    act = ordinal,
+                    hopper = *hopper,
+                    "tacsim: an unload's hopper marker ring is full of young markers; the finish \
+                     records it refused (MarkersFull) and nothing moved; the ring frees as its \
+                     markers pass the retention horizon"
+                );
+                return refused(RefusedCode::MarkersFull);
+            }
+            moved.map_err(|error| {
+                tracing::warn!(
+                    tv = tv.0,
+                    act = ordinal,
+                    hold = *hold,
+                    goods = moves.len(),
+                    %error,
+                    "tacsim: an unload's transfer into the hold refused; the next finish \
+                     records it refused"
+                );
+                port_error(
+                    ActionErrorCode::ProviderRejected,
+                    "the hopper could not be unloaded into the hold",
+                )
+            })?;
+        }
+        // The outcome: what moved, and for a queued or whole unload what stays.
+        let mut stays: BTreeMap<CanonicalId, u64> = BTreeMap::new();
+        if matches!(how, UnloadHow::Queued | UnloadHow::Whole) {
+            for (good, available) in &before {
+                let left = available.saturating_sub(goods.get(good).copied().unwrap_or(0));
+                if left > 0 {
+                    stays.insert(good.clone(), left);
+                }
+            }
+        }
+        Ok((ActResult::Done, goods.clone(), stays))
+    }
+
     /// **One mining cycle's finish** (doc 20 §6 "the completion"; cut SM.7, the brief's 3.7; lead
     /// rulings 1, 5, 6 and 7), **one bundle** (≤ 8 writes, §11's Tick row):
     ///
@@ -6251,6 +7763,7 @@ impl SurfaceDoneProvider {
             span: None,
             arrived: None,
             mined: Some(mined),
+            stays: BTreeMap::new(),
         });
         write_record(txn, &self.excursions, record, true)?;
         let outcome = RulesValue::new(
@@ -6449,6 +7962,35 @@ mod tests {
                 port: String::new(),
             },
             Refusal::MineChanged,
+            // Doc 20 cut SM.8: unloading's six.
+            Refusal::UnloadUnderWay {
+                name: String::new(),
+            },
+            Refusal::UnloadNotSite {
+                n: 1,
+                name: String::new(),
+            },
+            Refusal::UnloadOut {
+                n: 1,
+                site: String::new(),
+            },
+            Refusal::UnloadNoRoom {
+                n: 1,
+                name: String::new(),
+                load: String::new(),
+            },
+            Refusal::UnloadNoFit {
+                n: 1,
+                q: 9,
+                fit: 3,
+                ore: String::new(),
+            },
+            Refusal::UnloadNoStock {
+                n: 1,
+                fit: 3,
+                ore: String::new(),
+            },
+            Refusal::UnloadChanged { n: 1 },
         ];
         let mut words: Vec<&str> = refusals.iter().map(Refusal::word).collect();
         for refusal in &refusals {
@@ -6480,8 +8022,44 @@ mod tests {
         assert_eq!(Refusal::NothingNew.line(), "You learn nothing new here.");
         assert_eq!(Refusal::NothingNew.code(), "you learn nothing new here");
         // Doc 20 cut SM.4b: 24 → 33 words; the drive's lines verbatim. Doc 20 cut SM.7: 33 → 49
-        // (mining's sixteen).
-        assert_eq!(REFUSAL_CODES.len(), 49);
+        // (mining's sixteen). Doc 20 cut SM.8: 49 → 55 (unloading's six), 55 → 56 at the lead's
+        // pre-commit round (item 4: `unload_no_stock` — a named tonnage past the hopper's stock is
+        // no longer told as not fitting the hold).
+        assert_eq!(REFUSAL_CODES.len(), 56);
+        assert_eq!(
+            Refusal::UnloadNoFit {
+                n: 1,
+                q: 9,
+                fit: 3,
+                ore: "Metal ore".to_owned(),
+            }
+            .line(),
+            "9 t do not fit: rig 1 can unload 3 t of Metal ore now — +tv/1 unload 3, or +tv/1 \
+             unload with no number."
+        );
+        assert_eq!(
+            Refusal::UnloadNoStock {
+                n: 1,
+                fit: 4,
+                ore: "ice ore".to_owned(),
+            }
+            .line(),
+            "Rig 1's hopper holds only 4 t of ice ore: +tv/1 unload 4, or +tv/1 unload with no \
+             number."
+        );
+        assert_eq!(
+            Refusal::UnloadNoStock {
+                n: 1,
+                fit: 4,
+                ore: String::new(),
+            }
+            .code(),
+            "the hopper holds less than that"
+        );
+        assert_eq!(
+            Refusal::UnloadChanged { n: 2 }.code(),
+            "the hopper or the hold's room changed; preview it again"
+        );
         assert_eq!(
             Refusal::NoFit {
                 n: 1,
@@ -6574,8 +8152,8 @@ mod tests {
         let refused = act_param(&parameters("probe")).expect_err("probe is retired");
         assert!(
             refused.to_string().contains(
-                "a surface act names launch, recover, dump, scan, sound, sound_quiet, drive, mine \
-                 or mine_stop"
+                "a surface act names launch, recover, dump, scan, sound, sound_quiet, drive, \
+                 mine, mine_stop or unload"
             ),
             "{refused}"
         );
@@ -6750,7 +8328,8 @@ mod tests {
     /// [`act_of_word`]; the Choice is sorted and holds nine; the cycle and stop keys form.
     #[test]
     fn sm7_the_wire_words_parse() {
-        assert_eq!(ACT_WIRE_WORDS.len(), 9);
+        // Doc 20 cut SM.8: nine → ten with `unload`.
+        assert_eq!(ACT_WIRE_WORDS.len(), 10);
         let mut sorted = ACT_WIRE_WORDS;
         sorted.sort_unstable();
         assert_eq!(sorted, ACT_WIRE_WORDS);
@@ -6916,6 +8495,115 @@ mod tests {
         assert_eq!(
             done_key(ObjId(900), 3).map(|k| k.as_str().to_owned()),
             Some("tacsim.surface/900/3/done".to_owned())
+        );
+        // Doc 20 cut SM.8 (decision R15): the queued unload's start has its own key.
+        assert_eq!(
+            queued_key(ObjId(900), 3).map(|k| k.as_str().to_owned()),
+            Some("tacsim.surface/900/3/queued".to_owned())
+        );
+    }
+
+    /// **An unload's start names how it was planned** (doc 20 cut SM.8; decision R15): `how` reads
+    /// the three words and nothing else; `qty` reads whole tonnes `1..=99`; `unload` is an act
+    /// word (the `Unload` kind) and its wire word round-trips.
+    #[test]
+    fn sm8_an_unload_start_names_how() {
+        let parameters = |extra: Value| {
+            let mut map = json!({ "tv": "900", "act": "unload", "ordinal": 4 })
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            if let Some(more) = extra.as_object() {
+                map.extend(more.clone());
+            }
+            map
+        };
+        assert_eq!(act_of_word("unload"), Some((ActKind::Unload, false)));
+        assert_eq!(wire_word(ActKind::Unload, false), "unload");
+        for (word, how) in [
+            ("queued", UnloadHow::Queued),
+            ("whole", UnloadHow::Whole),
+            ("part", UnloadHow::Part),
+        ] {
+            assert_eq!(how_of(&parameters(json!({ "how": word }))), Some(how));
+        }
+        for bad in [json!("all"), json!(1), json!("Whole")] {
+            assert_eq!(how_of(&parameters(json!({ "how": bad }))), None, "{bad}");
+        }
+        assert_eq!(how_of(&parameters(json!({}))), None);
+        assert_eq!(qty_of(&parameters(json!({ "qty": 3 }))), Some(3));
+        assert_eq!(qty_of(&parameters(json!({ "qty": 99 }))), Some(99));
+        for bad in [json!(0), json!(100), json!("3"), json!(-1)] {
+            assert_eq!(qty_of(&parameters(json!({ "qty": bad }))), None, "{bad}");
+        }
+    }
+
+    /// **The unload weighs with the plan's table** (doc 20 cut SM.8; decision R16): the goods table
+    /// a hold plan carries (`plan_goods` of the Dray-P's `stowage_plan`) is the compiled-in table
+    /// the layer's store loads (`goods_table`, `TacsimStore::goods`), so the room `unload_room`
+    /// computes through `hold_unreserved_with(plan_goods(..))` equals `hold_unreserved`'s on the
+    /// shipped tables, and the preview, the offer, the prepare and the finish weigh alike. (No test
+    /// seam sets the store's table apart from the compiled one, so the unequal-table refusal is
+    /// asserted by construction only.)
+    #[test]
+    fn sm8_the_unload_weighs_with_the_plans_table() {
+        let pack = crate::pack::load_pack(crate::definitions::content::DRAY_P_JSON)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let id = CanonicalId::new(crate::definitions::content::DRAY_P)
+            .unwrap_or_else(|_| panic!("an id"));
+        let logistics = match pack.entry(&id) {
+            Some(crate::pack::PackEntry::Unit(spec)) => spec
+                .logistics
+                .clone()
+                .unwrap_or_else(|| panic!("logistics")),
+            _ => panic!("the Dray-P unit"),
+        };
+        let plan =
+            crate::port::market::stowage_plan(&logistics).unwrap_or_else(|| panic!("a plan"));
+        let table = crate::port::market::plan_goods(&plan).unwrap_or_else(|| panic!("a table"));
+        let store = crate::definitions::goods::goods_table().unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(*table, store, "the plan's table is the store's");
+        let mut other = plan.clone();
+        other.goods = "00".repeat(32);
+        assert!(
+            crate::port::market::plan_goods(&other).is_none(),
+            "another digest reads dark"
+        );
+        let ore = CanonicalId::new("metal_ore").unwrap_or_else(|_| panic!("an id"));
+        assert!(
+            crate::port::capacity::compartment_for(
+                table,
+                &crate::port::market::plan_compartments(&plan),
+                &ore
+            )
+            .is_some(),
+            "the Dray-P hold has one ore compartment"
+        );
+    }
+
+    /// **A load line names its goods as a list** (the lead's pre-commit round, item 5): one good
+    /// reads as itself (byte-identical to the old join), two join with " and ", three or more
+    /// with ", " and a last " and " — so goods v3's comma-bearing labels never read as more goods.
+    #[test]
+    fn sm8_a_load_line_names_its_goods_as_a_list() {
+        let words = |items: &[&str]| -> Vec<String> {
+            items.iter().map(|item| (*item).to_owned()).collect()
+        };
+        assert_eq!(and_list(&[]), "");
+        assert_eq!(
+            and_list(&words(&["8 t of ice ore, run-of-mine"])),
+            "8 t of ice ore, run-of-mine"
+        );
+        assert_eq!(
+            and_list(&words(&[
+                "8 t of ice ore, run-of-mine",
+                "4 t of metal ore, run-of-mine"
+            ])),
+            "8 t of ice ore, run-of-mine and 4 t of metal ore, run-of-mine"
+        );
+        assert_eq!(
+            and_list(&words(&["1 t of a", "2 t of b", "3 t of c"])),
+            "1 t of a, 2 t of b and 3 t of c"
         );
     }
 }

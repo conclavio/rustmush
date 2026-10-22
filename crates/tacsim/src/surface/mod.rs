@@ -92,6 +92,16 @@
 //! - [`mined`](crate::surface::mined) — the per-site `tacsim.surface.mined` ring the tick appends
 //!   each cycle that moved ore to.
 //!
+//! **Doc 20 cut SM.8** brings the ore home (§1 beats 9 and 12, §7.1, D-20-10):
+//!
+//! - [`unload`](crate::surface::unload) — the pure split of a hopper into what the hold's room
+//!   takes and what stays, and each move's marker;
+//! - an unload is `act = unload` on SM.3b's one start and one finish: a `Done` recover with ore in
+//!   the hopper writes a durable queued unload on the rig's record (`excursion::Queued`) that the
+//!   surface tick starts as the operator on its next visit (keyed
+//!   `tacsim.surface/{tv}/{ordinal}/queued`), or the operator files one with `+tv/unload`; its
+//!   finish moves the hopper's goods into the hold by one inventory-owned marked transfer.
+//!
 //! **The site ground is warmed off the act's path** (lead ruling 6, D11): the command, the
 //! start's offer and `+tv` status only peek the cache
 //! ([`ground::site_ground_cached`](crate::surface::ground::site_ground_cached)); a cold peek
@@ -124,6 +134,7 @@ pub mod opening;
 pub mod reading;
 pub mod tenure;
 pub mod tick;
+pub mod unload;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -142,7 +153,7 @@ pub use reading::{FieldReading, Footing, READING_RULE_VERSION};
 
 pub use act::{
     Refusal, RigAt, SURFACE_ACT_ACTION, SURFACE_ACT_OUTCOME, SURFACE_DONE_ACTION,
-    SURFACE_DONE_OUTCOME, SURFACE_KEY_PREFIX, Where, act_key, done_key,
+    SURFACE_DONE_OUTCOME, SURFACE_KEY_PREFIX, Where, act_key, done_key, queued_key,
 };
 pub use address::Octant;
 pub use chart::{
@@ -160,12 +171,12 @@ pub use excursion::{
     IC_HOUR, LAUNCH_S, LegWaypoint, LicenceEnd, LockRow, MAX_DRIVE_TARGET_BYTES, MAX_DUMP_GOODS,
     MAX_EXCURSIONS_PER_OPERATOR, MAX_EXCURSIONS_PER_SITE, MAX_EXCURSIONS_WORLD, MAX_LEG_WAYPOINTS,
     MAX_LOCK_ROWS, MAX_READ_RADIUS_CELLS, MAX_RUN_CYCLES, MAX_SCAN_FIELDS, MAX_TV_LOG_BYTES,
-    MAX_TV_LOG_LINES, MAX_TV_REC_BYTES, Mined, Outcome, PAD_CENTRE_CM, RECOVER_S, ReadSpan,
+    MAX_TV_LOG_LINES, MAX_TV_REC_BYTES, Mined, Outcome, PAD_CENTRE_CM, Queued, RECOVER_S, ReadSpan,
     RefusedCode, ReserveShort, RigKey, RigRecord, Run, RunEnd, RunView, TV_REC_PREFIX,
-    TV_REC_SCHEMA, TvLogLine, TvPose, TvRec, TvRecState, TvState, cap_refusal, cell_pose,
-    cells_apart, charge_at, charge_for_act, charge_shown, leg_affordable, needs_battery, ramp_pose,
-    reserve_check, reserved_total, settle_free, settle_spent_out_of_bay, site_cell, tv_rec_key,
-    tv_rec_key_owner,
+    TV_REC_SCHEMA, TvLogLine, TvPose, TvRec, TvRecState, TvState, UNLOAD_S, UnloadHow, cap_refusal,
+    cell_pose, cells_apart, charge_at, charge_for_act, charge_shown, leg_affordable, needs_battery,
+    ramp_pose, reserve_check, reserved_total, settle_free, settle_spent_out_of_bay, site_cell,
+    tv_rec_key, tv_rec_key_owner,
 };
 pub use ground::site_ground_cached;
 pub use tick::{

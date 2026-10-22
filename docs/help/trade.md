@@ -87,8 +87,9 @@ Every figure below is one you read off the game, not one to remember.
 ## Ore at Ceres
 
 Ore is bought only at Ceres Freeport, by standing bids on the Exchange Hall's
-board. The Freeport Exchange takes metal ore, carbon ore and strategic ore, and
-Occator takes ice ore. Each intake refreshes once an IC day: metal ore by 40 t a
+board, and only the hold sells ore: a rig's hopper never does (`help mining`).
+The Freeport Exchange takes metal ore, carbon ore and strategic ore, and Occator
+takes ice ore. Each intake refreshes once an IC day: metal ore by 40 t a
 day to 240 t, ice ore by 40 t to 240 t, carbon ore by 20 t to 120 t, and strategic
 ore by 2 t to 12 t, never past what the house can pay for. Each time an intake
 refreshes its bid is posted afresh under a new listing number, so read the

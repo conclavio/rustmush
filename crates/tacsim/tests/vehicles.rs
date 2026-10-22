@@ -2490,9 +2490,10 @@ fn sm3a_a_filed_passage_burns_with_its_rigs() {
     board(&mut rig, other);
     let hull = ObjId(row.hull);
     let hull_o = ObjId(row_o.hull);
-    // Doc 20 cut SM.3b: a loaded hopper holds the hull.
+    // Doc 20 cut SM.3b: a loaded hopper holds the hull. Doc 20 cut SM.8 (reviewer F6, decision
+    // R5): at a port neither the unload nor the dump works, so the line names staff.
     let (out, queued) = command(&mut rig, pilot, "+ship/undock stickney");
-    let loaded = tacsim::port::voyage::HOPPER_LOADED
+    let loaded = tacsim::port::voyage::HOPPER_LOADED_AWAY
         .replace("{n}", "1")
         .replace("{t}", "2")
         .replace("{name}", "Salt Moth");

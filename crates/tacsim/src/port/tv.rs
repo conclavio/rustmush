@@ -78,10 +78,11 @@ pub const TV_HELP: &str = "+tv  --  Your Dray-P's rigs: each bay slot's terrain 
 +tv/<n> lease return [go]  at the same counter: hand rig n back, its hopper empty, and the deposit is released.
 A lease past its term is re-debited at your next +tv/lease, or the deposit is forfeit.
 +tv/<n> launch [go]  with your Dray-P settled on a site's pad and you aboard: send rig n down the stern ramp onto the site (300 IC s).
-+tv/<n> recover [go]  bring rig n up the ramp into the bay (300 IC s); a rig further off drives to the ramp first, even while the instruments are dark.
++tv/<n> recover [go]  bring rig n up the ramp into the bay (300 IC s); a rig further off drives to the ramp first, even while the instruments are dark. With ore in its hopper it unloads into the hold next, on its own.
 +tv/<n> drive <target> [go]  drive rig n over the ground to a pocket (C117), a field (C-NW), a block (C), a site cell (140,96) or a bearing (ne 300); the preview names the charge left after the trip home.
 +tv[/<n>]/map [site] [family]  the site map around rig n, or the whole site: your own readings, the rigs and the hull.
 +tv/<n> dump [go]  empty rig n's hopper onto the site's spoil, for good.
++tv/<n> unload [<t>] [go]  with rig n in the bay on a site's pad: move its hopper's ore into the hold, as much as the hold has room for (600 IC s), or <t> tonnes of the first ore.
 +tv/<n> scan [go]  (alias survey) read the nine fields around rig n by richness, sharper from rock than from regolith; nothing from ice (600 IC s, 1,000 cu).
 +tv/<n> sound [quiet] [go]  read every pocket of the field rig n stands in, heard across the site; quiet reads a quarter of it and nobody hears (1,200 IC s, 2,000 cu).
 +tv/<n> mine [family] [cycles] [go]  (alias drill) mine the pocket rig n stands on, from your own reading of it: the family you name, else the one with most tonnes left; no number runs until the pocket, the hopper or the hold's room gives out (at most eight cycles). An unread pocket is cored one cycle (1,800 IC s, 3,600 on rock; 2,000 cu a cycle).
@@ -145,7 +146,7 @@ pub const LEASE_FAILED: &str =
     "Occator could not complete it; nothing of the lease or the return was signed.";
 /// **The grammar** (doc 20 cut SM.3b; §10): the status, the three acts and the lease.
 /// Replaces SM.3a's `LEASE_USAGE`; no second constant is kept.
-pub const TV_USAGE: &str = "Usage: +tv[/<n>]  or  +tv[/<n>]/<launch|recover|dump|scan> [go]  or  +tv[/<n>]/sound [quiet] [go]  or  +tv/<n> drive <target> [go]  or  +tv[/<n>]/mine [family] [cycles] [go] (alias drill)  or  +tv[/<n>]/mine stop  or  +tv[/<n>]/map [site] [family]  or  +tv[/<n>]/lease [return] [go]  or  +tv/forget <site>|<body> [go]  or  +tv/quiet [on|off]";
+pub const TV_USAGE: &str = "Usage: +tv[/<n>]  or  +tv[/<n>]/<launch|recover|dump|scan> [go]  or  +tv[/<n>]/sound [quiet] [go]  or  +tv/<n> drive <target> [go]  or  +tv[/<n>]/mine [family] [cycles] [go] (alias drill)  or  +tv[/<n>]/mine stop  or  +tv[/<n>]/unload [<t>] [go]  or  +tv[/<n>]/map [site] [family]  or  +tv[/<n>]/lease [return] [go]  or  +tv/forget <site>|<body> [go]  or  +tv/quiet [on|off]";
 /// A rig within its term (doc 20 cut SM.3b: where it is and its charge): `{n}`, `{mark}`,
 /// `{where}`, `{charge}`, `{span}`, `{hopper}`.
 pub const RIG_LINE: &str = "Rig {n}: {mark}, {where}; charge {charge} %; leased from Occator for {span} more; hopper {hopper}.";
@@ -214,12 +215,14 @@ pub const RECOVER_ELSEWHERE: &str = "Rig {n} is not on the ground beside the {na
 pub const RECOVER_FAR: &str =
     "Rig {n} is about {m} m from the {ramp}; it climbs aboard from beside it.";
 /// The recover's preview: `{n}`, `{mark}`, `{ramp}`, `{name}`, `{secs}`, `{real}`, `{now}`,
-/// `{after}`, `{hopper}`.
-pub const RECOVER_PREVIEW: &str = "Rig {n} ({mark}) would climb the {ramp} into the {name}'s bay: {secs} IC s{real}; charge {now} → {after} %; hopper {hopper}. +tv/{n} recover go brings it in.";
+/// `{after}`, `{hopper}`, `{then}` (doc 20 cut SM.8: the unload that follows, [`RECOVER_THEN`],
+/// [`RECOVER_THEN_PART`] or [`RECOVER_THEN_NONE`], empty for an empty hopper).
+pub const RECOVER_PREVIEW: &str = "Rig {n} ({mark}) would climb the {ramp} into the {name}'s bay: {secs} IC s{real}; charge {now} → {after} %; hopper {hopper}{then}. +tv/{n} recover go brings it in.";
 /// The recover's preview when the rig's battery row cannot be read (§4.1 "a TV cannot be
 /// stranded by its battery": a recover spends nothing, so it never needs the battery — the
-/// fixer round's item 3): `{n}`, `{mark}`, `{ramp}`, `{name}`, `{secs}`, `{real}`, `{hopper}`.
-pub const RECOVER_PREVIEW_UNREAD: &str = "Rig {n} ({mark}) would climb the {ramp} into the {name}'s bay: {secs} IC s{real}; its charge cannot be read; hopper {hopper}. +tv/{n} recover go brings it in.";
+/// fixer round's item 3): `{n}`, `{mark}`, `{ramp}`, `{name}`, `{secs}`, `{real}`, `{hopper}`,
+/// `{then}` (doc 20 cut SM.8: the unload that follows, [`RECOVER_THEN`], or empty).
+pub const RECOVER_PREVIEW_UNREAD: &str = "Rig {n} ({mark}) would climb the {ramp} into the {name}'s bay: {secs} IC s{real}; its charge cannot be read; hopper {hopper}{then}. +tv/{n} recover go brings it in.";
 /// The recover, filed: `{n}`, `{ramp}`, `{when}`.
 pub const RECOVER_FILED: &str = "Rig {n} starts up the {ramp}: in the bay {when}.";
 /// The recover, done: `{n}`, `{name}`.
@@ -450,11 +453,12 @@ pub const DRIVE_UNPLANNED: &str = "That drive was not planned; preview it again.
 /// A drive's start whose rig no longer stands where its leg begins.
 pub const DRIVE_MOVED: &str = "That rig has moved since the drive was planned; preview it again.";
 /// The recover's preview from farther than beside the ramp: `{n}`, `{mark}`, `{m}`, `{ramp}`,
-/// `{name}`, `{drive}`, `{climb}`, `{real}`, `{now}`, `{after}`, `{hopper}`.
-pub const RECOVER_DRIVE_PREVIEW: &str = "Rig {n} ({mark}) would drive {m} m to the {ramp} and climb into the {name}'s bay: {drive} IC s, then {climb} IC s{real}; charge {now} → {after} %; hopper {hopper}. +tv/{n} recover go brings it in.";
+/// `{name}`, `{drive}`, `{climb}`, `{real}`, `{now}`, `{after}`, `{hopper}`, `{then}` (doc 20 cut
+/// SM.8).
+pub const RECOVER_DRIVE_PREVIEW: &str = "Rig {n} ({mark}) would drive {m} m to the {ramp} and climb into the {name}'s bay: {drive} IC s, then {climb} IC s{real}; charge {now} → {after} %; hopper {hopper}{then}. +tv/{n} recover go brings it in.";
 /// The same with the rig's battery row unreadable: `{n}`, `{mark}`, `{m}`, `{ramp}`, `{name}`,
-/// `{drive}`, `{climb}`, `{real}`, `{hopper}`.
-pub const RECOVER_DRIVE_PREVIEW_UNREAD: &str = "Rig {n} ({mark}) would drive {m} m to the {ramp} and climb into the {name}'s bay: {drive} IC s, then {climb} IC s{real}; its charge cannot be read; hopper {hopper}. +tv/{n} recover go brings it in.";
+/// `{drive}`, `{climb}`, `{real}`, `{hopper}`, `{then}`.
+pub const RECOVER_DRIVE_PREVIEW_UNREAD: &str = "Rig {n} ({mark}) would drive {m} m to the {ramp} and climb into the {name}'s bay: {drive} IC s, then {climb} IC s{real}; its charge cannot be read; hopper {hopper}{then}. +tv/{n} recover go brings it in.";
 /// The recover with a leg, filed: `{n}`, `{ramp}`, `{when}`.
 pub const RECOVER_DRIVE_FILED: &str = "Rig {n} drives to the {ramp}: in the bay {when}.";
 /// The rig cannot afford its own leg home (lead ruling 5): `{n}`, `{now}`, `{need}`, `{ramp}`.
@@ -606,6 +610,82 @@ pub const RUN_STOP_CLAUSE: &str = "; it stops after this cycle";
 /// the departure's `TV_BUSY` and the lease return's [`RIG_BUSY`] for a run in flight, in
 /// [`MINE_RUNNING`]'s words: `{n}`.
 pub const RUN_STOP_REMEDY: &str = " +tv/{n} mine stop ends the run after this cycle.";
+
+// ---- doc 20 cut SM.8: unloading (§1 beat 9, §7.1, §8, §10; the brief's 3.5 and 3.6) ------------
+//
+// Placeholders beyond SM.7's: `{load}` and `{stays}` "{q} t of {label}" per good, joined as a
+// list — `a`, `a and b`, `a, b and c` (`crate::surface::act::load_words`; goods v3's labels carry
+// commas, so a plain ", " join was ambiguous — the lead's pre-commit round, item 5), `{room}` the hold's unreserved mass after the unload in
+// whole tonnes (floored), `{hop0}`/`{hop1}`/`{cap}` the hopper before and after and its limit in
+// whole tonnes (floored), `{q}` the tonnes named, `{fit}` the tonnes that fit (always ≥ 1),
+// `{ore}` SM.7's ore words (`ore_words`: `metal ore`), `{arg}` the count as typed with a leading
+// space (or empty), `{then}` a recover preview's unload clause (or empty).
+
+/// **The recover's unload clause** (doc 20 §1 beat 9; lead ruling 1): `{then}` in every recover
+/// preview when the hopper holds ore and the hold's room takes all of it: `{load}`, `{room}`.
+pub const RECOVER_THEN: &str = "; then it unloads {load} into the hold, {room} t of room after";
+/// `{then}` when the hold's room takes part of the hopper (lead ruling 3: "unloads what fits and
+/// says what stays"): `{load}`, `{stays}`.
+pub const RECOVER_THEN_PART: &str = "; then it unloads {load} into the hold and {stays} stays in the hopper: the hold has no room for it";
+/// `{then}` when the hold's room takes none of it: `{stays}`, `{n}`.
+pub const RECOVER_THEN_NONE: &str =
+    "; the hold has no room for its {stays}: +tv/{n} dump empties it onto the spoil";
+/// **The unload's preview** (§7.1 "previewed per good"): `{n}`, `{mark}`, `{load}`, `{name}`,
+/// `{secs}`, `{real}`, `{hop0}`, `{hop1}`, `{cap}`, `{room}`, `{stays}` ([`UNLOAD_STAYS`] for a
+/// whole unload that leaves some, else empty), `{arg}`.
+pub const UNLOAD_PREVIEW: &str = "Rig {n} ({mark}) would unload {load} into the {name}'s hold: {secs} IC s{real}; hopper {hop0} → {hop1} of {cap} t; hold room after: {room} t.{stays} +tv/{n} unload{arg} go moves it.";
+/// What an unload leaves in the hopper: `{stays}`.
+pub const UNLOAD_STAYS: &str = " {stays} stays in the hopper: the hold has no room for it.";
+/// The unload, filed: `{n}`, `{when}`.
+pub const UNLOAD_FILED: &str = "Rig {n} starts unloading into the hold: done {when}.";
+/// **The unload, done**: `{n}`, `{load}`, `{name}`, `{hopper}`; [`UNLOAD_STAYS`] follows when
+/// something stayed.
+pub const UNLOADED: &str = "Rig {n} unloads {load} into the {name}'s hold; hopper {hopper}.";
+/// A queued unload that moved nothing (the hold had no room): `{n}`, `{stays}`, `{name}`.
+pub const UNLOADED_NONE: &str = "Rig {n}'s hopper still holds {stays}: the {name}'s hold has no room for it. +tv/{n} dump empties it onto the spoil.";
+/// **A queued unload that moved nothing because nothing was there** (the lead's pre-commit round,
+/// item 3): the hopper read empty at the start's offer — staff emptied it after the recover — so
+/// nothing stays either and [`UNLOADED_NONE`] would name nothing: `{n}`, `{name}`.
+pub const UNLOADED_NONE_EMPTY: &str =
+    "Rig {n} unloads nothing into the {name}'s hold: its hopper was already empty.";
+/// **A recover that queued its unload, done** (lead ruling 1): `{n}`, `{name}`.
+pub const RECOVERED_UNLOADING: &str =
+    "Rig {n} is back in the {name}'s bay; it unloads its hopper into the hold next.";
+/// Under way: `{name}`.
+pub const UNLOAD_UNDER_WAY: &str = "The {name} is under way; her rigs unload only on a site's pad.";
+/// Not on a site's pad (the brief's decision R5): `{name}`, `{n}`.
+pub const UNLOAD_NOT_SITE: &str =
+    "The {name} is not on a site's pad; rig {n} unloads into the hold only there.";
+/// The rig is out on the site's ground (decision R9): `{n}`, `{site}`.
+pub const UNLOAD_OUT: &str = "Rig {n} is out on {site}; it unloads from the bay: +tv/{n} recover brings it in and unloads it.";
+/// The hold takes nothing of it (decision R18): `{name}`, `{n}`, `{load}`.
+pub const UNLOAD_NO_ROOM: &str =
+    "The {name}'s hold has no room for rig {n}'s {load}: +tv/{n} dump empties it onto the spoil.";
+/// A named tonnage that does not fit, `{fit}` ≥ 1 (decisions R10, R18): `{q}`, `{n}`, `{fit}`,
+/// `{ore}`.
+pub const UNLOAD_NO_FIT: &str = "{q} t do not fit: rig {n} can unload {fit} t of {ore} now — +tv/{n} unload {fit}, or +tv/{n} unload with no number.";
+/// **A named tonnage past the hopper's own stock**, `{fit}` ≥ 1 (the lead's pre-commit round,
+/// item 4: the stock, not the hold's room, bound the fit, so [`UNLOAD_NO_FIT`]'s "do not fit"
+/// would be wrong): `{n}`, `{fit}`, `{ore}`.
+pub const UNLOAD_NO_STOCK: &str = "Rig {n}'s hopper holds only {fit} t of {ore}: +tv/{n} unload {fit}, or +tv/{n} unload with no number.";
+/// The hopper or the hold's room changed between the preview and its start: `{n}`.
+pub const UNLOAD_CHANGED: &str =
+    "Rig {n}'s hopper or the hold's room changed since the preview; preview it again.";
+/// The grammar: `{n}`.
+pub const UNLOAD_USAGE: &str = "Unload how? +tv/{n} unload [tonnes] [go].";
+/// `ACT_FAILED`'s `{why}` for an unload whose rig left the bay.
+pub const WHY_LEFT_BAY: &str = "it left the bay before it finished";
+/// `ACT_FAILED`'s `{why}` for an unload the hold would not take (decision R8).
+pub const WHY_HOLD_REFUSED: &str =
+    "the hold would not take the load; it stays in the hopper and nothing moved";
+/// `ACT_FAILED`'s `{why}` for an unload whose hopper's marker ring is full (the cut SM.8 fix
+/// round's correctness/F2): the ring frees itself as its markers age, so the remedy is time.
+pub const WHY_MARKERS_FULL: &str =
+    "the rig's unload log is full; it stays in the hopper and nothing moved: try again later";
+/// The status's line under a rig with a queued unload.
+pub const QUEUED_LINE: &str = "  Unloads its hopper into the hold next.";
+/// The most tonnes `+tv/unload` takes as typed (`1..=99`).
+pub const MAX_TYPED_TONNES: u64 = 99;
 
 /// **`{ore}`**: the family's ore good's id with `_` read as a space (`metal ore`).
 #[must_use]
@@ -1241,14 +1321,22 @@ enum Act {
     },
     /// **Doc 20 cut SM.7**: `+tv[/<n>]/mine stop` — committed at once (the brief's decision R7).
     MineStop,
+    /// **Doc 20 cut SM.8**: `+tv[/<n>]/unload [<t>] [go]` — the whole hopper, or `<t>` tonnes of
+    /// the first good (`1..=`[`MAX_TYPED_TONNES`]).
+    Unload {
+        /// The tonnes named.
+        qty: Option<u64>,
+        /// Committed.
+        go: bool,
+    },
 }
 
 /// The act words a `+tv` switch or first word may name (the lease's, the acts', and since doc
 /// 20 cut SM.4a `scan` with its alias `survey`, `sound`, `forget` and `quiet`; since SM.4b
-/// `drive` and `map`; since SM.7 `mine` with its alias `drill`).
-const ACT_WORDS: [&str; 13] = [
+/// `drive` and `map`; since SM.7 `mine` with its alias `drill`; since SM.8 `unload`).
+const ACT_WORDS: [&str; 14] = [
     "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget", "quiet", "drive",
-    "map", "mine", "drill",
+    "map", "mine", "drill", "unload",
 ];
 
 /// **The most cycles `+tv/mine` takes as typed** (the brief's 3.6: `1..=99`; the plan refuses a
@@ -1392,6 +1480,39 @@ fn parse_parts(has: &dyn Fn(&str) -> bool, raw: &str) -> Result<(Option<u8>, Act
                 next = words.next();
             }
             return Ok((slot, Act::Mine { family, cycles, go }));
+        }
+        // Doc 20 cut SM.8 (the brief's 3.5): `unload [<t>] [go]` — at most one whole tonnage
+        // (`1..=99`, decimal digits only), then `go`; anything else is `UNLOAD_USAGE`.
+        "unload" => {
+            let unload_usage = || {
+                CmdError::msg(UNLOAD_USAGE.replace(
+                    "{n}",
+                    &slot.map_or_else(|| "<n>".to_owned(), |n| n.to_string()),
+                ))
+            };
+            let (mut qty, mut go) = (None, false);
+            while let Some(word) = next.take() {
+                if go {
+                    return Err(unload_usage());
+                }
+                if word == "go" {
+                    go = true;
+                } else if qty.is_none()
+                    && !word.is_empty()
+                    && word.bytes().all(|b| b.is_ascii_digit())
+                {
+                    qty = Some(
+                        word.parse::<u64>()
+                            .ok()
+                            .filter(|t| (1..=MAX_TYPED_TONNES).contains(t))
+                            .ok_or_else(unload_usage)?,
+                    );
+                } else {
+                    return Err(unload_usage());
+                }
+                next = words.next();
+            }
+            return Ok((slot, Act::Unload { qty, go }));
         }
         _ => {}
     }
@@ -1559,6 +1680,12 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let rig = select(ctx, slot, crate::surface::excursion::ActKind::Mine)
                 .map_err(CmdError::msg)?;
             crate::surface::act::mine_stop_cmd(ctx, &rig)
+        }
+        // Doc 20 cut SM.8 (§7.1, §10; the brief's 3.5).
+        Act::Unload { qty, go } => {
+            let rig = select(ctx, slot, crate::surface::excursion::ActKind::Unload)
+                .map_err(CmdError::msg)?;
+            crate::surface::act::unload_cmd(ctx, &rig, qty, go)
         }
     }
 }
@@ -2074,6 +2201,14 @@ fn rig_state(
                 )
                 .replace("{when}", &due_words(w, act.due_ic)),
         );
+    }
+    // Doc 20 cut SM.8 (lead ruling 1): a recover's queued unload, waiting on the surface tick.
+    if record
+        .as_ref()
+        .and_then(|found| found.as_ref())
+        .is_some_and(|record| record.queued.is_some())
+    {
+        acts.push(QUEUED_LINE.to_owned());
     }
     let charge = match (battery, record) {
         (Some(battery), Some(record)) => {
@@ -4059,5 +4194,167 @@ mod tests {
         assert_eq!(owed_of(&record, end), Some((1, 140_000)));
         assert_eq!(owed_of(&record, end + 2 * DAY), Some((1, 140_000)));
         assert_eq!(owed_of(&record, end + record.term_secs), Some((2, 280_000)));
+    }
+
+    /// **The unloading grammar** (doc 20 cut SM.8; the brief's 3.5): `+tv[/<n>]/unload [<t>] [go]`
+    /// as a switch or a first word, `<t>` decimal whole tonnes `1..=99`; `0`, `100`, a word, two
+    /// counts, a signed or fractional count and a word after `go` are the unload's usage line
+    /// (naming the slot, or `<n>`).
+    #[test]
+    fn sm8_the_unloading_grammar() {
+        let parse = |switches: &[&str], raw: &str| -> Result<(Option<u8>, Act), String> {
+            parse_parts(&|word| switches.contains(&word), raw).map_err(|e| e.to_string())
+        };
+        let unload = |qty: Option<u64>, go| Act::Unload { qty, go };
+        assert_eq!(
+            parse(&["1", "unload"], ""),
+            Ok((Some(1), unload(None, false)))
+        );
+        assert_eq!(
+            parse(&["1", "unload"], "go"),
+            Ok((Some(1), unload(None, true)))
+        );
+        assert_eq!(
+            parse(&["1"], "unload 3 go"),
+            Ok((Some(1), unload(Some(3), true)))
+        );
+        assert_eq!(parse(&[], "unload 99"), Ok((None, unload(Some(99), false))));
+        assert_eq!(
+            parse(&["2", "unload"], "1"),
+            Ok((Some(2), unload(Some(1), false)))
+        );
+        let usage1 = UNLOAD_USAGE.replace("{n}", "1");
+        let usage = UNLOAD_USAGE.replace("{n}", "<n>");
+        for (switches, raw, want) in [
+            (&["1", "unload"][..], "0", &usage1),
+            (&["1", "unload"][..], "100", &usage1),
+            (&["1", "unload"][..], "x", &usage1),
+            (&["1", "unload"][..], "3 4", &usage1),
+            (&["1", "unload"][..], "-3", &usage1),
+            (&["1", "unload"][..], "2.5", &usage1),
+            (&["1", "unload"][..], "go 3", &usage1),
+            (&["1", "unload"][..], "3 go now", &usage1),
+            (&[][..], "unload all", &usage),
+        ] {
+            assert_eq!(
+                parse(switches, raw),
+                Err(want.clone()),
+                "{switches:?} {raw:?}"
+            );
+        }
+        assert_eq!(
+            parse(&["unload", "dump"], ""),
+            Err(TV_USAGE.to_owned()),
+            "two act words"
+        );
+        assert!(TV_USAGE.contains("+tv[/<n>]/unload [<t>] [go]"));
+        assert!(TV_HELP.contains("+tv/<n> unload [<t>] [go]"));
+    }
+
+    /// **The unloading texts fill** (doc 20 cut SM.8; the brief's 3.6): every template filled with
+    /// the widest figures holds no newline and no unfilled `{`; the recover's unload clause reads in
+    /// doc 20 §1 beat 9's shape ("then … into the hold, … of room"), and an empty hopper's recover
+    /// preview is byte-for-byte SM.4b's (the clause empty); the departure's two hopper lines name a
+    /// remedy that works where each is said.
+    #[test]
+    fn sm8_the_unload_texts_fill() {
+        let fill = |template: &str| {
+            [
+                ("{n}", "4"),
+                ("{mark}", "OWP-TV-04"),
+                ("{load}", "12 t of Strategic ore and 12 t of Water ice ore"),
+                ("{stays}", "12 t of Carbon ore and 12 t of Metal ore"),
+                ("{name}", "Salt Moth"),
+                ("{secs}", "600"),
+                ("{real}", ", about 25 s"),
+                ("{hop0}", "12"),
+                ("{hop1}", "0"),
+                ("{cap}", "12"),
+                ("{room}", "86"),
+                ("{arg}", " 99"),
+                ("{when}", "23:59 UTC (IC 2350-12-31 23:59; in 25 s)"),
+                ("{hopper}", "12 of 12 t"),
+                ("{site}", "Ahuna Flank"),
+                ("{q}", "99"),
+                ("{fit}", "12"),
+                ("{ore}", "Strategic ore"),
+                ("{then}", ""),
+                ("{t}", "12"),
+            ]
+            .iter()
+            .fold(template.to_owned(), |text, (key, value)| {
+                text.replace(key, value)
+            })
+        };
+        for template in [
+            RECOVER_THEN,
+            RECOVER_THEN_PART,
+            RECOVER_THEN_NONE,
+            UNLOAD_PREVIEW,
+            UNLOAD_STAYS,
+            UNLOAD_FILED,
+            UNLOADED,
+            UNLOADED_NONE,
+            UNLOADED_NONE_EMPTY,
+            RECOVERED_UNLOADING,
+            UNLOAD_UNDER_WAY,
+            UNLOAD_NOT_SITE,
+            UNLOAD_OUT,
+            UNLOAD_NO_ROOM,
+            UNLOAD_NO_FIT,
+            UNLOAD_NO_STOCK,
+            UNLOAD_CHANGED,
+            UNLOAD_USAGE,
+            WHY_LEFT_BAY,
+            WHY_HOLD_REFUSED,
+            WHY_MARKERS_FULL,
+            QUEUED_LINE,
+            crate::port::voyage::HOPPER_LOADED,
+            crate::port::voyage::HOPPER_LOADED_AWAY,
+        ] {
+            let text = fill(template);
+            assert!(!text.contains('\n'), "{text}");
+            assert!(!text.contains('{'), "{text}");
+        }
+        // §1 beat 9's shape: "…; hopper 12 of 12 t; then it unloads 12 t of Metal ore into the
+        // hold, 62 t of room after. +tv/1 recover go brings it in."
+        let then = RECOVER_THEN
+            .replace("{load}", "12 t of Metal ore")
+            .replace("{room}", "62");
+        let preview = RECOVER_PREVIEW
+            .replace("{n}", "1")
+            .replace("{mark}", "OWP-TV-01")
+            .replace("{ramp}", "stern ramp")
+            .replace("{name}", "Salt Moth")
+            .replace("{secs}", "300")
+            .replace("{real}", "")
+            .replace("{now}", "60")
+            .replace("{after}", "60")
+            .replace("{hopper}", "12 of 12 t")
+            .replace("{then}", &then);
+        assert!(
+            preview.ends_with(
+                "; hopper 12 of 12 t; then it unloads 12 t of Metal ore into the hold, 62 t of \
+                 room after. +tv/1 recover go brings it in."
+            ),
+            "{preview}"
+        );
+        let empty = RECOVER_PREVIEW.replace("{then}", "");
+        assert!(
+            empty.ends_with("; hopper {hopper}. +tv/{n} recover go brings it in."),
+            "an empty hopper's preview is SM.4b's"
+        );
+        assert!(crate::port::voyage::HOPPER_LOADED.contains("+tv/{n} unload moves it"));
+        assert!(crate::port::voyage::HOPPER_LOADED.contains("+tv/{n} dump empties it"));
+        assert!(crate::port::voyage::HOPPER_LOADED_AWAY.ends_with("staff must empty it."));
+        assert_eq!(
+            UNLOAD_NO_FIT
+                .replace("{q}", "5")
+                .replace("{n}", "1")
+                .replace("{fit}", "3")
+                .replace("{ore}", "Metal ore"),
+            "5 t do not fit: rig 1 can unload 3 t of Metal ore now — +tv/1 unload 3, or +tv/1 \
+             unload with no number."
+        );
     }
 }

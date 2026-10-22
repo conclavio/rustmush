@@ -215,6 +215,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // the same one act; `/map` is a pure read. Doc 20 cut SM.7: `/mine … go` (alias `/drill`)
     // writes one RAM act order (SM.4b's slot, generalised) and stages exactly one
     // `tacsim_surface_act` with `act mine`; `/mine stop` stages exactly one with `act mine_stop`.
+    // Doc 20 cut SM.8: `/unload [<t>] go` writes one RAM act order (the same slot) and stages
+    // exactly one `tacsim_surface_act` with `act unload`; a recover's queued unload is the
+    // surface tick's start, as the operator.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
@@ -225,7 +228,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 .copied()
                 .chain([
                     "lease", "launch", "recover", "dump", "scan", "survey", "sound", "forget",
-                    "quiet", "drive", "map", "mine", "drill",
+                    "quiet", "drive", "map", "mine", "drill", "unload",
                 ])
                 .map(SmolStr::new)
                 .collect(),

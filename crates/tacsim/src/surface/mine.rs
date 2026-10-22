@@ -814,6 +814,7 @@ mod tests {
         let site = run.map_or_else(|| cid("ahuna_port"), |(_, site, _, _)| cid(site));
         RigRecord {
             schema: EXCURSION_SCHEMA,
+            queued: None,
             tv: ObjId(tv),
             ordinal: run.map_or(1, |(ordinal, _, _, _)| ordinal),
             charge: Charge {

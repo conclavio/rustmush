@@ -249,6 +249,14 @@ pub struct Moved {
     pub moved: u64,
 }
 
+/// A marker ring's push decided in memory and not yet staged (doc 20 cut SM.8): whether the
+/// ring existed, the ring after every push, and the ids the pushes evicted.
+struct RingAfter {
+    existed: bool,
+    next: crate::record::MarkerRing,
+    evicted: Vec<smol_str::SmolStr>,
+}
+
 impl InventoryFamilies {
     // ---- the pair ----
 
@@ -684,13 +692,100 @@ impl InventoryFamilies {
         Ok(moved)
     }
 
+    /// ---- Doc 20 §7.1, cut SM.8 — several marked moves in one bundle ----
+    ///
+    /// [`Self::transfer_many`] plus one `inventory.transferred` applied marker a
+    /// move, under caller-derived ids ([`derived_marker_id`]), in ONE bundle (doc
+    /// 20 cut SM.8, §7.1: the unload of a hopper that holds two ores). Two
+    /// [`Self::transfer_marked`] calls on one source cannot share a bundle — the
+    /// source's marker ring and the destination's pool census are one key each, and
+    /// `ActionTxn` refuses a second mutation of one key — so the moves run as
+    /// `transfer_many` does (the census staged once) and `from`'s ring is written
+    /// once with every id ([`Self::retain_markers`]).
+    ///
+    /// Every check is made before anything is staged: `from == to`
+    /// ([`InventoryError::SameEndpoint`]); an empty list or a zero amount
+    /// ([`InventoryRecordError::ZeroQuantity`]); a commodity named twice
+    /// ([`InventoryError::DuplicateCommodity`]); a marker id not 1..=96 lowercase
+    /// hex, or one named twice ([`InventoryError::Identity`]); a marker already in
+    /// `inventory.applied` ([`InventoryError::AlreadyExists`] — the replay guard,
+    /// `transfer_marked`'s rule); **the source's ring full of young markers**
+    /// ([`InventoryError::MarkerRingFull`] — the push is made in memory first, so
+    /// a caller may answer this refusal as an outcome: nothing is staged, the cut
+    /// SM.8 fix round's correctness/F2). Then the moves, each marker inserted, and
+    /// the ring written once.
+    ///
+    /// # Errors
+    /// Those, plus every refusal of [`Self::transfer_many`], of
+    /// [`AppliedMarker::new`](crate::record::AppliedMarker::new) and of the ring's
+    /// write; **nothing is written on an error** (`ActionTxn` discards the
+    /// bundle), and none of the checks above has staged anything when it refuses.
+    #[allow(clippy::too_many_arguments)]
+    pub fn transfer_many_marked(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        from: EndpointRef,
+        to: EndpointRef,
+        moves: &[(CanonicalId, u64, smol_str::SmolStr)],
+        actor: mush_core::ObjId,
+        now: &ClockStamp,
+        wall: i64,
+    ) -> Result<Vec<Moved>, InventoryError> {
+        if from == to {
+            return Err(InventoryError::SameEndpoint);
+        }
+        if moves.is_empty() || moves.iter().any(|(_, amount, _)| *amount == 0) {
+            return Err(InventoryError::Record(InventoryRecordError::ZeroQuantity));
+        }
+        let mut commodities = std::collections::BTreeSet::new();
+        let mut ids = std::collections::BTreeSet::new();
+        for (commodity, _, marker) in moves {
+            if !commodities.insert(commodity) {
+                return Err(InventoryError::DuplicateCommodity);
+            }
+            if !is_marker_id(marker) || !ids.insert(marker) {
+                return Err(InventoryError::Identity);
+            }
+        }
+        let mut records = Vec::with_capacity(moves.len());
+        for (commodity, amount, marker) in moves {
+            if txn.get(&self.applied, marker)?.is_some() {
+                return Err(InventoryError::AlreadyExists);
+            }
+            records.push(crate::record::AppliedMarker::new(
+                crate::record::FACT_TRANSFERRED,
+                Some(from),
+                Some(to),
+                commodity.clone(),
+                *amount,
+                actor,
+                now.at,
+            )?);
+        }
+        let marked: Vec<smol_str::SmolStr> =
+            moves.iter().map(|(_, _, marker)| marker.clone()).collect();
+        // The ring's push decided before anything is staged (correctness/F2).
+        let ring = self.ring_after(txn, from, &marked, wall)?;
+        let plain: Vec<(CanonicalId, u64)> = moves
+            .iter()
+            .map(|(commodity, amount, _)| (commodity.clone(), *amount))
+            .collect();
+        let moved = self.transfer_many(txn, from, to, &plain)?;
+        for ((_, _, marker), record) in moves.iter().zip(records) {
+            txn.insert(&self.applied, marker, record)?;
+        }
+        self.stage_ring(txn, from, ring)?;
+        Ok(moved)
+    }
+
     /// ---- Doc 18 §9 risk 19, cut IC14 row 1 — record a marker in its ring ----
     ///
     /// Record the applied marker `id`, just written in this bundle, in
     /// `endpoint`'s [`MarkerRing`](crate::record::MarkerRing), and remove from
     /// `inventory.applied` every marker the push evicts — all in the same
     /// bundle. `wall` is the offer's real-clock stamp, which is also "now" for
-    /// the prepare (a prepare reads no clock).
+    /// the prepare (a prepare reads no clock). Since doc 20 cut SM.8 it is
+    /// [`Self::retain_markers`] of one id: one ring rule, never two.
     ///
     /// **The replay argument.** E7c2 owner decision D1: the applied marker is
     /// the only replay guard that survives a reboot, and for a sale also the
@@ -717,38 +812,101 @@ impl InventoryFamilies {
         id: &smol_str::SmolStr,
         wall: i64,
     ) -> Result<(), InventoryError> {
+        self.retain_markers(txn, endpoint, std::slice::from_ref(id), wall)
+    }
+
+    /// ---- Doc 20 §7.1, cut SM.8 — record several markers in one ring write ----
+    ///
+    /// Record the applied markers `ids`, just written in this bundle, in
+    /// `endpoint`'s [`MarkerRing`](crate::record::MarkerRing) with ONE write:
+    /// each pushed in order in memory (`MarkerRing::push`, the eviction rule
+    /// [`Self::retain_marker`] documents), every evicted id removed from
+    /// `inventory.applied`, the ring staged once — a second ring write in one
+    /// bundle would refuse `DuplicateMutation` (doc 20 cut SM.8's two-ore
+    /// unload). An evicted id that is one of `ids` (impossible under the push
+    /// rule: a just-pushed entry is never older than the horizon) fails closed as
+    /// [`InventoryError::Identity`].
+    ///
+    /// # Errors
+    /// [`InventoryError::MarkerRingFull`] as [`Self::retain_marker`]; the
+    /// `Identity` case above; [`InventoryError::State`] /
+    /// [`InventoryError::Record`] when the ring cannot be read or written.
+    pub fn retain_markers(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        ids: &[smol_str::SmolStr],
+        wall: i64,
+    ) -> Result<(), InventoryError> {
+        let ring = self.ring_after(txn, endpoint, ids, wall)?;
+        self.stage_ring(txn, endpoint, ring)
+    }
+
+    /// **[`Self::retain_markers`]' push, in memory** (doc 20 cut SM.8): `endpoint`'s ring
+    /// read, `ids` pushed in order, the evictions collected — nothing staged, so
+    /// [`InventoryError::MarkerRingFull`] here leaves the bundle untouched.
+    fn ring_after(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        ids: &[smol_str::SmolStr],
+        wall: i64,
+    ) -> Result<RingAfter, InventoryError> {
         let current = txn.get(&self.marker_ring, &endpoint)?.cloned();
-        let ring = current
+        let mut next = current
             .clone()
             .unwrap_or_else(crate::record::MarkerRing::empty);
-        let pushed = ring.push(
-            crate::record::RingEntry {
-                key: id.clone(),
+        let mut evicted: Vec<smol_str::SmolStr> = Vec::new();
+        for id in ids {
+            let pushed = next.push(
+                crate::record::RingEntry {
+                    key: id.clone(),
+                    wall,
+                },
                 wall,
-            },
-            wall,
-        );
-        let (next, evicted) = match pushed {
-            Ok(pushed) => pushed,
-            Err(InventoryRecordError::MarkerRingFull { .. }) => {
-                tracing::error!(
-                    %endpoint,
-                    "inventory: this endpoint's marker ring is full of markers younger than the \
-                     retention horizon; the move is refused (doc 18 §9 risk 19)"
-                );
-                return Err(InventoryError::MarkerRingFull);
-            }
-            Err(error) => return Err(InventoryError::Record(error)),
-        };
-        for key in &evicted {
+            );
+            let (ring, gone) = match pushed {
+                Ok(pushed) => pushed,
+                Err(InventoryRecordError::MarkerRingFull { .. }) => {
+                    tracing::error!(
+                        %endpoint,
+                        "inventory: this endpoint's marker ring is full of markers younger than \
+                         the retention horizon; the move is refused (doc 18 §9 risk 19)"
+                    );
+                    return Err(InventoryError::MarkerRingFull);
+                }
+                Err(error) => return Err(InventoryError::Record(error)),
+            };
+            next = ring;
+            evicted.extend(gone);
+        }
+        if evicted.iter().any(|key| ids.contains(key)) {
+            return Err(InventoryError::Identity);
+        }
+        Ok(RingAfter {
+            existed: current.is_some(),
+            next,
+            evicted,
+        })
+    }
+
+    /// **[`Self::retain_markers`]' write**: every evicted id removed from `inventory.applied`
+    /// and the ring staged once.
+    fn stage_ring(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        ring: RingAfter,
+    ) -> Result<(), InventoryError> {
+        for key in &ring.evicted {
             if txn.get(&self.applied, key)?.is_some() {
                 txn.remove(&self.applied, key)?;
             }
         }
-        if current.is_some() {
-            txn.replace(&self.marker_ring, &endpoint, next)?;
+        if ring.existed {
+            txn.replace(&self.marker_ring, &endpoint, ring.next)?;
         } else {
-            txn.insert(&self.marker_ring, &endpoint, next)?;
+            txn.insert(&self.marker_ring, &endpoint, ring.next)?;
         }
         Ok(())
     }

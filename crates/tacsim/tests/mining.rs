@@ -2413,14 +2413,62 @@ fn at_counter(tw: &TestWorld, template: &str) -> String {
         .replace("{port}", "Ceres Freeport")
 }
 
-/// Recover `tv` home (its operator's `+tv/1 recover go`, finished), asserting it lands `Done`.
+/// Recover `tv` home (its operator's `+tv/1 recover go`, finished), asserting it lands `Done`;
+/// with ore in the hopper, the unload the recover files is started and finished too, asserted
+/// `Done` with the hopper read empty — so the rig is home, idle and empty, and the callers'
+/// next launch carries nothing (the fact SM.7's `emptied` dump used to supply here).
 fn recovered(rig: &mut Rig, pilot: ObjId, tv: ObjId) {
+    // What the hopper carries home, read before the recover and never from the rig's record:
+    // whether an unload is filed is decided against this, not against what the system wrote.
+    let vault = hopper(&rig.tw, tv);
+    let ore: u64 = ["metal_ore", "ice_ore", "carbon_ore", "strategic_ore"]
+        .iter()
+        .map(|good| pool(&mut rig.tw, vault, good))
+        .sum();
     let _ = act_go(rig, pilot, "+tv/1 recover go");
+    // The recover's finish alone, at its due (`finish`'s first half): its own `Done`, asserted
+    // before anything the queue starts can run.
+    let due = record_of(&mut rig.tw, tv)
+        .and_then(|record| record.act)
+        .map(|act| act.due_ic)
+        .expect("the recover in flight");
+    let (_, queued) = advance_to(rig, due);
+    assert_eq!(finishes(&queued).len(), 1, "one finish: {queued:?}");
+    land_all(rig, &queued);
+    let record = record_of(&mut rig.tw, tv).expect("the rig's record");
+    assert_eq!(
+        record.last.as_ref().map(|l| (l.kind, l.result)),
+        Some((ActKind::Recover, ActResult::Done)),
+        "the recover lands Done"
+    );
+    // Doc 20 cut SM.8 (lead ruling 1): a recover with ore in the hopper files its unload in its
+    // own bundle; the tell's fire starts it as the operator.
+    let filed = record.queued.is_some();
+    assert_eq!(
+        filed,
+        ore > 0,
+        "a recover files its unload exactly when the hopper holds ore ({ore} t aboard)"
+    );
+    let (_, queued) = fire(rig);
+    land_all(rig, &queued);
+    let started = record_of(&mut rig.tw, tv)
+        .and_then(|r| r.act)
+        .map(|act| act.kind);
+    if !filed {
+        assert_eq!(started, None, "an empty hopper files nothing");
+        return;
+    }
+    assert_eq!(started, Some(ActKind::Unload), "the queued unload starts");
     let _ = finish(rig, tv, pilot);
     let last = record_of(&mut rig.tw, tv).and_then(|r| r.last);
     assert_eq!(
         last.map(|l| (l.kind, l.result)),
-        Some((ActKind::Recover, ActResult::Done))
+        Some((ActKind::Unload, ActResult::Done))
+    );
+    assert_eq!(
+        pool(&mut rig.tw, vault, "metal_ore"),
+        0,
+        "the unload empties the hopper"
     );
 }
 
@@ -2571,7 +2619,7 @@ fn sm7_rights_gate_mining_and_never_the_way_home() {
     );
     assert!(queued.is_empty());
     support::licence::buy_licence(&mut rig.tw, p);
-    emptied(&mut rig, p, 1, tv);
+    // (`recovered` unloaded the hopper and asserted it empty: SM.7's `emptied` dump is moot.)
     launched(&mut rig, p, 1, tv);
     // (c) A block under claim: X's, held by Q.
     let term = 30 * 86_400;
@@ -2648,7 +2696,6 @@ fn sm7_rights_gate_mining_and_never_the_way_home() {
     assert_eq!(count(&heard, &line), 1, "{heard}\nwanted: {line}");
     assert!(run_of(&mut rig.tw, tv).is_none());
     recovered(&mut rig, p, tv);
-    emptied(&mut rig, p, 1, tv);
     launched(&mut rig, p, 1, tv);
     // (d) A claim past its term that nothing lapsed: open ground again.
     claim_block(&mut rig, &z, q, 100);

@@ -112,6 +112,8 @@ stores and your buying costs are yours alone; the share does not come off them.
 The share is taken inside the sale: the sale line names it, and you receive the
 rest when the goods are in. On ore, which no port sells, the Co-op's reference is
 fixed at half the bid, so the share is a quarter of the margin over half the bid
-(`help trade`).
+(`help trade`). Ore you mine is cargo like any other once it is in the hold: it
+sells from there, and the Trust's quarter of the margin over half the bid comes off
+that sale (`help mining`).
 
-See also: `help trade`, `help ships`, `help ports`.
+See also: `help trade`, `help ships`, `help ports`, `help mining`.

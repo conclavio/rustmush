@@ -159,20 +159,23 @@ deposit and the rig must go back.
 
 `+tv/1 lease return go` at the same counter hands rig 1 back: the rig must be in
 the bay and its hopper empty, and your deposit is released. Without go it says
-what would happen. A rig never sells from its hopper, and nobody takes ore out of
-a hopper by hand.
+what would happen. Ore leaves a hopper only by the rig's own unload into the hold
+or a dump onto the spoil; a hopper never sells.
 
 With your Dray-P settled on a site's pad and you aboard, you work the rigs from
 the bridge. `+tv/1 launch` says what sending rig 1 down the stern ramp would do
 and commits nothing; `+tv/1 launch go` sends it: 300 IC s later it stands on the
 ground at the foot of the ramp. `+tv/1 recover` brings it back up when it stands
 beside the ramp, on the ramp's own cell or the next (300 IC s); a rig further off
-drives to the ramp first, in the same act. `+tv/1 dump go` empties its hopper onto the
+drives to the ramp first, in the same act. A rig that comes home with ore in its
+hopper then unloads it into the hold on its own (600 IC s); `+tv/1 unload go` does
+the same by hand, for a rig in the bay. `+tv/1 dump go` empties its hopper onto the
 site's spoil heap, for good. Without a number, `+tv/launch` addresses the rig you
 named last, or your only rig. `+tv` shows where each rig is, its charge and any
 act it is in the middle of. The Dray-P lifts only with every rig in her bay and
 every hopper empty: `+ship/lift`, `+ship/plan` and a queued depart all say which
-rig holds her. Scanning, sounding and the rest of the mining loop are in
-`help mining`.
+rig holds her, and on a site's pad name the unload and the dump; at a port, where
+neither works, only staff can empty a hopper. Scanning, sounding and the rest of
+the mining loop are in `help mining`.
 
 See also: `help orders`, `help ports`, `help trade`, `help coop`, `help mining`.

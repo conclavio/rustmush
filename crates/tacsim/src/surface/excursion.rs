@@ -33,6 +33,12 @@
 //! leg, the one leg variant a far recover carries too — [`Outcome::arrived`], the leg in
 //! [`TvRec::leg`] (fitted under 4 KiB by [`TvRec::fit`]), [`leg_affordable`] (a recover's way
 //! home, never held to the floor) and [`cell_pose`].
+//!
+//! **Doc 20 cut SM.8** adds the unload: [`ActKind::Unload`] and [`ActParams::Unload`] (the goods
+//! frozen at the start, [`UnloadHow`], the excursion the ore came home from), [`UNLOAD_S`], the
+//! record's durable queue [`Queued`] (`RigRecord::queued`, written by a `Done` recover with ore in
+//! the hopper and cleared by any start), [`Outcome::stays`] and the refusal codes
+//! [`RefusedCode::LeftBay`], [`RefusedCode::HoldRefused`] and [`RefusedCode::MarkersFull`].
 
 use std::collections::BTreeMap;
 
@@ -62,6 +68,12 @@ pub const RECOVER_S: u32 = 300;
 /// A dump, IC seconds (decision 10): a zero-length act finished on the next fire, so every
 /// act has one start, one finish and one completion line.
 pub const DUMP_S: u32 = 0;
+/// **An unload, IC seconds** (doc 20 cut SM.8; the brief's lead ruling 2, decision R13): the
+/// hopper into the hold from the bay. Doc 20 §4.1's basis — "a 600 IC s unload regains 8,300
+/// cu" (the battery row's own note says the same) — and §12.1's "home and unload (a minute)":
+/// 25 real seconds at rate 24. A code constant, as [`RECOVER_S`]: no tools or battery row carries
+/// it, so no content digest moves.
+pub const UNLOAD_S: u32 = 600;
 /// The most excursions one operator runs (§8, §11 Caps: the Compact's span-of-control
 /// lever).
 pub const MAX_EXCURSIONS_PER_OPERATOR: u32 = 4;
@@ -147,6 +159,11 @@ pub enum ActKind {
     /// ([`RigRecord::run`]), so a `Mine` [`Act`] never exists ([`RigRecord::check`] refuses one);
     /// the kind names the run's outcomes ([`Outcome::mined`]) and its word.
     Mine,
+    /// **An unload** (doc 20 cut SM.8; §7.1, D-20-10; the brief's lead ruling 1): the hopper's ore
+    /// into the hull's hold from the bay ([`ActParams::Unload`]), by an inventory-owned marked
+    /// transfer at the act's due. Filed by a `Done` recover with a loaded hopper (the record's
+    /// [`RigRecord::queued`], started by the surface tick as the operator) or by `+tv/unload`.
+    Unload,
 }
 
 impl ActKind {
@@ -163,6 +180,7 @@ impl ActKind {
             ActKind::Sound => "sound",
             ActKind::Drive => "drive",
             ActKind::Mine => "mine",
+            ActKind::Unload => "unload",
         }
     }
 
@@ -177,6 +195,7 @@ impl ActKind {
             "sound" => Some(ActKind::Sound),
             "drive" => Some(ActKind::Drive),
             "mine" => Some(ActKind::Mine),
+            "unload" => Some(ActKind::Unload),
             _ => None,
         }
     }
@@ -254,6 +273,60 @@ pub enum ActParams {
         /// The heading at the end, millidegrees clockwise from north, `< 360,000`.
         heading_mdeg: u32,
     },
+    /// **An unload** (doc 20 §7.1, cut SM.8): the hopper's goods into the hull's hold, frozen at
+    /// the start; the finish moves exactly these by an inventory-owned marked transfer
+    /// (`InventoryFamilies::transfer_many_marked`).
+    Unload {
+        /// The rig's hopper vault, `VaultId.0`.
+        hopper: u64,
+        /// The hull's hold vault, `VaultId.0`.
+        hold: u64,
+        /// Good → the quantity that moves: at most [`MAX_DUMP_GOODS`] positive rows; empty only
+        /// for a [`UnloadHow::Queued`] unload the hold has no room for (a 0 s act, told once).
+        goods: BTreeMap<CanonicalId, u64>,
+        /// How it was filed.
+        how: UnloadHow,
+        /// The excursion the ore came home from (a queued unload's: the one its recover closed);
+        /// part of each move's marker (`crate::surface::unload::marker`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        excursion: Option<ExcursionId>,
+    },
+}
+
+/// **How an unload was filed** (doc 20 cut SM.8; the brief's decision R15): the start's `how`
+/// parameter, which binds a start to the plan it came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnloadHow {
+    /// Filed by a `Done` recover ([`RigRecord::queued`]) and started by the surface tick.
+    Queued,
+    /// A bare `+tv/unload go`: every good, up to the hold's room.
+    Whole,
+    /// `+tv/unload <t> go`: a named tonnage of the first good.
+    Part,
+}
+
+impl UnloadHow {
+    /// The start's `how` word.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            UnloadHow::Queued => "queued",
+            UnloadHow::Whole => "whole",
+            UnloadHow::Part => "part",
+        }
+    }
+
+    /// The inverse of [`UnloadHow::word`].
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<UnloadHow> {
+        match word {
+            "queued" => Some(UnloadHow::Queued),
+            "whole" => Some(UnloadHow::Whole),
+            "part" => Some(UnloadHow::Part),
+            _ => None,
+        }
+    }
 }
 
 /// The most bytes a drive's target words carry.
@@ -273,7 +346,7 @@ impl ActParams {
             ActParams::Scan { from_bay, .. }
             | ActParams::Sound { from_bay, .. }
             | ActParams::Drive { from_bay, .. } => *from_bay,
-            ActParams::None {} | ActParams::Dump { .. } => false,
+            ActParams::None {} | ActParams::Dump { .. } | ActParams::Unload { .. } => false,
         }
     }
 
@@ -282,7 +355,10 @@ impl ActParams {
     pub fn stand(&self) -> Option<[i64; 2]> {
         match self {
             ActParams::Scan { cell, .. } | ActParams::Sound { cell, .. } => Some(*cell),
-            ActParams::None {} | ActParams::Dump { .. } | ActParams::Drive { .. } => None,
+            ActParams::None {}
+            | ActParams::Dump { .. }
+            | ActParams::Drive { .. }
+            | ActParams::Unload { .. } => None,
         }
     }
 
@@ -295,7 +371,8 @@ impl ActParams {
             ActParams::None {}
             | ActParams::Dump { .. }
             | ActParams::Scan { .. }
-            | ActParams::Sound { .. } => None,
+            | ActParams::Sound { .. }
+            | ActParams::Unload { .. } => None,
         }
     }
 
@@ -307,6 +384,19 @@ impl ActParams {
     fn check(&self) -> Result<(), String> {
         match self {
             ActParams::None {} | ActParams::Dump { .. } => Ok(()),
+            // Doc 20 cut SM.8: at most `MAX_DUMP_GOODS` positive rows, empty only when queued.
+            ActParams::Unload { goods, how, .. } => {
+                if goods.len() > MAX_DUMP_GOODS
+                    || goods.values().any(|qty| *qty == 0)
+                    || (goods.is_empty() && *how != UnloadHow::Queued)
+                {
+                    return Err(format!(
+                        "an unload moves at most {MAX_DUMP_GOODS} goods, each a positive \
+                         quantity, and none only when queued"
+                    ));
+                }
+                Ok(())
+            }
             ActParams::Drive {
                 target,
                 to,
@@ -547,6 +637,20 @@ pub enum RefusedCode {
     /// nothing was spent, the chart is untouched and the run ends; the sweep's
     /// `initial − pool == Σ drawn` invariant decides whether the books disagree.
     Unworked,
+    /// **An unload whose rig was not, at landing, in its hull's bay** (doc 20 cut SM.8; a staff
+    /// move): nothing moved; the charge settles as it stands.
+    LeftBay,
+    /// **An unload the hold would not take** (doc 20 cut SM.8; the brief's decision R8): the hold
+    /// vault or its plan changed, its ore compartment would not admit the frozen goods, or an
+    /// earlier finish of this unload refused mid-bundle. Nothing moved; the ore stays in the
+    /// hopper. Staff state only: §6's gate keeps an honest fill inside the hold's room.
+    HoldRefused,
+    /// **An unload whose hopper's marker ring is full** (doc 20 cut SM.8, the fix round's
+    /// correctness/F2): the hopper vault's ring holds `mush_inventory::MAX_MARKER_RING` markers
+    /// younger than the retention horizon, so the marked move refused before anything was staged.
+    /// Nothing moved; the ore stays in the hopper until older markers age out. The ring is the
+    /// hopper vault's — Occator's rig's — so it outlives a lease.
+    MarkersFull,
 }
 
 /// **How an act finished.**
@@ -601,6 +705,12 @@ pub struct Outcome {
     /// when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mined: Option<Mined>,
+    /// **What an unload left in the hopper** (doc 20 cut SM.8; lead ruling 3: "unloads what fits
+    /// and says what stays"): for a `Done` queued or whole unload, each hopper good's available
+    /// quantity at landing less what moved, when positive; empty for every other act (`moved`
+    /// carries what an unload moved). Skipped when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stays: BTreeMap<CanonicalId, u64>,
 }
 
 /// **What one mining cycle did** (doc 20 cut SM.7; §6, §1 beat 8's line): carried on its
@@ -907,6 +1017,38 @@ pub struct RigRecord {
     /// migration).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<Run>,
+    /// **An act a finish queued for the tick to start** (doc 20 cut SM.8; the brief's lead ruling
+    /// 1, decision R1): the unload a `Done` recover files when the hopper holds ore. Skipped when
+    /// `None` (schema 1 stands: pre-launch, no migration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued: Option<Queued>,
+}
+
+/// **An act a finish queued for the tick to start** (doc 20 §7.1; cut SM.8 lead ruling 1): the
+/// unload a `Done` recover files when the hopper holds ore. Durable, so a restart between the
+/// recover and the unload loses nothing (§8 "nothing is RAM-only"); cleared by ANY start that
+/// lands on the rig (the operator's newer act supersedes it). Shaped so a fill plan's chain
+/// (SM.11) can reuse it; no chain is built here.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Queued {
+    /// What the tick starts: [`ActKind::Unload`], the only kind SM.8 queues.
+    pub kind: ActKind,
+    /// Who it is started for: the tick submits as this principal.
+    pub operator: ObjId,
+    /// The hull the rig came home to.
+    pub hull: ObjId,
+    /// The rig's bay slot.
+    pub slot: u8,
+    /// The site port entry the hull is settled at.
+    pub site: CanonicalId,
+    /// The ordinal of the recover that queued it.
+    pub after: u32,
+    /// The recover's due instant: the tick's order key.
+    pub at_ic: i64,
+    /// The excursion that recover closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excursion: Option<ExcursionId>,
 }
 
 /// A slot word a record may carry: `1..=MAX_BAY_ITEMS`.
@@ -933,6 +1075,7 @@ impl RigRecord {
             excursion: None,
             last: None,
             run: None,
+            queued: None,
         }
     }
 
@@ -956,6 +1099,7 @@ impl RigRecord {
             excursion: None,
             last: None,
             run: None,
+            queued: None,
         }
     }
 
@@ -1029,6 +1173,7 @@ impl RigRecord {
                 | (ActKind::Scan, ActParams::Scan { .. })
                 | (ActKind::Sound, ActParams::Sound { .. })
                 | (ActKind::Drive, ActParams::Drive { .. })
+                | (ActKind::Unload, ActParams::Unload { .. })
                 | (
                     ActKind::Recover,
                     ActParams::Drive {
@@ -1042,7 +1187,8 @@ impl RigRecord {
                     | ActKind::Scan
                     | ActKind::Sound
                     | ActKind::Drive
-                    | ActKind::Mine,
+                    | ActKind::Mine
+                    | ActKind::Unload,
                     _,
                 ) => false,
             };
@@ -1071,6 +1217,17 @@ impl RigRecord {
             if last.moved.len() > MAX_DUMP_GOODS || last.moved.values().any(|qty| *qty == 0) {
                 return Err(format!(
                     "a finished dump moved at most {MAX_DUMP_GOODS} goods, each a positive quantity"
+                ));
+            }
+            // Doc 20 cut SM.8: only an unload says what stayed in the hopper.
+            if !last.stays.is_empty()
+                && (last.kind != ActKind::Unload
+                    || last.stays.len() > MAX_DUMP_GOODS
+                    || last.stays.values().any(|qty| *qty == 0))
+            {
+                return Err(format!(
+                    "only a finished unload names what stays, at most {MAX_DUMP_GOODS} goods, \
+                     each a positive quantity"
                 ));
             }
             // Doc 20 cut SM.4a: what a finished scan or sounding read, within its bounds.
@@ -1105,6 +1262,21 @@ impl RigRecord {
                     || mined.tonnes > crate::surface::cursor::MAX_POCKET_TONNES)
             {
                 return Err("a mining outcome names a cycle of its run and its tonnes".to_owned());
+            }
+        }
+        // Doc 20 cut SM.8 (lead ruling 1): a queued unload waits on an idle rig — no act, no run.
+        if let Some(queued) = &self.queued {
+            if queued.kind != ActKind::Unload {
+                return Err("only an unload is queued".to_owned());
+            }
+            if queued.after > self.ordinal || queued.after == 0 {
+                return Err("a queued act follows an act of the record".to_owned());
+            }
+            if !slot_ok(queued.slot) {
+                return Err(format!("a queued act's slot is 1 to {MAX_BAY_ITEMS}"));
+            }
+            if self.act.is_some() || self.run.is_some() {
+                return Err("a queued act waits on an idle rig".to_owned());
             }
         }
         Ok(())
@@ -2068,8 +2240,10 @@ mod tests {
                 span: None,
                 arrived: None,
                 mined: None,
+                stays: BTreeMap::new(),
             }),
             run: None,
+            queued: None,
         }
     }
 
@@ -2168,6 +2342,7 @@ mod tests {
             ActKind::Sound,
             ActKind::Drive,
             ActKind::Mine,
+            ActKind::Unload,
         ] {
             let wire = serde_json::to_value(kind).unwrap_or_else(|e| panic!("{e}"));
             assert_eq!(wire, serde_json::json!(kind.word()));
@@ -3024,5 +3199,224 @@ mod tests {
             ..RunView::of(&run_sample(3))
         }));
         assert!(bad.check().is_err());
+    }
+
+    /// An idle record (no act) holding a queued unload after its recover, ordinal 3.
+    fn queued_unload() -> RigRecord {
+        RigRecord {
+            act: None,
+            queued: Some(Queued {
+                kind: ActKind::Unload,
+                operator: ObjId(42),
+                hull: ObjId(500),
+                slot: 1,
+                site: cid("ahuna_port"),
+                after: 3,
+                at_ic: 1_300,
+                excursion: Some(ExcursionId {
+                    tv: ObjId(900),
+                    launch_ic: 1_000,
+                }),
+            }),
+            ..sample()
+        }
+    }
+
+    /// An unload act at `ordinal` moving `goods`, filed `how`.
+    fn unload_act(ordinal: u32, goods: &[(&str, u64)], how: UnloadHow) -> Act {
+        Act {
+            kind: ActKind::Unload,
+            due_ic: 1_000 + i64::from(UNLOAD_S),
+            params: ActParams::Unload {
+                hopper: 13,
+                hold: 14,
+                goods: goods.iter().map(|(g, q)| (cid(g), *q)).collect(),
+                how,
+                excursion: None,
+            },
+            ..act(ordinal, ActParams::None {})
+        }
+    }
+
+    /// **`UNLOAD_S` is 600 IC s** (doc 20 §4.1's "a 600 IC s unload regains 8,300 cu"; the
+    /// brief's lead ruling 2): the code constant, pinned.
+    #[test]
+    fn sm8_unload_s_is_six_hundred() {
+        assert_eq!(UNLOAD_S, 600);
+        assert_eq!(ActKind::Unload.word(), "unload");
+        assert_eq!(ActKind::from_word("unload"), Some(ActKind::Unload));
+        assert!(
+            !needs_battery(ActKind::Unload, 0, 0),
+            "an unload spends nothing and never reads the battery"
+        );
+    }
+
+    /// **A record with a queued unload checks its bounds** (doc 20 cut SM.8; lead ruling 1): an
+    /// idle record with a queued unload passes; beside an act, beside a run, a kind other than
+    /// `Unload`, an `after` past the ordinal or of 0, and a slot of 0 are each refused.
+    #[test]
+    fn sm8_a_record_with_a_queued_unload_checks_its_bounds() {
+        let good = queued_unload();
+        assert_eq!(good.check(), Ok(()));
+        let with = |edit: &dyn Fn(&mut RigRecord)| {
+            let mut record = queued_unload();
+            edit(&mut record);
+            record.check()
+        };
+        assert!(
+            with(&|r| {
+                r.ordinal = 4;
+                r.act = Some(act(4, ActParams::None {}));
+            })
+            .is_err(),
+            "beside an act"
+        );
+        assert!(
+            with(&|r| {
+                r.run = Some(run_sample(3));
+            })
+            .is_err(),
+            "beside a run"
+        );
+        let edit_queued = |edit: &dyn Fn(&mut Queued)| {
+            with(&|r| {
+                if let Some(queued) = r.queued.as_mut() {
+                    edit(queued);
+                }
+            })
+        };
+        assert!(edit_queued(&|q| q.kind = ActKind::Dump).is_err(), "a dump");
+        assert!(
+            edit_queued(&|q| q.after = 4).is_err(),
+            "after past the ordinal"
+        );
+        assert!(edit_queued(&|q| q.after = 0).is_err(), "after 0");
+        assert!(edit_queued(&|q| q.slot = 0).is_err(), "slot 0");
+        assert_eq!(edit_queued(&|q| q.after = 2), Ok(()), "an earlier act's");
+    }
+
+    /// **An unload act checks its goods** (doc 20 cut SM.8): one or eight positive goods pass in
+    /// every form; nine goods, a zero, and an empty list but for a queued unload are refused; the
+    /// unload's parameters with any other kind, and any other parameters with `Unload`, are
+    /// refused; `stays` belongs to an unload's outcome alone.
+    #[test]
+    fn sm8_an_unload_act_checks_its_goods() {
+        let with_act = |act: Act| {
+            let mut record = sample();
+            record.act = Some(act);
+            record.check()
+        };
+        for how in [UnloadHow::Queued, UnloadHow::Whole, UnloadHow::Part] {
+            assert_eq!(
+                with_act(unload_act(3, &[("metal_ore", 12)], how)),
+                Ok(()),
+                "{how:?}"
+            );
+        }
+        let eight: Vec<(String, u64)> = (0..8).map(|n| (format!("good_{n}"), 1)).collect();
+        let eight: Vec<(&str, u64)> = eight.iter().map(|(g, q)| (g.as_str(), *q)).collect();
+        assert_eq!(with_act(unload_act(3, &eight, UnloadHow::Whole)), Ok(()));
+        let nine: Vec<(String, u64)> = (0..9).map(|n| (format!("good_{n}"), 1)).collect();
+        let nine: Vec<(&str, u64)> = nine.iter().map(|(g, q)| (g.as_str(), *q)).collect();
+        assert!(
+            with_act(unload_act(3, &nine, UnloadHow::Whole)).is_err(),
+            "nine"
+        );
+        assert!(
+            with_act(unload_act(3, &[("metal_ore", 0)], UnloadHow::Whole)).is_err(),
+            "a zero"
+        );
+        assert_eq!(
+            with_act(unload_act(3, &[], UnloadHow::Queued)),
+            Ok(()),
+            "a queued unload the hold cannot take moves nothing"
+        );
+        assert!(with_act(unload_act(3, &[], UnloadHow::Whole)).is_err());
+        assert!(with_act(unload_act(3, &[], UnloadHow::Part)).is_err());
+        let mut wrong = unload_act(3, &[("metal_ore", 1)], UnloadHow::Whole);
+        wrong.kind = ActKind::Dump;
+        assert!(with_act(wrong).is_err(), "unload parameters on a dump");
+        let mut wrong = act(3, ActParams::None {});
+        wrong.kind = ActKind::Unload;
+        assert!(with_act(wrong).is_err(), "an unload without its parameters");
+        let mut stays = sample();
+        if let Some(last) = stays.last.as_mut() {
+            last.stays = [(cid("metal_ore"), 7)].into_iter().collect();
+        }
+        assert!(stays.check().is_err(), "a recover's outcome names no stays");
+        if let Some(last) = stays.last.as_mut() {
+            last.kind = ActKind::Unload;
+            last.result = ActResult::Done;
+        }
+        assert_eq!(stays.check(), Ok(()));
+        if let Some(last) = stays.last.as_mut() {
+            last.stays = [(cid("metal_ore"), 0)].into_iter().collect();
+        }
+        assert!(stays.check().is_err(), "a zero stays");
+    }
+
+    /// **The unload's record shapes round-trip the strict wire** (doc 20 cut SM.8): a record with a
+    /// queued unload, an unload act of every `how` (with and without its excursion), an outcome
+    /// with `stays`, and the two new refusal codes; an unknown field refused; a record with no
+    /// queue encodes no `queued` key and an outcome with nothing left no `stays` key.
+    #[test]
+    fn sm8_the_unload_wire_round_trips() {
+        let record = queued_unload();
+        let wire = serde_json::to_value(&record).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(wire["queued"]["kind"], serde_json::json!("unload"));
+        let back: RigRecord =
+            serde_json::from_value(wire.clone()).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(back, record);
+        let mut extra = wire;
+        extra["queued"]["surprise"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<RigRecord>(extra).is_err());
+        let plain = serde_json::to_value(sample()).unwrap_or_else(|e| panic!("{e}"));
+        assert!(plain.get("queued").is_none());
+        assert!(plain["last"].get("stays").is_none());
+        for how in [UnloadHow::Queued, UnloadHow::Whole, UnloadHow::Part] {
+            assert_eq!(UnloadHow::from_word(how.word()), Some(how));
+            for excursion in [
+                None,
+                Some(ExcursionId {
+                    tv: ObjId(900),
+                    launch_ic: 1_000,
+                }),
+            ] {
+                let mut unloading = sample();
+                let mut act = unload_act(3, &[("metal_ore", 5), ("ice_ore", 2)], how);
+                if let ActParams::Unload {
+                    excursion: slot, ..
+                } = &mut act.params
+                {
+                    *slot = excursion;
+                }
+                unloading.act = Some(act);
+                let wire = serde_json::to_value(&unloading).unwrap_or_else(|e| panic!("{e}"));
+                assert_eq!(wire["act"]["params"]["how"], serde_json::json!(how.word()));
+                let back: RigRecord =
+                    serde_json::from_value(wire).unwrap_or_else(|e| panic!("{e}"));
+                assert_eq!(back, unloading);
+            }
+        }
+        let mut told = sample();
+        if let Some(last) = told.last.as_mut() {
+            last.kind = ActKind::Unload;
+            last.result = ActResult::Done;
+            last.moved = [(cid("metal_ore"), 5)].into_iter().collect();
+            last.stays = [(cid("metal_ore"), 7)].into_iter().collect();
+        }
+        let wire = serde_json::to_value(&told).unwrap_or_else(|e| panic!("{e}"));
+        let back: RigRecord = serde_json::from_value(wire).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(back, told);
+        for (code, word) in [
+            (RefusedCode::LeftBay, "left_bay"),
+            (RefusedCode::HoldRefused, "hold_refused"),
+            (RefusedCode::MarkersFull, "markers_full"),
+        ] {
+            let wire = serde_json::to_value(code).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(wire, serde_json::json!(word));
+            let back: RefusedCode = serde_json::from_value(wire).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(back, code);
+        }
     }
 }

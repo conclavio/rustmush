@@ -3,7 +3,7 @@
 Surface mining is the trade run's other trade: you take a Dray-P down onto a
 mining site's pad, send its terrain vehicles out, learn where the ore lies, dig
 it, and carry it home to sell at Ceres. This page walks the loop beat by beat.
-Some of it is not built yet; those beats say "(not yet)".
+Staking and leaving rigs running are not built yet; those beats say "(not yet)".
 
 ## Two rules every rig act follows
 
@@ -28,6 +28,7 @@ bay at the Exchange Hall counter (`+tv/lease`, `help ships`). A lease needs a
 licence in force or in its grace.
 
   +licence/buy [go]        the Freeport Registry's prospecting licence
+  +licence                 your licence: in force, in its grace, or lapsed
   +coop/refit prospector   a Dray-P: a two-slot vehicle bay and a stern ramp
   +tv/lease [go]           lease a rig into a free bay slot
 
@@ -59,9 +60,6 @@ map, and yours never show on theirs.
 
   +tv[/<n>]                each rig: where it stands, its charge, its act
   +tv/<n> launch [go]      down the ramp onto the site
-  +tv/<n> recover [go]     back up the ramp into the bay; from further off the
-                           rig drives to the ramp first, in the same act
-  +tv/<n> dump [go]        empty the hopper onto the site's spoil, for good
   +tv[/<n>]/map [site] [family]  the site map around the rig, or the whole site
 
 **5. Scan.** `+tv/1 scan go` (or `+tv/1 survey go`) reads the nine fields around
@@ -86,10 +84,15 @@ reads a quarter of that and nobody hears it, for the same charge and time.
                            site on a body, from your chart
 
 From the bay, a scan or a sounding goes down the ramp first: one act, 300 IC s
-longer, and the preview names both legs. A rig's battery recharges in the bay
-and only falls outside it; a scan or a sounding that would leave it under 5 % is
-refused (the charge home counts too: beat 7), but a recover is never
-held to the 5 %: a rig whose charge covers the drive to the ramp always comes home.
+longer, and the preview names both legs.
+
+**The reserve rule.** A rig's battery recharges in the bay and only falls outside
+it. Every act that spends charge reserves it when it starts, and keeps back the
+charge to drive home to the ramp from where it will leave the rig: an act that
+would leave less than 5 % after that trip home is refused, and two acts never
+spend one margin. A recover is held only to its own drive: a rig whose charge
+covers the drive to the ramp always comes home. An unload spends nothing, and
+the bay recharges the rig while it unloads.
 
 **7. Drive.** `+tv/1 drive C117` drives rig 1 over the ground to a pocket; the
 target can also be a field (`C-NW`, its middle), a block (`C`, its middle), a
@@ -131,29 +134,59 @@ Mining needs a prospecting licence in force or in its grace, and open ground or
 the commons: "That block is under claim." refuses a block someone holds. Only
 one rig works a pocket at a time: "Another rig is working that pocket." A
 licence that lapses, or a claim filed, mid-run stops the run after the cycle in
-flight, and the rig can always come home with `+tv/1 recover go`. Every map
-shows the pits worked so far (`v`, and `V` once worked out).
+flight, and the rig can always come home with `+tv/1 recover go`.
 
   +tv/<n> mine [family] [cycles] [go]  mine the pocket the rig stands on
   +tv/<n> drill [family] [cycles] [go] the same
   +tv/<n> mine stop        end the run after the cycle in flight
 
-**9. Hopper full, go home.** (not yet) Unloading a rig's hopper into the hold.
-Until then a rig comes home with `+tv/1 recover go`: from anywhere on the site's
-ground it drives to the ramp and climbs aboard as one act, even while the
-instruments are dark, and it is refused only when its charge cannot cover that
-drive. `+ship/lift ceres` lifts the Dray-P off the pad once every rig is in her
-bay and every hopper is empty (`help ships`).
+**9. Hopper full, go home.** `+tv/1 recover` previews the way home and what
+follows it: from anywhere on the site's ground the rig drives to the ramp and
+climbs aboard as one act, even while the instruments are dark, and it is refused
+only when its charge cannot cover that drive. With ore in the hopper the preview
+ends "then it unloads 12 t of metal ore, run-of-mine into the hold, 74 t of room
+after" (a Dray-P's hold with nothing else in it), and once the rig is back in
+the bay it unloads on its own: 600 IC s, the hopper into the hold, and you hear
+"Rig 1 unloads 12 t of metal ore, run-of-mine into the Salt Moth's hold". The
+hold always has room for what a hopper carries, because no cycle starts without
+it. Should the hold have less (staff changed it), the rig unloads what fits and
+says what stays in the hopper; a dump empties the rest.
+
+`+tv/1 unload` previews the same unload by hand, for a rig in the bay with ore in
+its hopper: every kind of ore the hold has room for, the first kind first.
+`+tv/1 unload 3` unloads 3 t of the first kind only; a number past what the
+hopper holds of it, or past what the hold has room for, is refused, and the
+refusal names the most you can unload. Any act you file for the rig
+before its own unload starts — a dump, a launch, your own `+tv/1 unload go` —
+takes its place. `+ship/lift ceres` lifts the Dray-P off the pad once every rig is
+in her bay and every hopper is empty (`help ships`).
+
+  +tv/<n> recover [go]     back up the ramp into the bay; from further off the
+                           rig drives to the ramp first, in the same act; a
+                           loaded hopper then unloads into the hold
+  +tv/<n> unload [<t>] [go]  the hopper into the hold, or <t> tonnes of the
+                           first kind of ore
+  +tv/<n> dump [go]        empty the hopper onto the site's spoil, for good
 
 **10. Stake.** (not yet) Staking an open block and the Registry's claims.
 
-**11. Leave it running.** (not yet) Fill plans, and awaiting a rig from the
-order queue.
+**11. Leave it running.** (not yet) Fill plans, and awaiting a rig from the order queue.
 
 **12. Sell.** Ore sells only at Ceres, to the Exchange's and Occator's standing
-bids. `+market/sell <listing>` shows what a sale would take and pay;
-`+market/sell <listing>=all` sells what the bid takes and leaves the rest
-aboard.
+bids, and only from the hold: a rig's hopper never sells — unload it first.
+`+market/sell <listing>` shows what a sale would take and pay and sells nothing;
+`+market/sell <listing>=all` sells what the bid takes and leaves the rest aboard.
+On a Co-op charter the Trust takes its share of an ore sale like any cargo's: a
+quarter of the margin over half the bid (`help coop`).
+
+  +market/sell <listing>[=all|=<t>]  at Ceres: sell ore from the hold to a bid
+
+**The pits and the fog.** Every map shows the pits worked so far, the same for
+everyone: `v` where someone has mined, `V` once the pocket is worked out. A pit
+says only that someone mined there — never who, nor what is left. Everything
+else on your map is your own reading, and "You have no reading there." is the
+same words for a place you have never seen, a field you have not scanned and a
+barren pocket you have not sounded.
 
 ## What a reading says
 
@@ -180,7 +213,7 @@ sounding thumps through the ground from the southeast, over 1 km off."
 
 ## Still to come
 
-Unloading; staking and the Registry's claims; fill plans and awaiting a rig;
-the ground chart of a whole body.
+Staking and the Registry's claims; fill plans and awaiting a rig; the ground
+chart of a whole body.
 
 See also: `help ships`, `help coop`, `help travel`, `help trade`.

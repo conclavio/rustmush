@@ -408,11 +408,17 @@ pub fn hold_plan(view: &HullView<'_>) -> Option<HoldPlan> {
     if view.unit_held {
         return None;
     }
-    plan_of(view.logistics)
+    stowage_plan(view.logistics)
 }
 
-/// The plan of one hull definition's logistics block.
-fn plan_of(logistics: &crate::definitions::LogisticsDef) -> Option<HoldPlan> {
+/// **The plan of any unit's stowage block** (doc 18 cut IC8's `plan_of`, generalised by doc 20
+/// cut SM.8 — the brief's lead ruling 4, decision R12): a hull's hold or a rig's hopper alike,
+/// so a hopper and a Dray-P hold refuse an overfill identically through [`plan_check`]. **Not
+/// the sale predicate**: [`PortCapacity::plan`] still answers only where [`governed_hold`]
+/// does, so the market never plans a hopper and a hopper is never a sale source (D-20-10).
+/// `None` when the compiled goods table does not load.
+#[must_use]
+pub(crate) fn stowage_plan(logistics: &crate::definitions::LogisticsDef) -> Option<HoldPlan> {
     let (digest, _) = compiled_goods()?;
     Some(HoldPlan {
         v: HOLD_PLAN_VERSION,
@@ -454,60 +460,91 @@ impl CapacityProvider for PortCapacity {
     ) -> Result<(), CapacityRefusal> {
         let plan: HoldPlan =
             serde_json::from_value(plan.0.clone()).map_err(|_| CapacityRefusal::Unreadable)?;
-        if plan.v != HOLD_PLAN_VERSION {
-            return Err(CapacityRefusal::Unreadable);
+        plan_check(&plan, commodity, quantity, read_pool)
+    }
+}
+
+/// **A plan's compartments as the capacity function reads them** (doc 20 cut SM.8): the plan's
+/// own compartments, in stowage order.
+#[must_use]
+pub(crate) fn plan_compartments(plan: &HoldPlan) -> Vec<Compartment> {
+    plan.compartments
+        .iter()
+        .map(|c| Compartment {
+            id: c.id.clone(),
+            accepts: c.accepts.clone(),
+            limits: c.limits.clone(),
+        })
+        .collect()
+}
+
+/// **The goods table a plan was made against** (doc 20 cut SM.8; the brief's decision R16): the
+/// compiled-in table, `None` when it does not load **or** its digest differs from the plan's —
+/// the IC8 fail-closed rule in one place, so a check, the unload's preview, its prepare and its
+/// finish all weigh with one table.
+#[must_use]
+pub(crate) fn plan_goods(plan: &HoldPlan) -> Option<&'static GoodsTable> {
+    if plan.v != HOLD_PLAN_VERSION {
+        return None;
+    }
+    let (digest, goods) = compiled_goods()?;
+    (*digest == plan.goods).then_some(goods)
+}
+
+/// **The capacity check over a plan** (doc 18 cut IC8's `PortCapacity::check` body, factored by
+/// doc 20 cut SM.8 so any stowage block's plan — [`stowage_plan`] — is checked by the one rule):
+/// the plan's goods table ([`plan_goods`]; `Unreadable` without it), the one compartment the
+/// good stows in (else "has no place aboard"), every good that compartment accepts read through
+/// `read_pool` (an unreadable pool refuses, never 0), then `capacity::admits` and §4.3's
+/// sentence ([`capacity_line`]). The market's answers are byte-unchanged.
+///
+/// # Errors
+///
+/// [`CapacityRefusal`], as above.
+pub(crate) fn plan_check(
+    plan: &HoldPlan,
+    commodity: &CanonicalId,
+    quantity: u64,
+    read_pool: &mut dyn FnMut(&CanonicalId) -> Result<u64, CapacityReadError>,
+) -> Result<(), CapacityRefusal> {
+    let Some(goods) = plan_goods(plan) else {
+        return Err(CapacityRefusal::Unreadable);
+    };
+    let compartments = plan_compartments(plan);
+    let no_place = || CapacityRefusal::Refused {
+        fits: 0,
+        line: format!("{} has no place aboard.", label_of(goods, commodity)),
+    };
+    let Some(compartment) = compartment_for(goods, &compartments, commodity) else {
+        return Err(no_place());
+    };
+    // Every good the compartment accepts, read; an unreadable pool refuses, never 0.
+    let mut contents: BTreeMap<CanonicalId, u64> = BTreeMap::new();
+    for good in goods
+        .goods
+        .iter()
+        .filter(|good| compartment.accepts.contains(&good.stowage))
+    {
+        let held = read_pool(&good.id).map_err(|CapacityReadError| CapacityRefusal::Unreadable)?;
+        if held > 0 {
+            contents.insert(good.id.clone(), held);
         }
-        let Some((digest, goods)) = compiled_goods() else {
-            return Err(CapacityRefusal::Unreadable);
-        };
-        if *digest != plan.goods {
-            return Err(CapacityRefusal::Unreadable);
-        }
-        let compartments: Vec<Compartment> = plan
-            .compartments
-            .iter()
-            .map(|c| Compartment {
-                id: c.id.clone(),
-                accepts: c.accepts.clone(),
-                limits: c.limits.clone(),
+    }
+    match capacity::admits(goods, &compartment, &contents, (commodity, quantity)) {
+        Admission::Admitted(_) => Ok(()),
+        Admission::Refused(refused) => {
+            let mut with = contents;
+            let slot = with.entry(commodity.clone()).or_insert(0);
+            *slot = slot.saturating_add(quantity);
+            let Ok(after) = capacity::load(goods, &compartment, &with) else {
+                return Err(no_place());
+            };
+            Err(CapacityRefusal::Refused {
+                fits: refused.fits,
+                line: capacity_line(goods, &compartment, commodity, quantity, &refused, &after),
             })
-            .collect();
-        let no_place = || CapacityRefusal::Refused {
-            fits: 0,
-            line: format!("{} has no place aboard.", label_of(goods, commodity)),
-        };
-        let Some(compartment) = compartment_for(goods, &compartments, commodity) else {
-            return Err(no_place());
-        };
-        // Every good the compartment accepts, read; an unreadable pool refuses, never 0.
-        let mut contents: BTreeMap<CanonicalId, u64> = BTreeMap::new();
-        for good in goods
-            .goods
-            .iter()
-            .filter(|good| compartment.accepts.contains(&good.stowage))
-        {
-            let held =
-                read_pool(&good.id).map_err(|CapacityReadError| CapacityRefusal::Unreadable)?;
-            if held > 0 {
-                contents.insert(good.id.clone(), held);
-            }
         }
-        match capacity::admits(goods, &compartment, &contents, (commodity, quantity)) {
-            Admission::Admitted(_) => Ok(()),
-            Admission::Refused(refused) => {
-                let mut with = contents;
-                let slot = with.entry(commodity.clone()).or_insert(0);
-                *slot = slot.saturating_add(quantity);
-                let Ok(after) = capacity::load(goods, &compartment, &with) else {
-                    return Err(no_place());
-                };
-                Err(CapacityRefusal::Refused {
-                    fits: refused.fits,
-                    line: capacity_line(goods, &compartment, commodity, quantity, &refused, &after),
-                })
-            }
-            Admission::Error(_) => Err(no_place()),
-        }
+        Admission::Error(_) => Err(no_place()),
     }
 }
 
@@ -745,7 +782,7 @@ mod tests {
     /// bound with at least 1 KiB to spare, and it round-trips strictly.
     #[test]
     fn ic8_the_drays_plan_is_bounded() {
-        let plan = plan_of(&dray()).expect("a plan");
+        let plan = stowage_plan(&dray()).expect("a plan");
         let bytes = serde_json::to_vec(&plan).expect("encodes");
         assert!(
             bytes.len().saturating_add(1_024) <= mush_market::MAX_CAPACITY_PLAN_BYTES,
@@ -762,7 +799,7 @@ mod tests {
     /// aboard; an admitted load is `Ok`.
     #[test]
     fn ic8_the_check_fails_closed() {
-        let plan = plan_of(&dray()).expect("a plan");
+        let plan = stowage_plan(&dray()).expect("a plan");
         let value = serde_json::to_value(&plan).expect("value");
         let provider = PortCapacity;
         let mut empty = |_: &CanonicalId| Ok(0);
@@ -807,5 +844,203 @@ mod tests {
                 line: "nonesuch has no place aboard.".to_owned()
             })
         );
+    }
+
+    /// A unit's logistics from its shipped pack (`dray()`'s shape).
+    fn logistics_of(json: &str, unit: &str) -> LogisticsDef {
+        let pack = crate::pack::load_pack(json).expect("the pack loads");
+        match pack.entry(&cid(unit)) {
+            Some(crate::pack::PackEntry::Unit(spec)) => {
+                spec.logistics.clone().expect("the unit's logistics")
+            }
+            _ => panic!("the {unit} unit"),
+        }
+    }
+
+    /// The count `capacity::fits_in` gives `good` in an empty compartment, and every measure
+    /// that attains it.
+    fn bound_of(goods: &GoodsTable, comp: &Compartment, good: &str) -> (u64, Vec<CanonicalId>) {
+        let row = goods.good(&cid(good)).expect("a good");
+        let figures: Vec<(CanonicalId, u64)> = comp
+            .limits
+            .keys()
+            .map(|m| (m.clone(), row.per_unit(m).expect("a figure")))
+            .collect();
+        capacity::fits_in(&comp.limits, &figures)
+    }
+
+    /// **A hopper and a Dray-P hold refuse an overfill identically** (doc 20 cut SM.8, lead ruling
+    /// 4, decision R12): [`stowage_plan`] of the prospector's logistics and of the Dray-P's, each
+    /// checked through [`plan_check`] with empty pools — metal ore one tonne past the mass limit
+    /// refused with the count that fits (12 and 86), bound by mass, and the limit itself admitted;
+    /// carbon ore (its packed volume read from the goods table) fits 11 in the hopper bound by
+    /// volume alone and 86 in the Dray-P hold bound by both measures. The hopper's plan has one
+    /// compartment, `hopper`, accepting `stow.ore`.
+    #[test]
+    fn sm8_a_hopper_and_a_dray_p_hold_refuse_an_overfill_identically() {
+        let goods = goods();
+        let hopper = stowage_plan(&logistics_of(
+            crate::definitions::content::TV_PROSPECTOR_JSON,
+            crate::definitions::content::TV_PROSPECTOR,
+        ))
+        .expect("the hopper's plan");
+        let hold = stowage_plan(&logistics_of(
+            crate::definitions::content::DRAY_P_JSON,
+            crate::definitions::content::DRAY_P,
+        ))
+        .expect("the Dray-P's plan");
+        assert_eq!(hopper.compartments.len(), 1);
+        assert_eq!(hopper.compartments[0].id, cid("hopper"));
+        assert!(hopper.compartments[0].accepts.contains(&cid("stow.ore")));
+        let (mass, volume) = (cid(MASS_KG), cid(VOLUME_L));
+        let ore_comp = |plan: &HoldPlan| {
+            compartment_for(&goods, &plan_compartments(plan), &cid("metal_ore"))
+                .expect("one ore compartment")
+        };
+        for (plan, limit_t) in [(&hopper, 12_u64), (&hold, 86_u64)] {
+            let comp = ore_comp(plan);
+            assert_eq!(
+                comp.limits.get(&mass).copied(),
+                Some(limit_t * per(&goods, "metal_ore", MASS_KG))
+            );
+            let mut empty = |_: &CanonicalId| Ok(0);
+            assert_eq!(
+                plan_check(plan, &cid("metal_ore"), limit_t, &mut empty),
+                Ok(()),
+                "{limit_t} t is admitted"
+            );
+            match plan_check(plan, &cid("metal_ore"), limit_t + 1, &mut empty) {
+                Err(CapacityRefusal::Refused { fits, .. }) => assert_eq!(fits, limit_t),
+                other => panic!("{other:?}"),
+            }
+            let Admission::Refused(refused) = capacity::admits(
+                &goods,
+                &comp,
+                &BTreeMap::new(),
+                (&cid("metal_ore"), limit_t + 1),
+            ) else {
+                panic!("an overfill is refused");
+            };
+            assert_eq!(refused.bound, vec![mass.clone()], "bound by mass");
+        }
+        // Carbon ore: bound by packed volume in the hopper, by both measures in the Dray-P hold.
+        let carbon_l = per(&goods, "carbon_ore", VOLUME_L);
+        let hopper_comp = ore_comp(&hopper);
+        let (fit, bound) = bound_of(&goods, &hopper_comp, "carbon_ore");
+        assert_eq!(fit, hopper_comp.limits[&volume] / carbon_l);
+        assert_eq!(fit, 11);
+        assert_eq!(bound, vec![volume.clone()]);
+        let hold_comp = ore_comp(&hold);
+        let (fit, bound) = bound_of(&goods, &hold_comp, "carbon_ore");
+        assert_eq!(fit, 86);
+        assert_eq!(bound, vec![mass.clone(), volume.clone()]);
+        let mut empty = |_: &CanonicalId| Ok(0);
+        match plan_check(&hopper, &cid("carbon_ore"), 12, &mut empty) {
+            Err(CapacityRefusal::Refused { fits, .. }) => assert_eq!(fits, 11),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// **The market's check is `plan_check`, its IC8 answers byte-unchanged** (doc 20 cut SM.8;
+    /// the fix round's conformance/F1): through `PortCapacity::check` over the Dray's plan, an
+    /// admitted load is `Ok` and every refusal carries exactly the fit and the §4.3 line IC8's
+    /// tests pin (`ic8_the_capacity_lines_read_as_section_4_3_writes_them`,
+    /// `ic8_the_check_fails_closed`) — literals, never a second call of the function under test —
+    /// and [`plan_check`] over the same plan answers the same.
+    #[test]
+    fn sm8_the_market_check_is_plan_check() {
+        let plan = stowage_plan(&dray()).expect("a plan");
+        let value = CapacityPlan(serde_json::to_value(&plan).expect("value"));
+        let provider = PortCapacity;
+        let refused = |fits: u64, line: &str| {
+            Err(CapacityRefusal::Refused {
+                fits,
+                line: line.to_owned(),
+            })
+        };
+        /// A good, a quantity, what the compartment already holds, and IC8's answer.
+        type Case<'a> = (
+            &'a str,
+            u64,
+            &'a [(&'a str, u64)],
+            Result<(), CapacityRefusal>,
+        );
+        let cases: [Case<'_>; 8] = [
+            ("metals", 10, &[], Ok(())),
+            (
+                "volatiles",
+                86,
+                &[],
+                refused(
+                    85,
+                    "86 t of water ice packs to 120.4 m³; the hold takes 120 m³. 85 t fits.",
+                ),
+            ),
+            (
+                "structural_alloys",
+                101,
+                &[],
+                refused(
+                    100,
+                    "101 t of structural alloy stock weighs past the hold's 100 t rating \
+                     (30.3 m³). 100 t fits.",
+                ),
+            ),
+            (
+                "propellant",
+                81,
+                &[],
+                refused(
+                    80,
+                    "81 t of reaction mass weighs past the tank's 80 t rating. 80 t fits.",
+                ),
+            ),
+            (
+                "propellant",
+                1,
+                &[("propellant", 80)],
+                refused(0, "The tank is full: no more reaction mass fits."),
+            ),
+            (
+                "provisions",
+                121,
+                &[],
+                refused(
+                    120,
+                    "121 crew-days of voyage provisions do not fit the stores locker's 120 \
+                     crew-days. 120 fit.",
+                ),
+            ),
+            (
+                "provisions",
+                1,
+                &[("provisions", 120)],
+                refused(
+                    0,
+                    "The stores locker is full: no more voyage provisions fits.",
+                ),
+            ),
+            (
+                "nonesuch",
+                1,
+                &[],
+                refused(0, "nonesuch has no place aboard."),
+            ),
+        ];
+        for (good, qty, held, wanted) in cases {
+            let held: BTreeMap<CanonicalId, u64> = held.iter().map(|(g, q)| (cid(g), *q)).collect();
+            let mut read = |good: &CanonicalId| Ok(held.get(good).copied().unwrap_or(0));
+            assert_eq!(
+                provider.check(&value, &cid(good), qty, &mut read),
+                wanted,
+                "{good} × {qty}"
+            );
+            let mut read = |good: &CanonicalId| Ok(held.get(good).copied().unwrap_or(0));
+            assert_eq!(
+                plan_check(&plan, &cid(good), qty, &mut read),
+                wanted,
+                "{good} × {qty}"
+            );
+        }
     }
 }

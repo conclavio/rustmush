@@ -410,9 +410,17 @@ pub const TV_AWAY: &str = "Rig {n} is logged out {where}; the {name} lifts only 
 /// SM.7) uses it too, `{doing}` from `crate::surface::act::drilling_words` and
 /// `crate::port::tv::RUN_STOP_REMEDY` appended.
 pub const TV_BUSY: &str = "Rig {n} is {doing}; the {name} lifts once it is done.";
-/// **Doc 20 cut SM.3b (§4.3)**: a hopper with ore in it: `{n}`, `{t}` whole tonnes, `{name}`.
-/// (SM.8 adds the unload to the remedy.)
-pub const HOPPER_LOADED: &str = "Rig {n}'s hopper holds {t} t of ore; the {name} lifts with every hopper empty: +tv/{n} dump empties it onto the spoil.";
+/// **Doc 20 cut SM.3b (§4.3)**: a hopper with ore in it, the hull settled on a site's pad — where
+/// both remedies work (doc 20 cut SM.8 names the unload first): `{n}`, `{t}` whole tonnes,
+/// `{name}`.
+pub const HOPPER_LOADED: &str = "Rig {n}'s hopper holds {t} t of ore; the {name} lifts with every hopper empty: +tv/{n} unload moves it into the hold, or +tv/{n} dump empties it onto the spoil.";
+/// **A hopper with ore in it, the hull anywhere but a site's pad** (doc 20 cut SM.8; the brief's
+/// reviewer finding F6 and decision R5 — SM.3b's decision 21, "the refusal names a remedy that
+/// works", the reason [`TV_AWAY`] exists): at a port neither `+tv/{n} unload` (`UNLOAD_NOT_SITE`)
+/// nor the dump (`DUMP_NOT_SITE`) works, and only staff make that state (an honest hull never
+/// leaves a pad with a loaded hopper): `{n}`, `{t}`, `{name}`. Under the same
+/// `DepartRefusalKind::HopperLoaded`.
+pub const HOPPER_LOADED_AWAY: &str = "Rig {n}'s hopper holds {t} t of ore; the {name} lifts with every hopper empty: staff must empty it.";
 
 /// **The waypoint details** (lead ruling L9: code data keyed by the lane place id,
 /// so no pack version moves): the clause [`BOUNDARY`]'s `{detail}` takes.
@@ -2459,8 +2467,10 @@ pub(crate) fn site_gate<'w>(
 /// staff move makes) [`TV_AWAY`], whose remedy is staff's (the fixer round's item 2). The
 /// record is read through `crate::port::tv::rig_flight`, the reader the lease return and the
 /// repossession share. Then each rig in the bay whose hopper holds anything refuses
-/// [`HOPPER_LOADED`]. A record or a pool that will not read is `PlanDark`, logged. A standard
-/// Dray (no bay, no records) answers `Ok(())` at once.
+/// [`HOPPER_LOADED`] on a site's pad, else (doc 20 cut SM.8) [`HOPPER_LOADED_AWAY`]; a queued
+/// unload is not busy (the rig is in the bay) — its loaded hopper is what holds the hull. A record
+/// or a pool that will not read is `PlanDark`, logged. A standard Dray (no bay, no records)
+/// answers `Ok(())` at once.
 ///
 /// # Errors
 ///
@@ -2590,9 +2600,18 @@ pub(crate) fn bay_gate(
             dark()
         })?;
         if kg > 0 {
+            // Doc 20 cut SM.8 (reviewer F6, decision R5): on a site's pad the unload and the dump
+            // both work; anywhere else neither does, so the line names staff. A rig in the bay
+            // with a queued unload (`RigRecord::queued`) is not busy (`rig_flight` reads it Idle):
+            // its loaded hopper holds the hull here until the unload lands.
+            let template = if pad.is_some() {
+                HOPPER_LOADED
+            } else {
+                HOPPER_LOADED_AWAY
+            };
             return Err(refusal(
                 K::HopperLoaded,
-                HOPPER_LOADED
+                template
                     .replace("{n}", &n_of(*slot))
                     .replace("{t}", &(kg / 1_000).to_string())
                     .replace("{name}", name),

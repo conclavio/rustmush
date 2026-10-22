@@ -53,6 +53,14 @@
 //! recover's rig placed back in the bay from its leg's start, its end or beside the ramp; **the
 //! arrival** — `ARRIVED`, with the operator's own reading of the end pocket; and the projection
 //! fitted under its 4 KiB by dropping the oldest log lines, never the leg.
+//!
+//! **Doc 20 cut SM.8** adds a fourth candidate reason, **queued** — an idle record holding the
+//! unload a `Done` recover filed (`RigRecord::queued`): the tick tells the recover
+//! (`RECOVERED_UNLOADING`), then submits the unload's start **as the operator**, under its own key
+//! `tacsim.surface/{tv}/{ordinal}/queued` with `how: queued`, by the same attempt rule (attempts
+//! keyed `(tv, ordinal, QUEUED_CYCLE)`, never a finish's retries); and the unload's tell —
+//! `UNLOADED` (with what stayed), `UNLOADED_NONE` (nothing moved, something stays) or
+//! `UNLOADED_NONE_EMPTY` (nothing moved, nothing was there).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -66,7 +74,7 @@ use crate::port::families::PortHandles;
 use crate::port_tick::{Fire, Step, SwapRefused};
 use crate::store::{TacsimStore, put_tv_rec};
 use crate::surface::act::{
-    Where, cycle_key, done_key, ramp_label, site_berth, site_name, where_is,
+    Where, cycle_key, done_key, queued_key, ramp_label, site_berth, site_name, where_is,
 };
 use crate::surface::address::{self, Octant};
 use crate::surface::chart::{ChartKey, ChartRecord};
@@ -95,8 +103,15 @@ pub const SCAN_PAGE: usize = 256;
 pub const MAX_RIG_RECORDS: usize = 1_024;
 
 /// `(tv.0, ordinal, cycle)`: one finish's key in the slot — an act's with cycle 0, a mining run's
-/// cycle `k` under the run's ordinal (doc 20 cut SM.7; the brief's 3.8).
+/// cycle `k` under the run's ordinal (doc 20 cut SM.7; the brief's 3.8) — and since doc 20 cut
+/// SM.8 a queued unload's START under the ordinal it will take, with [`QUEUED_CYCLE`].
 type ActKey = (u32, u32, u8);
+
+/// **The attempts key's cycle for a queued unload's start** (doc 20 cut SM.8; the brief's 3.9):
+/// past [`crate::surface::excursion::MAX_RUN_CYCLES`], so it never meets a cycle's key (cycle 0
+/// is an act's). Its attempts are a start's, never a finish's retries: [`finish_retried`] skips
+/// them.
+pub(crate) const QUEUED_CYCLE: u8 = u8::MAX;
 
 /// **The tick's RAM slot** (the brief's 3.5): retry bookkeeping and once-a-boot pages only;
 /// every fact is in the family or the projection, so a restart loses nothing but a retry
@@ -159,7 +174,9 @@ pub(crate) const MAX_RETRIED_ORDINALS: usize = 8;
 /// finish's offer fixes it so a dump whose transfer refused mid-bundle records `SpoilGone` on
 /// its next finish instead of wedging. RAM only, like every retry count: after a restart the
 /// first finish tries the transfer again. **Doc 20 cut SM.7**: `(ordinal, cycle)` pairs, cycle 0
-/// an act's, so a mining cycle whose transfer refused records `Unworked` the same way.
+/// an act's, so a mining cycle whose transfer refused records `Unworked` the same way. **Doc 20
+/// cut SM.8** (the brief's reviewer finding F9): a queued unload's start attempts
+/// ([`QUEUED_CYCLE`]) are never a finish's retries and never spend a slot.
 #[must_use]
 pub(crate) fn finish_retried(w: &World, tv: ObjId) -> Vec<(u32, u8)> {
     w.module_state::<SurfaceTickState>()
@@ -172,6 +189,7 @@ fn retried_ordinals(state: &SurfaceTickState, tv: ObjId) -> Vec<(u32, u8)> {
     let keys: Vec<(u32, u8)> = state
         .attempts
         .range((tv.0, 1, 0)..=(tv.0, u32::MAX, u8::MAX))
+        .filter(|((_, _, cycle), _)| *cycle != QUEUED_CYCLE)
         .map(|(&(_, ordinal, cycle), _)| (ordinal, cycle))
         .collect();
     let skip = keys.len().saturating_sub(MAX_RETRIED_ORDINALS);
@@ -343,6 +361,9 @@ pub(crate) struct Candidate {
     /// interpolate the rig while it moves. **Doc 20 cut SM.7** (the lead's pre-commit round, item
     /// 4): or a run in flight, its cycle not yet due, that the projection does not show yet.
     started: bool,
+    /// **Doc 20 cut SM.8** (the brief's 3.9): an idle record holding a queued unload, outside its
+    /// start's back-off — the tick submits the start as the operator.
+    queued: bool,
     order: (i64, u32),
 }
 
@@ -351,6 +372,12 @@ pub(crate) struct Candidate {
 #[must_use]
 pub(crate) fn told_pair(last: &Outcome) -> (u32, u8) {
     (last.ordinal, last.mined.as_ref().map_or(0, |mined| mined.k))
+}
+
+/// **A queued unload's attempts key** (doc 20 cut SM.8): `(tv, the ordinal its start will take,
+/// QUEUED_CYCLE)`.
+fn queued_attempt(record: &RigRecord) -> ActKey {
+    (record.tv.0, record.ordinal.saturating_add(1), QUEUED_CYCLE)
 }
 
 /// Whether `key`'s finish is inside its back-off this fire (the attempt rule's own test,
@@ -444,13 +471,22 @@ pub(crate) fn candidates(
                 .as_ref()
                 .filter(|last| told_pair(last) != told)
                 .map(|last| last.at_ic);
-            let at = due_at.or(untold_at).or(started_at)?;
+            // Doc 20 cut SM.8 (the brief's 3.9): a queued unload on an idle rig, outside its
+            // start's back-off.
+            let queued_at = record
+                .queued
+                .as_ref()
+                .filter(|_| record.act.is_none() && record.run.is_none())
+                .filter(|_| rest(queued_attempt(&record)))
+                .map(|queued| queued.at_ic);
+            let at = due_at.or(untold_at).or(started_at).or(queued_at)?;
             Some(Candidate {
                 order: (at, record.tv.0),
                 due: due_at.is_some(),
                 cycle,
                 untold: untold_at.is_some(),
                 started: started_at.is_some(),
+                queued: queued_at.is_some(),
                 record,
             })
         })
@@ -599,6 +635,71 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
                 }
                 Step::Refused
             }
+            // Doc 20 cut SM.8 (lead ruling 1; the brief's 3.9): a recover's queued unload, started
+            // as the operator under its own key, by the attempt rule (a start that does not land
+            // and leaves the queue standing counts an attempt).
+            (None, _) if candidate.queued => {
+                let queued = record.queued.as_ref();
+                match (queued, handles.surface_act.as_ref()) {
+                    (Some(queued), Some(act)) => {
+                        let key = queued_attempt(record);
+                        let pending = ctx.authoritative_pending(queued.operator);
+                        match attempt_visit(state, key, pending) {
+                            Visit::PassOver => {
+                                stats.passed_over = stats.passed_over.saturating_add(1);
+                                Step::Held
+                            }
+                            Visit::Page => {
+                                tracing::error!(
+                                    tv = tv.0,
+                                    slot = queued.slot,
+                                    "tacsim: rig {} (tacsim.excursion {}): its queued unload has \
+                                     not started after 8 tries; the pilot's own +tv/{} unload or \
+                                     dump supersedes it; the tick retries every 60 s",
+                                    queued.slot,
+                                    tv.0,
+                                    queued.slot
+                                );
+                                stats.passed_over = stats.passed_over.saturating_add(1);
+                                Step::Held
+                            }
+                            Visit::Submit => {
+                                let step = submit_queued(
+                                    ctx,
+                                    &mut fire,
+                                    &mut state.paged,
+                                    act,
+                                    (tv, key.1),
+                                    queued.operator,
+                                );
+                                note_step(state, key, step);
+                                match step {
+                                    Step::Submitted => {
+                                        stats.submitted = stats.submitted.saturating_add(1);
+                                        stats.worked = stats.worked.saturating_add(1);
+                                    }
+                                    Step::Deferred => {
+                                        stats.deferred = stats.deferred.saturating_add(1);
+                                    }
+                                    Step::Idle | Step::Worked | Step::Refused | Step::Held => {}
+                                }
+                                step
+                            }
+                        }
+                    }
+                    (Some(_), None) => {
+                        if state.paged.insert(queued_attempt(record)) {
+                            tracing::error!(
+                                tv = tv.0,
+                                "tacsim: a rig's unload is queued but the start is not registered \
+                                 on this roster; it waits"
+                            );
+                        }
+                        Step::Refused
+                    }
+                    (None, _) => Step::Worked,
+                }
+            }
             (None, _) => Step::Worked,
         };
         fire.settle(tv, step);
@@ -647,6 +748,10 @@ fn still_due(records: &[RigRecord], now: i64) -> BTreeSet<ActKey> {
         // Doc 20 cut SM.7: a run's cycle in flight.
         if let Some(run) = record.run.as_ref().filter(|run| run.due_ic <= now) {
             due.insert((record.tv.0, run.ordinal, run.k));
+        }
+        // Doc 20 cut SM.8: a queued unload's start, so its attempts survive the prune.
+        if record.queued.is_some() && record.act.is_none() && record.run.is_none() {
+            due.insert(queued_attempt(record));
         }
     }
     due
@@ -910,8 +1015,9 @@ fn world_step(ctx: &mut Ctx<'_>, record: &RigRecord) {
                 }
             }
         }
-        // Doc 20 cut SM.7: a run never moves its rig (and never sits in the act slot).
-        ActKind::Dump | ActKind::Mine => {}
+        // Doc 20 cut SM.7: a run never moves its rig (and never sits in the act slot); doc 20 cut
+        // SM.8: an unload places nothing (the rig stays in the bay).
+        ActKind::Dump | ActKind::Mine | ActKind::Unload => {}
     }
 }
 
@@ -1042,6 +1148,55 @@ fn submit_done(
     }
 }
 
+/// **A queued unload's start, as the operator** (doc 20 cut SM.8; lead ruling 1, decisions R1
+/// and R15): one closed call through `Fire::as_principal` — `AlreadyActed`, `Owed` and `Pending`
+/// defer (one submission an operator a fire, so the start lands on the fire after the recover is
+/// told at the earliest); `God` and `Gone` refuse, logged once a boot under the queued key —
+/// ONE `tacsim_surface_act` with `{ tv, act: unload, ordinal, how: queued }` keyed
+/// `tacsim.surface/{tv}/{ordinal}/queued`, never `act_key` (a hand `go` for the same ordinal is a
+/// distinct request; the prepare's ordinal check settles the race).
+fn submit_queued(
+    ctx: &mut Ctx<'_>,
+    fire: &mut Fire,
+    paged: &mut BTreeSet<ActKey>,
+    act: &mush_core::DefinitionRef,
+    (tv, ordinal): (ObjId, u32),
+    operator: ObjId,
+) -> Step {
+    let Some(key) = queued_key(tv, ordinal) else {
+        tracing::error!(tv = tv.0, "tacsim: a queued unload's key did not form");
+        return Step::Refused;
+    };
+    let parameters = json!({
+        "tv": tv.0.to_string(),
+        "act": ActKind::Unload.word(),
+        "ordinal": ordinal,
+        "how": crate::surface::excursion::UnloadHow::Queued.word(),
+    });
+    match fire.as_principal(ctx, tv, operator, |ctx| {
+        ctx.submit_authoritative(
+            act.clone(),
+            PerceivedRef::SelfActor,
+            Vec::new(),
+            parameters,
+            key,
+        );
+    }) {
+        Ok(()) => Step::Submitted,
+        Err(SwapRefused::AlreadyActed | SwapRefused::Owed | SwapRefused::Pending) => Step::Deferred,
+        Err(SwapRefused::God | SwapRefused::Gone) => {
+            if paged.insert((tv.0, ordinal, QUEUED_CYCLE)) {
+                tracing::warn!(
+                    tv = tv.0,
+                    operator = operator.0,
+                    "tacsim: a rig's operator is GOD or gone; its queued unload waits"
+                );
+            }
+            Step::Refused
+        }
+    }
+}
+
 /// **The tell** (the brief's 3.5): the projection (`told` moved to the last act, the state
 /// and pose as they stand, one log line stamped at the act's own instant) and the completion
 /// line to the operator.
@@ -1082,7 +1237,7 @@ fn tell(
         (ActResult::Done, None, Some(cell), None) if last.kind == ActKind::Drive => {
             arrival_line(ctx, handles, last, cell)
         }
-        _ => completion_line(w, last, hull),
+        _ => completion_line(ctx, record, last, hull),
     };
     // Doc 20 cut SM.4b: a finished drive asks for its site's ground and home once more (a no-op
     // when warm), so the next act from the new stand peeks them warm.
@@ -1223,6 +1378,9 @@ fn mine_line(
             RefusedCode::NotBeside => tv::WHY_NOT_BESIDE.replace("{ramp}", "ramp"),
             RefusedCode::HopperChanged => tv::WHY_HOPPER_CHANGED.to_owned(),
             RefusedCode::SpoilGone => tv::WHY_SPOIL_GONE.to_owned(),
+            RefusedCode::LeftBay => tv::WHY_LEFT_BAY.to_owned(),
+            RefusedCode::HoldRefused => tv::WHY_HOLD_REFUSED.to_owned(),
+            RefusedCode::MarkersFull => tv::WHY_MARKERS_FULL.to_owned(),
         };
         return tv::CYCLE_FAILED
             .replace("{n}", &n)
@@ -1588,9 +1746,36 @@ fn arrival_line(ctx: &Ctx<'_>, handles: &PortHandles, last: &Outcome, cell: [i64
         .replace("{reading}", &reading)
 }
 
-/// **The completion line** of a finished act (the brief's 3.6 texts).
-fn completion_line(w: &World, last: &Outcome, hull: Option<ObjId>) -> String {
+/// **The line of an unload that moved nothing** (doc 20 cut SM.8; the lead's pre-commit round,
+/// item 3): `UNLOADED_NONE` naming what stays in the hopper (`stays`, `load_words`' list), or —
+/// the hopper read empty at the start's offer (staff emptied it after the recover), so nothing
+/// stays either — `UNLOADED_NONE_EMPTY`: never a line whose `{stays}` names nothing.
+fn unloaded_none_line(n: &str, name: &str, stays: &str) -> String {
     use crate::port::tv;
+    if stays.is_empty() {
+        tv::UNLOADED_NONE_EMPTY
+            .replace("{n}", n)
+            .replace("{name}", name)
+    } else {
+        tv::UNLOADED_NONE
+            .replace("{n}", n)
+            .replace("{stays}", stays)
+            .replace("{name}", name)
+    }
+}
+
+/// **The completion line** of a finished act (the brief's 3.6 texts). Doc 20 cut SM.8: a `Done`
+/// recover whose record queued its unload tells `RECOVERED_UNLOADING`; a `Done` unload tells
+/// `UNLOADED` with the hopper read now (and `UNLOAD_STAYS` when something stayed), or, when it
+/// moved nothing, [`unloaded_none_line`]'s.
+fn completion_line(
+    ctx: &Ctx<'_>,
+    record: &RigRecord,
+    last: &Outcome,
+    hull: Option<ObjId>,
+) -> String {
+    use crate::port::tv;
+    let w: &World = ctx.w;
     let n = last.slot.to_string();
     let ramp = hull.map_or_else(|| "ramp".to_owned(), |hull| ramp_label(w, hull));
     let name = hull.map_or_else(String::new, |hull| crate::port::coop::name_of(w, hull));
@@ -1601,7 +1786,42 @@ fn completion_line(w: &World, last: &Outcome, hull: Option<ObjId>) -> String {
                 .replace("{n}", &n)
                 .replace("{ramp}", &ramp)
                 .replace("{site}", &site),
+            ActKind::Recover
+                if record
+                    .queued
+                    .as_ref()
+                    .is_some_and(|queued| queued.after == last.ordinal) =>
+            {
+                tv::RECOVERED_UNLOADING
+                    .replace("{n}", &n)
+                    .replace("{name}", &name)
+            }
             ActKind::Recover => tv::RECOVERED.replace("{n}", &n).replace("{name}", &name),
+            // Doc 20 cut SM.8: the unload, with the hopper as it reads now.
+            ActKind::Unload if last.moved.is_empty() => {
+                unloaded_none_line(&n, &name, &crate::surface::act::load_words(w, &last.stays))
+            }
+            ActKind::Unload => {
+                let hopper = match tv::hopper_load_of(ctx, record.tv) {
+                    Ok((kg, cap)) => tv::hopper_text(kg, cap),
+                    Err(error) => {
+                        tracing::warn!(tv = record.tv.0, %error, "tacsim: an unload's tell could not read the hopper");
+                        "?".to_owned()
+                    }
+                };
+                let mut line = tv::UNLOADED
+                    .replace("{n}", &n)
+                    .replace("{load}", &crate::surface::act::load_words(w, &last.moved))
+                    .replace("{name}", &name)
+                    .replace("{hopper}", &hopper);
+                if !last.stays.is_empty() {
+                    line.push_str(
+                        &tv::UNLOAD_STAYS
+                            .replace("{stays}", &crate::surface::act::load_words(w, &last.stays)),
+                    );
+                }
+                line
+            }
             ActKind::Dump => tv::DUMPED
                 .replace("{n}", &n)
                 .replace("{load}", &crate::surface::act::load_words(w, &last.moved))
@@ -1629,6 +1849,9 @@ fn completion_line(w: &World, last: &Outcome, hull: Option<ObjId>) -> String {
                 RefusedCode::SpoilGone => tv::WHY_SPOIL_GONE.to_owned(),
                 RefusedCode::Moved => tv::WHY_MOVED.to_owned(),
                 RefusedCode::Unworked => tv::WHY_UNWORKED.to_owned(),
+                RefusedCode::LeftBay => tv::WHY_LEFT_BAY.to_owned(),
+                RefusedCode::HoldRefused => tv::WHY_HOLD_REFUSED.to_owned(),
+                RefusedCode::MarkersFull => tv::WHY_MARKERS_FULL.to_owned(),
             };
             tv::ACT_FAILED
                 .replace("{n}", &n)
@@ -1667,6 +1890,7 @@ mod tests {
             span,
             arrived: None,
             mined: None,
+            stays: BTreeMap::new(),
         };
         let loud = outcome(Some(sound(false, true)), ActResult::Done);
         assert_eq!(heard_from(true, &loud), Some([170, 90]));
@@ -1812,6 +2036,7 @@ mod tests {
         let site = mush_core::CanonicalId::new("ahuna_port").expect("an id");
         let record = |tv: u32, act: Option<i64>| RigRecord {
             schema: crate::surface::excursion::EXCURSION_SCHEMA,
+            queued: None,
             tv: ObjId(tv),
             ordinal: 3,
             charge: Charge {
@@ -1864,6 +2089,7 @@ mod tests {
         let site = mush_core::CanonicalId::new("ahuna_port").expect("an id");
         let record = |tv: u32, due_ic: i64| RigRecord {
             schema: crate::surface::excursion::EXCURSION_SCHEMA,
+            queued: None,
             tv: ObjId(tv),
             ordinal: 2,
             charge: Charge {
@@ -1948,6 +2174,7 @@ mod tests {
             span: None,
             arrived: None,
             mined: None,
+            stays: BTreeMap::new(),
         });
         let (picked, resting) = candidates(vec![untold], now, told, |_| None, |_| None, &state);
         assert_eq!(resting, 1);
@@ -1987,6 +2214,7 @@ mod tests {
         };
         let record = |tv: u32, started_ic: i64, due_ic: i64, params: ActParams| RigRecord {
             schema: crate::surface::excursion::EXCURSION_SCHEMA,
+            queued: None,
             tv: ObjId(tv),
             ordinal: 4,
             charge: Charge {
@@ -2054,6 +2282,7 @@ mod tests {
         let number = address::pocket_number(px, py).expect("a number");
         RigRecord {
             schema: crate::surface::excursion::EXCURSION_SCHEMA,
+            queued: None,
             tv: ObjId(tv),
             ordinal: if act_due.is_some() { 4 } else { 3 },
             charge: Charge {
@@ -2239,6 +2468,7 @@ mod tests {
             moved: BTreeMap::new(),
             span: None,
             arrived: None,
+            stays: BTreeMap::new(),
             mined: Some(Mined {
                 k: 2,
                 cycles: 4,
@@ -2310,5 +2540,127 @@ mod tests {
             text,
             "A sounding thumps through the ground from the southeast, 500 m to 1 km off."
         );
+    }
+
+    /// An idle record at ordinal 5 holding a queued unload filed by that recover at `at_ic`.
+    fn queued(tv: u32, at_ic: i64) -> RigRecord {
+        let mut record = RigRecord::fresh_unread(ObjId(tv));
+        record.ordinal = 5;
+        record.queued = Some(crate::surface::excursion::Queued {
+            kind: ActKind::Unload,
+            operator: ObjId(7),
+            hull: ObjId(8),
+            slot: 1,
+            site: mush_core::CanonicalId::new("ahuna_port").expect("an id"),
+            after: 5,
+            at_ic,
+            excursion: None,
+        });
+        record
+    }
+
+    /// **A queued unload is a candidate until a start lands** (doc 20 cut SM.8; the brief's 3.9):
+    /// an idle record with a queue is a queued candidate (not due, not started), ordered by its
+    /// `at_ic` among the others; with an act or a run beside it, not; inside its start's back-off,
+    /// not (and counted passed over); `still_due` holds its attempts key.
+    #[test]
+    fn sm8_a_queued_unload_is_a_candidate_until_a_start_lands() {
+        let now = 10_000;
+        let state = SurfaceTickState::default();
+        let pick = |records: Vec<RigRecord>, state: &SurfaceTickState| {
+            let (picked, resting) = candidates(records, now, |_| (0, 0), |_| None, |_| None, state);
+            (
+                picked
+                    .iter()
+                    .map(|c| (c.record.tv.0, c.queued, c.due, c.started, c.order))
+                    .collect::<Vec<_>>(),
+                resting,
+            )
+        };
+        assert_eq!(
+            pick(vec![queued(1, 9_000)], &state),
+            (vec![(1, true, false, false, (9_000, 1))], 0)
+        );
+        assert_eq!(
+            pick(vec![queued(1, 9_500), queued(2, 9_000)], &state).0,
+            vec![
+                (2, true, false, false, (9_000, 2)),
+                (1, true, false, false, (9_500, 1))
+            ],
+            "ordered by the queue's instant"
+        );
+        let mut busy = queued(1, 9_000);
+        busy.act = drilling(1, 9_000, 2, Some(12_000)).act;
+        busy.ordinal = 4;
+        assert!(pick(vec![busy], &state).0.is_empty(), "an act beside it");
+        let mut drilling_too = drilling(1, 12_000, 2, None);
+        drilling_too.queued = queued(1, 9_000).queued;
+        if let Some(q) = drilling_too.queued.as_mut() {
+            q.after = 3;
+        }
+        assert!(
+            pick(vec![drilling_too], &state).0.iter().all(|c| !c.1),
+            "never queued beside a run"
+        );
+        let mut resting = SurfaceTickState {
+            fires: 100,
+            ..SurfaceTickState::default()
+        };
+        resting.backoff.insert((1, 6, QUEUED_CYCLE), 100);
+        assert_eq!(pick(vec![queued(1, 9_000)], &resting), (Vec::new(), 1));
+        let due = still_due(&[queued(1, 9_000)], now);
+        assert!(due.contains(&(1, 6, QUEUED_CYCLE)), "{due:?}");
+    }
+
+    /// **The queued key never meets a cycle** (doc 20 cut SM.8; the brief's reviewer finding F9):
+    /// `QUEUED_CYCLE` lies past every run cycle; a slot holding a queued start's attempts and an
+    /// act's finish attempts hands the finish's offer the act's ordinal only.
+    #[test]
+    fn sm8_the_queued_key_never_meets_a_cycle() {
+        const { assert!(QUEUED_CYCLE > crate::surface::excursion::MAX_RUN_CYCLES) };
+        let mut state = SurfaceTickState::default();
+        state.attempts.insert((900, 6, QUEUED_CYCLE), 3);
+        state.attempts.insert((900, 4, 0), 2);
+        state.attempts.insert((900, 3, 2), 1);
+        assert_eq!(retried_ordinals(&state, ObjId(900)), vec![(3, 2), (4, 0)]);
+    }
+
+    /// **The queued key is its own** (doc 20 cut SM.8; decision R15): `tacsim.surface/900/3/queued`,
+    /// never the start's `act_key` nor the finish's `done_key`.
+    #[test]
+    fn sm8_the_queued_key_is_its_own() {
+        let queued = queued_key(ObjId(900), 3).map(|k| k.as_str().to_owned());
+        assert_eq!(queued.as_deref(), Some("tacsim.surface/900/3/queued"));
+        assert_ne!(
+            queued,
+            crate::surface::act::act_key(ObjId(900), 3).map(|k| k.as_str().to_owned())
+        );
+        assert_ne!(
+            queued,
+            done_key(ObjId(900), 3).map(|k| k.as_str().to_owned())
+        );
+    }
+
+    /// **An unload that moved nothing is told a whole line** (the lead's pre-commit round, item
+    /// 3): with something staying, `UNLOADED_NONE` naming it; with the hopper read empty at the
+    /// offer (nothing moved, nothing stays), `UNLOADED_NONE_EMPTY` — never a line with an empty
+    /// `{stays}`.
+    #[test]
+    fn sm8_an_unload_that_moved_nothing_is_told_a_whole_line() {
+        let stays = unloaded_none_line("1", "Salt Moth", "2 t of metal ore, run-of-mine");
+        assert_eq!(
+            stays,
+            "Rig 1's hopper still holds 2 t of metal ore, run-of-mine: the Salt Moth's hold has no \
+             room for it. +tv/1 dump empties it onto the spoil."
+        );
+        let empty = unloaded_none_line("1", "Salt Moth", "");
+        assert_eq!(
+            empty,
+            "Rig 1 unloads nothing into the Salt Moth's hold: its hopper was already empty."
+        );
+        for line in [&stays, &empty] {
+            assert!(!line.contains('{'), "{line}");
+            assert!(!line.contains("holds :"), "{line}");
+        }
     }
 }
