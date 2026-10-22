@@ -76,7 +76,7 @@ impl CommerceRead for OwnerReadContext<'_> {
         K: Send + Sync + 'static,
         V: Clone + Send + Sync + 'static,
     {
-        self.action_state(handle, key).map_err(|_| ReadUnavailable)
+        self.action_state(handle, key).map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG owner read get: {e:?}"); } ReadUnavailable }) // TEMP M7 diag
     }
     fn get_many<K, V>(
         &self,
