@@ -54,16 +54,14 @@ fn signed(
         .engine
         .legal_action_query(principal.clone(), actor, PerceivedRef::SelfActor)?;
     let offers = w.engine.project_legal_actions(&query)?;
-    let offer = offers
-        .projected_for_action(&action)
-        .ok_or_else(|| {
-            format!(
-                "actual signed Follow action {owner}:{id} for #{} at {:?} ({} offers)",
-                actor.0,
-                w.engine.world.get(actor).and_then(|o| o.location),
-                offers.projected().len()
-            )
-        })?;
+    let offer = offers.projected_for_action(&action).ok_or_else(|| {
+        format!(
+            "actual signed Follow action {owner}:{id} for #{} at {:?} ({} offers)",
+            actor.0,
+            w.engine.world.get(actor).and_then(|o| o.location),
+            offers.projected().len()
+        )
+    })?;
     let invocation = request(n, actor, owner, params.clone())?;
     let resolved = w.engine.resolve_legal_action(
         &offers,
