@@ -298,6 +298,9 @@ pub(super) async fn exercise(
             tasks.push(probe.tasks.clone());
             let (prepared, out) =
                 prepare_q(&mut probe, BUYER, N + 20, params(owner, parent.licence()))?;
+            // Core admits one pending commit: the parent cannot be resold
+            // between a prepared (or staged) qualification and its install,
+            // so the resale itself is refused and no qualification lands.
             if take {
                 stage_q(
                     &mut probe,
@@ -306,20 +309,16 @@ pub(super) async fn exercise(
                     prepared,
                     out,
                 )?;
-                resale(&mut probe, parent.licence(), BUYER, GOD, N + 21)?;
-                assert!(probe.engine.take_staged_action().is_err());
-            } else {
-                resale(&mut probe, parent.licence(), BUYER, GOD, N + 21)?;
                 assert!(
-                    stage_q(
-                        &mut probe,
-                        N + 20,
-                        params(owner, parent.licence()),
-                        prepared,
-                        out
-                    )
-                    .is_err()
+                    resale(&mut probe, parent.licence(), BUYER, GOD, N + 21).is_err(),
+                    "parent resold under a staged qualification"
                 );
+            } else {
+                assert!(
+                    resale(&mut probe, parent.licence(), BUYER, GOD, N + 21).is_err(),
+                    "parent resold under a prepared qualification"
+                );
+                drop((prepared, out));
             }
             assert!(rows(&disk(&probe), "roll", OPS).is_empty());
         }
