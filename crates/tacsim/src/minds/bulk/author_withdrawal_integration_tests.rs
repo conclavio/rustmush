@@ -153,6 +153,13 @@ fn transfer(world: &mut PlayerWorld, a: &EntitlementAllocationV1) -> TestResult 
     );
     Ok(())
 }
+/// A fresh boot seats both actors in the lobby; the market venue is ROOM.
+fn seat(world: &mut PlayerWorld) -> TestResult {
+    for actor in [GOD, BUYER] {
+        world.engine.world.move_to(actor, ROOM)?;
+    }
+    world.commit()
+}
 fn fences(f: &PurchaseFixture, granted: &Durable, a: &EntitlementAllocationV1) -> TestResult {
     let mut disabled = PlayerWorld::boot_entitlements(f, granted)?;
     assert!(action(&disabled, "roll", ACTION, 1).is_err());
@@ -353,6 +360,7 @@ fn withdraw_after_lapse(
         "withdrawal is permanent, not a second cause"
     );
     source_answer(&mut world, GOD, a.licence(), Some(a.revision().source()))?;
+    seat(&mut world)?;
     assert!(
         prepare(
             &mut world,
@@ -389,6 +397,7 @@ fn eligible_withdrawal(
     let mut world = PlayerWorld::boot_withdrawal(f, granted)?;
     // Positive control at the same clock: the later refusal is withdrawal,
     // not an already expired parent or owner term.
+    seat(&mut world)?;
     commit(
         &mut world,
         "market",
@@ -404,6 +413,7 @@ fn eligible_withdrawal(
     assert!(disk(&world) == before);
     install(&mut world, prepared)?;
     unchanged(&before, &disk(&world), a)?;
+    seat(&mut world)?;
     assert!(
         prepare(
             &mut world,
