@@ -2409,7 +2409,7 @@ line mode, the TUI's and the web's decoders; the arrival line over SSH; the obse
 Judged **ship-with-notes**; the lead accepted the owner-critical defaults (the display freeze reading
 of §8's 32 waypoints; the way home waived from the 5 % floor; the readings rows without a per-row
 drive time; the keyless way home while dark) and the builder's (a recover with no readable battery
-row spends nothing for its leg), accepted the crossed 20 ms planning threshold with an atlas cut owed,
+row spends nothing for its leg), accepted the crossed 20 ms planning threshold with an atlas cut owed (since landed as cut AP, `74c5801f`),
 and made the housekeeping fixes by hand before the commit. One commit, pushed.
 
 ### What landed
