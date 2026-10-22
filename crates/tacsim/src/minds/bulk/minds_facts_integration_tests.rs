@@ -314,14 +314,19 @@ fn public_and_private(
         "foreign and absent are indistinguishable"
     );
     let own = draft(w, BUYER, "Private owner lapse")?;
-    w.say(
+    let attached = w.say(
         BUYER,
         &format!(
             "@contract/condition {own}=fact minds licence.lapsed {} revision=1",
             owner.key()
         ),
     )?;
-    assert_eq!(contract(w, own)?.consent.conditions.len(), 1);
+    assert_eq!(
+        contract(w, own)?.consent.conditions.len(),
+        1,
+        "{}",
+        PlayerWorld::private_text(&attached, BUYER)
+    );
     let private = w.say(GOD, &format!("@contract/show {own}"))?;
     assert!(
         !PlayerWorld::private_text(&private, GOD).contains(&owner.key()),

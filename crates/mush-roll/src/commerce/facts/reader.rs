@@ -87,7 +87,7 @@ impl OwnerReadService for Reader {
         query: Query,
     ) -> Result<Reply, OwnerReadError> {
         let refuse = |_| OwnerReadError::Unavailable;
-        self.ready.check(ctx.world()).map_err(refuse)?;
+        self.ready.check(ctx.world()).map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG facts/reader ready: {e:?}"); } refuse(e) })?; // TEMP M7 diag
         match query {
             Query::Term(request) => {
                 if ctx.requester().as_str() != crate::NS || ctx.actor() != mush_core::GOD {
@@ -118,8 +118,11 @@ impl OwnerReadService for Reader {
                     _ => return Err(OwnerReadError::Authority),
                 };
                 let proof = history::resolve(ctx, &self.f, &self.ratings, licence, generation)
+                    .map_err(history::diag(concat!(file!(), ":", line!()))) // TEMP M7 diag
                     .map_err(refuse)?;
-                authority::authorize(ctx, &scope, &fact, &proof).map_err(refuse)?;
+                authority::authorize(ctx, &scope, &fact, &proof)
+                    .map_err(history::diag(concat!(file!(), ":", line!()))) // TEMP M7 diag
+                    .map_err(refuse)?;
                 let occurrence = super::super::entitlement::history::optional(
                     ctx,
                     &self.f.lapse_occurrences,

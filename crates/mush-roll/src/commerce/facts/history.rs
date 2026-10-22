@@ -212,6 +212,15 @@ pub(super) fn historical(
         _ => Err(PublicationError::Unavailable),
     }
 }
+// TEMP M7 diag (to be reverted)
+pub(super) fn diag(at: &'static str) -> impl Fn(PublicationError) -> PublicationError {
+    move |e| {
+        if std::env::var_os("M7_CONDUCT_DIAG").is_some() {
+            eprintln!("M7_CONDUCT_DIAG {at}: {e:?}");
+        }
+        e
+    }
+}
 fn owner_term(
     ctx: &impl CommerceRead,
     roll: &RollStore,
@@ -220,11 +229,11 @@ fn owner_term(
     generation: TermGeneration,
 ) -> Result<TermProof, PublicationError> {
     if generation > licence.term {
-        return Err(PublicationError::Unavailable);
+        return Err(diag(concat!(file!(), ":", line!()))(PublicationError::Unavailable));
     }
-    let birth = read(ctx, &f.operations, licence.operation.to_hex())?;
+    let birth = read(ctx, &f.operations, licence.operation.to_hex()).map_err(diag(concat!(file!(), ":", line!())))?;
     let mush_org::PrincipalId::Object(initial_owner) = birth.economic.issued_owner else {
-        return Err(PublicationError::Unavailable);
+        return Err(diag(concat!(file!(), ":", line!()))(PublicationError::Unavailable));
     };
     if birth.economic.house.is_some()
         || birth.licence != licence.id
@@ -232,42 +241,42 @@ fn owner_term(
         || birth.line != licence.line
         || birth.requester != initial_owner
     {
-        return Err(PublicationError::Mismatch);
+        return Err(diag(concat!(file!(), ":", line!()))(PublicationError::Mismatch));
     }
     let economy = ctx
         .world()
         .module_state::<mush_economy::EconomyStore>()
-        .ok_or(PublicationError::Unavailable)?;
+        .ok_or(PublicationError::Unavailable).map_err(diag(concat!(file!(), ":", line!())))?;
     if economy.is_frozen() {
-        return Err(PublicationError::Unavailable);
+        return Err(diag(concat!(file!(), ":", line!()))(PublicationError::Unavailable));
     }
     economy
         .filing_receipt_audit()
-        .verify(&birth.audit_subject()?)
-        .map_err(unavailable)?;
+        .verify(&birth.audit_subject().map_err(diag(concat!(file!(), ":", line!())))?)
+        .map_err(unavailable).map_err(diag(concat!(file!(), ":", line!())))?;
     roll.check_required_root(&RequiredRoot {
         anchor: RootAnchor::Operation(birth.commit),
         identity: birth.revision,
     })
-    .map_err(mismatch)?;
+    .map_err(mismatch).map_err(diag(concat!(file!(), ":", line!())))?;
     let term =
-        super::super::owner_attestation::history::historical(ctx, roll, f, birth, generation)?;
+        super::super::owner_attestation::history::historical(ctx, roll, f, birth, generation).map_err(diag(concat!(file!(), ":", line!())))?;
     let (accepted_holder, revision) = if generation.get() == 1 {
         (initial_owner, birth.revision)
     } else {
-        let op = read(ctx, &f.owner_attestations, term.operation.to_hex())?;
+        let op = read(ctx, &f.owner_attestations, term.operation.to_hex()).map_err(diag(concat!(file!(), ":", line!())))?;
         // historical() already checked exact cause, predecessor and its roots.
         (op.owner, op.revision)
     };
     let successor = if generation < licence.term {
-        let next = next_generation(generation)?.ok_or(PublicationError::Mismatch)?;
+        let next = next_generation(generation).map_err(diag(concat!(file!(), ":", line!())))?.ok_or(PublicationError::Mismatch).map_err(diag(concat!(file!(), ":", line!())))?;
         Some(super::super::owner_attestation::history::historical(
             ctx, roll, f, birth, next,
-        )?)
+        ).map_err(diag(concat!(file!(), ":", line!())))?)
     } else {
         if let Some(next) = next_generation(generation)? {
             if optional(ctx, &f.terms, OwnerTerm::encoded_key(licence.id, next))?.is_some() {
-                return Err(PublicationError::Mismatch);
+                return Err(diag(concat!(file!(), ":", line!()))(PublicationError::Mismatch));
             }
         }
         None
@@ -285,7 +294,7 @@ fn owner_term(
         revision,
         window: term.window,
     };
-    accepted.validate()?;
+    accepted.validate().map_err(diag(concat!(file!(), ":", line!())))?;
     Ok(TermProof {
         accepted,
         rows: Rows::Owner {

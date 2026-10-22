@@ -17,21 +17,21 @@ pub(super) fn authorize(
     let subject = match proof.accepted.kind {
         PersonalKind::Paid => proof
             .paid_current_holder()
-            .ok_or(PublicationError::Unavailable)?,
+            .ok_or(super::history::diag(concat!(file!(), ":", line!()))(PublicationError::Unavailable))?,
         PersonalKind::Owner => {
             let economy = ctx
                 .world()
                 .module_state::<mush_economy::EconomyStore>()
-                .ok_or(PublicationError::Unavailable)?;
+                .ok_or(super::history::diag(concat!(file!(), ":", line!()))(PublicationError::Unavailable))?;
             if economy.is_frozen() {
-                return Err(PublicationError::Unavailable);
+                return Err(super::history::diag(concat!(file!(), ":", line!()))(PublicationError::Unavailable));
             }
             let title = economy
                 .snapshot()
                 .asset(proof.accepted.charter.object())
-                .ok_or(PublicationError::Unavailable)?;
+                .ok_or(super::history::diag(concat!(file!(), ":", line!()))(PublicationError::Unavailable))?;
             let PrincipalId::Object(holder) = &title.title_owner else {
-                return Err(PublicationError::Unavailable);
+                return Err(super::history::diag(concat!(file!(), ":", line!()))(PublicationError::Unavailable));
             };
             if title.object != proof.accepted.charter.object()
                 || title.revision == 0
@@ -40,7 +40,7 @@ pub(super) fn authorize(
                 || title.stolen.is_some()
                 || title.lifecycle != mush_economy::AssetLifecycle::Active
             {
-                return Err(PublicationError::Unavailable);
+                return Err(super::history::diag(concat!(file!(), ":", line!()))(PublicationError::Unavailable));
             }
             // A genuine current title is separate from the immutable owner who
             // accepted this generation; it never rewrites the lapse attribution.
@@ -72,7 +72,7 @@ fn common(
         || !matches!(scope.visibility(), EconomicVisibility::Parties)
         || scope.org_scope().is_some()
     {
-        return Err(PublicationError::Unavailable);
+        return Err(super::history::diag(concat!(file!(), ":", line!()))(PublicationError::Unavailable));
     }
     Ok(())
 }
@@ -86,13 +86,13 @@ fn participants(
         FactPurpose::Attach => scope.actor(),
         FactPurpose::Read | FactPurpose::Evaluate => scope
             .attachment_actor(fact)
-            .ok_or(PublicationError::Unavailable)?,
+            .ok_or(super::history::diag(concat!(file!(), ":", line!()))(PublicationError::Unavailable))?,
     };
     live(ctx, authorizer)?;
     if !subjects.contains(&authorizer)
         || !scope.parties().contains(&PrincipalId::Object(authorizer))
     {
-        return Err(PublicationError::Unavailable);
+        return Err(super::history::diag(concat!(file!(), ":", line!()))(PublicationError::Unavailable));
     }
     if scope.purpose() == FactPurpose::Read {
         live(ctx, scope.actor())?;
@@ -100,7 +100,7 @@ fn participants(
             .parties()
             .contains(&PrincipalId::Object(scope.actor()))
         {
-            return Err(PublicationError::Unavailable);
+            return Err(super::history::diag(concat!(file!(), ":", line!()))(PublicationError::Unavailable));
         }
     }
     Ok(())
@@ -112,7 +112,7 @@ fn live(ctx: &OwnerReadContext<'_>, actor: ObjId) -> Result<(), PublicationError
         .get(actor)
         .is_none_or(|o| o.kind != ObjKind::Player || o.flags.contains(Flags::GOING))
     {
-        return Err(PublicationError::Unavailable);
+        return Err(super::history::diag(concat!(file!(), ":", line!()))(PublicationError::Unavailable));
     }
     Ok(())
 }
