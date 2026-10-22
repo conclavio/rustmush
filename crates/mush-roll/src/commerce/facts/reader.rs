@@ -128,18 +128,21 @@ impl OwnerReadService for Reader {
                     &self.f.lapse_occurrences,
                     proof.accepted.key(),
                 )
+                .map_err(history::diag(concat!(file!(), ":", line!()))) // TEMP M7 diag
                 .map_err(refuse)?;
                 let truth = occurrence
                     .map(|row| {
-                        proof.require_historical_lapse(row)?;
-                        roll.check_required_root(&row.root()?).map_err(invalid)?;
+                        proof.require_historical_lapse(row).map_err(history::diag(concat!(file!(), ":", line!())))?; // TEMP M7 diag
+                        roll.check_required_root(&row.root()?).map_err(invalid).map_err(history::diag(concat!(file!(), ":", line!())))?; // TEMP M7 diag
                         Ok::<_, PublicationError>(Truth {
                             at: row.at_utc,
                             actor: row.actor,
                         })
                     })
                     .transpose()
+                    .map_err(history::diag(concat!(file!(), ":", line!()))) // TEMP M7 diag
                     .map_err(refuse)?;
+                if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG facts reader scoped ok truth={}", truth.is_some()); } // TEMP M7 diag
                 Ok(Reply::Scoped { truth })
             }
         }
