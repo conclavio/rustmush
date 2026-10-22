@@ -162,12 +162,12 @@ pub(super) async fn exercise(
     owner: LicenceId,
     paid: &EntitlementAllocationV1,
 ) -> TestResult {
-    let initial: FiledRecord = serde_json::from_value(
-        rows(&saved.disk, "roll", "roll_mind_filed")
-            .into_iter()
-            .find(|v| v.pointer("/content/id") == Some(&json!(paid.filed())))
-            .ok_or("actual initial child")?,
-    )?;
+    // Compare typed ids: the content's serialised field is `filed`, not `id`.
+    let initial: FiledRecord = rows(&saved.disk, "roll", "roll_mind_filed")
+        .into_iter()
+        .filter_map(|v| serde_json::from_value::<FiledRecord>(v).ok())
+        .find(|r| r.content().id() == paid.filed())
+        .ok_or("actual initial child")?;
     let (edited, revision) = save(f, saved).await?;
     let (certified, rating) = registry::certify(f, &edited).await?;
     let mut w = boot(f, &certified)?;
