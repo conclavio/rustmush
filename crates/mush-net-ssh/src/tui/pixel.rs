@@ -655,9 +655,12 @@ impl PixelView {
             .unwrap_or(0);
         let tank = self.helm.predicted(now).unwrap_or(heading);
         let camera = (tank + self.look_mdeg).rem_euclid(360_000) / 1_000;
+        // An order the picture already shows reached is not news, even while
+        // the frame that confirms it is a pulse away.
         let ordered = self
             .helm
             .ordered()
+            .filter(|o| arc(tank, *o).abs() > 1_000)
             .map(|o| format!(" → {:03}°", o / 1_000))
             .unwrap_or_default();
         let turning = match self.helm.turning() {
