@@ -1,5 +1,10 @@
 # 21. The graphics engine — one frame, three encoders
 
+**Draft 0.4 — 2026-10-22, after the review of w11term 331a550.** G.10 and G.11 now state the
+wire forms w11term implements (`docs/game-client-protocol.md` there): the four-field OSC 440 with
+no loop, SFTP v3 with the `read_len` floor, the manifest rules beyond the doc, the DCS parser
+change the probe needs first (§10, D-21-24).
+
 **Draft 0.3 — 2026-10-22.** Two cuts added from the owner's work on w11term the same night: G.10
 bells and sounds (D-21-24) and G.11 assets over the player's own connection (D-21-25); §10, §11, §14.
 
@@ -339,8 +344,8 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
 | **G.7 the heightfield** | the voxel-space producer; the first map with relief (Q-21-5) | M | G.1, a map with height | a crater rim on the proving ground or a Ceres site at ≤6 ms a frame |
 | **G.8 debrief and replay** | the replay document (16b I.2) as a bucket-B picture with a scrubbable timeline | M | G.5 | `SIM REPLAY` draws the match; `,`/`.` scrub it |
 | **G.9 the boards** | the strategic board and the investigation board; the player annotation store they share | L | G.5, an annotation store | two players see each other's pins |
-| **G.10 bells and sounds** | the cockpit's notice kinds as sound names (`contact-gained`, `contact-lost`, `hit`, `overheat`, `power-online`, …); BEL for every terminal, mintty's **OSC 440** (`ESC ] 440 ; name[:async][:nostop][:loop] BEL`, the empty name stopping a loop) for a terminal that answers `XTVERSION` as w11term or mintty, kitty's OSC 99 with its `s=` sound for kitty; `async:nostop` on events, `loop` + stop for alarms; one sound a kind per two seconds; `@sounds on|off`; `XTVERSION` joins the `@tui` probe (D-21-24) | S | G.1 | a contact gained rings in w11term and in Windows Terminal's bell; the overheat alarm starts and stops with the frame; the sound names are the notice kinds |
-| **G.11 assets over the player's own connection** | the gateway's SSH server accepts the `sftp` subsystem (russh-sftp) over a READ-ONLY virtual tree rooted at a shipped `assets/` directory — open/read/close/opendir/readdir/stat/realpath only, paths canonicalised, a size cap a file and a bytes-a-second cap a connection; `assets/manifest.json` with content hashes and a pack version that the TUI's Hello carries; w11term syncs what changed into its per-host cache and OSC 440 names resolve there first; the sound pack, the scene model's sprite sheet, a font with the HUD's glyphs and the help topics ride it (D-21-25) | M | G.10, deploy.sh shipping `assets/` | w11term fetches the sound pack on first connect and plays G.10's sounds from it; a write, a rename or a `..` is refused; the manifest version in the Hello changes when the pack does |
+| **G.10 bells and sounds** | the cockpit's notice kinds as sound names (`contact-gained`, `contact-lost`, `hit`, `overheat`, `power-online`, …; 1–64 of `[A-Za-z0-9_-]`); BEL for every terminal; **w11term's OSC 440, wire version 1** — `ESC ] 440 ; 1 ; play ; <name> ST` and `ESC ] 440 ; 1 ; pack ; <pack_version> ST`, four fields, no options, no loop (w11term's `docs/game-client-protocol.md`; mintty's older `440;file` form is NOT this and mintty gets BEL) — only for a terminal whose `XTVERSION` reply names w11term; kitty's OSC 99 with its `s=` sound for kitty; the client plays serially at a 40 ms floor with a 16-deep queue and ≤5 s clips, so an alarm is the server re-sending its name on a cadence, debounced server-side at one sound a kind per two seconds; `@sounds on|off`; **`XTVERSION` joins the `@tui` probe, which first needs the TUI key parser to swallow DCS (`ESC P … ESC \`) the way it swallows APC** — today that reply would decode as F1 plus typed text (D-21-24) | S | G.1 | a contact gained rings in w11term and in Windows Terminal's bell; the overheat alarm repeats while the frame says so and stops when it clears; the sound names are the notice kinds; a DCS reply never reaches the input line |
+| **G.11 assets over the player's own connection** | the gateway's SSH server accepts the `sftp` subsystem (russh-sftp, **protocol v3**) over a READ-ONLY virtual tree rooted at a shipped `assets/` directory — open/read/close/opendir/readdir/stat/lstat/fstat/realpath only, paths canonicalised, a size cap a file and a bytes-a-second cap a connection; if it advertises `limits@openssh.com` its `read_len` is ≥ 16384 (the client reads 16 KiB and refuses larger-than-limit reads); `assets/manifest.json` as w11term's protocol defines it — schema `version` 1, `pack_version` an OSC-grammar token, `files[{name, path, kind, sha256, size}]`, every `size` > 0, names and the pack version 1–64 of `[A-Za-z0-9_-]`, sound names never `system`/`off`, paths of two or more segments with no `.`/`..`, `.wav` lower-case, no unknown fields (the schema is frozen at 1) — and the Hello's `asset_pack {version, pack_version, manifest}` for the web client; the gateway announces the pack once after login and once after a deploy (an announcement during a running sync is dropped by the client, so re-announce on a slow cadence, never per frame); the first pack stays small (sounds only, well under 10 MiB: sequential 16 KiB reads fetch ~25 MiB in the client's 180 s at 100 ms RTT); w11term syncs what changed into its per-host cache and OSC 440 names resolve there first; the sprite sheet, a font with the HUD's glyphs and the help topics ride the same manifest (D-21-25) | M | G.10, deploy.sh shipping `assets/` | w11term fetches the sound pack on first connect and plays G.10's sounds from it; a write, a rename or a `..` is refused; the manifest version in the Hello changes when the pack does |
 
 ## 11. Decisions taken here
 
@@ -375,8 +380,10 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
 - **D-21-23** w11term, the owner's Windows-native terminal on `wezterm-term`, is the reference
   Windows client (Q-21-8).
 - **D-21-24** Sounds are names, never audio: the cockpit's notice kinds, sent as BEL everywhere
-  and as mintty's OSC 440 or kitty's OSC 99 where `XTVERSION` or the probe says so; the client
-  maps names to files it holds, refuses paths from the server, and debounces (G.10).
+  and as w11term's four-field OSC 440 (`440;1;play;<name>`) or kitty's OSC 99 where `XTVERSION`
+  or the probe says so; the client maps names to files it holds, refuses paths from the server,
+  and debounces; an alarm is a repeated name, never a loop (G.10). Amended 2026-10-22 from
+  mintty's form to w11term's after the review of w11term 331a550.
 - **D-21-25** Client-side assets (sounds, sprites, a font, help) are fetched over the player's
   own SSH connection through a read-only `sftp` subsystem on the gateway, from a manifest with
   content hashes whose version the Hello carries; never over a second port or a second login

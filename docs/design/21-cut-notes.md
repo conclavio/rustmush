@@ -9,3 +9,5 @@ The document (Draft 0.1, 2026-10-21), the README row and this file. Nothing of t
 Draft 0.2 the same evening: the owner accepted every Q-21 default (now D-21-16..22) and answered Q-21-8 with w11term, their own Windows-native terminal on `wezterm-term` (D-21-23).
 
 Draft 0.3 (2026-10-22): two cuts added from the owner's w11term work — G.10 bells and sounds (names over BEL / OSC 440 / OSC 99, D-21-24) and G.11 assets over the player's own connection (a read-only sftp subsystem on the gateway with a hashed manifest, D-21-25).
+
+Draft 0.4 (2026-10-22): after reviewing w11term 331a550 against its game-client protocol, G.10 and G.11 restated in w11term's wire forms (four-field OSC 440 without loop; SFTP v3, `read_len` >= 16384, the manifest's undocumented rules; the TUI key parser must swallow DCS before the probe sends XTVERSION).
