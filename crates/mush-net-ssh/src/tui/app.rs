@@ -2429,12 +2429,26 @@ impl TuiApp {
                 r.redraw = false;
                 return;
             }
-            Key::Ctrl('g') => {
-                self.pixel.toggle(Instant::now());
+            Key::KeyboardFlags(_) => {
+                self.pixel.keyboard_reply();
+                r.redraw = false;
                 return;
             }
+            Key::Ctrl('g') => {
+                self.pixel.toggle(Instant::now());
+                r.submit.extend(self.pixel.take_orders());
+                return;
+            }
+            // Doc 21 cut G.4: the view's helm orders go to the world as the
+            // lines a pilot would type (`HEADING <deg>`).
             _ if self.pixel.is_active() && key != Key::Ctrl(']') => {
-                self.pixel.key(key);
+                self.pixel.key(key, Instant::now());
+                r.submit.extend(self.pixel.take_orders());
+                return;
+            }
+            // A held key's repeat or release that outlived the view.
+            Key::Repeat(_) | Key::Release(_) => {
+                r.redraw = false;
                 return;
             }
             _ => {}
@@ -3832,6 +3846,31 @@ impl TuiApp {
     #[must_use]
     pub fn pixel_interval(&self) -> std::time::Duration {
         self.pixel.interval()
+    }
+
+    /// The view's helm orders since the last call (doc 21 cut G.4), for the
+    /// output pump to send as typed lines.
+    pub fn pixel_take_orders(&mut self) -> Vec<String> {
+        self.pixel.take_orders()
+    }
+
+    /// Bytes for the terminal ahead of the next text frame (the kitty
+    /// keyboard protocol's push and pop).
+    pub fn pixel_take_terminal_bytes(&mut self) -> Vec<u8> {
+        self.pixel.take_terminal_bytes()
+    }
+
+    /// Whether the view has the kitty keyboard protocol pushed.
+    #[must_use]
+    pub fn pixel_keyboard_pushed(&self) -> bool {
+        self.pixel.keyboard_pushed()
+    }
+
+    /// Leaving the TUI with the view open: stop a turn in progress and hand
+    /// back its order.
+    pub fn pixel_leave_orders(&mut self) -> Vec<String> {
+        self.pixel.stop_helm(Instant::now());
+        self.pixel.take_orders()
     }
 
     /// The encoder of the picture a close since the last call took off

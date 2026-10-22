@@ -1,5 +1,11 @@
 # 21. The graphics engine — one frame, three encoders
 
+**Draft 0.8 — 2026-10-22, G.4: the camera on a leash.** The turn keys steer the tank with
+`HEADING` orders; the picture predicts the tank's heading between pulses from the order, the last
+frame and a turn rate measured from frames; `,` and `.` are a look that orders nothing; on a
+terminal that answers the kitty keyboard protocol's query the view pushes it while open and a
+turn is held, elsewhere toggled (the owner's three defaults, cut notes §G.4).
+
 **Draft 0.7 — 2026-10-22, G.2b: sixel fills its box.** The owner after the smoke: the native-size
 picture in a corner "won't work". A sixel picture is now shown as large as its cell box holds at the
 frame's aspect, up to three times the frame: rendered at 640x480 as before and scaled
@@ -365,7 +371,7 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
 | **G.2 sixel** | the sixel encoder from the same frame; DA1 attribute 4 detection; the 10 Hz default; the encoder choice (§4.4); smoked in Windows Terminal over `ssh.exe`. **Landed 2026-10-22** at 20 Hz (D-21-3 amended), with the `CSI 16 t` cell size, the frame sized to the box, the resend after text and the wipe on close, and `@pixel/encoder` per connection | M | G.1 | the MW2 fixture frame and the cockpit frame byte-compared against a reference encoder; the live smoke in Windows Terminal (as built: a decoder round trip in place of a reference encoder; the fixture shown in Windows Terminal through ConPTY; the live SSH smoke owed) |
 | **G.3 the web frame** | the gateway's PNG over the websocket as a binary message; the cockpit tab's canvas; the same clock and hash | S | G.1 | the web cockpit shows the picture the TUI shows, pinned by a fixture test |
 | **G.3b the web render** | `mush-pixel` to WebAssembly; the client renders from its own feeds; the socket frame as the fallback | M | G.3 | the fixture renders pixel-equal in the browser and the TUI; zero gateway CPU for a web viewer |
-| **G.4 the leash and the keys** | the turn as a helm order through the control channel; interpolation between pulses; the kitty keyboard protocol for hold-to-turn | M | G.1 | the sim's heading and the camera's reconcile within one pulse; a release event stops a turn |
+| **G.4 the leash and the keys** | the turn as a helm order through the control channel; interpolation between pulses; the kitty keyboard protocol for hold-to-turn. **Landed 2026-10-22**: `HEADING` orders a pulse and a half ahead, the heading predicted from the order and a measured turn rate, `,`/`.` a look, the protocol pushed only while the view is open | M | G.1 | the sim's heading and the camera's reconcile within one pulse; a release event stops a turn |
 | **G.5 the scene model and the orbital view** | `scene` (§3.3) and its rasteriser; the first builder: `sky.chart` as a picture with the plan's legs, the ship's dot and light-lag rings; the minimap re-based on `scene` | L | G.1 | `+chart` draws the picture in every encoder; the minimap pixel-equal before and after |
 | **G.6 the doll and the fitting screen** | the armour doll as a standalone bucket-B picture with a legend; the fitting paper doll with hardpoints and arcs embedded in the sheet (bucket C) | M | G.5 | the fixture doll; the fitting screen on the TUI and the web |
 | **G.7 the heightfield** | the voxel-space producer; the first map with relief (Q-21-5) | M | G.1, a map with height | a crater rim on the proving ground or a Ceres site at ≤6 ms a frame |
@@ -481,7 +487,10 @@ superseded its default (D-21-23).
 - **Doc 19 §5** (`+chart`): the chart as a picture (G.5).
 - **Doc 20 §4** (the vehicle) and **§5** (knowing): the windscreen and the survey chart as pictures;
   the first map with height (G.7, Q-21-5).
-- **Doc 17 §6** (the field pilot): the leash and the helm order (G.4).
+- **Doc 17 §6** (the field pilot): the leash and the helm order (G.4). *Not made: doc 17's §6 is
+  the due-event scheduling section, not the field pilot; G.4 is recorded here and in the cut notes
+  until the owner names the section it belongs in (17e, the field pilot's acceptance, is a
+  candidate).*
 - **`docs/ops.md`**: `[pixel]`, `@pixel/stats`, the budget per viewer (G.1); the `assets/`
   directory deploy.sh ships and the sftp caps (G.11).
 - **Doc 02 §5** (the SSH server): the `sftp` subsystem as the one subsystem the front door

@@ -70,6 +70,29 @@ pub enum Key {
     /// The terminal's cell size in sixel pixels (`CSI 6 ; h ; w t`), its
     /// answer to the probe's `CSI 16 t` (doc 21 cut G.2). Not a key either.
     CellSize(mush_pixel::caps::CellSize),
+    /// The kitty keyboard protocol's flags (`CSI ? flags u`), the answer to
+    /// the probe's `CSI ? u` (doc 21 cut G.4): the terminal speaks the
+    /// protocol. Not a key.
+    KeyboardFlags(u16),
+    /// A cursor key held down (the kitty keyboard protocol's repeat event,
+    /// only while the pixel view has pushed it).
+    Repeat(Arrow),
+    /// A cursor key let go (the protocol's release event): what ends a
+    /// held turn.
+    Release(Arrow),
+}
+
+/// A cursor key, for the kitty keyboard protocol's repeat and release events.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arrow {
+    /// Up.
+    Up,
+    /// Down.
+    Down,
+    /// Left.
+    Left,
+    /// Right.
+    Right,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -292,11 +315,27 @@ fn ctrl_letter(b: u8) -> char {
 
 fn csi_key(params: &str, fin: u8) -> Option<Key> {
     let first = params.split(';').next().unwrap_or("");
+    // The kitty keyboard protocol's event type, `CSI 1 ; <mods>:<event> D`:
+    // 1 press (also the default), 2 repeat, 3 release.
+    let event = params
+        .split(';')
+        .nth(1)
+        .and_then(|m| m.split(':').nth(1))
+        .unwrap_or("1");
+    let arrow = |a: Arrow, press: Key| match event {
+        "2" => Key::Repeat(a),
+        "3" => Key::Release(a),
+        _ => press,
+    };
+    // Another key's repeat is the key again; its release is nothing.
+    if event == "3" && !matches!(fin, b'A'..=b'D') {
+        return None;
+    }
     Some(match fin {
-        b'A' => Key::Up,
-        b'B' => Key::Down,
-        b'C' => Key::Right,
-        b'D' => Key::Left,
+        b'A' => arrow(Arrow::Up, Key::Up),
+        b'B' => arrow(Arrow::Down, Key::Down),
+        b'C' => arrow(Arrow::Right, Key::Right),
+        b'D' => arrow(Arrow::Left, Key::Left),
         b'H' => Key::Home,
         b'F' => Key::End,
         b'Z' => Key::BackTab,
@@ -307,6 +346,12 @@ fn csi_key(params: &str, fin: u8) -> Option<Key> {
         // A window report: only the cell size is asked for, and only it is a
         // marker; every other `CSI … t` is swallowed.
         b't' => Key::CellSize(mush_pixel::caps::CellSize::parse(params)?),
+        // The kitty keyboard protocol (doc 21 cut G.4): the flags reply, or a
+        // key in its `CSI <code>[;<mods>[:<event>]] u` form.
+        b'u' => match params.strip_prefix('?') {
+            Some(flags) => Key::KeyboardFlags(flags.parse().ok()?),
+            None => csi_u_key(params)?,
+        },
         b'~' => match first {
             "1" | "7" => Key::Home,
             "4" | "8" => Key::End,
@@ -327,6 +372,34 @@ fn csi_key(params: &str, fin: u8) -> Option<Key> {
             "24" => Key::F(12),
             _ => return None,
         },
+        _ => return None,
+    })
+}
+
+/// A key in the kitty keyboard protocol's `CSI <code>[:<alts>][;<mods>[:<event>]] u`
+/// form, which the pixel view's pushed flags (disambiguate, report event
+/// types) make the terminal send for Esc and for Ctrl and Alt chords: Esc is
+/// `CSI 27 u`, `^]` is `CSI 93;5 u`. Mapped to the legacy key it stands for,
+/// so the view's Esc and the detach still work; a release is nothing.
+fn csi_u_key(params: &str) -> Option<Key> {
+    let mut fields = params.split(';');
+    let code: u32 = fields.next()?.split(':').next()?.parse().ok()?;
+    let mut mods_event = fields.next().unwrap_or("1").split(':');
+    let mods: u32 = mods_event.next().and_then(|m| m.parse().ok()).unwrap_or(1);
+    if mods_event.next() == Some("3") {
+        return None;
+    }
+    let bits = mods.saturating_sub(1);
+    let (alt, ctrl) = (bits & 2 != 0, bits & 4 != 0);
+    let c = char::from_u32(code)?;
+    Some(match code {
+        27 => Key::Esc,
+        13 => Key::Enter,
+        9 => Key::Tab,
+        127 | 8 => Key::Backspace,
+        _ if ctrl && c.is_ascii() => Key::Ctrl(c.to_ascii_lowercase()),
+        _ if alt && !c.is_control() => Key::Alt(c),
+        _ if !c.is_control() => Key::Char(c),
         _ => return None,
     })
 }
@@ -477,6 +550,32 @@ mod tests {
             })]
         );
         assert_eq!(keys(b"\x1b[4;480;640t"), vec![]);
+        // The kitty keyboard protocol (doc 21 cut G.4): its flags reply; a
+        // cursor key's press, repeat and release; Esc and the Ctrl chords in
+        // the `CSI u` form, which must keep closing the view and detaching;
+        // another key's release is nothing.
+        assert_eq!(keys(b"\x1b[?0u"), vec![Key::KeyboardFlags(0)]);
+        assert_eq!(keys(b"\x1b[?3u"), vec![Key::KeyboardFlags(3)]);
+        assert_eq!(
+            keys(b"\x1b[D\x1b[1;1:2D\x1b[1;1:3D\x1b[1;1:1C"),
+            vec![
+                Key::Left,
+                Key::Repeat(Arrow::Left),
+                Key::Release(Arrow::Left),
+                Key::Right
+            ]
+        );
+        assert_eq!(
+            keys(b"\x1b[27u\x1b[93;5u\x1b[103;5u\x1b[120;3u\x1b[97u\x1b[97;1:3u"),
+            vec![
+                Key::Esc,
+                Key::Ctrl(']'),
+                Key::Ctrl('g'),
+                Key::Alt('x'),
+                Key::Char('a')
+            ]
+        );
+        assert_eq!(keys(b"\x1b[3;1:3~"), vec![], "a Delete release");
         // The probe's two answers in one burst, in the order a kitty sends
         // them, then a typed key.
         assert_eq!(

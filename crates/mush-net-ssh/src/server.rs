@@ -842,6 +842,7 @@ impl ConnHandler {
         let Some(channel) = self.channel else {
             return Ok(());
         };
+        let stop_orders: Vec<String>;
         let bytes = {
             let mut sh = self.lock();
             // Pixel cockpit spike (2026-10-21): free the picture's image
@@ -851,6 +852,12 @@ impl ConnHandler {
                 .as_ref()
                 .map(|t| t.pixel_close_bytes())
                 .unwrap_or_default();
+            // Doc 21 cut G.4: a turn in progress stops where it was shown.
+            stop_orders = sh
+                .tui
+                .as_mut()
+                .map(|t| t.pixel_leave_orders())
+                .unwrap_or_default();
             sh.tui = None;
             sh.mode = Mode::InGame;
             out.extend_from_slice(TuiSession::leave_bytes());
@@ -859,7 +866,11 @@ impl ConnHandler {
             sh.editor.redraw(&mut out);
             out
         };
-        session.data(channel, bytes)
+        session.data(channel, bytes)?;
+        for line in stop_orders {
+            self.hooks.line(self.conn_id, line).await;
+        }
+        Ok(())
     }
 
     /// Raw input while in [`Mode::Tui`]: decode it into the TUI app, then
@@ -2202,6 +2213,8 @@ fn spawn_output_pump(
 
             let mut done = false;
             let mut queries: Vec<(String, serde_json::Value)> = Vec::new();
+            // Doc 21 cut G.4: the pixel view's helm orders, sent as typed lines.
+            let mut lines: Vec<String> = Vec::new();
             let (bytes, invokes) = {
                 let mut sh = shared.lock().expect("conn state poisoned");
                 let bytes = match wake {
@@ -2258,9 +2271,17 @@ fn spawn_output_pump(
                             match sh.tui.as_mut() {
                                 Some(t) if t.pixel_active() => {
                                     t.pixel_tick();
-                                    t.pixel_frame()
+                                    let bytes = t.pixel_frame();
+                                    lines.extend(t.pixel_take_orders());
+                                    bytes
                                 }
-                                _ => Vec::new(),
+                                Some(t) => {
+                                    // A view that just closed may still owe
+                                    // its stop order.
+                                    lines.extend(t.pixel_take_orders());
+                                    Vec::new()
+                                }
+                                None => Vec::new(),
                             }
                         } else {
                             Vec::new()
@@ -2284,6 +2305,9 @@ fn spawn_output_pump(
             }
             for (name, args) in queries {
                 hooks.query(conn_id, name, args).await;
+            }
+            for line in lines {
+                hooks.line(conn_id, line).await;
             }
 
             if !bytes.is_empty() {

@@ -56,12 +56,14 @@ impl DeviceAttributes {
 }
 
 /// The whole capability probe, sent once on entering `@tui`: the kitty
-/// query, the cell-size report request (`CSI 16 t`), then `CSI c`, which
-/// every terminal answers last.
+/// query, the cell-size report request (`CSI 16 t`), the kitty keyboard
+/// protocol's flags query (`CSI ? u`, G.4), then `CSI c`, which every
+/// terminal answers last.
 #[must_use]
 pub fn probe_bytes() -> Vec<u8> {
     let mut out = crate::kitty::query_bytes();
     out.extend_from_slice(b"\x1b[16t");
+    out.extend_from_slice(b"\x1b[?u");
     out.extend_from_slice(b"\x1b[c");
     out
 }
@@ -288,6 +290,6 @@ mod tests {
         assert_eq!(CellSize::parse("6;20;10;1"), None);
         let probe = String::from_utf8_lossy(&probe_bytes()).into_owned();
         assert!(probe.starts_with("\x1b_Gi=31,"), "{probe:?}");
-        assert!(probe.ends_with("\x1b\\\x1b[16t\x1b[c"), "{probe:?}");
+        assert!(probe.ends_with("\x1b\\\x1b[16t\x1b[?u\x1b[c"), "{probe:?}");
     }
 }

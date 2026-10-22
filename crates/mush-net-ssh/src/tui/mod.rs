@@ -20,6 +20,7 @@
 
 pub mod app;
 mod backend;
+pub mod helm;
 pub mod keys;
 mod mind_workshop;
 pub mod panels;
@@ -147,10 +148,13 @@ impl TuiSession {
             let _ = terminal.clear();
         }
         terminal.backend_mut().set_watch(app.pixel_sixel_box());
+        // The kitty keyboard protocol's push (the view opened) or pop (it
+        // closed) goes ahead of the frame, so the next key already reads right.
+        let mut bytes = app.pixel_take_terminal_bytes();
         // The only error path is a backend write error; `SshBackend` writes
         // into a `Vec` and never errors, so a failure just yields no bytes.
         let _ = terminal.draw(|frame| app.draw(frame));
-        let mut bytes = terminal.backend_mut().take_output();
+        bytes.extend(terminal.backend_mut().take_output());
         if closed == Some(Encoder::Kitty) {
             bytes.extend_from_slice(&mush_pixel::kitty::delete_bytes(pixel::IMAGE_ID));
         }
@@ -216,11 +220,27 @@ impl TuiSession {
     /// send before leaving the alternate screen.
     #[must_use]
     pub fn pixel_close_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
         if self.app.pixel_active() && self.app.pixel_shown() == Some(Encoder::Kitty) {
-            mush_pixel::kitty::delete_bytes(pixel::IMAGE_ID)
-        } else {
-            Vec::new()
+            bytes.extend(mush_pixel::kitty::delete_bytes(pixel::IMAGE_ID));
         }
+        // Doc 21 cut G.4: never leave the terminal in the keyboard protocol.
+        if self.app.pixel_keyboard_pushed() {
+            bytes.extend_from_slice(b"\x1b[<u");
+        }
+        bytes
+    }
+
+    /// The view's helm orders since the last call (doc 21 cut G.4): what the
+    /// output pump sends to the world after a frame tick.
+    pub fn pixel_take_orders(&mut self) -> Vec<String> {
+        self.app.pixel_take_orders()
+    }
+
+    /// Leaving the TUI with the view open: the order that stops a turn in
+    /// progress, to send before the TUI is dropped.
+    pub fn pixel_leave_orders(&mut self) -> Vec<String> {
+        self.app.pixel_leave_orders()
     }
 
     /// Bytes that enter the alternate screen and hide the cursor.
@@ -515,7 +535,7 @@ mod tests {
         let mut sess = TuiSession::new(wide, TuiManifest::default());
         let probe = sess.probe_bytes();
         assert!(
-            probe.ends_with(b"\x1b[16t\x1b[c"),
+            probe.ends_with(b"\x1b[16t\x1b[?u\x1b[c"),
             "the cell size is asked before DA1: {probe:?}"
         );
         let r = sess.feed_input(b"\x1b[6;20;10t\x1b[?61;4;6;22c");

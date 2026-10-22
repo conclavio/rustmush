@@ -671,17 +671,29 @@ drawn at all, however close it is.
 
 While the picture is open:
 
-  Left or a      start turning the view left; the same key again stops it
-  Right or d     start turning the view right; the same key again stops it
-  space          stop turning
+  Left, Right    turn the tank. Hold the key down and let go to stop, on a
+                 terminal that tells the game when a key is let go (WezTerm,
+                 kitty, Ghostty, Windows Terminal 1.25 and later); elsewhere
+                 press once to start and again to stop
+  a, d           turn the tank too, press to start and again to stop
+  , and .        swing your look left or right without turning the tank;
+                 the same key again stops it
   c              look along your tank's heading again
+  space          stop turning, and stop the look swinging
   r              a smaller picture (320 by 220 rather than 640 by 480), for a
                  slow link
   Esc or q       close the picture
 
-Every other key does nothing while it is open. **Turning the view does not turn
-the tank**: the line over the picture says the view's heading against the
-tank's (`camera 075° (sim 045° +30°)`), and `HEADING` is still how you steer.
+Every other key does nothing while it is open. **The turn keys steer the tank**:
+each turn is a `HEADING` order, exactly as if you had typed it, so it needs your
+seat to hold the helm and the power to be online, and you will see the
+`Steering to …` lines when you close the picture. The tank turns at its own rate
+and the arena moves it on its pulses; between them the picture shows where the
+tank will be, and lets go of that guess if the order was refused. The line over
+the picture says the camera's heading, the tank's and the one it was ordered to,
+and your look: `camera 120° (tank 090° → 135°, look +30°)`. Letting go of a turn
+orders the heading the picture was showing, so the tank stops about where you
+saw it.
 
 **Which terminals show it.** The picture is sent one of two ways, whichever
 your terminal can show: as a kitty graphics image, or as sixel.

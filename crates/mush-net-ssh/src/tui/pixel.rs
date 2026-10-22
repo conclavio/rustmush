@@ -42,7 +42,8 @@ use mush_pixel::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
 use mush_pixel::{Frame, kitty, png, sixel};
 use serde_json::Value;
 
-use super::keys::Key;
+use super::helm::{Helm, arc};
+use super::keys::{Arrow, Key};
 
 /// The rendered frame's size; a kitty terminal scales it into the cell box,
 /// and a sixel frame is this or the largest of its aspect that fits.
@@ -68,8 +69,15 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// The frame clock: 20 frames a second, bucket A's interval. The output
 /// pump's idle wait while no view is open.
 pub const FRAME_INTERVAL: Duration = BUCKET_A_INTERVAL;
-/// How fast a toggled turn swings the camera, millidegrees a second (45°/s).
+/// How fast a toggled look swings the camera, millidegrees a second (45°/s).
 const TURN_MDEG_PER_S: i64 = 45_000;
+/// Push the kitty keyboard protocol with "disambiguate" and "report event
+/// types" (G.4): a held cursor key reports its release, which ends a turn.
+/// Pushed when the view opens on a terminal that answered `CSI ? u`.
+const KEYBOARD_PUSH: &[u8] = b"\x1b[>3u";
+/// Pop it again when the view closes, so the rest of the TUI reads keys as
+/// it always has.
+const KEYBOARD_POP: &[u8] = b"\x1b[<u";
 
 /// A size in pixels, `(width, height)`.
 pub type Pixels = (usize, usize);
@@ -123,10 +131,21 @@ pub struct PixelView {
     /// What `@pixel/encoder` set for this connection.
     choice: EncoderChoice,
     active: bool,
-    /// `-1` turning left, `0` still, `1` turning right.
-    turn: i8,
-    /// The camera's heading offset from the sim's, millidegrees.
-    offset_mdeg: i64,
+    /// The look (`,` and `.`): `-1` swinging left, `0` still, `1` right.
+    look_turn: i8,
+    /// The look's offset from the tank's heading, millidegrees: a look, not
+    /// a turn (D-21-14).
+    look_mdeg: i64,
+    /// The tank's helm: the turn keys' orders and the predicted heading.
+    helm: Helm,
+    /// The terminal answered the kitty keyboard protocol's `CSI ? u`.
+    keyboard: bool,
+    /// The view pushed the protocol: cursor keys report their release, so
+    /// a turn is held, not toggled.
+    keyboard_pushed: bool,
+    /// Bytes for the terminal ahead of the next text frame: the protocol's
+    /// push and pop.
+    term_bytes: Vec<u8>,
     last_tick: Option<Instant>,
     /// What the last picture sent was: its frame hash, the cell box it went
     /// into, its encoder and the size it was shown at.
@@ -176,8 +195,12 @@ impl PixelView {
             cell: None,
             choice: EncoderChoice::Auto,
             active: false,
-            turn: 0,
-            offset_mdeg: 0,
+            look_turn: 0,
+            look_mdeg: 0,
+            helm: Helm::new(),
+            keyboard: false,
+            keyboard_pushed: false,
+            term_bytes: Vec::new(),
             last_tick: None,
             last_sent: None,
             want: (FRAME_W, FRAME_H),
@@ -240,6 +263,14 @@ impl PixelView {
         if matches!(self.probe, Probe::Sent(_)) {
             self.graphics.kitty = ok;
             self.probe = Probe::Done;
+        }
+    }
+
+    /// The kitty keyboard protocol's flags reply arrived: hold-to-turn is
+    /// possible on this terminal.
+    pub fn keyboard_reply(&mut self) {
+        if self.probe != Probe::NotSent {
+            self.keyboard = true;
         }
     }
 
@@ -337,13 +368,22 @@ impl PixelView {
             self.active = true;
             self.last_tick = Some(now);
             self.last_sent = None;
+            if self.keyboard {
+                self.term_bytes.extend_from_slice(KEYBOARD_PUSH);
+                self.keyboard_pushed = true;
+            }
         }
         self.active
     }
 
     fn close(&mut self) {
         self.active = false;
-        self.turn = 0;
+        self.look_turn = 0;
+        // A turn in progress stops where the picture showed the tank.
+        self.helm.stop(Instant::now());
+        if std::mem::take(&mut self.keyboard_pushed) {
+            self.term_bytes.extend_from_slice(KEYBOARD_POP);
+        }
         self.last_sent = None;
         self.wipe_pending = false;
         if let Some((encoder, _)) = self.shown.take() {
@@ -392,17 +432,70 @@ impl PixelView {
         std::mem::take(&mut self.wipe_pending)
     }
 
-    /// A key while the view is open. Left/`a` and Right/`d` toggle a turn,
-    /// space stops it, `c` recentres the camera on the sim's heading, Esc
-    /// and `q` close. Every other key is swallowed: the view is modal.
-    pub fn key(&mut self, key: Key) {
+    /// Bytes for the terminal ahead of the next text frame: the kitty
+    /// keyboard protocol's push when the view opened, its pop when it closed.
+    pub fn take_terminal_bytes(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.term_bytes)
+    }
+
+    /// Whether the view has the kitty keyboard protocol pushed (a leave must
+    /// pop it).
+    #[must_use]
+    pub fn keyboard_pushed(&self) -> bool {
+        self.keyboard_pushed
+    }
+
+    /// Stop a turn in progress (leaving the TUI with the view open): the
+    /// tank stops where the picture showed it.
+    pub fn stop_helm(&mut self, now: Instant) {
+        self.helm.stop(now);
+    }
+
+    /// The helm orders (`HEADING <deg>` lines) the view has made since the
+    /// last call, to send to the world as typed lines.
+    pub fn take_orders(&mut self) -> Vec<String> {
+        self.helm.take_orders()
+    }
+
+    /// A key while the view is open (doc 21 cut G.4):
+    ///
+    /// - **Left / Right turn the tank**: a helm order, the authority the
+    ///   `HEADING` verb has. Held where the terminal reports releases (the
+    ///   kitty keyboard protocol), toggled (press again to stop) elsewhere.
+    /// - `a` / `d` turn it too, always toggled.
+    /// - `,` / `.` swing the **look**, the camera's own offset (toggled);
+    ///   `c` recentres it on the tank.
+    /// - space stops the tank's turn and the look's swing.
+    /// - `r` and `u` are the load experiment's switches; Esc and `q` close.
+    ///
+    /// Every other key is swallowed: the view is modal.
+    pub fn key(&mut self, key: Key, now: Instant) {
+        let held = self.keyboard_pushed;
+        let steer = |helm: &mut Helm, dir: i8, toggle: bool| {
+            if helm.turning() == dir {
+                if toggle {
+                    helm.stop(now);
+                }
+            } else {
+                helm.start(dir, now);
+            }
+        };
         match key {
-            Key::Left | Key::Char('a') => self.turn = if self.turn == -1 { 0 } else { -1 },
-            Key::Right | Key::Char('d') => self.turn = if self.turn == 1 { 0 } else { 1 },
-            Key::Char(' ') => self.turn = 0,
+            Key::Left => steer(&mut self.helm, -1, !held),
+            Key::Right => steer(&mut self.helm, 1, !held),
+            Key::Char('a') => steer(&mut self.helm, -1, true),
+            Key::Char('d') => steer(&mut self.helm, 1, true),
+            Key::Release(Arrow::Left) if self.helm.turning() == -1 => self.helm.stop(now),
+            Key::Release(Arrow::Right) if self.helm.turning() == 1 => self.helm.stop(now),
+            Key::Char(',') => self.look_turn = if self.look_turn == -1 { 0 } else { -1 },
+            Key::Char('.') => self.look_turn = if self.look_turn == 1 { 0 } else { 1 },
+            Key::Char(' ') => {
+                self.helm.stop(now);
+                self.look_turn = 0;
+            }
             Key::Char('c') => {
-                self.turn = 0;
-                self.offset_mdeg = 0;
+                self.look_turn = 0;
+                self.look_mdeg = 0;
             }
             // The load experiment's two switches (2026-10-21): the frame
             // size and the clock cap. Either resets the last-sent key so the
@@ -424,32 +517,40 @@ impl PixelView {
         }
     }
 
-    /// The camera's offset from the sim heading, millidegrees in
+    /// The look's offset from the tank's heading, millidegrees in
     /// `-180_000..180_000`.
     #[must_use]
-    pub fn offset_mdeg(&self) -> i64 {
-        (self.offset_mdeg + 180_000).rem_euclid(360_000) - 180_000
+    pub fn look_mdeg(&self) -> i64 {
+        (self.look_mdeg + 180_000).rem_euclid(360_000) - 180_000
     }
 
-    /// Which way the camera is turning: `-1`, `0`, `1`.
+    /// Which way the look is swinging: `-1`, `0`, `1`.
     #[must_use]
-    pub fn turn(&self) -> i8 {
-        self.turn
+    pub fn look_turn(&self) -> i8 {
+        self.look_turn
+    }
+
+    /// The tank's helm, as the view drives it.
+    #[must_use]
+    pub fn helm(&self) -> &Helm {
+        &self.helm
     }
 
     // ---- the frame clock -------------------------------------------------
 
-    /// Advance the turn by the time since the last tick.
+    /// Advance the look's swing by the time since the last tick, and let a
+    /// held turn extend its order.
     pub fn tick(&mut self, now: Instant) {
         let dt = self
             .last_tick
             .map_or(Duration::ZERO, |t| now.saturating_duration_since(t));
         self.last_tick = Some(now);
-        if self.turn != 0 {
+        if self.look_turn != 0 {
             let ms = i64::try_from(dt.as_millis()).unwrap_or(0).min(1_000);
-            self.offset_mdeg += i64::from(self.turn) * TURN_MDEG_PER_S * ms / 1_000;
-            self.offset_mdeg = self.offset_mdeg.rem_euclid(360_000);
+            self.look_mdeg += i64::from(self.look_turn) * TURN_MDEG_PER_S * ms / 1_000;
+            self.look_mdeg = self.look_mdeg.rem_euclid(360_000);
         }
+        self.helm.tick(now);
     }
 
     /// Draw the picture from `feeds` (the TUI's held keyframes) and return
@@ -480,8 +581,19 @@ impl PixelView {
         if (self.frame.width(), self.frame.height()) != size {
             self.frame = Frame::new(size.0, size.1);
         }
+        // The camera: the tank's heading as the helm predicts it (the frame's,
+        // carried toward the order between pulses), plus the look.
+        let cockpit = feeds.feed(mush_pixel::cockpit::COCKPIT_FEED);
+        let frame_heading = cockpit
+            .and_then(|c| c.get("heading_mdeg"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        if let Some(c) = cockpit {
+            self.helm.observe(c, now);
+        }
+        let predicted = self.helm.predicted(now).unwrap_or(frame_heading);
         let look = Look {
-            offset_mdeg: self.offset_mdeg,
+            offset_mdeg: arc(frame_heading, predicted) + self.look_mdeg,
         };
         let t0 = Instant::now();
         if !self.picture.draw(&mut self.frame, feeds, &look) {
@@ -541,8 +653,14 @@ impl PixelView {
             .and_then(|c| c.get("heading_mdeg"))
             .and_then(Value::as_i64)
             .unwrap_or(0);
-        let camera = (heading + self.offset_mdeg).rem_euclid(360_000) / 1_000;
-        let turning = match self.turn {
+        let tank = self.helm.predicted(now).unwrap_or(heading);
+        let camera = (tank + self.look_mdeg).rem_euclid(360_000) / 1_000;
+        let ordered = self
+            .helm
+            .ordered()
+            .map(|o| format!(" → {:03}°", o / 1_000))
+            .unwrap_or_default();
+        let turning = match self.helm.turning() {
             -1 => "turning left",
             1 => "turning right",
             _ => "steady",
@@ -575,9 +693,9 @@ impl PixelView {
             format!("{w}x{h} shown {}x{}", self.shown_size.0, self.shown_size.1)
         };
         let top = format!(
-            "PIXEL VIEW  camera {camera:03}° (sim {:03}° {:+}°)  {turning}  |  {probe}, drawing {drawing}  {size} {clock}  render {:.1} ms  encode {:.1} ms  image {} B  wire {} B  sent {}  fps {fps}",
+            "PIXEL VIEW  camera {camera:03}° (tank {:03}°{ordered}, look {:+}°)  {turning}  |  {probe}, drawing {drawing}  {size} {clock}  render {:.1} ms  encode {:.1} ms  image {} B  wire {} B  sent {}  fps {fps}",
             heading / 1_000,
-            self.offset_mdeg() / 1_000,
+            self.look_mdeg() / 1_000,
             s.render_us as f64 / 1000.0,
             s.encode_us as f64 / 1000.0,
             s.image_bytes,
@@ -585,8 +703,14 @@ impl PixelView {
             s.sent,
         );
         let bottom = if cockpit.is_some() {
-            "←/a and →/d: toggle a turn   space: hold   c: recentre   r: 640x480/320x220   u: clock/uncapped   Esc/q: close   ^]: detach"
-                .to_string()
+            let arrows = if self.keyboard_pushed {
+                "←/→: turn the tank (hold)"
+            } else {
+                "←/→ or a/d: turn the tank (again to stop)"
+            };
+            format!(
+                "{arrows}   ,/.: look   space: stop   c: centre the look   r: 640x480/320x220   u: clock/uncapped   Esc/q: close   ^]: detach"
+            )
         } else {
             "No cockpit frame held: take a seat in the arena, then ^G.   Esc/q: close".to_string()
         };
@@ -810,7 +934,7 @@ mod tests {
         assert!(v.is_active());
         assert_eq!(v.take_close(), None);
         // Closed before a picture went out: nothing to free.
-        v.key(Key::Esc);
+        v.key(Key::Esc, t0);
         assert!(!v.is_active());
         assert_eq!(v.take_close(), None);
         // Closed with a picture on screen: its encoder, once.
@@ -821,7 +945,7 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(v.shown(), Some(Encoder::Kitty));
-        v.key(Key::Esc);
+        v.key(Key::Esc, t0);
         assert_eq!(v.take_close(), Some(Encoder::Kitty));
         assert_eq!(v.take_close(), None, "a close is reported once");
         assert_eq!(v.shown(), None);
@@ -892,12 +1016,12 @@ mod tests {
         wt.text_touched();
         assert!(!wt.paint(&both_feeds, 120, 40, t0).is_empty(), "resent");
         // `r`: a smaller frame in a smaller box, under a wipe.
-        wt.key(Key::Char('r'));
+        wt.key(Key::Char('r'), t0);
         assert!(!wt.paint(&both_feeds, 120, 40, t0).is_empty());
         assert_eq!(wt.size(), (320, 220));
         assert!(wt.take_wipe());
         assert!(!wt.take_wipe(), "once");
-        wt.key(Key::Esc);
+        wt.key(Key::Esc, t0);
         assert_eq!(wt.take_close(), Some(Encoder::Sixel));
         assert_eq!(wt.sixel_box(), None);
         // Kitty: the text never touches the image.
@@ -932,31 +1056,80 @@ mod tests {
         assert_eq!(k.choice(), EncoderChoice::Auto);
     }
 
+    /// The look (`,` and `.`): toggled, 45°/s, capped at a second a tick
+    /// so a stalled pump does not spin it, recentred by `c`. It is the
+    /// camera's own offset and orders nothing.
     #[test]
-    fn toggle_turn_swings_the_camera_until_toggled_again() {
+    fn the_look_swings_the_camera_and_orders_nothing() {
         let t0 = Instant::now();
         let mut v = supported(t0);
         v.toggle(t0);
-        v.key(Key::Left);
-        assert_eq!(v.turn(), -1);
+        v.key(Key::Char(','), t0);
+        assert_eq!(v.look_turn(), -1);
         v.tick(t0 + Duration::from_millis(500));
-        assert_eq!(v.offset_mdeg(), -22_500, "45°/s for half a second");
-        v.key(Key::Left);
-        assert_eq!(v.turn(), 0, "the same key stops the turn");
+        assert_eq!(v.look_mdeg(), -22_500, "45°/s for half a second");
+        v.key(Key::Char(','), t0);
+        assert_eq!(v.look_turn(), 0, "the same key stops the look");
         v.tick(t0 + Duration::from_secs(2));
-        assert_eq!(v.offset_mdeg(), -22_500, "still");
-        v.key(Key::Char('d'));
+        assert_eq!(v.look_mdeg(), -22_500, "still");
+        v.key(Key::Char('.'), t0);
         v.tick(t0 + Duration::from_secs(3));
-        assert_eq!(v.offset_mdeg(), 22_500);
-        // A long gap is capped at a second so a stalled pump does not spin
-        // the camera.
+        assert_eq!(v.look_mdeg(), 22_500);
         v.tick(t0 + Duration::from_secs(60));
-        assert_eq!(v.offset_mdeg(), 67_500);
-        v.key(Key::Char('c'));
-        assert_eq!((v.turn(), v.offset_mdeg()), (0, 0));
+        assert_eq!(v.look_mdeg(), 67_500);
+        v.key(Key::Char('c'), t0);
+        assert_eq!((v.look_turn(), v.look_mdeg()), (0, 0));
+        assert!(v.take_orders().is_empty(), "a look is not an order");
         // Other keys are swallowed without effect.
-        v.key(Key::Char('1'));
+        v.key(Key::Char('1'), t0);
         assert!(v.is_active());
+    }
+
+    /// The turn keys steer the tank (doc 21 cut G.4): a `HEADING` order a
+    /// pulse ahead, toggled where the terminal reports no releases; held
+    /// (press, repeat, release) where the view pushed the kitty keyboard
+    /// protocol, which it pops again on close.
+    #[test]
+    fn the_arrows_steer_the_tank_toggled_or_held() {
+        let t0 = Instant::now();
+        let (cockpit, map) = fixtures();
+        let both = feeds(Some(&cockpit), Some(&map));
+        // Toggled: no keyboard protocol.
+        let mut v = supported(t0);
+        v.toggle(t0);
+        assert!(v.take_terminal_bytes().is_empty(), "nothing pushed");
+        assert!(!v.paint(&both, 120, 40, t0).is_empty());
+        v.key(Key::Right, t0);
+        let first = v.take_orders();
+        assert_eq!(first.len(), 1);
+        assert!(first[0].starts_with("HEADING "), "{first:?}");
+        assert_eq!(v.helm().turning(), 1);
+        v.key(Key::Right, t0);
+        assert_eq!(v.helm().turning(), 0, "pressed again: stopped");
+        v.key(Key::Char('a'), t0);
+        assert_eq!(v.helm().turning(), -1);
+        v.key(Key::Char(' '), t0);
+        assert_eq!(v.helm().turning(), 0, "space stops");
+        // Held: the terminal answered `CSI ? u`.
+        let mut h = supported(t0);
+        h.keyboard_reply();
+        h.toggle(t0);
+        assert_eq!(h.take_terminal_bytes(), b"\x1b[>3u");
+        assert!(!h.paint(&both, 120, 40, t0).is_empty());
+        h.key(Key::Left, t0);
+        assert_eq!(h.helm().turning(), -1);
+        h.key(Key::Left, t0);
+        h.key(Key::Repeat(Arrow::Left), t0);
+        assert_eq!(h.helm().turning(), -1, "a held key keeps turning");
+        h.key(Key::Release(Arrow::Right), t0);
+        assert_eq!(h.helm().turning(), -1, "another key's release does nothing");
+        h.key(Key::Release(Arrow::Left), t0);
+        assert_eq!(h.helm().turning(), 0, "released: stopped");
+        let (top, bottom) = h.hud(Some(&cockpit), t0);
+        assert!(bottom.contains("turn the tank (hold)"), "{bottom}");
+        assert!(top.contains("(tank 045°"), "{top}");
+        h.key(Key::Esc, t0);
+        assert_eq!(h.take_terminal_bytes(), b"\x1b[<u", "popped on close");
     }
 
     #[test]
@@ -988,8 +1161,8 @@ mod tests {
         assert_eq!(v.stats.skipped, 1);
         // A resize re-sends into the new box even though the pixels match.
         assert!(!v.paint(&both, 160, 50, t0).is_empty());
-        // Turn, tick: a new picture.
-        v.key(Key::Right);
+        // Look, tick: a new picture.
+        v.key(Key::Char('.'), t0);
         v.tick(t0 + Duration::from_millis(200));
         let turned = v.paint(&both, 160, 50, t0);
         assert!(!turned.is_empty());
@@ -1009,7 +1182,7 @@ mod tests {
             top.contains("camera 045°") && top.contains("kitty graphics OK"),
             "{top}"
         );
-        assert!(bottom.contains("toggle a turn"));
+        assert!(bottom.contains("turn the tank (again to stop)"), "{bottom}");
     }
 
     #[test]
@@ -1038,7 +1211,7 @@ mod tests {
         assert_eq!(v.interval(), FRAME_INTERVAL);
         assert!(!v.paint(&both, 120, 40, t0).is_empty());
         assert!(v.paint(&both, 120, 40, t0).is_empty());
-        v.key(Key::Char('r'));
+        v.key(Key::Char('r'), t0);
         let small = String::from_utf8_lossy(&v.paint(&both, 120, 40, t0)).into_owned();
         assert_eq!(
             v.size(),
@@ -1047,7 +1220,7 @@ mod tests {
         );
         assert!(small.contains("c=110,r=38"), "{}", &small[..80]);
         assert!(v.stats.image_bytes > 0);
-        v.key(Key::Char('u'));
+        v.key(Key::Char('u'), t0);
         assert!(v.uncapped());
         assert_eq!(v.interval(), FRAME_INTERVAL_UNCAPPED);
         assert!(
@@ -1057,8 +1230,8 @@ mod tests {
         let (top, bottom) = v.hud(Some(&cockpit), t0);
         assert!(top.contains("320x220 uncapped"), "{top}");
         assert!(bottom.contains("640x480/320x220") && bottom.contains("uncapped"));
-        v.key(Key::Char('r'));
-        v.key(Key::Char('u'));
+        v.key(Key::Char('r'), t0);
+        v.key(Key::Char('u'), t0);
         assert!(!v.paint(&both, 120, 40, t0).is_empty());
         assert_eq!((v.size(), v.uncapped()), ((640, 480), false));
     }
