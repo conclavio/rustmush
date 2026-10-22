@@ -147,7 +147,6 @@ pub(crate) fn prepare_attachment(
                 .any(|p| p.provider() == fact.provider.as_str() && p.requires_scope(fact))
         {
             if !bounded(fact) || !permitted(ctx, c, fact, FactPurpose::Attach) {
-                if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG economy attach refused: bounded={} scope={}", bounded(fact), super::ScopedFactContext::new(ctx, c, FactPurpose::Attach).is_some()); } // TEMP M7 diag
                 return Err(crate::ContractError::NoStanding);
             }
             refs.push(fact.clone());
