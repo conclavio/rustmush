@@ -1,6 +1,8 @@
 # 21. The graphics engine — one frame, three encoders
 
-**Draft 0.1 — 2026-10-21.** Written the evening the pixel cockpit went live. The owner's ask,
+**Draft 0.2 — 2026-10-21, the owner's acceptance.** Every Q-21 default was accepted by the owner
+the same evening ("all question defaults accepted"), so each stands as a decision; Q-21-8 was
+answered differently and better (§12). Draft 0.1 was written the evening the pixel cockpit went live. The owner's ask,
 verbatim: *"i think we've proven that not only is this possible, it's pretty fucking cool .. let's go
 ahead and write up a design proposal for the graphics engine with its 3 encoders (kitty, sixel, web)
 and the variety of use cases that we identified and you fit into three buckets"*. The proof it rests
@@ -267,6 +269,7 @@ downlink are, which is what the step-down is for.
 | kitty, Ghostty 1.2+ | yes | kitty: yes | their own SSH | by the protocol; pixel's row-diff patching exists only here and is not needed at these frame sizes |
 | foot, xterm, mintty, mlterm | no | yes | ssh | by the protocol |
 | tmux | passthrough + placeholders | passthrough | — | unsupported in v1 |
+| **w11term** (the owner's own, `codexprojs/w11term`) | yes (wezterm-term's parser) | yes | its own SSH client, no ConPTY | a Windows-native terminal the owner built around the `wezterm-term` library with a `windows-reactor` + Direct2D front end; the shell is the SSH server, so nothing passes through ConPTY; faster than WezTerm and "feels like a windows application"; the owner means to publish it beside the game as the Windows option (Q-21-8) |
 | Web client | — | — | websocket (G.3), then WebAssembly (G.3b) | the one client with zero wire cost at G.3b |
 
 **D-21-12.** The engine supports both terminal encoders from the first cut after this document
@@ -360,8 +363,18 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
 - **D-21-14** The camera on a leash: a turn is a helm order, the view interpolates, the picture
   never claims what the sim has not granted.
 - **D-21-15** The heightfield producer is built when the first map carries height.
+- **D-21-16..22** The Q-21-1..7 defaults, accepted by the owner 2026-10-21: sixel at 10 Hz; an
+  encoder may be forced per account; the web frame before the WebAssembly render; the orbital view
+  is the first scene; a Ceres site is the first map with height; corridor views deferred; no
+  one-shot picture in line mode in v1.
+- **D-21-23** w11term, the owner's Windows-native terminal on `wezterm-term`, is the reference
+  Windows client (Q-21-8).
 
-## 12. Questions for the owner (defaults taken, none blocking)
+## 12. Questions for the owner — all accepted 2026-10-21
+
+The owner accepted every default below on 2026-10-21 ("all question defaults accepted"); each is
+now a decision of this document, D-21-16..22 in the questions' order (§11). Q-21-8's answer
+superseded its default (D-21-23).
 
 - **Q-21-1** Sixel's default rate. *Default:* 10 Hz, because the bytes are twice the PNG's and
   Windows Terminal is the usual sixel client on a home link; `r` and the step-down apply.
@@ -381,6 +394,16 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
   v1; the TUI is the picture's home.
 - **Q-21-8** The WezTerm freeze. *Default:* the help page recommends `front_end = "Software"` for
   WezTerm on Windows until the owner has investigated; nothing in the engine changes for it.
+  **Answered otherwise (owner, 2026-10-21):** the owner got around the freeze by building
+  **w11term** (`C:\Users\faeni\codexprojs\w11term`), a Windows-native terminal around the
+  `wezterm-term` library (its own vendored copy, with termwiz and wezterm-input-types pinned to one
+  WezTerm revision) and a `windows-reactor` + Direct2D/DirectWrite front end, with no ConPTY and no
+  local shell: the shell is the SSH server, and connection profiles (`profiles.json`) name the game's
+  ports. It is faster than WezTerm and feels like a Windows application, and the owner will probably
+  publish it beside the game as the Windows option. **D-21-23:** w11term is the engine's reference
+  Windows client — kitty and sixel both reach it, so Windows players are not confined to sixel — and
+  the help page names it first, WezTerm's software front end second, Windows Terminal (sixel) third.
+  The ConPTY finding of §6 stands for every other Windows terminal.
 
 ## 13. Risks, and what this document refuses
 
