@@ -485,7 +485,8 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
             world.clone(),
             Arc::clone(&guard),
         )
-        .with_metrics(Arc::clone(&metrics)),
+        .with_metrics(Arc::clone(&metrics))
+        .with_pixel(&config.pixel),
     );
     let listener = start_listener(listen, &data_dir, banner(&config.server.name), bridge)
         .await

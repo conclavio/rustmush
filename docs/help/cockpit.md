@@ -753,6 +753,17 @@ answered no.
 turns the picture off, and `@pixel/encoder auto` goes back to asking the
 terminal. It lasts until you disconnect.
 
+**On a slow link** the picture looks after itself: when your connection cannot
+take the pictures as fast as they are drawn, it skips one, and if that keeps
+happening it drops to a narrower picture ten times a second (the line over the
+picture says `slow link: stepped down`), coming back up once the link has kept
+up for ten seconds. `r` picks the narrower picture yourself.
+
+`@pixel/stats` tells this connection's picture in numbers: what your terminal
+showed and what it draws, the picture's size and clock, what the last frame
+cost to draw and send, and how many were sent, unchanged, skipped on a slow
+link and stepped down.
+
 See also: `help simulator`, `help tui`, `help chargen` (gunnery is the rating
 the shot reads), `help macros` (a word of your own for a line you type
 often).

@@ -1890,6 +1890,40 @@ mail, jobs) is wiped along with the world; use a disposable instance. The
 RediSearch index only works on db 0, which is one more reason production
 uses a dedicated instance on db 0.
 
+## The terminal picture: `[pixel]` (doc 21 G.1b)
+
+The SSH TUI's `^G` picture is drawn per connection in the gateway half (the
+all-in-one `mushd` alike), never across the boundary. `[pixel]` holds its
+clock and its manners on a slow link; every key defaults and the block may be
+left out:
+
+| key | default | what it does |
+|---|---|---|
+| `frame_interval_ms` | `50` | the clock, 20 Hz for kitty and sixel alike (clamped 10–1000) |
+| `low_interval_ms` | `100` | the clock after a step-down (never faster than the clock) |
+| `step_down_after` | `3` | picture writes in a row, each slower than a frame, before stepping down |
+| `step_up_after_s` | `10` | seconds of writes that kept up before stepping back up |
+| `diagnostics` | `false` | staff diagnostics, box-wide: the `u` key (an uncapped clock) and the engineering numbers on the picture's status line |
+
+**The step-down** (doc 21 §3.4). russh stops taking a channel's data once the
+client's SSH window is full, so a client that cannot keep up makes the
+gateway's write of a picture wait. A picture write that took longer than a
+frame skips the next frame; `step_down_after` of them in a row step that
+viewer to the 320-wide frame at `low_interval_ms`; `step_up_after_s` of writes
+that kept up step it back. A client that stops reading entirely still hits the
+pump's 5 s write timeout and is closed, as before.
+
+**`diagnostics`** is the owner's box-wide switch (2026-10-22): off on a box
+players use; on for a smoke box (`deploy/dev2/instance.env`,
+`PIXEL_DIAGNOSTICS=true`). `@pixel/stats` gives every player their own numbers
+either way.
+
+**Metrics** (`/metrics`): `mush_pixel_viewers` (views open now),
+`mush_pixel_frames_total` and `mush_pixel_bytes_total` (pictures and their
+bytes on the wire), `mush_pixel_slow_skips_total`, `mush_pixel_step_downs_total`.
+A viewer costs about 100 KB/s at 640 wide and 20 Hz, and a fifth of a vCPU at
+most (doc 21 §5); a box whose step-downs climb is short of uplink, not CPU.
+
 ## Forked gateway/server split: `[ipc]`
 
 The **default deploy is still the all-in-one `mushd`** binary (gateway + world

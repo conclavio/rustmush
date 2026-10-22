@@ -2594,7 +2594,8 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
             Arc::clone(&link_dyn),
             Arc::clone(&guard),
         )
-        .with_metrics(Arc::clone(&metrics)),
+        .with_metrics(Arc::clone(&metrics))
+        .with_pixel(&config.pixel),
     );
 
     let data_dir = config.server.data_dir.clone();

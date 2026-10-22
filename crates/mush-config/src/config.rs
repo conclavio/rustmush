@@ -1964,6 +1964,44 @@ impl Default for IpcCfg {
     }
 }
 
+/// `[pixel]` section (doc 21 cut G.1b): the terminal picture's clock and its
+/// step-down on a slow link, read by the gateway half (the SSH TUI's `^G`
+/// view). Every key defaults; the whole block may be left out.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PixelCfg {
+    /// The picture's clock, milliseconds a frame. Default `50` (20 Hz, the
+    /// owner's ruling for both encoders). Clamped to `10..=1000` where it is
+    /// used.
+    pub frame_interval_ms: u64,
+    /// The clock after a step-down, milliseconds a frame. Default `100`
+    /// (10 Hz); never faster than `frame_interval_ms`.
+    pub low_interval_ms: u64,
+    /// Picture writes in a row that each took longer than a frame before the
+    /// view steps down to the narrow frame and the low clock. Default `3`.
+    pub step_down_after: u32,
+    /// Seconds of picture writes that kept up before a stepped-down view
+    /// steps back up. Default `10`.
+    pub step_up_after_s: u64,
+    /// The staff diagnostics, box-wide (the owner's ruling of 2026-10-22):
+    /// the `u` key that uncaps the clock and the engineering numbers on the
+    /// picture's status line. Default `false`: players see neither;
+    /// `@pixel/stats` reports the numbers either way.
+    pub diagnostics: bool,
+}
+
+impl Default for PixelCfg {
+    fn default() -> Self {
+        PixelCfg {
+            frame_interval_ms: 50,
+            low_interval_ms: 100,
+            step_down_after: 3,
+            step_up_after_s: 10,
+            diagnostics: false,
+        }
+    }
+}
+
 /// The host and TCP port a `[store].redis_url` points at, when it names one.
 ///
 /// Deliberately small: enough of `redis://[user:pass@]host[:port][/db]` (and
@@ -2077,6 +2115,9 @@ pub struct Config {
     /// `[ipc]` — the M16b forked gateway<->server boundary socket. Ignored by
     /// the all-in-one `mushd`; read by `mush-gateway`/`mush-server`.
     pub ipc: IpcCfg,
+    /// `[pixel]` — the terminal picture's clock, step-down and staff
+    /// diagnostics (doc 21 cut G.1b). Defaults whole.
+    pub pixel: PixelCfg,
 }
 
 impl Default for Config {
@@ -2100,6 +2141,7 @@ impl Default for Config {
             atlas: AtlasCfg::default(),
             llm: empty_toml_table(),
             ipc: IpcCfg::default(),
+            pixel: PixelCfg::default(),
         }
     }
 }
@@ -2125,6 +2167,7 @@ const CONFIG_SECTIONS: &[&str] = &[
     "atlas",
     "llm",
     "ipc",
+    "pixel",
 ];
 
 /// Levenshtein distance, only when it is at most two. The working row is bounded

@@ -195,6 +195,28 @@ impl TuiSession {
         self.app.pixel_set_choice(choice);
     }
 
+    /// `[pixel]`'s knobs for this connection's view (doc 21 G.1b).
+    pub fn set_pixel_config(&mut self, cfg: pixel::PixelConfig) {
+        self.app.pixel_set_config(cfg);
+    }
+
+    /// The pump's last picture write took `took`: the step-down's input
+    /// (doc 21 §3.4, G.1b).
+    pub fn pixel_write_took(&mut self, took: std::time::Duration) -> pixel::StepChange {
+        self.app.pixel_write_took(took)
+    }
+
+    /// The view's counters (G.1b: the pump reads the slow-write skips).
+    #[must_use]
+    pub fn pixel_stats(&self) -> pixel::Stats {
+        self.app.pixel_stats()
+    }
+
+    /// `@pixel/stats`'s lines for this connection (G.1b).
+    pub fn pixel_stats_lines(&mut self) -> Vec<String> {
+        self.app.pixel_stats_lines()
+    }
+
     /// What the probe found, in words, and the encoder `^G` would draw in.
     pub fn pixel_report(&mut self) -> (&'static str, Option<Encoder>) {
         self.app.pixel_report()

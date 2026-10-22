@@ -1,5 +1,12 @@
 # 21. The graphics engine — one frame, three encoders
 
+**Draft 0.13 — 2026-10-22, G.1b: the step-down, `[pixel]`, `@pixel/stats`.** §3.4's step-down is
+built on what russh was found to do (it stops taking a channel's data while the client's window is
+full, so the gateway's write waits — the signal); the clock and the thresholds are `[pixel]` in
+`mushd.toml`; the `u` key and the engineering numbers sit behind `[pixel] diagnostics`, a box-wide
+switch (the owner's ruling); `@pixel/stats` tells a player their own numbers; the box counts views,
+pictures, bytes, slow skips and step-downs in `/metrics` (cut notes, "G.1b").
+
 **Draft 0.12 — 2026-10-22, the text cockpit (D-21-10 revised, D-21-26).** The owner: the player
 must read and send chat while navigating, so the picture takes the **top two-thirds** of the
 terminal, drawn at that box's shape (640 wide, the renderers' vertical scale following the width so
@@ -406,7 +413,7 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
 | Cut | What | Size | Depends on | Acceptance |
 |---|---|---|---|---|
 | **G.0** | This document; the README row; the cut notes started; `help cockpit` names `^G`, the keys, the terminals that work and tmux that does not | S | — | the README row; help text |
-| **G.1 the engine from the spike** | `mush_pixel` promoted: the producer seam (`Picture` = producer + overlay + clock interval), the step-down on back-pressure (§3.4), `[pixel]` config, `@pixel/stats`, the floor-cast per-row lookup, the `u` key behind a privilege, the probe's attribute set. **Split 2026-10-22:** **G.1a (landed)** the seam, the two-pass render, the attribute set and the help; **G.1b** the step-down, `[pixel]`, `@pixel/stats` and the `u` gate | M | — | 640x480 render ≤4 ms on the VPS (G.1a: 0.95 ms on the owner's box, the VPS figure owed to G.1b's dev2 smoke); a client that stops reading costs one frame; the step-down test; the contract gates |
+| **G.1 the engine from the spike** | `mush_pixel` promoted: the producer seam (`Picture` = producer + overlay + clock interval), the step-down on back-pressure (§3.4), `[pixel]` config, `@pixel/stats`, the floor-cast per-row lookup, the `u` key behind a privilege, the probe's attribute set. **Split 2026-10-22:** **G.1a (landed)** the seam, the two-pass render, the attribute set and the help; **G.1b (landed)** the step-down, `[pixel]`, `@pixel/stats`, the `u` gate behind `[pixel] diagnostics` and the box counters | M | — | 640x480 render ≤4 ms on the VPS (G.1a: 0.95 ms on the owner's box, the VPS figure owed to G.1b's dev2 smoke); a client that stops reading costs one frame; the step-down test; the contract gates |
 | **G.2 sixel** | the sixel encoder from the same frame; DA1 attribute 4 detection; the 10 Hz default; the encoder choice (§4.4); smoked in Windows Terminal over `ssh.exe`. **Landed 2026-10-22** at 20 Hz (D-21-3 amended), with the `CSI 16 t` cell size, the frame sized to the box, the resend after text and the wipe on close, and `@pixel/encoder` per connection | M | G.1 | the MW2 fixture frame and the cockpit frame byte-compared against a reference encoder; the live smoke in Windows Terminal (as built: a decoder round trip in place of a reference encoder; the fixture shown in Windows Terminal through ConPTY; the live SSH smoke owed) |
 | **G.3 the web frame** | the gateway's PNG over the websocket as a binary message; the cockpit tab's canvas; the same clock and hash. **Split 2026-10-22:** **G.3a (landed)** the gateway half — the `picture` command, the per-connection feed cache, the frame clock, the binary PNG; **G.3c** the cockpit tab's canvas in the web client, after SM.10 | S | G.1 | the web cockpit shows the picture the TUI shows, pinned by a fixture test |
 | **G.3b the web render** | `mush-pixel` to WebAssembly; the client renders from its own feeds; the socket frame as the fallback | M | G.3 | the fixture renders pixel-equal in the browser and the TUI; zero gateway CPU for a web viewer |

@@ -67,7 +67,7 @@ use tokio::sync::Notify;
 use tokio::sync::mpsc;
 
 use crate::editor::{EchoMode, EditorAction, LineEditor};
-use crate::hooks::{AuthResult, BlockReason, CharSummary, NewConn, SshHooks};
+use crate::hooks::{AuthResult, BlockReason, CharSummary, NewConn, PixelEvent, SshHooks};
 use crate::tui::{TuiManifest, TuiSession};
 use crate::welcome::{WelcomeCmd, parse_welcome};
 use crate::{caps, hostkey};
@@ -507,6 +507,16 @@ fn strip_verb<'a>(line: &'a str, verb: &str) -> Option<&'a str> {
     }
 }
 
+/// What `@pixel/stats` says outside `@tui`, where no picture is drawn.
+const PIXEL_STATS_OUTSIDE_TUI: &str =
+    "The picture is drawn inside @tui (Ctrl-G there); its numbers are told there.";
+
+/// `@pixel/stats` (doc 21 cut G.1b), read transport-side: this connection's
+/// picture in numbers. Whatever follows the verb is ignored.
+fn is_pixel_stats(line: &str) -> bool {
+    strip_verb(line.trim(), "@pixel/stats").is_some()
+}
+
 /// `@pixel/encoder [auto|kitty|sixel|off]`, read transport-side (doc 21 cut
 /// G.2): the picture's encoder for this connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -775,6 +785,10 @@ impl ConnHandler {
                     let text = self.pixel_encoder(req);
                     return self.write_sys(session, &text);
                 }
+                // Doc 21 cut G.1b: the picture's numbers live in `@tui`.
+                if is_pixel_stats(&line) {
+                    return self.write_sys(session, PIXEL_STATS_OUTSIDE_TUI);
+                }
                 self.hooks.line(self.conn_id, line).await;
                 Ok(())
             }
@@ -814,6 +828,7 @@ impl ConnHandler {
             let caps = sh.caps;
             let mut tui = Box::new(TuiSession::new(caps, sh.manifest.clone()));
             tui.set_pixel_choice(sh.pixel_choice);
+            tui.set_pixel_config(self.hooks.pixel_config());
             let mut out = TuiSession::enter_bytes().to_vec();
             out.extend_from_slice(&tui.paint());
             // Pixel cockpit spike (2026-10-21): ask the terminal whether it
@@ -904,6 +919,17 @@ impl ConnHandler {
                     let text = self.pixel_encoder(req);
                     if let Some(tui) = self.lock().tui.as_mut() {
                         let _ = tui.apply_event(&OutputEvent::Sys(RichText::tag("system", &text)));
+                    }
+                    self.fire_repaint();
+                    continue;
+                }
+                // Doc 21 cut G.1b: this connection's picture in numbers.
+                if is_pixel_stats(&line) {
+                    if let Some(tui) = self.lock().tui.as_mut() {
+                        for text in tui.pixel_stats_lines() {
+                            let _ =
+                                tui.apply_event(&OutputEvent::Sys(RichText::tag("system", &text)));
+                        }
                     }
                     self.fire_repaint();
                     continue;
@@ -2146,6 +2172,9 @@ fn spawn_output_pump(
         // sleep measured 17 Hz on dev2). A tick that falls behind resyncs to
         // now instead of bursting.
         let mut next_frame = tokio::time::Instant::now() + crate::tui::pixel::FRAME_INTERVAL;
+        // Doc 21 cut G.1b: whether this connection's picture view is open, as
+        // the box's viewer count last heard it.
+        let mut viewing = false;
 
         enum Wake {
             Event(Option<Arc<OutputEvent>>),
@@ -2212,10 +2241,13 @@ fn spawn_output_pump(
             }
 
             let mut done = false;
+            // Doc 21 cut G.1b: this wake's bytes carry a picture, whose write
+            // is timed for the step-down.
+            let mut picture = false;
             let mut queries: Vec<(String, serde_json::Value)> = Vec::new();
             // Doc 21 cut G.4: the pixel view's helm orders, sent as typed lines.
             let mut lines: Vec<String> = Vec::new();
-            let (bytes, invokes) = {
+            let (bytes, invokes, now_viewing) = {
                 let mut sh = shared.lock().expect("conn state poisoned");
                 let bytes = match wake {
                     Wake::Repaint => {
@@ -2271,7 +2303,12 @@ fn spawn_output_pump(
                             match sh.tui.as_mut() {
                                 Some(t) if t.pixel_active() => {
                                     t.pixel_tick();
+                                    let skipped = t.pixel_stats().slow_skips;
                                     let bytes = t.pixel_frame();
+                                    if t.pixel_stats().slow_skips > skipped {
+                                        hooks.pixel_event(PixelEvent::SlowSkip);
+                                    }
+                                    picture = !bytes.is_empty();
                                     lines.extend(t.pixel_take_orders());
                                     bytes
                                 }
@@ -2293,8 +2330,18 @@ fn spawn_output_pump(
                     .as_mut()
                     .map(|t| t.take_invokes())
                     .unwrap_or_default();
-                (bytes, invokes)
+                let now_viewing = matches!(sh.mode, Mode::Tui)
+                    && sh.tui.as_ref().is_some_and(|t| t.pixel_active());
+                (bytes, invokes, now_viewing)
             };
+            if now_viewing != viewing {
+                viewing = now_viewing;
+                hooks.pixel_event(if viewing {
+                    PixelEvent::Opened
+                } else {
+                    PixelEvent::Closed
+                });
+            }
 
             // A cursor mismatch or an unmergeable delta is never patched
             // locally, and a `Hello` names feeds to hydrate: ask the ordinary
@@ -2311,7 +2358,29 @@ fn spawn_output_pump(
             }
 
             if !bytes.is_empty() {
-                match tokio::time::timeout(WRITE_TIMEOUT, handle.data(channel, bytes)).await {
+                let sent = bytes.len();
+                let started = std::time::Instant::now();
+                let wrote = tokio::time::timeout(WRITE_TIMEOUT, handle.data(channel, bytes)).await;
+                // Doc 21 cut G.1b (§3.4): a picture write that waited means the
+                // client's window is full — russh stops taking a channel's data
+                // while it cannot send it — so the view skips a frame, and
+                // steps down if it keeps happening.
+                if picture && matches!(wrote, Ok(Ok(()))) {
+                    hooks.pixel_event(PixelEvent::Sent(sent));
+                    let change = shared.lock().ok().and_then(|mut sh| {
+                        sh.tui
+                            .as_mut()
+                            .map(|t| t.pixel_write_took(started.elapsed()))
+                    });
+                    if change == Some(crate::tui::pixel::StepChange::Down) {
+                        tracing::info!(
+                            conn = conn_id,
+                            "picture stepped down: the link is not keeping up"
+                        );
+                        hooks.pixel_event(PixelEvent::SteppedDown);
+                    }
+                }
+                match wrote {
                     Ok(Ok(())) => {}
                     // Transport gone: nothing left to close.
                     Ok(Err(_)) => return,
@@ -2328,6 +2397,9 @@ fn spawn_output_pump(
             }
         }
 
+        if viewing {
+            hooks.pixel_event(PixelEvent::Closed);
+        }
         // If the connection tore down while still on the alternate screen,
         // restore it so the client is never stuck there (invariant T5).
         let was_tui = matches!(shared.lock().expect("conn state poisoned").mode, Mode::Tui);
@@ -2512,6 +2584,17 @@ mod tests {
             || last.next(),
             &mut queries
         ));
+    }
+
+    /// Doc 21 cut G.1b: `@pixel/stats` is read transport-side, case-folded,
+    /// whatever follows it ignored, and nothing else is it.
+    #[test]
+    fn pixel_stats_is_read_transport_side() {
+        assert!(is_pixel_stats("@pixel/stats"));
+        assert!(is_pixel_stats("  @PIXEL/Stats now "));
+        assert!(!is_pixel_stats("@pixel/statsx"));
+        assert!(!is_pixel_stats("say @pixel/stats"));
+        assert!(!is_pixel_stats("@pixel/encoder"));
     }
 
     /// Doc 21 cut G.2: `@pixel/encoder` is read transport-side, case-folded,

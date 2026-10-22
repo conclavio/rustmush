@@ -84,6 +84,75 @@ const KEYBOARD_PUSH: &[u8] = b"\x1b[>3u";
 /// it always has.
 const KEYBOARD_POP: &[u8] = b"\x1b[<u";
 
+/// **The view's knobs** (doc 21 cut G.1b), from `[pixel]` in `mushd.toml`
+/// through `SshHooks::pixel_config`: the clock, the step-down on a slow link,
+/// and the box-wide staff diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PixelConfig {
+    /// The picture's clock (20 Hz).
+    pub frame_interval: Duration,
+    /// The clock after a step-down (10 Hz).
+    pub low_interval: Duration,
+    /// Picture writes in a row, each slower than a frame, before stepping
+    /// down.
+    pub step_down_after: u32,
+    /// How long the writes must keep up before stepping back up.
+    pub step_up_after: Duration,
+    /// The staff diagnostics, box-wide (the owner's ruling of 2026-10-22):
+    /// the `u` key and the engineering numbers on the status line.
+    pub diagnostics: bool,
+}
+
+impl Default for PixelConfig {
+    fn default() -> Self {
+        PixelConfig {
+            frame_interval: FRAME_INTERVAL,
+            low_interval: Duration::from_millis(100),
+            step_down_after: 3,
+            step_up_after: Duration::from_secs(10),
+            diagnostics: false,
+        }
+    }
+}
+
+impl PixelConfig {
+    /// The knobs from `[pixel]`'s numbers, held to sane bounds: the clock
+    /// 10 ms to a second, the low clock never faster than it, at least one
+    /// slow write and a second clean.
+    #[must_use]
+    pub fn from_millis(
+        frame_interval_ms: u64,
+        low_interval_ms: u64,
+        step_down_after: u32,
+        step_up_after_s: u64,
+        diagnostics: bool,
+    ) -> PixelConfig {
+        let frame = frame_interval_ms.clamp(10, 1_000);
+        PixelConfig {
+            frame_interval: Duration::from_millis(frame),
+            low_interval: Duration::from_millis(low_interval_ms.clamp(frame, 2_000)),
+            step_down_after: step_down_after.max(1),
+            step_up_after: Duration::from_secs(step_up_after_s.max(1)),
+            diagnostics,
+        }
+    }
+}
+
+/// What a picture write did to the view's step-down (doc 21 cut G.1b), for
+/// the box's counters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepChange {
+    /// Nothing changed.
+    None,
+    /// The writes fell behind: the next frame is skipped.
+    Skip,
+    /// They kept falling behind: the view stepped down to the narrow frame
+    /// and the low clock (the next frame is skipped too).
+    Down,
+    /// They kept up long enough: the view stepped back up.
+    Up,
+}
+
 /// A size in pixels, `(width, height)`.
 pub type Pixels = (usize, usize);
 /// A cell box, `(col, row, cols, rows)`, 1-based as `CUP` counts.
@@ -120,6 +189,10 @@ pub struct Stats {
     pub sent: u64,
     /// Ticks whose frame matched the last sent one and was skipped.
     pub skipped: u64,
+    /// Ticks skipped because the write before was slower than a frame (G.1b).
+    pub slow_skips: u64,
+    /// Times the view stepped down to the narrow frame and the low clock.
+    pub step_downs: u64,
 }
 
 /// The view's state for one connection.
@@ -175,6 +248,16 @@ pub struct PixelView {
     closed: Option<Encoder>,
     /// `u`: the frame clock runs as fast as it can instead of 20 Hz.
     uncapped: bool,
+    /// The knobs from `[pixel]` (G.1b).
+    cfg: PixelConfig,
+    /// Picture writes in a row slower than a frame.
+    slow_streak: u32,
+    /// The write before was slow: skip the next frame.
+    skip_next: bool,
+    /// Stepped down: the narrow frame and the low clock.
+    stepped_down: bool,
+    /// Since when the writes have kept up, while stepped down.
+    clean_since: Option<Instant>,
     /// When the frames of the last second went out: the HUD's measured
     /// frames-per-second, which is what the wire carries (the `sent` total
     /// says nothing about rate).
@@ -216,20 +299,82 @@ impl PixelView {
             picture: Box::new(CockpitPicture::new()),
             closed: None,
             uncapped: false,
+            cfg: PixelConfig::default(),
+            slow_streak: 0,
+            skip_next: false,
+            stepped_down: false,
+            clean_since: None,
             sent_at: VecDeque::new(),
             stats: Stats::default(),
         }
     }
 
-    /// The frame clock's wait: the picture's own (20 Hz for the cockpit, in
-    /// either encoder), or ~1 ms when uncapped.
+    /// The frame clock's wait: `[pixel]`'s clock (20 Hz, in either encoder),
+    /// its low clock while stepped down, or ~1 ms when uncapped.
     #[must_use]
     pub fn interval(&self) -> Duration {
         if self.uncapped {
             FRAME_INTERVAL_UNCAPPED
+        } else if self.stepped_down {
+            self.cfg.low_interval
         } else {
-            self.picture.interval()
+            self.cfg.frame_interval
         }
+    }
+
+    /// Take `[pixel]`'s knobs (G.1b). Turning the diagnostics off also
+    /// drops an uncapped clock.
+    pub fn set_config(&mut self, cfg: PixelConfig) {
+        self.cfg = cfg;
+        if !cfg.diagnostics {
+            self.uncapped = false;
+        }
+    }
+
+    /// The knobs in force.
+    #[must_use]
+    pub fn config(&self) -> PixelConfig {
+        self.cfg
+    }
+
+    /// Whether the view is stepped down.
+    #[must_use]
+    pub fn stepped_down(&self) -> bool {
+        self.stepped_down
+    }
+
+    /// **The step-down** (doc 21 §3.4, cut G.1b): a picture write that took
+    /// longer than a frame means the link is not keeping up — russh stops
+    /// taking a channel's data once the client's window is full, so the write
+    /// waits — and the next frame is skipped; [`PixelConfig::step_down_after`]
+    /// such writes in a row step the view down to the narrow frame
+    /// ([`FRAME_W_LO`]) and the low clock; writes that keep up for
+    /// [`PixelConfig::step_up_after`] step it back up. Returns what changed,
+    /// for the box's counters.
+    pub fn write_took(&mut self, took: Duration, now: Instant) -> StepChange {
+        if took > self.interval() {
+            self.skip_next = true;
+            self.slow_streak = self.slow_streak.saturating_add(1);
+            self.clean_since = None;
+            if !self.stepped_down && self.slow_streak >= self.cfg.step_down_after {
+                self.stepped_down = true;
+                self.stats.step_downs += 1;
+                self.last_sent = None;
+                return StepChange::Down;
+            }
+            return StepChange::Skip;
+        }
+        self.slow_streak = 0;
+        if self.stepped_down {
+            let since = *self.clean_since.get_or_insert(now);
+            if now.saturating_duration_since(since) >= self.cfg.step_up_after {
+                self.stepped_down = false;
+                self.clean_since = None;
+                self.last_sent = None;
+                return StepChange::Up;
+            }
+        }
+        StepChange::None
     }
 
     /// Whether the clock is uncapped.
@@ -533,7 +678,9 @@ impl PixelView {
                 };
                 self.last_sent = None;
             }
-            Key::Char('u') => {
+            // A staff diagnostic, box-wide (G.1b): only where `[pixel]
+            // diagnostics` is on.
+            Key::Char('u') if self.cfg.diagnostics => {
                 self.uncapped = !self.uncapped;
                 self.last_sent = None;
             }
@@ -590,9 +737,19 @@ impl PixelView {
         let Some(encoder) = self.encoder(now) else {
             return Vec::new();
         };
+        // G.1b: the write before this tick's was slow; let the link drain.
+        if std::mem::take(&mut self.skip_next) {
+            self.stats.slow_skips += 1;
+            return Vec::new();
+        }
         let cell = self.cell.unwrap_or(CellSize::DEFAULT);
         let area = picture_area(cols, rows);
-        let want = frame_size(self.want, area, cell);
+        let width = if self.stepped_down {
+            self.want.min(FRAME_W_LO)
+        } else {
+            self.want
+        };
+        let want = frame_size(width, area, cell);
         let (size, shown, placed) = match encoder {
             Encoder::Kitty => (want, want, image_box(area, want, cell)),
             Encoder::Sixel => sixel_box(area, want, cell),
@@ -728,29 +885,90 @@ impl PixelView {
         } else {
             format!("{w}x{h} shown {}x{}", self.shown_size.0, self.shown_size.1)
         };
-        let top = format!(
-            "PIXEL VIEW  camera {camera:03}° (tank {:03}°{ordered}, look {:+}°)  {turning}  |  {probe}, drawing {drawing}  {size} {clock}  render {:.1} ms  encode {:.1} ms  image {} B  wire {} B  sent {}  fps {fps}",
+        let slow = if self.stepped_down {
+            "  (slow link: stepped down)"
+        } else {
+            ""
+        };
+        let mut top = format!(
+            "PIXEL VIEW  camera {camera:03}° (tank {:03}°{ordered}, look {:+}°)  {turning}  |  {probe}, drawing {drawing}  {size} {clock}{slow}",
             heading / 1_000,
             self.look_mdeg() / 1_000,
-            s.render_us as f64 / 1000.0,
-            s.encode_us as f64 / 1000.0,
-            s.image_bytes,
-            s.wire_bytes,
-            s.sent,
         );
+        // G.1b: the engineering numbers are the staff's (`[pixel]
+        // diagnostics`); everyone's own are in `@pixel/stats`.
+        if self.cfg.diagnostics {
+            top.push_str(&format!(
+                "  render {:.1} ms  encode {:.1} ms  image {} B  wire {} B  sent {}  fps {fps}",
+                s.render_us as f64 / 1000.0,
+                s.encode_us as f64 / 1000.0,
+                s.image_bytes,
+                s.wire_bytes,
+                s.sent,
+            ));
+        }
         let bottom = if cockpit.is_some() {
             let arrows = if self.keyboard_pushed {
                 "←/→: turn the tank (hold)"
             } else {
                 "←/→ or a/d: turn the tank (again to stop)"
             };
+            let clock = if self.cfg.diagnostics {
+                "   u: clock"
+            } else {
+                ""
+            };
             format!(
-                "{arrows}   ,/.: look   space: stop   c: centre   Enter: chat   r: 640/320 wide   u: clock   Esc/q: close   ^]: detach"
+                "{arrows}   ,/.: look   space: stop   c: centre   Enter: chat   r: 640/320 wide{clock}   Esc/q: close   ^]: detach"
             )
         } else {
             "No cockpit frame held: take a seat in the arena, then ^G.   Esc/q: close".to_string()
         };
         (top, bottom)
+    }
+}
+
+impl PixelView {
+    /// **`@pixel/stats`** (doc 21 cut G.1b): this connection's picture in
+    /// words — what the terminal showed and what is drawn, the frame and the
+    /// clock, the last frame's costs and bytes, and the counts. Everyone's
+    /// own numbers; the status line carries them only for staff.
+    #[must_use]
+    pub fn stats_lines(&mut self, now: Instant) -> Vec<String> {
+        let s = self.stats;
+        let drawing = self
+            .current_encoder()
+            .map_or("nothing".to_string(), |e| e.name().to_string());
+        let (w, h) = self.size();
+        let clock = if self.uncapped {
+            "uncapped".to_string()
+        } else {
+            format!("{} Hz", 1_000 / self.interval().as_millis().max(1))
+        };
+        let fps = self.sent_at.back().map_or(0, |last| self.fps(*last));
+        vec![
+            format!(
+                "Picture: {}, drawing {drawing}; {}.",
+                self.probe_words(now),
+                if self.active { "open" } else { "closed" }
+            ),
+            format!(
+                "Frame {w}x{h} at {clock}{}; last frame render {:.1} ms, encode {:.1} ms, image {} B, wire {} B; {fps} frames in the last second.",
+                if self.stepped_down {
+                    ", stepped down for a slow link"
+                } else {
+                    ""
+                },
+                s.render_us as f64 / 1000.0,
+                s.encode_us as f64 / 1000.0,
+                s.image_bytes,
+                s.wire_bytes,
+            ),
+            format!(
+                "Sent {}, unchanged {}, skipped behind a slow write {}, stepped down {} times.",
+                s.sent, s.skipped, s.slow_skips, s.step_downs
+            ),
+        ]
     }
 }
 
@@ -1326,6 +1544,19 @@ mod tests {
         );
         assert!(small.contains("c=120,r=26"), "{}", &small[..80]);
         assert!(v.stats.image_bytes > 0);
+        // G.1b: `u` is a staff diagnostic, inert unless `[pixel]
+        // diagnostics` is on, and the legend does not offer it.
+        v.key(Key::Char('u'), t0);
+        assert!(!v.uncapped(), "no diagnostics: u does nothing");
+        let (top, bottom) = v.hud(Some(&cockpit), t0);
+        assert!(
+            !bottom.contains("u: clock") && !top.contains("render"),
+            "{top} / {bottom}"
+        );
+        v.set_config(PixelConfig {
+            diagnostics: true,
+            ..PixelConfig::default()
+        });
         v.key(Key::Char('u'), t0);
         assert!(v.uncapped());
         assert_eq!(v.interval(), FRAME_INTERVAL_UNCAPPED);
@@ -1334,12 +1565,97 @@ mod tests {
             "re-sent after the switch"
         );
         let (top, bottom) = v.hud(Some(&cockpit), t0);
-        assert!(top.contains("320x138 uncapped"), "{top}");
+        assert!(
+            top.contains("320x138 uncapped") && top.contains("render"),
+            "{top}"
+        );
         assert!(bottom.contains("640/320 wide") && bottom.contains("u: clock"));
         v.key(Key::Char('r'), t0);
         v.key(Key::Char('u'), t0);
         assert!(!v.paint(&both, 120, 40, t0).is_empty());
         assert_eq!((v.size(), v.uncapped()), ((640, 276), false));
+    }
+
+    /// **Doc 21 cut G.1b, the step-down** (§3.4): a picture write slower than
+    /// a frame skips the next frame; three in a row step the view down to
+    /// the narrow frame and the low clock; ten seconds of writes that keep
+    /// up step it back; `@pixel/stats` tells it.
+    #[test]
+    fn slow_writes_skip_a_frame_then_step_down_and_clean_ones_step_back_up() {
+        let t0 = Instant::now();
+        let (cockpit, map) = fixtures();
+        let both = feeds(Some(&cockpit), Some(&map));
+        let mut v = supported(t0);
+        v.toggle(t0);
+        assert_eq!(v.config(), PixelConfig::default());
+        let slow = Duration::from_millis(80);
+        let quick = Duration::from_millis(2);
+        assert!(!v.paint(&both, 120, 40, t0).is_empty());
+        assert_eq!((v.size().0, v.interval()), (640, FRAME_INTERVAL));
+
+        // One slow write: the next tick is skipped, whatever it would draw.
+        assert_eq!(v.write_took(slow, t0), StepChange::Skip);
+        v.look_turn = 1;
+        v.tick(t0 + Duration::from_millis(500));
+        assert!(v.paint(&both, 120, 40, t0).is_empty(), "skipped");
+        assert_eq!(v.stats.slow_skips, 1);
+        assert!(!v.paint(&both, 120, 40, t0).is_empty(), "then drawn again");
+        assert_eq!(v.write_took(quick, t0), StepChange::None, "the streak ends");
+
+        // Three in a row: stepped down.
+        assert_eq!(v.write_took(slow, t0), StepChange::Skip);
+        assert_eq!(v.write_took(slow, t0), StepChange::Skip);
+        assert_eq!(v.write_took(slow, t0), StepChange::Down);
+        assert!(v.stepped_down());
+        assert_eq!(v.interval(), Duration::from_millis(100));
+        assert!(v.paint(&both, 120, 40, t0).is_empty(), "the skip first");
+        assert!(!v.paint(&both, 120, 40, t0).is_empty());
+        assert_eq!(v.size().0, FRAME_W_LO, "the narrow frame");
+        let (top, _) = v.hud(Some(&cockpit), t0);
+        assert!(
+            top.contains("10 Hz") && top.contains("stepped down"),
+            "{top}"
+        );
+
+        // Writes that keep up for ten seconds step it back up — not nine.
+        assert_eq!(v.write_took(quick, t0), StepChange::None);
+        assert_eq!(
+            v.write_took(quick, t0 + Duration::from_secs(9)),
+            StepChange::None
+        );
+        assert_eq!(
+            v.write_took(quick, t0 + Duration::from_secs(10)),
+            StepChange::Up
+        );
+        assert!(!v.stepped_down());
+        assert_eq!(v.interval(), FRAME_INTERVAL);
+        assert!(!v.paint(&both, 120, 40, t0).is_empty());
+        assert_eq!(v.size().0, FRAME_W);
+
+        let stats = v.stats_lines(t0).join(" ");
+        assert!(
+            stats.contains("skipped behind a slow write 2")
+                && stats.contains("stepped down 1 times"),
+            "{stats}"
+        );
+    }
+
+    /// `[pixel]`'s numbers are held to sane bounds.
+    #[test]
+    fn the_config_is_held_to_sane_bounds() {
+        let cfg = PixelConfig::from_millis(1, 5, 0, 0, true);
+        assert_eq!(cfg.frame_interval, Duration::from_millis(10));
+        assert_eq!(
+            cfg.low_interval,
+            Duration::from_millis(10),
+            "never faster than the clock"
+        );
+        assert_eq!(
+            (cfg.step_down_after, cfg.step_up_after),
+            (1, Duration::from_secs(1))
+        );
+        let cfg = PixelConfig::from_millis(50, 100, 3, 10, false);
+        assert_eq!(cfg, PixelConfig::default());
     }
 
     /// The feed names the engine's cockpit picture reads are the ones this

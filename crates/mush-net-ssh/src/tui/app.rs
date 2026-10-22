@@ -4040,6 +4040,21 @@ impl TuiApp {
         pixel.paint(&*panels, w, h, Instant::now())
     }
 
+    /// `[pixel]`'s knobs for this connection's view (doc 21 G.1b).
+    pub fn pixel_set_config(&mut self, cfg: super::pixel::PixelConfig) {
+        self.pixel.set_config(cfg);
+    }
+
+    /// The pump's picture write took `took` (G.1b's step-down).
+    pub fn pixel_write_took(&mut self, took: std::time::Duration) -> super::pixel::StepChange {
+        self.pixel.write_took(took, Instant::now())
+    }
+
+    /// `@pixel/stats`'s lines (G.1b).
+    pub fn pixel_stats_lines(&mut self) -> Vec<String> {
+        self.pixel.stats_lines(Instant::now())
+    }
+
     /// The view's counters.
     #[must_use]
     pub fn pixel_stats(&self) -> super::pixel::Stats {
