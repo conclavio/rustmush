@@ -218,7 +218,9 @@ fn conditional(w: &mut IcWorld, acceptance: u128) -> TestResult<ContractId> {
     Ok(id)
 }
 fn settle_contract(w: &mut IcWorld, id: ContractId) -> TestResult {
-    for _ in 0..8 {
+    // Contracts settle only in the Economy sweep, one bounded pass per
+    // period; each step below advances two seconds.
+    for _ in 0..mush_economy::SWEEP_PERIOD_SECS {
         if matches!(contract(w, id)?.state, ContractState::Settled { .. }) {
             return Ok(());
         }
