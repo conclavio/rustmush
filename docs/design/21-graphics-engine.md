@@ -1,5 +1,8 @@
 # 21. The graphics engine — one frame, three encoders
 
+**Draft 0.3 — 2026-10-22.** Two cuts added from the owner's work on w11term the same night: G.10
+bells and sounds (D-21-24) and G.11 assets over the player's own connection (D-21-25); §10, §11, §14.
+
 **Draft 0.2 — 2026-10-21, the owner's acceptance.** Every Q-21 default was accepted by the owner
 the same evening ("all question defaults accepted"), so each stands as a decision; Q-21-8 was
 answered differently and better (§12). Draft 0.1 was written the evening the pixel cockpit went live. The owner's ask,
@@ -336,6 +339,8 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
 | **G.7 the heightfield** | the voxel-space producer; the first map with relief (Q-21-5) | M | G.1, a map with height | a crater rim on the proving ground or a Ceres site at ≤6 ms a frame |
 | **G.8 debrief and replay** | the replay document (16b I.2) as a bucket-B picture with a scrubbable timeline | M | G.5 | `SIM REPLAY` draws the match; `,`/`.` scrub it |
 | **G.9 the boards** | the strategic board and the investigation board; the player annotation store they share | L | G.5, an annotation store | two players see each other's pins |
+| **G.10 bells and sounds** | the cockpit's notice kinds as sound names (`contact-gained`, `contact-lost`, `hit`, `overheat`, `power-online`, …); BEL for every terminal, mintty's **OSC 440** (`ESC ] 440 ; name[:async][:nostop][:loop] BEL`, the empty name stopping a loop) for a terminal that answers `XTVERSION` as w11term or mintty, kitty's OSC 99 with its `s=` sound for kitty; `async:nostop` on events, `loop` + stop for alarms; one sound a kind per two seconds; `@sounds on|off`; `XTVERSION` joins the `@tui` probe (D-21-24) | S | G.1 | a contact gained rings in w11term and in Windows Terminal's bell; the overheat alarm starts and stops with the frame; the sound names are the notice kinds |
+| **G.11 assets over the player's own connection** | the gateway's SSH server accepts the `sftp` subsystem (russh-sftp) over a READ-ONLY virtual tree rooted at a shipped `assets/` directory — open/read/close/opendir/readdir/stat/realpath only, paths canonicalised, a size cap a file and a bytes-a-second cap a connection; `assets/manifest.json` with content hashes and a pack version that the TUI's Hello carries; w11term syncs what changed into its per-host cache and OSC 440 names resolve there first; the sound pack, the scene model's sprite sheet, a font with the HUD's glyphs and the help topics ride it (D-21-25) | M | G.10, deploy.sh shipping `assets/` | w11term fetches the sound pack on first connect and plays G.10's sounds from it; a write, a rename or a `..` is refused; the manifest version in the Hello changes when the pack does |
 
 ## 11. Decisions taken here
 
@@ -369,6 +374,13 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
   one-shot picture in line mode in v1.
 - **D-21-23** w11term, the owner's Windows-native terminal on `wezterm-term`, is the reference
   Windows client (Q-21-8).
+- **D-21-24** Sounds are names, never audio: the cockpit's notice kinds, sent as BEL everywhere
+  and as mintty's OSC 440 or kitty's OSC 99 where `XTVERSION` or the probe says so; the client
+  maps names to files it holds, refuses paths from the server, and debounces (G.10).
+- **D-21-25** Client-side assets (sounds, sprites, a font, help) are fetched over the player's
+  own SSH connection through a read-only `sftp` subsystem on the gateway, from a manifest with
+  content hashes whose version the Hello carries; never over a second port or a second login
+  (G.11).
 
 ## 12. Questions for the owner — all accepted 2026-10-21
 
@@ -435,4 +447,7 @@ superseded its default (D-21-23).
 - **Doc 20 §4** (the vehicle) and **§5** (knowing): the windscreen and the survey chart as pictures;
   the first map with height (G.7, Q-21-5).
 - **Doc 17 §6** (the field pilot): the leash and the helm order (G.4).
-- **`docs/ops.md`**: `[pixel]`, `@pixel/stats`, the budget per viewer (G.1).
+- **`docs/ops.md`**: `[pixel]`, `@pixel/stats`, the budget per viewer (G.1); the `assets/`
+  directory deploy.sh ships and the sftp caps (G.11).
+- **Doc 02 §5** (the SSH server): the `sftp` subsystem as the one subsystem the front door
+  accepts, read-only, and the `XTVERSION` reply in the capability record (G.10, G.11).

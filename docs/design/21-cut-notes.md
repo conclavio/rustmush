@@ -7,3 +7,5 @@ One `## G.n` heading per cut of [21-graphics-engine.md](21-graphics-engine.md), 
 The document (Draft 0.1, 2026-10-21), the README row and this file. Nothing of the engine moved: the spike's code (`crates/mush-pixel`, the TUI's `^G` view) stands as the proof the document describes, with its measurements in `crates/mush-pixel/NOTES.md`.
 
 Draft 0.2 the same evening: the owner accepted every Q-21 default (now D-21-16..22) and answered Q-21-8 with w11term, their own Windows-native terminal on `wezterm-term` (D-21-23).
+
+Draft 0.3 (2026-10-22): two cuts added from the owner's w11term work — G.10 bells and sounds (names over BEL / OSC 440 / OSC 99, D-21-24) and G.11 assets over the player's own connection (a read-only sftp subsystem on the gateway with a hashed manifest, D-21-25).
