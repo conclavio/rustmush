@@ -321,7 +321,8 @@ fn fences(
                     .title_owner
                     .clone();
                 assert!(
-                    w.transfer_charter(charter.object(), GOD, 49_000_110).is_err(),
+                    w.transfer_charter(charter.object(), GOD, 49_000_110)
+                        .is_err(),
                     "title moved under a prepared qualification"
                 );
                 assert_eq!(

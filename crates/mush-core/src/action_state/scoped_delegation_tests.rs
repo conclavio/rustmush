@@ -424,8 +424,8 @@ fn registrar_only_grants_during_real_composition_and_frozen_tables_cannot_expand
 }
 
 #[test]
-fn read_grants_permit_module_reads_never_writes_and_change_identity_only_when_present()
--> TestResult {
+fn read_grants_permit_module_reads_never_writes_and_change_identity_only_when_present() -> TestResult
+{
     // The same composition with and without a grant: no grant keeps the
     // exact existing fingerprint bytes; a grant is a different deployment.
     let plain = {

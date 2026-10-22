@@ -43,7 +43,8 @@ fn disk(w: &PlayerWorld) -> Disk {
             let ledger = data.ledger.iter().map(move |(key, text)| {
                 (
                     (ns.to_string(), key.to_string()),
-                    serde_json::from_str::<serde_json::Value>(text).expect("a ledger chunk is JSON"),
+                    serde_json::from_str::<serde_json::Value>(text)
+                        .expect("a ledger chunk is JSON"),
                 )
             });
             kv.chain(ledger)

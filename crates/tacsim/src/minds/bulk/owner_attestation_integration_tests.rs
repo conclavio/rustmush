@@ -168,11 +168,11 @@ async fn fences(
                         .into_iter()
                         .find(|v| v.get("licence") == Some(&json!(owner)))
                         .ok_or("birth")?;
-                    let charter: mush_roll::commerce::CharterId = serde_json::from_value(
-                        birth.get("charter").ok_or("charter")?.clone(),
-                    )?;
+                    let charter: mush_roll::commerce::CharterId =
+                        serde_json::from_value(birth.get("charter").ok_or("charter")?.clone())?;
                     assert!(
-                        w.transfer_charter(charter.object(), GOD, 49_000_100).is_err(),
+                        w.transfer_charter(charter.object(), GOD, 49_000_100)
+                            .is_err(),
                         "title moved under a prepared attestation"
                     );
                     drop((prepared, out));

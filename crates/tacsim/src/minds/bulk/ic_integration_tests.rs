@@ -603,9 +603,11 @@ impl IcWorld {
                 transfer_facts.clone(),
             ),
             Box::new(composition.configure_roll(RollModule::with_writers(["tacsim"]))),
-            Box::new(composition.configure_market(
-                MarketModule::new().with_venue_gate(Arc::new(IcVenue { base })),
-            )),
+            Box::new(
+                composition.configure_market(
+                    MarketModule::new().with_venue_gate(Arc::new(IcVenue { base })),
+                ),
+            ),
             paid_checkout::content()?,
         ];
         if let Some(host) = &host {

@@ -774,8 +774,10 @@ impl PlayerWorld {
             })
             .map(|(_, event)| mush_testkit::text_of(event))
             .collect::<Vec<_>>()
-            .join("
-");
+            .join(
+                "
+",
+            );
         assert!(heard.contains("red slot 1"), "SIM TEAM red: {heard}");
         self.say(BUYER, "SIM AI 1")?;
         self.say(BUYER, "SIM UNIT heavy_mk1")?;

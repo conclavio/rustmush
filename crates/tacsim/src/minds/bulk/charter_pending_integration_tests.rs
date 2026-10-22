@@ -442,7 +442,16 @@ fn offer_and_custody(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) 
                 .ok_or("actual close custody")?
                 .into_parts();
             assert!(
-                prepare(&mut w, FUND, 1, BUYER, START + 512, fund_params.clone(), None).is_err(),
+                prepare(
+                    &mut w,
+                    FUND,
+                    1,
+                    BUYER,
+                    START + 512,
+                    fund_params.clone(),
+                    None
+                )
+                .is_err(),
                 "Fund prepared under a staged claim close"
             );
             // This is an actual prepared four-owner close image, not a patched

@@ -335,6 +335,9 @@ mod tests {
             super::super::TermGeneration::new(1).expect("term").key()
         );
         assert!(valid_key("roll_mind_lapse_occurrences", &key));
-        assert!(!valid_key("roll_mind_lapse_occurrences", "licence/0000000000000004"));
+        assert!(!valid_key(
+            "roll_mind_lapse_occurrences",
+            "licence/0000000000000004"
+        ));
     }
 }

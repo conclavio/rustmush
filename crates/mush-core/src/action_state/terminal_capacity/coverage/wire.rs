@@ -340,7 +340,11 @@ impl Row {
         let role = if qualified.is_null() {
             Value::Null
         } else {
-            json!(digest("tacsim.coverage.qualified_role.v1", qualified, 4096)?)
+            json!(digest(
+                "tacsim.coverage.qualified_role.v1",
+                qualified,
+                4096
+            )?)
         };
         for (n, v) in [
             ("format", json!(1)),

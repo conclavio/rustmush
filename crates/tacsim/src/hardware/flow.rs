@@ -102,7 +102,11 @@ fn command(w: &mut TestWorld, actor: ObjId, line: &str) -> Result {
         .collect();
     if !refusals.is_empty() {
         let verb = line.split_whitespace().next().unwrap_or_default();
-        return Err(format!("actual hardware setup command refused: {verb}: {}", refusals.join(" | ")).into());
+        return Err(format!(
+            "actual hardware setup command refused: {verb}: {}",
+            refusals.join(" | ")
+        )
+        .into());
     }
     Ok(())
 }

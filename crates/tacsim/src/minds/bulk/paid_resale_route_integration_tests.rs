@@ -118,7 +118,11 @@ fn connect(w: &mut PlayerWorld, buyer: ObjId) -> TestResult {
 /// holder's listing is a separate, not-yet-built feature), so it is no test of
 /// a buyer's holding.
 fn holds(w: &PlayerWorld, actor: ObjId, id: LicenceId) -> TestResult {
-    assert_eq!(pointer(w, id)?.holder(), actor, "actual current paid holder");
+    assert_eq!(
+        pointer(w, id)?.holder(),
+        actor,
+        "actual current paid holder"
+    );
     Ok(())
 }
 fn visible(w: &mut PlayerWorld, actor: ObjId, id: LicenceId, expected: bool) -> TestResult {
