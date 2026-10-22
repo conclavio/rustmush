@@ -1712,7 +1712,8 @@ fn sm5_a_lane_has_one_licence_issuer_and_every_site_is_its() {
     };
     let second = |doc: &mut Value| {
         doc["entries"]["stickney_port"]["def"]["licence"] = serde_json::json!({
-            "org": "kasei", "fee_major": 100, "term_ic_days": 30, "grace_ic_days": 1
+            "org": "kasei", "fee_major": 100, "term_ic_days": 30, "grace_ic_days": 1,
+            "claim_stake_major": 2000, "claim_term_major": 2000
         });
     };
     let got = refused(&second);
@@ -2235,7 +2236,18 @@ fn sm5_occators_capital_rises_by_a_tranche_on_a_kept_world() {
         .filter(|o| !before.contains(&o.id.0))
         .cloned()
         .collect();
-    assert_eq!(made.len(), 1, "exactly one new tranche");
+    // Doc 20 cut SM.10: v12 also adds the Pallas Syndicate (capital 50,000), whose base
+    // tranche is the other new obligation; Occator's raise is still exactly one.
+    assert_eq!(
+        made.len(),
+        2,
+        "Occator's one new tranche and the Syndicate's base"
+    );
+    let made: Vec<mush_economy::Obligation> = made
+        .into_iter()
+        .filter(|o| o.amount.minor() != 5_000_000)
+        .collect();
+    assert_eq!(made.len(), 1, "exactly one new Occator tranche");
     assert_eq!(made[0].amount.minor(), 25_000_000);
     let row = port_map(&rig.tw, "ceres_port").orgs[&cid("occator")].clone();
     assert_eq!(row.raises, vec![250_000]);

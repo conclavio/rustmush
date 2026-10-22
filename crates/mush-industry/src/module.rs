@@ -87,6 +87,8 @@ pub struct IndustryModule {
     draws: Option<Arc<dyn crate::seams::ExternalDraws>>,
     /// Doc 20 cut SM.6 (§9.6): the composed jurisdiction row.
     jurisdiction: Option<Arc<dyn crate::seams::JurisdictionAuthority>>,
+    /// Doc 20 cut SM.10 (§9, D-20-12): the composed tenure authority.
+    tenure: Option<Arc<dyn crate::seams::TenureAuthority>>,
     /// Doc 20 cut SM.6: the composed owners this crate delegates its typed
     /// families to.
     delegates: Vec<SmolStr>,
@@ -99,6 +101,7 @@ impl std::fmt::Debug for IndustryModule {
             .field("has_recipes", &self.recipes.is_some())
             .field("has_system_opener", &self.opener.is_some())
             .field("has_external_draws", &self.draws.is_some())
+            .field("has_tenure_authority", &self.tenure.is_some())
             .field("delegates", &self.delegates)
             .finish_non_exhaustive()
     }
@@ -118,6 +121,7 @@ impl IndustryModule {
             opener: None,
             draws: None,
             jurisdiction: None,
+            tenure: None,
             delegates: Vec::new(),
         }
     }
@@ -161,6 +165,20 @@ impl IndustryModule {
         authority: Arc<dyn crate::seams::JurisdictionAuthority>,
     ) -> Self {
         self.jurisdiction = Some(authority);
+        self
+    }
+
+    /// Compose the tenure authority (doc 20 §9, D-20-12; cut SM.10) that admits
+    /// an actor to `industry_claim_tenure` for exactly the ONE server-authored
+    /// [`TenureAct`](crate::seams::TenureAct) it vouches for, and stages the
+    /// composing game's own record writes in the same bundle. Unset, the verb
+    /// registers and offers nothing.
+    #[must_use]
+    pub fn with_tenure_authority(
+        mut self,
+        authority: Arc<dyn crate::seams::TenureAuthority>,
+    ) -> Self {
+        self.tenure = Some(authority);
         self
     }
 
@@ -716,6 +734,7 @@ impl GameModule for IndustryModule {
             self.recipes.clone(),
             self.opener.clone(),
             jurisdiction,
+            self.tenure.clone(),
         )?;
 
         let mut store = IndustryStore::default();

@@ -143,6 +143,23 @@ pub(crate) trait SurfaceReads {
         &self,
         deposit: mush_industry::OreDepositId,
     ) -> Result<Vec<mush_industry::ClaimRecord>, String>;
+    /// **A block's public tenure** (doc 20 cut SM.10, D17): its `tacsim.claims` record, `None`
+    /// when nothing was ever staked, seeded or papered there.
+    fn block_tenure(
+        &self,
+        key: &crate::surface::claims::BlockKey,
+    ) -> Result<Option<crate::surface::claims::BlockTenure>, String>;
+    /// **A block place's industry tenure** (doc 20 cut SM.10): the epoch, its start and the
+    /// cooling rows, read only through the delegation (`None` = never moved: fresh).
+    fn tenure(&self, place: ObjId) -> Result<Option<mush_industry::TenureRecord>, String>;
+    /// **Every chart row of one site, bounded** (doc 20 cut SM.10, D12): a paged scan of
+    /// `tacsim.chart` keeping the rows whose site is `site`, stopping once `max` records were
+    /// **read**; `true` when it stopped short of the family's end.
+    fn site_charts(
+        &self,
+        site: &CanonicalId,
+        max: usize,
+    ) -> Result<(Vec<ChartRecord>, bool), String>;
 }
 
 /// The handles, or why not.
@@ -177,6 +194,41 @@ fn claims_through<E: std::fmt::Display>(
         }
     }
     Ok(out)
+}
+
+/// One page of `tacsim.chart` from `(after, limit)`: the records and the cursor past them.
+type ChartPage<'a> =
+    dyn FnMut(Option<&str>, usize) -> Result<(Vec<ChartRecord>, Option<SmolStr>), String> + 'a;
+
+/// **The bounded site-chart scan** (doc 20 cut SM.10, D12): pages of `tacsim.chart` through
+/// `page(after, limit)` until the family ends or `max` records were read, keeping the rows of
+/// `site`. `true` when it stopped at `max` with more of the family left.
+fn scan_site_charts(
+    site: &CanonicalId,
+    max: usize,
+    page: &mut ChartPage<'_>,
+) -> Result<(Vec<ChartRecord>, bool), String> {
+    /// One page's records.
+    const PAGE: usize = 64;
+    let mut out = Vec::new();
+    let mut read = 0_usize;
+    let mut after: Option<SmolStr> = None;
+    loop {
+        let left = max.saturating_sub(read);
+        if left == 0 {
+            return Ok((out, after.is_some()));
+        }
+        let (rows, next) = page(after.as_deref(), left.min(PAGE))?;
+        if rows.is_empty() {
+            return Ok((out, false));
+        }
+        read = read.saturating_add(rows.len());
+        out.extend(rows.into_iter().filter(|row| &row.site == site));
+        match next {
+            None => return Ok((out, false)),
+            Some(next) => after = Some(next),
+        }
+    }
 }
 
 /// **The engine's own snapshot, as [`SurfaceReads`]** (doc 20 cut SM.7; the brief's 3.3): the
@@ -259,6 +311,49 @@ impl SurfaceReads for EngineReads<'_> {
             &|id| state.get(&families.claims, id).map(|f| f.cloned()),
         )
     }
+
+    fn block_tenure(
+        &self,
+        key: &crate::surface::claims::BlockKey,
+    ) -> Result<Option<crate::surface::claims::BlockTenure>, String> {
+        let handles = handles_of(&self.0.world)?;
+        self.0
+            .action_state()
+            .get(&handles.families.claims, key)
+            .map(|found| found.cloned().filter(|row| row.key().as_ref() == Some(key)))
+            .map_err(|error| error.to_string())
+    }
+
+    fn tenure(&self, place: ObjId) -> Result<Option<mush_industry::TenureRecord>, String> {
+        let families = industry_of(&self.0.world)?;
+        self.0
+            .action_state()
+            .get(&families.tenure, &place)
+            .map(|found| found.cloned().filter(|row| row.place() == place))
+            .map_err(|error| error.to_string())
+    }
+
+    fn site_charts(
+        &self,
+        site: &CanonicalId,
+        max: usize,
+    ) -> Result<(Vec<ChartRecord>, bool), String> {
+        let handles = handles_of(&self.0.world)?;
+        scan_site_charts(site, max, &mut |after, limit| {
+            let page = self
+                .0
+                .action_state()
+                .scan_family(&handles.families.charts, after, limit)
+                .map_err(|error| error.to_string())?;
+            Ok((
+                page.entries()
+                    .iter()
+                    .map(|entry| entry.value().clone())
+                    .collect(),
+                page.next_after().cloned(),
+            ))
+        })
+    }
 }
 
 impl SurfaceReads for Ctx<'_> {
@@ -315,6 +410,43 @@ impl SurfaceReads for Ctx<'_> {
             &|id| self.action_state(&families.claims, id).map(|f| f.cloned()),
         )
     }
+
+    fn block_tenure(
+        &self,
+        key: &crate::surface::claims::BlockKey,
+    ) -> Result<Option<crate::surface::claims::BlockTenure>, String> {
+        let handles = handles_of(self.w)?;
+        self.action_state(&handles.families.claims, key)
+            .map(|found| found.cloned().filter(|row| row.key().as_ref() == Some(key)))
+            .map_err(|error| error.to_string())
+    }
+
+    fn tenure(&self, place: ObjId) -> Result<Option<mush_industry::TenureRecord>, String> {
+        let families = industry_of(self.w)?;
+        self.action_state(&families.tenure, &place)
+            .map(|found| found.cloned().filter(|row| row.place() == place))
+            .map_err(|error| error.to_string())
+    }
+
+    fn site_charts(
+        &self,
+        site: &CanonicalId,
+        max: usize,
+    ) -> Result<(Vec<ChartRecord>, bool), String> {
+        let handles = handles_of(self.w)?;
+        scan_site_charts(site, max, &mut |after, limit| {
+            let page = self
+                .scan_action_state(&handles.families.charts, after, limit)
+                .map_err(|error| error.to_string())?;
+            Ok((
+                page.entries()
+                    .iter()
+                    .map(|entry| entry.value().clone())
+                    .collect(),
+                page.next_after().cloned(),
+            ))
+        })
+    }
 }
 
 impl SurfaceReads for HookReadContext<'_> {
@@ -370,6 +502,43 @@ impl SurfaceReads for HookReadContext<'_> {
             },
             &|id| self.action_state(&families.claims, id).map(|f| f.cloned()),
         )
+    }
+
+    fn block_tenure(
+        &self,
+        key: &crate::surface::claims::BlockKey,
+    ) -> Result<Option<crate::surface::claims::BlockTenure>, String> {
+        let handles = handles_of(self.world())?;
+        self.action_state(&handles.families.claims, key)
+            .map(|found| found.cloned().filter(|row| row.key().as_ref() == Some(key)))
+            .map_err(|error| error.to_string())
+    }
+
+    fn tenure(&self, place: ObjId) -> Result<Option<mush_industry::TenureRecord>, String> {
+        let families = industry_of(self.world())?;
+        self.action_state(&families.tenure, &place)
+            .map(|found| found.cloned().filter(|row| row.place() == place))
+            .map_err(|error| error.to_string())
+    }
+
+    fn site_charts(
+        &self,
+        site: &CanonicalId,
+        max: usize,
+    ) -> Result<(Vec<ChartRecord>, bool), String> {
+        let handles = handles_of(self.world())?;
+        scan_site_charts(site, max, &mut |after, limit| {
+            let page = self
+                .scan_action_state(&handles.families.charts, after, limit)
+                .map_err(|error| error.to_string())?;
+            Ok((
+                page.entries()
+                    .iter()
+                    .map(|entry| entry.value().clone())
+                    .collect(),
+                page.next_after().cloned(),
+            ))
+        })
     }
 }
 
@@ -760,9 +929,70 @@ pub(crate) fn pit_at(
     pit
 }
 
-/// **A held block's edge `#`** — a stub: claims are SM.10's (no claim is filed before it).
-fn claim_edges() -> impl Iterator<Item = ((i64, i64), char)> {
-    std::iter::empty()
+/// **A claimed block's edge `#`** (doc 20 cut SM.10; the brief's 3.8 item 22): every perimeter
+/// site cell of each block of `letters`, less the block's letter corner (its north-west cell,
+/// where the letter stands), as `'#'`. Pure: the caller maps the cells into the frame and keeps
+/// the letters on top.
+fn claim_edges(letters: &[char]) -> Vec<((i64, i64), char)> {
+    let side = address::CELLS_PER_BLOCK;
+    let mut out = Vec::new();
+    for letter in letters {
+        let Some((bx, by)) = address::block_of_letter(*letter) else {
+            continue;
+        };
+        let (x0, y0) = (bx * side, by * side);
+        let (x1, y1) = (x0 + side - 1, y0 + side - 1);
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let edge = x == x0 || x == x1 || y == y0 || y == y1;
+                if edge && (x, y) != (x0, y1) {
+                    out.push(((x, y), '#'));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// **One claimed block on the map** (doc 20 cut SM.10): its letter, whether an org holds it, the
+/// holder's name and whether it is the viewer's. Public facts only (D13).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ClaimMark {
+    letter: char,
+    held: bool,
+    holder: String,
+    yours: bool,
+}
+
+/// **The site's live claims, A–P, from the block records** (D17): a block whose record carries a
+/// live claim of any holder. An unreadable record draws nothing.
+fn claimed_blocks(
+    w: &World,
+    reads: &dyn SurfaceReads,
+    entry: &CanonicalId,
+    viewer: ObjId,
+    now: i64,
+) -> Vec<ClaimMark> {
+    crate::port::def::BLOCK_LETTERS
+        .into_iter()
+        .filter_map(|letter| {
+            let claim = reads
+                .block_tenure(&crate::surface::claims::BlockKey {
+                    site: entry.clone(),
+                    letter,
+                })
+                .ok()
+                .flatten()?
+                .claim
+                .filter(|claim| claim.live(now))?;
+            Some(ClaimMark {
+                letter,
+                held: !claim.player_held(),
+                holder: crate::port::claims::holder_name(w, &claim.holder),
+                yours: claim.holder == mush_org::PrincipalId::Object(viewer),
+            })
+        })
+        .collect()
 }
 
 /// One of the viewer's rigs on the map: its slot, its frame cell and the frame cell east of it
@@ -1450,9 +1680,16 @@ pub(crate) fn site_map_frame(
             }
         }
     }
-    layers.claims = claim_edges()
-        .filter_map(|(cell, glyph)| frame_cell(cell).map(|at| (at, glyph)))
+    // Doc 20 cut SM.10 (the brief's 3.8 item 22): a live claim's block edge, the same for every
+    // viewer, never over a block's letter.
+    let claimed = claimed_blocks(w, reads, &entry, actor, now);
+    let claimed_letters: Vec<char> = claimed.iter().map(|mark| mark.letter).collect();
+    let claim_cells: BTreeSet<(usize, usize)> = claim_edges(&claimed_letters)
+        .into_iter()
+        .filter_map(|(cell, _)| frame_cell(cell))
+        .filter(|at| !layers.letters.iter().any(|(letter_at, _)| letter_at == at))
         .collect();
+    layers.claims = claim_cells.into_iter().map(|at| (at, '#')).collect();
     layers.pits = pit_layer(reads, &entry, &ground)
         .into_iter()
         .filter_map(|(pocket, glyph)| frame_cell(pocket_cell(pocket)).map(|at| (at, glyph)))
@@ -1858,6 +2095,22 @@ pub(crate) fn site_map_frame(
     let print = site_map_lines(&frame);
     if let Some(block) = frame.get_mut("site").and_then(Value::as_object_mut) {
         block.insert("print".to_owned(), json!(print));
+        // Doc 20 cut SM.10 (D13): the live claims, omitted when there are none, so a frame with
+        // no claim is byte-identical to SM.9's.
+        if !claimed.is_empty() {
+            let claims: Vec<Value> = claimed
+                .iter()
+                .map(|mark| {
+                    json!({
+                        "letter": mark.letter.to_string(),
+                        "state": if mark.held { "held" } else { "claimed" },
+                        "holder": mark.holder,
+                        "yours": mark.yours,
+                    })
+                })
+                .collect();
+            block.insert("claims".to_owned(), Value::Array(claims));
+        }
     }
     Ok(frame)
 }
@@ -2140,7 +2393,23 @@ mod tests {
             SITE_LEGEND,
             "@ you  H hull  o rig  , regolith  ^ rock  = ice  O crater  1–3 ore (t a cycle)  + other family  . barren  v/V pit  # claim"
         );
-        assert_eq!(claim_edges().count(), 0, "claims are SM.10's");
+        // Doc 20 cut SM.10: the edges of a claimed block — its perimeter less its letter's corner.
+        assert!(claim_edges(&[]).is_empty(), "no claim, no edge");
+        let a = claim_edges(&['A']);
+        assert_eq!(
+            a.len(),
+            64 * 4 - 4 - 1,
+            "the perimeter less the letter's corner"
+        );
+        assert!(a.iter().all(|(_, glyph)| *glyph == '#'));
+        assert!(
+            !a.iter().any(|(cell, _)| *cell == (0, 255)),
+            "the letter's corner stays"
+        );
+        assert!(
+            a.iter()
+                .all(|((x, y), _)| *x == 0 || *x == 63 || *y == 192 || *y == 255)
+        );
         // The digits are the drill row's yield (the legend's "t a cycle").
         let drill = crate::definitions::tools::tools_table()
             .unwrap_or_else(|e| panic!("{e}"))

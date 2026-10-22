@@ -100,9 +100,15 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
 /// prints as that one line and the web shows as its sentence.
 struct ChartQuery;
 
-impl QueryHandler for ChartQuery {
-    fn query(&self, w: &World, actor: ObjId, _params: &Value) -> Result<OutputEvent, RichText> {
-        let data = chart_frame(w, actor).unwrap_or_else(|why| {
+impl ChartQuery {
+    /// The frame, or the reason frame; `reads` reads the sites' block records for their tenure
+    /// lines (doc 20 cut SM.10, lead note 0a), the authored tenure without.
+    fn answer(
+        w: &World,
+        reads: Option<&dyn crate::port::site_map::SurfaceReads>,
+        actor: ObjId,
+    ) -> OutputEvent {
+        let data = chart_frame_reading(w, reads, actor).unwrap_or_else(|why| {
             json!({
                 "schema": { "id": SKY_CHART_FEED, "shape": "grid", "version": SCHEMA_VERSION },
                 "window": 0,
@@ -115,11 +121,26 @@ impl QueryHandler for ChartQuery {
                 "you": null,
             })
         });
-        Ok(OutputEvent::Panel {
+        OutputEvent::Panel {
             feed: SmolStr::new_static(SKY_CHART_FEED),
             kind: PanelFrameKind::Keyframe,
             data,
-        })
+        }
+    }
+}
+
+impl QueryHandler for ChartQuery {
+    fn query(&self, w: &World, actor: ObjId, _params: &Value) -> Result<OutputEvent, RichText> {
+        Ok(Self::answer(w, None, actor))
+    }
+
+    fn query_with_context(
+        &self,
+        context: &mush_core::HookReadContext<'_>,
+        actor: ObjId,
+        _params: &Value,
+    ) -> Result<OutputEvent, RichText> {
+        Ok(Self::answer(context.world(), Some(context), actor))
     }
 }
 
@@ -379,13 +400,29 @@ fn glyph_for(id: &CanonicalId, taken: &mut BTreeSet<char>) -> char {
 }
 
 /// **The chart frame for `actor`** (the module doc): the grid, the `chart`
-/// block and the lines.
+/// block and the lines — a site's tenure line here the authored one; the `sky.chart` feed and
+/// `+chart/map` read the sites' block records (doc 20 cut SM.10).
+///
+/// # Errors
+///
+/// The vantage's refusal: no lane, or nowhere the lane knows.
+pub fn chart_frame(w: &World, actor: ObjId) -> Result<Value, String> {
+    chart_frame_reading(w, None, actor)
+}
+
+/// **[`chart_frame`] with the sites' block records read** through `reads` (doc 20 cut SM.10,
+/// lead note 0a: a site's tenure line counts its live claims): the `sky.chart` feed's own
+/// answer and `+chart/map`'s; `None` prints the authored tenure, as [`chart_frame`] does.
 ///
 /// # Errors
 ///
 /// The vantage's refusal: no lane, or nowhere the lane knows.
 #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
-pub fn chart_frame(w: &World, actor: ObjId) -> Result<Value, String> {
+pub(crate) fn chart_frame_reading(
+    w: &World,
+    reads: Option<&dyn crate::port::site_map::SurfaceReads>,
+    actor: ObjId,
+) -> Result<Value, String> {
     let v: Vantage<'_> = vantage_for_world(w, actor)?;
     let now = w.world_ic_now().at;
     let rate = v.sky.ephemeris().rate_permille();
@@ -572,7 +609,7 @@ pub fn chart_frame(w: &World, actor: ObjId) -> Result<Value, String> {
         })
         .collect();
     // The lines `+chart` prints, for a renderer that composes nothing itself.
-    let sky = sky_lines(w, &v, now);
+    let sky = sky_lines(w, reads, &v, now);
     let window_text: Vec<String> = dests
         .iter()
         .flat_map(|dest| window_lines_for(w, &v, dest, now).unwrap_or_default())
@@ -625,7 +662,21 @@ pub fn chart_frame(w: &World, actor: ObjId) -> Result<Value, String> {
 ///
 /// The vantage's refusal.
 pub fn flat_lines(w: &World, actor: ObjId) -> Result<Vec<String>, String> {
-    let frame = chart_frame(w, actor)?;
+    flat_lines_reading(w, None, actor)
+}
+
+/// **[`flat_lines`] with the sites' block records read** through `reads` (doc 20 cut SM.10,
+/// lead note 0a): `+chart/map`'s own lines.
+///
+/// # Errors
+///
+/// The vantage's refusal.
+pub(crate) fn flat_lines_reading(
+    w: &World,
+    reads: Option<&dyn crate::port::site_map::SurfaceReads>,
+    actor: ObjId,
+) -> Result<Vec<String>, String> {
+    let frame = chart_frame_reading(w, reads, actor)?;
     let mut lines = vec![
         frame
             .get("title")

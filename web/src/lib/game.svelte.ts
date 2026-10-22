@@ -1027,9 +1027,14 @@ export class GameApp {
         this.chart.applyKeyframe(d.data);
       }
     } else if (d.feed === SITE_MAP_FEED) {
-      // The quarry's site map (doc 20 cut SM.9): pulled, every frame a whole keyframe.
+      // The quarry's site map (doc 20 cut SM.9): pulled, every frame a whole keyframe. Doc 20 cut
+      // SM.10 (SM.9's lead round, inherited): a reason frame that cleared the pick is re-asked once
+      // while the quarry is the screen, so it is not held until the next push or `r`.
       if (d.kind === "keyframe") {
-        this.quarry.applySite(d.data, Date.now());
+        const cleared = this.quarry.applySite(d.data, Date.now());
+        if (cleared && this.screens.active === QUARRY_SCREEN.def.id) {
+          this.refreshQuarrySite();
+        }
       }
     } else if (d.feed === BODY_GROUND_FEED) {
       if (d.kind === "keyframe") {

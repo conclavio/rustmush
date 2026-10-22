@@ -188,6 +188,15 @@ pub struct LicenceDef {
     pub term_ic_days: u32,
     /// The grace after a term ends, IC days, at most the term.
     pub grace_ic_days: u32,
+    /// **Doc 20 cut SM.10 (§9.3, lead ruling 3)**: a mining claim's stake fee,
+    /// major units, `1..=`[`MAX_LICENCE_FEE_MAJOR`] — paid to the same org as
+    /// the licence's fee, beside it (a public E4 contract into the Registry's
+    /// treasury, the licence's shape). A stake pays the stake and one term.
+    pub claim_stake_major: u64,
+    /// **Doc 20 cut SM.10 (§9.3, lead ruling 3)**: a mining claim's term fee,
+    /// major units, `1..=`[`MAX_LICENCE_FEE_MAJOR`]: paid at the stake, at each
+    /// renewal, and refunded to a contest's loser.
+    pub claim_term_major: u64,
 }
 
 /// **Doc 20 cut SM.3a (§4.3, Q-20-6)**: a lessor's pool of terrain vehicles,
@@ -305,6 +314,34 @@ pub struct BlockDef {
     /// The block's zone, when not the site's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone: Option<Zone>,
+    /// **Doc 20 cut SM.10 (§9.6, lead ruling 10)**: another issuer's paper over
+    /// this open block (the Pallas Syndicate's at Occator Rim). The site clerk
+    /// seeds it as that issuer's `Contested` claims; it bars nothing, and the
+    /// Registrar suspends it at the first renewal of a worked player claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paper: Option<BlockPaperDef>,
+}
+
+/// **A block's paper** (doc 20 §9.6; cut SM.10): who files it and which of the
+/// site's [`SiteDef::papers`] rows is its adjudication contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlockPaperDef {
+    /// The paper's issuer: an org of some port of the pack, never the site's
+    /// own issuer.
+    pub issuer: CanonicalId,
+    /// A key of the site's `papers`.
+    pub contract: CanonicalId,
+}
+
+/// **One paper's adjudication contract** (doc 20 §9.6; cut SM.10, OC2): the
+/// bond the contract names (never escrowed). Its deadline is not lane data: it
+/// is the seeded term (`surface::tenure::SEEDED_TERM_IC_SECS`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaperDef {
+    /// The bond, major units, `1..=`[`MAX_LICENCE_FEE_MAJOR`].
+    pub bond_major: u64,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -336,6 +373,11 @@ pub struct SiteDef {
     /// Block letter (`A`..=`P`) → its exceptions; absent letters take the defaults.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub blocks: BTreeMap<String, BlockDef>,
+    /// **Doc 20 cut SM.10 (§9.6)**: the papers filed over this site's blocks,
+    /// row id → its adjudication contract's terms; every row is named by some
+    /// block's `paper`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub papers: BTreeMap<CanonicalId, PaperDef>,
 }
 
 /// One block as the site reads it: its tenure, holder, prospectivity, worked
@@ -432,6 +474,37 @@ impl SiteDef {
                 return Err(format!(
                     "site: block {letter}: worked_permille is 0 to 1000, not {}",
                     row.worked_permille
+                ));
+            }
+            // Doc 20 cut SM.10 (§9.6): a paper stands only over open ground,
+            // and names one of the site's papers rows.
+            if let Some(paper) = &row.paper {
+                if self.block(letter).tenure != Tenure::Open {
+                    return Err(format!(
+                        "site: block {letter}: a paper stands only over an open block"
+                    ));
+                }
+                if !self.papers.contains_key(&paper.contract) {
+                    return Err(format!(
+                        "site: block {letter}: paper contract {} is not a row of the site's papers",
+                        paper.contract
+                    ));
+                }
+            }
+        }
+        // Doc 20 cut SM.10: every papers row is named, its bond in bounds.
+        for (id, paper) in &self.papers {
+            if !self.blocks.values().any(|row| {
+                row.paper
+                    .as_ref()
+                    .is_some_and(|block_paper| &block_paper.contract == id)
+            }) {
+                return Err(format!("site: papers row {id} is named by no block"));
+            }
+            if paper.bond_major == 0 || paper.bond_major > MAX_LICENCE_FEE_MAJOR {
+                return Err(format!(
+                    "site: papers row {id}: bond_major must be 1..={MAX_LICENCE_FEE_MAJOR}, not {}",
+                    paper.bond_major
                 ));
             }
         }
@@ -997,6 +1070,17 @@ impl PortDef {
                 licence.term_ic_days, licence.grace_ic_days
             ));
         }
+        // Doc 20 cut SM.10 (§9.3, lead ruling 3): the claim fees beside it.
+        for (field, value) in [
+            ("claim_stake_major", licence.claim_stake_major),
+            ("claim_term_major", licence.claim_term_major),
+        ] {
+            if value == 0 || value > MAX_LICENCE_FEE_MAJOR {
+                return Err(format!(
+                    "licence: {field} must be 1..={MAX_LICENCE_FEE_MAJOR}, not {value}"
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -1535,6 +1619,22 @@ pub fn check_ports(
                     "site: block {letter}: holder {holder} is not an org of any port of this pack"
                 ));
             }
+            // Doc 20 cut SM.10 (§9.6): a paper is another issuer's.
+            if let Some(paper) = &row.paper {
+                if !orgs.contains_key(&paper.issuer) {
+                    return fail(format!(
+                        "site: block {letter}: paper issuer {} is not an org of any port of this \
+                         pack",
+                        paper.issuer
+                    ));
+                }
+                if paper.issuer == site.issuer {
+                    return fail(format!(
+                        "site: block {letter}: a paper's issuer is never the site's own issuer {}",
+                        site.issuer
+                    ));
+                }
+            }
         }
     }
     for (id, def) in &ports {
@@ -1964,6 +2064,7 @@ mod tests {
                     default: Tenure::Open,
                 },
                 blocks: BTreeMap::new(),
+                papers: BTreeMap::new(),
             }),
             vehicles: None,
             licence: None,
@@ -2253,6 +2354,8 @@ mod tests {
             fee_major: 2_500,
             term_ic_days: 168,
             grace_ic_days: 3,
+            claim_stake_major: 2_000,
+            claim_term_major: 2_000,
         };
         let with = |edit: &dyn Fn(&mut LicenceDef)| {
             let mut def = port();

@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 11,
+    "version": 12,
     "kind": "campaign_seed",
-    "digest": "c7239b0ae61645657e9be2bb5dab56f9041e5a608c872f15c2865efb10668744",
+    "digest": "9108a455528b781bc3a010cf43cadbc001b7663e720e5cd19082f85bc63ca6c2",
     "requires": []
   },
   "entries": {
@@ -2558,7 +2558,8 @@
           { "id": "freeport_exchange", "name": "Freeport Exchange", "capital_major": 4000000, "faction": "freeport" },
           { "id": "occator", "name": "Occator Water & Propellant", "capital_major": 50000, "faction": "freeport", "raises": [ 250000 ] },
           { "id": "tycho_mutual", "name": "Tycho Mutual Assurance & Salvage", "capital_major": 50000, "faction": "concord" },
-          { "id": "freeport_registry", "name": "Freeport Registry", "capital_major": 50000, "faction": "freeport" }
+          { "id": "freeport_registry", "name": "Freeport Registry", "capital_major": 50000, "faction": "freeport" },
+          { "id": "pallas_syndicate", "name": "Pallas Syndicate", "capital_major": 50000, "faction": "syndicate" }
         ],
         "programme": {
           "id": "coop.first_captain",
@@ -2617,7 +2618,8 @@
           "issuer": "tacsim.registry", "counter": "exchange", "shed": "Occator Vehicle Shed", "pool": 8,
           "registry_prefix": "OWP-TV-", "fee_major": 1400, "deposit_major": 5000, "term_ic_days": 168,
           "tools": [ "tacsim.tool.drill_core_mk1", "tacsim.tool.scanner_mk1", "tacsim.tool.battery_mk1" ] },
-        "licence": { "org": "freeport_registry", "fee_major": 2500, "term_ic_days": 168, "grace_ic_days": 3 }
+        "licence": { "org": "freeport_registry", "fee_major": 2500, "term_ic_days": 168, "grace_ic_days": 3,
+                     "claim_stake_major": 2000, "claim_term_major": 2000 }
       }
     },
     "stickney_port": {
@@ -2877,23 +2879,24 @@
         "routes": { "ceres": [ "occator_ceres" ] },
         "site": { "name": "Occator Rim", "issuer": "freeport_registry", "zone": "core",
                   "tenure": { "default": "open" },
+                  "papers": { "occator_outer": { "bond_major": 5000 } },
                   "blocks": {
-                        "A": { "prospectivity": 1 },
-                        "B": { "prospectivity": 1 },
-                        "C": { "prospectivity": 1 },
-                        "D": { "prospectivity": 1 },
-                        "E": { "prospectivity": 1 },
+                        "A": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "B": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "C": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "D": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "E": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
                         "F": { "tenure": "held", "holder": "occator" },
                         "G": { "tenure": "held", "holder": "occator" },
-                        "H": { "prospectivity": 1 },
-                        "I": { "prospectivity": 1 },
+                        "H": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "I": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
                         "J": { "tenure": "held", "holder": "occator" },
                         "K": { "tenure": "held", "holder": "occator" },
-                        "L": { "prospectivity": 1 },
-                        "M": { "prospectivity": 1 },
-                        "N": { "prospectivity": 1 },
-                        "O": { "prospectivity": 1 },
-                        "P": { "prospectivity": 1 }
+                        "L": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "M": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "N": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "O": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } },
+                        "P": { "prospectivity": 1, "paper": { "issuer": "pallas_syndicate", "contract": "occator_outer" } }
                       } }
       }
     },

@@ -445,6 +445,26 @@ account map — the `match_lifecycle.rs` precedent.
 """
 
 [[site]]
+path = "crates/tacsim/tests/support/claims.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Doc 20 cut SM.10, for the mining.rs row's reason: the claims tests charter
+their pilots through `+coop/enrol` and buy their licences per gateway account
+before the rig leases, the hop to a site's pad and the stake, and the claim
+rules (two live claims an account, the cooling term on the lapsed holder's
+account) read the account through the oracle and fail closed on an unmapped
+character. The shared `install_oracle` maps one gateway account for every
+pilot a rig spawns, and the cooling case remaps the lapsed holder onto
+another pilot's account to reach the account half of the rule (the licence
+is one holder an account, so no verb makes that alt). The oracle is
+boot-hydrated by the host from the store, which a `TestWorld` has none of,
+so the rig installs the fixed account map — the `match_lifecycle.rs`
+precedent.
+"""
+
+[[site]]
 path = "crates/tacsim/tests/deposits.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

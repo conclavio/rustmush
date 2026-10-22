@@ -3,7 +3,7 @@
 Surface mining is the trade run's other trade: you take a Dray-P down onto a
 mining site's pad, send its terrain vehicles out, learn where the ore lies, dig
 it, and carry it home to sell at Ceres. This page walks the loop beat by beat.
-Staking and leaving rigs running are not built yet; those beats say "(not yet)".
+Leaving rigs running is not built yet; that beat says "(not yet)".
 
 ## Two rules every rig act follows
 
@@ -186,7 +186,51 @@ in her bay and every hopper is empty (`help ships`).
                            first kind of ore
   +tv/<n> dump [go]        empty the hopper onto the site's spoil, for good
 
-**10. Stake.** (not yet) Staking an open block and the Registry's claims.
+**10. Stake.** A block you have read yourself can be yours. Stand a rig in an
+open block — not in the bay, not on the commons, not on a block someone holds —
+and type `+claim/stake`. The preview lists your own readings of the block
+("C-NW sounded, C117 cored"), how many soundings the site heard on the block
+since it last opened before your first reading, any cooling term that binds you,
+and the fee: "2000.00cr now and 2000.00cr a term (4000.00cr today)". A stake
+needs a reading of your own made by hand since the block last opened — a scan, a
+sounding, quiet or loud, or a single core will do; someone else's reading never
+counts. Name a family to declare it on the Registry's books (`+claim/stake
+metals`), and a rig's number when you have two (`+claim/stake 2`). Nothing is
+filed until you type `go`.
+
+`+claim/stake go` holds the fee out of your account as a public contract with the
+Registry and files the claim over the whole block at once; the fee is the same
+whatever the block holds. The Registry records it within a few seconds ("The
+Freeport Registry records your claim on block C at Ahuna Flank until …") and the
+fee is paid; if the Registry cannot take the stake, the fee comes back within the
+hour. From then on only your rigs mine the block, its edge reads `#` on every
+map, and `+registry` lists it. An account holds at most two claims.
+
+A claim runs 168 IC days. `+claim/renew` extends it by another term, from
+anywhere, once you have worked 50 t of the block this term (the preview says
+"worked 32 of 50 t"); a claim that is not renewed lapses at its term's end and
+the block reopens at once to anyone else. `+claim/release` gives a claim up now.
+Either way the Registry takes no new stake on that block from you, or from any
+character of your account, for one term after the lapse.
+
+A rival who sounded the block loudly — the sounding the whole site heard —
+after it last opened and before your first reading, within 30 IC days of your
+stake, can take it with `+claim/contest <block>` from aboard a hull on the site:
+they pay a stake and a term, and your last term fee comes back to you. A quiet
+sounding is heard by nobody and gives no priority.
+
+At Occator Rim the Pallas Syndicate's paper stands over the twelve outer blocks.
+It bars nothing: stake and mine as anywhere. Work 100 t of a papered block in
+your first term and your first renewal has the Registrar suspend the paper there;
+work less and the paper stands, and your claim is not renewed. Occator holds the
+four blocks around the pad.
+
+  +claim/stake [<rig>] [<family>] [go]  stake the block your rig stands in
+  +claim/renew [<site>] <block> [go]    renew your claim for another term
+  +claim/release [<site>] <block> [go]  give a claim up now
+  +claim/contest <block> [go]           take a claim on a sounding heard first
+  +claim/list                           your claims and their worked tonnes
+  +registry [<site>]                    every claim and paper at a site
 
 **11. Leave it running.** (not yet) Fill plans, and awaiting a rig from the order queue.
 
@@ -231,6 +275,6 @@ sounding thumps through the ground from the southeast, over 1 km off."
 
 ## Still to come
 
-Staking and the Registry's claims; fill plans and awaiting a rig.
+Fill plans and awaiting a rig.
 
 See also: `help ships`, `help coop`, `help travel`, `help trade`.

@@ -1811,6 +1811,11 @@ fn sm6_the_opening_writes_no_truth_anywhere_a_player_reads() {
                         works += 1;
                     }
                 }
+                // Doc 20 cut SM.10: an open site's clerk seeds its held blocks and papers
+                // (Occator Rim's); the act's outcome names no deposit, count or reserve.
+                "industry_claim_tenure" => {
+                    assert_eq!(keys, vec!["actor", "place", "receipt", "summary", "verb"]);
+                }
                 other => panic!("a site clerk submitted {other}"),
             }
         }
@@ -1856,7 +1861,7 @@ fn sm6_the_opening_writes_no_truth_anywhere_a_player_reads() {
 // ---------------------------------------------------------------------------
 
 /// Industry's writing seams: a call to one from tacsim is a write.
-const INDUSTRY_SEAMS: [&str; 9] = [
+const INDUSTRY_SEAMS: [&str; 12] = [
     "open_deposit(",
     "file_claim(",
     "put_claim(",
@@ -1866,6 +1871,11 @@ const INDUSTRY_SEAMS: [&str; 9] = [
     "lapse_claim(",
     "take_over_claim(",
     "transfer_tenure(",
+    // Doc 20 cut SM.10: the block-level tenure seams and the termed transfer — industry
+    // tenure writes tacsim reaches only through the composed `industry_claim_tenure`.
+    "tenure_lapse(",
+    "tenure_hold(",
+    "transfer_tenure_termed(",
 ];
 
 /// The raw typed-state writes, by their receiver spellings in the tree.

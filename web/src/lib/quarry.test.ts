@@ -175,21 +175,22 @@ describe("the quarry store's rig pick", () => {
     store.applySite({ schema: { id: "site.map", shape: "status" } }, 1);
     expect(store.refused).toBe(true);
     expect(store.rig).toBe(2);
-    store.applySite(
-      {
-        schema: { id: "site.map", shape: "grid", version: 1 },
-        window: 0,
-        title: "Rig 2 is not on Ahuna Mons's ground or in the bay.",
-        width: 0,
-        height: 0,
-        rows: [],
-        legend: [],
-        units: [],
-        you: null,
-      },
-      2,
-    );
+    const reason = {
+      schema: { id: "site.map", shape: "grid", version: 1 },
+      window: 0,
+      title: "Rig 2 is not on Ahuna Mons's ground or in the bay.",
+      width: 0,
+      height: 0,
+      rows: [],
+      legend: [],
+      units: [],
+      you: null,
+    };
+    // Doc 20 cut SM.10: a reason frame that clears a pick says so (the caller re-asks once);
+    // the same frame again clears nothing and says nothing.
+    expect(store.applySite(reason, 2)).toBe(true);
     expect(store.rig).toBeNull();
+    expect(store.applySite(reason, 3)).toBe(false);
     expect(siteParams(store.mode, store.rig, store.family)).toEqual({ view: "drive" });
   });
 });

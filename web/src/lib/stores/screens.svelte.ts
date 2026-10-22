@@ -146,6 +146,10 @@ export const RUN_ALLOWLIST: readonly string[] = [
   // Doc 20 cut SM.9: the ground chart reads the Registry's survey, the planner and your own
   // chart. Never `+tv`: its first word would admit `+tv scan go`.
   "+chart/ground",
+  // Doc 20 cut SM.10: the Registry's books and your own claims, pure reads. Never `+claim`:
+  // its first word would admit `+claim/stake go`.
+  "+registry",
+  "+claim/list",
 ];
 
 const hasPanel = (g: GateInput, p: string): boolean => g.panels.includes(p);

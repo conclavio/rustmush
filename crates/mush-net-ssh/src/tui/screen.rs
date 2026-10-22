@@ -116,6 +116,10 @@ pub const RUN_ALLOWLIST: &[&str] = &[
     // Doc 20 cut SM.9: the ground chart reads the Registry's survey, the planner and your own
     // chart. Never `+tv`: a bare `+tv` would admit `+tv scan go` by its first word.
     "+chart/ground",
+    // Doc 20 cut SM.10: the Registry's books and your own claims, pure reads. Never `+claim`:
+    // its first word would admit `+claim/stake go`.
+    "+registry",
+    "+claim/list",
 ];
 
 /// The body of a declared-but-unproduced pane (interface plan I8), two rows

@@ -449,6 +449,32 @@ fn live_ground_sky_and_path_keys_are_explicit_in_every_shipped_config() {
     }
 }
 
+/// **Doc 20 cut SM.10 (§9.4; lead ruling 9)**: `[tacsim.surface].registry_interlock` is the
+/// boolean `true`, written out, in every shipped config — the example and every rendered
+/// instance. A new test because the list above is integers only; the host refuses `false` at
+/// boot, so an omitted key would silently take a default no operator wrote.
+#[test]
+fn live_surface_interlock_is_true_in_every_shipped_config() {
+    let mut configs = vec![(
+        "mushd.toml.example",
+        read(&repo_root().join("mushd.toml.example")),
+    )];
+    for instance in SHIPPED {
+        configs.push((instance.env, rendered_instance(instance).0));
+    }
+    for (name, text) in configs {
+        let raw: toml::Value = toml::from_str(&text).expect("shipped config parses");
+        assert_eq!(
+            raw.get("tacsim")
+                .and_then(|tacsim| tacsim.get("surface"))
+                .and_then(|surface| surface.get("registry_interlock"))
+                .and_then(toml::Value::as_bool),
+            Some(true),
+            "{name}: [tacsim.surface].registry_interlock must be explicit and true"
+        );
+    }
+}
+
 /// The listeners a rendered instance advertises are ADDRESSES. This is the
 /// other half of the deploy-time-marker rule: `rendered_instance` proves the
 /// marker is gone, and this proves what replaced it is something a socket can

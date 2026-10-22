@@ -299,7 +299,7 @@ pub fn standing_at(record: &Licence, entitlement_active: bool, now_ic: i64) -> L
 }
 
 /// The pilot's gateway account, through the account oracle.
-fn gateway_account(w: &World, pilot: ObjId) -> Option<mush_core::AccountId> {
+pub(crate) fn gateway_account(w: &World, pilot: ObjId) -> Option<mush_core::AccountId> {
     w.module_state::<mush_sim::AccountOracle>()
         .and_then(|oracle| oracle.account_of(pilot))
 }

@@ -415,6 +415,9 @@ max_snapshot_bytes = 7340032       # (16b cut AF.2) bytes of the largest arena s
 [tacsim.geology]                   # (doc 20 cut SM.1) the geology key family: one key, never rotated
 # key_dir = "./data/geology-keys"   # absent: the mining layer is disabled (doc 20 SM.1)
 
+[tacsim.surface]                   # (doc 20 cut SM.10) surface mining's claims
+registry_interlock = true          # the Registry interlock: phase 1's only claim enforcement (doc 20 §9.4); false is refused at boot
+
 [onboarding]                       # (M9) the chargen_required gate + start rooms
 # When off (the default), a fresh character plays immediately, exactly as
 # before. When on, a newly created, not-yet-approved character is placed in the

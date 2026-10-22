@@ -31,7 +31,13 @@ export class QuarryStore {
    */
   rig = $state<number | null>(null);
 
-  applySite(raw: unknown, nowMs: number): void {
+  /**
+   * Hold one `site.map` keyframe. Returns whether it was a reason frame (one that lists no
+   * rigs: the server's `MAP_NO_RIG`) that cleared a pick — doc 20 cut SM.10 (SM.9's lead round,
+   * inherited): the caller re-asks once then, and a pick once cleared stays cleared, so a frame
+   * that again lists nothing asks nothing more.
+   */
+  applySite(raw: unknown, nowMs: number): boolean {
     const frame = parseSiteFrame(raw);
     if (frame) {
       this.site = frame;
@@ -42,10 +48,12 @@ export class QuarryStore {
       // rig; a reason frame lists none, so it clears a pick too.
       if (this.rig !== null && !(frame.site?.rigs.some((r) => r.slot === this.rig) ?? false)) {
         this.rig = null;
+        return frame.site == null;
       }
     } else {
       this.refused = true;
     }
+    return false;
   }
 
   applyGround(raw: unknown): void {

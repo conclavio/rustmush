@@ -494,6 +494,11 @@ pub struct PortFamilies {
     /// one home. Derived truth, never projected.
     pub pockets:
         StateFamilyHandle<mush_industry::OreDepositId, crate::surface::cursor::PocketCursor>,
+    /// **`tacsim.claims`** (doc 20 cut SM.10; §9, D17): one block tenure per (site, block) —
+    /// the one public source of a block's claim and paper, staged inside industry's own tenure
+    /// bundle by the composed `SurfaceTenure`.
+    pub claims:
+        StateFamilyHandle<crate::surface::claims::BlockKey, crate::surface::claims::BlockTenure>,
 }
 
 /// Published in module state by `crate::port_tick::register` — read-only capabilities, the
@@ -560,9 +565,9 @@ pub(crate) fn family_descriptor(
     .map_err(|error| ModError::msg(error.to_string()))
 }
 
-/// Register the five production families (doc 18 cut IC5; doc 20 cut SM.3b's
+/// Register the six production families (doc 18 cut IC5; doc 20 cut SM.3b's
 /// `tacsim.excursion`; doc 20 cut SM.4a's `tacsim.chart`; doc 20 cut SM.6's
-/// `tacsim.pockets`), unconditionally.
+/// `tacsim.pockets`; doc 20 cut SM.10's `tacsim.claims`), unconditionally.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError> {
     let port_stock = reg.state_family::<StockIssueId, StockReceipt, _, _, _, _>(
         family_descriptor(
@@ -652,12 +657,34 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<PortFamilies, ModError
             serde_json::to_value(value).map_err(|e| e.to_string())
         },
     )?;
+    // Doc 20 cut SM.10 (§9, D17): the block tenure records, keyed `{site}/{L}`, strict on parse.
+    let claims = reg.state_family::<
+        crate::surface::claims::BlockKey,
+        crate::surface::claims::BlockTenure,
+        _,
+        _,
+        _,
+        _,
+    >(
+        family_descriptor(
+            crate::surface::claims::CLAIMS_FAMILY,
+            "tacsim.claims_key.v1",
+            "tacsim.claims",
+        )?,
+        |key: &crate::surface::claims::BlockKey| Ok(key.key_text()),
+        |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+        |value: &crate::surface::claims::BlockTenure| value.check(),
+        |value: &crate::surface::claims::BlockTenure| {
+            serde_json::to_value(value).map_err(|e| e.to_string())
+        },
+    )?;
     Ok(PortFamilies {
         port_stock,
         tickets,
         excursions,
         charts,
         pockets,
+        claims,
     })
 }
 

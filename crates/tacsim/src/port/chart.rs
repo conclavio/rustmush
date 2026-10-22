@@ -291,12 +291,19 @@ pub(crate) fn direct_at(
 fn chart_sky(ctx: &mut Ctx<'_>) -> Result<Vec<String>, CmdError> {
     let v = vantage(ctx)?;
     let now = ctx.w.world_ic_now().at;
-    Ok(sky_lines(ctx.w, &v, now))
+    Ok(sky_lines(ctx.w, Some(&*ctx), &v, now))
 }
 
 /// **The sky table and the passages now** (`+chart`'s lines; doc 19 cut A.3b
-/// factored them out for the `sky.chart` panel, which carries them too).
-pub(crate) fn sky_lines(w: &World, v: &Vantage<'_>, now: i64) -> Vec<String> {
+/// factored them out for the `sky.chart` panel, which carries them too). A site's tenure line
+/// reads its block records through `reads` (doc 20 cut SM.10, lead note 0a); `None` — a caller
+/// with no typed-state reads — prints the authored tenure.
+pub(crate) fn sky_lines(
+    w: &World,
+    reads: Option<&dyn crate::port::site_map::SurfaceReads>,
+    v: &Vantage<'_>,
+    now: i64,
+) -> Vec<String> {
     let motion = if v.sky.ephemeris().rate_permille() == 0 {
         "constant".to_owned()
     } else {
@@ -349,10 +356,11 @@ pub(crate) fn sky_lines(w: &World, v: &Vantage<'_>, now: i64) -> Vec<String> {
     let dests = destinations(w, v.def);
     let empty = u64::from(v.spec.allowance_kg) * u64::from(v.occupants.max(1));
     for dest in &dests {
-        let port_def = v.pack.entries().iter().find_map(|(_, entry)| match entry {
-            PackEntry::Port(port) if port.venue == dest.venue => Some(port),
+        let port_entry = v.pack.entries().iter().find_map(|(id, entry)| match entry {
+            PackEntry::Port(port) if port.venue == dest.venue => Some((id, port)),
             _ => None,
         });
+        let port_def = port_entry.map(|(_, port)| port);
         let Some(to) = port_def
             .and_then(|port| body_of(v.pack, &port.location))
             .or_else(|| {
@@ -401,8 +409,10 @@ pub(crate) fn sky_lines(w: &World, v: &Vantage<'_>, now: i64) -> Vec<String> {
         }
         line.push('.');
         lines.push(line);
-        // Doc 20 cut SM.2 (§1 beat 2): a site's Registry survey (R0) and its tenure.
-        if let Some(port) = port_def
+        // Doc 20 cut SM.2 (§1 beat 2): a site's Registry survey (R0) and its tenure — from its
+        // block records when the caller can read them (doc 20 cut SM.10, lead note 0a), the
+        // authored word without.
+        if let Some((entry, port)) = port_entry
             && let Some(site) = &port.site
         {
             lines.push(
@@ -411,10 +421,13 @@ pub(crate) fn sky_lines(w: &World, v: &Vantage<'_>, now: i64) -> Vec<String> {
                     |words| crate::port::site::SURVEY_LINE.replace("{words}", &words),
                 ),
             );
-            lines.push(
-                crate::port::site::TENURE_LINE
-                    .replace("{parts}", &crate::port::site::tenure_parts(v.pack, site)),
-            );
+            let tenure = match reads {
+                Some(reads) => {
+                    crate::port::claims::tenure_parts_now(w, reads, v.pack, entry, site, now)
+                }
+                None => crate::port::site::tenure_parts(v.pack, site),
+            };
+            lines.push(crate::port::site::TENURE_LINE.replace("{parts}", &tenure));
         }
     }
     lines
@@ -720,7 +733,8 @@ pub(crate) fn chart_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         chart_body(ctx, &raw)?
     } else if ctx.switches.has("map") {
         // Doc 19 cut A.3b: the flat render, the TUI's chart pane for a line player.
-        crate::port::chart_panel::flat_lines(ctx.w, ctx.actor).map_err(CmdError::msg)?
+        crate::port::chart_panel::flat_lines_reading(ctx.w, Some(&*ctx), ctx.actor)
+            .map_err(CmdError::msg)?
     } else if raw.is_empty() {
         chart_sky(ctx)?
     } else {

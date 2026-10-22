@@ -61,6 +61,14 @@
 //!   deposit, what industry's sweep reconciles each pool against and the lock's one home;
 //! - [`tenure`](crate::surface::tenure) — §9's numbers, which SM.10 reads.
 //!
+//! **Doc 20 cut SM.10** gives a block its claim (§9, D-20-12):
+//!
+//! - [`claims`](crate::surface::claims) — `tacsim.claims`, the one public record of a block's
+//!   tenure (the site issuer's claim and another issuer's paper), staged inside industry's own
+//!   tenure bundle, and the site's claim log `tacsim:claimlog:{site}`;
+//! - [`tenure`](crate::surface::tenure) gains the pure rules: the hand-made evidence, the heard
+//!   soundings, the worked floor and the contest window.
+//!
 //! **Doc 20 cut SM.4b** gives the operator the moving half (§1 beats 7 and 9, §8, §10, D-20-13):
 //!
 //! - [`drive`](crate::surface::drive) — the pure planner: the targets, ONE A* a command over the
@@ -121,6 +129,7 @@
 pub mod act;
 pub mod address;
 pub mod chart;
+pub mod claims;
 pub mod commands;
 pub mod cursor;
 pub mod drive;

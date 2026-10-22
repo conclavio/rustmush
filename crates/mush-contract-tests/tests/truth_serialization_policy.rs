@@ -7,6 +7,7 @@
 use mush_core::{GeologyMac, GeologySecret, ResolvedActionInvocation, ResolvedAuthoritativeOffer};
 use serde::{Serialize, de::DeserializeOwned};
 use static_assertions::assert_not_impl_any;
+use tacsim::port::claims::{ClaimPlan, PlanCore};
 use tacsim::surface::geology::{FieldGround, PocketRow, ProvinceGround};
 use tacsim::surface::ground::{SiteGeology, SiteGround};
 use tacsim::surface::mine::MinePlan;
@@ -33,6 +34,11 @@ assert_not_impl_any!(OpeningRow: Serialize, DeserializeOwned);
 // (`tacsim.excursion`) and the start's fixed parameters carry the same figures and serialise — a
 // durable family and server-only fixed parameters, never projected (the cursor's precedent).
 assert_not_impl_any!(MinePlan: Serialize, DeserializeOwned);
+// Doc 20 cut SM.10 (the brief's 3.6 item 17, reviewer F8): a claim plan names the block's opened
+// deposits — a deposit's existence is a barren-ness bit (SM.6's D14) — so the plan and its compared
+// core never serialise. The block record (`tacsim.claims`) names no deposit.
+assert_not_impl_any!(ClaimPlan: Serialize, DeserializeOwned);
+assert_not_impl_any!(PlanCore: Serialize, DeserializeOwned);
 
 #[test]
 fn private_truth_wrappers_have_no_serde_contract() {
@@ -55,12 +61,15 @@ fn private_truth_wrappers_have_no_serde_contract() {
         std::any::type_name::<OpeningRow>(),
         // Doc 20 cut SM.7: the mining plan (it holds the pocket's true class and tonnes).
         std::any::type_name::<MinePlan>(),
+        // Doc 20 cut SM.10: the claim plan and its compared core.
+        std::any::type_name::<ClaimPlan>(),
+        std::any::type_name::<PlanCore>(),
     ] {
         assert!(
             name.contains("Geology")
                 || name.contains("Ground")
                 || name.contains("Row")
-                || name.contains("Plan") // "Plan": SM.7's MinePlan
+                || name.contains("Plan") // "Plan": SM.7's MinePlan, SM.10's ClaimPlan and PlanCore
         );
     }
 }

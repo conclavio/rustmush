@@ -168,6 +168,19 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(crate::port::chart::chart_cmd),
     )?;
+    // ---- Doc 20 cut SM.10 (§9; reviewer F5): `+registry <site>`, a pure read ----
+    //
+    // In the same ReadOnly bracket as `+credit` and `+chart`: a read of the site's sixteen
+    // `tacsim.claims` records — no document, no post, no submission.
+    reg.command(
+        CommandSpec {
+            name: crate::port::claims::REGISTRY_VERB.into(),
+            shape: ArgShape::Raw,
+            help: crate::port::claims::REGISTRY_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::claims::registry_cmd),
+    )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     // ---- Doc 18 cut IC6 (§4.1, §4.2; D-18-23, D-18-34): `+coop` and `+ship` ----
     //
@@ -240,6 +253,31 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             ..CommandSpec::default()
         },
         Arc::new(crate::port::tv::tv_cmd),
+    )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    // ---- Doc 20 cut SM.10 (§9; D-20-12): `+claim`, the Registry's mining claims,
+    // Authoritative ----
+    //
+    // `+claim` and `+claim/list` are pure reads; a bare `/stake`, `/renew`, `/release` or
+    // `/contest` previews and writes nothing; `go` is the economy's own API (one Public fee
+    // contract offered and escrowed by the pilot after a funds check — none for a release),
+    // one bounded RAM claim order, and exactly ONE `industry_claim_tenure` submission as the
+    // actor, so the verb takes the `Authoritative` class (`+tv`'s rule). The class is declared
+    // before the `reg.command` and the module default restored right after.
+    reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
+    reg.command(
+        CommandSpec {
+            name: crate::port::claims::CLAIM_VERB.into(),
+            shape: ArgShape::Raw,
+            switches: ["stake", "renew", "release", "contest", "list"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: crate::port::claims::CLAIM_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(crate::port::claims::claim_cmd),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     // ---- Doc 20 cut SM.5 (§9.1; D-20-12, Q-20-2): `+licence`, the Freeport Registry's

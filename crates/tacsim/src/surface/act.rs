@@ -3559,8 +3559,9 @@ pub(crate) fn claim_live(claim: &mush_industry::ClaimRecord, now: &mush_core::Cl
 /// **The tenure verdict, pure** (doc 20 §6 "tenure allows it"; the brief's 3.3 item 5, decision
 /// R5): commons → Ok with no claim read; then the **live** claims of the site's issuer over the
 /// block's opened deposits (`claims`, filtered by the caller to the issuer): none live → an
-/// authored held block refuses `Claimed` (SM.10 replaces the authored word with its seeded
-/// claims), open ground is Ok; some live → Ok iff `authorizes` one of them — **whatever its
+/// authored held block refuses `Claimed` (R5 — since doc 20 cut SM.10 the fallback for a held
+/// block the site clerk has not seeded yet: a seeded one carries the org's live claims, F15),
+/// open ground is Ok; some live → Ok iff `authorizes` one of them — **whatever its
 /// contest state** (a suspended or seized claim authorizes nobody, so it bars its holder too:
 /// industry's rule), else `Claimed`. Block-level: it answers the same whatever family a run names.
 ///
@@ -3601,7 +3602,10 @@ pub(crate) fn tenure_verdict(
 /// site's issuer principal (`port::site::org_principal`), judged by [`tenure_verdict`] with
 /// `mush_industry::extraction_authorized` over that claim's own deposit (`remaining` its initial
 /// reserve: the cursor, not the pool, sets the tonnes, §3.4) and industry's licence instrument.
-/// **Read only**: no industry family is written (SM.6's D10 tripwire).
+/// **Doc 20 cut SM.10**: then the block's public record (`tacsim.claims`): a live claim held by
+/// neither the actor nor someone the actor `acts_for` refuses `Claimed` — the one answer for a
+/// block with no opened deposit. **Read only**: no industry family is written (SM.6's D10
+/// tripwire).
 ///
 /// # Errors
 ///
@@ -3668,7 +3672,28 @@ pub(crate) fn mine_tenure(
             )
             .is_ok()
         })
-    })
+    })?;
+    // Doc 20 cut SM.10 (the brief's 3.8 item 21, reviewer F4; a stated, narrow touch of SM.7's
+    // gate): the block's public record too. On an ore-bearing block the two always agree (both
+    // are written in one bundle); on a block with no opened deposit the record alone answers, so
+    // that block refuses a stranger exactly as an ore block does. A live claim held by neither
+    // the actor nor someone the actor acts for bars it; a past-term one is open ground (R20).
+    let record = reads
+        .block_tenure(&crate::surface::claims::BlockKey {
+            site: entry.clone(),
+            letter,
+        })
+        .map_err(|_| TenureBar::Dark(DarkCause::Claims))?;
+    match record.and_then(|record| record.claim) {
+        Some(claim)
+            if claim.live(now.at)
+                && claim.holder != operator
+                && !mush_economy::acts_for(w, actor, &claim.holder) =>
+        {
+            Err(TenureBar::Claimed)
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The live lease's bar as a mining refusal.
@@ -3738,6 +3763,27 @@ pub(crate) fn licence_end_line(w: &World, operator: ObjId, why: LicenceEnd) -> S
     };
     crate::port::licence::standing_line(w, operator, &standing)
         .unwrap_or_else(|| tv::MINE_NO_LICENCE.to_owned())
+}
+
+/// **The site the actor stands aboard** (doc 20 cut SM.10, D11: a contest is filed from aboard
+/// the hull settled on the site): the rig's hull's view (`view_of`), its site berth
+/// (`site_berth`: under way, not a site, dark) and the actor aboard it (`TV_NOT_ABOARD`); the
+/// site's entry and name.
+///
+/// # Errors
+///
+/// The [`Refusal`] the launch's own gates answer.
+pub(crate) fn aboard_site(
+    w: &World,
+    actor: ObjId,
+    rig: &RigAt,
+) -> Result<(CanonicalId, String), Refusal> {
+    let (view, name) = view_of(w, rig)?;
+    let berth = site_berth(w, &view)?;
+    if !crate::port::voyage::aboard(w, rig.hull, actor) {
+        return Err(Refusal::NotAboard { name });
+    }
+    Ok((berth.entry.clone(), berth.name.clone()))
 }
 
 /// The lane site definition of `entry` (cloned), when the latched lane authors one.
@@ -8205,6 +8251,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            papers: std::collections::BTreeMap::new(),
         };
         assert_eq!(authored_of(&site, 'A'), Authored::Commons);
         assert_eq!(authored_of(&site, 'F'), Authored::Held);

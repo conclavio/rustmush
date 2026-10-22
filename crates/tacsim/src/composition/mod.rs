@@ -735,7 +735,8 @@ impl IndustryLicenceExt for mush_industry::IndustryModule {
 
 /// **Doc 20 cut SM.6's industry seams, composed only where the TacSim layer is** (the
 /// [`IndustryLicenceExt`] shape): [`industry_seams::SiteOpener`] as the system opener,
-/// [`industry_seams::SurfaceDraws`] as the external draws, and the typed-state delegation of
+/// [`industry_seams::SurfaceDraws`] as the external draws, (doc 20 cut SM.10)
+/// [`industry_seams::SurfaceTenure`] as the tenure authority, and the typed-state delegation of
 /// industry's families to `tacsim` (D1) — a capability to read deposits, which tacsim's source
 /// tripwire (`tests/deposits.rs`, D10) holds to reads. Unwired, `DepositOpen` stays staff-only,
 /// the delegation is absent, and a surface deposit (none exists there) would read
@@ -749,6 +750,8 @@ impl IndustrySurfaceExt for mush_industry::IndustryModule {
         if on {
             self.with_system_opener(Arc::new(industry_seams::SiteOpener::new(Arc::clone(cell))))
                 .with_external_draws(Arc::new(industry_seams::SurfaceDraws))
+                // Doc 20 cut SM.10 (§9, D1/D2): the claim acts' composed authority.
+                .with_tenure_authority(Arc::new(industry_seams::SurfaceTenure::new()))
                 .with_state_delegates([crate::NS])
         } else {
             self

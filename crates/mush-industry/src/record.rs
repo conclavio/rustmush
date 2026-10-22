@@ -1198,6 +1198,30 @@ impl ClaimRecord {
         Ok(next)
     }
 
+    // ---- doc 20 cut SM.10: the unfiled builders (§9.3–§9.4) ----
+
+    /// A record **not yet filed** with its discovery stamp set (doc 20 §9.3–§9.4;
+    /// cut SM.10): the stake's earliest hand-made reading of the block, the
+    /// priority a contest reads. The revision is unchanged — this is a builder
+    /// beside [`Self::new`], never a post-image of a filed record (a filed
+    /// record's stamp moves only through [`Self::taken_over`] or
+    /// [`Self::transferred`]).
+    #[must_use]
+    pub fn with_discovery(mut self, at: ClockStamp) -> Self {
+        self.discovered_at = Some(at);
+        self
+    }
+
+    /// A record **not yet filed** in an initial contest state (doc 20 §9.4;
+    /// cut SM.10): the site clerk's seeded Syndicate paper, filed
+    /// `Contested { contract }` at revision 1. The revision is unchanged — a
+    /// filed record's state moves only through [`Self::with_contest_state`].
+    #[must_use]
+    pub fn with_initial_contest(mut self, state: ContestState) -> Self {
+        self.contest_state = state;
+        self
+    }
+
     // ---- doc 20 cut SM.6: tenure (§9.2–§9.4, D-20-12) ----
 
     /// The block's tenure epoch when this record was staked, taken over or
@@ -1294,6 +1318,26 @@ impl ClaimRecord {
         next.discovered_at = discovered_at;
         next.epoch = epoch;
         next.contest_state = ContestState::Uncontested;
+        Ok(next)
+    }
+
+    /// The post-image of a contest settled for the challenger **with the term
+    /// it paid for** (doc 20 §9.4; cut SM.10): [`Self::transferred`] and the
+    /// term set to `term` in ONE post-image, so **one** revision — a contest
+    /// moves the claim's revision by one, as every other write does (the
+    /// judge's conformance F7 on SM.10).
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::RevisionOverflow`] at `u64::MAX`.
+    pub fn transferred_termed(
+        &self,
+        holder: PrincipalId,
+        discovered_at: Option<ClockStamp>,
+        epoch: u32,
+        term: ClockStamp,
+    ) -> Result<Self, IndustryRecordError> {
+        let mut next = self.transferred(holder, discovered_at, epoch)?;
+        next.term = term;
         Ok(next)
     }
 }
@@ -1480,8 +1524,13 @@ impl TenureRecord {
     /// = at`, mark [`TenureMark::Lapsed`]) **unless** a lapse already opened
     /// it, and records `holder`'s cooling row to `cooling_until`: a row whose
     /// `until` is not before `cooling_until` is kept unchanged, an earlier one
-    /// is raised to it, a holder with none gets one. When anything is written,
-    /// rows that ran out by `now` are pruned; a fifth live holder drops the
+    /// is raised to it, a holder with none gets one. **A `cooling_until` that
+    /// is not after `at` is no cooling term** and writes no row (doc 20 cut
+    /// SM.10, the lead's ruling on R1/OC16: a claim whose fee expired
+    /// unaccepted lapses cooling nobody) — never a row that has run out the
+    /// instant it is written, which a later clock generation would read as
+    /// live (fail closed) and so bar the holder for ever. When anything is
+    /// written, rows that ran out by `now` are pruned; a fifth live holder drops the
     /// row with the **soonest** `until` — never the one just written — the
     /// bounded fail-open of the shortest remaining term (refusing the lapse
     /// instead would wedge the dormancy sweep with the claim live for ever),
@@ -1500,15 +1549,22 @@ impl TenureRecord {
         now: &ClockStamp,
     ) -> Result<Option<Self>, IndustryRecordError> {
         let advance = self.mark != Some(TenureMark::Lapsed);
-        let raise = match self.cooling.iter().find(|row| &row.holder == holder) {
-            None => true,
-            // A stored row is raised only when it is strictly earlier on the
-            // same generation; across generations it is kept (fail closed).
-            Some(row) => matches!(
-                row.until.checked_cmp(cooling_until),
-                Ok(std::cmp::Ordering::Less)
-            ),
-        };
+        // Only a pair proven not to run forward skips the row: a pair across clock
+        // generations (`Err`) is read as cooling (fail closed, like the stored rows).
+        let cools = !matches!(
+            at.checked_cmp(cooling_until),
+            Ok(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+        );
+        let raise = cools
+            && match self.cooling.iter().find(|row| &row.holder == holder) {
+                None => true,
+                // A stored row is raised only when it is strictly earlier on the
+                // same generation; across generations it is kept (fail closed).
+                Some(row) => matches!(
+                    row.until.checked_cmp(cooling_until),
+                    Ok(std::cmp::Ordering::Less)
+                ),
+            };
         if !advance && !raise {
             return Ok(None);
         }

@@ -120,6 +120,13 @@
 //!   every licence-gated act reads first;
 //! - the Ceres ore bids' intake drip is a step of [`stock`]'s arm, and the fixed
 //!   reference for the Co-op's share on ore is [`proceeds`]'s.
+//!
+//! **Doc 20 cut SM.10** — claims (doc 20 §9):
+//!
+//! - [`claims`] — `+claim/stake|renew|release|contest|list` and `+registry <site>`: the
+//!   player's own tenure acts under the site's issuer, each ONE `industry_claim_tenure` the
+//!   composed authority vouches for, with its fee as a Public contract into the Registry;
+//!   the one public word of a block's tenure (`claims::block_tenure_now`).
 
 pub mod apply;
 pub mod board;
@@ -131,6 +138,8 @@ pub mod capacity;
 pub mod chart;
 /// Doc 19 cut A.3b: the `sky.chart` panel — one frame, three renders (doc 19 §5).
 pub mod chart_panel;
+/// Doc 20 cut SM.10: the Registry's mining claims (doc 20 §9).
+pub mod claims;
 pub mod coop;
 pub mod credit;
 pub mod def;

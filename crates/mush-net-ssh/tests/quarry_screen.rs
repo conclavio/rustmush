@@ -582,6 +582,60 @@ fn sm9_a_frame_that_drops_the_picked_rig_clears_the_pick() {
     assert_eq!(asks(&r.queries, "site.map"), [&json!({ "view": "drive" })]);
 }
 
+/// **A reason frame that clears the pick re-asks once** (doc 20 cut SM.10; SM.9's lead round,
+/// inherited): on `q` with rig 2 picked, a reason frame (no rigs: the server's `MAP_NO_RIG`)
+/// clears the pick and asks `site.map` once, with no rig; a second reason frame clears nothing
+/// and asks nothing (no loop on a frame that again lists nothing); off the quarry a clearing
+/// asks nothing.
+#[test]
+fn sm10_a_reason_frame_that_clears_the_pick_re_asks_once() {
+    let frame = json_of(SITE_MAP);
+    let mut two = frame.clone();
+    let mut second = two["site"]["rigs"][0].clone();
+    second["slot"] = json!(2);
+    two["site"]["rigs"]
+        .as_array_mut()
+        .expect("rigs")
+        .push(second);
+    let reason = json!({
+        "schema": { "id": "site.map", "shape": "grid", "version": 1 },
+        "window": 0,
+        "title": "Rig 2 is not on Ahuna Mons's ground or in the bay.",
+        "width": 0, "height": 0, "rows": [], "legend": [], "units": [], "you": null,
+    });
+    let mut app = app_with(&BOTH);
+    let _ = app.feed_input(b"\x1bq");
+    let _ = app.apply_event(&keyframe("site.map", two.clone()));
+    let _ = app.feed_input(b"t");
+    assert_eq!(app.panels().quarry().rig, Some(2));
+    let asked = app.apply_event(&keyframe("site.map", reason.clone()));
+    assert_eq!(app.panels().quarry().rig, None);
+    assert_eq!(
+        asks(&asked, "site.map"),
+        [&json!({ "view": "drive" })],
+        "the clearing re-asks once, with no rig"
+    );
+    let again = app.apply_event(&keyframe("site.map", reason.clone()));
+    assert!(
+        asks(&again, "site.map").is_empty(),
+        "a frame that again lists nothing asks nothing more"
+    );
+    // A frame that drops the pick but still lists rigs is no reason frame: no re-ask.
+    let _ = app.apply_event(&keyframe("site.map", two.clone()));
+    let _ = app.feed_input(b"t");
+    assert_eq!(app.panels().quarry().rig, Some(2));
+    let dropped = app.apply_event(&keyframe("site.map", frame.clone()));
+    assert_eq!(app.panels().quarry().rig, None);
+    assert!(asks(&dropped, "site.map").is_empty());
+    // Off the quarry, a clearing asks nothing.
+    let _ = app.apply_event(&keyframe("site.map", two.clone()));
+    let _ = app.feed_input(b"t");
+    assert_eq!(app.panels().quarry().rig, Some(2));
+    let _ = app.feed_input(b"1");
+    let off = app.apply_event(&keyframe("site.map", reason));
+    assert!(asks(&off, "site.map").is_empty(), "off the quarry: nothing");
+}
+
 /// **A `tv.status` keyframe re-pulls the quarry** (decision D13; the lead's 0z ruling 1): on
 /// `q` it asks `site.map` (with the screen's arguments) and nothing else; on the scene screen it
 /// asks nothing; and the four-second tick never asks for the site map — not with a leg in

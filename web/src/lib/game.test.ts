@@ -2483,6 +2483,46 @@ describe("the quarry (doc 20 cut SM.9)", () => {
     expect(paramsOf(last)).toEqual({ view: "drive" });
   });
 
+  // Doc 20 cut SM.10 (SM.9's lead round, inherited): a reason frame that cleared the pick is
+  // re-asked once on the quarry, with no rig; a second reason frame asks nothing more; a frame
+  // that drops the pick but lists rigs is no reason frame and asks nothing.
+  it("a reason frame that clears the pick re-asks the site map once", () => {
+    const { app, ws } = boot(QUARRY_PANELS);
+    app.act({ kind: "screenKey", key: "q" });
+    const two = siteFixture() as { site: { rigs: Record<string, unknown>[] } };
+    two.site.rigs.push({ ...two.site.rigs[0]!, slot: 2, line: "Rig 2: in the bay." });
+    ws.deliver(panel(6, "site.map", "keyframe", two));
+    expect(app.runBinding("t")).toBe(true);
+    expect(app.quarry.rig).toBe(2);
+    const reason = {
+      schema: { id: "site.map", shape: "grid", version: 1 },
+      window: 0,
+      title: "Rig 2 is not on Ahuna Mons's ground or in the bay.",
+      width: 0,
+      height: 0,
+      rows: [],
+      legend: [],
+      units: [],
+      you: null,
+    };
+    let before = ws.reqs().length;
+    ws.deliver(panel(7, "site.map", "keyframe", reason));
+    expect(app.quarry.rig).toBeNull();
+    const asked = ws.reqs().slice(before).filter((r) => feedOf(r) === "site.map");
+    expect(asked.length).toBe(1);
+    expect(paramsOf(asked[0]!)).toEqual({ view: "drive" });
+    before = ws.reqs().length;
+    ws.deliver(panel(8, "site.map", "keyframe", reason));
+    expect(ws.reqs().slice(before).filter((r) => feedOf(r) === "site.map")).toEqual([]);
+    ws.deliver(panel(9, "site.map", "keyframe", two));
+    expect(app.runBinding("t")).toBe(true);
+    expect(app.quarry.rig).toBe(2);
+    before = ws.reqs().length;
+    ws.deliver(panel(10, "site.map", "keyframe", siteFixture()));
+    expect(app.quarry.rig).toBeNull();
+    expect(ws.reqs().slice(before).filter((r) => feedOf(r) === "site.map")).toEqual([]);
+  });
+
   // §5, D16: the quarry's frames are the viewer's own knowledge; a character switch in the
   // same tab (or a reconnect) starts it empty, and the next ask carries none of its view.
   it("a character switch clears the quarry", () => {

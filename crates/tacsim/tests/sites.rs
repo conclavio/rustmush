@@ -1022,10 +1022,11 @@ fn sm2_the_lane_carries_six_sites() {
     assert_eq!(pack.manifest().version(), LANE_VERSION);
     // Doc 20 cut SM.3a: v10 (the refit row and Occator's rigs; no new entry). Doc 20 cut
     // SM.5: v11 (the ore bids, the fixed references, the licence, Occator's raise; no new
-    // entry).
+    // entry). Doc 20 cut SM.10: v12 (the claim fees, the Pallas Syndicate org, Occator Rim's
+    // paper; no new entry).
     assert_eq!(
-        LANE_VERSION, 11,
-        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5"
+        LANE_VERSION, 12,
+        "lane v9 since doc 20 cut SM.2, v10 since SM.3a, v11 since SM.5, v12 since SM.10"
     );
     assert_eq!(
         parse_pack(LANE_JSON).expect("parses").entries().len(),
@@ -1111,7 +1112,20 @@ fn sm2_the_lane_carries_six_sites() {
             "{venue}"
         );
     }
-    let last = ceres.orgs.last().expect("orgs");
+    // Doc 20 cut SM.10 appends the Pallas Syndicate after the Registry.
+    let [.., registry, last] = ceres.orgs.as_slice() else {
+        panic!("orgs");
+    };
+    assert_eq!(
+        (
+            registry.id.as_str(),
+            registry.name.as_str(),
+            registry.capital_major,
+            registry.faction.as_str()
+        ),
+        ("freeport_registry", "Freeport Registry", 50_000, "freeport"),
+        "appended last at v9, before SM.10's Syndicate"
+    );
     assert_eq!(
         (
             last.id.as_str(),
@@ -1119,8 +1133,8 @@ fn sm2_the_lane_carries_six_sites() {
             last.capital_major,
             last.faction.as_str()
         ),
-        ("freeport_registry", "Freeport Registry", 50_000, "freeport"),
-        "appended last"
+        ("pallas_syndicate", "Pallas Syndicate", 50_000, "syndicate"),
+        "appended last at v12"
     );
     let Some(PackEntry::Location(freeport)) = pack.entry(&cid("ceres_freeport")) else {
         panic!("the Freeport");

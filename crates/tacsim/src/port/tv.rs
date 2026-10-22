@@ -1872,17 +1872,37 @@ fn select(
     kind: crate::surface::excursion::ActKind,
 ) -> Result<crate::surface::act::RigAt, String> {
     let w: &World = ctx.w;
-    let rigs = crate::surface::act::operator_rigs(w, ctx.actor);
+    if crate::surface::act::operator_rigs(w, ctx.actor).is_empty() {
+        status_lines(ctx, named, &mut Vec::new())?;
+    }
+    select_in(
+        w,
+        ctx.actor,
+        named,
+        &WHICH_RIG_ACT.replace("{act}", kind.word()),
+    )
+}
+
+/// **Which rig an act names** (doc 20 cut SM.3b's rule; factored out by cut SM.10 so the
+/// stake's plan, which holds no `Ctx` at the offer, reads the same one): the slot named, else the
+/// slot the actor named last (`RigPointer`), else the only rig; with none, `NO_RIG` (or
+/// `NO_CHARTER` with no hull); with two and none named, `which` with its `{slots}` filled.
+pub(crate) fn select_in(
+    w: &World,
+    actor: ObjId,
+    named: Option<u8>,
+    which: &str,
+) -> Result<crate::surface::act::RigAt, String> {
+    let rigs = crate::surface::act::operator_rigs(w, actor);
     let no_rig = |n: u8, hull: ObjId| {
         NO_RIG
             .replace("{n}", &n.to_string())
             .replace("{name}", &hull_name(w, hull))
     };
     if rigs.is_empty() {
-        status_lines(ctx, named, &mut Vec::new())?;
-        let hull = crate::port::coop::helm_of(w, ctx.actor)
+        let hull = crate::port::coop::helm_of(w, actor)
             .map(|helm| helm.hull)
-            .or_else(|| live_records(w, ctx.actor).first().map(|record| record.hull));
+            .or_else(|| live_records(w, actor).first().map(|record| record.hull));
         return Err(match hull {
             Some(hull) => no_rig(named.unwrap_or(1), hull),
             None => NO_CHARTER.to_owned(),
@@ -1895,7 +1915,7 @@ fn select(
             .cloned()
             .ok_or_else(|| no_rig(n, rigs.first().map_or(ObjId(0), |rig| rig.hull)));
     }
-    if let Some(n) = pointed(w, ctx.actor)
+    if let Some(n) = pointed(w, actor)
         && let Some(rig) = rigs.iter().find(|rig| rig.slot == n)
     {
         return Ok(rig.clone());
@@ -1904,9 +1924,7 @@ fn select(
         [only] => Ok(only.clone()),
         _ => {
             let slots: Vec<u8> = rigs.iter().map(|rig| rig.slot).collect();
-            Err(WHICH_RIG_ACT
-                .replace("{act}", kind.word())
-                .replace("{slots}", &slots_words(&slots)))
+            Err(which.replace("{slots}", &slots_words(&slots)))
         }
     }
 }
@@ -2262,7 +2280,18 @@ fn ground_line(
     let pack = w
         .module_state::<TacsimStore>()
         .and_then(|store| crate::port::readiness::report_ports(store, w).0);
-    let tenure = crate::port::site::block_tenure(pack, site_def, letter);
+    // Doc 20 cut SM.10 (the brief's 3.8 item 20): the block's claim record, else the
+    // authored word.
+    let tenure = crate::port::claims::block_tenure_now(
+        w,
+        ctx,
+        ctx.actor,
+        &berth.entry,
+        site_def,
+        letter,
+        pack,
+        w.world_ic_now().at,
+    );
     let field_word = address::field_name(field.0, field.1)?;
     let fill = |template: &str| {
         template

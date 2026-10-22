@@ -1268,8 +1268,11 @@ impl TuiApp {
     }
 
     /// **Forget a pick the held site frame no longer lists** (doc 20 cut SM.9; the judge's
-    /// correctness/F7): `t`'s pick stands only while the frame lists that slot.
-    fn forget_an_unlisted_quarry_rig(&mut self) {
+    /// correctness/F7): `t`'s pick stands only while the frame lists that slot. **Doc 20 cut
+    /// SM.10** (SM.9's lead round, inherited): returns whether it cleared a pick, so a reason
+    /// frame that cleared one is re-asked once — the clearing is what re-asks, and a pick cleared
+    /// stays cleared, so a frame that again lists nothing asks nothing more.
+    fn forget_an_unlisted_quarry_rig(&mut self) -> bool {
         let view = self.panels.quarry();
         if let Some(rig) = view.rig
             && !self.quarry_slots().contains(&rig)
@@ -1277,7 +1280,19 @@ impl TuiApp {
             let mut view = view.clone();
             view.rig = None;
             self.panels.set_quarry(view);
+            return true;
         }
+        false
+    }
+
+    /// Whether the held site frame is a reason frame: one that lists no rigs at all (no
+    /// `site.rigs` array — `MAP_NO_RIG` and its kin).
+    fn quarry_reason_frame(&self) -> bool {
+        self.panels
+            .get(SITE_MAP_FEED)
+            .and_then(|frame| frame.pointer("/site/rigs"))
+            .and_then(Value::as_array)
+            .is_none()
     }
 
     /// The rig a quarry key addresses: `t`'s pick, else the held frame's addressed rig.
@@ -1875,8 +1890,17 @@ impl TuiApp {
                 // or the hull moved — clears the pick, so the next ask carries no rig and the
                 // server addresses its own default; `t` then starts from the first listed slot.
                 // A reason frame lists no rigs, so it clears a pick too.
-                if feed.as_str() == SITE_MAP_FEED && *kind == PanelFrameKind::Keyframe {
-                    self.forget_an_unlisted_quarry_rig();
+                // Doc 20 cut SM.10 (SM.9's lead round, inherited): a reason frame that cleared the
+                // pick is re-asked once while the quarry is the screen, so the screen does not hold
+                // the `MAP_NO_RIG` frame the cleared pick caused until the next push or `r`.
+                if feed.as_str() == SITE_MAP_FEED
+                    && *kind == PanelFrameKind::Keyframe
+                    && self.forget_an_unlisted_quarry_rig()
+                    && self.quarry_reason_frame()
+                    && self.active == QUARRY_SCREEN
+                    && let Some(ask) = self.quarry_map_ask()
+                {
+                    queries.push(ask);
                 }
                 // Doc 20 cut SM.9 (the brief's 3.6, decision D13): a rig's projection changed —
                 // a start, a due step, a tell — so the quarry, when it is the screen, pulls the

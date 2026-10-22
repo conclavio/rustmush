@@ -802,10 +802,13 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// (`metal_ore`, `carbon_ore`, `strategic_ore`) and Occator's `ice_ore` intake, each
 /// with its daily `refresh`, the programme's fixed `reference_minor` for the four ore
 /// goods, Occator's appended capital raise (`raises: [250000]`) and the Freeport
-/// Registry's prospecting `licence` block. The port readiness report
+/// Registry's prospecting `licence` block; **v12 since doc 20 cut SM.10**: the claim fees
+/// beside the licence's (`claim_stake_major`, `claim_term_major`), the Pallas Syndicate
+/// (`pallas_syndicate`, a Ceres org), Occator Rim's paper (`papers.occator_outer` and the
+/// twelve outer blocks' `paper`). The port readiness report
 /// (`crate::port::readiness`) reads the latched version against it, and every test
 /// that names the lane's version reads it here.
-pub const LANE_VERSION: u32 = 11;
+pub const LANE_VERSION: u32 = 12;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.

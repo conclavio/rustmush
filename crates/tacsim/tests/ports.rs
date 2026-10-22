@@ -612,10 +612,10 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
         -(i64::try_from(total_capital()).expect("fits") * 100)
     );
     assert_eq!(
-        treasury_balance, -1_480_000_000,
-        "14,800,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
-         Freeport Registry's 50,000 (doc 20 cut SM.2) and Occator's 250,000 raise (doc 20 cut \
-         SM.5)"
+        treasury_balance, -1_485_000_000,
+        "14,850,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
+         Freeport Registry's 50,000 (doc 20 cut SM.2), Occator's 250,000 raise (doc 20 cut \
+         SM.5) and the Pallas Syndicate's 50,000 (doc 20 cut SM.10)"
     );
     set_rate(&mut tw, 24);
     let after = report(&mut tw);
@@ -666,8 +666,9 @@ fn ic3_the_applier_ensures_the_credit_without_the_sheet() {
     assert!(economy(&tw).snapshot().instrument(&credit()).is_some());
     let ceres = port_map(&tw, "ceres_port");
     let stickney = port_map(&tw, "stickney_port");
-    // Doc 20 cut SM.2: the Freeport Registry is Ceres's seventh.
-    assert_eq!(ceres.orgs.len() + stickney.orgs.len(), 10);
+    // Doc 20 cut SM.2: the Freeport Registry is Ceres's seventh. Doc 20 cut SM.10: the Pallas
+    // Syndicate, a Ceres lane org, its eighth.
+    assert_eq!(ceres.orgs.len() + stickney.orgs.len(), 11);
     sweep(&mut tw, 3_600);
     let snapshot = economy(&tw).snapshot();
     let treasury = snapshot

@@ -464,6 +464,11 @@ max_snapshot_bytes = 7340032
 [tacsim.geology]
 key_dir = "__DATA_DIR__/geology-keys"
 
+# Doc 20 cut SM.10 (§9.4): the Registry interlock, phase 1's only claim enforcement until the
+# fight exists. It is stated explicitly; `false` is refused at boot.
+[tacsim.surface]
+registry_interlock = true
+
 # Onboarding. The start rooms are REAL SEEDED ROOMS, not #0. Limbo is the
 # bootstrap room the store seeds with God — it is reserved from housing, it is
 # where a world with nothing else in it puts you, and it is not a place to open

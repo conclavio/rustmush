@@ -98,8 +98,9 @@ pub use money::{
     wo_hold_key, wo_settle_key,
 };
 pub use provider::{
-    CLAIM_ADMINISTRABLE, CLAIM_CONTEST_BY, CLAIM_CONTEST_STAFF, IndustryVerb, SYSTEM_OPENER,
-    SYSTEM_OPENINGS, action_ref, deposit_backing, deposit_of_backing, jurisdiction_claims,
+    ACTION_CLAIM_TENURE, CLAIM_ADMINISTRABLE, CLAIM_CONTEST_BY, CLAIM_CONTEST_STAFF, IndustryVerb,
+    SYSTEM_OPENER, SYSTEM_OPENINGS, TENURE_ACT, TENURE_ACTOR, action_ref, deposit_backing,
+    deposit_of_backing, jurisdiction_claims,
 };
 pub use record::{
     Accessibility, AppliedMarker, BandId, ClaimId, ClaimIndex, ClaimRecord, ClaimSubject,
@@ -113,8 +114,9 @@ pub use record::{
     TenureRecord, Transferability, YieldCurve, is_external_name, owner,
 };
 pub use seams::{
-    ActsForJurisdiction, ExternalDraws, IndustryHandleCell, JurisdictionAuthority, SystemOpener,
-    SystemOpening,
+    ActsForJurisdiction, ClaimRev, ExternalDraws, IndustryHandleCell, JurisdictionAuthority,
+    MAX_TENURE_CLAIMS, MAX_TENURE_GAME_BYTES, MAX_TENURE_SUMMARY_BYTES, SystemOpener,
+    SystemOpening, TenureAct, TenureAuthority, TenureKind, TenureOutcome,
 };
 pub use store::{DraftDrift, FacilityQuarantine, IndustryStore, Quarantine};
 pub use workorder::{

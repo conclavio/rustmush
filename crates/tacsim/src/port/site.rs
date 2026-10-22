@@ -261,7 +261,20 @@ pub fn tenure_parts(pack: &RulesPack, site: &SiteDef) -> String {
             (Tenure::Held, None) => open = open.saturating_add(1),
         }
     }
-    let org_name = |id: &CanonicalId| org_name(pack, id);
+    tenure_words(pack, commons, open, 0, &held)
+}
+
+/// **The tenure groups in words** ([`tenure_parts`]'s, and the live reading's
+/// `crate::port::claims::tenure_parts_now`): commons, open, `{n} claimed` (live player claims;
+/// doc 20 cut SM.10, lead note 0a), then each holder's `{n} held by {org}` in org-id order,
+/// joined `"; "`, zero groups left out.
+pub(crate) fn tenure_words(
+    pack: &RulesPack,
+    commons: usize,
+    open: usize,
+    claimed: usize,
+    held: &std::collections::BTreeMap<&CanonicalId, usize>,
+) -> String {
     let mut parts: Vec<String> = Vec::new();
     if commons > 0 {
         parts.push(format!("{commons} commons"));
@@ -269,8 +282,11 @@ pub fn tenure_parts(pack: &RulesPack, site: &SiteDef) -> String {
     if open > 0 {
         parts.push(format!("{open} open"));
     }
+    if claimed > 0 {
+        parts.push(format!("{claimed} claimed"));
+    }
     for (holder, n) in held {
-        parts.push(format!("{n} held by {}", org_name(holder)));
+        parts.push(format!("{n} held by {}", org_name(pack, holder)));
     }
     parts.join("; ")
 }
@@ -906,11 +922,13 @@ pub(crate) fn site_step(
         return Step::Refused;
     };
     let entry = map.entry.clone();
+    // Doc 20 cut SM.10 (§9; the brief's 3.7): an open site's clerk works its claims — the
+    // fees, the lapses, the refunds, the chronicle, the paper and the seeds, one item a fire.
     if matches!(
         crate::surface::opening::opening_line(ctx.w, &entry),
         SiteOpening::Open { .. }
     ) {
-        return Step::Idle;
+        return claims_step(ctx, fire, clerk, &map, &site);
     }
     let plan = match read_plan(ctx.w, &map, &site) {
         PlanRead::Dark => return Step::Idle,
@@ -1401,6 +1419,831 @@ impl mush_core::ActionProvider for SiteWorkProvider {
     }
 }
 
+// ---- doc 20 cut SM.10: the site clerk's claim steps (§9; the brief's 3.7) ------------------
+
+/// The unpaid lapse's key and receipt prefix: `tacsim.claim.unpaid/{site}/{l}/{epoch}`.
+pub const CLAIM_UNPAID_KEY_PREFIX: &str = "tacsim.claim.unpaid/";
+/// The due lapse's key and receipt prefix: `tacsim.claim.lapse/{site}/{l}/{epoch}`.
+pub const CLAIM_LAPSE_KEY_PREFIX: &str = "tacsim.claim.lapse/";
+/// The seed's key and receipt prefix: `tacsim.claim.seed/{site}/{l}/{issuer}`.
+pub const CLAIM_SEED_KEY_PREFIX: &str = "tacsim.claim.seed/";
+/// The refund's idempotency namespace and cause kind.
+pub const CLAIM_REFUND_KEY: &str = "tacsim.claim.refund";
+/// The paper contract's name: `{org}`, `{site}` (the re-find's key with its issuer, F11).
+pub const PAPER_NAME: &str = "{org} paper: {site}";
+
+/// A site's sixteen block records, A–P.
+fn site_records(
+    reads: &dyn crate::port::site_map::SurfaceReads,
+    entry: &CanonicalId,
+) -> Result<Vec<(char, Option<crate::surface::claims::BlockTenure>)>, String> {
+    let mut out = Vec::with_capacity(BLOCK_LETTERS.len());
+    for letter in BLOCK_LETTERS {
+        let record = reads.block_tenure(&crate::surface::claims::BlockKey {
+            site: entry.clone(),
+            letter,
+        })?;
+        out.push((letter, record));
+    }
+    Ok(out)
+}
+
+/// The site's claim log as the store holds it, or a fresh one (an unreadable log bars nothing).
+fn claim_log_of(w: &World, entry: &CanonicalId) -> crate::surface::claims::ClaimLog {
+    match w
+        .module_state::<crate::store::TacsimStore>()
+        .and_then(|store| store.claim_log(entry))
+    {
+        Some(crate::surface::claims::ClaimLogState::Present(log)) => log.clone(),
+        Some(crate::surface::claims::ClaimLogState::Unreadable) | None => {
+            crate::surface::claims::ClaimLog::new(entry.clone())
+        }
+    }
+}
+
+/// The paper rows of a site, each with its issuer (the first block naming the row).
+fn paper_rows(site: &SiteDef) -> Vec<(CanonicalId, CanonicalId)> {
+    site.papers
+        .keys()
+        .filter_map(|row| {
+            site.blocks
+                .values()
+                .filter_map(|block| block.paper.as_ref())
+                .find(|paper| &paper.contract == row)
+                .map(|paper| (row.clone(), paper.issuer.clone()))
+        })
+        .collect()
+}
+
+/// The lapse act of `claim` on `letter`'s block: its holder's unlapsed site-issuer claims over
+/// the block's opened deposits (possibly none), at `at`, cooling for a term from it — or, for
+/// a fee that expired unaccepted (`cools` false; the lead's ruling on R1, OC16), `cooling_until`
+/// = `at`, which industry's `on_lapse` reads as no cooling term and writes no row, so nobody is
+/// cooled and the block reopens at once.
+fn lapse_act(
+    reads: &dyn crate::port::site_map::SurfaceReads,
+    entry: &CanonicalId,
+    letter: char,
+    record: &crate::surface::claims::BlockTenure,
+    claim: &crate::surface::claims::BlockClaim,
+    issuer: &PrincipalId,
+    (at, kind, prefix, cools): (i64, &str, &str, bool),
+) -> Option<mush_industry::TenureAct> {
+    let deposits = crate::port::claims::opened_deposits(reads, entry, letter).ok()?;
+    let mut claims = Vec::new();
+    for id in deposits {
+        for found in reads.claims(id).ok()? {
+            if found.issuer() == issuer && !found.is_lapsed() && found.holder() == &claim.holder {
+                claims.push(mush_industry::ClaimRev {
+                    claim: found.id(),
+                    revision: found.revision(),
+                });
+            }
+        }
+    }
+    let game = crate::port::claims::TenureGame::new(entry, letter, kind);
+    Some(mush_industry::TenureAct {
+        receipt: SmolStr::new(format!(
+            "{prefix}{entry}/{}/{}",
+            letter.to_ascii_lowercase(),
+            claim.epoch
+        )),
+        actor: ObjId(0),
+        place: record.place,
+        kind: mush_industry::TenureKind::Lapse {
+            holder: claim.holder.clone(),
+            claims,
+            at,
+            cooling_until: if cools {
+                at.checked_add(crate::surface::tenure::COOLING_TERM_IC_SECS)?
+            } else {
+                at
+            },
+        },
+        summary: crate::port::claims::TENURE_SUMMARY.to_owned(),
+        game: serde_json::to_value(&game).ok()?,
+    })
+}
+
+/// The deposits of a block no claim of `issuer` covers yet.
+fn unseeded(
+    reads: &dyn crate::port::site_map::SurfaceReads,
+    entry: &CanonicalId,
+    letter: char,
+    issuer: &PrincipalId,
+) -> Option<Vec<mush_industry::OreDepositId>> {
+    let mut out = Vec::new();
+    for id in crate::port::claims::opened_deposits(reads, entry, letter).ok()? {
+        if !reads
+            .claims(id)
+            .ok()?
+            .iter()
+            .any(|claim| claim.issuer() == issuer)
+        {
+            out.push(id);
+        }
+    }
+    Some(out)
+}
+
+/// A contract's state in the economy's snapshot.
+fn contract_state(w: &World, id: u64) -> Option<mush_economy::ContractState> {
+    w.module_state::<EconomyStore>()?
+        .snapshot()
+        .contract(mush_economy::ContractId(id))
+        .map(|contract| contract.state)
+}
+
+/// Whether fee contract `id` settled, is being settled, or was forfeit to the Registry
+/// ([`crate::port::claims::fee_forfeit`]; the lead's ruling on R1, OC16): the loser's line
+/// agrees with `claims::fee_recorded`, [`crate::port::claims::fee_unpaid`] and the refund
+/// ([`fee_settled`]), so a fee the Registry holds through a forfeit is a fee the loser paid
+/// (the reviewer's F1).
+fn fee_paid(w: &World, id: u64) -> bool {
+    fee_settled(w, id)
+        || matches!(
+            contract_state(w, id),
+            Some(mush_economy::ContractState::Active | mush_economy::ContractState::ReadyToSettle)
+        )
+}
+
+/// Whether fee contract `id` was paid in full: `Settled`, or forfeit to the Registry
+/// ([`crate::port::claims::fee_forfeit`]) — either way the Registry's account holds it, so a
+/// contest refund of it is owed (the reviewer's F1).
+fn fee_settled(w: &World, id: u64) -> bool {
+    w.module_state::<EconomyStore>()
+        .and_then(|economy| {
+            economy
+                .snapshot()
+                .contract(mush_economy::ContractId(id))
+                .map(|contract| {
+                    matches!(contract.state, mush_economy::ContractState::Settled { .. })
+                        || crate::port::claims::fee_forfeit(contract)
+                })
+        })
+        .unwrap_or(false)
+}
+
+/// **The clerk's next system act** (the brief's 3.7; the `next_work_row` precedent): items 2, 5
+/// and 7 of [`claims_step`], in that priority, under the step's own rules, so the composed
+/// authority's offer and the step agree — an unpaid lapse (a landed claim whose fee contract the
+/// holder withdrew — cancelled, amended back to a draft or re-offered on other terms, F2 and the
+/// fixer's round — with the cooling term; or whose fee expired unaccepted, an outage, with none:
+/// the lead's ruling on R1, OC16), else a due lapse (a player claim past its term, stamped at its end),
+/// else a seed (an authored held block's org claim, then a papered block's paper once its
+/// adjudication contract is in the claim log). `None` before the site is open, or with nothing
+/// due. **The applier and the boot pass submit nothing**: only the clerk's step does.
+#[allow(clippy::too_many_lines)]
+#[must_use]
+pub(crate) fn next_system_act(
+    w: &World,
+    reads: &dyn crate::port::site_map::SurfaceReads,
+    clerk: ObjId,
+    now: i64,
+) -> Option<mush_industry::TenureAct> {
+    let (map, site) = clerk_site(w, clerk)?;
+    let entry = map.entry.clone();
+    if !matches!(
+        crate::surface::opening::opening_line(w, &entry),
+        SiteOpening::Open { .. }
+    ) {
+        return None;
+    }
+    let issuer = org_principal(w, &site.issuer)?;
+    let records = site_records(reads, &entry).ok()?;
+    let stamp = |act: Option<mush_industry::TenureAct>| {
+        act.map(|mut act| {
+            act.actor = clerk;
+            act
+        })
+    };
+    // Item 2: an unpaid landed claim — its fee withdrawn after it landed: cancelled, amended
+    // back to a draft, or re-offered on other terms (`claims::fee_unpaid`; the fixer's round,
+    // correctness F1/F2), cooling its holder; or its fee expired unaccepted (an outage), cooling
+    // nobody (the lead's ruling on R1, OC16). Both share one receipt a block epoch: a fee is in
+    // one state, and one lapse lands.
+    let registry = crate::port::claims::registry_info(w);
+    for (letter, record) in &records {
+        let Some(record) = record else { continue };
+        let Some(claim) = record.claim.as_ref() else {
+            continue;
+        };
+        if claim.lapsed_ic.is_some() || !claim.player_held() {
+            continue;
+        }
+        let unpaid = registry
+            .as_ref()
+            .and_then(|registry| crate::port::claims::fee_unpaid(w, claim, registry));
+        let (kind, cools) = match unpaid {
+            None => continue,
+            Some(crate::port::claims::FeeUnpaid::Withdrawn) => ("unpaid", true),
+            Some(crate::port::claims::FeeUnpaid::Expired) => ("expired", false),
+        };
+        return stamp(lapse_act(
+            reads,
+            &entry,
+            *letter,
+            record,
+            claim,
+            &issuer,
+            (now, kind, CLAIM_UNPAID_KEY_PREFIX, cools),
+        ));
+    }
+    // Item 5: a player claim past its term, lapsed at the term's end.
+    for (letter, record) in &records {
+        let Some(record) = record else { continue };
+        let Some(claim) = record.claim.as_ref() else {
+            continue;
+        };
+        if claim.player_held() && claim.lapsing(now) {
+            return stamp(lapse_act(
+                reads,
+                &entry,
+                *letter,
+                record,
+                claim,
+                &issuer,
+                (claim.term_end_ic, "lapse", CLAIM_LAPSE_KEY_PREFIX, true),
+            ));
+        }
+    }
+    // Item 7: the seeds — held blocks first, then the papers.
+    let place_of = |letter: char| {
+        map.site
+            .as_ref()
+            .and_then(|row| row.blocks.get(letter.to_string().as_str()))
+            .map(|id| ObjId(*id))
+    };
+    let term_at = now.checked_add(crate::surface::tenure::SEEDED_TERM_IC_SECS)?;
+    for (letter, record) in &records {
+        let terms = site.block(*letter);
+        let (Tenure::Held, Some(holder)) = (terms.tenure, terms.holder) else {
+            continue;
+        };
+        if record.as_ref().is_some_and(|record| record.claim.is_some()) {
+            continue;
+        }
+        let game = crate::port::claims::TenureGame::new(&entry, *letter, "seed_held");
+        return Some(mush_industry::TenureAct {
+            receipt: SmolStr::new(format!(
+                "{CLAIM_SEED_KEY_PREFIX}{entry}/{}/{}",
+                letter.to_ascii_lowercase(),
+                site.issuer
+            )),
+            actor: clerk,
+            place: place_of(*letter)?,
+            kind: mush_industry::TenureKind::Seed {
+                issuer: issuer.clone(),
+                holder: org_principal(w, holder)?,
+                term_at,
+                deposits: unseeded(reads, &entry, *letter, &issuer)?,
+                contest: None,
+            },
+            summary: crate::port::claims::TENURE_SUMMARY.to_owned(),
+            game: serde_json::to_value(&game).ok()?,
+        });
+    }
+    let log = claim_log_of(w, &entry);
+    for (letter, record) in &records {
+        let Some(paper) = site
+            .blocks
+            .get(letter.to_string().as_str())
+            .and_then(|row| row.paper.as_ref())
+        else {
+            continue;
+        };
+        if record.as_ref().is_some_and(|record| record.paper.is_some()) {
+            continue;
+        }
+        let Some(contract) = log.paper.get(paper.contract.as_str()).copied() else {
+            continue;
+        };
+        let paper_principal = org_principal(w, &paper.issuer)?;
+        let mut game = crate::port::claims::TenureGame::new(&entry, *letter, "seed_paper");
+        game.contract = Some(contract);
+        game.paper_issuer = Some(paper.issuer.clone());
+        game.paper_row = Some(paper.contract.clone());
+        return Some(mush_industry::TenureAct {
+            receipt: SmolStr::new(format!(
+                "{CLAIM_SEED_KEY_PREFIX}{entry}/{}/{}",
+                letter.to_ascii_lowercase(),
+                paper.issuer
+            )),
+            actor: clerk,
+            place: place_of(*letter)?,
+            kind: mush_industry::TenureKind::Seed {
+                issuer: paper_principal.clone(),
+                deposits: unseeded(reads, &entry, *letter, &paper_principal)?,
+                holder: paper_principal,
+                term_at,
+                contest: Some(mush_economy::ContractId(contract)),
+            },
+            summary: crate::port::claims::TENURE_SUMMARY.to_owned(),
+            game: serde_json::to_value(&game).ok()?,
+        });
+    }
+    None
+}
+
+/// Submit the clerk's system act as the clerk (`Fire::as_principal`), keyed by its receipt.
+fn submit_system_act(
+    ctx: &mut Ctx<'_>,
+    fire: &mut crate::port_tick::Fire,
+    clerk: ObjId,
+    act: &mush_industry::TenureAct,
+) -> crate::port_tick::Step {
+    use crate::port_tick::Step;
+    let Some(action) = mush_industry::action_ref(ctx.reg, mush_industry::IndustryVerb::ClaimTenure)
+    else {
+        return Step::Refused;
+    };
+    let Ok(key) = mush_core::IdempotencyKeyText::parse_canonical(&act.receipt) else {
+        return Step::Refused;
+    };
+    let receipt = act.receipt.to_string();
+    swapped(fire.as_principal(ctx, clerk, clerk, |ctx| {
+        ctx.submit_authoritative(
+            action,
+            mush_core::PerceivedRef::SelfActor,
+            Vec::new(),
+            serde_json::json!({ "receipt": receipt }),
+            key,
+        );
+    }))
+}
+
+/// **The site clerk's claim steps** (doc 20 §9; the brief's 3.7, D10): once the site is open,
+/// over its sixteen block records and its claim log, ONE item a fire, money first. **An item
+/// found already done is not the fire's step** and evaluation continues (reviewer F6); the first
+/// item that does real work ends the fire. In order:
+///
+/// 1. **accept one fee** (§9.3): the first block claim whose fee contract is still `Offered` on
+///    the claim fee's own terms at the fee due (`claims::fee_terms_hold`) — the Registry's
+///    `accept_contract_as` as the clerk — and the holder told (`STAKE_RECORDED`,
+///    `RENEW_RECORDED` with `REGISTRAR_TOLD`, or `CONTEST_RECORDED` and the loser
+///    `CONTEST_LOST`); a refused acceptance pages once and does not end the fire;
+/// 2. **lapse one unpaid claim** (reviewer F2a; the fixer's round, correctness F1/F2): a landed
+///    claim whose fee its holder withdrew (`claims::fee_unpaid`: cancelled, amended back to a
+///    draft, or re-offered on other terms), with the cooling term; or whose fee expired before
+///    the Registry accepted it (an outage past the fee's real hour, its escrow refunded by the
+///    economy's expiry), with **no** cooling term, so the block reopens at once (the lead's ruling
+///    on R1, OC16);
+/// 3. **pay one refund** (§9.4, F2): a contest's loser's term fee, from the Registry's account,
+///    under one idempotency key, only when the loser's own last fee settled — never minted;
+/// 4. **chronicle one landed lapse** (§9.2): one public `tacsim.claim.lapsed` canon line, the
+///    holder told — both once: after a lost claim log the chronicle's own record guards the line
+///    and the tell alike (`mush_canon::records_for_source`; the judge's conformance F9);
+/// 5. **lapse one due block** (§9.2, lead ruling 5): a player claim past its term, stamped at its
+///    end, with the cooling term;
+/// 6. **file the paper's adjudication contract** (§9.6, F11, D9): re-found by its issuer and name
+///    before any offer, offered by the tick's own GOD under the paper org's root scope, never
+///    accepted;
+/// 7. **seed one block** (lead ruling 10): an authored held block's org claim, then a papered
+///    block's paper — a block with no opened deposit too (the record alone, F4).
+///
+/// Items 2, 5 and 7 are the submissions [`next_system_act`] computes, so the offer and the step
+/// agree.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn claims_step(
+    ctx: &mut Ctx<'_>,
+    fire: &mut crate::port_tick::Fire,
+    clerk: ObjId,
+    map: &PortMap,
+    site: &SiteDef,
+) -> crate::port_tick::Step {
+    use crate::port::claims;
+    use crate::port_tick::Step;
+    let entry = map.entry.clone();
+    let now = ctx.w.world_ic_now().at;
+    let Some(registry) = claims::registry_info(ctx.w) else {
+        return Step::Idle;
+    };
+    let records = match site_records(&*ctx, &entry) {
+        Ok(records) => records,
+        Err(error) => {
+            if page_once(ctx.w, format!("claims/{entry}")) {
+                tracing::error!(site = %entry, %error, "tacsim: a site's claim records cannot be read; the clerk's claim steps wait");
+            }
+            return Step::Idle;
+        }
+    };
+    let act = next_system_act(ctx.w, &*ctx, clerk, now);
+    let act_kind = act.as_ref().and_then(|act| {
+        act.game
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    });
+    let site_name = site.name.clone();
+    let mut log = claim_log_of(ctx.w, &entry);
+    let before = log.clone();
+    let finish = |ctx: &mut Ctx<'_>, log: &crate::surface::claims::ClaimLog, step: Step| {
+        if *log != before {
+            crate::store::put_claim_log(ctx, log);
+        }
+        step
+    };
+    // ---- 1. Accept one fee ----
+    for (letter, record) in &records {
+        let Some(record) = record else { continue };
+        let Some(claim) = record.claim.as_ref() else {
+            continue;
+        };
+        let Some(fee) = claim.fee else { continue };
+        if claim.lapsed_ic.is_some() {
+            continue;
+        }
+        // Only a contract that still carries the claim fee's own terms — Offered, the holder's,
+        // paying exactly the fee due to the Registry and nothing else — is accepted (the
+        // fixer's round, correctness F2): an issuer may amend an Offered contract back to Draft
+        // and re-offer other terms, and such a fee is item 2's unpaid lapse, never accepted.
+        let terms_hold = claims::fee_due(claim, &registry).is_some_and(|due| {
+            ctx.w
+                .module_state::<EconomyStore>()
+                .and_then(|economy| {
+                    economy
+                        .snapshot()
+                        .contract(mush_economy::ContractId(fee))
+                        .map(|contract| {
+                            claims::fee_terms_hold(contract, &claim.holder, &registry, due)
+                        })
+                })
+                .unwrap_or(false)
+        });
+        if !terms_hold {
+            continue;
+        }
+        let principal = registry.principal.clone();
+        let accepted = fire.as_principal(ctx, clerk, clerk, |ctx| {
+            mush_economy::accept_contract_as(ctx, mush_economy::ContractId(fee), &principal)
+        });
+        match accepted {
+            Ok(Ok(mush_economy::AcceptOutcome::Accepted { .. })) => {}
+            // A refused acceptance did no work: paged once, and evaluation continues to the
+            // next item, so one fee the Registry cannot take never holds every later claim item
+            // at the site (the fixer's round, correctness F2).
+            Ok(other) => {
+                if page_once(ctx.w, format!("accept/{fee}")) {
+                    tracing::error!(site = %entry, %letter, contract = fee, outcome = ?other, "tacsim: the Registry could not accept a landed claim's fee; it refunds at its deadline");
+                }
+                continue;
+            }
+            Err(refused) => return finish(ctx, &log, swapped(Err(refused))),
+        }
+        let block = letter.to_string();
+        let until = crate::port::licence::ic_stamp(claim.term_end_ic);
+        let PrincipalId::Object(holder) = claim.holder else {
+            return finish(ctx, &log, Step::Worked);
+        };
+        if claim.refund.is_some() && claim.registered_ic == claim.term_start_ic {
+            let line = claims::CONTEST_RECORDED
+                .replace("{issuer}", &registry.name)
+                .replace("{block}", &block)
+                .replace("{site}", &site_name)
+                .replace("{until}", &until);
+            crate::port_tick::notify(ctx, holder, &line);
+            if let Some(refund) = &claim.refund {
+                let template = if fee_paid(ctx.w, refund.paid_by) {
+                    claims::CONTEST_LOST
+                } else {
+                    claims::CONTEST_LOST_UNPAID
+                };
+                let line = template
+                    .replace("{contester}", &crate::port::coop::name_of(ctx.w, holder))
+                    .replace("{block}", &block)
+                    .replace("{site}", &site_name);
+                crate::port_tick::notify(ctx, refund.to, &line);
+            }
+        } else if claim.term_start_ic > claim.registered_ic {
+            let mut line = claims::RENEW_RECORDED
+                .replace("{issuer}", &registry.name)
+                .replace("{block}", &block)
+                .replace("{site}", &site_name)
+                .replace("{until}", &until);
+            if let Some(paper) = record.paper.as_ref()
+                && paper.state == crate::surface::claims::PaperState::Suspended
+                && paper.suspended_ic == Some(claim.term_start_ic)
+            {
+                line.push_str(
+                    &claims::REGISTRAR_TOLD.replace("{paper}", &org_name_of(ctx.w, &paper.issuer)),
+                );
+            }
+            crate::port_tick::notify(ctx, holder, &line);
+        } else {
+            let line = claims::STAKE_RECORDED
+                .replace("{issuer}", &registry.name)
+                .replace("{block}", &block)
+                .replace("{site}", &site_name)
+                .replace("{until}", &until);
+            crate::port_tick::notify(ctx, holder, &line);
+        }
+        return finish(ctx, &log, Step::Worked);
+    }
+    // ---- 2. Lapse one unpaid claim: withdrawn (cooling) or expired (none) ----
+    if matches!(act_kind.as_deref(), Some("unpaid" | "expired"))
+        && let Some(act) = &act
+    {
+        let step = submit_system_act(ctx, fire, clerk, act);
+        return finish(ctx, &log, step);
+    }
+    // ---- 3. Pay one refund ----
+    for (letter, record) in &records {
+        let Some(record) = record else { continue };
+        let Some(claim) = record.claim.as_ref() else {
+            continue;
+        };
+        let Some(refund) = claim.refund.as_ref() else {
+            continue;
+        };
+        let key = letter.to_string();
+        if log.refunded.get(&key) == Some(&claim.epoch) {
+            continue;
+        }
+        if claim.fee.and_then(|id| contract_state(ctx.w, id))
+            == Some(mush_economy::ContractState::Offered)
+        {
+            continue;
+        }
+        match contract_state(ctx.w, refund.paid_by) {
+            // Settled, or forfeit to the Registry (an `Expired` fee it had accepted): either
+            // way the Registry's account holds the loser's fee, so it goes back (F1).
+            _ if fee_settled(ctx.w, refund.paid_by) => {}
+            Some(
+                mush_economy::ContractState::Active | mush_economy::ContractState::ReadyToSettle,
+            ) => continue,
+            _ => {
+                // The loser never paid: nothing is owed (F2: never mint).
+                log.refunded.insert(key, claim.epoch);
+                continue;
+            }
+        }
+        let Some(to) = crate::port::credit::own_account(ctx.w, refund.to).map(|account| account.id)
+        else {
+            if page_once(ctx.w, format!("refund/{entry}/{letter}")) {
+                tracing::error!(site = %entry, %letter, loser = refund.to.0, "tacsim: a contest refund has no credit account to go to; it retries each fire");
+            }
+            continue;
+        };
+        let (Some(debit), credit) = (
+            mush_economy::Amount::from_minor(refund.minor).checked_neg(),
+            mush_economy::Amount::from_minor(refund.minor),
+        ) else {
+            continue;
+        };
+        let plan = mush_economy::EconomyPlan {
+            description: format!("Freeport Registry claim refund, {site_name} block {letter}"),
+            visibility: mush_economy::EconomicVisibility::Public,
+            ..mush_economy::EconomyPlan::new(
+                mush_economy::IdempotencyKey::new(
+                    CLAIM_REFUND_KEY,
+                    format!("{entry}/{letter}/{}", claim.epoch),
+                ),
+                PrincipalId::Object(ctx.actor),
+                mush_economy::EconomicCause::Internal {
+                    kind: SmolStr::new_static(CLAIM_REFUND_KEY),
+                    id: u64::from(record.place.0),
+                },
+                vec![
+                    mush_economy::RequestedLine {
+                        account: registry.account,
+                        delta: debit,
+                        memo: SmolStr::new_static(CLAIM_REFUND_KEY),
+                    },
+                    mush_economy::RequestedLine {
+                        account: to,
+                        delta: credit,
+                        memo: SmolStr::new_static(CLAIM_REFUND_KEY),
+                    },
+                ],
+            )
+        };
+        match mush_economy::post(ctx, &plan) {
+            Ok(mush_economy::PostOutcome::Posted(_)) => {
+                log.refunded.insert(key, claim.epoch);
+                return finish(ctx, &log, Step::Worked);
+            }
+            Ok(mush_economy::PostOutcome::AlreadyPosted(_)) => {
+                log.refunded.insert(key, claim.epoch);
+            }
+            other => {
+                if page_once(ctx.w, format!("refund/{entry}/{letter}/{}", claim.epoch)) {
+                    tracing::error!(site = %entry, %letter, outcome = ?other, "tacsim: a contest refund did not post; it retries each fire");
+                }
+            }
+        }
+    }
+    // ---- 4. Chronicle one landed lapse ----
+    for (letter, record) in &records {
+        let Some(claim) = record.as_ref().and_then(|record| record.claim.as_ref()) else {
+            continue;
+        };
+        let Some(lapsed_ic) = claim.lapsed_ic else {
+            continue;
+        };
+        let key = letter.to_string();
+        if log.chronicled.get(&key) == Some(&claim.epoch) {
+            continue;
+        }
+        let holder_name = claims::holder_name(ctx.w, &claim.holder);
+        let source = format!("{CLAIM_LAPSE_KEY_PREFIX}{entry}/{letter}/{}", claim.epoch);
+        let already = ctx
+            .w
+            .module_state::<mush_canon::CanonState>()
+            .is_some_and(|state| {
+                mush_canon::records_for_source(state, &source, mush_canon::MAX_RECORDS_PER_SOURCE)
+                    .iter()
+                    .any(|event| event.kind.as_str() == claims::KIND_CLAIM_LAPSED)
+            });
+        log.chronicled.insert(key.clone(), claim.epoch);
+        // Found already chronicled with no log row to say so: the log was lost (unreadable or
+        // gone), and the fire that wrote the canon line told the holder in the same step — so
+        // nothing is committed and nobody is told twice (the judge's conformance F9). The row is
+        // kept (written at the fire's end), and the item, found done, is not the fire's step.
+        if already {
+            continue;
+        }
+        let entities = match claim.holder {
+            PrincipalId::Object(holder) => vec![holder],
+            _ => Vec::new(),
+        };
+        mush_canon::commit(
+            ctx,
+            mush_canon::CanonDraft {
+                kind: SmolStr::new_static(claims::KIND_CLAIM_LAPSED),
+                summary: claims::LAPSE_CANON_LINE
+                    .replace("{holder}", &holder_name)
+                    .replace("{block}", &key)
+                    .replace("{site}", &site_name),
+                entities,
+                scope: mush_canon::CanonScope::Public,
+                ic_time: lapsed_ic,
+                source,
+                detail: serde_json::json!({ "site": entry.as_str(), "block": key }),
+            },
+        );
+        if let PrincipalId::Object(holder) = claim.holder {
+            let unpaid = claims::fee_unpaid(ctx.w, claim, &registry);
+            // A contest whose fee was withdrawn or expired after it landed: item 1 never
+            // accepted it, so the loser was never told the claim passed — they are told now,
+            // beside the unpaid holder (the fixer's round, correctness F5). Their paid term fee
+            // still comes back (item 3): the Registry returns money the loser paid for a term
+            // they no longer hold, never money nobody paid.
+            if unpaid.is_some()
+                && let Some(refund) = &claim.refund
+            {
+                let template = if fee_paid(ctx.w, refund.paid_by) {
+                    claims::CONTEST_LOST
+                } else {
+                    claims::CONTEST_LOST_UNPAID
+                };
+                let line = template
+                    .replace("{contester}", &crate::port::coop::name_of(ctx.w, holder))
+                    .replace("{block}", &key)
+                    .replace("{site}", &site_name);
+                crate::port_tick::notify(ctx, refund.to, &line);
+            }
+            let line = match unpaid {
+                Some(claims::FeeUnpaid::Withdrawn) => claims::UNPAID_LAPSED
+                    .replace("{block}", &key)
+                    .replace("{site}", &site_name),
+                Some(claims::FeeUnpaid::Expired) => claims::EXPIRED_LAPSED
+                    .replace("{block}", &key)
+                    .replace("{site}", &site_name),
+                None => claims::LAPSED_TOLD
+                    .replace("{block}", &key)
+                    .replace("{site}", &site_name)
+                    .replace(
+                        "{until}",
+                        &crate::port::licence::ic_stamp(
+                            lapsed_ic.saturating_add(crate::surface::tenure::COOLING_TERM_IC_SECS),
+                        ),
+                    ),
+            };
+            crate::port_tick::notify(ctx, holder, &line);
+        }
+        return finish(ctx, &log, Step::Worked);
+    }
+    // ---- 5. Lapse one due block ----
+    if act_kind.as_deref() == Some("lapse")
+        && let Some(act) = &act
+    {
+        let step = submit_system_act(ctx, fire, clerk, act);
+        return finish(ctx, &log, step);
+    }
+    // ---- 6. File the paper's adjudication contract ----
+    for (row, issuer) in paper_rows(site) {
+        if log.paper.contains_key(row.as_str()) {
+            continue;
+        }
+        let Some(org) = map_org(ctx.w, &issuer) else {
+            if page_once(ctx.w, format!("paper/{entry}/{row}")) {
+                tracing::error!(site = %entry, %row, %issuer, "tacsim: a paper's issuer has no lane org row; its paper waits");
+            }
+            continue;
+        };
+        let name = PAPER_NAME
+            .replace("{org}", &org_name_of(ctx.w, &issuer))
+            .replace("{site}", &site_name);
+        let issuer_principal = PrincipalId::Organization(mush_org::OrgId(org.org));
+        let found = ctx.w.module_state::<EconomyStore>().and_then(|economy| {
+            economy
+                .snapshot()
+                .contracts()
+                .find(|contract| {
+                    contract.issuer == issuer_principal && contract.name.as_str() == name
+                })
+                .map(|contract| contract.id.0)
+        });
+        if let Some(id) = found {
+            log.paper.insert(row.to_string(), id);
+            continue;
+        }
+        let Some(paper) = site.papers.get(&row) else {
+            continue;
+        };
+        let (Some(account), Some(bond)) = (
+            org.account.map(mush_economy::AccountId),
+            crate::port::apply::minor_of(paper.bond_major, crate::port::apply::credit_scale(ctx.w)),
+        ) else {
+            continue;
+        };
+        let bond = mush_economy::Amount::from_minor(bond);
+        let deadline = mush_economy::EconomicDeadline {
+            clock: mush_economy::EconomicClock::WorldIc,
+            at: now.saturating_add(crate::surface::tenure::SEEDED_TERM_IC_SECS),
+        };
+        let spec = mush_economy::ContractSpec {
+            name: SmolStr::new(&name),
+            scope: Some(mush_org::OrgScopeId(org.root_scope)),
+            parties: vec![registry.principal.clone()],
+            considerations: vec![mush_economy::ConsiderationSpec {
+                account,
+                amount: bond,
+            }],
+            outcomes: vec![mush_economy::OutcomeTerms {
+                name: SmolStr::new_static("returned"),
+                when: vec![0],
+                payouts: vec![mush_economy::PayoutShare {
+                    to: account,
+                    share: mush_economy::Share::Exact(bond),
+                }],
+                expense_treatment: mush_economy::ExpenseTreatment::None,
+                asset_consequences: Vec::new(),
+            }],
+            remainder_to: account,
+            conditions: vec![mush_economy::TypedCondition::Before { deadline }],
+            adjudicator: Some(mush_economy::AttestorSet::Party(registry.principal.clone())),
+            evidence: vec![mush_economy::EvidenceKind::Before],
+            deadline: Some(deadline),
+            on_expiry: mush_economy::Expiry::Refund,
+            visibility: mush_economy::EconomicVisibility::Public,
+            roles: mush_economy::ContractRoles {
+                author: None,
+                payer: Some(issuer_principal.clone()),
+                representative: None,
+                facilitator: None,
+            },
+            deterministic: true,
+            deliverables: Vec::new(),
+        };
+        match mush_economy::offer_contract(ctx, spec) {
+            Ok(id) => {
+                log.paper.insert(row.to_string(), id.0);
+                return finish(ctx, &log, Step::Worked);
+            }
+            Err(error) => {
+                if page_once(ctx.w, format!("paper/{entry}/{row}/offer")) {
+                    tracing::error!(site = %entry, %row, %error, "tacsim: a paper's adjudication contract was not offered; it retries each fire");
+                }
+            }
+        }
+    }
+    // ---- 7. Seed one block ----
+    if matches!(act_kind.as_deref(), Some("seed_held" | "seed_paper"))
+        && let Some(act) = &act
+    {
+        let step = submit_system_act(ctx, fire, clerk, act);
+        return finish(ctx, &log, step);
+    }
+    finish(ctx, &log, Step::Idle)
+}
+
+/// A lane org's port map row by its lane id.
+fn map_org(w: &World, org: &CanonicalId) -> Option<crate::port::map::PortOrgRow> {
+    w.module_state::<crate::store::TacsimStore>()?
+        .port_maps()
+        .filter(|map| map.pack.as_str() == crate::definitions::content::LANE_PACK)
+        .find_map(|map| map.orgs.get(org))
+        .cloned()
+}
+
+/// A lane org's authored name.
+fn org_name_of(w: &World, org: &CanonicalId) -> String {
+    w.module_state::<crate::store::TacsimStore>()
+        .and_then(|store| crate::port::readiness::report_ports(store, w).0)
+        .map_or_else(|| org.to_string(), |pack| org_name(pack, org))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1457,6 +2300,7 @@ mod tests {
                 .iter()
                 .map(|(l, b)| ((*l).to_owned(), b.clone()))
                 .collect(),
+            papers: std::collections::BTreeMap::new(),
         }
     }
 

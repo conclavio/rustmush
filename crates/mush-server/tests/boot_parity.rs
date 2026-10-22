@@ -806,9 +806,10 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
             .orgs()
             .count();
         assert_eq!(
-            orgs, 21,
-            "the twenty-one port institutions: the corridor's nine, the moons' eleven (doc 19 cut \
-             A.8) and the Freeport Registry (doc 20 cut SM.2)"
+            orgs, 22,
+            "the twenty-two port institutions: the corridor's nine, the moons' eleven (doc 19 cut \
+             A.8), the Freeport Registry (doc 20 cut SM.2) and the Pallas Syndicate (doc 20 cut \
+             SM.10)"
         );
         assert!(
             !store.test_world(),

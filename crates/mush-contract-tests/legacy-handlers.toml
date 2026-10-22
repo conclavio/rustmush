@@ -68,6 +68,12 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
+name = "+claim"
+category = "authoritative"
+family = "tacsim.claims"
+note = "doc 20 cut SM.10 (section 9, D-20-12; the SM.10 brief's lead rulings 1-14): the Freeport Registry's mining claims, a block at a time. +claim and +claim/list are pure reads (the actor's own tacsim.claims records and the block cursors). A bare /stake, /renew, /release or /contest previews and writes nothing. go is the economy's own API plus one submission: for a fee act (stake, renew, contest) a funds check, then offer_contract + accept_contract (as the pilot) make ONE Public fee contract into the Registry's account, left Offered with the pilot's escrow (no accept by the Registry in the command; an Offered contract refunds at its deadline, so a refused act costs nothing); the Registry accepts it only on the tacsim.port tick, as the site clerk through accept_contract_as, once the act has landed, and a fee the pilot cancels after landing makes the clerk lapse the claim; a release has no contract. Then one bounded RAM ClaimOrders entry (tacsim's own slot, keyed by the actor) and exactly ONE Ctx::submit_authoritative of industry's industry_claim_tenure (keyed tacsim.claim/<actor>/<contract>, or tacsim.claim/<actor>/release/<site>/<block>/<epoch>), admitted only for the ONE server-authored TenureAct the composed SurfaceTenure authority vouches for from that order, whose bundle writes industry.claim, industry.claim_index and industry.tenure and tacsim's own tacsim.claims record (staged by tacsim's code inside industry's bundle). New verb: PINNED_BASELINE does not move."
+
+[[handler]]
 name = "+clocks"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
@@ -213,6 +219,11 @@ note = "E6a (08f 3.1/3.2/3.4, D-E6-5): the bare verb is a viewer-gated read; the
 name = "+recap"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "+registry"
+category = "read-only"
+note = "doc 20 cut SM.10 (section 9; reviewer F5): a pure read of the site's sixteen tacsim.claims records (and the block cursors for the worked tonnes) -- each claimed block's holder, term, epoch, declared family, first reading, worked tonnes against the floor and contest state, and the paper over it. Registered in +credit's ReadOnly bracket: no document, no post, no submission; it reads no industry claim and no deposit."
 
 [[handler]]
 name = "+request"

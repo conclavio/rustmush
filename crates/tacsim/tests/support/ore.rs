@@ -12,6 +12,9 @@ pub const ORE_GOODS: [&str; 4] = ["metal_ore", "carbon_ore", "strategic_ore", "i
 /// `licence` block and Occator's `raises` — the v10 shape (idempotent; the manifest is
 /// the caller's).
 pub fn strip_ore(doc: &mut Value) {
+    // Doc 20 cut SM.10: v12's additions first, so every strip chain rebuilds its older lane
+    // unchanged.
+    super::claims::strip_claims(doc);
     let Some(ceres) = doc["entries"]
         .as_object_mut()
         .and_then(|entries| entries.get_mut("ceres_port"))

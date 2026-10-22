@@ -449,7 +449,9 @@ pub(crate) fn ground_frame(
             _ => None,
         };
         let survey = crate::port::site::survey_words(w, pack, &mark.location);
-        let tenure = crate::port::site::tenure_parts(pack, &mark.site);
+        // The site's tenure from its block records (doc 20 cut SM.10, lead note 0a).
+        let tenure =
+            crate::port::claims::tenure_parts_now(w, reads, pack, &mark.entry, &mark.site, now);
         let row = reads.chart(actor, &mark.entry)?;
         let (best, dark) = match crate::surface::chart::site_context(w, &mark.entry) {
             Ok(site) => (

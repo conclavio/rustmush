@@ -44,6 +44,9 @@
 /// **16b cut I.1**: the fixture yard both fixture blessers draw on.
 pub mod yard;
 
+/// **Doc 20 cut SM.10**: the claims cut's lane additions stripped away (the v11 shape), the
+/// fixed gateway-account oracle and the deposit-count rig's three geology tables.
+pub mod claims;
 /// **16b cut AE.1**: the proving ground's generator, moved here from
 /// `tests/content.rs` so the version-1 ground a shelf test boots on can be
 /// built ([`ground::atlas_pack_at`]).

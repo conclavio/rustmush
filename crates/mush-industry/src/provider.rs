@@ -90,6 +90,9 @@ pub const ACTION_WO_DELIVER: &str = "industry_wo_deliver";
 pub const ACTION_WO_CANCEL: &str = "industry_wo_cancel";
 /// Restamp an interrupted work order (E7c4).
 pub const ACTION_WO_RESTAMP: &str = "industry_wo_restamp";
+/// Doc 20 cut SM.10 (§9, D-20-12): one tenure act a composed
+/// [`TenureAuthority`](crate::seams::TenureAuthority) vouches for.
+pub const ACTION_CLAIM_TENURE: &str = "industry_claim_tenure";
 /// The one durable outcome schema all actions reference.
 pub const OUTCOME_ID: &str = "industry_result";
 
@@ -155,12 +158,17 @@ pub enum IndustryVerb {
     WoCancel,
     /// E7c4 B6: restamp one interrupted order under a campaign-registered policy.
     WoRestamp,
+    /// Doc 20 cut SM.10 (§9, D-20-12): one block-wide tenure act — a stake, a
+    /// renewal, a lapse, a contest transfer or a seed — that the composed
+    /// [`TenureAuthority`](crate::seams::TenureAuthority) vouches for as a
+    /// server-authored row (SM.6's `SystemOpener` pattern). Appended last.
+    ClaimTenure,
 }
 
 impl IndustryVerb {
     /// Every verb, in registration order.
     #[must_use]
-    pub const fn all() -> [Self; 14] {
+    pub const fn all() -> [Self; 15] {
         [
             Self::DepositOpen,
             Self::DepositAccess,
@@ -176,6 +184,7 @@ impl IndustryVerb {
             Self::WoDeliver,
             Self::WoCancel,
             Self::WoRestamp,
+            Self::ClaimTenure,
         ]
     }
 
@@ -195,6 +204,7 @@ impl IndustryVerb {
             Self::WoDeliver => ACTION_WO_DELIVER,
             Self::WoCancel => ACTION_WO_CANCEL,
             Self::WoRestamp => ACTION_WO_RESTAMP,
+            Self::ClaimTenure => ACTION_CLAIM_TENURE,
         }
     }
 
@@ -227,6 +237,7 @@ impl IndustryVerb {
             Self::WoDeliver => "wo-deliver",
             Self::WoCancel => "wo-cancel",
             Self::WoRestamp => "wo-restamp",
+            Self::ClaimTenure => "claim-tenure",
         }
     }
 
@@ -263,12 +274,28 @@ impl IndustryVerb {
                 "Complete production and place the output at its destination.",
             ),
             Self::WoCancel => ("Cancel a work order", "Release every reservation once."),
+            Self::ClaimTenure => (
+                "Hold tenure",
+                "A tenure act a composed authority vouches for.",
+            ),
             Self::WoRestamp => (
                 "Restamp a work order",
                 "Re-anchor an interrupted order under a campaign policy.",
             ),
         }
     }
+}
+
+/// What the same-issuer exclusive rule finds over one subject
+/// (`IndustryProvider::exclusive_conflict`; doc 20 cut SM.10 factored it out
+/// of `file()`).
+enum ExclusiveConflict {
+    /// No conflicting claim.
+    Clear,
+    /// A live conflicting claim.
+    Live,
+    /// A lapsed conflicting claim: take it over.
+    Lapsed,
 }
 
 /// One industry action's provider.
@@ -289,6 +316,10 @@ pub struct IndustryProvider {
     /// Doc 20 cut SM.6 (§9.6, D-20-12): the contest offer's jurisdiction row,
     /// [`crate::seams::ActsForJurisdiction`] unless the root composed another.
     jurisdiction: std::sync::Arc<dyn crate::seams::JurisdictionAuthority>,
+    /// Doc 20 cut SM.10 (§9, D-20-12): the composed tenure authority that
+    /// admits an actor to `ClaimTenure` for exactly the ONE server-authored
+    /// act it vouches for. `None`: the verb registers and offers nothing.
+    tenure: Option<std::sync::Arc<dyn crate::seams::TenureAuthority>>,
     /// The hashed catalog, keyed on [`crate::workorder::RecipeAuthority::catalog_revision`]. The
     /// walk and the hashing happen once per pack publish, not once per
     /// projection — and `project_legal_actions` runs every provider on every
@@ -349,6 +380,14 @@ pub const CLAIM_CONTEST_STAFF: &str = "claim_contest_staff";
 /// strings, published beside the offer's `Choice` (the issuer gate's layer-3
 /// shape).
 pub const CLAIM_ADMINISTRABLE: &str = "claim_administrable";
+/// Doc 20 cut SM.10 (§9): the actor a tenure act was offered to, published as a
+/// fixed parameter so `tenure()` can tell its own offer from somebody else's.
+pub const TENURE_ACTOR: &str = "tenure_actor";
+/// Doc 20 cut SM.10 (§9): the ONE server-authored
+/// [`TenureAct`](crate::seams::TenureAct) the offer carries, as a fixed
+/// parameter `merge_parameters` keeps unforgeable; its `receipt` is the offer's
+/// one `Choice`.
+pub const TENURE_ACT: &str = "tenure_act";
 
 /// The actor the `WoDraft` offer was projected to, published as a fixed
 /// parameter so the prepare can tell its own offer from somebody else's.
@@ -1571,7 +1610,36 @@ impl ActionProvider for IndustryProvider {
         // fixed parameters.
         let mut system_opening: Option<crate::seams::SystemOpening> = None;
         let mut contest_claims: Option<Vec<String>> = None;
+        // Doc 20 cut SM.10: the one server-authored tenure act (§9).
+        let mut tenure_act: Option<crate::seams::TenureAct> = None;
         match self.verb {
+            IndustryVerb::ClaimTenure => {
+                // Doc 20 §9, D-20-12 (cut SM.10): every actor — staff included,
+                // whose own tenure tools are `@claim` — is offered exactly the
+                // ONE act the composed authority vouches for, or nothing. The
+                // row rides as a fixed parameter below; its receipt is the only
+                // `Choice`. The block place must be a live object: this is the
+                // one seam on the prepared path that holds a world (the
+                // prepare re-checks every claim and deposit against it).
+                let Some(act) = self
+                    .tenure
+                    .as_ref()
+                    .and_then(|tenure| tenure.next_tenure(engine, actor))
+                else {
+                    return Ok(None);
+                };
+                if act.actor != actor || engine.world.get(act.place).is_none() {
+                    return Ok(None);
+                }
+                parameters.push(parameter(
+                    "receipt",
+                    true,
+                    mush_core::ProjectedParameterKind::Choice {
+                        choices: vec![act.receipt.to_string()],
+                    },
+                )?);
+                tenure_act = Some(act);
+            }
             IndustryVerb::DepositOpen if !staff => {
                 // Opening an ore body is a staff act: it credits a pool from
                 // nothing, which is the one thing no player may do. **Doc 20
@@ -1985,6 +2053,19 @@ impl ActionProvider for IndustryProvider {
             openings.insert(receipt, row);
             map.insert(SYSTEM_OPENINGS.to_owned(), Value::Object(openings));
         }
+        // ---- Doc 20 cut SM.10: the one server-authored tenure act (§9) ----
+        if let Some(act) = tenure_act
+            && let Some(map) = fixed.as_object_mut()
+        {
+            let row = serde_json::to_value(&act).map_err(|_| {
+                error(
+                    ActionErrorCode::Integrity,
+                    "industry tenure act cannot be encoded",
+                )
+            })?;
+            map.insert(TENURE_ACTOR.to_owned(), json!(actor.0));
+            map.insert(TENURE_ACT.to_owned(), row);
+        }
         // ---- The facility gate, layer 3: the structural half (WS02-S4) ----
         //
         // Same trick, same reason: `merge_parameters` refuses a submitted key
@@ -2118,6 +2199,9 @@ impl ActionProvider for IndustryProvider {
             }
             IndustryVerb::WoCancel => self.wo_cancel(txn, &parameters, actor, &mut data)?,
             IndustryVerb::WoRestamp => self.wo_restamp(txn, &parameters, &now, actor, &mut data)?,
+            IndustryVerb::ClaimTenure => {
+                self.tenure(txn, invocation, &parameters, &now, &mut data)?
+            }
         };
         data.insert("summary".to_owned(), json!(summary));
         let outcome = RulesValue::new(self.outcome.clone(), json!(data)).map_err(|_| {
@@ -2259,6 +2343,454 @@ impl IndustryProvider {
         Ok(format!("Opened {id}."))
     }
 
+    /// **The same-issuer exclusive rule** over one subject, shared by `file()`
+    /// and the tenure stake (doc 20 cut SM.10 factored it out of `file()`).
+    ///
+    /// Exclusivity is enforced against the live set, not against a count: one
+    /// live exclusive claim per issuer per subject. Two governments may still
+    /// each issue one over the same ground — that is two issuers, and it is
+    /// exactly what §3.3 asks for without a `ControlKind`. Doc 20 §9.2 (cut
+    /// SM.6, reviewer F4): a LAPSED exclusive claim still blocks, because the
+    /// remedy is the take-over (`IndustryFamilies::take_over_claim`), which
+    /// never spends `MAX_CLAIMS_PER_SUBJECT` — a lifetime bound, the index
+    /// being add-only. Only the answer differs. The first conflicting claim
+    /// decides.
+    fn exclusive_conflict(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        subject: ClaimSubject,
+        issuer: &PrincipalId,
+        exclusivity: Exclusivity,
+    ) -> Result<ExclusiveConflict, ActionError> {
+        for existing in self
+            .families
+            .claims_over(txn, subject)
+            .map_err(|source| refuse(&source))?
+        {
+            if existing.issuer() == issuer
+                && existing.contest_state().authorizes()
+                && (exclusivity == Exclusivity::Exclusive
+                    || existing.exclusivity() == Exclusivity::Exclusive)
+            {
+                return Ok(if existing.is_lapsed() {
+                    ExclusiveConflict::Lapsed
+                } else {
+                    ExclusiveConflict::Live
+                });
+            }
+        }
+        Ok(ExclusiveConflict::Clear)
+    }
+
+    /// **Doc 20 §9, D-20-12 (cut SM.10): one block-wide tenure act.** The
+    /// composed [`TenureAuthority`](crate::seams::TenureAuthority)'s one
+    /// server-authored row, read back from the offer's own fixed parameters
+    /// ([`TENURE_ACTOR`], [`TENURE_ACT`]) — SM.6's system-opening pattern. Any
+    /// structural mismatch refuses `Unauthorized` with the one [`REFUSED`] line,
+    /// and nothing is written on any error (`ActionTxn` discards the bundle).
+    ///
+    /// In order: the row checks (the actor, the receipt, the bounds, every
+    /// named claim at its revision over a deposit of the row's place, every
+    /// named deposit at that place); the tenure before the act; the kind's own
+    /// writes — the block-level seam ([`IndustryFamilies::tenure_hold`] /
+    /// [`IndustryFamilies::tenure_lapse`]) **first**, so the claims' own seams
+    /// find the epoch already moved and write no tenure (the block-event
+    /// contract); then the authority's own staging
+    /// ([`TenureAuthority::stage`](crate::seams::TenureAuthority::stage)), last,
+    /// with the epoch before and after. The outcome is `{ actor, verb, summary,
+    /// receipt, place }`: never a deposit count, a claim list, a stamp or a
+    /// reserve.
+    fn tenure(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        invocation: &ActionInvocation,
+        parameters: &serde_json::Map<String, Value>,
+        now: &ClockStamp,
+        data: &mut BTreeMap<String, Value>,
+    ) -> Result<String, ActionError> {
+        use crate::seams::{
+            ClaimRev, MAX_TENURE_CLAIMS, MAX_TENURE_GAME_BYTES, MAX_TENURE_SUMMARY_BYTES,
+            TenureAct, TenureKind, TenureOutcome,
+        };
+        let unauthorized = || error(ActionErrorCode::Unauthorized, REFUSED);
+        let Some(authority) = self.tenure.as_ref() else {
+            return Err(unauthorized());
+        };
+        // ---- 1. The row checks ----
+        let fixed_actor = parameters
+            .get(TENURE_ACTOR)
+            .and_then(Value::as_u64)
+            .and_then(|id| u32::try_from(id).ok())
+            .map(ObjId);
+        if fixed_actor != Some(invocation.actor()) {
+            return Err(unauthorized());
+        }
+        let Some(row) = parameters.get(TENURE_ACT) else {
+            return Err(unauthorized());
+        };
+        let act: TenureAct = serde_json::from_value(row.clone()).map_err(|_| unauthorized())?;
+        if act.actor != invocation.actor() {
+            return Err(unauthorized());
+        }
+        let receipt = text_field(parameters, "receipt")?;
+        if receipt != act.receipt.as_str() || !crate::families::is_receipt(&receipt) {
+            return Err(unauthorized());
+        }
+        let game_bytes = serde_json::to_vec(&act.game).map_or(usize::MAX, |bytes| bytes.len());
+        if act.summary.len() > MAX_TENURE_SUMMARY_BYTES || game_bytes > MAX_TENURE_GAME_BYTES {
+            return Err(error(
+                ActionErrorCode::InvalidRequest,
+                "a tenure act's summary or payload is too long",
+            ));
+        }
+        let place = act.place;
+        // Every list within `MAX_TENURE_CLAIMS`; every list may be empty (a
+        // block with no opened deposit, reviewer F4).
+        let too_long = |len: usize| len > MAX_TENURE_CLAIMS;
+        let (named_claims, named_deposits, over): (Vec<ClaimRev>, Vec<OreDepositId>, bool) =
+            match &act.kind {
+                TenureKind::Stake {
+                    file, take_over, ..
+                } => (
+                    take_over.clone(),
+                    file.clone(),
+                    too_long(file.len()) || too_long(take_over.len()),
+                ),
+                TenureKind::Renew {
+                    claims, suspend, ..
+                } => (
+                    claims.iter().chain(suspend.iter()).copied().collect(),
+                    Vec::new(),
+                    too_long(claims.len()) || too_long(suspend.len()),
+                ),
+                TenureKind::Lapse { claims, .. } | TenureKind::Contest { claims, .. } => {
+                    (claims.clone(), Vec::new(), too_long(claims.len()))
+                }
+                TenureKind::Seed { deposits, .. } => {
+                    (Vec::new(), deposits.clone(), too_long(deposits.len()))
+                }
+            };
+        if over {
+            return Err(error(
+                ActionErrorCode::InvalidRequest,
+                "a tenure act names at most four claims or deposits a list",
+            ));
+        }
+        // Every named claim at its revision, over a deposit of this place.
+        let mut claims: BTreeMap<ClaimId, (ClaimRecord, OreDeposit)> = BTreeMap::new();
+        for rev in &named_claims {
+            let claim = self
+                .families
+                .claim(txn, rev.claim)
+                .map_err(|source| refuse(&source))?
+                .ok_or_else(unauthorized)?;
+            if claim.revision() != rev.revision {
+                return Err(unauthorized());
+            }
+            let ClaimSubject::Deposit { deposit } = claim.subject() else {
+                return Err(unauthorized());
+            };
+            let body = self
+                .families
+                .deposit(txn, deposit)
+                .map_err(|source| refuse(&source))?
+                .ok_or_else(unauthorized)?;
+            if body.place() != place {
+                return Err(unauthorized());
+            }
+            if claims.insert(rev.claim, (claim, body)).is_some() {
+                // One claim named twice.
+                return Err(unauthorized());
+            }
+        }
+        // Every named deposit at this place.
+        let mut deposits: BTreeMap<OreDepositId, OreDeposit> = BTreeMap::new();
+        for id in &named_deposits {
+            let body = self
+                .families
+                .deposit(txn, *id)
+                .map_err(|source| refuse(&source))?
+                .ok_or_else(unauthorized)?;
+            if body.place() != place || deposits.insert(*id, body).is_some() {
+                return Err(unauthorized());
+            }
+        }
+        let stamp = |at: i64| ClockStamp {
+            clock: now.clock.clone(),
+            at,
+        };
+        let claim_of = |id: ClaimId| claims.get(&id).ok_or_else(unauthorized);
+
+        // ---- 2. The tenure before the act ----
+        let before = self
+            .families
+            .tenure(txn, place)
+            .map_err(|source| refuse(&source))?;
+        let epoch_before = before.epoch();
+        let since_before = before.since().map(|since| since.at);
+
+        // ---- 3–7. The kind's own writes ----
+        match &act.kind {
+            TenureKind::Stake {
+                issuer,
+                holder,
+                term_at,
+                discovered_at,
+                reopen,
+                file,
+                take_over,
+            } => {
+                if !take_over.is_empty() && !reopen {
+                    return Err(unauthorized());
+                }
+                for rev in take_over {
+                    let (claim, _) = claim_of(rev.claim)?;
+                    if claim.issuer() != issuer {
+                        return Err(unauthorized());
+                    }
+                }
+                for id in file {
+                    let body = deposits.get(id).ok_or_else(unauthorized)?;
+                    if body.jurisdiction() != Some(issuer) {
+                        return Err(unauthorized());
+                    }
+                    match self.exclusive_conflict(
+                        txn,
+                        ClaimSubject::Deposit { deposit: *id },
+                        issuer,
+                        Exclusivity::Exclusive,
+                    )? {
+                        ExclusiveConflict::Clear => {}
+                        ExclusiveConflict::Live => {
+                            return Err(error(
+                                ActionErrorCode::ProviderRejected,
+                                "That block is under claim.",
+                            ));
+                        }
+                        // A lapsed claim is taken over, never filed beside.
+                        ExclusiveConflict::Lapsed => return Err(unauthorized()),
+                    }
+                }
+                if *reopen {
+                    self.families
+                        .tenure_hold(txn, place, holder, now)
+                        .map_err(|source| refuse(&source))?;
+                } else if let Some(until) = self
+                    .families
+                    .cooling_until(txn, place, holder, now)
+                    .map_err(|source| refuse(&source))?
+                {
+                    return Err(refuse(&IndustryError::Cooling { until }));
+                }
+                for (ordinal, id) in file.iter().enumerate() {
+                    let ordinal = u32::try_from(ordinal).map_err(|_| unauthorized())?;
+                    let claim_id = derive_claim_id(invocation.request(), ordinal)
+                        .map_err(|source| refuse(&source))?;
+                    let claim = ClaimRecord::new(
+                        claim_id,
+                        ClaimSubject::Deposit { deposit: *id },
+                        issuer.clone(),
+                        holder.clone(),
+                        place,
+                        Exclusivity::Exclusive,
+                        1,
+                        stamp(*term_at),
+                        Transferability::Bound,
+                    )
+                    .map_err(|source| error(ActionErrorCode::InvalidRequest, source.to_string()))?
+                    .with_discovery(stamp(*discovered_at));
+                    self.families
+                        .file_claim(txn, claim)
+                        .map_err(|source| refuse(&source))?;
+                }
+                for rev in take_over {
+                    self.families
+                        .take_over_claim(
+                            txn,
+                            rev.claim,
+                            rev.revision,
+                            holder.clone(),
+                            stamp(*term_at),
+                            Some(stamp(*discovered_at)),
+                            now,
+                        )
+                        .map_err(|source| refuse(&source))?;
+                }
+            }
+            TenureKind::Renew {
+                claims: renewed,
+                term_at,
+                suspend,
+                by,
+            } => {
+                for rev in renewed {
+                    self.families
+                        .renew_claim(txn, rev.claim, rev.revision, stamp(*term_at))
+                        .map_err(|source| refuse(&source))?;
+                }
+                if !suspend.is_empty() {
+                    let Some(by) = by else {
+                        return Err(unauthorized());
+                    };
+                    for rev in suspend {
+                        let (claim, body) = claim_of(rev.claim)?;
+                        if body.jurisdiction() != Some(by) {
+                            return Err(unauthorized());
+                        }
+                        let next = claim
+                            .with_contest_state(ContestState::Suspended { by: by.clone() })
+                            .map_err(|source| {
+                                error(ActionErrorCode::InvalidRequest, source.to_string())
+                            })?;
+                        self.families
+                            .put_claim(txn, rev.revision, next)
+                            .map_err(|source| refuse(&source))?;
+                    }
+                }
+            }
+            TenureKind::Lapse {
+                holder,
+                claims: lapsing,
+                at,
+                cooling_until,
+            } => {
+                for rev in lapsing {
+                    let (claim, _) = claim_of(rev.claim)?;
+                    if claim.holder() != holder {
+                        return Err(unauthorized());
+                    }
+                }
+                let (at, cooling_until) = (stamp(*at), stamp(*cooling_until));
+                self.families
+                    .tenure_lapse(txn, place, holder, &at, &cooling_until)
+                    .map_err(|source| refuse(&source))?;
+                for rev in lapsing {
+                    self.families
+                        .lapse_claim(txn, rev.claim, rev.revision, &at, &cooling_until)
+                        .map_err(|source| refuse(&source))?;
+                }
+            }
+            TenureKind::Contest {
+                claims: contested,
+                to,
+                discovered_at,
+                term_at,
+            } => {
+                for rev in contested {
+                    let (claim, body) = claim_of(rev.claim)?;
+                    if body.jurisdiction() != Some(claim.issuer()) {
+                        return Err(unauthorized());
+                    }
+                }
+                let discovered = stamp(*discovered_at);
+                if !matches!(
+                    discovered.checked_cmp(now),
+                    Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                ) {
+                    return Err(error(
+                        ActionErrorCode::InvalidRequest,
+                        "a discovery cannot postdate the seizure",
+                    ));
+                }
+                self.families
+                    .tenure_hold(txn, place, to, now)
+                    .map_err(|source| refuse(&source))?;
+                for rev in contested {
+                    self.families
+                        .transfer_tenure_termed(
+                            txn,
+                            rev.claim,
+                            rev.revision,
+                            to.clone(),
+                            Some(discovered.clone()),
+                            stamp(*term_at),
+                            now,
+                        )
+                        .map_err(|source| refuse(&source))?;
+                }
+            }
+            TenureKind::Seed {
+                issuer,
+                holder,
+                term_at,
+                deposits: seeded,
+                contest,
+            } => {
+                for id in seeded {
+                    let already = self
+                        .families
+                        .claims_over(txn, ClaimSubject::Deposit { deposit: *id })
+                        .map_err(|source| refuse(&source))?
+                        .iter()
+                        .any(|claim| claim.issuer() == issuer);
+                    if already {
+                        return Err(error(
+                            ActionErrorCode::ProviderRejected,
+                            "that block is already seeded",
+                        ));
+                    }
+                }
+                for (ordinal, id) in seeded.iter().enumerate() {
+                    let ordinal = u32::try_from(ordinal).map_err(|_| unauthorized())?;
+                    let claim_id = derive_claim_id(invocation.request(), ordinal)
+                        .map_err(|source| refuse(&source))?;
+                    let mut claim = ClaimRecord::new(
+                        claim_id,
+                        ClaimSubject::Deposit { deposit: *id },
+                        issuer.clone(),
+                        holder.clone(),
+                        place,
+                        Exclusivity::Exclusive,
+                        1,
+                        stamp(*term_at),
+                        Transferability::Bound,
+                    )
+                    .map_err(|source| error(ActionErrorCode::InvalidRequest, source.to_string()))?;
+                    if let Some(contract) = contest {
+                        claim = claim.with_initial_contest(ContestState::Contested {
+                            contract: *contract,
+                        });
+                    }
+                    self.families
+                        .file_claim(txn, claim)
+                        .map_err(|source| refuse(&source))?;
+                }
+            }
+        }
+
+        // ---- 8. The composing game's own staging, and the outcome ----
+        let epoch_after = self
+            .families
+            .tenure(txn, place)
+            .map_err(|source| refuse(&source))?
+            .epoch();
+        authority
+            .stage(
+                txn,
+                &act,
+                &TenureOutcome {
+                    epoch_before,
+                    since_before,
+                    epoch_after,
+                },
+                now,
+            )
+            .map_err(|line| {
+                tracing::info!(
+                    target: "industry",
+                    actor = invocation.actor().0,
+                    place = place.0,
+                    kind = act.kind.word(),
+                    %line,
+                    "industry: a tenure act's staging refused it (doc 20 §9, cut SM.10)"
+                );
+                error(ActionErrorCode::ProviderRejected, line)
+            })?;
+        data.insert("receipt".to_owned(), json!(act.receipt.as_str()));
+        data.insert("place".to_owned(), json!(place.0));
+        Ok(act.summary.clone())
+    }
+
     /// B2 — the attributed journaled campaign event.
     ///
     /// It moves the **next** cycle's effective yield and never a completed one:
@@ -2354,31 +2886,15 @@ impl IndustryProvider {
         let term = term_field(parameters, now)?;
         let id = derive_claim_id(invocation.request(), 0).map_err(|source| refuse(&source))?;
 
-        // Exclusivity is enforced against the live set, not against a count:
-        // one live exclusive claim per issuer per subject. Two governments may
-        // still each issue one over the same ground — that is two issuers, and
-        // it is exactly what §3.3 asks for without a `ControlKind`.
-        for existing in self
-            .families
-            .claims_over(txn, subject)
-            .map_err(|source| refuse(&source))?
-        {
-            if existing.issuer() == &issuer
-                && existing.contest_state().authorizes()
-                && (exclusivity == Exclusivity::Exclusive
-                    || existing.exclusivity() == Exclusivity::Exclusive)
-            {
-                // Doc 20 §9.2 (cut SM.6, reviewer F4): a LAPSED exclusive claim
-                // still blocks, because the remedy is the take-over
-                // (`IndustryFamilies::take_over_claim`), which never spends
-                // `MAX_CLAIMS_PER_SUBJECT` — a lifetime bound, the index being
-                // add-only. Only the line differs.
-                if existing.is_lapsed() {
-                    return Err(error(
-                        ActionErrorCode::ProviderRejected,
-                        "that claim has lapsed: take it over",
-                    ));
-                }
+        match self.exclusive_conflict(txn, subject, &issuer, exclusivity)? {
+            ExclusiveConflict::Clear => {}
+            ExclusiveConflict::Lapsed => {
+                return Err(error(
+                    ActionErrorCode::ProviderRejected,
+                    "that claim has lapsed: take it over",
+                ));
+            }
+            ExclusiveConflict::Live => {
                 return Err(error(
                     ActionErrorCode::ProviderRejected,
                     "that authority already holds an exclusive claim over that subject",
@@ -3740,6 +4256,7 @@ pub fn register(
     recipes: Option<std::sync::Arc<dyn crate::workorder::RecipeAuthority>>,
     opener: Option<std::sync::Arc<dyn crate::seams::SystemOpener>>,
     jurisdiction: std::sync::Arc<dyn crate::seams::JurisdictionAuthority>,
+    tenure: Option<std::sync::Arc<dyn crate::seams::TenureAuthority>>,
 ) -> Result<(), ModError> {
     let outcome_descriptor = descriptor(
         "outcome",
@@ -3784,6 +4301,7 @@ pub fn register(
                 recipes: recipes.clone(),
                 opener: opener.clone(),
                 jurisdiction: std::sync::Arc::clone(&jurisdiction),
+                tenure: tenure.clone(),
                 catalog: std::sync::Mutex::new(None),
                 truncation_warned: std::sync::Mutex::new(None),
             },

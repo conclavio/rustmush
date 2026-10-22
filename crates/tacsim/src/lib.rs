@@ -514,7 +514,10 @@ impl GameModule for TacsimRuleset {
         // which always composes `mush-industry` — this layer delegates its typed families to
         // `industry`, so industry's sweep can read `tacsim.pockets` through its own module
         // context (the composed `ExternalDraws`). It widens the bundle, never the gate:
-        // industry stages no write on a tacsim family.
+        // industry stages no write on a tacsim family — with ONE composed exception (doc 20 cut
+        // SM.10, D2, OC11): `industry_claim_tenure`'s bundle carries `tacsim.claims`, written by
+        // tacsim's own code (`composition::industry_seams::SurfaceTenure::stage`) on tacsim's own
+        // family, so a block's record moves atomically with its industry claims.
         if self.inventory.is_some() {
             reg.delegate_state_families(mush_industry::NS)?;
         }
@@ -540,6 +543,9 @@ impl GameModule for TacsimRuleset {
         // Doc 20 cut SM.6 (§3.4, D2): the sites' opening states the Site readiness line reads,
         // RAM only, beside the geology slot (never `PortTickState`, which a fire takes whole).
         reg.state(surface::opening::SiteOpenings::default());
+        // Doc 20 cut SM.10 (D5): the claim orders the tenure authority re-plans at the offer, RAM
+        // only (the `ActOrders` precedent).
+        reg.state(port::claims::ClaimOrders::default());
         reg.state(
             match_::mind_tape::TapeStore::new(self.cfg.arena.tape_retained_max_bytes)
                 .map_err(|e| ModError::msg(e.to_string()))?,
