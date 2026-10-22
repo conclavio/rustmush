@@ -12,11 +12,11 @@
 //! - `check_ne!(left, right[, "fmt", args..])` for `assert_ne!`.
 //!
 //! They are declared first in `lib.rs` because `macro_rules!` is textually
-//! scoped, and they neither panic nor unwrap. The message is built out of
+//! scoped, and they neither panic nor unwrap. The failure is built out of
 //! line, in [`failed`] and its siblings, so a check costs its caller's stack
 //! frame no more than the assert it replaced (`clippy::large_stack_frames`
 //! measures test functions too). A `macro_rules!` does not cross crates; the
-//! same module lives in `mush-roll`.
+//! same module lives in `mush-roll` and `tacsim`.
 
 use std::error::Error;
 use std::fmt;
@@ -41,58 +41,56 @@ impl fmt::Display for CheckFailed {
 
 impl Error for CheckFailed {}
 
-/// A failed `check!(cond)`.
-pub(crate) fn failed<E: From<CheckFailed>>(message: &str) -> E {
-    E::from(CheckFailed(message.to_owned()))
+/// A failed `check!(cond)`. It returns the caller's whole `Err`, so the
+/// expansion writes straight into the caller's return slot.
+pub(crate) fn failed<T, E: From<CheckFailed>>(message: &str) -> Result<T, E> {
+    Err(E::from(CheckFailed(message.to_owned())))
 }
 
 /// A failed `check!(cond, "fmt", args..)`.
-pub(crate) fn failed_with<E: From<CheckFailed>>(message: fmt::Arguments<'_>) -> E {
-    E::from(CheckFailed(message.to_string()))
+pub(crate) fn failed_with<T, E: From<CheckFailed>>(message: fmt::Arguments<'_>) -> Result<T, E> {
+    Err(E::from(CheckFailed(message.to_string())))
 }
 
 /// A failed `check_eq!`/`check_ne!` without a message; `op` is `==` or `!=`.
-pub(crate) fn failed_cmp<E, L, R>(op: &str, left: &L, right: &R) -> E
+pub(crate) fn failed_cmp<T, E, L, R>(op: &str, left: &L, right: &R) -> Result<T, E>
 where
     E: From<CheckFailed>,
     L: fmt::Debug + ?Sized,
     R: fmt::Debug + ?Sized,
 {
-    E::from(CheckFailed(format!(
+    Err(E::from(CheckFailed(format!(
         "assertion `left {op} right` failed\n  left: {left:?}\n right: {right:?}"
-    )))
+    ))))
 }
 
 /// A failed `check_eq!`/`check_ne!` with a message; `op` is `==` or `!=`.
-pub(crate) fn failed_cmp_with<E, L, R>(
+pub(crate) fn failed_cmp_with<T, E, L, R>(
     op: &str,
     left: &L,
     right: &R,
     message: fmt::Arguments<'_>,
-) -> E
+) -> Result<T, E>
 where
     E: From<CheckFailed>,
     L: fmt::Debug + ?Sized,
     R: fmt::Debug + ?Sized,
 {
-    E::from(CheckFailed(format!(
+    Err(E::from(CheckFailed(format!(
         "assertion `left {op} right` failed: {message}\n  left: {left:?}\n right: {right:?}"
-    )))
+    ))))
 }
 
 /// `assert!` for a function that returns `Result`.
 macro_rules! check {
     ($cond:expr $(,)?) => {
         if !$cond {
-            return Err($crate::test_checks::failed(concat!(
-                "assertion failed: ",
-                stringify!($cond)
-            )));
+            return $crate::test_checks::failed(concat!("assertion failed: ", stringify!($cond)));
         }
     };
     ($cond:expr, $($arg:tt)+) => {
         if !$cond {
-            return Err($crate::test_checks::failed_with(format_args!($($arg)+)));
+            return $crate::test_checks::failed_with(format_args!($($arg)+));
         }
     };
 }
@@ -106,7 +104,7 @@ macro_rules! check_eq {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if !(*left_val == *right_val) {
-                    return Err($crate::test_checks::failed_cmp("==", left_val, right_val));
+                    return $crate::test_checks::failed_cmp("==", left_val, right_val);
                 }
             }
         }
@@ -115,12 +113,12 @@ macro_rules! check_eq {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if !(*left_val == *right_val) {
-                    return Err($crate::test_checks::failed_cmp_with(
+                    return $crate::test_checks::failed_cmp_with(
                         "==",
                         left_val,
                         right_val,
                         format_args!($($arg)+),
-                    ));
+                    );
                 }
             }
         }
@@ -133,7 +131,7 @@ macro_rules! check_ne {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if *left_val == *right_val {
-                    return Err($crate::test_checks::failed_cmp("!=", left_val, right_val));
+                    return $crate::test_checks::failed_cmp("!=", left_val, right_val);
                 }
             }
         }
@@ -142,12 +140,12 @@ macro_rules! check_ne {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if *left_val == *right_val {
-                    return Err($crate::test_checks::failed_cmp_with(
+                    return $crate::test_checks::failed_cmp_with(
                         "!=",
                         left_val,
                         right_val,
                         format_args!($($arg)+),
-                    ));
+                    );
                 }
             }
         }
