@@ -145,6 +145,16 @@ impl Cells {
         }
     }
 
+    /// Every cell, row-major from the south-west (cut AP: the path search's once-per-search class
+    /// scan for its heuristic's floor,
+    /// [`LocomotionCosts::cheapest_on`](crate::physics::LocomotionCosts::cheapest_on), reads the
+    /// grid without a bounds check per cell; the search's inner loop still reads through
+    /// [`Cells::get`]).
+    #[must_use]
+    pub fn as_slice(&self) -> &[Cell] {
+        &self.cells
+    }
+
     /// Every cell, row-major, with its coordinates.
     pub fn iter(&self) -> impl Iterator<Item = (u16, u16, Cell)> + '_ {
         let width = usize::from(self.width);

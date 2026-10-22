@@ -1409,6 +1409,155 @@ fn sm4b_the_freeze_census() {
     println!("the worst site refuses {worst} of 64");
 }
 
+/// **The least cost from `from` to every cell of `surface`** (cut AP's independent oracle): a
+/// plain single-source Dijkstra with no heuristic, over `mush_atlas::physics::move_cost` (tracked,
+/// no tags) in the atlas's own neighbour order — the string-keyed step rule, never the dense row
+/// cut AP's search reads. Row-major from the south-west; `None` unreachable.
+fn least_from_cell(
+    surface: &mush_atlas::window::SurfaceComposite,
+    from: (u16, u16),
+) -> Vec<Option<u64>> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    let w = usize::from(surface.grid.width);
+    let h = usize::from(surface.grid.height);
+    let cell_cm = u32::from(surface.grid.resolution_cm);
+    let mut best: Vec<Option<u64>> = vec![None; w * h];
+    let mut done = vec![false; w * h];
+    let mut open = BinaryHeap::new();
+    best[usize::from(from.1) * w + usize::from(from.0)] = Some(0);
+    open.push(Reverse((0_u64, from.1, from.0)));
+    while let Some(Reverse((g, y, x))) = open.pop() {
+        let i = usize::from(y) * w + usize::from(x);
+        if done[i] {
+            continue;
+        }
+        done[i] = true;
+        let here = surface.cells.get(x, y).expect("on the grid");
+        for (dx, dy) in [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (1, -1),
+            (-1, 1),
+            (-1, -1),
+        ] {
+            let (nx, ny) = (i32::from(x) + dx, i32::from(y) + dy);
+            let (Ok(nx), Ok(ny)) = (u16::try_from(nx), u16::try_from(ny)) else {
+                continue;
+            };
+            let Some(next) = surface.cells.get(nx, ny) else {
+                continue;
+            };
+            let kind = if dx != 0 && dy != 0 {
+                mush_atlas::StepKind::Diagonal
+            } else {
+                mush_atlas::StepKind::Orthogonal
+            };
+            let Ok(step) =
+                mush_atlas::move_cost(table(), here, next, kind, cell_cm, DRIVE_LOCOMOTION, &[])
+            else {
+                continue;
+            };
+            let ni = usize::from(ny) * w + usize::from(nx);
+            let ng = g + u64::from(step);
+            if !done[ni] && best[ni].is_none_or(|b| ng < b) {
+                best[ni] = Some(ng);
+                open.push(Reverse((ng, ny, nx)));
+            }
+        }
+    }
+    best
+}
+
+/// **Every lane site's 64 ramp legs' Σ cost, recorded at `a0030f71` + SM.7 before cut AP changed
+/// `mush_atlas::physics::path`** (the brief's Step 0), keyed by port entry in entry order, over
+/// each site's keyless terrain (`tacsim::surface::ground::site_terrain`, the census's composite)
+/// from [`RAMP`]. Re-bless only with the lane's terrain (a lane version or a terrain generation
+/// change), never for AP, which proves every cost equal.
+const AP_SITE_LEG_COST_TOTALS: [(&str, u64); 6] = [
+    ("ahuna_port", 1_094_385),
+    ("commons_port", 1_039_283),
+    ("juling_port", 1_072_064),
+    ("kerwan_port", 1_086_989),
+    ("occator_port", 1_063_028),
+    ("rheasilvia_port", 1_056_596),
+];
+
+/// **B1 — every lane leg costs the least, and what it did** (cut AP; the lead's acceptance: "every
+/// path cost equal before and after", and the freeze census's 64 of 64 on every lane site). For
+/// every lane site, over its keyless terrain from the ramp: a plain forward Dijkstra over
+/// `move_cost` ([`least_from_cell`], independent of the atlas's dense `LocomotionCosts`), then
+/// all 64 field middles' `drive_leg` — **every one accepted**, each leg's cost the flood's least
+/// cost at its target, and the site's Σ cost the total recorded before AP changed `path`
+/// ([`AP_SITE_LEG_COST_TOTALS`]). Prints per site the Σ, the tolerance histogram and the waypoint
+/// and path-cell spreads, as the census does (`--nocapture`); those are printed, not asserted —
+/// a tie may break the other way on an equal cost (the brief's Step 4 freeze rule governs them).
+#[test]
+fn ap_every_lane_leg_costs_the_least_and_what_it_did() {
+    let tw = booted();
+    let sites = lane_sites();
+    assert_eq!(sites.len(), AP_SITE_LEG_COST_TOTALS.len(), "{sites:?}");
+    let rates = rates(&tw);
+    let ramp = (
+        u16::try_from(RAMP_CELL.0).expect("x"),
+        u16::try_from(RAMP_CELL.1).expect("y"),
+    );
+    for (n, (entry, name)) in sites.iter().enumerate() {
+        let terrain = tacsim::surface::ground::site_terrain(tw.world(), entry)
+            .unwrap_or_else(|error| panic!("{name}'s terrain: {error}"));
+        let surface = terrain
+            .surface(&mush_atlas::SurfaceRef::Ground)
+            .expect("a ground surface");
+        let least = least_from_cell(surface, ramp);
+        let width = usize::from(surface.grid.width);
+        let mut total = 0_u64;
+        let mut tolerances = [0_usize; 4];
+        let mut waypoints = Vec::new();
+        let mut cells = Vec::new();
+        for fy in 0..8_i64 {
+            for fx in 0..8_i64 {
+                let to = (fx * 32 + 16, fy * 32 + 16);
+                let leg = drive_leg(surface, table(), (RAMP.0, RAMP.1), to, &rates)
+                    .unwrap_or_else(|why| panic!("{name}: the leg to {to:?} is refused: {why:?}"));
+                let at =
+                    usize::try_from(to.1).expect("y") * width + usize::try_from(to.0).expect("x");
+                assert_eq!(Some(leg.cost), least[at], "{name}: {to:?} costs the least");
+                total += leg.cost;
+                if let Some(slot) = LEG_TOLERANCE_CELLS
+                    .iter()
+                    .position(|t| *t == leg.tolerance_cells)
+                    .and_then(|i| tolerances.get_mut(i))
+                {
+                    *slot += 1;
+                }
+                waypoints.push(leg.waypoints.len());
+                cells.push(leg.cells.len());
+            }
+        }
+        let (wmin, wmed, wmax) = spread(waypoints);
+        let (cmin, cmed, cmax) = spread(cells);
+        println!(
+            "{name} ({entry}): accepted 64; total cost {total}; tolerance 1/2/4/8 cells: \
+             {}/{}/{}/{}; waypoints min/median/max {wmin}/{wmed}/{wmax}; path cells \
+             {cmin}/{cmed}/{cmax}",
+            tolerances[0], tolerances[1], tolerances[2], tolerances[3],
+        );
+        let (want_entry, want_total) = AP_SITE_LEG_COST_TOTALS[n];
+        assert_eq!(
+            entry.as_str(),
+            want_entry,
+            "the lane's sites in entry order"
+        );
+        assert_eq!(
+            total, want_total,
+            "{name}: the 64 legs' total cost moved from what the old search found"
+        );
+    }
+}
+
 /// **D15 — the lane sites hold only footings and passable craters** (the brief's decisions P5
 /// and P9, D17): every lane site's composite is regolith, rock or ice in every cell, and every
 /// feature it carries blocks no movement — the drive's A* reads cells alone (the atlas's "a path
@@ -3129,20 +3278,42 @@ fn sm4b_the_site_map_fixtures_are_blessed() {
 // ---------------------------------------------------------------------------
 
 /// The median of five timings, milliseconds (fractional).
-fn median_ms(mut samples: Vec<f64>) -> f64 {
+fn median_ms(samples: &[f64]) -> f64 {
+    let mut samples = samples.to_vec();
     samples.sort_by(f64::total_cmp);
     samples.get(samples.len() / 2).copied().unwrap_or(0.0)
 }
 
-/// **D14 — the drive planner is measured** (lead ruling 13; R4, F8): on Ahuna Flank's cached
-/// composite, (a) the worst case corner to corner, `(0, 0)` → `(255, 255)`, from the peek onward
-/// (the site's non-building peek, the target, the A*, the freeze, the charge home); (b) the
-/// budget exhausted — an unreachable target on an open 256 × 256 synthetic composite, walled by
-/// an impassable ring; (c) the home field's build over the cached composite, and the keyless
-/// terrain capture and build. Each the median of five, printed (`--nocapture`); only a generous
-/// ceiling — ten times the STOP threshold — is asserted, so a slow runner never flakes. STOP
-/// (the lead's): release planning over 20 ms or debug over 250 ms; a home build over 50 ms
-/// release or 2,000 ms debug.
+/// The least of five timings, milliseconds (fractional): cut AP's gate statistic — a slow
+/// runner's load is not the code's cost.
+fn min_ms(samples: &[f64]) -> f64 {
+    samples.iter().copied().fold(f64::INFINITY, f64::min)
+}
+
+/// **Ahuna Flank's corner-to-corner leg's cost**, `drive_leg` from pose `(500, 500)` to cell
+/// `(255, 255)` over the keyed cached composite (`site_ground_cached`'s warm ground surface) —
+/// recorded at `a0030f71` + SM.7 before cut AP changed `mush_atlas::physics::path` (294 cells,
+/// 18 waypoints, the old search visiting 58,159 cells). Re-bless only with the lane's terrain (a
+/// lane version or a terrain generation change), never for AP, which proves every cost equal.
+const AP_AHUNA_CORNER_COST: u64 = 60_720;
+
+/// **D14 — the drive planner is measured, and gated** (lead ruling 13; R4, F8; cut AP turned it
+/// into a release gate): on Ahuna Flank's cached composite, (a) the worst case corner to corner,
+/// `(0, 0)` → `(255, 255)`, from the peek onward (the site's non-building peek, the target, the
+/// A*, the freeze, the charge home); (b) the budget exhausted — an unreachable target on an open
+/// 256 × 256 synthetic composite, walled by an impassable ring; (c) the home field's build over
+/// the cached composite, and the keyless terrain capture and build. Five samples each; the min
+/// and the median printed (`--nocapture`). **The gate is the minimum of five**, because a slow
+/// runner's load is not the code's cost: in a release build, always, planning ≤ 10 ms, the
+/// cached build ≤ 20 ms and the exhausted flood (the same flood) ≤ 20 ms — the gate runner runs
+/// this test with `--release`; in a debug build under `TACSIM_ASSERT=1`, the lead's debug
+/// figures, 100 ms / 250 ms / 250 ms. CI runs only debug, where the tight figures assert only
+/// under `TACSIM_ASSERT=1`, because a shared runner's speed is not a threshold (D-H-8, D-16-19):
+/// without it a debug build keeps SM.4b's generous ceilings on the median — ten times the old
+/// STOP, 250 ms planning and 2,000 ms a build — so a slow runner never flakes. The keyless
+/// capture and build keep that old ceiling in every build (AP does not own the capture). Outside
+/// the timed loop, the corner leg's cost is the one recorded before AP
+/// ([`AP_AHUNA_CORNER_COST`]), in every build.
 #[test]
 fn sm4b_the_drive_planner_is_measured() {
     let mut rig = stocked();
@@ -3245,29 +3416,103 @@ fn sm4b_the_drive_planner_is_measured() {
             started.elapsed().as_secs_f64() * 1_000.0
         })
         .collect();
-    let (planning, exhausted, keyed_build, keyless_build) = (
-        median_ms(planning),
-        median_ms(exhausted),
-        median_ms(keyed_build),
-        median_ms(keyless_build),
-    );
+    // The corner leg's cost, outside the timed loop (cut AP): the old search's, on the same
+    // keyed cached composite from the same pose.
+    {
+        let ground = tacsim::surface::site_ground_cached(rig.tw.world(), &frame, &spec)
+            .expect("peeks")
+            .expect("warm");
+        let surface = ground
+            .composite
+            .surface(&mush_atlas::SurfaceRef::Ground)
+            .expect("a surface");
+        let leg = drive_leg(surface, table(), (500, 500), (255, 255), &rates).expect("a leg");
+        let visited = match mush_atlas::path(
+            surface,
+            table(),
+            (0, 0),
+            (255, 255),
+            DRIVE_LOCOMOTION,
+            &[],
+            DRIVE_PATH_BUDGET_CELLS,
+        ) {
+            mush_atlas::PathOutcome::Found(found) => found.visited,
+            other => panic!("{other:?}"),
+        };
+        println!(
+            "the corner-to-corner leg: cost {}, {} cells, {} waypoints; the search visited \
+             {visited} cells",
+            leg.cost,
+            leg.cells.len(),
+            leg.waypoints.len()
+        );
+        assert_eq!(
+            leg.cost, AP_AHUNA_CORNER_COST,
+            "the corner-to-corner leg's cost moved from what the old search found"
+        );
+    }
     let profile = if cfg!(debug_assertions) {
         "debug"
     } else {
         "release"
     };
-    println!(
-        "{profile}: planning corner to corner {planning:.2} ms; the budget exhausted \
-         {exhausted:.2} ms; the home field over the cached composite {keyed_build:.2} ms; the \
-         keyless terrain and its home field {keyless_build:.2} ms"
+    let (planning_min, exhausted_min, keyed_min, keyless_min) = (
+        min_ms(&planning),
+        min_ms(&exhausted),
+        min_ms(&keyed_build),
+        min_ms(&keyless_build),
     );
+    let (planning, exhausted, keyed_build, keyless_build) = (
+        median_ms(&planning),
+        median_ms(&exhausted),
+        median_ms(&keyed_build),
+        median_ms(&keyless_build),
+    );
+    println!(
+        "{profile}: planning corner to corner min {planning_min:.2} / median {planning:.2} ms; \
+         the budget exhausted min {exhausted_min:.2} / median {exhausted:.2} ms; the home field \
+         over the cached composite min {keyed_min:.2} / median {keyed_build:.2} ms; the keyless \
+         terrain and its home field min {keyless_min:.2} / median {keyless_build:.2} ms"
+    );
+    let asserted = std::env::var("TACSIM_ASSERT").is_ok_and(|v| v.trim() == "1");
+    // SM.4b's STOP, whose ten-times ceiling the debug default and the keyless build keep.
     let (plan_stop, home_stop) = if cfg!(debug_assertions) {
         (250.0, 2_000.0)
     } else {
         (20.0, 50.0)
     };
-    assert!(planning < plan_stop * 10.0, "{planning} ms");
-    assert!(exhausted < plan_stop * 10.0, "{exhausted} ms");
-    assert!(keyed_build < home_stop * 10.0, "{keyed_build} ms");
+    if !cfg!(debug_assertions) {
+        // Cut AP's release gate (the lead's 10 ms / 20 ms), on the minimum of five.
+        assert!(
+            planning_min <= 10.0,
+            "release planning {planning_min} ms > 10 ms"
+        );
+        assert!(
+            keyed_min <= 20.0,
+            "release home build {keyed_min} ms > 20 ms"
+        );
+        assert!(
+            exhausted_min <= 20.0,
+            "release exhausted {exhausted_min} ms > 20 ms"
+        );
+    } else if asserted {
+        // The lead's debug figures, under `TACSIM_ASSERT=1` only (the brief's R8).
+        assert!(
+            planning_min <= 100.0,
+            "debug planning {planning_min} ms > 100 ms"
+        );
+        assert!(
+            keyed_min <= 250.0,
+            "debug home build {keyed_min} ms > 250 ms"
+        );
+        assert!(
+            exhausted_min <= 250.0,
+            "debug exhausted {exhausted_min} ms > 250 ms"
+        );
+    } else {
+        assert!(planning < plan_stop * 10.0, "{planning} ms");
+        assert!(exhausted < plan_stop * 10.0, "{exhausted} ms");
+        assert!(keyed_build < home_stop * 10.0, "{keyed_build} ms");
+    }
     assert!(keyless_build < home_stop * 10.0, "{keyless_build} ms");
 }

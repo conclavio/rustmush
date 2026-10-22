@@ -25,7 +25,8 @@
 //!   site-view cell) is refused [`LegRefused::Winding`], never cut;
 //! - **the way home** ([`HomeField`]): every cell's exact least cost to beside the ramp, built
 //!   once per (site terrain, ramp cell) by a multi-source reverse Dijkstra over the same
-//!   `move_cost` (the brief's decision P1: the start's offer re-plans every rig's acts on every
+//!   step rule as `move_cost` (cut AP: over the atlas's `LocomotionCosts` resolved once a build;
+//!   the brief's decision P1: the start's offer re-plans every rig's acts on every
 //!   projection, so a per-command search home would become a per-projection one). Each cell also
 //!   keeps its first step home, so a descent needs no composite (R3: the way home never depends
 //!   on the geology key). [`home_cu_to`] reads the charge home from a stand an act would move the
@@ -44,7 +45,8 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use mush_atlas::physics::{
-    DIAGONAL_PCT, LocomotionTable, NOMINAL_COST, PathOutcome, StepKind, move_cost, path,
+    DIAGONAL_PCT, LocomotionCosts, LocomotionTable, NOMINAL_COST, PathOutcome, StepKind, move_cost,
+    path,
 };
 use mush_atlas::window::SurfaceComposite;
 
@@ -382,6 +384,24 @@ fn step_cost(
     .map(u64::from)
 }
 
+/// One step's cost through the dense row `costs` (cut AP): [`step_cost`] with the rows resolved
+/// once a build ([`LocomotionCosts::step`], the same step rule as `move_cost`), for the home
+/// field's relaxation.
+fn dense_step(
+    surface: &SurfaceComposite,
+    costs: &LocomotionCosts,
+    from: (u16, u16),
+    to: (u16, u16),
+) -> Option<u64> {
+    let kind = kind_of(from, to)?;
+    let here = surface.cells.get(from.0, from.1)?;
+    let next = surface.cells.get(to.0, to.1)?;
+    costs
+        .step(here, next, kind, u32::from(surface.grid.resolution_cm))
+        .ok()
+        .map(u64::from)
+}
+
 /// An octant's index clockwise from north (0..8) for a unit step `(dx, dy)`.
 fn heading_of(dx: i32, dy: i32) -> u32 {
     match (dx.signum(), dy.signum()) {
@@ -680,7 +700,8 @@ pub fn freeze_always(points: &[(i64, i64)], tolerances: &[u32]) -> (Vec<usize>, 
 /// (heap key `(cost, y, x)`, smallest first); for each of the atlas's eight directions `d` in its
 /// order, the neighbour `u = v − d` is relaxed with `cost[v] + move_cost(u → v)`, and on a strict
 /// improvement `next[u]` becomes `d`. Deterministic, at most one pop a cell. Self-contained: a
-/// descent needs no composite (R3).
+/// descent needs no composite (R3). **Cut AP:** over the atlas's `LocomotionCosts` resolved once
+/// a build, the same step rule as `move_cost` (`ap_the_home_field_is_byte_identical_to_the_string_rule`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HomeField {
     ramp: (i64, i64),
@@ -725,6 +746,10 @@ impl HomeField {
             next: vec![NO_STEP; count],
         };
         field.index(ramp)?;
+        // Cut AP: the tracked row resolved once a build; a table without it prices every step
+        // impassable, which is what `move_cost` answered (`NoLocomotion`) step by step.
+        let costs = LocomotionCosts::resolve(table, DRIVE_LOCOMOTION, &[])
+            .unwrap_or_else(|_| LocomotionCosts::impassable());
         let mut open: BinaryHeap<Reverse<(u32, u16, u16)>> = BinaryHeap::new();
         for dy in -1_i64..=1 {
             for dx in -1_i64..=1 {
@@ -761,7 +786,7 @@ impl HomeField {
                 if closed.get(ui).copied().unwrap_or(true) {
                     continue;
                 }
-                let Some(step) = step_cost(surface, table, (ux, uy), (x, y)) else {
+                let Some(step) = dense_step(surface, &costs, (ux, uy), (x, y)) else {
                     continue;
                 };
                 let Some(cand) = u64::from(g)
@@ -1443,5 +1468,176 @@ mod tests {
             None,
             "beside the ramp"
         );
+    }
+
+    /// **The home field as SM.4b built it** (cut AP's reference): `HomeField::build`'s body
+    /// before AP, verbatim, relaxing with [`step_cost`] (`move_cost`, the string rule).
+    fn reference_field(
+        surface: &SurfaceComposite,
+        table: &LocomotionTable,
+        ramp: (i64, i64),
+    ) -> HomeField {
+        let width = surface.grid.width;
+        let height = surface.grid.height;
+        let count = usize::from(width) * usize::from(height);
+        let mut field = HomeField {
+            ramp,
+            width,
+            height,
+            cost: vec![u32::MAX; count],
+            next: vec![NO_STEP; count],
+        };
+        field.index(ramp).expect("the ramp is on the grid");
+        let mut open: BinaryHeap<Reverse<(u32, u16, u16)>> = BinaryHeap::new();
+        for dy in -1_i64..=1 {
+            for dx in -1_i64..=1 {
+                let cell = (ramp.0.saturating_add(dx), ramp.1.saturating_add(dy));
+                let Some(i) = field.index(cell) else {
+                    continue;
+                };
+                if let Some(slot) = field.cost.get_mut(i) {
+                    *slot = 0;
+                }
+                if let (Ok(x), Ok(y)) = (u16::try_from(cell.0), u16::try_from(cell.1)) {
+                    open.push(Reverse((0, y, x)));
+                }
+            }
+        }
+        let mut closed = vec![false; count];
+        while let Some(Reverse((g, y, x))) = open.pop() {
+            let Some(i) = field.index((i64::from(x), i64::from(y))) else {
+                continue;
+            };
+            match closed.get_mut(i) {
+                Some(true) | None => continue,
+                Some(done) => *done = true,
+            }
+            for (k, (dx, dy)) in NEIGHBOURS.iter().enumerate() {
+                let ux = i32::from(x) - dx;
+                let uy = i32::from(y) - dy;
+                let (Ok(ux), Ok(uy)) = (u16::try_from(ux), u16::try_from(uy)) else {
+                    continue;
+                };
+                let Some(ui) = field.index((i64::from(ux), i64::from(uy))) else {
+                    continue;
+                };
+                if closed.get(ui).copied().unwrap_or(true) {
+                    continue;
+                }
+                let Some(step) = step_cost(surface, table, (ux, uy), (x, y)) else {
+                    continue;
+                };
+                let Some(cand) = u64::from(g)
+                    .checked_add(step)
+                    .and_then(|c| u32::try_from(c).ok())
+                    .filter(|c| *c < u32::MAX)
+                else {
+                    continue;
+                };
+                if let (Some(slot), Some(dir)) = (field.cost.get_mut(ui), field.next.get_mut(ui))
+                    && cand < *slot
+                {
+                    *slot = cand;
+                    *dir = u8::try_from(k).unwrap_or(NO_STEP);
+                    open.push(Reverse((cand, uy, ux)));
+                }
+            }
+        }
+        field
+    }
+
+    /// The serpentine of `sm4b_a_recover_descent_is_never_refused`: forty walls across the site,
+    /// their gaps alternating east and west.
+    fn serpentine() -> SurfaceComposite {
+        let mut surface = flat(TerrainClass::Regolith);
+        for wall in 0..40_u16 {
+            let y = 4 + wall * 3;
+            for x in 0..256_u16 {
+                let gap = if wall % 2 == 0 { 250 } else { 5 };
+                if x.abs_diff(gap) > 1 {
+                    surface.cells.set(x, y, cell(TerrainClass::Wall, 0));
+                }
+            }
+        }
+        surface
+    }
+
+    /// **A6 — the home field is byte-identical to the string rule** (cut AP): `HomeField::build`
+    /// over the dense row equals [`reference_field`] (SM.4b's body over `move_cost`) — the whole
+    /// struct, every cost and every first step — on the flat site, the noisy one, the noisy one
+    /// with `sm4b_no_way_home_…`'s ring walls, and the serpentine. The dense row moved no home
+    /// answer.
+    #[test]
+    fn ap_the_home_field_is_byte_identical_to_the_string_rule() {
+        let ramp = (128_i64, 124_i64);
+        let mut walled = noisy();
+        for (x, y) in ring((60, 60), 2) {
+            walled.cells.set(x, y, cell(TerrainClass::Wall, 0));
+        }
+        for (name, surface) in [
+            ("flat", flat(TerrainClass::Regolith)),
+            ("noisy", noisy()),
+            ("walled", walled),
+            ("serpentine", serpentine()),
+        ] {
+            let built = HomeField::build(&surface, table(), ramp).expect("a field");
+            assert!(
+                built == reference_field(&surface, table(), ramp),
+                "{name}: the dense home field differs from the string rule's"
+            );
+        }
+    }
+
+    /// The least cost from `from` to every cell of `surface` by a plain single-source Dijkstra
+    /// over [`step_cost`] (`move_cost`), row-major; `None` unreachable.
+    fn least_from(surface: &SurfaceComposite, from: (u16, u16)) -> Vec<Option<u64>> {
+        let w = usize::from(surface.grid.width);
+        let h = usize::from(surface.grid.height);
+        let mut best: Vec<Option<u64>> = vec![None; w * h];
+        let mut done = vec![false; w * h];
+        let mut open = BinaryHeap::new();
+        best[usize::from(from.1) * w + usize::from(from.0)] = Some(0);
+        open.push(Reverse((0_u64, from.1, from.0)));
+        while let Some(Reverse((g, y, x))) = open.pop() {
+            let i = usize::from(y) * w + usize::from(x);
+            if done[i] {
+                continue;
+            }
+            done[i] = true;
+            for (dx, dy) in NEIGHBOURS {
+                let (Ok(nx), Ok(ny)) = (
+                    u16::try_from(i32::from(x) + dx),
+                    u16::try_from(i32::from(y) + dy),
+                ) else {
+                    continue;
+                };
+                let Some(step) = step_cost(surface, table(), (x, y), (nx, ny)) else {
+                    continue;
+                };
+                let ni = usize::from(ny) * w + usize::from(nx);
+                let ng = g + step;
+                if !done[ni] && best[ni].is_none_or(|b| ng < b) {
+                    best[ni] = Some(ng);
+                    open.push(Reverse((ng, ny, nx)));
+                }
+            }
+        }
+        best
+    }
+
+    /// **A7 — a leg costs the least a plain Dijkstra finds** (cut AP; the brief's R6): on the
+    /// noisy site from `(30, 40)`, sixteen fixed targets' `drive_leg` cost equals [`least_from`]'s
+    /// flood at the target — the tracked search's answer is the least cost, whatever tie it took.
+    #[test]
+    fn ap_a_leg_costs_the_least_a_plain_dijkstra_finds() {
+        let surface = noisy();
+        let flood = least_from(&surface, (30, 40));
+        for n in 0..16_i64 {
+            let to = ((n * 67 + 3) % 256, (n * 41 + 200) % 256);
+            let leg = drive_leg(&surface, table(), at(30, 40), to, &RATES)
+                .unwrap_or_else(|why| panic!("{to:?}: {why:?}"));
+            let want = flood[usize::try_from(to.1 * 256 + to.0).expect("an index")];
+            assert_eq!(Some(leg.cost), want, "{to:?}");
+        }
     }
 }
