@@ -295,12 +295,48 @@ fn fences(
     for mode in ["foreign", "clock", "lapse_stage", "lapse_take", "title"] {
         let mut w = boot(f, saved)?;
         let before = disk(&w);
-        let mut money = balances(&w)?;
+        let money = balances(&w)?;
         if mode == "foreign" {
             assert!(prepare_q(&mut w, GOD, START + 30, p.clone()).is_err());
         } else {
             let (prepared, out) = prepare_q(&mut w, BUYER, START + 30, p.clone())?;
-            if mode == "lapse_take" {
+            if mode == "title" {
+                // Core admits one pending commit: the charter's title cannot move
+                // under a prepared qualification, so the transfer is refused and
+                // the author keeps the title.
+                let op = rows(&disk(&w), "roll", "roll_mind_initial_filing")
+                    .into_iter()
+                    .find(|v| v.get("licence") == Some(&json!(owner)))
+                    .ok_or("birth")?;
+                let charter: mush_roll::commerce::CharterId =
+                    serde_json::from_value(op.get("charter").ok_or("charter")?.clone())?;
+                let held = w
+                    .engine
+                    .world
+                    .module_state::<EconomyStore>()
+                    .ok_or("economy")?
+                    .snapshot()
+                    .asset(charter.object())
+                    .ok_or("title")?
+                    .title_owner
+                    .clone();
+                assert!(
+                    w.transfer_charter(charter.object(), GOD, 49_000_110).is_err(),
+                    "title moved under a prepared qualification"
+                );
+                assert_eq!(
+                    w.engine
+                        .world
+                        .module_state::<EconomyStore>()
+                        .ok_or("economy")?
+                        .snapshot()
+                        .asset(charter.object())
+                        .ok_or("title")?
+                        .title_owner,
+                    held
+                );
+                drop((prepared, out));
+            } else if mode == "lapse_take" {
                 stage_q(&mut w, START + 30, p.clone(), prepared, out)?;
                 w.engine.world.set_now(parent_window.grace_end().get());
                 assert!(w.engine.take_staged_action().is_err());
@@ -310,29 +346,6 @@ fn fences(
                         let epoch = w.engine.world.next_world_timeline_epoch(2)?;
                         w.engine.world.append_world_timeline_epoch(epoch)?;
                     }
-                    "title" => {
-                        let op = rows(&disk(&w), "roll", "roll_mind_initial_filing")
-                            .into_iter()
-                            .find(|v| v.get("licence") == Some(&json!(owner)))
-                            .ok_or("birth")?;
-                        let charter: mush_roll::commerce::CharterId =
-                            serde_json::from_value(op.get("charter").ok_or("charter")?.clone())?;
-                        w.transfer_charter(charter.object(), GOD, 49_000_110)?;
-                        // The helper proves the actual one-minor-unit sale. The
-                        // refused owner operation must add no further money effect.
-                        money = balances(&w)?;
-                        assert_eq!(
-                            w.engine
-                                .world
-                                .module_state::<EconomyStore>()
-                                .ok_or("economy")?
-                                .snapshot()
-                                .asset(charter.object())
-                                .ok_or("actual changed title")?
-                                .title_owner,
-                            EconomicOwner::Object(GOD)
-                        );
-                    }
                     _ => w.engine.world.set_now(parent_window.grace_end().get()),
                 }
                 assert!(stage_q(&mut w, START + 30, p.clone(), prepared, out).is_err());
@@ -340,12 +353,10 @@ fn fences(
         }
         assert_eq!(balances(&w)?, money);
         assert!(rows(&disk(&w), "roll", OPS).is_empty());
-        if mode != "title" {
-            assert!(
-                disk(&w) == before,
-                "refusal changed retained business images"
-            );
-        }
+        assert!(
+            disk(&w) == before,
+            "refusal changed retained business images"
+        );
     }
     // Ordinary frozen custody completes after the actual parent lapses.
     let mut held = boot(f, saved)?;

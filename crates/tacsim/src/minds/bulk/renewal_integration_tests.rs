@@ -518,10 +518,23 @@ fn title_fences(
             };
             let definition = action(&world, "market", id, 1)?;
             let number_for_action = number + 2;
-            let mut before = balances(&world)?;
+            let before = balances(&world)?;
             let old = licence(&world, birth.licence())?;
+            let held = world
+                .engine
+                .world
+                .module_state::<EconomyStore>()
+                .ok_or("Economy")?
+                .snapshot()
+                .asset(ObjId(birth.charter().get()))
+                .ok_or("title")?
+                .title_owner
+                .clone();
             let (prepared, output) =
                 prepare_step(&mut world, id, GOD, number_for_action, params.clone())?;
+            // Core admits one pending commit: the issuer's title cannot move
+            // under a prepared (or staged) renewal step, so the transfer is
+            // refused and the renewal writes nothing.
             if after_stage {
                 stage(
                     &mut world,
@@ -532,24 +545,20 @@ fn title_fences(
                     prepared,
                     output,
                 )?;
-                world.transfer_charter(birth.charter().object(), GOD, 49_000_130)?;
-                before = balances(&world)?;
-                assert!(world.engine.take_staged_action().is_err());
-            } else {
-                world.transfer_charter(birth.charter().object(), GOD, 49_000_140)?;
-                before = balances(&world)?;
                 assert!(
-                    stage(
-                        &mut world,
-                        definition,
-                        GOD,
-                        number_for_action,
-                        params,
-                        prepared,
-                        output
-                    )
-                    .is_err()
+                    world
+                        .transfer_charter(birth.charter().object(), GOD, 49_000_130)
+                        .is_err(),
+                    "title moved under a staged renewal step"
                 );
+            } else {
+                assert!(
+                    world
+                        .transfer_charter(birth.charter().object(), GOD, 49_000_140)
+                        .is_err(),
+                    "title moved under a prepared renewal step"
+                );
+                drop((definition, params, prepared, output));
             }
             assert_eq!(
                 world
@@ -561,7 +570,7 @@ fn title_fences(
                     .asset(ObjId(birth.charter().get()))
                     .ok_or("title")?
                     .title_owner,
-                EconomicOwner::Object(GOD)
+                held
             );
             assert_eq!(licence(&world, birth.licence())?, old);
             assert_eq!(balances(&world)?, before);

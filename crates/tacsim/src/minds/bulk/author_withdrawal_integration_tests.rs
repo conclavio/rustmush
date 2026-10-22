@@ -164,18 +164,29 @@ fn fences(f: &PurchaseFixture, granted: &Durable, a: &EntitlementAllocationV1) -
             "staff is not the personal author"
         );
         let (prepared, output) = prepare_withdraw(&mut world, BUYER, START + 1, a)?;
+        // Core admits one pending commit: the title cannot move under a
+        // prepared (or staged) withdrawal, so the transfer is refused and no
+        // withdrawal cause is written.
         if after_stage {
             stage_withdraw(&mut world, START + 1, a, prepared, output)?;
-            transfer(&mut world, a)?;
-            assert!(world.engine.take_staged_action().is_err());
+            assert!(
+                transfer(&mut world, a).is_err(),
+                "title moved under a staged withdrawal"
+            );
         } else {
-            transfer(&mut world, a)?;
-            assert!(stage_withdraw(&mut world, START + 1, a, prepared, output).is_err());
+            assert!(
+                transfer(&mut world, a).is_err(),
+                "title moved under a prepared withdrawal"
+            );
+            drop((prepared, output));
         }
         assert!(rows(&disk(&world), "roll", CAUSES).is_empty());
         assert_eq!(status(&world, a)?.get("withdrawn_by"), Some(&Value::Null));
-        let transferred = capture(&world, &disk(&world));
-        let mut fresh = PlayerWorld::boot_withdrawal(f, &transferred)?;
+        // After a real transfer on a clean engine the original author no
+        // longer holds the title.
+        let untouched = capture(&world, &disk(&world));
+        let mut fresh = PlayerWorld::boot_withdrawal(f, &untouched)?;
+        transfer(&mut fresh, a)?;
         assert!(
             prepare_withdraw(&mut fresh, BUYER, START + 2, a).is_err(),
             "original author no longer holds title"

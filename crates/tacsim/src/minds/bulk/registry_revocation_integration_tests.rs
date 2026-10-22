@@ -504,6 +504,7 @@ fn late_consumer_fence(
 ) -> TestResult {
     for after_stage in [false, true] {
         let mut w = PlayerWorld::boot_revocation(f, saved, policy.clone())?;
+        let before = disk(&w);
         let p = listing_params(owner, "open_resale", 100);
         let (prepared, out) = prepare(
             &mut w,
@@ -515,20 +516,24 @@ fn late_consumer_fence(
             p.clone(),
         )?;
         let exact = action(&w, "market", "list_derived_mind", 1)?;
+        // Core admits one pending commit: a sanction cannot land between a
+        // prepared (or staged) listing and its install, so the revocation is
+        // refused and nothing is written. The opposite order (sanction first,
+        // then the listing refused) is covered by the story's own flow.
         if after_stage {
             stage(&mut w, exact, BUYER, START + 22, p, prepared, out)?;
-            revoke(&mut w, owner, START + 23)?;
             assert!(
-                w.engine.take_staged_action().is_err(),
-                "actual typed sanction invalidates retained consumer"
+                revoke(&mut w, owner, START + 23).is_err(),
+                "sanction landed under a staged listing"
             );
         } else {
-            revoke(&mut w, owner, START + 23)?;
             assert!(
-                stage(&mut w, exact, BUYER, START + 22, p, prepared, out).is_err(),
-                "prepared consumer cannot cross sanction"
+                revoke(&mut w, owner, START + 23).is_err(),
+                "sanction landed under a prepared listing"
             );
+            drop((exact, p, prepared, out));
         }
+        assert!(disk(&w) == before, "refused sanction changed retained rows");
     }
     Ok(())
 }
