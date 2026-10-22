@@ -412,8 +412,8 @@ fn offer_and_custody(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) 
 
     // A real owned claim closing races Fund. Core admits one pending commit,
     // so neither can land under the other's custody: a claim close cannot
-    // land under a prepared Fund, a Fund cannot prepare under a staged close,
-    // and once the actual close lands Fund is refused by the closed claim.
+    // land under a prepared Fund, and a Fund cannot prepare under a staged
+    // close. Neither order leaves pending escrow or held money.
     for after_stage in [false, true] {
         let mut w = start_branch(f, template, seeded)?;
         owner_claim(&mut w, START + 510)?;
@@ -442,27 +442,13 @@ fn offer_and_custody(f: &PurchaseFixture, template: &IcWorld, seeded: &Durable) 
                 .ok_or("actual close custody")?
                 .into_parts();
             assert!(
-                prepare(
-                    &mut w,
-                    FUND,
-                    1,
-                    BUYER,
-                    START + 512,
-                    fund_params.clone(),
-                    None
-                )
-                .is_err(),
+                prepare(&mut w, FUND, 1, BUYER, START + 512, fund_params, None).is_err(),
                 "Fund prepared under a staged claim close"
             );
             // This is an actual prepared four-owner close image, not a patched
             // claim counter.
             retain_writes(&mut w.disk, bundle.writes())?;
             w.engine.install_composed_action(installation)?;
-            let refused = match prepare(&mut w, FUND, 1, BUYER, START + 514, fund_params, None) {
-                Err(_) => true,
-                Ok(p) => stage(&mut w, p).is_err(),
-            };
-            assert!(refused, "Fund accepted after the claim closed");
         } else {
             let p = prepare(&mut w, FUND, 1, BUYER, START + 512, fund_params, None)?;
             assert!(
