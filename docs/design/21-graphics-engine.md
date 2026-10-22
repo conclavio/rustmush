@@ -1,5 +1,12 @@
 # 21. The graphics engine — one frame, three encoders
 
+**Draft 0.11 — 2026-10-22, the picture measures sight as the sim does.** Both producers now use
+the sim's line-of-sight numbers — a 1.5 m eye (a unit's sensor height), 3 m walls, 6 m light and 8 m
+heavy woods — mirrored from `mush-atlas` and pinned by a contract test; the raycaster walks past a
+block lower than one behind it, units are hidden pixel by pixel, and **a contact the sim reports is
+never invisible**: covered by the picture's own ground or walls, or too far to draw, it is
+bracketed where it stands (cut notes, "Sight alignment").
+
 **Draft 0.10 — 2026-10-22, G.7a: the heightfield producer.** `mush_pixel::heightfield`, a voxel-space
 renderer over a `Terrain` (the arena's cell grid plus an elevation a cell), tested on the proving
 ground's shipped relief and a synthetic crater; 2.45 ms a frame at 640x480 on the owner's box. The

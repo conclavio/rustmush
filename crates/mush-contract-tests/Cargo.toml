@@ -41,6 +41,9 @@ mush-ruleset.workspace = true
 # WS03-A1: the boot-refusal case measures the starter lot the atlas ships, so
 # the "nothing was refused" claim cannot be met by a boot that applied nothing.
 mush-atlas.workspace = true
+# Doc 21: the pixel picture's sight heights are pinned to the atlas's
+# (tests/pixel_sight_heights.rs); mush-pixel itself does not depend on it.
+mush-pixel.workspace = true
 mush-jobs.workspace = true
 # 16b cut A.1: the two arena gates doc 16 §8 names (tests/arena_library.rs) read
 # the arena library's source tree and its pinned draw-label set. 16b cut T.3 adds

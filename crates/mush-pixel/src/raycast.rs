@@ -15,14 +15,21 @@
 //! depth buffer so a wall in front of a unit hides it.
 //!
 //! **Two passes (doc 21 cut G.1).** The rays are cast column by column, and
-//! each column keeps only where its sky ends, its wall slice and where its
-//! floor starts; the frame is then written row by row, top to bottom, so the
-//! writes run along memory and everything that is constant along a row (the
-//! sky band, the floor's distance, its fog step) is worked out once a row
-//! rather than once a pixel. Every colour comes from tables built once a
-//! render instead of three float lerps a pixel. The spike's one-pass
-//! renderer is kept under `#[cfg(test)]` as the reference the new one must
-//! match pixel for pixel.
+//! each column keeps only where its sky ends and the blocks it shows; the
+//! frame is then written row by row, top to bottom, so the writes run along
+//! memory and everything that is constant along a row (the sky band, the
+//! floor's distance, its fog step) is worked out once a row rather than once
+//! a pixel. Every colour comes from tables built once a render.
+//!
+//! **The sim's heights** (2026-10-22, the owner): the eye stands at a unit's
+//! sensor height (1.5 m), walls are 3 m, light woods 6 m and heavy woods 8 m —
+//! the sim's own line-of-sight numbers ([`EYE_HEIGHT_CM`], [`Ground::height_cm`]),
+//! so what the picture hides behind a wall is what the sim's sight hides. A
+//! ray walks on past a block lower than one behind it (a wall shows the woods
+//! that rise over it), up to four blocks a column; units are hidden pixel by
+//! pixel against what was drawn nearer (a turret shows over a low wall); and a
+//! **contact the sim reports is never invisible**: one the picture covers, or
+//! too far off to draw, is bracketed where it stands.
 //!
 //! **Colours are a closed set by construction** — the private `Base` set times
 //! [`FOG_STEPS`] plus the sky's [`SKY_STEPS`] — so a rendered frame never
@@ -45,9 +52,13 @@ pub enum Ground {
     Water,
     /// Road.
     Road,
-    /// Woods: block the eye, drawn as a green wall.
+    /// Light woods (trees with sight between them, 6 m): block the eye,
+    /// drawn as a green block.
     Woods,
-    /// A wall, a building, rock: blocks the eye.
+    /// Heavy woods (canopy and undergrowth, 8 m): block the eye, drawn
+    /// darker and taller.
+    WoodsHeavy,
+    /// A wall, a building, rock (3 m): blocks the eye.
     Wall,
 }
 
@@ -60,7 +71,9 @@ impl Ground {
             "water" => Ground::Water,
             "road" => Ground::Road,
             "wall" | "rock" | "building" | "cliff" => Ground::Wall,
-            n if n.starts_with("woods") || n.starts_with("forest") => Ground::Woods,
+            "woods_heavy" => Ground::WoodsHeavy,
+            n if n.starts_with("forest") => Ground::WoodsHeavy,
+            n if n.starts_with("woods") => Ground::Woods,
             _ => Ground::Open,
         }
     }
@@ -68,7 +81,20 @@ impl Ground {
     /// Whether a ray stops here.
     #[must_use]
     pub fn blocks(self) -> bool {
-        matches!(self, Ground::Wall | Ground::Woods)
+        self.height_cm() > 0
+    }
+
+    /// How high it stands above the ground, centimetres: the sim's own
+    /// obstacle heights (`mush_atlas::physics::obstacle_height_cm`), so the
+    /// picture hides behind a wall exactly what the sim's line of sight does.
+    #[must_use]
+    pub fn height_cm(self) -> i32 {
+        match self {
+            Ground::Wall => WALL_HEIGHT_CM,
+            Ground::Woods => WOODS_LIGHT_HEIGHT_CM,
+            Ground::WoodsHeavy => WOODS_HEAVY_HEIGHT_CM,
+            _ => 0,
+        }
     }
 }
 
@@ -223,6 +249,7 @@ pub(crate) enum Base {
     WallLit,
     WallDark,
     Woods,
+    WoodsHeavy,
     Hostile,
     Friendly,
     Unknown,
@@ -232,7 +259,7 @@ pub(crate) enum Base {
 
 impl Base {
     /// How many bases there are: the rows of the shade table.
-    const COUNT: usize = 16;
+    const COUNT: usize = 17;
 
     pub(crate) fn rgb(self) -> Rgb {
         match self {
@@ -247,6 +274,7 @@ impl Base {
             Base::WallLit => [150, 150, 158],
             Base::WallDark => [104, 104, 112],
             Base::Woods => [40, 84, 44],
+            Base::WoodsHeavy => [28, 62, 34],
             Base::Hostile => [178, 54, 48],
             Base::Friendly => [64, 124, 204],
             Base::Unknown => [168, 160, 96],
@@ -280,13 +308,29 @@ pub(crate) const FOG_CELLS: f32 = 60.0;
 pub(crate) const HORIZON: Rgb = [150, 165, 185];
 /// The colour at the top of the sky.
 const ZENITH: Rgb = [24, 36, 72];
-/// The eye's height above the ground, in cells (2.5 m).
-pub(crate) const EYE: f32 = 0.25;
-/// A wall's height, in cells (8 m).
-pub(crate) const WALL_H: f32 = 0.8;
-/// A sprite's height and width, in cells (3.5 m tall, 5 m wide).
-pub(crate) const SPRITE_H: f32 = 0.35;
-pub(crate) const SPRITE_W: f32 = 0.5;
+/// The eye's height above the ground, centimetres: a unit's sensor height,
+/// the eye the sim's line of sight is drawn from (`mush_atlas::trace::
+/// EYE_HEIGHT_CM`, the stock `sensor_height_cm`), so the picture's horizon
+/// and what a wall hides are the sim's. A contract test pins every height
+/// here to the sim's (`mush-pixel` does not depend on the atlas).
+pub const EYE_HEIGHT_CM: i32 = 150;
+/// A wall's height, centimetres (`mush_atlas::physics::WALL_HEIGHT_CM`).
+pub const WALL_HEIGHT_CM: i32 = 300;
+/// Light woods' height, centimetres (`obstacle_height_cm(WoodsLight)`).
+pub const WOODS_LIGHT_HEIGHT_CM: i32 = 600;
+/// Heavy woods' height, centimetres (`obstacle_height_cm(WoodsHeavy)`).
+pub const WOODS_HEAVY_HEIGHT_CM: i32 = 800;
+/// A unit's drawn height and width, centimetres (3.5 m tall, 5 m wide).
+pub const SPRITE_HEIGHT_CM: i32 = 350;
+/// See [`SPRITE_HEIGHT_CM`].
+pub const SPRITE_WIDTH_CM: i32 = 500;
+/// The most blocks one column shows, nearest first: a wall, the woods that
+/// rise over it, the taller woods over those.
+const MAX_SPANS: usize = 4;
+/// A contact the sim reports is never invisible: one the picture's ground
+/// covers, or too far off to draw, is bracketed at least this many pixels a
+/// side.
+const MARK_MIN_PX: f32 = 6.0;
 /// Half the field of view as the camera plane's length (66 degrees).
 pub(crate) const PLANE: f32 = 0.66;
 /// How far a ray walks before giving up (cells).
@@ -335,6 +379,7 @@ impl Shades {
             Base::WallLit,
             Base::WallDark,
             Base::Woods,
+            Base::WoodsHeavy,
             Base::Hostile,
             Base::Friendly,
             Base::Unknown,
@@ -370,28 +415,40 @@ impl Shades {
     }
 }
 
-/// What the column pass leaves the row pass: the ray, and where the
-/// column's sky, wall and floor lie.
+/// One block a column's ray met and shows: rows `top..end` of the
+/// column, drawn `px`, `perp` cells away.
+#[derive(Clone, Copy, Default)]
+struct Span {
+    top: usize,
+    end: usize,
+    px: Rgb,
+    perp: f32,
+}
+
+/// What the column pass leaves the row pass: the ray, and the blocks it
+/// shows, nearest first. Rows above the topmost block are sky (or the
+/// horizon's haze); rows below the horizon that no block covers are floor.
 #[derive(Clone, Copy)]
 struct Column {
     rdx: f32,
     rdy: f32,
+    spans: [Span; MAX_SPANS],
+    n: usize,
     /// Rows `0..sky_end` are sky.
     sky_end: usize,
-    /// Rows `wall_top..wall_end` are the wall slice (empty when the ray hit
-    /// nothing).
-    wall_top: usize,
-    wall_end: usize,
-    wall_px: Rgb,
-    /// Rows `floor_start..` are floor. A row that is none of the three (the
-    /// horizon row under a ray that hit nothing) is drawn the horizon colour;
-    /// the spike left whatever the last frame had there, which is how a
-    /// sprite could leave a trail along the horizon of an open view.
-    floor_start: usize,
 }
 
-/// The camera in cell units: where the eye stands, the way it looks and the
-/// camera plane across it.
+impl Column {
+    /// The block covering row `y`, if one does.
+    fn span_at(&self, y: usize) -> Option<&Span> {
+        self.spans
+            .get(..self.n)
+            .and_then(|spans| spans.iter().find(|s| (s.top..s.end).contains(&y)))
+    }
+}
+
+/// The camera in cell units: where the eye stands, the way it looks, the
+/// camera plane across it, and the heights that matter, in cells.
 #[derive(Clone, Copy)]
 struct Eye {
     cell: f32,
@@ -401,6 +458,8 @@ struct Eye {
     diry: f32,
     planex: f32,
     planey: f32,
+    /// The eye's height above the ground, cells.
+    eye: f32,
 }
 
 impl Eye {
@@ -416,7 +475,18 @@ impl Eye {
             diry,
             planex: diry * PLANE,
             planey: -dirx * PLANE,
+            eye: EYE_HEIGHT_CM as f32 / cell,
         }
+    }
+}
+
+/// The colour base of a block a ray met, by its kind and the face it hit.
+fn block_base(ground: Ground, side: u8) -> Base {
+    match (ground, side) {
+        (Ground::Woods, _) => Base::Woods,
+        (Ground::WoodsHeavy, _) => Base::WoodsHeavy,
+        (_, 0) => Base::WallLit,
+        _ => Base::WallDark,
     }
 }
 
@@ -426,59 +496,56 @@ pub fn render(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
     if w == 0 || h == 0 {
         return;
     }
-    let eye = Eye::new(map, cam);
-    let Eye {
-        posx,
-        posy,
-        dirx,
-        diry,
-        planex,
-        planey,
-        ..
-    } = eye;
+    let e = Eye::new(map, cam);
     let hf = h as f32;
     let horizon = h / 2;
+    let hz = horizon as f32;
     let shades = Shades::new();
-    let mut zbuf = vec![f32::INFINITY; w];
 
-    // The column pass: one ray a column. The expressions are the spike's,
-    // term for term, so the reference test can ask for equality.
+    // The column pass: one ray a column, walked past a block lower than one
+    // behind it, so a wall shows the woods that rise over it.
     let mut columns = Vec::with_capacity(w);
-    for (x, z) in zbuf.iter_mut().enumerate() {
+    for x in 0..w {
         let camx = 2.0 * x as f32 / w as f32 - 1.0;
-        let rdx = dirx + planex * camx;
-        let rdy = diry + planey * camx;
-        let (perp, side) = cast(map, posx, posy, rdx, rdy);
-        *z = perp;
-
-        let (top, bottom) = if perp.is_finite() {
-            let top = horizon as f32 - (WALL_H - EYE) * hf / perp;
-            let bottom = horizon as f32 + EYE * hf / perp;
-            (top.max(0.0) as usize, (bottom.min(hf)) as usize)
-        } else {
-            (horizon, horizon)
-        };
-        let (wall_top, wall_end, wall_px) = if perp.is_finite() {
-            let hx = (posx + rdx * perp).floor() as i64;
-            let hy = (posy + rdy * perp).floor() as i64;
-            let base = match (map.get(hx, hy), side) {
-                (Ground::Woods, _) => Base::Woods,
-                (_, 0) => Base::WallLit,
-                _ => Base::WallDark,
-            };
-            (top, bottom.max(top), shades.shade(base, fog_step(perp)))
-        } else {
-            (0, 0, HORIZON)
-        };
-        columns.push(Column {
+        let rdx = e.dirx + e.planex * camx;
+        let rdy = e.diry + e.planey * camx;
+        let mut col = Column {
             rdx,
             rdy,
-            sky_end: top.min(horizon),
-            wall_top,
-            wall_end,
-            wall_px,
-            floor_start: bottom.max(horizon + 1),
+            spans: [Span::default(); MAX_SPANS],
+            n: 0,
+            sky_end: horizon,
+        };
+        let mut min_top = f32::INFINITY;
+        cast(map, e.posx, e.posy, rdx, rdy, |perp, side, ground| {
+            let block = ground.height_cm() as f32 / e.cell;
+            let top = hz - (block - e.eye) * hf / perp;
+            if top >= min_top {
+                // Hidden behind a nearer, taller-looking block.
+                return true;
+            }
+            let end = if col.n == 0 {
+                (hz + e.eye * hf / perp).min(hf) as usize
+            } else {
+                min_top.max(0.0) as usize
+            };
+            let top_row = top.max(0.0) as usize;
+            if let Some(span) = col.spans.get_mut(col.n) {
+                *span = Span {
+                    top: top_row,
+                    end: end.max(top_row),
+                    px: shades.shade(block_base(ground, side), fog_step(perp)),
+                    perp,
+                };
+                col.n += 1;
+            }
+            min_top = top;
+            top > 0.0 && col.n < MAX_SPANS
         });
+        if col.n > 0 {
+            col.sky_end = min_top.max(0.0) as usize;
+        }
+        columns.push(col);
     }
 
     // The row pass: top to bottom, along memory. A row's sky band, and a
@@ -486,17 +553,17 @@ pub fn render(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
     for (y, row) in frame.rgb_mut().chunks_exact_mut(w * 3).enumerate() {
         let sky_px = shades.sky(y * SKY_STEPS / horizon.max(1));
         let floor = (y > horizon).then(|| {
-            let dist = EYE * hf / (y - horizon) as f32;
+            let dist = e.eye * hf / (y - horizon) as f32;
             (dist, fog_step(dist))
         });
         for (px, c) in row.as_chunks_mut::<3>().0.iter_mut().zip(&columns) {
-            *px = if y < c.sky_end {
+            *px = if y < c.sky_end && y < horizon {
                 sky_px
-            } else if (c.wall_top..c.wall_end).contains(&y) {
-                c.wall_px
-            } else if let Some((dist, step)) = floor.filter(|_| y >= c.floor_start) {
-                let fx = posx + c.rdx * dist;
-                let fy = posy + c.rdy * dist;
+            } else if let Some(span) = c.span_at(y) {
+                span.px
+            } else if let Some((dist, step)) = floor {
+                let fx = e.posx + c.rdx * dist;
+                let fy = e.posy + c.rdy * dist;
                 let ground = map.get(fx.floor() as i64, fy.floor() as i64);
                 let line = fx.fract().abs() < LINE || fy.fract().abs() < LINE;
                 shades.shade(Base::floor(ground, line), step)
@@ -506,31 +573,25 @@ pub fn render(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
         }
     }
 
-    draw_sprites(frame, &eye, sprites, &zbuf, &shades);
-}
-
-/// The sprites, far to near, against the column pass's depth buffer.
-fn draw_sprites(frame: &mut Frame, eye: &Eye, sprites: &[Sprite], zbuf: &[f32], shades: &Shades) {
-    let (w, h) = (frame.width(), frame.height());
-    let Eye {
-        cell,
-        posx,
-        posy,
-        dirx,
-        diry,
-        planex,
-        planey,
-    } = *eye;
-    let hf = h as f32;
-    let horizon = h / 2;
-    let invdet = 1.0 / (planex * diry - dirx * planey);
+    // A sprite's pixel shows where nothing nearer was drawn at it.
+    let depth = |x: usize, y: usize| -> f32 {
+        match columns.get(x) {
+            Some(c) => match c.span_at(y) {
+                Some(span) => span.perp,
+                None if y > horizon => e.eye * hf / (y - horizon) as f32,
+                None => f32::INFINITY,
+            },
+            None => f32::INFINITY,
+        }
+    };
+    let invdet = 1.0 / (e.planex * e.diry - e.dirx * e.planey);
     let mut placed: Vec<(f32, f32, SpriteKind)> = sprites
         .iter()
         .map(|s| {
-            let relx = s.x_cm as f32 / cell - posx;
-            let rely = s.y_cm as f32 / cell - posy;
-            let tx = invdet * (diry * relx - dirx * rely);
-            let ty = invdet * (-planey * relx + planex * rely);
+            let relx = s.x_cm as f32 / e.cell - e.posx;
+            let rely = s.y_cm as f32 / e.cell - e.posy;
+            let tx = invdet * (e.diry * relx - e.dirx * rely);
+            let ty = invdet * (-e.planey * relx + e.planex * rely);
             (tx, ty, s.kind)
         })
         .filter(|(_, ty, _)| *ty > 0.05)
@@ -538,45 +599,123 @@ fn draw_sprites(frame: &mut Frame, eye: &Eye, sprites: &[Sprite], zbuf: &[f32], 
     placed.sort_by(|a, b| b.1.total_cmp(&a.1));
     for (tx, ty, kind) in placed {
         let screenx = (w as f32 / 2.0) * (1.0 + tx / ty);
-        let hpx = SPRITE_H * hf / ty;
-        let wpx = SPRITE_W * hf / ty;
-        if hpx < 1.0 || wpx < 1.0 {
-            continue;
-        }
-        let bottom = horizon as f32 + EYE * hf / ty;
-        let top = bottom - hpx;
-        let left = screenx - wpx / 2.0;
-        let step = fog_step(ty);
-        let body = shades.shade(
-            match kind {
-                SpriteKind::Hostile => Base::Hostile,
-                SpriteKind::Friendly => Base::Friendly,
-                SpriteKind::Unknown => Base::Unknown,
-                SpriteKind::Wreck => Base::Wreck,
+        let bottom = hz + e.eye * hf / ty;
+        draw_sprite(
+            frame,
+            &shades,
+            SpriteAt {
+                screenx,
+                bottom,
+                depth: ty,
+                height: SPRITE_HEIGHT_CM as f32 / e.cell * hf / ty,
+                width: SPRITE_WIDTH_CM as f32 / e.cell * hf / ty,
+                kind,
             },
-            step,
+            &depth,
         );
+    }
+}
+
+/// A sprite placed on the screen: its centre column, the row its base
+/// stands on, its distance, its size in pixels.
+#[derive(Clone, Copy)]
+pub(crate) struct SpriteAt {
+    pub(crate) screenx: f32,
+    pub(crate) bottom: f32,
+    pub(crate) depth: f32,
+    pub(crate) height: f32,
+    pub(crate) width: f32,
+    pub(crate) kind: SpriteKind,
+}
+
+/// Draw one unit: its silhouette wherever the picture drew nothing nearer
+/// (`depth_at(x, y)` is the distance the pixel was drawn at), and — when
+/// none of it shows, or it is under two pixels tall — a bracket in its
+/// unfogged colour around where it stands: **a contact the sim reports is
+/// never invisible** in the picture, whatever the picture's own ground or
+/// walls make of the line between (the sim's sight decides what is seen;
+/// the picture only draws it). A unit off the side of the view is not drawn.
+pub(crate) fn draw_sprite(
+    frame: &mut Frame,
+    shades: &Shades,
+    at: SpriteAt,
+    depth_at: &dyn Fn(usize, usize) -> f32,
+) {
+    let (w, h) = (frame.width(), frame.height());
+    let wf = w as f32;
+    if at.screenx + at.width / 2.0 < 0.0 || at.screenx - at.width / 2.0 >= wf {
+        return;
+    }
+    let kind_base = match at.kind {
+        SpriteKind::Hostile => Base::Hostile,
+        SpriteKind::Friendly => Base::Friendly,
+        SpriteKind::Unknown => Base::Unknown,
+        SpriteKind::Wreck => Base::Wreck,
+    };
+    let top = at.bottom - at.height;
+    let left = at.screenx - at.width / 2.0;
+    let mut drawn = 0usize;
+    if at.height >= 2.0 && at.width >= 1.0 {
+        let step = fog_step(at.depth);
+        let body = shades.shade(kind_base, step);
         let outline = shades.shade(Base::Outline, step);
         let x0 = left.floor().max(0.0) as usize;
-        let x1 = ((left + wpx).ceil().max(0.0) as usize).min(w);
+        let x1 = ((left + at.width).ceil().max(0.0) as usize).min(w);
         let y0 = top.floor().max(0.0) as usize;
-        let y1 = ((bottom).ceil().max(0.0) as usize).min(h);
-        let (du, dv) = (1.0 / wpx, 1.0 / hpx);
-        for (x, &z) in zbuf.iter().enumerate().take(x1).skip(x0) {
-            if ty >= z {
-                continue;
-            }
-            let u = (x as f32 + 0.5 - left) / wpx;
+        let y1 = (at.bottom.ceil().max(0.0) as usize).min(h);
+        let (du, dv) = (1.0 / at.width, 1.0 / at.height);
+        for x in x0..x1 {
+            let u = (x as f32 + 0.5 - left) / at.width;
             for y in y0..y1 {
-                let v = (y as f32 + 0.5 - top) / hpx;
+                if at.depth >= depth_at(x, y) {
+                    continue;
+                }
+                let v = (y as f32 + 0.5 - top) / at.height;
                 if !tank(u, v) {
                     continue;
                 }
                 let edge =
                     !tank(u - du, v) || !tank(u + du, v) || !tank(u, v - dv) || !tank(u, v + dv);
                 frame.put(x, y, if edge { outline } else { body });
+                drawn += 1;
             }
         }
+    }
+    if drawn == 0 {
+        let bw = at.width.max(MARK_MIN_PX);
+        let bh = at.height.max(MARK_MIN_PX);
+        let cy = at.bottom - at.height / 2.0;
+        mark(
+            frame,
+            (at.screenx - bw / 2.0, cy - bh / 2.0, bw, bh),
+            shades.shade(kind_base, 0),
+        );
+    }
+}
+
+/// Four corner brackets around a box (`x`, `y`, width, height in pixels),
+/// each arm a quarter of the side and at least two pixels.
+pub(crate) fn mark(frame: &mut Frame, (x, y, bw, bh): (f32, f32, f32, f32), px: Rgb) {
+    let (x0, y0) = (x.round() as i64, y.round() as i64);
+    let (x1, y1) = ((x + bw).round() as i64 - 1, (y + bh).round() as i64 - 1);
+    let arm_x = ((bw / 4.0).round() as i64).max(2);
+    let arm_y = ((bh / 4.0).round() as i64).max(2);
+    let mut put = |px_x: i64, px_y: i64| {
+        if px_x >= 0 && px_y >= 0 {
+            frame.put(px_x as usize, px_y as usize, px);
+        }
+    };
+    for i in 0..arm_x {
+        put(x0 + i, y0);
+        put(x1 - i, y0);
+        put(x0 + i, y1);
+        put(x1 - i, y1);
+    }
+    for i in 0..arm_y {
+        put(x0, y0 + i);
+        put(x1, y0 + i);
+        put(x0, y1 - i);
+        put(x1, y1 - i);
     }
 }
 
@@ -594,11 +733,18 @@ pub(crate) fn tank(u: f32, v: f32) -> bool {
     hull || turret || barrel || tracks
 }
 
-/// DDA from `(posx, posy)` along `(rdx, rdy)`: the perpendicular distance to
-/// the first blocking cell and which side (0 = an east/west face, 1 = a
-/// north/south face) was hit; infinite when nothing blocks within
-/// [`MAX_STEPS`].
-fn cast(map: &Map, posx: f32, posy: f32, rdx: f32, rdy: f32) -> (f32, u8) {
+/// DDA from `(posx, posy)` along `(rdx, rdy)`: `hit(perp, side, ground)` for
+/// each blocking cell in order, its perpendicular distance and which side (0
+/// = an east/west face, 1 = a north/south face) the ray entered by, until it
+/// answers `false` or [`MAX_STEPS`] cells are walked.
+fn cast(
+    map: &Map,
+    posx: f32,
+    posy: f32,
+    rdx: f32,
+    rdy: f32,
+    mut hit: impl FnMut(f32, u8, Ground) -> bool,
+) {
     let mut mapx = posx.floor() as i64;
     let mut mapy = posy.floor() as i64;
     let deltax = if rdx == 0.0 {
@@ -621,7 +767,7 @@ fn cast(map: &Map, posx: f32, posy: f32, rdx: f32, rdy: f32) -> (f32, u8) {
     } else {
         (1, (mapy as f32 + 1.0 - posy) * deltay)
     };
-    let mut side = 0;
+    let mut side;
     for _ in 0..MAX_STEPS {
         if sidex < sidey {
             sidex += deltax;
@@ -632,183 +778,26 @@ fn cast(map: &Map, posx: f32, posy: f32, rdx: f32, rdy: f32) -> (f32, u8) {
             mapy += stepy;
             side = 1;
         }
-        if map.get(mapx, mapy).blocks() {
+        let ground = map.get(mapx, mapy);
+        if ground.blocks() {
             let perp = if side == 0 {
                 sidex - deltax
             } else {
                 sidey - deltay
             };
-            return (perp.max(1e-4), side);
+            if !hit(perp.max(1e-4), side, ground) {
+                return;
+            }
+        }
+        if (if sidex < sidey { sidex } else { sidey }) > FOG_CELLS * 1.5 {
+            return;
         }
     }
-    (f32::INFINITY, side)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// **The spike's renderer, as it was** (2026-10-21, one pass, column by
-    /// column, three lerps a pixel): the reference [`render`] must match
-    /// pixel for pixel on a frame cleared to the horizon colour (the one
-    /// row the spike never drew, see `Column::floor_start`).
-    fn render_reference(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
-        let (w, h) = (frame.width(), frame.height());
-        if w == 0 || h == 0 {
-            return;
-        }
-        let cell = map.cell_cm() as f32;
-        let posx = cam.x_cm as f32 / cell;
-        let posy = cam.y_cm as f32 / cell;
-        let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
-        let (dirx, diry) = heading.to_radians().sin_cos();
-        let (planex, planey) = (diry * PLANE, -dirx * PLANE);
-        let hf = h as f32;
-        let horizon = h / 2;
-        let mut zbuf = vec![f32::INFINITY; w];
-
-        for (x, z) in zbuf.iter_mut().enumerate() {
-            let camx = 2.0 * x as f32 / w as f32 - 1.0;
-            let rdx = dirx + planex * camx;
-            let rdy = diry + planey * camx;
-            let (perp, side) = cast(map, posx, posy, rdx, rdy);
-            *z = perp;
-
-            let (top, bottom) = if perp.is_finite() {
-                let top = horizon as f32 - (WALL_H - EYE) * hf / perp;
-                let bottom = horizon as f32 + EYE * hf / perp;
-                (top.max(0.0) as usize, (bottom.min(hf)) as usize)
-            } else {
-                (horizon, horizon)
-            };
-
-            for y in 0..top.min(horizon) {
-                frame.put(x, y, sky(y * SKY_STEPS / horizon.max(1)));
-            }
-            if perp.is_finite() {
-                let hit = {
-                    let dist = perp;
-                    let hx = (posx + rdx * dist).floor() as i64;
-                    let hy = (posy + rdy * dist).floor() as i64;
-                    map.get(hx, hy)
-                };
-                let base = match (hit, side) {
-                    (Ground::Woods, _) => Base::Woods,
-                    (_, 0) => Base::WallLit,
-                    _ => Base::WallDark,
-                };
-                let px = shade(base, fog_step(perp));
-                for y in top..bottom.max(top) {
-                    frame.put(x, y, px);
-                }
-            }
-            for y in bottom.max(horizon + 1)..h {
-                let dist = EYE * hf / (y - horizon) as f32;
-                let fx = posx + rdx * dist;
-                let fy = posy + rdy * dist;
-                let ground = map.get(fx.floor() as i64, fy.floor() as i64);
-                let line = fx.fract().abs() < LINE || fy.fract().abs() < LINE;
-                frame.put(x, y, shade(Base::floor(ground, line), fog_step(dist)));
-            }
-        }
-
-        // Sprites, far to near.
-        let invdet = 1.0 / (planex * diry - dirx * planey);
-        let mut placed: Vec<(f32, f32, SpriteKind)> = sprites
-            .iter()
-            .map(|s| {
-                let relx = s.x_cm as f32 / cell - posx;
-                let rely = s.y_cm as f32 / cell - posy;
-                let tx = invdet * (diry * relx - dirx * rely);
-                let ty = invdet * (-planey * relx + planex * rely);
-                (tx, ty, s.kind)
-            })
-            .filter(|(_, ty, _)| *ty > 0.05)
-            .collect();
-        placed.sort_by(|a, b| b.1.total_cmp(&a.1));
-        for (tx, ty, kind) in placed {
-            let screenx = (w as f32 / 2.0) * (1.0 + tx / ty);
-            let hpx = SPRITE_H * hf / ty;
-            let wpx = SPRITE_W * hf / ty;
-            if hpx < 1.0 || wpx < 1.0 {
-                continue;
-            }
-            let bottom = horizon as f32 + EYE * hf / ty;
-            let top = bottom - hpx;
-            let left = screenx - wpx / 2.0;
-            let step = fog_step(ty);
-            let body = shade(
-                match kind {
-                    SpriteKind::Hostile => Base::Hostile,
-                    SpriteKind::Friendly => Base::Friendly,
-                    SpriteKind::Unknown => Base::Unknown,
-                    SpriteKind::Wreck => Base::Wreck,
-                },
-                step,
-            );
-            let outline = shade(Base::Outline, step);
-            let x0 = left.floor().max(0.0) as usize;
-            let x1 = ((left + wpx).ceil().max(0.0) as usize).min(w);
-            let y0 = top.floor().max(0.0) as usize;
-            let y1 = ((bottom).ceil().max(0.0) as usize).min(h);
-            let (du, dv) = (1.0 / wpx, 1.0 / hpx);
-            for (x, &z) in zbuf.iter().enumerate().take(x1).skip(x0) {
-                if ty >= z {
-                    continue;
-                }
-                let u = (x as f32 + 0.5 - left) / wpx;
-                for y in y0..y1 {
-                    let v = (y as f32 + 0.5 - top) / hpx;
-                    if !tank(u, v) {
-                        continue;
-                    }
-                    let edge = !tank(u - du, v)
-                        || !tank(u + du, v)
-                        || !tank(u, v - dv)
-                        || !tank(u, v + dv);
-                    frame.put(x, y, if edge { outline } else { body });
-                }
-            }
-        }
-    }
-
-    /// The rendered frame equals the spike's for a camera at every heading
-    /// in 7.5 degree steps across the fixture yard and an open field, at
-    /// both frame sizes, with sprites in front of and behind walls.
-    #[test]
-    fn the_two_pass_render_matches_the_spike_pixel_for_pixel() {
-        let yard = yard();
-        // Open ground as wide as the TUI's stand-in map: no ray meets its
-        // edge, so the horizon row under them is the case the spike missed.
-        let open = Map::new(512, 512, 1000);
-        for (map, x_cm, y_cm) in [(&yard, 8_000, 3_000), (&open, 256_000, 256_000)] {
-            for &(w, h) in &[(640, 480), (320, 220), (17, 9)] {
-                for step in 0..48u32 {
-                    let cam = Camera {
-                        x_cm,
-                        y_cm,
-                        heading_mdeg: step * 7_500,
-                    };
-                    let sprites = [
-                        Sprite::at_bearing(&cam, 0.0, 60.0, SpriteKind::Hostile),
-                        Sprite::at_bearing(&cam, 30.0, 150.0, SpriteKind::Friendly),
-                        Sprite::at_bearing(&cam, 200.0, 40.0, SpriteKind::Wreck),
-                    ];
-                    let mut want = Frame::new(w, h);
-                    want.clear(HORIZON);
-                    render_reference(&mut want, map, &cam, &sprites);
-                    let mut got = Frame::new(w, h);
-                    got.clear([255, 0, 255]);
-                    render(&mut got, map, &cam, &sprites);
-                    assert!(
-                        got == want,
-                        "{w}x{h} at {} mdeg from {x_cm},{y_cm}",
-                        cam.heading_mdeg
-                    );
-                }
-            }
-        }
-    }
 
     /// The spike left the horizon row of a ray that hit nothing as it was,
     /// so whatever the last frame drew there stayed; every pixel is drawn
@@ -858,18 +847,58 @@ mod tests {
         assert_eq!(map.get(5, 6), Ground::Water);
     }
 
+    fn first_hit(map: &Map, posx: f32, posy: f32, rdx: f32, rdy: f32) -> (f32, u8) {
+        let mut found = (f32::INFINITY, 0);
+        cast(map, posx, posy, rdx, rdy, |perp, side, _| {
+            found = (perp, side);
+            false
+        });
+        found
+    }
+
     #[test]
     fn a_ray_north_hits_the_wall_at_its_distance() {
         let map = yard();
         // From the centre of cell (8, 4) looking north: the wall's south face
         // at y = 12 is 7.5 cells away.
-        let (perp, side) = cast(&map, 8.5, 4.5, 0.0, 1.0);
+        let (perp, side) = first_hit(&map, 8.5, 4.5, 0.0, 1.0);
         assert!((perp - 7.5).abs() < 1e-4, "{perp}");
         assert_eq!(side, 1);
         // Looking east: the map edge at x = 16, 7.5 cells away.
-        let (perp, side) = cast(&map, 8.5, 4.5, 1.0, 0.0);
+        let (perp, side) = first_hit(&map, 8.5, 4.5, 1.0, 0.0);
         assert!((perp - 7.5).abs() < 1e-4, "{perp}");
         assert_eq!(side, 0);
+    }
+
+    /// The sim's heights: a 3 m wall in front of 8 m woods shows the woods
+    /// rising over it; the eye is at 1.5 m.
+    #[test]
+    fn woods_rise_over_a_low_wall_in_front_of_them() {
+        let mut map = Map::new(32, 32, 1000);
+        for y in 0..32 {
+            for x in 0..32 {
+                map.set(x, y, Ground::Grass);
+            }
+        }
+        for x in 0..32 {
+            map.set(x, 10, Ground::Wall);
+            map.set(x, 14, Ground::WoodsHeavy);
+        }
+        let cam = Camera {
+            x_cm: 16_500,
+            y_cm: 4_500,
+            heading_mdeg: 0,
+        };
+        let mut f = Frame::new(320, 220);
+        render(&mut f, &map, &cam, &[]);
+        let shades = Shades::new();
+        let woods = (0..110)
+            .any(|y| (0..FOG_STEPS).any(|s| f.get(160, y) == shades.shade(Base::WoodsHeavy, s)));
+        assert!(woods, "the heavy woods show above the wall");
+        assert_eq!(Ground::Wall.height_cm(), 300);
+        assert_eq!(Ground::from_legend_name("woods_heavy").height_cm(), 800);
+        assert_eq!(Ground::from_legend_name("woods_light").height_cm(), 600);
+        assert_eq!(Ground::Grass.height_cm(), 0);
     }
 
     #[test]
@@ -907,25 +936,55 @@ mod tests {
         assert!(red, "the hostile sprite is drawn");
     }
 
+    /// A tank behind a wall taller than it is hidden by it — and, being a
+    /// contact the sim reports, bracketed where it stands; a tank behind a
+    /// lower wall shows its top over it.
     #[test]
-    fn a_sprite_behind_a_wall_is_hidden() {
-        let map = yard();
+    fn a_covered_contact_is_bracketed_and_a_turret_shows_over_a_low_wall() {
+        let shades = Shades::new();
+        let mut map = Map::new(32, 32, 1000);
+        for y in 0..32 {
+            for x in 0..32 {
+                map.set(x, y, Ground::Grass);
+            }
+        }
+        for x in 0..32 {
+            map.set(x, 12, Ground::WoodsHeavy);
+        }
         let cam = Camera {
-            x_cm: 8_500,
+            x_cm: 16_500,
             y_cm: 4_500,
             heading_mdeg: 0,
         };
-        // 100 m north is past the wall at y = 12 (75 m away).
-        let behind = [Sprite::at_bearing(&cam, 0.0, 100.0, SpriteKind::Hostile)];
-        let mut frame = Frame::new(160, 110);
-        render(&mut frame, &map, &cam, &behind);
-        let red = (0..160usize)
-            .flat_map(|x| (0..110usize).map(move |y| (x, y)))
-            .any(|(x, y)| {
-                let p = frame.get(x, y);
-                p[0] > 150 && p[1] < 90 && p[2] < 90
-            });
-        assert!(!red, "hidden by the wall");
+        let behind = [Sprite::at_bearing(&cam, 0.0, 120.0, SpriteKind::Hostile)];
+        let mut f = Frame::new(320, 220);
+        render(&mut f, &map, &cam, &behind);
+        let unfogged = shades.shade(Base::Hostile, 0);
+        let count = |f: &Frame, px: Rgb| {
+            (0..f.width())
+                .flat_map(|x| (0..f.height()).map(move |y| (x, y)))
+                .filter(|&(x, y)| f.get(x, y) == px)
+                .count()
+        };
+        assert!(
+            count(&f, unfogged) >= 8,
+            "the bracket in its unfogged colour"
+        );
+        let fogged = shades.shade(Base::Hostile, fog_step(11.5));
+        assert_eq!(count(&f, fogged), 0, "no silhouette through 8 m woods");
+        // A 3 m wall instead: the tank (3.5 m) shows its top over it.
+        for x in 0..32 {
+            map.set(x, 12, Ground::Wall);
+        }
+        render(&mut f, &map, &cam, &behind);
+        let reddish = (0..320usize)
+            .flat_map(|x| (0..220usize).map(move |y| (x, y)))
+            .filter(|&(x, y)| {
+                let [r, g, b] = f.get(x, y);
+                r > g + 30 && r > b + 30
+            })
+            .count();
+        assert!(reddish > 0, "the turret over the wall");
     }
 
     #[test]

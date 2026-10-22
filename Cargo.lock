@@ -2234,6 +2234,7 @@ dependencies = [
  "mush-llm",
  "mush-npc",
  "mush-org",
+ "mush-pixel",
  "mush-proto",
  "mush-ruleset",
  "mush-server",

@@ -133,6 +133,7 @@ fn ground_rgb(ground: Ground) -> Rgb {
         Ground::Water => [40, 70, 120],
         Ground::Road => [120, 112, 100],
         Ground::Woods => [34, 70, 38],
+        Ground::WoodsHeavy => [24, 52, 28],
         Ground::Wall => [150, 150, 158],
         Ground::Open => [100, 86, 64],
     }

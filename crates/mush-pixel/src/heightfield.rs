@@ -14,15 +14,17 @@
 //!
 //! - **Smooth relief**: a sample's height is interpolated between the four
 //!   nearest cell centres, so a hill is a slope and not a staircase.
-//! - **Blocks**: a wall stands `WALL_H` above its cell and woods
-//!   [`WOODS_H`], so the arena's buildings and tree lines still read as
-//!   solid; they are drawn as raised cells, flat-topped.
+//! - **Blocks**: a wall stands 3 m above its cell, light woods 6 m and heavy
+//!   woods 8 m — the sim's heights ([`Ground::height_cm`]), as is the eye's
+//!   1.5 m — so the arena's buildings and tree lines read as solid; they are
+//!   drawn as raised cells, flat-topped.
 //! - **Light**: each drawn sample is lit or shaded by its slope toward a sun
 //!   in the north-west — two levels, no more, so a frame stays inside the
 //!   palette PNG's 256 colours with the fog and the instruments.
 //! - **Sprites**: the units stand on the ground at their own cell's height,
 //!   and a per-pixel depth (the distance each pixel was drawn at) lets a
-//!   ridge hide half a tank.
+//!   ridge hide half a tank — but never all of a contact the sim reports,
+//!   which is then bracketed where it stands (the raycaster's rule).
 //!
 //! The colours are the raycaster's closed set (`Shades`), so the two
 //! producers draw the same ground the same colour.
@@ -42,12 +44,10 @@
 use crate::Frame;
 use crate::frame::Rgb;
 use crate::raycast::{
-    Base, Camera, EYE, FOG_CELLS, Ground, HORIZON, Map, PLANE, SKY_STEPS, SPRITE_H, SPRITE_W,
-    Shades, Sprite, SpriteKind, WALL_H, fog_step, tank,
+    Base, Camera, EYE_HEIGHT_CM, FOG_CELLS, Ground, HORIZON, Map, PLANE, SKY_STEPS,
+    SPRITE_HEIGHT_CM, SPRITE_WIDTH_CM, Shades, Sprite, SpriteAt, SpriteKind, draw_sprite, fog_step,
 };
 
-/// Woods' height above the ground, in cells (6 m at 10 m a cell).
-pub const WOODS_H: f32 = 0.6;
 /// How far out the march begins, in cells.
 const NEAR: f32 = 0.25;
 /// The march's first step, in cells; each step after is [`GROWTH`] times
@@ -192,11 +192,7 @@ impl Terrain {
     /// the ground, or a block standing on it.
     fn surface(&self, px: f32, py: f32) -> (Ground, f32) {
         let ground = self.map.get(px.floor() as i64, py.floor() as i64);
-        let raised = match ground {
-            Ground::Wall => WALL_H,
-            Ground::Woods => WOODS_H,
-            _ => 0.0,
-        };
+        let raised = ground.height_cm() as f32 / self.map.cell_cm() as f32;
         (ground, self.height(px, py) + raised)
     }
 
@@ -228,13 +224,14 @@ const LEVEL_GAIN: [f32; LEVELS] = [0.60, 0.80, 1.00, 1.15];
 /// metre-high terraces read.
 const RELIEF_GAIN: f32 = 4.0;
 /// The ground kinds a texel can be, in table order.
-const KINDS: [Ground; 6] = [
+const KINDS: [Ground; 7] = [
     Ground::Open,
     Ground::Grass,
     Ground::Water,
     Ground::Road,
     Ground::Wall,
     Ground::Woods,
+    Ground::WoodsHeavy,
 ];
 
 /// One level of a baked colour map: `kind * LEVELS + level` per texel,
@@ -429,13 +426,14 @@ fn base(ground: Ground, lit: bool) -> Base {
         Ground::Wall if lit => Base::WallLit,
         Ground::Wall => Base::WallDark,
         Ground::Woods => Base::Woods,
+        Ground::WoodsHeavy => Base::WoodsHeavy,
         // The floor's "line" shade is its darker twin: the shaded slope.
         g => Base::floor(g, !lit),
     }
 }
 
 /// Draw `terrain` from `cam` into `frame`, with `sprites` standing on it.
-/// The eye stands `EYE` above `eye_cm` when it is given (the cockpit
+/// The eye stands 1.5 m (the sim's sensor height) above `eye_cm` when it is given (the cockpit
 /// frame's `z_cm`, the sim's own elevation for the unit), else above the
 /// ground under the camera.
 pub fn render(
@@ -457,7 +455,8 @@ pub fn render(
     let (planex, planey) = (diry * PLANE, -dirx * PLANE);
     let hf = h as f32;
     let horizon = (h / 2) as f32;
-    let eye = eye_cm.map_or_else(|| terrain.height(posx, posy), |z| z as f32 / cell) + EYE;
+    let eye = eye_cm.map_or_else(|| terrain.height(posx, posy), |z| z as f32 / cell)
+        + EYE_HEIGHT_CM as f32 / cell;
     let shades = Shades::new();
 
     // The lowest row each column has drawn down to (exclusive): ground
@@ -548,47 +547,21 @@ fn draw_sprites(
         .filter(|(_, ty, _, _)| *ty > 0.05)
         .collect();
     placed.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let depth_at = |x: usize, y: usize| depth.get(y * w + x).copied().unwrap_or(f32::INFINITY);
     for (tx, ty, ground, kind) in placed {
-        let screenx = (w as f32 / 2.0) * (1.0 + tx / ty);
-        let hpx = SPRITE_H * hf / ty;
-        let wpx = SPRITE_W * hf / ty;
-        if hpx < 1.0 || wpx < 1.0 {
-            continue;
-        }
-        let bottom = horizon + (eye - ground) * hf / ty;
-        let top = bottom - hpx;
-        let left = screenx - wpx / 2.0;
-        let step = fog_step(ty);
-        let body = shades.shade(
-            match kind {
-                SpriteKind::Hostile => Base::Hostile,
-                SpriteKind::Friendly => Base::Friendly,
-                SpriteKind::Unknown => Base::Unknown,
-                SpriteKind::Wreck => Base::Wreck,
+        draw_sprite(
+            frame,
+            shades,
+            SpriteAt {
+                screenx: (w as f32 / 2.0) * (1.0 + tx / ty),
+                bottom: horizon + (eye - ground) * hf / ty,
+                depth: ty,
+                height: SPRITE_HEIGHT_CM as f32 / cell * hf / ty,
+                width: SPRITE_WIDTH_CM as f32 / cell * hf / ty,
+                kind,
             },
-            step,
+            &depth_at,
         );
-        let outline = shades.shade(Base::Outline, step);
-        let x0 = left.floor().max(0.0) as usize;
-        let x1 = ((left + wpx).ceil().max(0.0) as usize).min(w);
-        let y0 = top.floor().max(0.0) as usize;
-        let y1 = (bottom.ceil().max(0.0) as usize).min(h);
-        let (du, dv) = (1.0 / wpx, 1.0 / hpx);
-        for x in x0..x1 {
-            let u = (x as f32 + 0.5 - left) / wpx;
-            for y in y0..y1 {
-                if depth.get(y * w + x).is_some_and(|d| ty >= *d) {
-                    continue;
-                }
-                let v = (y as f32 + 0.5 - top) / hpx;
-                if !tank(u, v) {
-                    continue;
-                }
-                let edge =
-                    !tank(u - du, v) || !tank(u + du, v) || !tank(u, v - dv) || !tank(u, v + dv);
-                frame.put(x, y, if edge { outline } else { body });
-            }
-        }
     }
 }
 
@@ -745,10 +718,10 @@ mod tests {
         assert!(first_ground >= horizon, "row {first_ground}");
     }
 
-    /// A tank behind a ridge is hidden by it; the same tank on open ground
-    /// is drawn.
+    /// A tank behind a ridge is hidden by it and bracketed instead; the same
+    /// tank on open ground is drawn.
     #[test]
-    fn a_ridge_hides_a_tank_behind_it() {
+    fn a_ridge_hides_a_tank_and_brackets_it() {
         let mut map = Map::new(64, 64, 1000);
         for y in 0..64 {
             for x in 0..64 {
@@ -782,7 +755,23 @@ mod tests {
         }
         let mut hidden = Frame::new(320, 220);
         render(&mut hidden, &t, &cam, None, &[tank_at]);
-        assert!(!reddish(&hidden), "a 15 m ridge hides it");
+        // The silhouette is hidden (its fogged body colour nowhere), and the
+        // contact, which the sim reports, is bracketed in its unfogged one.
+        let shades = Shades::new();
+        let count = |f: &Frame, px: crate::frame::Rgb| {
+            (0..f.width())
+                .flat_map(|x| (0..f.height()).map(move |y| (x, y)))
+                .filter(|&(x, y)| f.get(x, y) == px)
+                .count()
+        };
+        assert_eq!(
+            count(&hidden, shades.shade(Base::Hostile, fog_step(20.0))),
+            0
+        );
+        assert!(
+            count(&hidden, shades.shade(Base::Hostile, 0)) >= 8,
+            "the bracket"
+        );
     }
 
     #[test]

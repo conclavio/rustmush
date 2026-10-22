@@ -50,7 +50,8 @@ fn ground_of(class: u8) -> Ground {
         4 | 15 => Ground::Water,
         1 | 7 => Ground::Road,
         9 | 10 => Ground::Wall,
-        13 | 14 => Ground::Woods,
+        13 => Ground::Woods,
+        14 => Ground::WoodsHeavy,
         _ => Ground::Open,
     }
 }
