@@ -98,14 +98,14 @@ fn real_carrier_pack_is_unarmed_fieldable_and_keeps_dray_out_of_the_trial() -> T
     let p = policy()?;
     let s = subject(&p, SOURCE)?;
     let trial = Trial::open(&p, &s, "Transit", Role::Transit, Case::Convoy, 2350)?;
-    assert_eq!(trial.units(), 3);
-    assert!(trial.native_ms() > 0);
-    assert!(
+    check_eq!(trial.units(), 3);
+    check!(trial.native_ms() > 0);
+    check!(
         p.references()
             .iter()
             .any(|r| r.key().id.as_str() == "tacsim.unit.conduct_carrier")
     );
-    assert!(
+    check!(
         !p.references()
             .iter()
             .any(|r| r.key().id.as_str().contains("dray"))
@@ -123,8 +123,8 @@ fn real_carrier_pack_is_unarmed_fieldable_and_keeps_dray_out_of_the_trial() -> T
         .get(p.carrier())
         .ok_or("actual carrier binding")?;
     let unit = crate::definitions::to_tactical_unit(spec, binding, mush_core::ObjId(900))?;
-    assert_eq!(unit.components().count(), spec.components.len());
-    assert!(spec.components.iter().all(|c| !matches!(
+    check_eq!(unit.components().count(), spec.components.len());
+    check!(spec.components.iter().all(|c| !matches!(
         &c.role,
         crate::definitions::unit::ComponentRole::Weapon { .. }
     )));
@@ -132,24 +132,24 @@ fn real_carrier_pack_is_unarmed_fieldable_and_keeps_dray_out_of_the_trial() -> T
         .ground_stowage
         .get(&p.cargo().compartment)
         .ok_or("actual compartment")?;
-    assert_eq!(
+    check_eq!(
         p.compartment(),
         &crate::port::capacity::Compartment::from_stowage(&p.cargo().compartment, actual)
     );
-    assert_eq!(
+    check_eq!(
         binding.spec.rules.data().get("ground_stowage"),
         Some(&serde_json::json!(spec.ground_stowage))
     );
     // This authored pack must obey the ordinary strict section rule. Cargo
     // destruction wrecks its carrier; an empty consequence list is not valid
     // content, even when its recomputed pack digest is otherwise correct.
-    assert_eq!(
+    check_eq!(
         spec.section(&p.cargo().compartment)
             .ok_or("actual cargo section")?
             .consequences,
         vec![crate::definitions::unit::Consequence::DestroyUnit]
     );
-    assert!(
+    check!(
         changed_carrier(|unit| {
             let cargo = unit["sections"]
                 .as_array_mut()
@@ -191,11 +191,11 @@ fn capture_refuses_missing_changed_or_unfitted_actual_carrier_capacity() -> Test
         // These are otherwise valid, actually rebound definitions, not a test
         // mutation of a cached capacity or of an already-captured Policy.
         let catalog = crate::definitions::Catalog::build_fielded(&[changed.clone()], crate::NS)?;
-        assert_ne!(
+        check_ne!(
             catalog.references.get(original.carrier()),
             Some(original_ref)
         );
-        assert!(
+        check!(
             policy_with(changed).is_err(),
             "changed actual carrier cannot keep the trial admission"
         );
@@ -227,7 +227,7 @@ fn ordinary_unit_loader_enforces_ground_compartment_bounds_and_section_identity(
                 );
             }
         });
-        assert!(
+        check!(
             result.is_err(),
             "ordinary authored unit validation must refuse malformed stowage"
         );
@@ -246,8 +246,8 @@ fn absent_ground_stowage_preserves_existing_unit_descriptors_and_exact_refs() ->
             let id = mush_core::CanonicalId::new(descriptor.id().as_str())?;
             let spec = catalog.specs.get(&id).ok_or("ordinary spec")?;
             let bound = catalog.bindings.get(&id).ok_or("ordinary binding")?;
-            assert!(spec.ground_stowage.is_empty());
-            assert!(serde_json::to_value(spec)?.get("ground_stowage").is_none());
+            check!(spec.ground_stowage.is_empty());
+            check!(serde_json::to_value(spec)?.get("ground_stowage").is_none());
             // The prior six-key rules plus optional existing class, spelled
             // independently so an accidental empty new key moves this proof.
             let consequences: Vec<_> = spec.sections.iter().map(|s| serde_json::json!({
@@ -268,9 +268,9 @@ fn absent_ground_stowage_preserves_existing_unit_descriptors_and_exact_refs() ->
                     descriptor.version(),
                 )?
                 .as_current();
-            assert_eq!(old.payload(), descriptor.payload());
+            check_eq!(old.payload(), descriptor.payload());
             let exact = prior.register(owner.clone(), old)?;
-            assert_eq!(exact, bound.spec.definition);
+            check_eq!(exact, bound.spec.definition);
             continue;
         } else {
             descriptor.clone()
@@ -285,14 +285,14 @@ fn actual_source_wrong_profile_role_and_changed_source_cannot_enter_success_evid
 {
     let p = policy()?;
     let s = subject(&p, SOURCE)?;
-    assert!(Trial::open(&p, &s, "unknown", Role::Escort, Case::Convoy, 2350).is_err());
-    assert!(Trial::open(&p, &s, "Escort", Role::Escort, Case::BlockedRoute, 2350).is_err());
-    assert!(
+    check!(Trial::open(&p, &s, "unknown", Role::Escort, Case::Convoy, 2350).is_err());
+    check!(Trial::open(&p, &s, "Escort", Role::Escort, Case::BlockedRoute, 2350).is_err());
+    check!(
         PreparedSubject::prepare(&revision(SOURCE)?, "fn think(v,c) {}", &p.physics.cfg.arena)
             .is_err()
     );
     let wrong = Trial::open(&p, &s, "Escort", Role::Transit, Case::Convoy, 2350)?;
-    assert!(finish(wrong).is_err());
+    check!(finish(wrong).is_err());
     let mut wrong = Run::new(p, s, "Escort".into(), Role::Transit)?;
     let mut refused = false;
     for _ in 0..100 {
@@ -302,12 +302,12 @@ fn actual_source_wrong_profile_role_and_changed_source_cannot_enter_success_evid
             break;
         }
     }
-    assert!(
+    check!(
         refused,
         "actual wrong role must refuse during source execution"
     );
-    assert!(wrong.next_unit_ms().is_err());
-    assert!(wrong.advance(u64::MAX).is_err());
+    check!(wrong.next_unit_ms().is_err());
+    check!(wrong.advance(u64::MAX).is_err());
     Ok(())
 }
 
@@ -319,11 +319,11 @@ fn real_native_role_cases_repeat_complete_measured_evidence() -> TestResult {
         for case in Case::for_role(role) {
             let a = finish(Trial::open(&p, &s, profile(role), role, *case, 2350)?)?;
             let b = finish(Trial::open(&p, &s, profile(role), role, *case, 2350)?)?;
-            assert!(
+            check!(
                 a == b,
                 "same native conduct input must reproduce full bounded evidence"
             );
-            assert!(
+            check!(
                 a.passed(),
                 "actual source must pass its complete native role scenario: {}",
                 a.failure_summary()
@@ -348,7 +348,7 @@ fn an_actual_always_hold_program_cannot_qualify_delivery() -> TestResult {
         Case::Convoy,
         2350,
     )?)?;
-    assert!(!row.passed());
+    check!(!row.passed());
     Ok(())
 }
 
@@ -356,7 +356,7 @@ fn an_actual_always_hold_program_cannot_qualify_delivery() -> TestResult {
 fn silent_answers_cannot_keep_a_native_route_after_the_role_must_stop() -> TestResult {
     let p = policy()?;
     let marker = "    let retry = card.get(\"retry_ms\");";
-    assert_eq!(SOURCE.matches(marker).count(), 1);
+    check_eq!(SOURCE.matches(marker).count(), 1);
     let adversarial = SOURCE.replace(
         marker,
         r#"
@@ -372,11 +372,11 @@ fn silent_answers_cannot_keep_a_native_route_after_the_role_must_stop() -> TestR
         let mut trial = Trial::open(&p, &bad, profile(role), role, Case::Convoy, 2350)?;
         trial.hold_after_real_motion()?;
         let row = finish(trial)?;
-        assert!(
+        check!(
             row.observations().retained_move > 0,
             "actual silent continuation must be observed before its later Hold"
         );
-        assert!(!row.passed());
+        check!(!row.passed());
 
         // The same actual order transition permits native answer landing and
         // braking. It must not require instantaneous speed zero at collection.
@@ -384,8 +384,8 @@ fn silent_answers_cannot_keep_a_native_route_after_the_role_must_stop() -> TestR
         let mut trial = Trial::open(&p, &good, profile(role), role, Case::Convoy, 2350)?;
         trial.hold_after_real_motion()?;
         let row = finish(trial)?;
-        assert_eq!(row.observations().retained_move, 0);
-        assert_eq!(row.observations().forbidden_move, 0);
+        check_eq!(row.observations().retained_move, 0);
+        check_eq!(row.observations().forbidden_move, 0);
     }
     Ok(())
 }
@@ -396,12 +396,12 @@ fn insufficient_actual_unit_time_leaves_paired_worker_unchanged() -> TestResult 
     let s = subject(&p, SOURCE)?;
     let mut run = Run::new(p, s, "Transit".into(), Role::Transit)?;
     let required = run.next_unit_ms()?;
-    assert!(required > 0);
-    assert!(run.advance(required - 1).is_err());
-    assert_eq!(run.next_unit_ms()?, required);
+    check!(required > 0);
+    check!(run.advance(required - 1).is_err());
+    check_eq!(run.next_unit_ms()?, required);
     let progress = run.advance(required)?;
-    assert!(progress.charged_unit_ms <= required);
-    assert!(progress.completed.is_none());
+    check!(progress.charged_unit_ms <= required);
+    check!(progress.completed.is_none());
     Ok(())
 }
 
@@ -417,14 +417,14 @@ fn complete_actual_paired_worker_returns_only_its_measured_output() -> TestResul
             .checked_add(progress.charged_unit_ms)
             .ok_or("charged overflow")?;
         if let Some(result) = progress.completed {
-            assert!(
+            check!(
                 result.passed(),
                 "actual paired Conduct failure: {}",
                 result.first_failure_summary()
             );
-            assert_eq!(result.measured_unit_ms(), charged);
-            assert!(serde_json::to_vec(&result)?.len() < 256 * 1024);
-            assert!(run.advance(u64::MAX).is_err());
+            check_eq!(result.measured_unit_ms(), charged);
+            check!(serde_json::to_vec(&result)?.len() < 256 * 1024);
+            check!(run.advance(u64::MAX).is_err());
             return Ok(());
         }
     }

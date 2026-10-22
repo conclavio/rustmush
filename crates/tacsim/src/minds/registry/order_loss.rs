@@ -611,7 +611,7 @@ mod tests {
             };
             let mut loss = Loss::open(&policy, &subject, &case)?;
             let first = loss.initial.as_ref().ok_or("real opening think")?;
-            assert_eq!(
+            check_eq!(
                 loss.facts(&first.view) & (MOVE | LOCKED | HURT),
                 MOVE | LOCKED | HURT,
                 "one captured picture supplies three distinct facts"
@@ -636,16 +636,16 @@ mod tests {
                 }
             }
             let result = finished.ok_or("all real loss witnesses")?;
-            assert!(matches!(result.outcome(), CaseOutcome::Conformant {}));
-            assert!(result.coverage().complete());
-            assert_eq!(result.coverage().required_thinks(), 4);
-            assert_eq!(result.coverage().evaluated_thinks(), 4);
-            assert!(result.meter().thinks() >= 4);
-            assert_eq!(loss.phase_landings.len(), OBSERVED_PHASES.len());
+            check!(matches!(result.outcome(), CaseOutcome::Conformant {}));
+            check!(result.coverage().complete());
+            check_eq!(result.coverage().required_thinks(), 4);
+            check_eq!(result.coverage().evaluated_thinks(), 4);
+            check!(result.meter().thinks() >= 4);
+            check_eq!(loss.phase_landings.len(), OBSERVED_PHASES.len());
             let mut sequences = loss.phase_landings.values().copied().collect::<Vec<_>>();
             sequences.sort_unstable();
             sequences.dedup();
-            assert_eq!(
+            check_eq!(
                 sequences.len(),
                 OBSERVED_PHASES.len(),
                 "four distinct actual answers"
@@ -658,46 +658,46 @@ mod tests {
                 .recent(OWN, Some(crate::arena::author_trace::THINKS));
             for phase in OBSERVED_PHASES {
                 let sequence = loss.phase_landings.get(&phase).ok_or("landed phase")?;
-                assert!(traces.iter().any(|row| row.think_seq == *sequence
+                check!(traces.iter().any(|row| row.think_seq == *sequence
                     && row.settled
                     && matches!(row.outcome, Outcome::Applied)));
             }
             if !armed {
-                assert!(
+                check!(
                     result.meter().thinks() < 6,
                     "the six required facts must not be mislabeled as six metered thinks"
                 );
             }
-            assert_eq!(
+            check_eq!(
                 loss.applied & (MOVE | HOLD | WITHDRAW | LOCKED | LOST | HURT),
                 MOVE | HOLD | WITHDRAW | LOCKED | LOST | HURT
             );
-            assert_eq!(
+            check_eq!(
                 loss.applied & (MISS | DRY),
                 if armed { MISS | DRY } else { 0 }
             );
-            assert_eq!(billed, u64::try_from(loss.arena.now_ms)?);
-            assert_eq!(
+            check_eq!(billed, u64::try_from(loss.arena.now_ms)?);
+            check_eq!(
                 loss.transitions.len(),
                 6,
                 "three real possess/release pairs"
             );
             for pair in loss.transitions.as_chunks::<2>().0 {
                 let [(_, pilot, before), (_, mind, after)] = pair;
-                assert_eq!((*pilot, *mind), (0, 1));
-                assert_eq!(before, after, "custody preserved actual memory");
+                check_eq!((*pilot, *mind), (0, 1));
+                check_eq!(before, after, "custody preserved actual memory");
             }
-            assert!(loss.arena.contacts.get(OWN, CONTACT).is_none());
-            assert!(loss.arena.now_ms >= loss.arena.contact_ttl_ms());
+            check!(loss.arena.contacts.get(OWN, CONTACT).is_none());
+            check!(loss.arena.now_ms >= loss.arena.contact_ttl_ms());
             let memory: serde_json::Value =
                 serde_json::from_slice(&loss.arena.minds.get(&OWN).ok_or("mind")?.memory)?;
-            assert!(
+            check!(
                 memory
                     .get("visits")
                     .and_then(serde_json::Value::as_u64)
                     .is_some_and(|v| v >= 4)
             );
-            assert!(loss.advance(u64::from(case.physics.native_ms)).is_err());
+            check!(loss.advance(u64::from(case.physics.native_ms)).is_err());
         }
         Ok(())
     }
@@ -706,12 +706,12 @@ mod tests {
         let mut policy = super::super::tests::frozen_policy()?;
         policy.cfg.sensors.pass_ms = 10_000;
         policy.cfg.sensors.lost_after_passes = 20;
-        assert_eq!(Loss::expiry_budget(&policy)?, 210_000);
+        check_eq!(Loss::expiry_budget(&policy)?, 210_000);
         let (arena, _) = probes::loss_opening(&policy, CoreClass::I, false)?;
-        assert_eq!(arena.contact_ttl_ms(), 200_000);
+        check_eq!(arena.contact_ttl_ms(), 200_000);
         policy.cfg.sensors.pass_ms = u32::MAX;
         policy.cfg.sensors.lost_after_passes = u32::MAX;
-        assert!(
+        check!(
             Loss::expiry_budget(&policy).is_err(),
             "unrepresentable real time refuses admission"
         );

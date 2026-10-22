@@ -126,7 +126,7 @@ fn prepare_public(
         let room = world.engine.world.get(actor).and_then(|o| o.location);
         format!("signed personal licence public offer: wanted {verb} for {id} as {actor:?} in {room:?}; projected {verbs:?}")
     })?;
-    assert!(
+    check!(
         matching.next().is_none(),
         "ambiguous actual personal licence line offer"
     );
@@ -149,7 +149,7 @@ fn prepare_public(
         },
     )?;
     let (actual, request, _) = resolved.into_authoritative_parts();
-    assert_eq!(actual, exact);
+    check_eq!(actual, exact);
     Ok(world
         .engine
         .prepare_registered_composed_resolved_authoritative_action(
@@ -274,13 +274,13 @@ fn cash(world: &mut PlayerWorld) -> TestResult {
         .account(WalletId(0))
         .ok_or("buyer cash")?
         .posted_balance;
-    assert_eq!(
+    check_eq!(
         after,
         before
             .checked_add(Amount::from_minor(1000))
             .ok_or("mint amount")?
     );
-    assert!(after >= Amount::from_minor(100));
+    check!(after >= Amount::from_minor(100));
     Ok(())
 }
 fn file(
@@ -292,15 +292,15 @@ fn file(
     let saved = source(&world)?;
     let parent: PaidTermRecord =
         serde_json::from_value(one(rows(&disk(&world), "roll", "roll_mind_paid_term"))?)?;
-    assert!(matches!(parent.terms().form(), PaidForm::OpenResale {}));
+    check!(matches!(parent.terms().form(), PaidForm::OpenResale {}));
     let measured: RatingReceipt = serde_json::from_value(
         rows(&disk(&world), "roll", "rating_receipts")
             .into_iter()
             .find(|r| r.pointer("/publication/job") == Some(&json!(rating.job())))
             .ok_or("actual complete marked receipt")?,
     )?;
-    assert_eq!(measured.reference()?, *rating);
-    assert_eq!(measured.subject().revision().revision(), saved.reference());
+    check_eq!(measured.reference()?, *rating);
+    check_eq!(measured.subject().revision().revision(), saved.reference());
     commit(
         &mut world,
         "roll",
@@ -313,7 +313,7 @@ fn file(
     let rev = saved.reference();
     let params = json!({"shell_request":RequestUid::from_bytes(FIRST.to_be_bytes()),"mind":rev.key.mind,"revision":rev.key.number,"revision_digest":rev.digest,
         "rating_job":rating.job(),"rating_id":rating.id(),"rating_digest":rating.receipt_digest(),"payer":WalletId(2),"charter_name":"Actual paid derivative"});
-    assert!(
+    check!(
         prepare(
             &mut world,
             "roll",
@@ -431,18 +431,18 @@ fn title_fences(f: &PurchaseFixture, filed: &Durable, owner: LicenceId) -> TestR
             stage(
                 &mut world, definition, BUYER, number, params, prepared, output,
             )?;
-            assert!(
+            check!(
                 world.transfer_charter(charter, GOD, 49_000_080).is_err(),
                 "title moved under a staged listing"
             );
         } else {
-            assert!(
+            check!(
                 world.transfer_charter(charter, GOD, 49_000_090).is_err(),
                 "title moved under a prepared listing"
             );
             drop((definition, params, prepared, output));
         }
-        assert_eq!(
+        check_eq!(
             world
                 .engine
                 .world
@@ -454,8 +454,8 @@ fn title_fences(f: &PurchaseFixture, filed: &Durable, owner: LicenceId) -> TestR
                 .title_owner,
             EconomicOwner::Object(BUYER)
         );
-        assert!(rows(&disk(&world), "market", "market_mind_entitlement_listing").is_empty());
-        assert!(rows(&disk(&world), "roll", "roll_mind_filed_royalty_terms").is_empty());
+        check!(rows(&disk(&world), "market", "market_mind_entitlement_listing").is_empty());
+        check!(rows(&disk(&world), "roll", "roll_mind_filed_royalty_terms").is_empty());
     }
     Ok(())
 }
@@ -463,7 +463,7 @@ fn merge_login_accounts(f: &PurchaseFixture) -> TestResult<mush_core::AccountId>
     let mut values = f.accounts.values.lock().map_err(module_error)?;
     let requester = *values.get(&GOD).ok_or("requester login account")?;
     let seller = *values.get(&BUYER).ok_or("seller login account")?;
-    assert_ne!(requester, seller);
+    check_ne!(requester, seller);
     f.accounts.epoch.invalidate();
     values.insert(BUYER, requester);
     Ok(seller)
@@ -515,12 +515,12 @@ fn account_fences(
             restore_login_account(f, seller)?;
             refused
         };
-        assert!(
+        check!(
             refused,
             "current or retained account capture must refuse {id}"
         );
-        assert_eq!(balances(&world)?, before);
-        assert!(
+        check_eq!(balances(&world)?, before);
+        check!(
             disk(&world) == original_disk,
             "account refusal changed retained rows"
         );
@@ -545,17 +545,17 @@ fn transactions(
         "market_mind_entitlement_quote",
     ))?)?;
     let qv = serde_json::to_value(&q)?;
-    assert_eq!(qv.pointer("/product/protocol"), Some(&json!("derived_v1")));
-    assert_eq!(
+    check_eq!(qv.pointer("/product/protocol"), Some(&json!("derived_v1")));
+    check_eq!(
         qv.pointer("/product/grant/downstream/royalty_permille"),
         Some(&json!(100))
     );
     let chain: FiledRoyaltyTermsV1 =
         serde_json::from_value(qv.get("royalty").ok_or("royalty")?.clone())?;
-    assert_eq!(chain.edges().len(), 1);
+    check_eq!(chain.edges().len(), 1);
     let edge = chain.edges().first().ok_or("actual acquisition")?;
-    assert_eq!(edge.royalty_permille(), 0);
-    assert!(matches!(
+    check_eq!(edge.royalty_permille(), 0);
+    check!(matches!(
         edge.basis(),
         RoyaltyBasisV1::LegacySourceFormsV2Zero { .. }
     ));
@@ -577,8 +577,8 @@ fn transactions(
         FIRST + 4,
         json!({"quote":token(FIRST+3)}),
     )?;
-    assert_eq!(balances(&world)?, before);
-    assert!(rows(&disk(&world), "roll", "roll_mind_entitlement_purchase").is_empty());
+    check_eq!(balances(&world)?, before);
+    check!(rows(&disk(&world), "roll", "roll_mind_entitlement_purchase").is_empty());
     let (writes, install) = prepared.into_parts();
     apply(&mut world, &writes, install)?;
     let funded = capture(&world, &disk(&world));
@@ -593,7 +593,7 @@ fn transactions(
     for actor in [GOD, BUYER] {
         world.engine.world.move_to(actor, ROOM)?;
     }
-    assert_eq!(
+    check_eq!(
         allocation(&world, FIRST + 4)?.phase(),
         PurchasePhase::Funded {}
     );
@@ -610,23 +610,23 @@ fn transactions(
             .iter()
             .find(|(key, _, _)| key == id)
             .ok_or("retained account")?;
-        assert_eq!(
+        check_eq!(
             actual.1,
             posted
                 .checked_add(Amount::from_minor(delta))
                 .ok_or("exact payout")?
         );
-        assert_eq!(actual.2, *held);
+        check_eq!(actual.2, *held);
     }
     let a = allocation(&world, FIRST + 4)?;
-    assert_eq!(a.protocol(), EntitlementProtocol::DerivedV1);
-    assert_eq!(
+    check_eq!(a.protocol(), EntitlementProtocol::DerivedV1);
+    check_eq!(
         a.phase(),
         PurchasePhase::Granted {
             commit: token(FIRST + 5)
         }
     );
-    assert_eq!(a.holder(), GOD);
+    check_eq!(a.holder(), GOD);
     let term = own_term(&world, a.licence())?;
     let parent: PaidTermRecord = serde_json::from_value(
         rows(&disk(&world), "roll", "roll_mind_paid_term")
@@ -634,26 +634,26 @@ fn transactions(
             .find(|r| r.get("operation") != Some(&json!(a.operation())))
             .ok_or("parent term")?,
     )?;
-    assert!(term.window().grace_end().get() > parent.window().grace_end().get());
+    check!(term.window().grace_end().get() > parent.window().grace_end().get());
     let economics: PaidTermEconomicsV1 = serde_json::from_value(one(rows(
         &disk(&world),
         "roll",
         "roll_mind_paid_term_economics",
     ))?)?;
-    assert_eq!(&economics, a.economics());
-    assert_eq!(economics.grant().renewal().price(), Amount::from_minor(73));
+    check_eq!(&economics, a.economics());
+    check_eq!(economics.grant().renewal().price(), Amount::from_minor(73));
     let receipt: EntitlementReceiptV1 = serde_json::from_value(one(rows(
         &disk(&world),
         "market",
         "market_mind_entitlement_receipt",
     ))?)?;
-    assert_eq!(receipt.operation(), a.operation());
+    check_eq!(receipt.operation(), a.operation());
     let purchase: EntitlementPurchaseV1 = serde_json::from_value(one(rows(
         &disk(&world),
         "market",
         "market_mind_entitlement_purchase",
     ))?)?;
-    assert_eq!(purchase.phase(), a.phase());
+    check_eq!(purchase.phase(), a.phase());
     let actual = world
         .engine
         .world
@@ -661,12 +661,12 @@ fn transactions(
         .ok_or("economy")?
         .purchase_receipt_audit()
         .get(a.operation())?;
-    assert!(actual.terminal().ok_or("actual E4 terminal")?.granted());
+    check!(actual.terminal().ok_or("actual E4 terminal")?.granted());
     let snapshot = capture(&world, &disk(&world));
     let cold = PlayerWorld::boot_entitlements(f, &snapshot)?;
-    assert_eq!(balances(&cold)?, balances(&world)?);
-    assert!(
-        PlayerWorld::boot_dependent(f, &snapshot).is_err(),
+    check_eq!(balances(&cold)?, balances(&world)?);
+    check!(
+        crate::test_checks::refused(PlayerWorld::boot_dependent(f, &snapshot))?,
         "old-only composition cannot accept new paid history"
     );
     // Each half of the immutable pair is mandatory, including all-row loss.
@@ -681,8 +681,8 @@ fn transactions(
         missing.disk.retain(|(ns, _), row| {
             !(ns == owner_ns && row.pointer("/family/id") == Some(&json!(family)))
         });
-        assert!(
-            PlayerWorld::boot_entitlements(f, &missing).is_err(),
+        check!(
+            crate::test_checks::refused(PlayerWorld::boot_entitlements(f, &missing))?,
             "missing {family}"
         );
     }
@@ -728,16 +728,16 @@ fn original_v3(f: &PurchaseFixture, filed: &Durable) -> TestResult {
         json!({"operation":token(FIRST+62)}),
     )?;
     let a = allocation(&world, FIRST + 62)?;
-    assert_eq!(a.protocol(), EntitlementProtocol::OriginalV3);
-    assert_eq!(
+    check_eq!(a.protocol(), EntitlementProtocol::OriginalV3);
+    check_eq!(
         a.economics().grant().downstream().royalty_permille(),
         Some(150)
     );
-    assert_eq!(
+    check_eq!(
         a.economics().grant().renewal().price(),
         Amount::from_minor(73)
     );
-    assert_eq!(a.terms().form(), PaidForm::OpenResale {});
+    check_eq!(a.terms().form(), PaidForm::OpenResale {});
     let snapshot = capture(&world, &disk(&world));
     let _ = PlayerWorld::boot_entitlements(f, &snapshot)?;
     renewal::service_tests::unavailable_buyer(f, &snapshot, &a)?;
@@ -774,8 +774,16 @@ fn lapse_refund(f: &PurchaseFixture, filed: &Durable, owner: LicenceId) -> TestR
         .engine
         .world
         .set_now(parent.window().grace_end().get());
-    assert!(list(&mut world, owner, FIRST + 73).is_err());
-    assert!(grant(&mut world, FIRST + 72, FIRST + 74).is_err()); // Quote is only one second old.
+    check!(crate::test_checks::refused(list(
+        &mut world,
+        owner,
+        FIRST + 73
+    ))?);
+    check!(crate::test_checks::refused(grant(
+        &mut world,
+        FIRST + 72,
+        FIRST + 74
+    ))?); // Quote is only one second old.
     commit(
         &mut world,
         "market",
@@ -785,20 +793,20 @@ fn lapse_refund(f: &PurchaseFixture, filed: &Durable, owner: LicenceId) -> TestR
         FIRST + 75,
         json!({"operation":token(FIRST+72)}),
     )?;
-    assert_eq!(balances(&world)?, before);
+    check_eq!(balances(&world)?, before);
     let a = allocation(&world, FIRST + 72)?;
-    assert_eq!(
+    check_eq!(
         a.phase(),
         PurchasePhase::Refunded {
             commit: token(FIRST + 75)
         }
     );
-    assert!(
+    check!(
         !rows(&disk(&world), "roll", "roll_mind_personal_paid_licence")
             .iter()
             .any(|r| r.get("id") == Some(&json!(a.licence())))
     );
-    assert!(rows(&disk(&world), "roll", "roll_mind_paid_term_economics").is_empty());
+    check!(rows(&disk(&world), "roll", "roll_mind_paid_term_economics").is_empty());
     let snapshot = capture(&world, &disk(&world));
     let _ = PlayerWorld::boot_entitlements(f, &snapshot)?;
     Ok(())
@@ -841,28 +849,28 @@ fn source_answer(
         } = event
         {
             answers += 1;
-            assert_eq!(*audience, mush_core::Audience::Conn(conn));
+            check_eq!(*audience, mush_core::Audience::Conn(conn));
             match response {
                 MindResponse::FiledSource {
                     source_sha256,
                     lines,
                     ..
                 } => {
-                    assert_eq!(Some(source_sha256.clone()), expected.map(|h| h.to_hex()));
-                    assert!(!lines.is_empty());
+                    check_eq!(Some(source_sha256.clone()), expected.map(|h| h.to_hex()));
+                    check!(!lines.is_empty());
                 }
                 MindResponse::Error { message, .. } => {
-                    assert!(expected.is_none(), "paid source refused: {message}")
+                    check!(expected.is_none(), "paid source refused: {message}")
                 }
                 _ => return Err("unexpected paid source response".into()),
             }
         }
         if serde_json::to_string(event)?.contains("this.landed") {
-            assert!(expected.is_some());
-            assert_eq!(*audience, mush_core::Audience::Conn(conn));
+            check!(expected.is_some());
+            check_eq!(*audience, mush_core::Audience::Conn(conn));
         }
     }
-    assert_eq!(answers, 1);
+    check_eq!(answers, 1);
     Ok(())
 }
 async fn customer(

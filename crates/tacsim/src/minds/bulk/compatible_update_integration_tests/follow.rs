@@ -81,7 +81,7 @@ fn signed(
         },
     )?;
     let (actual, resolved, _) = resolved.into_authoritative_parts();
-    assert_eq!(actual, action);
+    check_eq!(actual, action);
     Ok(w.engine
         .prepare_registered_composed_resolved_authoritative_action(&action, &resolved, token(n))?)
 }
@@ -129,28 +129,25 @@ fn listing(w: &mut PlayerWorld, n: u128, expected: &FiledRecord) -> TestResult {
             .find(|v| v.get("publication") == Some(&json!(token(n))))
             .ok_or("actual listing")?,
     )?;
-    assert_eq!(row.subject().filed(), expected.content().id());
-    assert_eq!(row.subject().revision(), expected.content().revision());
+    check_eq!(row.subject().filed(), expected.content().id());
+    check_eq!(row.subject().revision(), expected.content().revision());
     Ok(())
 }
 fn unavailable(w: &mut PlayerWorld, n: u128) -> TestResult {
     let back = to_market(w)?;
     let before = disk(w);
-    assert!(
-        signed(
-            w,
-            "market",
-            "list_original_mind",
-            GOD,
-            n,
-            json!({"owner_licence":"1"})
-        )
-        .is_err()
-    );
-    assert!(disk(w) == before, "refused Follow changed durable records");
+    check!(crate::test_checks::refused(signed(
+        w,
+        "market",
+        "list_original_mind",
+        GOD,
+        n,
+        json!({"owner_licence":"1"})
+    ))?);
+    check!(disk(w) == before, "refused Follow changed durable records");
     back_from_market(w, back)?;
     let events = w.say(GOD, "SIM MIND /filed")?;
-    assert!(!PlayerWorld::private_text(&events, GOD).contains("filed:1:"));
+    check!(!PlayerWorld::private_text(&events, GOD).contains("filed:1:"));
     Ok(())
 }
 fn withdraw(w: &mut PlayerWorld, n: u128, filed: FiledRevisionId) -> TestResult {
@@ -260,17 +257,20 @@ pub(super) async fn exercise(
             if after_stage {
                 stage_listing(&mut fence, n, p, o)?;
                 assert!(
-                    withdraw(
+                    crate::test_checks::is_refusal(withdraw(
                         &mut fence,
                         START + 12 + u128::from(after_stage),
                         new.content().id(),
-                    )
-                    .is_err(),
+                    )),
                     "withdrawal landed under a staged listing"
                 );
             } else {
                 assert!(
-                    withdraw(&mut fence, START + 12, new.content().id()).is_err(),
+                    crate::test_checks::is_refusal(withdraw(
+                        &mut fence,
+                        START + 12,
+                        new.content().id()
+                    )),
                     "withdrawal landed under a prepared listing"
                 );
                 drop((p, o));
@@ -322,7 +322,7 @@ pub(super) async fn exercise(
             remove_family(&mut missing, "roll", "roll_mind_line_update"),
             1
         );
-        assert!(boot(f, &missing, None).is_err());
+        assert!(crate::test_checks::is_refusal(boot(f, &missing, None)));
 
         // A separate real Org-authorized exact-filed recall has the same
         // selection effect, without recalling its shared historical rating.

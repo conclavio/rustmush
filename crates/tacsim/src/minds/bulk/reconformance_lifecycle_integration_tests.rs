@@ -79,10 +79,10 @@ fn resolved(
     let offer = offers
         .projected_for_action(&request.action)
         .ok_or("actual private Registry offer")?;
-    assert_eq!(request.actor, GOD);
-    assert_eq!(request.subject, PerceivedRef::SelfActor);
-    assert!(request.targets.is_empty());
-    assert_eq!(
+    check_eq!(request.actor, GOD);
+    check_eq!(request.subject, PerceivedRef::SelfActor);
+    check!(request.targets.is_empty());
+    check_eq!(
         request.parameters,
         json!({}),
         "fixed selector has no public authority fields"
@@ -120,7 +120,7 @@ fn land(w: &mut PlayerWorld, request: &AuthoritativeSubmit, n: u128) -> TestResu
     let (prepared, _) = w
         .engine
         .prepare_registered_composed_resolved_authoritative_action(&action, &resolved, token(n))?;
-    assert!(
+    check!(
         disk(w) == old,
         "preparation did not publish the measured result"
     );
@@ -463,7 +463,7 @@ async fn scenario(
             let mut corrupt = result.clone();
             assert!(remove_family(&mut corrupt, "roll", family) > 0);
             assert!(
-                PlayerWorld::boot(&configured, &corrupt).is_err(),
+                crate::test_checks::is_refusal(PlayerWorld::boot(&configured, &corrupt)),
                 "missing re-conformance history refused"
             );
         }
@@ -499,7 +499,7 @@ async fn scenario(
         for family in [CAUSE, "rating_nonconformance", HEAD] {
             let mut corrupt = rejected.clone();
             assert!(remove_family(&mut corrupt, "roll", family) > 0);
-            assert!(PlayerWorld::boot(&rejected_config, &corrupt).is_err());
+            assert!(crate::test_checks::is_refusal(PlayerWorld::boot(&rejected_config, &corrupt)));
         }
         let tasks = w.tasks.clone();
         drop(w);
@@ -526,12 +526,12 @@ fn expensive_filed() -> TestResult<(PurchaseFixture, Durable)> {
             ) && row.meter().max_ops() > 100
         });
     }
-    assert!(
+    check!(
         measured_above,
         "the actual completed source must exceed the later legal cap"
     );
     let mut world = World::new_minimal();
-    assert_eq!(
+    check_eq!(
         world.create(
             ObjKind::Player,
             "Actual reconformance buyer",

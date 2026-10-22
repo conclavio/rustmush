@@ -206,15 +206,15 @@ fn conditional(w: &mut IcWorld, acceptance: u128) -> TestResult<ContractId> {
     }
     attach(w, BUYER, id, acceptance, 2)?;
     let c = contract(w, id)?;
-    assert_eq!(c.consent.conditions.len(), 1);
-    assert!(
+    check_eq!(c.consent.conditions.len(), 1);
+    check!(
         c.consent.fact_consent.is_some(),
         "real seller attachment marker"
     );
     for (actor, verb) in [(BUYER, "offer"), (BUYER, "accept"), (GOD, "accept")] {
         say(w, actor, &format!("@contract/{verb} {id}"))?;
     }
-    assert_eq!(contract(w, id)?.state, ContractState::Active);
+    check_eq!(contract(w, id)?.state, ContractState::Active);
     Ok(id)
 }
 fn settle_contract(w: &mut IcWorld, id: ContractId) -> TestResult {
@@ -319,14 +319,14 @@ fn exercise_refund(
     let (request, _) = next(&mut refund, REFUND)?;
     let prepared = terminal(&mut refund, &request, N + 3)?;
     land(&mut refund, prepared)?;
-    assert_eq!(
+    check_eq!(
         history(&refund, N + 2)?.outcome(),
         mush_economy::managed_paid_resale::PaidResaleOutcome::Refunded
     );
-    assert_eq!(read(&mut refund, BUYER, id, fact(N + 2, 2))?, None);
-    assert_eq!(contract(&refund, id)?.state, ContractState::Active);
+    check_eq!(read(&mut refund, BUYER, id, fact(N + 2, 2))?, None);
+    check_eq!(contract(&refund, id)?.state, ContractState::Active);
     let mut refund = refund.reboot(f, &refund.snapshot())?;
-    assert_eq!(read(&mut refund, BUYER, id, fact(N + 2, 2))?, None);
+    check_eq!(read(&mut refund, BUYER, id, fact(N + 2, 2))?, None);
     drop(refund);
 
     Ok(())
@@ -345,21 +345,21 @@ fn exercise_later_holder(
     let (later, payer, _login) = third_holder(f, w)?;
     offer(w, N + 10, GOD, later, 0)?;
     buy(w, N + 11, N + 10, ACCEPT, later, payer.0)?;
-    assert_eq!(pointer(w)?.ownership().ok_or("ownership")?.generation, 3);
-    assert_eq!(pointer(w)?.holder(), later);
-    assert_eq!(pointer(w)?.term(), original.term());
-    assert_eq!(read(w, BUYER, id, fact(N + 2, 2))?, Some(expected.clone()));
-    assert_eq!(read(w, later, id, fact(N + 2, 2))?, None);
+    check_eq!(pointer(w)?.ownership().ok_or("ownership")?.generation, 3);
+    check_eq!(pointer(w)?.holder(), later);
+    check_eq!(pointer(w)?.term(), original.term());
+    check_eq!(read(w, BUYER, id, fact(N + 2, 2))?, Some(expected.clone()));
+    check_eq!(read(w, later, id, fact(N + 2, 2))?, None);
     let foreign = draft(w, later, "Not my earlier transfer")?;
     say(w, later, &format!("@contract/party {foreign}=#{}", GOD.0))?;
     let before = contract(w, foreign)?;
     attach(w, later, foreign, N + 2, 2)?;
-    assert_eq!(
+    check_eq!(
         contract(w, foreign)?,
         before,
         "current ownership never authorizes somebody else's historical transaction"
     );
-    assert_eq!(
+    check_eq!(
         read(w, later, foreign, fact(N + 2, 2))?,
         None,
         "missing attachment marker"
@@ -377,7 +377,7 @@ fn exercise_later_holder(
             original.term().get()
         ),
     )?;
-    assert_eq!(contract(w, lapse)?.consent.conditions.len(), 1);
+    check_eq!(contract(w, lapse)?.consent.conditions.len(), 1);
     let former = draft(w, BUYER, "Former holder lapse refusal")?;
     let old = contract(w, former)?;
     say(
@@ -389,11 +389,11 @@ fn exercise_later_holder(
             original.term().get()
         ),
     )?;
-    assert_eq!(contract(w, former)?, old);
+    check_eq!(contract(w, former)?, old);
 
     // Actual immediate settlement uses acceptance UTC, not its term clock.
     attach(w, later, foreign, N + 11, 3)?;
-    assert_eq!(contract(w, foreign)?.consent.conditions.len(), 1);
+    check_eq!(contract(w, foreign)?.consent.conditions.len(), 1);
     for line in [
         format!("@contract/pay {foreign}={payer} 1"),
         format!("@contract/split {foreign}=0 1"),
@@ -402,18 +402,18 @@ fn exercise_later_holder(
     ] {
         say(w, later, &line)?;
     }
-    assert_eq!(contract(w, foreign)?.state, ContractState::Offered);
+    check_eq!(contract(w, foreign)?.state, ContractState::Offered);
     let immediate = history(w, N + 11)?;
-    assert!(immediate.terminal().is_none());
+    check!(immediate.terminal().is_none());
     let now = FactState {
         satisfied: true,
         actor: Some(later),
         at: immediate.consent().accepted_at_utc,
     };
-    assert_eq!(read(w, later, foreign, fact(N + 11, 3))?, Some(now));
+    check_eq!(read(w, later, foreign, fact(N + 11, 3))?, Some(now));
     let kept = w.snapshot();
     let mut cold = w.reboot(f, &kept)?;
-    assert_eq!(read(&mut cold, BUYER, id, fact(N + 2, 2))?, Some(expected));
+    check_eq!(read(&mut cold, BUYER, id, fact(N + 2, 2))?, Some(expected));
     cold.engine.registry.freeze_mechanics_owner(
         &OwnerId::new("market")?,
         mush_core::mechanics::IncidentId(64_001),
@@ -421,7 +421,7 @@ fn exercise_later_holder(
             code: CanonicalId::new("transfer_fact_fixture")?,
         },
     )?;
-    assert_eq!(
+    check_eq!(
         read(&mut cold, BUYER, id, fact(N + 2, 2))?,
         None,
         "unavailable actual owner refuses"
@@ -434,8 +434,8 @@ fn exercise_later_holder(
             && v.pointer("/family/id") == Some(&json!(HOLDER))
             && v.pointer("/value/generation") == Some(&json!(2)))
     });
-    assert_eq!(missing.disk.len() + 1, before);
-    assert!(w.reboot(f, &missing).is_err());
+    check_eq!(missing.disk.len() + 1, before);
+    check!(w.reboot(f, &missing).is_err());
     Ok(())
 }
 
@@ -449,7 +449,7 @@ pub(super) fn exercise(f: &PurchaseFixture, template: &IcWorld, saved: &Durable)
     offer(&mut w, N + 1, BUYER, GOD, 2)?;
     buy(&mut w, N + 2, N + 1, FUND, GOD, 0)?;
     let id = conditional(&mut w, N + 2)?;
-    assert_eq!(
+    check_eq!(
         read(&mut w, BUYER, id, fact(N + 2, 2))?,
         None,
         "pending is not completion"
@@ -462,7 +462,7 @@ pub(super) fn exercise(f: &PurchaseFixture, template: &IcWorld, saved: &Durable)
     w.land(&close, N + 4, hull, true)?;
     let (request, _) = next(&mut w, SETTLE)?;
     let prepared = terminal(&mut w, &request, N + 5)?;
-    assert_eq!(
+    check_eq!(
         read(&mut w, BUYER, id, fact(N + 2, 2))?,
         None,
         "preparation is not completion"
@@ -478,23 +478,23 @@ pub(super) fn exercise(f: &PurchaseFixture, template: &IcWorld, saved: &Durable)
         actor: Some(decision.actor),
         at: decision.posted_at_utc,
     };
-    assert_eq!(
+    check_eq!(
         read(&mut w, BUYER, id, fact(N + 2, 2))?,
         Some(expected.clone())
     );
-    assert_eq!(
+    check_eq!(
         read(&mut w, GOD, id, fact(N + 2, 2))?,
         Some(expected.clone())
     );
-    assert_eq!(
+    check_eq!(
         read(&mut w, BUYER, id, fact(N + 2, 3))?,
         None,
         "wrong exact holder generation"
     );
     settle_contract(&mut w, id)?;
-    assert_eq!(pointer(&w)?.holder(), GOD);
+    check_eq!(pointer(&w)?.holder(), GOD);
     let mut w = w.reboot(f, &w.snapshot())?;
-    assert_eq!(
+    check_eq!(
         read(&mut w, BUYER, id, fact(N + 2, 2))?,
         Some(expected.clone())
     );

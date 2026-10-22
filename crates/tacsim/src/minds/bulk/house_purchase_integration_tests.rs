@@ -391,7 +391,7 @@ fn boot_resale_options(
     let mut engine = Engine::with_modules(saved.world()?, Registry::new(), modules)?;
     engine.set_account_identity(registry.accounts.clone());
     load(&mut engine, &saved.disk)?;
-    assert_eq!(
+    check_eq!(
         shared.lock().map_err(module_error)?.manifest,
         Some(manifest)
     );
@@ -498,7 +498,7 @@ fn balance(w: &PlayerWorld, id: WalletId) -> TestResult<(Amount, Amount)> {
 }
 fn command(w: &mut PlayerWorld, line: &str) -> TestResult {
     let e = w.say(GOD, line)?;
-    assert!(!e.iter().any(|(_,event)|matches!(event,OutputEvent::Sys(t) if t.spans().iter().any(|s|s.tag.as_deref()==Some("error")))),"house setup refused");
+    check!(!e.iter().any(|(_,event)|matches!(event,OutputEvent::Sys(t) if t.spans().iter().any(|s|s.tag.as_deref()==Some("error")))),"house setup refused");
     Ok(())
 }
 fn action(w: &PlayerWorld, id: &str) -> TestResult<DefinitionRef> {
@@ -557,7 +557,7 @@ fn signed(
         .iter()
         .filter(|offer| offer.presentation().verb.eq_ignore_ascii_case(verb));
     let offer = matching.next().ok_or("signed house public offer")?;
-    assert!(
+    check!(
         matching.next().is_none(),
         "ambiguous actual House line offer"
     );
@@ -580,7 +580,7 @@ fn signed(
         },
     )?;
     let (actual, invocation, _) = resolved.into_authoritative_parts();
-    assert_eq!(actual, exact);
+    check_eq!(actual, exact);
     Ok(w.engine
         .prepare_registered_composed_resolved_authoritative_action(&exact, &invocation, token(n))?)
 }
@@ -667,8 +667,8 @@ fn set_ic(w: &mut PlayerWorld, at: i64) -> TestResult {
         .checked_add(at.checked_sub(old.at).ok_or("IC delta")?)
         .ok_or("UTC")?;
     w.engine.world.set_now(utc);
-    assert_eq!(w.engine.world.world_ic_now().at, at);
-    assert_eq!(w.engine.world.world_ic_now().clock, old.clock);
+    check_eq!(w.engine.world.world_ic_now().at, at);
+    check_eq!(w.engine.world.world_ic_now().clock, old.clock);
     Ok(())
 }
 
@@ -756,14 +756,14 @@ fn selection(w: &mut PlayerWorld, licence: LicenceId, allowed: bool) -> TestResu
         &format!("SIM MIND filed:{} PROFILE Default", licence.get()),
     )?;
     let text = PlayerWorld::private_text(&events, BUYER);
-    assert_eq!(
+    check_eq!(
         text.contains("Your slot will carry"),
         allowed,
         "house selection disposition: {text}"
     );
     if allowed {
         let c = match_::centre_of(&w.engine.world).ok_or("centre")?;
-        assert_eq!(
+        check_eq!(
             c.slots
                 .iter()
                 .find(|s| s.pilot == BUYER)
@@ -792,17 +792,17 @@ fn fresh_fences(registry: &Fixture, quoted: &Durable, funded: &Durable, n: u128)
             let old = balance(&w, wallet(&w, EconomicOwner::Object(BUYER), None)?)?;
             if boundary == 0 {
                 command(&mut w, "@org/status House=suspended")?;
-                assert!(direct(&mut w, id, BUYER, n, params.clone()).is_err());
+                check!(direct(&mut w, id, BUYER, n, params.clone()).is_err());
             } else {
                 let (p, o) = direct(&mut w, id, BUYER, n, params.clone())?;
                 if boundary == 1 {
                     command(&mut w, "@org/status House=suspended")?;
-                    assert!(stage(&mut w, id, BUYER, n, params.clone(), p, o).is_err());
+                    check!(stage(&mut w, id, BUYER, n, params.clone(), p, o).is_err());
                 } else {
                     stage(&mut w, id, BUYER, n, params.clone(), p, o)?;
                     command(&mut w, "@org/status House=suspended")?;
                     let _ = w.engine.world.take_dirty();
-                    assert!(matches!(
+                    check!(matches!(
                         w.engine.take_staged_action(),
                         Err(mush_core::engine::StagedActionAdmissionError::Participant(
                             _
@@ -810,15 +810,15 @@ fn fresh_fences(registry: &Fixture, quoted: &Durable, funded: &Durable, n: u128)
                     ));
                 }
             }
-            assert_eq!(
+            check_eq!(
                 balance(&w, wallet(&w, EconomicOwner::Object(BUYER), None)?)?,
                 old
             );
-            assert_eq!(
+            check_eq!(
                 rows(&disk(&w), "roll", "roll_mind_house_purchase"),
                 rows(&base.disk, "roll", "roll_mind_house_purchase")
             );
-            assert!(rows(&disk(&w), "roll", "roll_mind_personal_paid_licence").is_empty());
+            check!(rows(&disk(&w), "roll", "roll_mind_personal_paid_licence").is_empty());
         }
     }
     Ok(())
@@ -844,16 +844,16 @@ fn account_fences(registry: &Fixture, quoted: &Durable, funded: &Durable) -> Tes
             if after_stage {
                 stage(&mut w, id, BUYER, FIRST + 25, params.clone(), p, o)?;
                 registry.accounts.epoch.invalidate();
-                assert!(w.engine.take_staged_action().is_err());
+                check!(w.engine.take_staged_action().is_err());
             } else {
                 registry.accounts.epoch.invalidate();
-                assert!(stage(&mut w, id, BUYER, FIRST + 25, params.clone(), p, o).is_err());
+                check!(stage(&mut w, id, BUYER, FIRST + 25, params.clone(), p, o).is_err());
             }
-            assert_eq!(
+            check_eq!(
                 balance(&w, wallet(&w, EconomicOwner::Object(BUYER), None)?)?,
                 old
             );
-            assert!(
+            check!(
                 disk(&w) == original_disk,
                 "stale account published no private rows"
             );
@@ -966,16 +966,13 @@ fn flow(
         command(&mut w, &format!("@econ/mint {faucet}={account} 2000"))?;
     }
     // The nonmember cannot publish through staff or purchaser rights.
-    assert!(
-        signed(
-            &mut w,
-            "list_house_mind",
-            BUYER,
-            FIRST,
-            json!({"owner_licence":owner.get().to_string()})
-        )
-        .is_err()
-    );
+    check!(crate::test_checks::refused(signed(
+        &mut w,
+        "list_house_mind",
+        BUYER,
+        FIRST,
+        json!({"owner_licence":owner.get().to_string()})
+    ))?);
     perform(
         &mut w,
         "list_house_mind",
@@ -993,28 +990,27 @@ fn flow(
     let quote: HouseQuoteV1 =
         serde_json::from_value(one(rows(&disk(&w), "market", "market_mind_house_quote"))?)?;
     command(&mut w, &format!("@house-purchase-curator-test {}", scope.0))?;
-    assert!(
-        signed(
+    check!(
+        crate::test_checks::refused(signed(
             &mut w,
             "list_house_mind",
             GOD,
             FIRST + 30,
             json!({"owner_licence":owner.get().to_string()})
-        )
-        .is_err(),
+        ))?,
         "a departed curator cannot publish another listing"
     );
     // The acknowledged quote still belongs to the actual house, independently
     // of the now-departed publisher. Both Fund and Grant below use that quote.
     let quoted = saved(&w);
     let q = serde_json::to_value(&quote)?;
-    assert_eq!(
+    check_eq!(
         q.pointer("/subject/issuer"),
         Some(&json!({"format":1,"organization":organization,"scope":scope}))
     );
-    assert!(q.get("seller").is_none());
-    assert_eq!(q.get("price"), Some(&json!(400)));
-    assert_eq!(q.pointer("/product/grant/renewal/price"), Some(&json!(300)));
+    check!(q.get("seller").is_none());
+    check_eq!(q.get("price"), Some(&json!(400)));
+    check_eq!(q.pointer("/product/grant/renewal/price"), Some(&json!(300)));
     let money = balance(&w, buyer)?;
     let house_money = balance(&w, treasury)?;
     let registry_money = balance(&w, WalletId(1))?;
@@ -1025,9 +1021,9 @@ fn flow(
         FIRST + 2,
         json!({"quote":token(FIRST+1)}),
     )?;
-    assert!(typed_families(&funded_writes).contains("roll_mind_house_purchase"));
-    assert_eq!(balance(&w, buyer)?, (money.0, Amount::from_minor(400)));
-    assert!(rows(&disk(&w), "roll", "roll_mind_personal_paid_licence").is_empty());
+    check!(typed_families(&funded_writes).contains("roll_mind_house_purchase"));
+    check_eq!(balance(&w, buyer)?, (money.0, Amount::from_minor(400)));
+    check!(rows(&disk(&w), "roll", "roll_mind_personal_paid_licence").is_empty());
     let funded = saved(&w);
     fresh_fences(registry, &quoted, &funded, FIRST + 20)?;
     account_fences(registry, &quoted, &funded)?;
@@ -1041,13 +1037,13 @@ fn flow(
         FIRST + 3,
         json!({"operation":token(FIRST+2)}),
     )?;
-    assert_eq!(balance(&refund, buyer)?, money);
-    assert_eq!(balance(&refund, treasury)?, house_money);
-    assert!(matches!(
+    check_eq!(balance(&refund, buyer)?, money);
+    check_eq!(balance(&refund, treasury)?, house_money);
+    check!(matches!(
         allocation(&refund, FIRST + 2)?.phase(),
         PurchasePhase::Refunded { .. }
     ));
-    assert!(rows(&disk(&refund), "roll", "roll_mind_house_term_economics").is_empty());
+    check!(rows(&disk(&refund), "roll", "roll_mind_house_term_economics").is_empty());
     let _cold_refund = boot(registry, &saved(&refund))?;
     let next = w
         .engine
@@ -1075,33 +1071,33 @@ fn flow(
         ]
         .map(str::to_owned),
     );
-    assert!(
+    check!(
         required.is_subset(&typed_families(&writes)),
         "actual six terminal rows"
     );
     let allocation = allocation(&w, FIRST + 2)?;
-    assert_eq!(allocation.holder(), BUYER);
-    assert_eq!(allocation.issuer().organization(), organization);
-    assert_eq!(allocation.issuer().scope(), scope);
-    assert!(matches!(allocation.phase(), PurchasePhase::Granted { .. }));
+    check_eq!(allocation.holder(), BUYER);
+    check_eq!(allocation.issuer().organization(), organization);
+    check_eq!(allocation.issuer().scope(), scope);
+    check!(matches!(allocation.phase(), PurchasePhase::Granted { .. }));
     let paid = term(&w, allocation.licence())?;
-    assert_eq!(
+    check_eq!(
         paid.terms().form(),
         mush_roll::commerce::paid::PaidForm::Sealed {}
     );
-    assert_eq!(paid.terms().seats().get(), 1);
-    assert_eq!(
+    check_eq!(paid.terms().seats().get(), 1);
+    check_eq!(
         balance(&w, buyer)?,
         (Amount::from_minor(money.0.minor() - 400), Amount::ZERO)
     );
-    assert_eq!(
+    check_eq!(
         balance(&w, treasury)?,
         (
             Amount::from_minor(house_money.0.minor() + 360),
             house_money.1
         )
     );
-    assert_eq!(
+    check_eq!(
         balance(&w, WalletId(1))?,
         (
             Amount::from_minor(registry_money.0.minor() + 40),
@@ -1131,9 +1127,9 @@ fn flow(
         ("roll", "roll_mind_paid_term"),
     ] {
         let mut broken = granted.clone();
-        assert!(remove_family(&mut broken, owner, family) > 0);
-        assert!(
-            boot(registry, &broken).is_err(),
+        check!(remove_family(&mut broken, owner, family) > 0);
+        check!(
+            crate::test_checks::refused(boot(registry, &broken))?,
             "missing paired history accepted"
         );
     }
@@ -1148,8 +1144,8 @@ fn flow(
     ] {
         remove_family(&mut all_missing, owner, family);
     }
-    assert!(
-        boot(registry, &all_missing).is_err(),
+    check!(
+        crate::test_checks::refused(boot(registry, &all_missing))?,
         "E4 inverse cannot lose all six rows"
     );
     let mut crossed = granted.clone();
@@ -1159,7 +1155,7 @@ fn flow(
             .ok_or("scope")? = json!(scope.0.checked_add(1).ok_or("scope overflow")?);
         Ok(())
     })?;
-    assert!(boot(registry, &crossed).is_err());
+    check!(crate::test_checks::refused(boot(registry, &crossed))?);
     // Members and even the publisher pay the identical gross public price.
     perform(
         &mut w,
@@ -1176,7 +1172,7 @@ fn flow(
         FIRST + 6,
         json!({"quote":token(FIRST+5)}),
     )?;
-    assert_eq!(
+    check_eq!(
         balance(&w, curator)?,
         (curator_before.0, Amount::from_minor(400))
     );
@@ -1187,11 +1183,11 @@ fn flow(
         FIRST + 7,
         json!({"operation":token(FIRST+6)}),
     )?;
-    assert_eq!(balance(&w, curator)?, curator_before);
+    check_eq!(balance(&w, curator)?, curator_before);
     // Issuer term lapse is not inherited by the already-granted customer's Pin.
     set_ic(&mut w, owner_term.window().grace_end().get())?;
-    assert!(w.engine.world.world_ic_now().at < paid.window().grace_end().get());
-    assert!(
+    check!(w.engine.world.world_ic_now().at < paid.window().grace_end().get());
+    check!(
         direct(
             &mut w,
             "quote_house_mind",

@@ -70,7 +70,7 @@ fn filed_source(
         } = event
         {
             answers += 1;
-            assert_eq!(*audience, mush_core::Audience::Conn(conn));
+            check_eq!(*audience, mush_core::Audience::Conn(conn));
             match response {
                 MindResponse::FiledSource {
                     licence: actual,
@@ -78,28 +78,28 @@ fn filed_source(
                     lines,
                     ..
                 } => {
-                    assert!(allowed, "refused source escaped");
-                    assert_eq!(actual, &licence.to_string());
-                    assert_eq!(source_sha256, &expected_source.to_hex());
-                    assert!(!lines.is_empty());
+                    check!(allowed, "refused source escaped");
+                    check_eq!(actual, &licence.to_string());
+                    check_eq!(source_sha256, &expected_source.to_hex());
+                    check!(!lines.is_empty());
                     if expected_source != mush_roll::source_digest(SOURCE) {
-                        assert!(
+                        check!(
                             lines.iter().any(
                                 |line| line.contains("independently authored child annotation")
                             )
                         );
                     }
                 }
-                MindResponse::Error { .. } => assert!(!allowed, "lawful dependent source refused"),
+                MindResponse::Error { .. } => check!(!allowed, "lawful dependent source refused"),
                 _ => return Err("unexpected source response".into()),
             }
         }
         if serde_json::to_string(event)?.contains("this.landed") {
-            assert!(allowed);
-            assert_eq!(*audience, mush_core::Audience::Conn(conn));
+            check!(allowed);
+            check_eq!(*audience, mush_core::Audience::Conn(conn));
         }
     }
-    assert_eq!(answers, 1);
+    check_eq!(answers, 1);
     Ok(())
 }
 fn select(world: &mut PlayerWorld, licence: u64, allowed: bool) -> TestResult {
@@ -107,7 +107,7 @@ fn select(world: &mut PlayerWorld, licence: u64, allowed: bool) -> TestResult {
     world.say(BUYER, "SIM AI 1")?;
     world.say(BUYER, "SIM UNIT heavy_mk1")?;
     let events = world.say(BUYER, &format!("SIM MIND filed:{licence} PROFILE Default"))?;
-    assert_eq!(
+    check_eq!(
         PlayerWorld::private_text(&events, BUYER).contains("Your slot will carry"),
         allowed
     );
@@ -495,7 +495,7 @@ fn inspect_filed_child(
             .find(|row| row.get("licence") == Some(&json!(licence.to_string())))
             .ok_or("actual owner term")?,
     )?;
-    assert_eq!(
+    check_eq!(
         owner_term.window(),
         mush_roll::commerce::rights::dependent_owner_window(
             mush_roll::commerce::WorldIcSeconds::from_stamp(&world.engine.world.world_ic_now())?,
@@ -510,9 +510,9 @@ fn inspect_filed_child(
             .find(|row| row.get("operation") == Some(&json!(token(FIRST + 1))))
             .ok_or("actual filed child")?,
     )?;
-    assert!(child.content().parent().is_some());
-    assert_eq!(rows(&filed.disk, "roll", "roll_mind_owner_parent").len(), 1);
-    assert_eq!(
+    check!(child.content().parent().is_some());
+    check_eq!(rows(&filed.disk, "roll", "roll_mind_owner_parent").len(), 1);
+    check_eq!(
         world
             .engine
             .world
@@ -618,9 +618,9 @@ pub(super) async fn exercise(
         let mut missing = filed.clone();
         missing.disk.retain(|(ns,_), row| !(ns=="roll"
             && row.pointer("/family/id") == Some(&json!("roll_mind_owner_parent"))));
-        assert!(PlayerWorld::boot_dependent(f, &missing).is_err());
+        assert!(crate::test_checks::is_refusal(PlayerWorld::boot_dependent(f, &missing)));
         let mut crossed = filed.clone(); alter_binding(&mut crossed, GOD)?;
-        assert!(PlayerWorld::boot_dependent(f, &crossed).is_err());
+        assert!(crate::test_checks::is_refusal(PlayerWorld::boot_dependent(f, &crossed)));
         Ok(())
     }.await;
     tasks.shutdown(Duration::from_secs(5)).await;

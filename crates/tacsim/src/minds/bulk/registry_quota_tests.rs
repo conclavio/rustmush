@@ -51,7 +51,7 @@ fn a_readable_near_cap_account_cannot_consume_the_registry_terminal_reserve() ->
         Ok(account)
     };
     let (mut low, mut high) = (0usize, 6300usize);
-    assert!(serde_json::to_vec(&account_with(high)?)?.len() > MAX_ACCOUNT_DOCUMENT);
+    check!(serde_json::to_vec(&account_with(high)?)?.len() > MAX_ACCOUNT_DOCUMENT);
     while low + 1 < high {
         let middle = low + (high - low) / 2;
         if serde_json::to_vec(&account_with(middle)?)?.len() <= MAX_ACCOUNT_DOCUMENT {
@@ -79,22 +79,22 @@ fn a_readable_near_cap_account_cannot_consume_the_registry_terminal_reserve() ->
     }
     account.validate(&store.cfg)?;
     let encoded = serde_json::to_vec(&account)?;
-    assert_eq!(encoded.len(), bytes);
-    assert!(encoded.len() <= MAX_ACCOUNT_DOCUMENT);
-    assert!(
+    check_eq!(encoded.len(), bytes);
+    check!(encoded.len() <= MAX_ACCOUNT_DOCUMENT);
+    check!(
         account
             .registry_document_ceiling()?
             .ok_or("reserved ceiling")?
             > MAX_ACCOUNT_DOCUMENT
     );
-    assert!(store.prepared(account, Vec::new(), None).is_err());
-    assert!(
+    check!(store.prepared(account, Vec::new(), None).is_err());
+    check!(
         store.accounts.is_empty(),
         "refused preparation installs no owner image"
     );
     let mut boot = BulkStore::new(BulkConfig::default())?;
-    assert_eq!(boot.load(id, &encoded), Err(BulkError::Quarantined));
-    assert!(boot.accounts.is_empty());
+    check_eq!(boot.load(id, &encoded), Err(BulkError::Quarantined));
+    check!(boot.accounts.is_empty());
     Ok(())
 }
 
@@ -104,15 +104,15 @@ fn registry_job_binding_and_terminal_growth_are_owned_by_the_actual_quota_store(
     let actor = ObjId(7);
     let job = CommitToken::from_bytes([19; 16]);
     let mut store = BulkStore::new(BulkConfig::default())?;
-    assert!(store.prepare_admit(id, actor, 1, plan()?, 0).is_err());
+    check!(store.prepare_admit(id, actor, 1, plan()?, 0).is_err());
     let (run, admitted) = store.prepare_registry_admit(id, actor, 1, plan()?, job, 0)?;
-    assert!(admitted.changes_registry());
+    check!(admitted.changes_registry());
     let ceiling = admitted
         .account
         .registry_document_ceiling()?
         .ok_or("reserved ceiling")?;
-    assert!(ceiling > admitted.bytes().len());
-    assert_eq!(
+    check!(ceiling > admitted.bytes().len());
+    check_eq!(
         admitted.resulting_run(run).ok_or("run")?.registry_job,
         Some(job)
     );
@@ -125,16 +125,16 @@ fn registry_job_binding_and_terminal_growth_are_owned_by_the_actual_quota_store(
         .ok_or("stored run")?
         .remove("registry_job");
     let mut boot = BulkStore::new(BulkConfig::default())?;
-    assert!(boot.load(id, &serde_json::to_vec(&missing)?).is_err());
+    check!(boot.load(id, &serde_json::to_vec(&missing)?).is_err());
     boot.load(id, &original)?;
-    assert_eq!(boot.account_run(id, run)?.registry_job, Some(job));
+    check_eq!(boot.account_run(id, run)?.registry_job, Some(job));
     publish(&mut store, admitted)?;
     let granted = store.prepare_grant(id, run, 0, 2000)?;
-    assert!(granted.changes_registry());
-    assert!(granted.bytes().len() <= ceiling);
+    check!(granted.changes_registry());
+    check!(granted.bytes().len() <= ceiling);
     let lease = publish(&mut store, granted)?.ok_or("paid lease")?;
     let cancelled = store.prepare_cancel(id, actor, run, 1)?;
-    assert!(cancelled.bytes().len() <= ceiling);
+    check!(cancelled.bytes().len() <= ceiling);
     publish(&mut store, cancelled)?;
     let finished = store.prepare_finish(
         Receipt {
@@ -147,10 +147,10 @@ fn registry_job_binding_and_terminal_growth_are_owned_by_the_actual_quota_store(
         },
         i64::MAX,
     )?;
-    assert!(finished.changes_registry());
-    assert!(finished.bytes().len() <= ceiling);
-    assert_eq!(finished.account.registry_document_ceiling()?, None);
-    assert_eq!(
+    check!(finished.changes_registry());
+    check!(finished.bytes().len() <= ceiling);
+    check_eq!(finished.account.registry_document_ceiling()?, None);
+    check_eq!(
         finished
             .resulting_run(run)
             .ok_or("terminal run")?
@@ -176,8 +176,8 @@ fn ordinary_pin_writes_cannot_change_or_release_an_active_registry_document_ceil
     proving.limit_ms = 10_000;
     proving.native_substep_ms = 250;
     let (old, p) = store.prepare_admit(id, actor, 1, proving, 0)?;
-    assert!(!p.changes_registry());
-    assert!(
+    check!(!p.changes_registry());
+    check!(
         serde_json::to_value(p.resulting_run(old).ok_or("M6 run")?)?
             .get("registry_job")
             .is_none()
@@ -199,15 +199,15 @@ fn ordinary_pin_writes_cannot_change_or_release_an_active_registry_document_ceil
         .registry_document_ceiling()?
         .ok_or("reserved bytes")?;
     let pinned = store.prepare_pin(id, actor, old, true)?;
-    assert!(!pinned.changes_registry());
-    assert!(
+    check!(!pinned.changes_registry());
+    check!(
         pinned
             .account
             .registry_document_ceiling()?
             .ok_or("preserved reserve")?
             >= before
     );
-    assert_eq!(
+    check_eq!(
         pinned.resulting_run(run).ok_or("active run")?.registry_job,
         Some(CommitToken::from_bytes([20; 16]))
     );
@@ -277,8 +277,8 @@ fn registry_leases_charge_the_current_roster_and_refund_only_exact_known_work() 
     publish(&mut store, change)?;
     let change = store.prepare_grant(id, run, 0, 2000)?;
     let lease = publish(&mut store, change)?.ok_or("lease")?;
-    assert_eq!(lease.units(), 2);
-    assert_eq!(lease.allowance, 4000);
+    check_eq!(lease.units(), 2);
+    check_eq!(lease.allowance, 4000);
     let receipt = Receipt {
         conduct: None,
         registry: Some(RegistryProgress {
@@ -295,11 +295,11 @@ fn registry_leases_charge_the_current_roster_and_refund_only_exact_known_work() 
     };
     let change = store.prepare_finish(receipt, 1)?;
     publish(&mut store, change)?;
-    assert_eq!(store.account(id)?.spent_unit_ms, 500);
+    check_eq!(store.account(id)?.spent_unit_ms, 500);
     let change = store.prepare_grant(id, run, 1, 2000)?;
     let lease = publish(&mut store, change)?.ok_or("second lease")?;
-    assert_eq!(lease.units(), 33);
-    assert_eq!(lease.allowance, 66_000);
+    check_eq!(lease.units(), 33);
+    check_eq!(lease.allowance, 66_000);
     let before = store.account(id)?.clone();
     let wrong = Receipt {
         conduct: None,
@@ -315,8 +315,8 @@ fn registry_leases_charge_the_current_roster_and_refund_only_exact_known_work() 
         result: None,
         terminal: None,
     };
-    assert!(store.prepare_finish(wrong, 2).is_err());
-    assert_eq!(
+    check!(store.prepare_finish(wrong, 2).is_err());
+    check_eq!(
         *store.account(id)?,
         before,
         "refusal changes no quota or cursor"
@@ -337,8 +337,8 @@ fn registry_leases_charge_the_current_roster_and_refund_only_exact_known_work() 
     };
     let change = store.prepare_finish(receipt.clone(), 2)?;
     publish(&mut store, change)?;
-    assert_eq!(store.account(id)?.spent_unit_ms, 8750);
-    assert!(
+    check_eq!(store.account(id)?.spent_unit_ms, 8750);
+    check!(
         store.prepare_finish(receipt, 2).is_err(),
         "paid receipt is consumed once"
     );
@@ -358,8 +358,8 @@ fn registry_cancellation_keeps_dispatched_charge_until_worker_exit_and_restart_i
     let lease = publish(&mut store, change)?.ok_or("lease")?;
     let change = store.prepare_cancel(id, actor, run, 1)?;
     publish(&mut store, change)?;
-    assert!(store.account_run(id, run)?.flight.is_some());
-    assert_eq!(store.account(id)?.spent_unit_ms, 4000);
+    check!(store.account_run(id, run)?.flight.is_some());
+    check_eq!(store.account(id)?.spent_unit_ms, 4000);
     let receipt = Receipt {
         registry: None,
         conduct: None,
@@ -370,9 +370,9 @@ fn registry_cancellation_keeps_dispatched_charge_until_worker_exit_and_restart_i
     };
     let change = store.prepare_finish(receipt, 2)?;
     publish(&mut store, change)?;
-    assert_eq!(store.account_run(id, run)?.status, Status::Cancelled);
-    assert_eq!(store.account(id)?.spent_unit_ms, 4000);
-    assert_eq!(store.account(id)?.reserved_unit_ms, 0);
+    check_eq!(store.account_run(id, run)?.status, Status::Cancelled);
+    check_eq!(store.account(id)?.spent_unit_ms, 4000);
+    check_eq!(store.account(id)?.reserved_unit_ms, 0);
     let (other, change) =
         store.prepare_registry_admit(id, actor, 2, plan()?, CommitToken::from_bytes([2; 16]), 3)?;
     publish(&mut store, change)?;
@@ -381,8 +381,8 @@ fn registry_cancellation_keeps_dispatched_charge_until_worker_exit_and_restart_i
     let before = store.account(id)?.spent_unit_ms;
     let change = store.prepare_recover(id, 4)?;
     publish(&mut store, change)?;
-    assert_eq!(store.account(id)?.spent_unit_ms, before);
-    assert_eq!(store.account_run(id, other)?.status, Status::Interrupted);
+    check_eq!(store.account(id)?.spent_unit_ms, before);
+    check_eq!(store.account_run(id, other)?.status, Status::Interrupted);
     Ok(())
 }
 
@@ -391,24 +391,24 @@ fn registry_case_transition_cannot_skip_a_same_class_case_or_relabel_partial_cov
 -> TestResult {
     let budget = plan()?.registry.ok_or("budget")?;
     let start = RegistryCursor::default();
-    assert!(
+    check!(
         budget
             .advance(start, 250, RegistryEnding::Certified)
             .is_err()
     );
-    assert!(
+    check!(
         budget
             .advance(start, 250, RegistryEnding::ClassBudget)
             .is_err(),
         "no higher class was admitted"
     );
-    assert!(
+    check!(
         budget
             .advance(start, 10_251, RegistryEnding::Continue)
             .is_err()
     );
     let next = budget.advance(start, 250, RegistryEnding::CaseComplete)?;
-    assert_eq!(
+    check_eq!(
         next,
         RegistryCursor {
             index: 1,
@@ -438,8 +438,8 @@ fn unknown_registry_failure_cannot_refund_and_known_failure_keeps_exact_progress
             result: None,
             terminal: Some(Status::Failed),
         };
-        assert!(store.prepare_finish(unknown, 1).is_err());
-        assert_eq!(
+        check!(store.prepare_finish(unknown, 1).is_err());
+        check_eq!(
             *store.account(id)?,
             before,
             "unknown work cannot release a precharge"
@@ -462,18 +462,18 @@ fn unknown_registry_failure_cannot_refund_and_known_failure_keeps_exact_progress
     let change = store.prepare_finish(known, 1)?;
     publish(&mut store, change)?;
     let account = store.account(id)?;
-    assert_eq!(account.spent_unit_ms, 500);
-    assert_eq!(account.reserved_unit_ms, 0);
+    check_eq!(account.spent_unit_ms, 500);
+    check_eq!(account.reserved_unit_ms, 0);
     let row = store.account_run(id, run)?;
-    assert_eq!(row.status, Status::Failed);
-    assert_eq!(
+    check_eq!(row.status, Status::Failed);
+    check_eq!(
         row.registry,
         Some(RegistryCursor {
             index: 0,
             simulated_ms: 250
         })
     );
-    assert!(row.flight.is_none());
+    check!(row.flight.is_none());
     Ok(())
 }
 
@@ -498,7 +498,7 @@ fn registry_cancel_wins_over_a_measured_completion_without_losing_its_charge() -
     let lease = publish(&mut store, granted)?.ok_or("paid lease")?;
     let cancelling = store.prepare_cancel(id, actor, run, 1)?;
     publish(&mut store, cancelling)?;
-    assert_eq!(store.account_run(id, run)?.status, Status::CancelRequested);
+    check_eq!(store.account_run(id, run)?.status, Status::CancelRequested);
     let observed = RegistryProgress {
         cursor: RegistryCursor {
             index: 0,
@@ -520,21 +520,21 @@ fn registry_cancel_wins_over_a_measured_completion_without_losing_its_charge() -
     let finished = store.prepare_finish(receipt, 2)?;
     publish(&mut store, finished)?;
     let row = store.account_run(id, run)?;
-    assert_eq!(row.status, Status::Cancelled);
-    assert_eq!(row.charged_unit_ms, 500);
-    assert_eq!(row.registry, Some(observed.cursor));
-    assert!(row.result.is_none());
-    assert!(row.flight.is_none());
+    check_eq!(row.status, Status::Cancelled);
+    check_eq!(row.charged_unit_ms, 500);
+    check_eq!(row.registry, Some(observed.cursor));
+    check!(row.result.is_none());
+    check!(row.flight.is_none());
     let exact = crate::minds::bulk::registry_projection::observation(row)?;
-    assert_eq!(
+    check_eq!(
         exact.phase,
         mush_roll::commerce::rating::execution::ExecutionPhase::Cancelled
     );
-    assert!(exact.result.is_none());
+    check!(exact.result.is_none());
     let account = store.account(id)?;
-    assert_eq!(account.spent_unit_ms, 500);
-    assert_eq!(account.reserved_unit_ms, 0);
-    assert!(account.active.is_none());
+    check_eq!(account.spent_unit_ms, 500);
+    check_eq!(account.reserved_unit_ms, 0);
+    check!(account.active.is_none());
     Ok(())
 }
 
@@ -556,7 +556,7 @@ fn maximum_class_rejection_is_new_admission_only_and_old_budget_bytes_stay_exact
     let budget = RegistryBudget::prepare(hash, hash, hash, vec![case.clone()])?;
     let from = RegistryCursor::default();
     let next = budget.advance(from, 250, RegistryEnding::Rejected)?;
-    assert_eq!(
+    check_eq!(
         next,
         RegistryCursor {
             index: 0,
@@ -568,18 +568,18 @@ fn maximum_class_rejection_is_new_admission_only_and_old_budget_bytes_stay_exact
         .ok_or("budget")?
         .remove("measured_rejection");
     let historical: RegistryBudget = serde_json::from_value(old.clone())?;
-    assert_eq!(serde_json::to_value(&historical)?, old);
-    assert!(
+    check_eq!(serde_json::to_value(&historical)?, old);
+    check!(
         historical
             .advance(from, 250, RegistryEnding::Rejected)
             .is_err()
     );
-    assert!(
+    check!(
         historical
             .advance(from, 250, RegistryEnding::Certified)
             .is_ok()
     );
-    assert_ne!(historical.digest()?, budget.digest()?);
+    check_ne!(historical.digest()?, budget.digest()?);
     let mut lower = case.clone();
     lower.key = CaseKey::new(
         RatingClass::II,
@@ -589,7 +589,7 @@ fn maximum_class_rejection_is_new_admission_only_and_old_budget_bytes_stay_exact
         },
     )?;
     let lower = RegistryBudget::prepare(hash, hash, hash, vec![lower])?;
-    assert!(lower.advance(from, 250, RegistryEnding::Rejected).is_err());
+    check!(lower.advance(from, 250, RegistryEnding::Rejected).is_err());
     let mut kernel = case;
     kernel.key = CaseKey::new(
         RatingClass::III,
@@ -598,7 +598,7 @@ fn maximum_class_rejection_is_new_admission_only_and_old_budget_bytes_stay_exact
         },
     )?;
     let kernel = RegistryBudget::prepare(hash, hash, hash, vec![kernel])?;
-    assert!(kernel.advance(from, 250, RegistryEnding::Rejected).is_err());
+    check!(kernel.advance(from, 250, RegistryEnding::Rejected).is_err());
     Ok(())
 }
 
@@ -630,8 +630,8 @@ fn partial_maximum_class_rejection_finishes_and_recovers_actual_quota_without_ce
         index: 0,
         simulated_ms: 250,
     };
-    assert!(!budget.can_certify(cursor)?, "partial class cannot certify");
-    assert!(budget.can_reject(cursor)?);
+    check!(!budget.can_certify(cursor)?, "partial class cannot certify");
+    check!(budget.can_reject(cursor)?);
     let mut admitted_plan = plan()?;
     admitted_plan.registry = Some(budget);
     let mut store = BulkStore::new(BulkConfig::default())?;
@@ -657,24 +657,24 @@ fn partial_maximum_class_rejection_finishes_and_recovers_actual_quota_without_ce
         },
         1,
     )?;
-    assert_eq!(store.account_run(id, run)?, &before, "prepare stays inert");
+    check_eq!(store.account_run(id, run)?, &before, "prepare stays inert");
     let bytes = finished.bytes().to_vec();
     publish(&mut store, finished)?;
     let row = store.account_run(id, run)?;
-    assert_eq!(row.status, Status::Complete);
-    assert_eq!(row.registry, Some(cursor));
-    assert_eq!(row.charged_unit_ms, 250);
-    assert!(row.flight.is_none());
+    check_eq!(row.status, Status::Complete);
+    check_eq!(row.registry, Some(cursor));
+    check_eq!(row.charged_unit_ms, 250);
+    check!(row.flight.is_none());
     let observed = crate::minds::bulk::registry_projection::observation(row)?;
-    assert_eq!(
+    check_eq!(
         observed.phase,
         mush_roll::commerce::rating::execution::ExecutionPhase::Complete
     );
-    assert!(observed.result.is_some());
-    assert_eq!(store.account(id)?.reserved_unit_ms, 0);
+    check!(observed.result.is_some());
+    check_eq!(store.account(id)?.reserved_unit_ms, 0);
     let mut recovered = BulkStore::new(BulkConfig::default())?;
     recovered.load(id, &bytes)?;
-    assert_eq!(recovered.account_run(id, run)?, row);
+    check_eq!(recovered.account_run(id, run)?, row);
     // Historical admissions never promised rejection. Removing the opt-in
     // must still reject this partial-class terminal state during native load.
     let mut old: serde_json::Value = serde_json::from_slice(&bytes)?;
@@ -683,7 +683,7 @@ fn partial_maximum_class_rejection_finishes_and_recovers_actual_quota_without_ce
         .ok_or("budget")?
         .remove("measured_rejection");
     let mut denied = BulkStore::new(BulkConfig::default())?;
-    assert!(denied.load(id, &serde_json::to_vec(&old)?).is_err());
-    assert!(denied.accounts.is_empty());
+    check!(denied.load(id, &serde_json::to_vec(&old)?).is_err());
+    check!(denied.accounts.is_empty());
     Ok(())
 }

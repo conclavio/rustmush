@@ -27,14 +27,14 @@ fn underwriting_launch_prices_keep_premium_and_reserved_liability_distinct() -> 
     let illustration = terms.illustrate(money(10_000))?;
     let ordinary = illustration.ordinary();
     let qualified = illustration.with_qualified_safe_conduct();
-    assert_eq!(illustration.insured_value(), money(10_000));
-    assert_eq!(ordinary.premium(), money(100));
-    assert_eq!(ordinary.discount(), money(0));
-    assert_eq!(qualified.base_premium(), money(100));
-    assert_eq!(qualified.discount(), money(10));
-    assert_eq!(qualified.premium(), money(90));
-    assert_eq!(qualified.maximum_payout(), money(8_000));
-    assert_eq!(ordinary.maximum_payout(), qualified.maximum_payout());
+    check_eq!(illustration.insured_value(), money(10_000));
+    check_eq!(ordinary.premium(), money(100));
+    check_eq!(ordinary.discount(), money(0));
+    check_eq!(qualified.base_premium(), money(100));
+    check_eq!(qualified.discount(), money(10));
+    check_eq!(qualified.premium(), money(90));
+    check_eq!(qualified.maximum_payout(), money(8_000));
+    check_eq!(ordinary.maximum_payout(), qualified.maximum_payout());
     Ok(())
 }
 
@@ -49,23 +49,23 @@ fn underwriting_rounding_is_explicit_and_conserves_minor_units() -> TestResult {
     ] {
         let illustration = terms.illustrate(money(value))?;
         let qualified = illustration.with_qualified_safe_conduct();
-        assert_eq!(qualified.base_premium(), money(base));
-        assert_eq!(qualified.discount(), money(discount));
-        assert_eq!(qualified.maximum_payout(), money(payout));
-        assert_eq!(
+        check_eq!(qualified.base_premium(), money(base));
+        check_eq!(qualified.discount(), money(discount));
+        check_eq!(qualified.maximum_payout(), money(payout));
+        check_eq!(
             qualified.premium().checked_add(qualified.discount()),
             Some(qualified.base_premium())
         );
-        assert_eq!(illustration.ordinary().premium(), qualified.base_premium());
+        check_eq!(illustration.ordinary().premium(), qualified.base_premium());
     }
     let maximal = terms
         .illustrate(money(i64::MAX))?
         .with_qualified_safe_conduct();
-    assert_eq!(maximal.base_premium(), money(92_233_720_368_547_759));
-    assert_eq!(maximal.discount(), money(9_223_372_036_854_775));
-    assert_eq!(maximal.maximum_payout(), money(7_378_697_629_483_820_645));
-    assert_eq!(terms.illustrate(money(1)), Err(CoverageError::Value));
-    assert_eq!(terms.illustrate(money(-1)), Err(CoverageError::Value));
+    check_eq!(maximal.base_premium(), money(92_233_720_368_547_759));
+    check_eq!(maximal.discount(), money(9_223_372_036_854_775));
+    check_eq!(maximal.maximum_payout(), money(7_378_697_629_483_820_645));
+    check_eq!(terms.illustrate(money(1)), Err(CoverageError::Value));
+    check_eq!(terms.illustrate(money(-1)), Err(CoverageError::Value));
     Ok(())
 }
 
@@ -74,7 +74,7 @@ fn underwriting_terms_codec_refuses_invalid_mutations_and_preserves_exact_digest
     let terms = terms()?;
     let value = serde_json::to_value(&terms)?;
     let encoded = serde_json::to_vec(&terms)?;
-    assert_eq!(CoverageTermsV1::decode(&encoded)?, terms);
+    check_eq!(CoverageTermsV1::decode(&encoded)?, terms);
     for (field, replacement) in [
         ("format", serde_json::json!(2)),
         ("minimum_value", serde_json::json!(0)),
@@ -96,23 +96,23 @@ fn underwriting_terms_codec_refuses_invalid_mutations_and_preserves_exact_digest
     ] {
         let mut changed = value.clone();
         changed[field] = replacement;
-        assert!(serde_json::from_value::<CoverageTermsV1>(changed).is_err());
+        check!(serde_json::from_value::<CoverageTermsV1>(changed).is_err());
     }
     let mut changed = value.clone();
     changed["premium_permille"] = serde_json::json!(11);
     let repriced: CoverageTermsV1 = serde_json::from_value(changed)?;
-    assert_ne!(repriced.digest()?, terms.digest()?);
+    check_ne!(repriced.digest()?, terms.digest()?);
     let mut changed = value;
     changed["instrument"] = serde_json::json!("another.currency");
-    assert_ne!(
+    check_ne!(
         serde_json::from_value::<CoverageTermsV1>(changed)?.digest()?,
         terms.digest()?
     );
-    assert_eq!(
+    check_eq!(
         CoverageTermsV1::decode(&vec![b' '; CoverageTermsV1::MAX_BYTES + 1]),
         Err(CoverageError::Bound)
     );
-    assert_eq!(CoverageTermsV1::decode(&[]), Err(CoverageError::Bound));
+    check_eq!(CoverageTermsV1::decode(&[]), Err(CoverageError::Bound));
     Ok(())
 }
 
@@ -120,22 +120,22 @@ fn underwriting_terms_codec_refuses_invalid_mutations_and_preserves_exact_digest
 fn underwriting_exact_term_and_delay_boundaries_preserve_a_maturing_loss() -> TestResult {
     let terms = terms()?;
     let window = CoverageWindow::new(ic(100), &terms)?;
-    assert_eq!(window.start(), &ic(100));
-    assert_eq!(window.end(), &ic(604_900));
-    assert_eq!(
+    check_eq!(window.start(), &ic(100));
+    check_eq!(window.end(), &ic(604_900));
+    check_eq!(
         window.loss_payment_due(&ic(99)),
         Err(CoverageError::OutsideTerm)
     );
-    assert_eq!(window.loss_payment_due(&ic(100))?, ic(86_500));
-    assert_eq!(
+    check_eq!(window.loss_payment_due(&ic(100))?, ic(86_500));
+    check_eq!(
         window.loss_payment_due(&ic(604_900)),
         Err(CoverageError::OutsideTerm)
     );
     let loss = ic(604_899);
-    assert_eq!(window.loss_payment_due(&loss)?, ic(691_299));
-    assert!(!window.delay_elapsed(&loss, &ic(691_298))?);
-    assert!(window.delay_elapsed(&loss, &ic(691_299))?);
-    assert!(!window.delay_elapsed(&loss, &ic(0))?);
+    check_eq!(window.loss_payment_due(&loss)?, ic(691_299));
+    check!(!window.delay_elapsed(&loss, &ic(691_298))?);
+    check!(window.delay_elapsed(&loss, &ic(691_299))?);
+    check!(!window.delay_elapsed(&loss, &ic(0))?);
     Ok(())
 }
 
@@ -143,7 +143,7 @@ fn underwriting_exact_term_and_delay_boundaries_preserve_a_maturing_loss() -> Te
 fn underwriting_never_coerces_clock_generation_or_overflows_deadlines() -> TestResult {
     let terms = terms()?;
     for clock in [ClockRef::Utc, ClockRef::WorldIc { generation: 0 }] {
-        assert_eq!(
+        check_eq!(
             CoverageWindow::new(ClockStamp { clock, at: 100 }, &terms),
             Err(CoverageError::Clock)
         );
@@ -153,17 +153,17 @@ fn underwriting_never_coerces_clock_generation_or_overflows_deadlines() -> TestR
         clock: ClockRef::WorldIc { generation: 2 },
         at: 100,
     };
-    assert_eq!(window.loss_payment_due(&foreign), Err(CoverageError::Clock));
-    assert_eq!(
+    check_eq!(window.loss_payment_due(&foreign), Err(CoverageError::Clock));
+    check_eq!(
         window.delay_elapsed(&ic(100), &foreign),
         Err(CoverageError::Clock)
     );
-    assert_eq!(
+    check_eq!(
         CoverageWindow::new(ic(i64::MAX), &terms),
         Err(CoverageError::Arithmetic)
     );
     let late = CoverageWindow::new(ic(i64::MAX - terms.term_seconds()), &terms)?;
-    assert_eq!(
+    check_eq!(
         late.loss_payment_due(&ic(i64::MAX - 1)),
         Err(CoverageError::Arithmetic)
     );

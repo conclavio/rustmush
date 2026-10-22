@@ -206,21 +206,21 @@ fn exact_admission_no_intent_releases_ticket_machine_and_shared_hold_only_once()
     let mut preparing = std::collections::BTreeSet::from([binding.account]);
     entry.pending.as_mut().ok_or("pending")?.attempt = Attempt::Observed(harness.queue(false)?);
     for _ in 0..3 {
-        assert!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
+        check!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
         tickets.check(ticket, &exact)?;
-        assert!(preparing.contains(&binding.account));
-        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        check!(preparing.contains(&binding.account));
+        check_eq!(drops.load(Ordering::SeqCst), 0);
     }
     let proof = harness.drive()?;
-    assert!(
+    check!(
         !consume_attempt(&mut entry, &mut tickets, &mut preparing)?,
         "driver drop is unresolved"
     );
-    assert!(matches!(
+    check!(matches!(
         entry.pending.as_ref().ok_or("pending")?.attempt,
         Attempt::Observed(_)
     ));
-    assert!(
+    check!(
         tickets
             .discard_unadmitted(ticket, ObjId(8), binding.account)
             .is_err()
@@ -228,23 +228,23 @@ fn exact_admission_no_intent_releases_ticket_machine_and_shared_hold_only_once()
     tickets.check(ticket, &exact)?;
     proof.store(true, Ordering::Release);
     entry.actor = ObjId(8);
-    assert!(consume_attempt(&mut entry, &mut tickets, &mut preparing).is_err());
-    assert!(matches!(
+    check!(consume_attempt(&mut entry, &mut tickets, &mut preparing).is_err());
+    check!(matches!(
         entry.pending.as_ref().ok_or("retained proof")?.attempt,
         Attempt::NoIntent
     ));
     tickets.check(ticket, &exact)?;
-    assert_eq!(drops.load(Ordering::SeqCst), 0);
-    assert!(preparing.contains(&binding.account));
+    check_eq!(drops.load(Ordering::SeqCst), 0);
+    check!(preparing.contains(&binding.account));
     entry.actor = binding.character;
-    assert!(consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
-    assert!(entry.pending.is_none());
-    assert!(matches!(entry.phase, Phase::Finished));
-    assert!(preparing.is_empty());
-    assert!(tickets.get(ticket).is_err());
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
-    assert!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    check!(consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
+    check!(entry.pending.is_none());
+    check!(matches!(entry.phase, Phase::Finished));
+    check!(preparing.is_empty());
+    check!(tickets.get(ticket).is_err());
+    check_eq!(drops.load(Ordering::SeqCst), 1);
+    check!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
+    check_eq!(drops.load(Ordering::SeqCst), 1);
     Ok(())
 }
 
@@ -259,23 +259,23 @@ fn not_dispatched_retries_but_new_unresolved_attempt_keeps_custody() -> TestResu
     let mut entry = entry(binding, ticket, drops.clone());
     let mut preparing = std::collections::BTreeSet::from([binding.account]);
     entry.pending.as_mut().ok_or("pending")?.attempt = Attempt::Observed(harness.queue(true)?);
-    assert!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
-    assert!(matches!(
+    check!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
+    check!(matches!(
         entry.pending.as_ref().ok_or("pending")?.attempt,
         Attempt::Unsubmitted
     ));
     entry.pending.as_mut().ok_or("pending")?.attempt = Attempt::Observed(harness.queue(false)?);
     let _unresolved = harness.drive()?;
     for _ in 0..3 {
-        assert!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
+        check!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
     }
     tickets.check(ticket, &exact)?;
-    assert!(matches!(
+    check!(matches!(
         entry.pending.as_ref().ok_or("pending")?.attempt,
         Attempt::Observed(_)
     ));
-    assert_eq!(drops.load(Ordering::SeqCst), 0);
-    assert!(preparing.contains(&binding.account));
+    check_eq!(drops.load(Ordering::SeqCst), 0);
+    check!(preparing.contains(&binding.account));
     Ok(())
 }
 
@@ -348,35 +348,35 @@ fn admitted_transition_no_intent_preserves_exact_machine_ticket_and_paid_receipt
         };
         let proof = harness.drive()?;
         let mut preparing = std::collections::BTreeSet::new();
-        assert!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
+        check!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
         proof.store(true, Ordering::Release);
-        assert!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
-        assert!(matches!(
+        check!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
+        check!(matches!(
             entry.pending.as_ref().ok_or("pending")?.attempt,
             Attempt::Unsubmitted
         ));
         tickets.check(ticket, &exact)?;
-        assert!(
+        check!(
             tickets
                 .discard_unadmitted(ticket, binding.character, binding.account)
                 .is_err()
         );
-        assert_eq!(
+        check_eq!(
             serde_json::to_value(quota.account_run(binding.account, binding.run)?)?,
             before
         );
-        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        check_eq!(drops.load(Ordering::SeqCst), 0);
         entry.pending.as_mut().ok_or("pending")?.attempt = Attempt::Observed(harness.queue(false)?);
         let _new_unresolved = harness.drive()?;
-        assert!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
-        assert!(
+        check!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
+        check!(
             matches!(
                 entry.pending.as_ref().ok_or("pending")?.attempt,
                 Attempt::Observed(_)
             ),
             "old NoIntent cannot complete the replacement attempt"
         );
-        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        check_eq!(drops.load(Ordering::SeqCst), 0);
     }
     Ok(())
 }
@@ -480,7 +480,7 @@ fn admit(store: &mut BulkStore, binding: Binding) -> TestResult {
         binding.job,
         0,
     )?;
-    assert_eq!(run, binding.run);
+    check_eq!(run, binding.run);
     install(store, change, binding.job)
 }
 
@@ -494,20 +494,20 @@ fn absent_or_wrong_ack_never_releases_machine_and_retries_the_same_actor_selecto
         .insert(binding.character, entry(binding, ticket, drops.clone()));
     for now in [0, 1_000, 60_000, 86_400_000] {
         let entry = lane.entries.get_mut(&binding.character).ok_or("entry")?;
-        assert!(
+        check!(
             entry.continuation(now, true).is_none(),
             "pending core custody suppresses resubmit"
         );
         let (actor, argument) = entry
             .continuation(now, false)
             .ok_or("registered actor continuation")?;
-        assert_eq!(actor, binding.character);
-        assert_eq!(argument, "17");
-        assert!(
+        check_eq!(actor, binding.character);
+        check_eq!(argument, "17");
+        check!(
             entry.continuation(now, false).is_none(),
             "bounded retry cadence"
         );
-        assert!(matches!(
+        check!(matches!(
             entry.phase,
             Phase::Admission {
                 machine: Some(_),
@@ -521,16 +521,16 @@ fn absent_or_wrong_ack_never_releases_machine_and_retries_the_same_actor_selecto
         job: binding.job,
         transition: Transition::Admit,
     };
-    assert!(!lane.accept_ack(Acknowledged {
+    check!(!lane.accept_ack(Acknowledged {
         ticket: TicketId::new(18)?,
         ..ack
     }));
-    assert!(!lane.accept_ack(Acknowledged {
+    check!(!lane.accept_ack(Acknowledged {
         transition: Transition::Grant,
         ..ack
     }));
     let now = 86_400_001;
-    assert!(
+    check!(
         lane.entries
             .get_mut(&binding.character)
             .ok_or("entry")?
@@ -538,18 +538,18 @@ fn absent_or_wrong_ack_never_releases_machine_and_retries_the_same_actor_selecto
             .is_none(),
         "wrong acknowledgements do not reset unresolved retry backoff"
     );
-    assert!(lane.accept_ack(ack));
+    check!(lane.accept_ack(ack));
     let entry = lane.entries.get_mut(&binding.character).ok_or("entry")?;
-    assert!(
+    check!(
         entry.continuation(now, true).is_none(),
         "fresh ACK keeps Core custody gate"
     );
-    assert_eq!(
+    check_eq!(
         entry.continuation(now, false),
         Some((binding.character, "17".into()))
     );
-    assert!(!lane.accept_ack(ack), "an Ack is consumed only once");
-    assert!(
+    check!(!lane.accept_ack(ack), "an Ack is consumed only once");
+    check!(
         lane.entries
             .get_mut(&binding.character)
             .ok_or("entry")?
@@ -557,7 +557,7 @@ fn absent_or_wrong_ack_never_releases_machine_and_retries_the_same_actor_selecto
             .is_none(),
         "duplicate ACK cannot queue another callback"
     );
-    assert!(
+    check!(
         lane.entries
             .get_mut(&binding.character)
             .ok_or("entry")?
@@ -565,7 +565,7 @@ fn absent_or_wrong_ack_never_releases_machine_and_retries_the_same_actor_selecto
             .is_none(),
         "same unresolved state retains 1000ms backoff"
     );
-    assert!(
+    check!(
         matches!(
             lane.entries.get(&binding.character).ok_or("entry")?.phase,
             Phase::Admission {
@@ -575,9 +575,9 @@ fn absent_or_wrong_ack_never_releases_machine_and_retries_the_same_actor_selecto
         ),
         "Ack alone cannot bypass typed owner readback"
     );
-    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    check_eq!(drops.load(Ordering::SeqCst), 0);
     drop(lane);
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    check_eq!(drops.load(Ordering::SeqCst), 1);
     Ok(())
 }
 
@@ -616,17 +616,17 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
     }
     lane.take_fair_turn(queue.pop().ok_or("A fair head")?)
         .map_err(|_| "take A")?;
-    assert_eq!(lane.pending_turn, Some(a.character));
+    check_eq!(lane.pending_turn, Some(a.character));
     let head = lane.entries.get_mut(&a.character).ok_or("A entry")?;
-    assert!(
+    check!(
         head.continuation(1, true).is_none(),
         "new turn keeps Core custody gate"
     );
-    assert_eq!(
+    check_eq!(
         head.continuation(1, false),
         Some((a.character, "17".into()))
     );
-    assert!(head.continuation(1, false).is_none());
+    check!(head.continuation(1, false).is_none());
     let op_a = CommitToken::from_bytes([41; 16]);
     let change = store.prepare_grant(a.account, a.run, 0, 2_000)?;
     install(&mut store, change, op_a)?;
@@ -644,8 +644,8 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
     };
     lane.take_fair_turn(queue.pop().ok_or("B fair head")?)
         .map_err(|_| "take B")?;
-    assert_eq!(lane.pending_turn, Some(b.character));
-    assert_eq!(
+    check_eq!(lane.pending_turn, Some(b.character));
+    check_eq!(
         lane.entries
             .get_mut(&b.character)
             .ok_or("B entry")?
@@ -662,19 +662,19 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
         attempt: Attempt::Unsubmitted,
     });
     for _ in 0..3 {
-        assert!(matches!(
+        check!(matches!(
             store.prepare_grant(b.account, b.run, 0, 2_000),
             Err(BulkError::Busy)
         ));
         let entry = lane.entries.get_mut(&b.character).ok_or("B entry")?;
-        assert!(matches!(
+        check!(matches!(
             entry.pending.as_ref().ok_or("B pending")?.attempt,
             Attempt::Unsubmitted
         ));
         entry.pending.as_mut().ok_or("B pending")?.attempt =
             Attempt::Observed(harness.queue(false)?);
         let proof = harness.drive()?;
-        assert!(!consume_attempt(
+        check!(!consume_attempt(
             entry,
             &mut tickets,
             &mut std::collections::BTreeSet::new()
@@ -682,12 +682,12 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
         // The server proof producer is covered separately; this drives the
         // same consumer after each actual quota Busy refusal in this fixture.
         proof.store(true, Ordering::Release);
-        assert!(!consume_attempt(
+        check!(!consume_attempt(
             entry,
             &mut tickets,
             &mut std::collections::BTreeSet::new()
         )?);
-        assert_eq!(
+        check_eq!(
             lane.pending_turn,
             Some(b.character),
             "Busy does not lose the fair head"
@@ -723,7 +723,7 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
         .take_fair_turn(next_a)
         .err()
         .ok_or("B must still own turn")?;
-    assert_eq!(
+    check_eq!(
         lane.entries
             .get(&a.character)
             .ok_or("A entry")?
@@ -735,7 +735,7 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
     let change = store.prepare_grant(b.account, b.run, 0, 2_000)?;
     let op_b = CommitToken::from_bytes([43; 16]);
     install(&mut store, change, op_b)?;
-    assert_eq!(
+    check_eq!(
         store
             .take_registry_lease(op_b)
             .ok_or("B paid lease")?
@@ -745,8 +745,8 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
     lane.pending_turn = None;
     lane.take_fair_turn(queue.pop().ok_or("A follows B")?)
         .map_err(|_| "next A")?;
-    assert_eq!(lane.pending_turn, Some(a.character));
-    assert_eq!(
+    check_eq!(lane.pending_turn, Some(a.character));
+    check_eq!(
         lane.entries
             .get_mut(&a.character)
             .ok_or("A entry")?
@@ -778,8 +778,8 @@ fn terminal_owner_apply_keeps_account_and_global_capacity_until_machine_readback
     // exercises its shared admission boundary, not synthetic typed readback.
     runtime.registry.entries.insert(a.character, retained);
     runtime.external_preparing.insert(a.account);
-    assert_eq!(store.active_count(), 1);
-    assert_eq!(
+    check_eq!(store.active_count(), 1);
+    check_eq!(
         runtime.ensure_admission(&store, b.account),
         Ok(()),
         "admission overlap consumes one account slot, not three"
@@ -792,7 +792,7 @@ fn terminal_owner_apply_keeps_account_and_global_capacity_until_machine_readback
             nonce: 1,
         },
     );
-    assert_eq!(
+    check_eq!(
         runtime.ensure_admission(&store, c.account),
         Err(BulkError::QueueFull)
     );
@@ -800,32 +800,32 @@ fn terminal_owner_apply_keeps_account_and_global_capacity_until_machine_readback
     runtime.external_preparing.remove(&a.account);
     let cancelled = store.prepare_cancel(a.account, a.character, a.run, 1)?;
     install(&mut store, cancelled, CommitToken::from_bytes([44; 16]))?;
-    assert!(store.account_run(a.account, a.run)?.status.terminal());
+    check!(store.account_run(a.account, a.run)?.status.terminal());
     // With one queued slot, B can enter only after A's actual quota image is
     // terminal. A's retained Machine must still occupy the other service slot.
     admit(&mut store, b)?;
-    assert_eq!(
+    check_eq!(
         store.active_count(),
         1,
         "real terminal owner image freed its active row"
     );
-    assert_eq!(
+    check_eq!(
         runtime.ensure_admission(&store, a.account),
         Err(BulkError::Busy),
         "every character of this account is held until the Machine is released"
     );
-    assert_eq!(
+    check_eq!(
         runtime.ensure_admission(&store, c.account),
         Err(BulkError::QueueFull),
         "terminal readback delay still consumes the global slot"
     );
-    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    check_eq!(drops.load(Ordering::SeqCst), 0);
     // Model only the release boundary: production removes this entry after
     // exact terminal Ack plus Roll/execution/BulkStore joins all succeed.
     runtime.registry.entries.remove(&a.character);
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
-    assert_eq!(runtime.ensure_admission(&store, a.account), Ok(()));
-    assert_eq!(runtime.ensure_admission(&store, c.account), Ok(()));
+    check_eq!(drops.load(Ordering::SeqCst), 1);
+    check_eq!(runtime.ensure_admission(&store, a.account), Ok(()));
+    check_eq!(runtime.ensure_admission(&store, c.account), Ok(()));
     // Even broken in-process joins must retain their bounded repair custody.
     // This Ready has no Entry and its actual quota row is already terminal.
     runtime.registry.stranded_ready.push(Ready::registry(
@@ -833,18 +833,18 @@ fn terminal_owner_apply_keeps_account_and_global_capacity_until_machine_readback
         [1; 32],
         Box::new(Kept(drops.clone())),
     ));
-    assert_eq!(
+    check_eq!(
         runtime.ensure_admission(&store, a.account),
         Err(BulkError::Busy)
     );
-    assert_eq!(
+    check_eq!(
         runtime.ensure_admission(&store, c.account),
         Err(BulkError::QueueFull)
     );
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    check_eq!(drops.load(Ordering::SeqCst), 1);
     runtime.registry.stranded_ready.clear();
-    assert_eq!(drops.load(Ordering::SeqCst), 2);
-    assert_eq!(runtime.ensure_admission(&store, c.account), Ok(()));
+    check_eq!(drops.load(Ordering::SeqCst), 2);
+    check_eq!(runtime.ensure_admission(&store, c.account), Ok(()));
     Ok(())
 }
 
@@ -869,7 +869,7 @@ fn worker_evidence_and_receipt_survive_codec_and_ticket_capacity_refusals() -> T
     let (_, retained) = PreparedSettlement::from_worker(binding, bad, Some(bytes.clone()))
         .err()
         .ok_or("malformed result refusal")?;
-    assert_eq!(retained.ok_or("retained raw bytes")?.bytes(), bytes.bytes());
+    check_eq!(retained.ok_or("retained raw bytes")?.bytes(), bytes.bytes());
     let receipt = Receipt {
         registry: None,
         conduct: None,
@@ -890,12 +890,12 @@ fn worker_evidence_and_receipt_survive_codec_and_ticket_capacity_refusals() -> T
             Err(e) => return Err(e.into()),
         }
     }
-    assert_eq!(count, 136);
+    check_eq!(count, 136);
     let (error, retained) = tickets
         .insert_settlement(prepared)
         .err()
         .ok_or("ticket bound")?;
-    assert_eq!(error, BulkError::QueueFull);
+    check_eq!(error, BulkError::QueueFull);
     // Free exactly one acknowledged slot; the same opaque completion inserts.
     let first = TicketId::new(1)?;
     let captured = tickets.get(first)?;
@@ -914,7 +914,7 @@ fn worker_evidence_and_receipt_survive_codec_and_ticket_capacity_refusals() -> T
     let super::super::registry_tickets::TicketKind::Settle { receipt, .. } = &row.kind else {
         return Err("same settlement".into());
     };
-    assert_eq!(
+    check_eq!(
         (receipt.account(), receipt.run(), receipt.terminal),
         (binding.account, binding.run, Some(Status::Failed))
     );
@@ -1002,7 +1002,7 @@ fn real_scheduler_preserves_the_actor_and_projection_refuses_foreign_principal()
         .module_state::<Dispatches>()
         .ok_or("capture")?
         .clone();
-    assert!(observed.0.lock().map_err(|_| "poisoned")?.is_empty());
+    check!(observed.0.lock().map_err(|_| "poisoned")?.is_empty());
     let editor = Arc::new(AtomicUsize::new(0));
     // This can change after scheduling: checking only at enqueue would not
     // protect the ticket from entering a newly opened editor at timer fire.
@@ -1012,11 +1012,11 @@ fn real_scheduler_preserves_the_actor_and_projection_refuses_foreign_principal()
         Box::new(EditingContext(editor.clone())),
     );
     world.fire_due(1_000_000);
-    assert_eq!(*observed.0.lock().map_err(|_| "poisoned")?, vec![actor]);
-    assert_eq!(editor.load(Ordering::Acquire), 0);
-    assert_eq!(world.world().input_depth(actor), 1);
+    check_eq!(*observed.0.lock().map_err(|_| "poisoned")?, vec![actor]);
+    check_eq!(editor.load(Ordering::Acquire), 0);
+    check_eq!(world.world().input_depth(actor), 1);
     world.run(actor, "ordinary editor input");
-    assert_eq!(editor.load(Ordering::Acquire), 1);
+    check_eq!(editor.load(Ordering::Acquire), 1);
     world
         .world_mut()
         .pop_input_context(actor)
@@ -1047,16 +1047,14 @@ fn real_scheduler_preserves_the_actor_and_projection_refuses_foreign_principal()
         actor,
         SubjectKey::Object { id: actor },
     )?;
-    assert!(
-        QuotaParticipant::project_selector(world.engine(), &own, Transition::Cancel)?.is_some()
-    );
-    assert!(QuotaParticipant::project_selector(world.engine(), &own, Transition::Grant)?.is_none());
+    check!(QuotaParticipant::project_selector(world.engine(), &own, Transition::Cancel)?.is_some());
+    check!(QuotaParticipant::project_selector(world.engine(), &own, Transition::Grant)?.is_none());
     let forged = query(
         PrincipalId::Object { id: other },
         actor,
         SubjectKey::Object { id: actor },
     )?;
-    assert!(
+    check!(
         QuotaParticipant::project_selector(world.engine(), &forged, Transition::Cancel)?.is_none()
     );
     let foreign = query(
@@ -1064,7 +1062,7 @@ fn real_scheduler_preserves_the_actor_and_projection_refuses_foreign_principal()
         other,
         SubjectKey::Object { id: other },
     )?;
-    assert!(
+    check!(
         QuotaParticipant::project_selector(world.engine(), &foreign, Transition::Cancel)?.is_none()
     );
     let wrong_subject = query(
@@ -1072,7 +1070,7 @@ fn real_scheduler_preserves_the_actor_and_projection_refuses_foreign_principal()
         actor,
         SubjectKey::Object { id: other },
     )?;
-    assert!(
+    check!(
         QuotaParticipant::project_selector(world.engine(), &wrong_subject, Transition::Cancel)?
             .is_none()
     );

@@ -375,17 +375,17 @@ mod tests {
         let mut result = None;
         for _ in 0..1025 {
             let slice = cycle.advance(u64::from(case.physics.native_ms))?;
-            assert!(slice.simulated_ms <= u64::from(case.physics.native_ms));
+            check!(slice.simulated_ms <= u64::from(case.physics.native_ms));
             if slice.result.is_some() {
                 result = slice.result;
                 break;
             }
         }
         let result = result.ok_or("complete traversal")?;
-        assert!(matches!(result.outcome(), CaseOutcome::Conformant {}));
-        assert!(result.coverage().complete());
-        assert_eq!(cycle.applied, BTreeSet::from([0, 1]));
-        assert_eq!(
+        check!(matches!(result.outcome(), CaseOutcome::Conformant {}));
+        check!(result.coverage().complete());
+        check_eq!(cycle.applied, BTreeSet::from([0, 1]));
+        check_eq!(
             cycle
                 .changes
                 .iter()
@@ -393,25 +393,25 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 0]
         );
-        assert!(cycle.changes.iter().all(|(_, _, _, sample)| *sample));
+        check!(cycle.changes.iter().all(|(_, _, _, sample)| *sample));
         let cancelled = cycle.changes.last().ok_or("last switch")?.2;
-        assert!(cycle.last_applied.is_some_and(|landed| landed > cancelled));
-        assert!(
+        check!(cycle.last_applied.is_some_and(|landed| landed > cancelled));
+        check!(
             matches!(cycle.changes.as_slice(), [(_,first,_,_),(_,second,_,_)] if *first>=10_000 && *second-*first>=10_000)
         );
         let memory: serde_json::Value =
             serde_json::from_slice(&cycle.arena.minds.get(&OWN).ok_or("mind")?.memory)?;
-        assert!(
+        check!(
             memory
                 .get("count")
                 .and_then(serde_json::Value::as_u64)
                 .is_some_and(|n| n > 2)
         );
-        assert_eq!(
+        check_eq!(
             memory.get("bias").and_then(serde_json::Value::as_u64),
             Some(1)
         );
-        assert!(cycle.advance(u64::from(case.physics.native_ms)).is_err());
+        check!(cycle.advance(u64::from(case.physics.native_ms)).is_err());
         Ok(())
     }
 }

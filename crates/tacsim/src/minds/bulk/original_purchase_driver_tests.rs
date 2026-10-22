@@ -77,19 +77,19 @@ fn take(
         .engine
         .take_observed_authoritative_submit()
         .ok_or("real service selector")?;
-    assert!(driven.is_observed());
+    check!(driven.is_observed());
     let (request, driver) = driven.into_parts();
-    assert_eq!(request.actor, BUYER);
-    assert_eq!(request.action.key().owner.as_str(), "market");
-    assert_eq!(request.action.key().id.as_str(), id);
-    assert_eq!(request.subject, PerceivedRef::SelfActor);
-    assert!(request.targets.is_empty());
-    assert_eq!(request.parameters, json!({"operation":operation}));
+    check_eq!(request.actor, BUYER);
+    check_eq!(request.action.key().owner.as_str(), "market");
+    check_eq!(request.action.key().id.as_str(), id);
+    check_eq!(request.subject, PerceivedRef::SelfActor);
+    check!(request.targets.is_empty());
+    check_eq!(request.parameters, json!({"operation":operation}));
     let proof = *driver
         .ok_or("actual runtime observer")?
         .downcast::<Arc<AtomicBool>>()
         .map_err(|_| "runtime proof type")?;
-    assert!(!proof.load(Ordering::Acquire));
+    check!(!proof.load(Ordering::Acquire));
     Ok((request, proof))
 }
 fn no_request(f: &mut PurchaseFixture) {
@@ -130,7 +130,7 @@ fn land(f: &mut PurchaseFixture, submit: &AuthoritativeSubmit, serial: u128) -> 
         },
     )?;
     let (action, resolved, _) = resolved.into_authoritative_parts();
-    assert_eq!(action, submit.action);
+    check_eq!(action, submit.action);
     let before = f.balances()?;
     let roots = f.roots()?;
     let (prepared, _) = f
@@ -140,8 +140,8 @@ fn land(f: &mut PurchaseFixture, submit: &AuthoritativeSubmit, serial: u128) -> 
             &resolved,
             token(serial),
         )?;
-    assert_eq!(f.balances()?, before);
-    assert_eq!(f.roots()?, roots);
+    check_eq!(f.balances()?, before);
+    check_eq!(f.roots()?, roots);
     f.install(prepared)?;
     Ok(())
 }
@@ -150,16 +150,16 @@ fn assert_funded(
     operation: CommitToken,
     money: &[(Amount, Amount)],
 ) -> TestResult {
-    assert_eq!(f.balances()?, money);
-    assert!(
+    check_eq!(f.balances()?, money);
+    check!(
         f.economy()?
             .purchase_receipt_audit()
             .get(operation)?
             .terminal()
             .is_none()
     );
-    assert!(f.rows("roll", "roll_mind_personal_paid_licence").is_empty());
-    assert!(f.rows("market", "market_mind_purchase_receipt").is_empty());
+    check!(f.rows("roll", "roll_mind_personal_paid_licence").is_empty());
+    check!(f.rows("market", "market_mind_purchase_receipt").is_empty());
     Ok(())
 }
 
@@ -179,18 +179,18 @@ pub(super) fn exercise(f: &PurchaseFixture, saved: &Durable, operation: CommitTo
     );
     fire(&mut healthy, saved.now + 1)?;
     let (grant, unknown) = take(&mut healthy, operation, "settle_original_mind")?;
-    assert_eq!(input.load(Ordering::Relaxed), 0);
-    assert_eq!(healthy.engine.world.input_depth(BUYER), 1);
+    check_eq!(input.load(Ordering::Relaxed), 0);
+    check_eq!(healthy.engine.world.input_depth(BUYER), 1);
     assert_funded(&healthy, operation, &money)?;
     land(&mut healthy, &grant, 4_000_001)?;
-    assert!(
+    check!(
         !unknown.load(Ordering::Acquire),
         "actual readback, not a made-up ACK, completes the entry"
     );
     fire(&mut healthy, saved.now + 2)?;
     no_request(&mut healthy);
-    assert_eq!(healthy.roots()?, roots);
-    assert_eq!(
+    check_eq!(healthy.roots()?, roots);
+    check_eq!(
         healthy
             .rows("roll", "roll_mind_personal_paid_licence")
             .len(),
@@ -256,21 +256,21 @@ pub(super) fn exercise(f: &PurchaseFixture, saved: &Durable, operation: CommitTo
     let (refund, second_proof) = take(&mut uncertain, operation, "refund_original_mind")?;
     fire(&mut uncertain, expired + 2)?;
     no_request(&mut uncertain);
-    assert!(
+    check!(
         !second_proof.load(Ordering::Acquire),
         "old consumed absence cannot finish the replacement"
     );
     land(&mut uncertain, &refund, 4_000_002)?;
     fire(&mut uncertain, expired + 3)?;
     no_request(&mut uncertain);
-    assert!(
+    check!(
         uncertain
             .rows("roll", "roll_mind_personal_paid_licence")
             .is_empty()
     );
-    assert!(uncertain.rows("roll", "roll_mind_paid_term").is_empty());
-    assert_eq!(uncertain.roots()?, roots);
-    assert!(
+    check!(uncertain.rows("roll", "roll_mind_paid_term").is_empty());
+    check_eq!(uncertain.roots()?, roots);
+    check!(
         uncertain
             .economy()?
             .purchase_receipt_audit()
@@ -288,7 +288,7 @@ pub(super) fn exercise(f: &PurchaseFixture, saved: &Durable, operation: CommitTo
     proof.store(true, Ordering::Release);
     fire(&mut retry, saved.now + 2)?;
     let (second, _) = take(&mut retry, operation, "settle_original_mind")?;
-    assert_eq!(first, second);
+    check_eq!(first, second);
 
     // The earlier unresolved purchase must not starve another funded purchase
     // belonging to this same buyer. Both observations remain independently held.
@@ -310,16 +310,16 @@ pub(super) fn exercise(f: &PurchaseFixture, saved: &Durable, operation: CommitTo
         fire(&mut fair, now)?;
         no_request(&mut fair);
     }
-    assert!(!earlier.load(Ordering::Acquire));
-    assert!(!later.load(Ordering::Acquire));
-    assert!(
+    check!(!earlier.load(Ordering::Acquire));
+    check!(!later.load(Ordering::Acquire));
+    check!(
         fair.economy()?
             .purchase_receipt_audit()
             .get(operation)?
             .terminal()
             .is_none()
     );
-    assert!(
+    check!(
         fair.economy()?
             .purchase_receipt_audit()
             .get(token(4_000_011))?
@@ -338,11 +338,11 @@ pub(super) fn exercise(f: &PurchaseFixture, saved: &Durable, operation: CommitTo
     fire(&mut away, saved.now + 1)?;
     let (refund, _) = take(&mut away, operation, "refund_original_mind")?;
     land(&mut away, &refund, 4_000_012)?;
-    assert!(
+    check!(
         away.rows("roll", "roll_mind_personal_paid_licence")
             .is_empty()
     );
-    assert_eq!(away.roots()?, roots);
+    check_eq!(away.roots()?, roots);
 
     // Fill the actual Engine's unrelated pre-ingress queue. The paid selector
     // is prepared by its real registered continuation but is never handed to
@@ -382,35 +382,35 @@ pub(super) fn exercise(f: &PurchaseFixture, saved: &Durable, operation: CommitTo
         &mut out,
         &mut mush_core::engine::Effects::new(),
     );
-    assert_eq!(queued_actors.len(), 64);
+    check_eq!(queued_actors.len(), 64);
     for actor in &queued_actors {
-        assert!(blocked.engine.has_authoritative_submit_for(*actor));
+        check!(blocked.engine.has_authoritative_submit_for(*actor));
     }
-    assert!(!blocked.engine.has_authoritative_submit_for(BUYER));
+    check!(!blocked.engine.has_authoritative_submit_for(BUYER));
     fire(&mut blocked, saved.now + 1)?;
-    assert!(!blocked.engine.has_authoritative_submit_for(BUYER));
+    check!(!blocked.engine.has_authoritative_submit_for(BUYER));
     assert_funded(&blocked, operation, &money)?;
     for _ in 0..64 {
         let queued = blocked
             .engine
             .take_observed_authoritative_submit()
             .ok_or("incumbent queued actor")?;
-        assert!(
+        check!(
             !queued.is_observed(),
             "paid attempt never entered the driver"
         );
-        assert!(queued_actors.remove(&queued.request().actor));
+        check!(queued_actors.remove(&queued.request().actor));
     }
-    assert!(queued_actors.is_empty());
+    check!(queued_actors.is_empty());
     no_request(&mut blocked);
     fire(&mut blocked, saved.now + 2)?;
     let (retry, proof) = take(&mut blocked, operation, "settle_original_mind")?;
-    assert!(!proof.load(Ordering::Acquire));
+    check!(!proof.load(Ordering::Acquire));
     land(&mut blocked, &retry, 4_000_013)?;
     fire(&mut blocked, saved.now + 3)?;
     no_request(&mut blocked);
-    assert_eq!(blocked.roots()?, roots);
-    assert_eq!(
+    check_eq!(blocked.roots()?, roots);
+    check_eq!(
         blocked
             .rows("roll", "roll_mind_personal_paid_licence")
             .len(),
@@ -425,7 +425,7 @@ pub(super) fn exercise(f: &PurchaseFixture, saved: &Durable, operation: CommitTo
     fire(&mut cold, expired + 1)?;
     let (refund, _) = take(&mut cold, operation, "refund_original_mind")?;
     land(&mut cold, &refund, 4_000_003)?;
-    assert!(
+    check!(
         cold.economy()?
             .purchase_receipt_audit()
             .get(operation)?

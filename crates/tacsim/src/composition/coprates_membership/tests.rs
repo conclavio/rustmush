@@ -290,13 +290,13 @@ impl Rig {
             previews,
         };
         let out = r.command(GOD, "@faction/create MembershipFixture");
-        assert!(out.events().iter().any(|(_,e)|matches!(e,mush_proto::OutputEvent::Sys(t) if t.to_plain_text().contains("Created faction MembershipFixture"))));
+        check!(out.events().iter().any(|(_,e)|matches!(e,mush_proto::OutputEvent::Sys(t) if t.to_plain_text().contains("Created faction MembershipFixture"))));
         let state = r
             .engine
             .world
             .module_state::<FactionState>()
             .ok_or("faction")?;
-        assert_eq!(
+        check_eq!(
             state
                 .faction_by_name("MembershipFixture")
                 .ok_or("created")?
@@ -441,16 +441,16 @@ fn actual_member_preview_accepts_non_officers_and_covert_members_without_disclos
         r.command(actor, "coprates_preview");
     }
     let answers = r.previews.lock().map_err(|_| "previews")?;
-    assert_eq!(
+    check_eq!(
         answers.iter().map(|a| a.passed).collect::<Vec<_>>(),
         vec![true, true, false]
     );
-    assert!(
+    check!(
         answers
             .iter()
             .all(|a| a.note == "Coprates buyer eligibility checked")
     );
-    assert_eq!(
+    check_eq!(
         answers.first().ok_or("first")?,
         answers.get(1).ok_or("second")?
     );
@@ -459,8 +459,8 @@ fn actual_member_preview_accepts_non_officers_and_covert_members_without_disclos
         .world
         .module_state::<FactionState>()
         .ok_or("state")?;
-    assert!(!st.is_officer(r.buyer, FactionId(0)));
-    assert!(!st.is_officer(r.hidden, FactionId(0)));
+    check!(!st.is_officer(r.buyer, FactionId(0)));
+    check!(!st.is_officer(r.hidden, FactionId(0)));
     r.unchanged();
     Ok(())
 }
@@ -473,37 +473,37 @@ fn exact_policy_coordinates_and_actual_owner_state_fail_closed() -> TestResult {
         ruleset: "tacsim".into(),
         code: "other".into(),
     };
-    assert!(
+    check!(
         r.handles
             .membership
             .guard(&r.engine.world, &other, r.buyer)
             .is_none()
     );
     let unknown = CopratesMembership::new(FactionId(u64::MAX), catalog())?;
-    assert!(!unknown.current(&r.engine.world, r.buyer));
-    assert!(!policy()?.current(&World::new_minimal(), GOD));
+    check!(!unknown.current(&r.engine.world, r.buyer));
+    check!(!policy()?.current(&World::new_minimal(), GOD));
     let object = r
         .engine
         .world
         .create(ObjKind::Thing, "MembershipNonPlayer", GOD, Some(LIMBO))?;
-    assert!(!policy()?.current(&r.engine.world, object));
+    check!(!policy()?.current(&r.engine.world, object));
     r.engine
         .world
         .get_mut(r.buyer)
         .ok_or("buyer")?
         .flags
         .insert(Flags::GOING);
-    assert!(
+    check!(
         r.handles
             .membership
             .guard(&r.engine.world, &catalog(), r.buyer)
             .is_none()
     );
-    assert_ne!(
+    check_ne!(
         policy()?.descriptor()?.payload(),
         unknown.descriptor()?.payload()
     );
-    assert!(
+    check!(
         CopratesMembership::new(
             FactionId(0),
             CatalogRef {
@@ -522,8 +522,8 @@ fn membership_loss_after_preview_refuses_actual_registered_preparation() -> Test
     r.add(false);
     let offer = r.resolved()?;
     r.remove();
-    assert!(!r.engine.revalidate_guards(offer.guards())?.is_current());
-    assert!(
+    check!(!r.engine.revalidate_guards(offer.guards())?.is_current());
+    check!(
         r.engine
             .prepare_registered_composed_resolved_authoritative_action(
                 offer.action(),
@@ -533,7 +533,7 @@ fn membership_loss_after_preview_refuses_actual_registered_preparation() -> Test
             .is_err()
     );
     r.unchanged();
-    assert!(!r.engine.action_state().has_prepared());
+    check!(!r.engine.action_state().has_prepared());
     Ok(())
 }
 
@@ -560,11 +560,11 @@ fn membership_loss_after_prepare_or_stage_refuses_before_writer_custody() -> Tes
         if after_stage {
             r.remove();
         }
-        assert!(r.engine.take_staged_action().is_err());
+        check!(r.engine.take_staged_action().is_err());
         r.unchanged();
-        assert!(!r.engine.has_staged_action());
-        assert!(!r.engine.action_state().has_prepared());
-        assert!(!r.engine.action_state().reservation_lost());
+        check!(!r.engine.has_staged_action());
+        check!(!r.engine.action_state().has_prepared());
+        check!(!r.engine.action_state().reservation_lost());
     }
     Ok(())
 }
@@ -588,7 +588,7 @@ fn unchanged_member_reaches_actual_custody_with_exact_guard_and_inert_images() -
     r.unchanged();
     let (_, installation) = staged.into_parts();
     r.engine.install_composed_action(installation)?;
-    assert_eq!(
+    check_eq!(
         r.engine.action_state().get(&r.handles.family, &r.buyer.0)?,
         Some(&1)
     );
@@ -602,8 +602,8 @@ fn preview_refuses_changed_rule_and_does_not_claim_a_foreign_catalogue() -> Test
     r.command(r.buyer, "coprates_preview wrong_rule");
     r.command(r.buyer, "coprates_preview foreign_catalog");
     let answers = r.previews.lock().map_err(|_| "previews")?;
-    assert_eq!(answers.len(), 1);
-    assert!(!answers.first().ok_or("owned refusal")?.passed);
+    check_eq!(answers.len(), 1);
+    check!(!answers.first().ok_or("owned refusal")?.passed);
     r.unchanged();
     Ok(())
 }
@@ -630,13 +630,13 @@ fn actual_membership_copied_into_a_foreign_owner_slot_conveys_no_eligibility() -
         .clone();
     let mut world = World::new_minimal();
     let buyer = world.create(ObjKind::Player, "CopratesBuyer", GOD, Some(LIMBO))?;
-    assert_eq!(buyer, r.buyer);
+    check_eq!(buyer, r.buyer);
     let engine = boxed_fixture_engine(world, Registry::new(), vec![Box::new(ForeignState(state))])?;
-    assert_eq!(
+    check_eq!(
         FactionStandingProvider.eval(&engine.world, "member", &json!({"faction":0}), buyer),
         Some(true)
     );
-    assert!(!policy()?.current(&engine.world, buyer));
+    check!(!policy()?.current(&engine.world, buyer));
     Ok(())
 }
 
@@ -675,7 +675,7 @@ fn actual_registered_validator_refuses_changed_guard_coordinates() -> TestResult
         )?;
         builder.add(guard)?;
         let guards = builder.finish()?;
-        assert!(
+        check!(
             !r.engine
                 .revalidate_guards(&guards)
                 .is_ok_and(|result| result.is_current())
@@ -709,7 +709,7 @@ fn registration_refuses_foreign_owner_and_duplicate_policy() -> TestResult {
         }
     }
     for (foreign, duplicate) in [(true, false), (false, true)] {
-        assert!(
+        check!(
             boxed_fixture_engine(
                 World::new_minimal(),
                 Registry::new(),

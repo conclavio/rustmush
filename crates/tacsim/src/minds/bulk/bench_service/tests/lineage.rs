@@ -72,8 +72,8 @@ fn mark(
         kv: documents,
         ..Default::default()
     })?;
-    assert_eq!(owner.revision(GOD, reference.key)?.reference(), reference);
-    assert_eq!(owner.mind(GOD, "retained")?.latest(), Some(reference.key));
+    check_eq!(owner.revision(GOD, reference.key)?.reference(), reference);
+    check_eq!(owner.mind(GOD, "retained")?.latest(), Some(reference.key));
     Ok(owner)
 }
 
@@ -91,7 +91,7 @@ fn cached_picture_and_pending_candidate_recheck_exact_current_owner_before_outpu
         digest: reference.digest,
     };
     let mut cached = picture(Some(origin.clone()));
-    assert!(
+    check!(
         serde_json::to_value(&cached)?
             .get("access_origin")
             .is_none()
@@ -100,16 +100,16 @@ fn cached_picture_and_pending_candidate_recheck_exact_current_owner_before_outpu
         let mut runtime = service.0.lock().map_err(|_| "runtime")?;
         let row = runtime.entries.values_mut().next().ok_or("entry")?;
         row.picture = Some(Arc::new(cached.clone()));
-        assert!(authorized(&engine.world, row));
+        check!(authorized(&engine.world, row));
     }
     let visible = cleanup_command(&mut engine, "BENCH PIC");
-    assert!(format!("{:?}", visible.events()).contains("lineage-memory"));
+    check!(format!("{:?}", visible.events()).contains("lineage-memory"));
     engine
         .world
         .module_state_insert::<RollStore>(mark(&documents, reference)?);
     let refused = cleanup_command(&mut engine, "BENCH PIC");
-    assert!(!format!("{:?}", refused.events()).contains("lineage-memory"));
-    assert!(
+    check!(!format!("{:?}", refused.events()).contains("lineage-memory"));
+    check!(
         !refused
             .events()
             .iter()
@@ -127,21 +127,21 @@ fn cached_picture_and_pending_candidate_recheck_exact_current_owner_before_outpu
     cached.unit = ObjId(45);
     cached.access_origin = Some(MindOrigin::Doctrine { revision: 1 });
     row.picture = Some(Arc::new(cached.clone()));
-    assert!(source_access(&engine.world, row));
+    check!(source_access(&engine.world, row));
     row.pending_revision = Some(reference);
-    assert!(
+    check!(
         !source_access(&engine.world, row),
         "delayed candidate result"
     );
     row.source_revision = row.pending_revision.take();
-    assert!(
+    check!(
         !source_access(&engine.world, row),
         "retained fork/diff result"
     );
     row.source_revision = None;
     cached.access_origin = None;
     row.picture = Some(Arc::new(cached));
-    assert!(!source_access(&engine.world, row));
-    assert!(engine.take_module_ops().is_empty());
+    check!(!source_access(&engine.world, row));
+    check!(engine.take_module_ops().is_empty());
     Ok(())
 }

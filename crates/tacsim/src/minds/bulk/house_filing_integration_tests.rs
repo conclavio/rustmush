@@ -272,7 +272,7 @@ impl HouseFixture {
 pub(super) fn exercise(registry: &Fixture, rating: &RatingRef) -> TestResult {
     let saved = Durable::capture(&registry.engine, &registry.disk);
     let mut f = HouseFixture::boot(registry, &saved)?;
-    assert_eq!(
+    check_eq!(
         f.engine
             .world
             .create(ObjKind::Player, "House customer", GOD, Some(ROOM))?,
@@ -328,7 +328,7 @@ pub(super) fn exercise(registry: &Fixture, rating: &RatingRef) -> TestResult {
         .find(|a| a.owner == faucet_owner)
         .ok_or("actual faucet")?
         .id;
-    assert_eq!(
+    check_eq!(
         f.economy()?
             .snapshot()
             .account(WalletId(1))
@@ -359,12 +359,12 @@ pub(super) fn exercise(registry: &Fixture, rating: &RatingRef) -> TestResult {
         "payer":payer,"charter_name":"Measured house original","organization":organization,"scope":scope});
     let before = f.snapshot();
     let before_revision = f.engine.action_state().revision();
-    assert!(
+    check!(
         f.prepare(6_000_001, parameters.clone()).is_err(),
         "staff alone supplies none of the scoped rights"
     );
-    assert_eq!(f.disk, before.disk);
-    assert_eq!(f.engine.action_state().revision(), before_revision);
+    check_eq!(f.disk, before.disk);
+    check_eq!(f.engine.action_state().revision(), before_revision);
     let caps = [
         mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY,
         "asset.title.transfer",
@@ -376,7 +376,7 @@ pub(super) fn exercise(registry: &Fixture, rating: &RatingRef) -> TestResult {
             GOD.0, other.0
         ))?;
     }
-    assert!(
+    check!(
         f.prepare(6_000_001, parameters.clone()).is_err(),
         "another scope cannot spend or publish here"
     );
@@ -391,12 +391,12 @@ pub(super) fn exercise(registry: &Fixture, rating: &RatingRef) -> TestResult {
     let (prepared, output) = f.prepare(6_000_001, parameters.clone())?;
     f.stage(6_000_001, parameters.clone(), prepared, output)?;
     let writes = f.acknowledge()?;
-    assert!(
+    check!(
         writes
             .iter()
             .any(|w| matches!(w, ReplayWrite::LedgerChunkSet { .. }))
     );
-    assert_eq!(
+    check_eq!(
         f.economy()?
             .snapshot()
             .account(payer)
@@ -405,28 +405,28 @@ pub(super) fn exercise(registry: &Fixture, rating: &RatingRef) -> TestResult {
         Amount::from_minor(900)
     );
     let title = f.economy()?.snapshot().asset(shell).ok_or("title")?;
-    assert_eq!(title.title_owner, EconomicOwner::Organization(organization));
-    assert_eq!(title.scope, Some(scope));
+    check_eq!(title.title_owner, EconomicOwner::Organization(organization));
+    check_eq!(title.scope, Some(scope));
     let operation = one(rows(&f.disk, "roll", "roll_mind_initial_filing"))?;
-    assert_eq!(operation.get("format"), Some(&json!(2)));
-    assert_eq!(
+    check_eq!(operation.get("format"), Some(&json!(2)));
+    check_eq!(
         operation.pointer("/economic/house"),
         Some(&json!({"format":1,"curator":GOD,"organization":organization,"scope":scope}))
     );
-    assert_eq!(operation.pointer("/rating/job"), Some(&json!(rating.job())));
+    check_eq!(operation.pointer("/rating/job"), Some(&json!(rating.job())));
     let committed = f.snapshot();
     catalogue::exercise(registry, &committed, organization, scope, other)?;
     paid_checkout::exercise_house(registry, &committed, organization, scope)?;
     let restarted = HouseFixture::boot(registry, &committed)?;
-    assert_eq!(restarted.economy()?.snapshot().asset(shell), Some(title));
-    assert_eq!(
+    check_eq!(restarted.economy()?.snapshot().asset(shell), Some(title));
+    check_eq!(
         one(rows(&restarted.disk, "roll", "roll_mind_initial_filing"))?,
         operation
     );
     let mut missing = committed.clone();
     remove_family(&mut missing, "roll", "roll_mind_initial_filing");
-    assert!(
-        HouseFixture::boot(registry, &missing).is_err(),
+    check!(
+        crate::test_checks::refused(HouseFixture::boot(registry, &missing))?,
         "history reverse join cannot lose the house operation"
     );
     let mut no_house = committed.clone();
@@ -437,7 +437,9 @@ pub(super) fn exercise(registry: &Fixture, rating: &RatingRef) -> TestResult {
             .remove("house");
         Ok(())
     })?;
-    assert!(HouseFixture::boot(registry, &no_house).is_err());
+    check!(crate::test_checks::refused(HouseFixture::boot(
+        registry, &no_house
+    ))?);
     let mut stale = HouseFixture::boot(registry, &eligible)?;
     let (prepared, output) = stale.prepare(6_000_002, parameters.clone())?;
     stale.command("@org/status House=suspended")?;
@@ -445,13 +447,13 @@ pub(super) fn exercise(registry: &Fixture, rating: &RatingRef) -> TestResult {
         .stage(6_000_002, parameters.clone(), prepared, output)
         .err()
         .ok_or("stale authority accepted")?;
-    assert_eq!(
+    check_eq!(
         error.downcast_ref::<mush_core::engine::StagePreparedActionError>(),
         Some(&mush_core::engine::StagePreparedActionError::ParticipantInputsChanged),
         "scoped right is re-resolved before custody"
     );
-    assert!(stale.economy()?.snapshot().asset(shell).is_none());
-    assert_eq!(
+    check!(stale.economy()?.snapshot().asset(shell).is_none());
+    check_eq!(
         stale
             .economy()?
             .snapshot()
@@ -460,22 +462,22 @@ pub(super) fn exercise(registry: &Fixture, rating: &RatingRef) -> TestResult {
             .posted_balance,
         Amount::from_minor(1000)
     );
-    assert!(rows(&stale.disk, "roll", "roll_mind_initial_filing").is_empty());
+    check!(rows(&stale.disk, "roll", "roll_mind_initial_filing").is_empty());
     // A successful stage still cannot cross the final custody boundary after
     // the genuine organization service has made the compartment inert.
     let mut stale_take = HouseFixture::boot(registry, &eligible)?;
     let (prepared, output) = stale_take.prepare(6_000_003, parameters.clone())?;
     stale_take.stage(6_000_003, parameters, prepared, output)?;
     stale_take.command("@org/status House=suspended")?;
-    assert!(matches!(
+    check!(matches!(
         stale_take.engine.take_staged_action(),
         Err(mush_core::engine::StagedActionAdmissionError::Participant(
             _
         ))
     ));
-    assert!(!stale_take.engine.has_staged_action());
-    assert!(stale_take.economy()?.snapshot().asset(shell).is_none());
-    assert_eq!(
+    check!(!stale_take.engine.has_staged_action());
+    check!(stale_take.economy()?.snapshot().asset(shell).is_none());
+    check_eq!(
         stale_take
             .economy()?
             .snapshot()
@@ -484,6 +486,6 @@ pub(super) fn exercise(registry: &Fixture, rating: &RatingRef) -> TestResult {
             .posted_balance,
         Amount::from_minor(1000)
     );
-    assert!(rows(&stale_take.disk, "roll", "roll_mind_initial_filing").is_empty());
+    check!(rows(&stale_take.disk, "roll", "roll_mind_initial_filing").is_empty());
     Ok(())
 }

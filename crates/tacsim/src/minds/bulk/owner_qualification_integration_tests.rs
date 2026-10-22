@@ -66,7 +66,7 @@ fn signed(w: &mut PlayerWorld, n: u128, p: Value) -> TestResult<PreparedComposed
         },
     )?;
     let (actual, request, _) = resolved.into_authoritative_parts();
-    assert_eq!(actual, exact);
+    check_eq!(actual, exact);
     Ok(w.engine
         .prepare_registered_composed_resolved_authoritative_action(&exact, &request, token(n))?
         .0)
@@ -208,25 +208,28 @@ fn parent_purchase(
         json!({"operation":token(n+2)}),
     )?;
     let actual = allocation(w, n + 2)?;
-    assert_eq!(actual.protocol(), EntitlementProtocol::OriginalV3);
-    assert_eq!(actual.holder(), BUYER);
+    check_eq!(actual.protocol(), EntitlementProtocol::OriginalV3);
+    check_eq!(actual.holder(), BUYER);
     Ok(actual)
 }
 fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
-    assert!(
-        PlayerWorld::boot_entitlements(f, saved).is_err(),
+    check!(
+        crate::test_checks::refused(PlayerWorld::boot_entitlements(f, saved))?,
         "disabled qualification cannot drop its obligations"
     );
     for family in [OPS, HEADS] {
         let mut missing = saved.clone();
-        assert!(remove_family(&mut missing, "roll", family) > 0);
-        assert!(boot(f, &missing).is_err(), "missing qualification half");
+        check!(remove_family(&mut missing, "roll", family) > 0);
+        check!(
+            crate::test_checks::refused(boot(f, &missing))?,
+            "missing qualification half"
+        );
     }
     let mut all = saved.clone();
-    assert!(remove_family(&mut all, "roll", OPS) > 0);
-    assert!(remove_family(&mut all, "roll", HEADS) > 0);
-    assert!(
-        boot(f, &all).is_err(),
+    check!(remove_family(&mut all, "roll", OPS) > 0);
+    check!(remove_family(&mut all, "roll", HEADS) > 0);
+    check!(
+        crate::test_checks::refused(boot(f, &all))?,
         "retained cause prevents all typed-row loss"
     );
     let mut root = saved.clone();
@@ -234,8 +237,11 @@ fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     root.disk.retain(|(_, key), _| {
         !key.starts_with("reference:roll:commercial:v1/owner_qualification/")
     });
-    assert!(root.disk.len() < before);
-    assert!(boot(f, &root).is_err(), "exact permanent cause required");
+    check!(root.disk.len() < before);
+    check!(
+        crate::test_checks::refused(boot(f, &root))?,
+        "exact permanent cause required"
+    );
     for field in ["ordinal", "operation"] {
         let mut crossed = saved.clone();
         let head = crossed
@@ -251,8 +257,8 @@ fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         } else {
             json!(token(START + 999))
         };
-        assert!(
-            boot(f, &crossed).is_err(),
+        check!(
+            crate::test_checks::refused(boot(f, &crossed))?,
             "head cannot claim an unrelated history"
         );
     }
@@ -275,8 +281,8 @@ fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         .get_mut("value")
         .and_then(|v| v.get_mut("recalled_by"))
         .ok_or("recall")? = json!(token(START + 998));
-    assert!(
-        boot(f, &recalled).is_err(),
+    check!(
+        crate::test_checks::refused(boot(f, &recalled))?,
         "replacement cannot repair a forged recall cause"
     );
     Ok(())
@@ -297,7 +303,7 @@ fn fences(
         let before = disk(&w);
         let money = balances(&w)?;
         if mode == "foreign" {
-            assert!(prepare_q(&mut w, GOD, START + 30, p.clone()).is_err());
+            check!(prepare_q(&mut w, GOD, START + 30, p.clone()).is_err());
         } else {
             let (prepared, out) = prepare_q(&mut w, BUYER, START + 30, p.clone())?;
             if mode == "title" {
@@ -320,12 +326,12 @@ fn fences(
                     .ok_or("title")?
                     .title_owner
                     .clone();
-                assert!(
+                check!(
                     w.transfer_charter(charter.object(), GOD, 49_000_110)
                         .is_err(),
                     "title moved under a prepared qualification"
                 );
-                assert_eq!(
+                check_eq!(
                     w.engine
                         .world
                         .module_state::<EconomyStore>()
@@ -340,7 +346,7 @@ fn fences(
             } else if mode == "lapse_take" {
                 stage_q(&mut w, START + 30, p.clone(), prepared, out)?;
                 w.engine.world.set_now(parent_window.grace_end().get());
-                assert!(w.engine.take_staged_action().is_err());
+                check!(w.engine.take_staged_action().is_err());
             } else {
                 match mode {
                     "clock" => {
@@ -349,12 +355,12 @@ fn fences(
                     }
                     _ => w.engine.world.set_now(parent_window.grace_end().get()),
                 }
-                assert!(stage_q(&mut w, START + 30, p.clone(), prepared, out).is_err());
+                check!(stage_q(&mut w, START + 30, p.clone(), prepared, out).is_err());
             }
         }
-        assert_eq!(balances(&w)?, money);
-        assert!(rows(&disk(&w), "roll", OPS).is_empty());
-        assert!(
+        check_eq!(balances(&w)?, money);
+        check!(rows(&disk(&w), "roll", OPS).is_empty());
+        check!(
             disk(&w) == before,
             "refusal changed retained business images"
         );
@@ -370,8 +376,8 @@ fn fences(
         .into_parts();
     held.engine.world.set_now(parent_window.grace_end().get());
     apply(&mut held, bundle.writes(), installation)?;
-    assert_eq!(rows(&disk(&held), "roll", OPS).len(), 1);
-    assert!(boot(f, &capture(&held, &disk(&held))).is_ok());
+    check_eq!(rows(&disk(&held), "roll", OPS).len(), 1);
+    check!(boot(f, &capture(&held, &disk(&held))).is_ok());
     Ok(())
 }
 // A shorter *actual configured offer*, not altered persisted dates. The old

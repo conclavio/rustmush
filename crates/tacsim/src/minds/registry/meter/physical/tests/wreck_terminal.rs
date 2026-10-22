@@ -25,13 +25,13 @@ fn terminal_wreck(
         for _ in 0..32 {
             wall += native;
             let output = arena.step_settled(wall, &[], &[]);
-            assert!(output.ended.is_none());
+            check!(output.ended.is_none());
             meter.reconcile(&arena)?;
             if meter.measurement()?.summary.thinks() > 0 {
                 break;
             }
         }
-        assert_eq!(meter.measurement()?.summary.thinks(), 1);
+        check_eq!(meter.measurement()?.summary.thinks(), 1);
     }
     let sequence = arena.minds.get(&OWN).ok_or("mind")?.think_seq;
     let scheduled = arena
@@ -56,7 +56,7 @@ fn terminal_wreck(
                 .is_some_and(|(section, _)| section == "hull")
         })
         .ok_or("bounded actual hull facet draw")?;
-    assert!(arena.fire_line(ObjId(9), OWN).0.is_clear_or_partial());
+    check!(arena.fire_line(ObjId(9), OWN).0.is_clear_or_partial());
     let shot = Shot {
         seq: shot_seq,
         shooter: ObjId(9),
@@ -86,17 +86,17 @@ fn terminal_wreck(
         wall += native;
         let output = arena.step_settled(wall, &[], &[]);
         if let Some(end) = output.ended {
-            assert!(matches!(end.reason, EndReason::Elimination { .. }));
-            assert_eq!(end.t_ms, impact_at);
-            assert!(output.thinks.is_empty());
-            assert!(arena.unit(OWN).ok_or("wreck")?.limits.wreck);
-            assert!(crate::arena::damage::is_wreck(
+            check!(matches!(end.reason, EndReason::Elimination { .. }));
+            check_eq!(end.t_ms, impact_at);
+            check!(output.thinks.is_empty());
+            check!(arena.unit(OWN).ok_or("wreck")?.limits.wreck);
+            check!(crate::arena::damage::is_wreck(
                 &arena.unit(OWN).ok_or("wreck")?.unit
             ));
-            assert!(arena.unit(OWN).ok_or("wreck")?.seal.closed);
-            assert!(arena.minds.get(&OWN).ok_or("mind")?.pending.is_none());
-            assert!(!arena.awaiting.contains(&OWN));
-            assert_eq!(
+            check!(arena.unit(OWN).ok_or("wreck")?.seal.closed);
+            check!(arena.minds.get(&OWN).ok_or("mind")?.pending.is_none());
+            check!(!arena.awaiting.contains(&OWN));
+            check_eq!(
                 arena
                     .thinks_outstanding()
                     .iter()
@@ -109,9 +109,9 @@ fn terminal_wreck(
                 .recent(OWN, Some(THINKS))
                 .pop()
                 .ok_or("cancelled trace")?;
-            assert_eq!(row.think_seq, sequence);
-            assert!(!row.settled);
-            assert!(matches!(
+            check_eq!(row.think_seq, sequence);
+            check!(!row.settled);
+            check!(matches!(
                 row.outcome,
                 Outcome::Cancelled {
                     reason: Cancelled::Wreck
@@ -133,16 +133,16 @@ fn actual_lethal_impact_cancels_uncalled_source_without_credit() -> TestResult {
     meter.reconcile(&arena)?;
     meter.require_complete()?;
     let after = meter.measurement()?;
-    assert_eq!(after.summary, before.summary);
-    assert_eq!(after.seen, before.seen);
-    assert_eq!(after.witness, before.witness);
+    check_eq!(after.summary, before.summary);
+    check_eq!(after.seen, before.seen);
+    check_eq!(after.witness, before.witness);
     let physical = after.physical.ok_or("physical")?;
-    assert_eq!(physical.total_thinks, 0);
-    assert_eq!(physical.cancelled_uncalled, 1);
-    assert_eq!(physical.cancelled_pending, 0);
-    assert_eq!(physical.refusals, 0);
-    assert_eq!(crate::arena::state_hash(&arena), state_hash);
-    assert_eq!(arena.ledger.digest(), ledger);
+    check_eq!(physical.total_thinks, 0);
+    check_eq!(physical.cancelled_uncalled, 1);
+    check_eq!(physical.cancelled_pending, 0);
+    check_eq!(physical.refusals, 0);
+    check_eq!(crate::arena::state_hash(&arena), state_hash);
+    check_eq!(arena.ledger.digest(), ledger);
     Ok(())
 }
 
@@ -183,7 +183,7 @@ fn terminal_wreck_suffix_requires_exact_physical_trace_and_job_evidence() -> Tes
             7..=9 => {
                 arena.traces = Default::default();
                 arena.traces.set_enabled(true);
-                assert!(
+                check!(
                     arena
                         .traces
                         .begin(OWN, think.think_seq, think.t_ms, think.dropped)
@@ -200,7 +200,7 @@ fn terminal_wreck_suffix_requires_exact_physical_trace_and_job_evidence() -> Tes
                 } else {
                     arena.now_ms
                 };
-                assert!(arena.traces.cancel(OWN, think.think_seq, at, reason));
+                check!(arena.traces.cancel(OWN, think.think_seq, at, reason));
             }
             10 => {
                 arena
@@ -214,7 +214,7 @@ fn terminal_wreck_suffix_requires_exact_physical_trace_and_job_evidence() -> Tes
             11 => arena.unsettled.retain(|job| job.unit != OWN),
             12 => arena.unsettled.push(think.clone()),
             13 => {
-                assert!(arena.traces.complete(
+                check!(arena.traces.complete(
                     OWN,
                     think.think_seq,
                     Some(ThinkDiagnostics::measured(1, 1)),
@@ -224,18 +224,18 @@ fn terminal_wreck_suffix_requires_exact_physical_trace_and_job_evidence() -> Tes
                 ));
             }
             _ => {
-                assert!(
+                check!(
                     arena
                         .traces
                         .complete(OWN, think.think_seq, None, &[], &[], Some("ops"))
                 );
             }
         }
-        assert!(
+        check!(
             meter.reconcile(&arena).is_err(),
             "forged wreck suffix mode {mode}"
         );
-        assert!(meter.measurement().is_err(), "refusal remains sticky");
+        check!(meter.measurement().is_err(), "refusal remains sticky");
     }
     Ok(())
 }
@@ -244,15 +244,15 @@ fn terminal_wreck_suffix_requires_exact_physical_trace_and_job_evidence() -> Tes
 fn actual_budget_fault_before_terminal_wreck_is_retained() -> TestResult {
     let (arena, meter, _) = terminal_wreck("fn think(v,c) { while true {} }", true)?;
     let before = meter.measurement()?;
-    assert!(before.summary.only_budget_faults());
-    assert_eq!(before.summary.thinks(), 1);
-    assert_eq!(before.summary.ops_faults(), 1);
+    check!(before.summary.only_budget_faults());
+    check_eq!(before.summary.thinks(), 1);
+    check_eq!(before.summary.ops_faults(), 1);
     meter.reconcile(&arena)?;
     meter.require_complete()?;
     let after = meter.measurement()?;
-    assert_eq!(after.summary, before.summary);
-    assert_eq!(after.seen, before.seen);
-    assert_eq!(after.witness, before.witness);
-    assert_eq!(after.physical.ok_or("physical")?.cancelled_uncalled, 1);
+    check_eq!(after.summary, before.summary);
+    check_eq!(after.seen, before.seen);
+    check_eq!(after.witness, before.witness);
+    check_eq!(after.physical.ok_or("physical")?.cancelled_uncalled, 1);
     Ok(())
 }

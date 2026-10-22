@@ -20,7 +20,7 @@ fn wallet(w: &IcWorld, owner: EconomicOwner) -> TestResult<WalletId> {
         .accounts()
         .filter(|a| a.owner == owner && a.scope.is_none() && a.instrument.as_str() == "cr");
     let account = accounts.next().ok_or("actual personal account")?.id;
-    assert!(accounts.next().is_none(), "ambiguous actual account");
+    check!(accounts.next().is_none(), "ambiguous actual account");
     Ok(account)
 }
 fn act(
@@ -55,7 +55,7 @@ fn act(
         .iter()
         .filter(|offer| offer.presentation().verb.eq_ignore_ascii_case(&verb));
     let offer = matching.next().ok_or("actual HouseV2 public offer")?;
-    assert!(matching.next().is_none(), "ambiguous HouseV2 public offer");
+    check!(matching.next().is_none(), "ambiguous HouseV2 public offer");
     let request = request(n, actor, "market", params.clone())?;
     let resolved = w.engine.resolve_legal_action(
         &offers,
@@ -75,8 +75,9 @@ fn act(
         },
     )?;
     let (actual, resolved, _) = resolved.into_authoritative_parts();
-    assert_eq!(
-        actual, action,
+    check_eq!(
+        actual,
+        action,
         "public selector resolved a different protocol"
     );
     let invocation = resolved.invocation().clone();
@@ -213,7 +214,7 @@ fn exercise_new_holder_renewal(
         FIRST + 30,
         json!({"licence":original.id().get()}),
     )?;
-    assert_eq!(pointer(&w)?, *transferred, "draft changed paid use");
+    check_eq!(pointer(&w)?, *transferred, "draft changed paid use");
     act(
         &mut w,
         "fund_house_mind_renewal",
@@ -232,15 +233,15 @@ fn exercise_new_holder_renewal(
         json!({"operation":token(FIRST+30)}),
     )?;
     let renewed = pointer(&w)?;
-    assert_eq!(renewed.term().get(), 2);
-    assert_eq!(renewed.ownership(), transferred.ownership());
-    assert_eq!(renewed.operation(), original.operation());
-    assert_eq!(paid_term(&w, 1)?, *term);
-    assert_eq!(paid_term(&w, 2)?.terms().seats().get(), 2);
-    assert_eq!(rows(&w.disk, "roll", BIRTH).as_slice(), birth);
+    check_eq!(renewed.term().get(), 2);
+    check_eq!(renewed.ownership(), transferred.ownership());
+    check_eq!(renewed.operation(), original.operation());
+    check_eq!(paid_term(&w, 1)?, *term);
+    check_eq!(paid_term(&w, 2)?.terms().seats().get(), 2);
+    check_eq!(rows(&w.disk, "roll", BIRTH).as_slice(), birth);
     let cold = w.reboot_house(registry, &w.snapshot())?;
-    assert_eq!(pointer(&cold)?, renewed);
-    assert_eq!(paid_term(&cold, 2)?, paid_term(&w, 2)?);
+    check_eq!(pointer(&cold)?, renewed);
+    check_eq!(paid_term(&cold, 2)?, paid_term(&w, 2)?);
     Ok(())
 }
 
@@ -248,67 +249,61 @@ fn exercise_new_holder_renewal(
 pub(in super::super) fn exercise(registry: &Fixture, saved: &Durable) -> TestResult {
     let (mut w, third, seller_account, buyer_account) = open_purchased_house(registry, saved)?;
     let allocation: HouseAllocationV1 = serde_json::from_value(one(rows(&w.disk, "roll", BIRTH))?)?;
-    assert_eq!(allocation.protocol(), HouseProtocol::HouseV2);
+    check_eq!(allocation.protocol(), HouseProtocol::HouseV2);
     let original = pointer(&w)?;
     let term = paid_term(&w, 1)?;
-    assert_eq!(term.terms().seats().get(), 2);
-    assert!(term.terms().transferable());
-    assert!(matches!(
+    check_eq!(term.terms().seats().get(), 2);
+    check!(term.terms().transferable());
+    check!(matches!(
         term.terms().form(),
         mush_roll::commerce::paid::PaidForm::Sealed {}
     ));
-    assert_eq!(original.id(), allocation.licence());
+    check_eq!(original.id(), allocation.licence());
     let birth = rows(&w.disk, "roll", BIRTH);
     let economics = rows(&w.disk, "roll", ECONOMICS);
     let economics_row = economics.first().ok_or("actual House economics")?;
-    assert_eq!(economics_row["format"], 2);
-    assert_eq!(economics_row["grant"]["renewal"]["format"], 2);
+    check_eq!(economics_row["format"], 2);
+    check_eq!(economics_row["grant"]["renewal"]["format"], 2);
     let first = w.hulls[0];
     let second = w.hulls[1];
     let opening = w.ticket(BUYER, first, original.id().get())?;
     w.land(&opening, FIRST + 10, first, false)?;
     let old_claim = claim(&w, FIRST + 10)?;
-    assert_eq!(old_claim["format"], 1);
+    check_eq!(old_claim["format"], 1);
     // Real held warrant forces Fund, even though another purchased seat is free.
     offer(&mut w, FIRST + 11, BUYER, GOD, seller_account.0)?;
-    assert!(
-        prepare(
-            &mut w,
-            ACCEPT,
-            1,
-            GOD,
-            FIRST + 12,
-            json!({"offer":token(FIRST+11),"payer":buyer_account.0}),
-            None
-        )
-        .is_err()
-    );
+    check!(crate::test_checks::refused(prepare(
+        &mut w,
+        ACCEPT,
+        1,
+        GOD,
+        FIRST + 12,
+        json!({"offer":token(FIRST+11),"payer":buyer_account.0}),
+        None
+    ))?);
     buy(&mut w, FIRST + 13, FIRST + 11, FUND, GOD, buyer_account.0)?;
-    assert_eq!(pointer(&w)?, original);
-    assert!(
+    check_eq!(pointer(&w)?, original);
+    check!(
         w.ticket(BUYER, second, original.id().get())
             .and_then(|t| w.prepare(&t, FIRST + 14))
             .is_err(),
         "pending seller obtained a new seal"
     );
-    assert!(
-        prepare(
-            &mut w,
-            "draft_house_mind_renewal",
-            1,
-            BUYER,
-            FIRST + 15,
-            json!({"licence":original.id().get()}),
-            None
-        )
-        .is_err()
-    );
+    check!(crate::test_checks::refused(prepare(
+        &mut w,
+        "draft_house_mind_renewal",
+        1,
+        BUYER,
+        FIRST + 15,
+        json!({"licence":original.id().get()}),
+        None
+    ))?);
     let funded = w.snapshot();
     let mut w = w.reboot_house(registry, &funded)?;
-    assert!(w.held(first)?);
+    check!(w.held(first)?);
     let consent = history(&w, FIRST + 13)?.consent().clone();
-    assert_eq!(consent.claims.open_paid, 1);
-    assert_eq!(consent.terms.basis.licence, original.id().get());
+    check_eq!(consent.claims.open_paid, 1);
+    check_eq!(consent.terms.basis.licence, original.id().get());
     // WorldIC is the actual fixture default ratio1/offset0; no claim deadline
     // or captured term is shortened to cause this service settlement.
     w.engine.world.set_now(consent.deadline.at);
@@ -316,43 +311,43 @@ pub(in super::super) fn exercise(registry: &Fixture, saved: &Durable) -> TestRes
     let (request, _) = next(&mut w, SETTLE)?;
     let prepared = terminal(&mut w, &request, FIRST + 16)?;
     land(&mut w, prepared)?;
-    assert_eq!(
+    check_eq!(
         history(&w, FIRST + 13)?.outcome(),
         mush_economy::managed_paid_resale::PaidResaleOutcome::Settled
     );
     let transferred = pointer(&w)?;
-    assert_eq!(transferred.holder(), GOD);
-    assert_eq!(transferred.term(), original.term());
-    assert_eq!(transferred.operation(), original.operation());
-    assert_eq!(paid_term(&w, 1)?, term);
-    assert_eq!(rows(&w.disk, "roll", BIRTH), birth);
-    assert_eq!(rows(&w.disk, "roll", ECONOMICS), economics);
-    assert_eq!(
+    check_eq!(transferred.holder(), GOD);
+    check_eq!(transferred.term(), original.term());
+    check_eq!(transferred.operation(), original.operation());
+    check_eq!(paid_term(&w, 1)?, term);
+    check_eq!(rows(&w.disk, "roll", BIRTH), birth);
+    check_eq!(rows(&w.disk, "roll", ECONOMICS), economics);
+    check_eq!(
         claim(&w, FIRST + 10)?,
         old_claim,
         "deadline changed the seller's warrant"
     );
-    assert!(w.held(first)?);
+    check!(w.held(first)?);
     w.command(&format!("@asset/transfer #{}=#{}", second.0, GOD.0))?;
     let buyer_open = w.ticket(GOD, second, original.id().get())?;
     w.land(&buyer_open, FIRST + 17, second, false)?;
     let captured = claim(&w, FIRST + 17)?;
-    assert_eq!(captured["format"], 3);
-    assert_eq!(captured["open"]["paid_ownership"]["generation"], 2);
-    assert!(
+    check_eq!(captured["format"], 3);
+    check_eq!(captured["open"]["paid_ownership"]["generation"], 2);
+    check!(
         w.ticket(GOD, third, original.id().get())
             .and_then(|t| w.prepare(&t, FIRST + 18))
             .is_err(),
         "buyer exceeded two minus the seller's held seat"
     );
     let mut w = w.reboot_house(registry, &w.snapshot())?;
-    assert!(w.held(first)? && w.held(second)?);
+    check!(w.held(first)? && w.held(second)?);
     {
         // Probe on a separate cold boot of the same state: a refused Open
         // leaves its intent pending in that host (no timeout cleanup), which
         // must not block the real third-seat Open below.
         let mut cold = w.reboot_house(registry, &w.snapshot())?;
-        assert!(
+        check!(
             cold.ticket(GOD, third, original.id().get())
                 .and_then(|t| cold.prepare(&t, FIRST + 19))
                 .is_err(),
@@ -362,12 +357,12 @@ pub(in super::super) fn exercise(registry: &Fixture, saved: &Durable) -> TestRes
     close(&mut w, BUYER, FIRST + 10, FIRST + 20, first)?;
     let freed = w.ticket(GOD, third, original.id().get())?;
     w.land(&freed, FIRST + 21, third, false)?;
-    assert!(w.held(second)? && w.held(third)?);
+    check!(w.held(second)? && w.held(third)?);
     close(&mut w, GOD, FIRST + 17, FIRST + 22, second)?;
     close(&mut w, GOD, FIRST + 21, FIRST + 23, third)?;
     let mut w = w.reboot_house(registry, &w.snapshot())?;
-    assert_eq!(pointer(&w)?, transferred);
-    assert!(!w.held(first)? && !w.held(second)? && !w.held(third)?);
+    check_eq!(pointer(&w)?, transferred);
+    check!(!w.held(first)? && !w.held(second)? && !w.held(third)?);
     exercise_new_holder_renewal(
         registry,
         Box::new(w),

@@ -642,12 +642,12 @@ mod tests {
         let id = *trial.candidates.first().ok_or("candidate")?;
         let runtime = trial.arena.profiles.get(&id).ok_or("runtime")?;
         let original = subject.variants().first().ok_or("variant")?;
-        assert_eq!(original.definition.declared_class, CoreClass::I);
-        assert_eq!(
+        check_eq!(original.definition.declared_class, CoreClass::I);
+        check_eq!(
             trial.arena.unit(id).ok_or("hull")?.seal.class,
             CoreClass::II
         );
-        assert_eq!(
+        check_eq!(
             runtime.card.rules(),
             Some(
                 original
@@ -659,12 +659,12 @@ mod tests {
                     .as_slice()
             )
         );
-        assert!(!runtime.program.rows.is_empty());
+        check!(!runtime.program.rows.is_empty());
         let mut landed = false;
         for _ in 0..80 {
             let slice = trial.advance(u64::from(case.physics.native_ms))?;
-            assert!(slice.simulated_ms <= u64::from(case.physics.native_ms));
-            assert!(
+            check!(slice.simulated_ms <= u64::from(case.physics.native_ms));
+            check!(
                 slice.result.is_none(),
                 "short real run has no invented completion"
             );
@@ -676,21 +676,21 @@ mod tests {
                     .and_then(serde_json::Value::as_u64)
                     .is_some_and(|n| n >= 3)
                 {
-                    assert_eq!(state.strikes, 0);
-                    assert!(state.dropped.is_none());
+                    check_eq!(state.strikes, 0);
+                    check!(state.dropped.is_none());
                     landed = true;
                     break;
                 }
             }
         }
-        assert!(
+        check!(
             landed,
             "real pending answers reach native landing with fresh evolving memory"
         );
         let measured = trial.meter.measurement()?;
-        assert!(measured.summary.clean());
-        assert!(measured.summary.max_ops() > 0 && measured.summary.max_fees() > 0);
-        assert_eq!(trial.binding.source(), revision.source());
+        check!(measured.summary.clean());
+        check!(measured.summary.max_ops() > 0 && measured.summary.max_fees() > 0);
+        check_eq!(trial.binding.source(), revision.source());
         Ok(())
     }
     #[test]
@@ -698,7 +698,7 @@ mod tests {
         use crate::arena::{intents::Refusal, mind::Landed};
         let own = ObjId(1);
         let mut traces = TraceStore::default();
-        assert!(traces.record(
+        check!(traces.record(
             own,
             0,
             0,
@@ -710,20 +710,20 @@ mod tests {
             }],
             None
         ));
-        assert!(traces.land(own, 0, 250, &[Landed::Refused(Refusal::NoContact)]));
+        check!(traces.land(own, 0, 250, &[Landed::Refused(Refusal::NoContact)]));
         let mut landings = Landings::new(&[own]);
         landings.collect(&traces)?;
-        assert_eq!(landings.refusals(), 1);
+        check_eq!(landings.refusals(), 1);
         landings.collect(&traces)?;
-        assert_eq!(
+        check_eq!(
             landings.refusals(),
             1,
             "the same actual row is not counted twice"
         );
         let mut missing = TraceStore::default();
-        assert!(missing.record(own, 1, 1000, false, None, &[], &[], None));
-        assert!(missing.land(own, 1, 1250, &[]));
-        assert!(
+        check!(missing.record(own, 1, 1000, false, None, &[], &[], None));
+        check!(missing.land(own, 1, 1250, &[]));
+        check!(
             Landings::new(&[own]).collect(&missing).is_err(),
             "missing first invocation cannot be silent"
         );
@@ -745,10 +745,10 @@ mod tests {
             }
         }
         let result = result.ok_or("the bounded real invocation must exhaust its budget")?;
-        assert!(matches!(result.outcome(), CaseOutcome::BudgetExceeded {}));
-        assert!(result.meter().only_budget_faults());
-        assert_eq!(result.meter().thinks(), 1);
-        assert_eq!(result.binding().source(), revision.source());
+        check!(matches!(result.outcome(), CaseOutcome::BudgetExceeded {}));
+        check!(result.meter().only_budget_faults());
+        check_eq!(result.meter().thinks(), 1);
+        check_eq!(result.binding().source(), revision.source());
         Ok(())
     }
 }

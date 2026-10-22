@@ -507,7 +507,7 @@ impl Fixture {
             &invocation(1, GOD, json!({}))?,
             CommitToken::from_bytes([1; 16]),
         )?;
-        assert!(setup.action_state().is_empty());
+        check!(setup.action_state().is_empty());
         install(&mut setup, &mut disk, prepared)?;
         // Initialize installs only the deployment rows. The real Registry
         // producer remains unavailable until Active boot and its final audits.
@@ -524,7 +524,7 @@ impl Fixture {
             .iter()
             .find(|action| action.key().id.as_str() == Transition::Admit.action_id())
             .ok_or("Registry admission definition")?;
-        assert!(matches!(
+        check!(matches!(
             setup.prepare_registered_composed_authoritative_action(
                 admit,
                 &invocation(2, GOD, json!({}))?,
@@ -627,11 +627,11 @@ impl Fixture {
             .registry
             .take_acknowledged()
             .ok_or("actual artifact Ack")?;
-        assert_eq!(ack.ticket, ticket);
-        assert_eq!(ack.job, job);
-        assert_eq!(ack.operation, CommitToken::from_bytes([operation; 16]));
-        assert_eq!(ack.transition, transition);
-        assert!(self.artifacts()?.registry.get(ticket).is_err());
+        check_eq!(ack.ticket, ticket);
+        check_eq!(ack.job, job);
+        check_eq!(ack.operation, CommitToken::from_bytes([operation; 16]));
+        check_eq!(ack.transition, transition);
+        check!(self.artifacts()?.registry.get(ticket).is_err());
         Ok(())
     }
     fn retained<T: serde::de::DeserializeOwned>(&self, family: &str) -> TestResult<T> {
@@ -667,7 +667,7 @@ impl Fixture {
             .module_state::<TacsimStore>()
             .ok_or("sources")?;
         let source = mush_roll::SourceAdapter::read_source(source, self.revision.source())?;
-        assert_eq!(source, self.source.as_ref());
+        check_eq!(source, self.source.as_ref());
         let prepared = self.factory.prepare(
             self.account,
             GOD,
@@ -688,10 +688,10 @@ impl Fixture {
         let root_before = self.roots()?;
         let revision_before = self.engine.action_state().revision();
         let change = self.prepare(Transition::Admit, ticket, job, 2)?;
-        assert_eq!(self.engine.action_state().revision(), revision_before);
-        assert!(self.quota()?.account_ids().is_empty());
-        assert_eq!(self.roots()?, root_before);
-        assert!(
+        check_eq!(self.engine.action_state().revision(), revision_before);
+        check!(self.quota()?.account_ids().is_empty());
+        check_eq!(self.roots()?, root_before);
+        check!(
             self.artifacts()?
                 .get(Key {
                     account: self.account,
@@ -701,21 +701,21 @@ impl Fixture {
                 .is_err()
         );
         self.artifacts()?.registry.check(ticket, &captured)?;
-        assert!(self.artifacts()?.registry.peek_acknowledged().is_none());
+        check!(self.artifacts()?.registry.peek_acknowledged().is_none());
         self.ack(change, ticket, job, 2, Transition::Admit)?;
         let run = self.run(binding)?;
-        assert_eq!(run.registry_job, Some(job));
-        assert_eq!(run.status, Status::Queued);
-        assert_eq!(run.charged_unit_ms, 0);
-        assert!(run.flight.is_none());
-        assert!(self.roots()?.contains(&format!("v1/rating_job/{job}")));
-        assert!(self.roots()?.contains(&format!("v1/rating_pending/{job}")));
-        assert_eq!(
+        check_eq!(run.registry_job, Some(job));
+        check_eq!(run.status, Status::Queued);
+        check_eq!(run.charged_unit_ms, 0);
+        check!(run.flight.is_none());
+        check!(self.roots()?.contains(&format!("v1/rating_job/{job}")));
+        check!(self.roots()?.contains(&format!("v1/rating_pending/{job}")));
+        check_eq!(
             self.roots()?.len(),
             2,
             "only actual job and pending obligations"
         );
-        assert_eq!(
+        check_eq!(
             self.disk
                 .keys()
                 .filter(|(_, key)| key.starts_with("action-state/capacity/v1/"))
@@ -724,14 +724,14 @@ impl Fixture {
             "actual registered admission reserves its terminal typed writes"
         );
         let row: RatingJob = self.retained("rating_jobs")?;
-        assert_eq!(row.job(), job);
-        assert!(matches!(row.state(), RatingJobState::Queued {}));
+        check_eq!(row.job(), job);
+        check!(matches!(row.state(), RatingJobState::Queued {}));
         let execution: RatingExecution = self.retained("rating_executions")?;
-        assert_eq!(execution.job(), row.job());
-        assert_eq!(execution.admission().subject, row.subject().digest()?);
+        check_eq!(execution.job(), row.job());
+        check_eq!(execution.admission().subject, row.subject().digest()?);
         execution.digest()?;
-        assert_eq!(execution.observation().phase, ExecutionPhase::Queued);
-        assert_eq!(
+        check_eq!(execution.observation().phase, ExecutionPhase::Queued);
+        check_eq!(
             self.artifacts()?
                 .get(Key {
                     account: self.account,
@@ -742,7 +742,7 @@ impl Fixture {
                 .sha256,
             start
         );
-        assert!(
+        check!(
             self.prepare(Transition::Admit, ticket, job, 3).is_err(),
             "consumed admission cannot replay"
         );
@@ -762,10 +762,10 @@ impl Fixture {
         let roots = self.roots()?;
         let revision = self.engine.action_state().revision();
         let prepared = self.prepare(Transition::Grant, ticket, binding.job, operation)?;
-        assert_eq!(self.run(binding)?, before);
-        assert_eq!(self.roots()?, roots);
-        assert_eq!(self.engine.action_state().revision(), revision);
-        assert!(
+        check_eq!(self.run(binding)?, before);
+        check_eq!(self.roots()?, roots);
+        check_eq!(self.engine.action_state().revision(), revision);
+        check!(
             self.engine
                 .world
                 .module_state_mut::<BulkStore>()
@@ -781,9 +781,9 @@ impl Fixture {
             .ok_or("quota")?
             .take_registry_lease(CommitToken::from_bytes([operation; 16]))
             .ok_or("post-install paid lease")?;
-        assert!(self.run(binding)?.flight.is_some());
-        assert!(lease.maximum_sim_ms() <= ready.next_grant_ms());
-        assert!(
+        check!(self.run(binding)?.flight.is_some());
+        check!(lease.maximum_sim_ms() <= ready.next_grant_ms());
+        check!(
             self.prepare(Transition::Grant, ticket, binding.job, operation + 1)
                 .is_err()
         );
@@ -798,10 +798,10 @@ impl Fixture {
             .module_state::<BulkStore>()
             .ok_or("quota")?
             .run(binding.account, binding.character, binding.run)?;
-        assert_eq!(run, &self.run(binding)?);
-        assert_eq!(run.status, expected);
-        assert!(run.flight.is_none());
-        assert!(
+        check_eq!(run, &self.run(binding)?);
+        check_eq!(run.status, expected);
+        check!(run.flight.is_none());
+        check!(
             reboot
                 .world
                 .module_state::<Artifacts>()
@@ -835,17 +835,17 @@ fn registered_admit_grant_real_quantum_settle_cancel_and_restart() -> TestResult
         }
         std::thread::sleep(Duration::from_millis(5));
     };
-    assert!(done.receipt.actual_unit_ms > 0);
-    assert!(done.receipt.actual_unit_ms <= allowance);
-    assert!(
+    check!(done.receipt.actual_unit_ms > 0);
+    check!(done.receipt.actual_unit_ms <= allowance);
+    check!(
         done.receipt.terminal.is_none(),
         "one paid case quantum is no certification"
     );
-    assert!(done.receipt.result.is_none());
-    assert!(done.artifact.is_none());
+    check!(done.receipt.result.is_none());
+    check!(done.artifact.is_none());
     let actual = done.receipt.actual_unit_ms;
     let progress = done.receipt.registry.as_ref().ok_or("real case progress")?;
-    assert!(progress.cursor.index > 0 || progress.cursor.simulated_ms > 0);
+    check!(progress.cursor.index > 0 || progress.cursor.simulated_ms > 0);
     let settlement = done
         .registry_settlement
         .take()
@@ -858,53 +858,53 @@ fn registered_admit_grant_real_quantum_settle_cancel_and_restart() -> TestResult
         .map_err(|(error, _)| error)?;
     let before = f.run(binding)?;
     let prepared = f.prepare(Transition::Settle, ticket, binding.job, 6)?;
-    assert_eq!(
+    check_eq!(
         f.run(binding)?,
         before,
         "worker completion alone does not refund/install"
     );
     f.ack(prepared, ticket, binding.job, 6, Transition::Settle)?;
     let settled = f.run(binding)?;
-    assert!(settled.flight.is_none());
-    assert_eq!(settled.charged_unit_ms, actual);
-    assert_eq!(settled.registry, Some(progress.cursor));
+    check!(settled.flight.is_none());
+    check_eq!(settled.charged_unit_ms, actual);
+    check_eq!(settled.registry, Some(progress.cursor));
     let ticket = f.artifacts_mut()?.registry.cancel(binding)?;
     let change = f.prepare(Transition::Cancel, ticket, binding.job, 8)?;
-    assert_eq!(f.run(binding)?, settled);
-    assert!(
+    check_eq!(f.run(binding)?, settled);
+    check!(
         f.roots()?
             .contains(&format!("v1/rating_pending/{}", binding.job))
     );
     f.ack(change, ticket, binding.job, 8, Transition::Cancel)?;
     drop(ready); // The exact Machine is retained until its terminal installation.
-    assert_eq!(f.run(binding)?.status, Status::Cancelled);
-    assert_eq!(f.run(binding)?.charged_unit_ms, actual);
-    assert!(
+    check_eq!(f.run(binding)?.status, Status::Cancelled);
+    check_eq!(f.run(binding)?.charged_unit_ms, actual);
+    check!(
         !f.roots()?
             .contains(&format!("v1/rating_pending/{}", binding.job))
     );
-    assert!(
+    check!(
         f.roots()?
             .contains(&format!("v1/rating_job/{}", binding.job))
     );
-    assert!(
+    check!(
         f.disk
             .keys()
             .all(|(_, k)| !k.contains("rating_receipts") && !k.contains("rating_pages"))
     );
-    assert_eq!(f.roots()?.len(), 1);
-    assert!(
+    check_eq!(f.roots()?.len(), 1);
+    check!(
         f.disk
             .keys()
             .all(|(_, key)| !key.starts_with("action-state/capacity/v1/"))
     );
     let job: RatingJob = f.retained("rating_jobs")?;
-    assert!(matches!(job.state(), RatingJobState::Cancelled {}));
+    check!(matches!(job.state(), RatingJobState::Cancelled {}));
     let execution: RatingExecution = f.retained("rating_executions")?;
-    assert_eq!(execution.job(), job.job());
-    assert_eq!(execution.admission().subject, job.subject().digest()?);
+    check_eq!(execution.job(), job.job());
+    check_eq!(execution.admission().subject, job.subject().digest()?);
     execution.digest()?;
-    assert_eq!(execution.observation().phase, ExecutionPhase::Cancelled);
+    check_eq!(execution.observation().phase, ExecutionPhase::Cancelled);
     f.restart_terminal(binding, Status::Cancelled)?;
     Ok(())
 }
@@ -916,17 +916,17 @@ fn registered_paid_flight_recovers_only_exact_stopped_ticket_without_refund() ->
     let lease = f.grant(binding, &ready, 4)?;
     let paid = f.run(binding)?;
     let allowance = lease.maximum_sim_ms() * lease.units();
-    assert_eq!(paid.charged_unit_ms, allowance);
+    check_eq!(paid.charged_unit_ms, allowance);
     drop(lease);
     drop(ready); // This fixture owns and stops every possible worker/continuation.
     let ticket = registry_boot_tests::cold_restart(&mut f, binding)?;
     let captured = f.artifacts()?.registry.get(ticket)?;
-    assert!(
+    check!(
         f.prepare(Transition::Cancel, ticket, binding.job, 6)
             .is_err(),
         "wrong transition cannot consume recovery"
     );
-    assert!(
+    check!(
         f.prepare(
             Transition::Recover,
             ticket,
@@ -936,37 +936,38 @@ fn registered_paid_flight_recovers_only_exact_stopped_ticket_without_refund() ->
         .is_err(),
         "crossed job refuses"
     );
-    assert_eq!(f.run(binding)?, paid);
+    check_eq!(f.run(binding)?, paid);
     f.artifacts()?.registry.check(ticket, &captured)?;
     let roots = f.roots()?;
     let change = f.prepare(Transition::Recover, ticket, binding.job, 8)?;
-    assert_eq!(f.run(binding)?, paid);
-    assert_eq!(f.roots()?, roots);
-    assert!(f.artifacts()?.registry.peek_acknowledged().is_none());
+    check_eq!(f.run(binding)?, paid);
+    check_eq!(f.roots()?, roots);
+    check!(f.artifacts()?.registry.peek_acknowledged().is_none());
     f.ack(change, ticket, binding.job, 8, Transition::Recover)?;
     let recovered = f.run(binding)?;
-    assert_eq!(recovered.status, Status::Interrupted);
-    assert_eq!(
-        recovered.charged_unit_ms, allowance,
+    check_eq!(recovered.status, Status::Interrupted);
+    check_eq!(
+        recovered.charged_unit_ms,
+        allowance,
         "unknown stopped progress keeps the full prepaid charge"
     );
-    assert!(recovered.flight.is_none());
-    assert!(recovered.result.is_none());
-    assert!(
+    check!(recovered.flight.is_none());
+    check!(recovered.result.is_none());
+    check!(
         !f.roots()?
             .contains(&format!("v1/rating_pending/{}", binding.job))
     );
-    assert!(
+    check!(
         f.roots()?
             .contains(&format!("v1/rating_job/{}", binding.job))
     );
-    assert!(
+    check!(
         f.prepare(Transition::Recover, ticket, binding.job, 9)
             .is_err(),
         "consumed recovery cannot replay"
     );
-    assert_eq!(f.roots()?.len(), 1);
-    assert!(
+    check_eq!(f.roots()?.len(), 1);
+    check!(
         f.disk
             .keys()
             .all(|(_, key)| !key.starts_with("action-state/capacity/v1/"))
@@ -994,11 +995,11 @@ fn registered_admission_account_epoch_change_refuses_before_every_owner_image() 
         values.insert(GOD, AccountId::mint("changed-registry-account", 2)?);
     }
     let (_, installation) = change.into_parts();
-    assert!(f.engine.install_composed_action(installation).is_err());
-    assert_eq!(f.engine.action_state().revision(), revision);
-    assert!(f.quota()?.account_ids().is_empty());
-    assert_eq!(f.roots()?, roots);
-    assert!(
+    check!(f.engine.install_composed_action(installation).is_err());
+    check_eq!(f.engine.action_state().revision(), revision);
+    check!(f.quota()?.account_ids().is_empty());
+    check_eq!(f.roots()?, roots);
+    check!(
         f.artifacts()?
             .get(Key {
                 account: f.account,
@@ -1008,15 +1009,15 @@ fn registered_admission_account_epoch_change_refuses_before_every_owner_image() 
             .is_err()
     );
     f.artifacts()?.registry.check(ticket, &captured)?;
-    assert!(f.artifacts()?.registry.peek_acknowledged().is_none());
-    assert_eq!(f.disk, disk);
+    check!(f.artifacts()?.registry.peek_acknowledged().is_none());
+    check_eq!(f.disk, disk);
     drop(prepared.machine);
     // Failed binding requires restart; replaying only actual durable rows
     // proves no typed admission or owner image escaped that refusal.
     let (mut reboot, _) = engine(&f.resources, f.accounts.clone(), CommerceMode::Active)?;
     load(&mut reboot, &disk)?;
     // Real final owner audit succeeded on exactly the pre-refusal disk image.
-    assert!(
+    check!(
         reboot
             .world
             .module_state::<BulkStore>()
@@ -1039,9 +1040,9 @@ fn real_measured_maximum_class_rejection_publishes_and_survives_private_history_
     };
     // Bound the inline fixture/result carried through this default-stack test.
     // The original real boot and worker assertions below remain unchanged.
-    assert!(std::mem::size_of::<Fixture>() <= 16 * 1024);
-    assert!(std::mem::size_of::<TestResult<Fixture>>() <= 16 * 1024);
-    assert!(std::mem::size_of::<TestResult<Box<Fixture>>>() <= 16 * 1024);
+    check!(std::mem::size_of::<Fixture>() <= 16 * 1024);
+    check!(std::mem::size_of::<TestResult<Fixture>>() <= 16 * 1024);
+    check!(std::mem::size_of::<TestResult<Box<Fixture>>>() <= 16 * 1024);
     let diagnostic = rejection_diagnostic::Phases::default();
     let _tracing = tracing::subscriber::set_default(diagnostic.clone());
     for declared in ["I", "III"] {
@@ -1073,8 +1074,8 @@ fn real_measured_maximum_class_rejection_publishes_and_survives_private_history_
                 .ok_or("charge")?;
             let terminal = done.receipt.terminal;
             if terminal.is_some() {
-                assert_eq!(terminal, Some(Status::Complete));
-                assert_eq!(
+                check_eq!(terminal, Some(Status::Complete));
+                check_eq!(
                     done.receipt
                         .registry
                         .as_ref()
@@ -1082,7 +1083,7 @@ fn real_measured_maximum_class_rejection_publishes_and_survives_private_history_
                         .ending,
                     super::registry_budget::RegistryEnding::Rejected
                 );
-                assert!(done.receipt.result.is_some());
+                check!(done.receipt.result.is_some());
             }
             ready = done.ready.take();
             let settlement = done
@@ -1099,8 +1100,8 @@ fn real_measured_maximum_class_rejection_publishes_and_survives_private_history_
             let prepared = f
                 .prepare(Transition::Settle, ticket, binding.job, operation + 2)
                 .map_err(|_| diagnostic.error(index, terminal.is_some()))?;
-            assert_eq!(f.run(binding)?, before);
-            assert!(
+            check_eq!(f.run(binding)?, before);
+            check!(
                 f.retained::<RatingNonconformance>("rating_nonconformance")
                     .is_err()
             );
@@ -1111,13 +1112,13 @@ fn real_measured_maximum_class_rejection_publishes_and_survives_private_history_
                 operation + 2,
                 Transition::Settle,
             )?;
-            assert_eq!(f.run(binding)?.charged_unit_ms, actual);
+            check_eq!(f.run(binding)?.charged_unit_ms, actual);
             if terminal.is_some() {
                 complete = true;
                 break;
             }
         }
-        assert!(
+        check!(
             complete,
             "real measured rejection must finish within bounded quanta"
         );
@@ -1131,17 +1132,17 @@ fn real_measured_maximum_class_rejection_publishes_and_survives_private_history_
             vec![page.content().clone()],
         )?;
         let execution: RatingExecution = f.retained("rating_executions")?;
-        assert_eq!(execution.observation().result, Some(measured.artifact()?));
-        assert!(execution.admission().measured_rejection);
+        check_eq!(execution.observation().result, Some(measured.artifact()?));
+        check!(execution.admission().measured_rejection);
         let job: RatingJob = f.retained("rating_jobs")?;
-        assert!(
+        check!(
             matches!(job.state(),RatingJobState::Nonconforming { receipt } if *receipt==header.reference()?)
         );
         for family in ["rating_receipts", "rating_completions", "rating_status"] {
-            assert!(f.retained::<Value>(family).is_err());
+            check!(f.retained::<Value>(family).is_err());
         }
-        assert_eq!(f.roots()?, vec![format!("v1/rating_job/{}", binding.job)]);
-        assert!(
+        check_eq!(f.roots()?, vec![format!("v1/rating_job/{}", binding.job)]);
+        check!(
             f.disk
                 .keys()
                 .all(|(_, key)| !key.starts_with("action-state/capacity/v1/"))
@@ -1157,7 +1158,7 @@ fn real_measured_maximum_class_rejection_publishes_and_survives_private_history_
                     != Some(missing)
             });
             let (mut reboot, _) = engine(&f.resources, f.accounts.clone(), CommerceMode::Active)?;
-            assert!(load(&mut reboot, &broken).is_err());
+            check!(load(&mut reboot, &broken).is_err());
         }
         let mut evicted = f.disk.clone();
         evicted.retain(|(owner, key), _| owner != "tacsim" || !key.starts_with("tacsim:mindbulk:"));

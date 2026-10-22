@@ -64,12 +64,12 @@ fn new_draft_execution_and_trace_refuse_marked_revision_but_frozen_clone_is_unch
     object.insert("provenance".into(),json!({"parent":{"filed":"1","revision":RevisionIdentity::capture(&parent)?},"charter":"90","line":"1"}));
     let marked: Revision = serde_json::from_value(marked_value.clone())?;
     marked.verify_source(&sources)?;
-    assert_eq!(marked.reference(), original.reference());
-    assert!(matches!(
+    check_eq!(marked.reference(), original.reference());
+    check!(matches!(
         SavedMind::from_revision(&sources, actor, "owned", &marked),
         Err(RollError::Missing)
     ));
-    assert_eq!(frozen, before);
+    check_eq!(frozen, before);
     let original_store = RollStore::load(&ModuleBootData {
         kv: vec![(
             format!("revision:{}:1:1", actor.0).into(),
@@ -77,7 +77,7 @@ fn new_draft_execution_and_trace_refuse_marked_revision_but_frozen_clone_is_unch
         )],
         ..Default::default()
     })?;
-    assert!(current_draft_source_access(
+    check!(current_draft_source_access(
         Some(&original_store),
         &frozen.origin
     ));
@@ -88,16 +88,16 @@ fn new_draft_execution_and_trace_refuse_marked_revision_but_frozen_clone_is_unch
         ],
         ..Default::default()
     })?;
-    assert_eq!(
+    check_eq!(
         marked_store.revision(actor, reference.key)?.reference(),
         reference
     );
-    assert!(!current_draft_source_access(
+    check!(!current_draft_source_access(
         Some(&marked_store),
         &frozen.origin
     ));
-    assert!(!current_draft_source_access(None, &frozen.origin));
-    assert!(current_draft_source_access(
+    check!(!current_draft_source_access(None, &frozen.origin));
+    check!(current_draft_source_access(
         None,
         &MindOrigin::Doctrine { revision: 1 }
     ));

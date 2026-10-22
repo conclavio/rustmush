@@ -251,11 +251,13 @@ fn names(r: &Rig) -> Result<Vec<String>> {
 async fn named_launch_real_initialization_cold_activation_and_private_import() -> Result {
     let (mut r, mut d) = setup()?;
     reboot(&mut r, &d)?;
-    assert!(
-        r.plan("industry", "issue_core_die", GOD, json!({"class":"i"}))
-            .is_err()
-    );
-    assert!(r.action("market", "purchase_house_mind").is_err());
+    check!(crate::test_checks::refused(r.plan(
+        "industry",
+        "issue_core_die",
+        GOD,
+        json!({"class":"i"})
+    ))?);
+    check!(r.action("market", "purchase_house_mind").is_err());
     r.initialize_roll()?;
     for action in [
         "initialize_core_origin",
@@ -267,14 +269,14 @@ async fn named_launch_real_initialization_cold_activation_and_private_import() -
     let image = r.boot.clone();
     d.mode = LaunchMode::Active;
     reboot(&mut r, &d)?;
-    assert!(!image.is_empty());
-    assert!(
+    check!(!image.is_empty());
+    check!(
         r.plan("industry", "issue_core_die", GOD, json!({"class":"i"}))
             .is_ok()
     );
-    assert!(r.action("market", "purchase_house_mind").is_ok());
-    assert!(r.action("roll", "conduct_trial_admit").is_ok());
-    assert!(names(&r)?.is_empty());
+    check!(r.action("market", "purchase_house_mind").is_ok());
+    check!(r.action("roll", "conduct_trial_admit").is_ok());
+    check!(names(&r)?.is_empty());
     let before = r.boot.clone();
     command(
         r.world_mut(),
@@ -284,7 +286,7 @@ async fn named_launch_real_initialization_cold_activation_and_private_import() -
     command(r.world_mut(), GOD, "@mind/launch coprates=Coprates Drill")?;
     command(r.world_mut(), GOD, "@mind/launch safe_conduct=Safe Conduct")?;
     r.flush();
-    assert!(!same_boot(&r.boot, &before));
+    check!(!same_boot(&r.boot, &before));
     for (recipe, house) in [
         (LaunchRecipe::Meridiani, &d.houses.meridiani),
         (LaunchRecipe::Coprates, &d.houses.coprates),
@@ -296,21 +298,21 @@ async fn named_launch_real_initialization_cold_activation_and_private_import() -
             .module_state::<mush_roll::RollStore>()
             .ok_or("Roll")?;
         let mind = roll.mind(GOD, &house.source_name)?;
-        assert_eq!(mind.draft(), &recipe.draft()?);
-        assert!(mind.latest().is_none());
+        check_eq!(mind.draft(), &recipe.draft()?);
+        check!(mind.latest().is_none());
     }
-    assert!(r.rows("roll_mind_initial_filing").is_empty());
-    assert!(r.rows("roll_mind_house_term_economics").is_empty());
+    check!(r.rows("roll_mind_initial_filing").is_empty());
+    check!(r.rows("roll_mind_house_term_economics").is_empty());
     let count = names(&r)?.len();
     r.world_mut()
         .run(GOD, "@mind/launch meridiani=Meridiani Field Series");
-    assert_eq!(
+    check_eq!(
         names(&r)?.len(),
         count,
         "duplicate import cannot replace the authored draft"
     );
     reboot(&mut r, &d)?;
-    assert_eq!(names(&r)?.len(), 3);
+    check_eq!(names(&r)?.len(), 3);
     Ok(())
 }
 
@@ -320,13 +322,11 @@ async fn named_launch_exact_coprates_membership_and_strict_host_coordinates() ->
     let bytes = serde_json::to_vec(&d)?;
     let mut invalid: Value = serde_json::from_slice(&bytes)?;
     invalid["eligible"] = json!(true);
-    assert!(LaunchDeployment::decode(&serde_json::to_vec(&invalid)?).is_err());
+    check!(LaunchDeployment::decode(&serde_json::to_vec(&invalid)?).is_err());
     invalid = serde_json::from_slice(&bytes)?;
     invalid["houses"]["coprates"]["source_name"] = json!("bad=name");
-    assert!(LaunchDeployment::decode(&serde_json::to_vec(&invalid)?).is_err());
-    assert!(
-        LaunchDeployment::decode(&vec![b' '; crate::launch::MAX_DEPLOYMENT_BYTES + 1]).is_err()
-    );
+    check!(LaunchDeployment::decode(&serde_json::to_vec(&invalid)?).is_err());
+    check!(LaunchDeployment::decode(&vec![b' '; crate::launch::MAX_DEPLOYMENT_BYTES + 1]).is_err());
     reboot(&mut r, &d)?;
     let service = r
         .world()
@@ -343,13 +343,13 @@ async fn named_launch_exact_coprates_membership_and_strict_host_coordinates() ->
         d.houses.meridiani.scope,
     )?;
     let buyer = r.buyer;
-    assert!(
+    check!(
         service
             .0
             .check_buyer(r.world().world(), issuer, buyer)
             .is_err()
     );
-    assert!(
+    check!(
         service
             .0
             .check_buyer(r.world().world(), other, buyer)
@@ -360,7 +360,7 @@ async fn named_launch_exact_coprates_membership_and_strict_host_coordinates() ->
         GOD,
         "@faction/add Republic=Hardware buyer/level:1",
     )?;
-    assert!(
+    check!(
         service
             .0
             .check_buyer(r.world().world(), issuer, buyer)
@@ -371,7 +371,7 @@ async fn named_launch_exact_coprates_membership_and_strict_host_coordinates() ->
         GOD,
         "@faction/remove Republic=Hardware buyer",
     )?;
-    assert!(
+    check!(
         service
             .0
             .check_buyer(r.world().world(), issuer, buyer)
@@ -379,7 +379,7 @@ async fn named_launch_exact_coprates_membership_and_strict_host_coordinates() ->
     );
     // Org/scope identity is exact. No current holder, staff bit or account can
     // substitute membership for this one configured issuer.
-    assert!(
+    check!(
         service
             .0
             .check_buyer(r.world().world(), issuer, GOD)
@@ -389,7 +389,7 @@ async fn named_launch_exact_coprates_membership_and_strict_host_coordinates() ->
         OrgId(u64::MAX),
         OrgScopeId(u64::MAX),
     )?;
-    assert!(
+    check!(
         service
             .0
             .check_buyer(r.world().world(), foreign, buyer)

@@ -55,7 +55,7 @@ fn signed(w: &mut PlayerWorld, actor: ObjId, n: u128, p: Value) -> TestResult<Pr
         },
     )?;
     let (actual, request, _) = resolved.into_authoritative_parts();
-    assert_eq!(actual, exact);
+    check_eq!(actual, exact);
     Ok(w.engine
         .prepare_registered_composed_resolved_authoritative_action(&exact, &request, token(n))?
         .0)
@@ -129,7 +129,7 @@ fn current(w: &PlayerWorld, owner: LicenceId) -> TestResult<u64> {
 fn unchanged(w: &PlayerWorld, before: &[((String, String), Value)]) -> TestResult {
     let actual = disk(w);
     for (key, value) in before {
-        assert!(
+        check!(
             actual.get(key) == Some(value),
             "attestation changed retained immutable history"
         );
@@ -139,10 +139,10 @@ fn unchanged(w: &PlayerWorld, before: &[((String, String), Value)]) -> TestResul
 fn install(w: &mut PlayerWorld, actor: ObjId, n: u128, owner: LicenceId) -> TestResult {
     let before = balances(w)?;
     let p = signed(w, actor, n, params(owner))?;
-    assert_eq!(balances(w)?, before);
+    check_eq!(balances(w)?, before);
     let (writes, installation) = p.into_parts();
     apply(w, &writes, installation)?;
-    assert_eq!(balances(w)?, before, "free owner attestation changed money");
+    check_eq!(balances(w)?, before, "free owner attestation changed money");
     Ok(())
 }
 async fn fences(
@@ -272,7 +272,7 @@ async fn original_economy_freeze(f: &PurchaseFixture, saved: &Durable) -> TestRe
 }
 async fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     assert!(
-        PlayerWorld::boot_owner_qualification(f, saved).is_err(),
+        crate::test_checks::refused(PlayerWorld::boot_owner_qualification(f, saved))?,
         "disabled attestation accepted retained generations"
     );
     for mode in [
@@ -348,7 +348,7 @@ async fn corruptions(f: &PurchaseFixture, saved: &Durable) -> TestResult {
             }
         }
         assert!(
-            boot(f, &bad).is_err(),
+            crate::test_checks::refused(boot(f, &bad))?,
             "cold generation/cause corruption became current authority"
         );
     }

@@ -381,8 +381,8 @@ mod tests {
             tickets.cancel(binding)?;
         }
         let previous = (tickets.next, tickets.bytes, tickets.rows.len());
-        assert_eq!(tickets.cancel(binding), Err(BulkError::QueueFull));
-        assert_eq!((tickets.next, tickets.bytes, tickets.rows.len()), previous);
+        check_eq!(tickets.cancel(binding), Err(BulkError::QueueFull));
+        check_eq!((tickets.next, tickets.bytes, tickets.rows.len()), previous);
         tickets.check(first, &captured)?;
         tickets.acknowledge_checked(
             &captured,
@@ -393,15 +393,15 @@ mod tests {
                 transition: Transition::Cancel,
             },
         );
-        assert_eq!(
+        check_eq!(
             tickets.cancel(binding),
             Err(BulkError::QueueFull),
             "unread ack retains the slot"
         );
         tickets.take_acknowledged().ok_or("ack")?;
         let next = tickets.cancel(binding)?;
-        assert_eq!(next.get(), u64::try_from(MAX_TICKETS)? + 1);
-        assert!(tickets.check(first, &captured).is_err());
+        check_eq!(next.get(), u64::try_from(MAX_TICKETS)? + 1);
+        check!(tickets.check(first, &captured).is_err());
         Ok(())
     }
     #[test]
@@ -410,8 +410,8 @@ mod tests {
         let binding = binding()?;
         tickets.insert(TicketKind::Cancel(binding), MAX_ENCODED_TICKET_BYTES)?;
         let previous = (tickets.next, tickets.bytes, tickets.rows.len());
-        assert_eq!(tickets.cancel(binding), Err(BulkError::QueueFull));
-        assert_eq!((tickets.next, tickets.bytes, tickets.rows.len()), previous);
+        check_eq!(tickets.cancel(binding), Err(BulkError::QueueFull));
+        check_eq!((tickets.next, tickets.bytes, tickets.rows.len()), previous);
         Ok(())
     }
 }

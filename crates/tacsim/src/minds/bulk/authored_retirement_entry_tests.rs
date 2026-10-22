@@ -66,7 +66,7 @@ fn prepare_selected(
         },
     )?;
     let (action, resolved, _) = resolved.into_authoritative_parts();
-    assert_eq!(action, submit.action);
+    check_eq!(action, submit.action);
     Ok(world
         .engine
         .prepare_registered_composed_resolved_authoritative_action(
@@ -237,7 +237,11 @@ async fn delayed_name_reuse(f: &PurchaseFixture, saved: &Durable) -> TestResult 
         assert_eq!(retry.request(), &exact);
         let before = disk(&world);
         assert!(
-            prepare_selected(&mut world, retry.request(), 9_500_013).is_err(),
+            crate::test_checks::is_refusal(prepare_selected(
+                &mut world,
+                retry.request(),
+                9_500_013
+            )),
             "v2 captured identity refuses name/counter ABA"
         );
         assert!(disk(&world) == before && roll(&world)?.mind(BUYER, "reused")? == &replacement);

@@ -61,7 +61,7 @@ fn signed(
         },
     )?;
     let (actual, resolved, _) = resolved.into_authoritative_parts();
-    assert_eq!(actual, exact);
+    check_eq!(actual, exact);
     Ok(w.engine
         .prepare_registered_composed_resolved_authoritative_action(&exact, &resolved, token(n))?
         .0)
@@ -107,13 +107,13 @@ fn attest(w: &mut PlayerWorld, n: u128) -> TestResult {
     let p = signed(w, "attest_owner_mind", n, json!({"owner_licence":1}))?;
     let (writes, install) = p.into_parts();
     captured::apply(w, &writes, install)?;
-    assert_eq!(balances(w)?, before, "free attestation changed balances");
+    check_eq!(balances(w)?, before, "free attestation changed balances");
     Ok(())
 }
 fn owner_available(w: &mut PlayerWorld, expected: bool) -> TestResult {
     let events = w.say(GOD, "SIM MIND /filed")?;
     let text = PlayerWorld::private_text(&events, GOD);
-    assert_eq!(
+    check_eq!(
         text.contains("filed:1:"),
         expected,
         "actual current owner projection"
@@ -177,7 +177,7 @@ async fn cold_refusals(f: &PurchaseFixture, saved: &Durable) -> TestResult {
                 "exact historical evidence removed"
             );
         }
-        if let Ok(world) = boot(f, &corrupt) {
+        if let Some(world) = crate::test_checks::accepted(boot(f, &corrupt))? {
             world.tasks.shutdown(Duration::from_secs(5)).await;
             return Err("corrupted attested update history passed cold boot".into());
         }
@@ -359,15 +359,12 @@ async fn chartered(
         w.engine.world.set_now(birth.window().grace_end().get());
         w.transfer_charter(charter.object(), BUYER, SALE)?;
         owner_available(&mut w, false)?;
-        assert!(
-            signed(
-                &mut w,
-                "attest_owner_mind",
-                SALE + 2,
-                json!({"owner_licence":1})
-            )
-            .is_err()
-        );
+        assert!(crate::test_checks::is_refusal(signed(
+            &mut w,
+            "attest_owner_mind",
+            SALE + 2,
+            json!({"owner_licence":1})
+        )));
         let before = balances(&w)?;
         let p = charter_transfer_fixture::signed(
             &mut w.engine,
@@ -449,7 +446,7 @@ async fn chartered(
                 .ok_or("actual captured ownership row")?;
             *row.pointer_mut("/value/charter_ownership/generation")
                 .ok_or("ownership generation")? = json!(4);
-            if let Ok(world) = boot(f, &crossed) {
+            if let Some(world) = crate::test_checks::accepted(boot(f, &crossed))? {
                 world.tasks.shutdown(Duration::from_secs(5)).await;
                 return Err("crossed historical charter ownership passed cold boot".into());
             }

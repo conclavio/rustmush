@@ -36,18 +36,18 @@ fn prepared() -> Result<MindCommerce, ModError> {
 }
 #[test]
 fn entitlement_opt_in_preserves_old_actions_and_freezes_actual_two_owner_protocols() -> TestResult {
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_mind_entitlements(policy()?)
             .is_err()
     );
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_mind_entitlements(policy()?)
             .is_err()
     );
     let base = prepared()?;
-    assert!(!base.configure_tacsim(layer())?.entitlement_holdings);
+    check!(!base.configure_tacsim(layer())?.entitlement_holdings);
     let prepared = base.with_mind_entitlements(policy()?)?;
     let config = prepared
         .state
@@ -83,7 +83,7 @@ fn entitlement_opt_in_preserves_old_actions_and_freezes_actual_two_owner_protoco
     let original = config.owner_actions(EntitlementProtocol::OriginalV3)?;
     let derived = config.owner_actions(EntitlementProtocol::DerivedV1)?;
     for reference in old.iter().chain(&original).chain(&derived) {
-        assert_eq!(
+        check_eq!(
             definitions
                 .iter()
                 .filter(|e| e.reference() == reference)
@@ -96,9 +96,9 @@ fn entitlement_opt_in_preserves_old_actions_and_freezes_actual_two_owner_protoco
         "personal_entitlement_holding",
         "personal_entitlement_source",
     ] {
-        assert!(has(&registered, "roll", "owner_read", id));
+        check!(has(&registered, "roll", "owner_read", id));
     }
-    assert!(
+    check!(
         registered
             .modules_loaded(
                 Default::default(),
@@ -108,13 +108,13 @@ fn entitlement_opt_in_preserves_old_actions_and_freezes_actual_two_owner_protoco
             .is_err(),
         "registration does not manufacture an acknowledged deployment"
     );
-    assert!(prepared.with_mind_entitlements(policy()?).is_err());
+    check!(prepared.with_mind_entitlements(policy()?).is_err());
     Ok(())
 }
 #[test]
 fn entitlement_configuration_requires_the_exact_installed_roll_writer() -> TestResult {
     let prepared = prepared()?.with_mind_entitlements(policy()?)?;
-    assert!(
+    check!(
         compose_boxed(
             World::new_minimal(),
             Registry::new(),

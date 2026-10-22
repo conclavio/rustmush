@@ -133,7 +133,7 @@ fn account(
         .accounts()
         .filter(|a| a.owner == owner && a.scope == scope && a.instrument.as_str() == "cr");
     let id = rows.next().ok_or("account")?.id;
-    assert!(rows.next().is_none(), "actual unique account");
+    check!(rows.next().is_none(), "actual unique account");
     Ok(id)
 }
 fn money(w: &IcWorld, id: MoneyAccount) -> TestResult<Amount> {
@@ -206,7 +206,7 @@ fn prepare_key(
         },
     )?;
     let (exact, resolved, _) = resolved.into_authoritative_parts();
-    assert_eq!(&exact, action);
+    check_eq!(&exact, action);
     let inv = resolved.invocation().clone();
     let (p, o) = w
         .engine
@@ -243,7 +243,7 @@ fn land_ticket(
     let actor = t.actor();
     let before = w.disk.clone();
     let prepared = prepare(w, actor, t.action(), n, json!({}))?;
-    assert!(
+    check!(
         w.disk == before,
         "coverage preparation changed durable data"
     );
@@ -260,7 +260,7 @@ fn observed_quote(
     // The caller installs the observed-submission runtime once per engine.
     let t = Arc::new(ticket);
     let (hc, tc) = (h.clone(), t.clone());
-    assert_eq!(
+    check_eq!(
         context(w, BUYER, move |ctx| hc.submit(ctx, &tc))?,
         State::AwaitingAcknowledgement
     );
@@ -269,42 +269,56 @@ fn observed_quote(
         .take_observed_authoritative_submit()
         .ok_or("actual coverage submission")?;
     let (request, driver) = submitted.into_parts();
-    assert_eq!(request.action, *t.action());
-    assert_eq!(request.parameters, t.parameters());
-    assert_eq!(request.actor, BUYER);
-    assert!(request.targets.is_empty());
+    check_eq!(request.action, *t.action());
+    check_eq!(request.parameters, t.parameters());
+    check_eq!(request.actor, BUYER);
+    check!(request.targets.is_empty());
     let proof = *driver
         .ok_or("actual observation")?
         .downcast::<Arc<std::sync::atomic::AtomicBool>>()
         .map_err(|_| "observation type")?;
     for _ in 0..2 {
         let (hc, tc) = (h.clone(), t.clone());
-        assert_eq!(
+        check_eq!(
             context(w, BUYER, move |ctx| hc.submit(ctx, &tc))?,
             State::AwaitingAcknowledgement
         );
-        assert!(w.engine.take_observed_authoritative_submit().is_none());
+        check!(w.engine.take_observed_authoritative_submit().is_none());
     }
     let (hc, tc) = (h.clone(), t.clone());
-    assert!(context(w, BUYER, move |ctx| hc.acknowledge(ctx, &tc, token(n))).is_err());
+    check!(crate::test_checks::refused(context(
+        w,
+        BUYER,
+        move |ctx| hc.acknowledge(ctx, &tc, token(n))
+    ))?);
     let (hc, tc) = (h.clone(), t.clone());
-    assert!(context(w, BUYER, move |ctx| hc.discard_unadmitted(ctx, &tc)).is_err());
+    check!(crate::test_checks::refused(context(
+        w,
+        BUYER,
+        move |ctx| hc.discard_unadmitted(ctx, &tc)
+    ))?);
     // Only the submission-consumer disposition is modeled here. It cannot
     // manufacture a coverage row, native receipt, or successful ACK.
     proof.store(true, std::sync::atomic::Ordering::Release);
-    assert_eq!(h.submission_state(&t)?, State::Retryable);
+    check_eq!(h.submission_state(&t)?, State::Retryable);
     let (hc, tc) = (h.clone(), t.clone());
     let mut released = context(w, BUYER, move |ctx| hc.discard_unadmitted(ctx, &tc))?;
-    assert_eq!(released.ticket().parameters(), t.parameters());
-    assert!(h.submission_state(&t).is_err());
+    check_eq!(released.ticket().parameters(), t.parameters());
+    check!(h.submission_state(&t).is_err());
     let hc = h.clone();
-    let restored = context(w, BUYER, move |ctx| {
+    // The closure answers through the fixture's CoverageError, so its second
+    // restore is checked here rather than inside it.
+    let (restored, restored_again_refused) = context(w, BUYER, move |ctx| {
         let restored = hc.restore_unadmitted(ctx, &mut released)?;
-        assert!(hc.restore_unadmitted(ctx, &mut released).is_err());
-        Ok(restored)
+        let again_refused = hc.restore_unadmitted(ctx, &mut released).is_err();
+        Ok((restored, again_refused))
     })?;
-    assert_eq!(restored.parameters(), request.parameters);
-    assert_eq!(restored.action(), t.action());
+    check!(
+        restored_again_refused,
+        "assertion failed: hc.restore_unadmitted(ctx, &mut released).is_err()"
+    );
+    check_eq!(restored.parameters(), request.parameters);
+    check_eq!(restored.action(), t.action());
     let t = Arc::new(restored);
     let (hc, tc) = (h.clone(), t.clone());
     context(w, BUYER, move |ctx| hc.submit(ctx, &tc))?;
@@ -313,9 +327,9 @@ fn observed_quote(
         .take_observed_authoritative_submit()
         .ok_or("same coverage retry")?;
     let (retry, driver) = submitted.into_parts();
-    assert_eq!(retry.key, request.key);
-    assert_eq!(retry.parameters, request.parameters);
-    assert_eq!(retry.action, request.action);
+    check_eq!(retry.key, request.key);
+    check_eq!(retry.parameters, request.parameters);
+    check_eq!(retry.action, request.action);
     let proof = *driver
         .ok_or("retry observation")?
         .downcast::<Arc<std::sync::atomic::AtomicBool>>()
@@ -325,10 +339,14 @@ fn observed_quote(
     // Contradictory definitive absence cannot defeat actual installed readback.
     proof.store(true, std::sync::atomic::Ordering::Release);
     let (hc, tc) = (h.clone(), t.clone());
-    assert!(context(w, BUYER, move |ctx| hc.discard_unadmitted(ctx, &tc)).is_err());
+    check!(crate::test_checks::refused(context(
+        w,
+        BUYER,
+        move |ctx| hc.discard_unadmitted(ctx, &tc)
+    ))?);
     let (hc, tc) = (h.clone(), t.clone());
     let acknowledged = context(w, BUYER, move |ctx| hc.acknowledge(ctx, &tc, token(n)))?;
-    assert!(h.submission_state(&t).is_err());
+    check!(h.submission_state(&t).is_err());
     Ok(acknowledged)
 }
 fn boot(
@@ -430,15 +448,14 @@ fn publish_ordinary_product(
 ) -> TestResult<Durable> {
     publication_fences(f, w, &w.snapshot(), product)?;
     let publication = reference(w, "publish_hull_coverage")?;
-    assert!(
-        prepare(
+    check!(
+        crate::test_checks::refused(prepare(
             w,
             BUYER,
             &publication,
             FIRST,
             json!({"product":product.digest()?.to_hex()})
-        )
-        .is_err(),
+        ))?,
         "customer is not publisher"
     );
     let p = prepare(
@@ -450,8 +467,8 @@ fn publish_ordinary_product(
     )?;
     install(w, &publication, FIRST, p)?;
     let published = w.snapshot();
-    assert_eq!(rows(&w.disk, "tacsim", "tacsim_coverage_products").len(), 1);
-    assert!(rows(&w.disk, "tacsim", "tacsim_coverage_policies").is_empty());
+    check_eq!(rows(&w.disk, "tacsim", "tacsim_coverage_products").len(), 1);
+    check!(rows(&w.disk, "tacsim", "tacsim_coverage_policies").is_empty());
     Ok(published)
 }
 
@@ -465,9 +482,15 @@ pub(super) fn exercise(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> 
     // exposes neither quote nor Bind and creates no native money history.
     for id in ["quote_hull_coverage", "bind_hull_coverage"] {
         let action = reference(&w, id)?;
-        assert!(prepare(&mut w, BUYER, &action, FIRST + 1, json!({})).is_err());
+        check!(crate::test_checks::refused(prepare(
+            &mut w,
+            BUYER,
+            &action,
+            FIRST + 1,
+            json!({})
+        ))?);
     }
-    assert_eq!((money(&w, payer)?, money(&w, treasury)?), original_money);
+    check_eq!((money(&w, payer)?, money(&w, treasury)?), original_money);
     let hull = w.hulls[0];
     let zone = selected_base(w.base, w.field)?.definition().clone();
     let permit = ic_sortie::fixture_withheld(
@@ -478,7 +501,7 @@ pub(super) fn exercise(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> 
     let pending = w
         .host
         .enqueue_withheld(&permit, LicenceId::new(2)?, vec![])?;
-    assert!(
+    check!(
         w.host
             .acknowledge_withheld(&w.engine.world, &pending)?
             .is_none()
@@ -498,23 +521,23 @@ pub(super) fn exercise(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> 
     )?;
     w.engine.set_submission_runtime(Arc::new(Runtime))?;
     let quoted = observed_quote(&mut w, quote, FIRST + 3)?;
-    assert_eq!(quoted.kind(), "quoted");
+    check_eq!(quoted.kind(), "quoted");
     let value = one(rows(&w.disk, "tacsim", "tacsim_coverage_quotes"))?;
-    assert_eq!(value["risk"]["qualified"], Value::Null);
-    assert_eq!(value["terms"]["premium"], json!(100));
-    assert_eq!(value["terms"]["discount"], json!(0));
+    check_eq!(value["risk"]["qualified"], Value::Null);
+    check_eq!(value["terms"]["premium"], json!(100));
+    check_eq!(value["terms"]["discount"], json!(0));
     bind_fences(f, &w, &w.snapshot(), departure.clone())?;
     let bind = h.bind(&w.engine.world, departure.clone(), token(FIRST + 3))?;
     let mut bound = land_ticket(&mut w, bind, FIRST + 4)?;
-    assert_eq!(bound.kind(), "bound");
-    assert_eq!(
+    check_eq!(bound.kind(), "bound");
+    check_eq!(
         money(&w, payer)?,
         original_money
             .0
             .checked_sub(Amount::from_minor(100))
             .ok_or("premium")?
     );
-    assert_eq!(
+    check_eq!(
         money(&w, treasury)?,
         original_money
             .1
@@ -528,7 +551,7 @@ pub(super) fn exercise(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> 
         .ok_or("E4")?
         .coverage_history(token(FIRST + 4))?
         .clone();
-    assert_eq!(policy.consent().terms.premium, Amount::from_minor(100));
+    check_eq!(policy.consent().terms.premium, Amount::from_minor(100));
     let starts = policy.consent().terms.starts_at.clone();
     let ends = policy.consent().terms.ends_at.at;
     let installed = w.snapshot();
@@ -561,32 +584,39 @@ pub(super) fn exercise(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> 
     let mut recovered = context(&mut restarted, BUYER, move |ctx| {
         recovered_host.recover_binding(ctx, retained_departure, token(FIRST + 4))
     })?;
-    assert_eq!(recovered.operation(), bound.operation());
+    check_eq!(recovered.operation(), bound.operation());
     let h2 = h.clone();
-    let released = context(&mut w, BUYER, move |ctx| {
-        let released = h2.release_departure(ctx, &mut recovered)?;
-        assert!(h2.release_departure(ctx, &mut recovered).is_err());
-        assert!(h2.release_departure(ctx, &mut bound).is_err());
-        Ok(released)
-    })?;
-    assert_eq!(released.open(), token(FIRST + 2));
-    assert_eq!(released.binding(), token(FIRST + 4));
+    // As above: the repeat releases are checked outside the CoverageError closure.
+    let (released, recovered_again_refused, bound_again_refused) =
+        context(&mut w, BUYER, move |ctx| {
+            let released = h2.release_departure(ctx, &mut recovered)?;
+            let recovered_again = h2.release_departure(ctx, &mut recovered).is_err();
+            let bound_again = h2.release_departure(ctx, &mut bound).is_err();
+            Ok((released, recovered_again, bound_again))
+        })?;
+    check!(
+        recovered_again_refused,
+        "assertion failed: h2.release_departure(ctx, &mut recovered).is_err()"
+    );
+    check!(
+        bound_again_refused,
+        "assertion failed: h2.release_departure(ctx, &mut bound).is_err()"
+    );
+    check_eq!(released.open(), token(FIRST + 2));
+    check_eq!(released.binding(), token(FIRST + 4));
     released.exact()?;
-    assert!(
+    check!(
         h.bind(&w.engine.world, departure, token(FIRST + 3))
             .is_err(),
         "released departure cannot buy twice"
     );
     // Expiry or an ordinary IC close cannot manufacture a coverage terminal.
     let h2 = h.clone();
-    assert!(
-        context(&mut w, GOD, move |ctx| h2.terminal(
-            ctx,
-            token(FIRST + 4),
-            false
-        ))
-        .is_err()
-    );
+    check!(crate::test_checks::refused(context(
+        &mut w,
+        GOD,
+        move |ctx| h2.terminal(ctx, token(FIRST + 4), false)
+    ))?);
     let mut ordinary_branch = w.reboot(f, &installed)?;
     let ordinary = ic_sortie::fixture_close(
         &ordinary_branch.engine.world,
@@ -595,11 +625,13 @@ pub(super) fn exercise(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> 
         ordinary_branch.base,
     )?;
     let ordinary = ordinary_branch.host.enqueue_close(&ordinary)?;
-    assert!(ordinary_branch.prepare(&ordinary, FIRST + 5).is_err());
+    check!(crate::test_checks::refused(
+        ordinary_branch.prepare(&ordinary, FIRST + 5)
+    )?);
     // Preserve the real insured Open and move beyond its cover term. A later
     // genuine clean close releases collateral while retaining the premium.
     w.engine.world.set_now(ends);
-    assert!(
+    check!(
         w.engine.world.world_ic_now().at >= ends
             && w.engine.world.world_ic_now().clock == starts.clock
     );
@@ -619,15 +651,15 @@ pub(super) fn exercise(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> 
         h2.terminal(ctx, token(FIRST + 4), false)
     })?;
     let released = land_ticket(&mut w, terminal, FIRST + 7)?;
-    assert_eq!(released.kind(), "released");
+    check_eq!(released.kind(), "released");
     let final_history = w
         .engine
         .world
         .module_state::<EconomyStore>()
         .ok_or("E4")?
         .coverage_history(token(FIRST + 4))?;
-    assert!(final_history.terminal().is_some());
-    assert_eq!(
+    check!(final_history.terminal().is_some());
+    check_eq!(
         money(&w, payer)?,
         original_money
             .0
@@ -635,13 +667,13 @@ pub(super) fn exercise(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> 
             .ok_or("premium")?
     );
     let terminal_rows = rows(&w.disk, "tacsim", "tacsim_coverage_terminals");
-    assert_eq!(terminal_rows.len(), 1);
-    assert_eq!(terminal_rows[0]["policy"], json!(token(FIRST + 4)));
-    assert_eq!(terminal_rows[0]["operation"], json!(token(FIRST + 7)));
+    check_eq!(terminal_rows.len(), 1);
+    check_eq!(terminal_rows[0]["policy"], json!(token(FIRST + 4)));
+    check_eq!(terminal_rows[0]["operation"], json!(token(FIRST + 7)));
     cold_terminal_corruption(f, &w, &w.snapshot())?;
     let cold = w.reboot(f, &w.snapshot())?;
-    assert!(!cold.held(hull)?);
-    assert_eq!(
+    check!(!cold.held(hull)?);
+    check_eq!(
         cold.engine
             .world
             .module_state::<EconomyStore>()
@@ -651,7 +683,9 @@ pub(super) fn exercise(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> 
     );
     // Actual absence and native/typed inverse are mandatory even with an empty
     // configured catalogue; historical publication remains unchanged.
-    assert!(IcWorld::boot(f, &installed, w.base, w.field, w.hulls, true).is_err());
+    check!(crate::test_checks::refused(IcWorld::boot(
+        f, &installed, w.base, w.field, w.hulls, true
+    ))?);
     let _ = (published, scope);
     eprintln!("M7_STORY phase=coverage_composed event=complete");
     Ok(())
@@ -691,23 +725,29 @@ fn bind_fences(
             };
             if phase == 0 {
                 invalidate(&mut w)?;
-                assert!(prepare(&mut w, BUYER, ticket.action(), FIRST + 50, json!({})).is_err());
+                check!(crate::test_checks::refused(prepare(
+                    &mut w,
+                    BUYER,
+                    ticket.action(),
+                    FIRST + 50,
+                    json!({})
+                ))?);
             } else {
                 let (prepared, output, invocation) =
                     prepare(&mut w, BUYER, ticket.action(), FIRST + 50, json!({}))?;
                 if phase == 1 {
                     invalidate(&mut w)?;
-                    assert!(
+                    check!(
                         w.stage_action(ticket.action(), FIRST + 50, prepared, output, &invocation)
                             .is_err()
                     );
                 } else {
                     w.stage_action(ticket.action(), FIRST + 50, prepared, output, &invocation)?;
                     invalidate(&mut w)?;
-                    assert!(w.engine.take_staged_action().is_err());
+                    check!(w.engine.take_staged_action().is_err());
                 }
             }
-            assert!(w.disk == before, "failed Bind changed durable state");
+            check!(w.disk == before, "failed Bind changed durable state");
         }
     }
     Ok(())
@@ -745,16 +785,13 @@ fn publication_fences(
             };
             if phase == 0 {
                 invalidate(&mut w)?;
-                assert!(
-                    prepare(
-                        &mut w,
-                        GOD,
-                        &action,
-                        FIRST + 20,
-                        json!({"product":product.digest()?.to_hex()})
-                    )
-                    .is_err()
-                );
+                check!(crate::test_checks::refused(prepare(
+                    &mut w,
+                    GOD,
+                    &action,
+                    FIRST + 20,
+                    json!({"product":product.digest()?.to_hex()})
+                ))?);
             } else {
                 let (p, o, inv) = prepare(
                     &mut w,
@@ -765,14 +802,14 @@ fn publication_fences(
                 )?;
                 if phase == 1 {
                     invalidate(&mut w)?;
-                    assert!(w.stage_action(&action, FIRST + 20, p, o, &inv).is_err());
+                    check!(w.stage_action(&action, FIRST + 20, p, o, &inv).is_err());
                 } else {
                     w.stage_action(&action, FIRST + 20, p, o, &inv)?;
                     invalidate(&mut w)?;
-                    assert!(w.engine.take_staged_action().is_err());
+                    check!(w.engine.take_staged_action().is_err());
                 }
             }
-            assert!(
+            check!(
                 w.disk == before,
                 "publication refusal changed retained state"
             );
@@ -807,10 +844,10 @@ fn cancel_branch(
     let ticket = context(&mut w, BUYER, move |ctx| {
         hc.terminal(ctx, token(FIRST + 4), true)
     })?;
-    assert_eq!(ticket.actor(), BUYER);
+    check_eq!(ticket.actor(), BUYER);
     let done = land_ticket(&mut w, ticket, FIRST + 41)?;
-    assert_eq!(done.kind(), "released");
-    assert_eq!(
+    check_eq!(done.kind(), "released");
+    check_eq!(
         money(&w, payer)?,
         original
             .checked_sub(Amount::from_minor(100))
@@ -822,7 +859,7 @@ fn cancel_branch(
         .module_state::<EconomyStore>()
         .ok_or("E4")?
         .coverage_history(token(FIRST + 4))?;
-    assert!(matches!(
+    check!(matches!(
         &history
             .terminal()
             .ok_or("actual cancellation")?
@@ -832,7 +869,7 @@ fn cancel_branch(
     ));
     cold_terminal_corruption(f, &w, &w.snapshot())?;
     let cold = w.reboot(f, &w.snapshot())?;
-    assert_eq!(
+    check_eq!(
         cold.engine
             .world
             .module_state::<EconomyStore>()
@@ -856,12 +893,12 @@ fn cold_terminal_corruption(f: &PurchaseFixture, base: &IcWorld, saved: &Durable
                 .then_some(k.clone())
             })
             .collect::<Vec<_>>();
-        assert_eq!(keys.len(), 1, "actual terminal counterpart");
+        check_eq!(keys.len(), 1, "actual terminal counterpart");
         for key in keys {
             bad.disk.remove(&key);
         }
-        assert!(
-            base.reboot(f, &bad).is_err(),
+        check!(
+            crate::test_checks::refused(base.reboot(f, &bad))?,
             "missing exact terminal counterpart accepted"
         );
     }
@@ -900,17 +937,16 @@ fn loss_branch(
     )?;
     let closing = w.host.enqueue_close(&event)?;
     w.land(&closing, FIRST + 30, hull, true)?;
-    assert!(crate::arena::damage::is_wreck(
+    check!(crate::arena::damage::is_wreck(
         mush_tactics::module::unit_of(&w.engine.world, hull).ok_or("actual damaged hull")?
     ));
     let h2 = h.clone();
-    assert!(
-        context(&mut w, BUYER, move |ctx| h2.terminal(
+    check!(
+        crate::test_checks::refused(context(&mut w, BUYER, move |ctx| h2.terminal(
             ctx,
             token(FIRST + 4),
             true
-        ))
-        .is_err(),
+        )))?,
         "cancel cannot erase covered loss"
     );
     let h2 = h.clone();
@@ -918,18 +954,24 @@ fn loss_branch(
         h2.terminal(ctx, token(FIRST + 4), false)
     })?;
     let before = w.disk.clone();
-    assert!(
-        prepare(&mut w, GOD, pending.action(), FIRST + 31, json!({})).is_err(),
+    check!(
+        crate::test_checks::refused(prepare(
+            &mut w,
+            GOD,
+            pending.action(),
+            FIRST + 31,
+            json!({})
+        ))?,
         "actual delay not yet matured"
     );
-    assert!(w.disk == before);
+    check!(w.disk == before);
     // Same pending intent, actual original-clock deadline, even after cover ends.
     let due = loss + history.consent().terms.claim_delay_seconds;
-    assert!(due > history.consent().terms.ends_at.at);
+    check!(due > history.consent().terms.ends_at.at);
     w.engine.world.set_now(due);
     let paid = land_ticket(&mut w, pending, FIRST + 31)?;
-    assert_eq!(paid.kind(), "claimed");
-    assert_eq!(
+    check_eq!(paid.kind(), "claimed");
+    check_eq!(
         money(&w, payer)?,
         original
             .0
@@ -937,7 +979,7 @@ fn loss_branch(
             .and_then(|a| a.checked_add(Amount::from_minor(8000)))
             .ok_or("claim arithmetic")?
     );
-    assert_eq!(
+    check_eq!(
         money(&w, treasury)?,
         original
             .1
@@ -952,7 +994,7 @@ fn loss_branch(
         .ok_or("E4")?
         .coverage_history(token(FIRST + 4))?
         .clone();
-    assert!(matches!(
+    check!(matches!(
         &final_history
             .terminal()
             .ok_or("native claim")?
@@ -961,7 +1003,7 @@ fn loss_branch(
         mush_economy::managed_coverage::CoverageDecisionKindV1::Destroyed { .. }
     ));
     let cold = w.reboot(f, &w.snapshot())?;
-    assert_eq!(
+    check_eq!(
         cold.engine
             .world
             .module_state::<EconomyStore>()
@@ -969,7 +1011,7 @@ fn loss_branch(
             .coverage_history(token(FIRST + 4))?,
         &final_history
     );
-    assert!(crate::arena::damage::is_wreck(
+    check!(crate::arena::damage::is_wreck(
         mush_tactics::module::unit_of(&cold.engine.world, hull).ok_or("retained wreck")?
     ));
     Ok(())
@@ -997,12 +1039,12 @@ fn cold_corruption(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> Test
                 .then_some(k.clone())
             })
             .collect::<Vec<_>>();
-        assert!(!keys.is_empty(), "actual complete typed row selected");
+        check!(!keys.is_empty(), "actual complete typed row selected");
         for key in keys {
             bad.disk.remove(&key);
         }
-        assert!(
-            base.reboot(f, &bad).is_err(),
+        check!(
+            crate::test_checks::refused(base.reboot(f, &bad))?,
             "missing actual coverage counterpart accepted"
         );
     }
@@ -1013,12 +1055,12 @@ fn cold_corruption(f: &PurchaseFixture, base: &IcWorld, saved: &Durable) -> Test
         .filter(|(ns, k)| ns == "tacsim" && k.starts_with("coverage_publication:"))
         .cloned()
         .collect::<Vec<_>>();
-    assert_eq!(keys.len(), 1);
+    check_eq!(keys.len(), 1);
     for key in keys {
         bad.disk.remove(&key);
     }
-    assert!(
-        base.reboot(f, &bad).is_err(),
+    check!(
+        crate::test_checks::refused(base.reboot(f, &bad))?,
         "missing native publication accepted"
     );
     Ok(())

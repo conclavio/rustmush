@@ -58,7 +58,7 @@ fn setup(
         PerceivedRef::SelfActor,
     )?;
     let offers = configured.engine.project_legal_actions(&query)?;
-    assert!(
+    check!(
         offers.projected_for_action(&policy.action()?).is_some(),
         "actual Org grant admits configured operator"
     );
@@ -100,7 +100,7 @@ fn signed(world: &mut PlayerWorld, number: u128, id: LicenceId) -> TestResult<Pr
         },
     )?;
     let (exact, resolved, _) = resolved.into_authoritative_parts();
-    assert_eq!(exact, action);
+    check_eq!(exact, action);
     Ok(world
         .engine
         .prepare_registered_composed_resolved_authoritative_action(
@@ -165,7 +165,7 @@ fn stage_revocation(
 }
 fn suspend(world: &mut PlayerWorld) -> TestResult {
     world.say(GOD, &format!("@org/status {ORG}=suspended"))?;
-    assert_eq!(
+    check_eq!(
         world
             .engine
             .world
@@ -187,23 +187,20 @@ fn fences(
     a: &EntitlementAllocationV1,
 ) -> TestResult {
     let mut disabled = PlayerWorld::boot_entitlements(f, saved)?;
-    assert!(action(&disabled, "roll", ACTION, 1).is_err());
-    assert!(
-        prepare(
-            &mut disabled,
-            "roll",
-            ACTION,
-            1,
-            BUYER,
-            START,
-            params(a.licence())
-        )
-        .is_err()
-    );
+    check!(action(&disabled, "roll", ACTION, 1).is_err());
+    check!(crate::test_checks::refused(prepare(
+        &mut disabled,
+        "roll",
+        ACTION,
+        1,
+        BUYER,
+        START,
+        params(a.licence())
+    ))?);
     for after_stage in [false, true] {
         let mut world = PlayerWorld::boot_revocation(f, saved, policy.clone())?;
-        assert!(
-            prepare(
+        check!(
+            crate::test_checks::refused(prepare(
                 &mut world,
                 "roll",
                 ACTION,
@@ -211,8 +208,7 @@ fn fences(
                 GOD,
                 START,
                 params(a.licence())
-            )
-            .is_err(),
+            ))?,
             "unconfigured staff is not Registry authority"
         );
         let (prepared, output) = prepare(
@@ -227,15 +223,13 @@ fn fences(
         if after_stage {
             stage_revocation(&mut world, START + 1, a.licence(), prepared, output)?;
             suspend(&mut world)?;
-            assert!(world.engine.take_staged_action().is_err());
+            check!(world.engine.take_staged_action().is_err());
         } else {
             suspend(&mut world)?;
-            assert!(
-                stage_revocation(&mut world, START + 1, a.licence(), prepared, output).is_err()
-            );
+            check!(stage_revocation(&mut world, START + 1, a.licence(), prepared, output).is_err());
         }
-        assert!(rows(&disk(&world), "roll", CAUSES).is_empty());
-        assert!(rows(&disk(&world), "roll", STATUS).is_empty());
+        check!(rows(&disk(&world), "roll", CAUSES).is_empty());
+        check!(rows(&disk(&world), "roll", STATUS).is_empty());
     }
     // Readiness is a live composed latch, not the mere continued existence of
     // an Org slot or an old generic AuthWitness.
@@ -263,14 +257,12 @@ fn fences(
         if after_stage {
             stage_revocation(&mut world, START + 2, a.licence(), prepared, output)?;
             freeze(&world)?;
-            assert!(world.engine.take_staged_action().is_err());
+            check!(world.engine.take_staged_action().is_err());
         } else {
             freeze(&world)?;
-            assert!(
-                stage_revocation(&mut world, START + 2, a.licence(), prepared, output).is_err()
-            );
+            check!(stage_revocation(&mut world, START + 2, a.licence(), prepared, output).is_err());
         }
-        assert!(rows(&disk(&world), "roll", CAUSES).is_empty());
+        check!(rows(&disk(&world), "roll", CAUSES).is_empty());
     }
     Ok(())
 }
@@ -278,7 +270,7 @@ fn fences(
 fn private_status(w: &mut PlayerWorld, actor: ObjId, id: LicenceId, revoked: bool) -> TestResult {
     let events = w.say(actor, &format!("@mindrevoke/status {}", id.get()))?;
     let text = PlayerWorld::private_text(&events, actor);
-    assert!(
+    check!(
         text.contains(if revoked {
             "Registry revocation: your mind licence"
         } else {
@@ -288,7 +280,7 @@ fn private_status(w: &mut PlayerWorld, actor: ObjId, id: LicenceId, revoked: boo
     );
     for (audience, event) in events {
         if mush_testkit::text_of(&event).contains("Registry revocation") {
-            assert!(
+            check!(
                 matches!(audience,mush_core::Audience::Actor(who)if who==actor)
                     || matches!(audience, mush_core::Audience::Conn(id) if id == if actor == BUYER { BUYER_CONN } else { OBSERVER_CONN }),
                 "private readback audience"
@@ -334,16 +326,16 @@ fn notices(world: &mut PlayerWorld, owner: LicenceId, paid: LicenceId) -> TestRe
                 } else {
                     return Err("unrelated notice recipient".into());
                 };
-                assert!(
+                check!(
                     text.contains(&format!("licence {} term 1 ", expected.get())),
                     "actual own term notice"
                 );
-                assert!(seen.insert(actor), "same-session notice is deduplicated");
+                check!(seen.insert(actor), "same-session notice is deduplicated");
             }
         }
-        assert!(emitted <= 16, "bounded lifecycle emissions");
+        check!(emitted <= 16, "bounded lifecycle emissions");
     }
-    assert_eq!(seen, std::collections::BTreeSet::from([BUYER, GOD]));
+    check_eq!(seen, std::collections::BTreeSet::from([BUYER, GOD]));
     Ok(())
 }
 fn revoke(w: &mut PlayerWorld, id: LicenceId, n: u128) -> TestResult {
@@ -363,21 +355,21 @@ fn publication(
     let before = disk(&w);
     let money = balances(&w)?;
     let prepared = signed(&mut w, START + 10, owner)?;
-    assert!(disk(&w) == before, "prepare has no sanction");
+    check!(disk(&w) == before, "prepare has no sanction");
     install(&mut w, prepared)?;
     for (k, v) in &before {
-        assert!(
+        check!(
             disk(&w).get(k) == Some(v),
             "sanction rewrote existing history"
         );
     }
-    assert_eq!(balances(&w)?, money);
+    check_eq!(balances(&w)?, money);
     source_answer(&mut w, BUYER, owner, None)?;
     source_answer(&mut w, GOD, a.licence(), Some(a.revision().source()))?;
     w.engine.world.move_to(BUYER, ROOM)?;
     w.commit()?;
-    assert!(
-        prepare(
+    check!(
+        crate::test_checks::refused(prepare(
             &mut w,
             "market",
             "list_derived_mind",
@@ -385,21 +377,20 @@ fn publication(
             BUYER,
             START + 11,
             listing_params(owner, "open_resale", 100)
-        )
-        .is_err(),
+        ))?,
         "revoked issuer cannot list"
     );
     private_status(&mut w, BUYER, owner, true)?;
     private_status(&mut w, GOD, a.licence(), false)?;
-    assert!(
-        signed(&mut w, START + 12, owner).is_err(),
+    check!(
+        crate::test_checks::refused(signed(&mut w, START + 12, owner))?,
         "one permanent sanction per accepted generation"
     );
     revoke(&mut w, a.licence(), START + 13)?;
     source_answer(&mut w, GOD, a.licence(), None)?;
     let foreign = w.say(BUYER, &format!("@mindrevoke/status {}", a.licence().get()))?;
     let missing = w.say(BUYER, "@mindrevoke/status 18446744073709551615")?;
-    assert_eq!(
+    check_eq!(
         PlayerWorld::private_text(&foreign, BUYER),
         PlayerWorld::private_text(&missing, BUYER)
     );
@@ -413,7 +404,7 @@ fn publication(
     suspend(&mut cold)?;
     let revoked_policy = capture(&cold, &disk(&cold));
     let mut disabled = PlayerWorld::boot_entitlements(f, &revoked_policy)?;
-    assert!(action(&disabled, "roll", ACTION, 1).is_err());
+    check!(action(&disabled, "roll", ACTION, 1).is_err());
     private_status(&mut disabled, GOD, a.licence(), true)?;
     source_answer(&mut disabled, GOD, a.licence(), None)?;
     cold_corruptions(f, &retained, policy)?;
@@ -442,9 +433,9 @@ fn cold_corruptions(
             }
             !hit
         });
-        assert_eq!(broken.disk.len() + 1, before);
-        assert!(
-            PlayerWorld::boot_revocation(f, &broken, policy.clone()).is_err(),
+        check_eq!(broken.disk.len() + 1, before);
+        check!(
+            crate::test_checks::refused(PlayerWorld::boot_revocation(f, &broken, policy.clone()))?,
             "missing paired {remove}"
         );
     }
@@ -467,8 +458,8 @@ fn cold_corruptions(
                 _ => json!(DefinitionDigest::from_bytes([0xfe; 32])),
             },
         );
-        assert!(
-            PlayerWorld::boot_revocation(f, &broken, policy.clone()).is_err(),
+        check!(
+            crate::test_checks::refused(PlayerWorld::boot_revocation(f, &broken, policy.clone()))?,
             "crossed term proof {field}"
         );
     }
@@ -526,25 +517,25 @@ fn late_consumer_fence(
         // then the listing refused) is covered by the story's own flow.
         if after_stage {
             stage(&mut w, exact, BUYER, START + 22, p, prepared, out)?;
-            assert!(
-                revoke(&mut w, owner, START + 23).is_err(),
+            check!(
+                crate::test_checks::refused(revoke(&mut w, owner, START + 23))?,
                 "sanction landed under a staged listing"
             );
         } else {
-            assert!(
-                revoke(&mut w, owner, START + 23).is_err(),
+            check!(
+                crate::test_checks::refused(revoke(&mut w, owner, START + 23))?,
                 "sanction landed under a prepared listing"
             );
             drop((exact, p, prepared, out));
         }
-        assert!(disk(&w) == before, "refused sanction changed retained rows");
+        check!(disk(&w) == before, "refused sanction changed retained rows");
     }
     Ok(())
 }
 fn original_owner_available(w: &mut PlayerWorld, owner: LicenceId, expected: bool) -> TestResult {
     let events = w.say(GOD, "SIM MIND /filed")?;
     let text = PlayerWorld::private_text(&events, GOD);
-    assert_eq!(
+    check_eq!(
         text.contains(&format!("filed:{}:", owner.get())),
         expected,
         "actual current original-owner projection"
@@ -566,8 +557,8 @@ fn new_owner_term(
             .ok_or("original birth")?,
     )?;
     let birth_wire = serde_json::to_value(&birth)?;
-    assert_eq!(birth_wire.get("requester"), Some(&json!(GOD)));
-    assert!(birth_wire.get("parent").is_none());
+    check_eq!(birth_wire.get("requester"), Some(&json!(GOD)));
+    check!(birth_wire.get("parent").is_none());
     let term: mush_roll::commerce::records::OwnerTerm = serde_json::from_value(
         rows(&disk(&w), "roll", "roll_mind_owner_term")
             .into_iter()
@@ -582,9 +573,9 @@ fn new_owner_term(
         term.window().grace_end().get() - 1,
     ] {
         w.engine.world.set_now(at);
-        assert_eq!(w.engine.world.world_ic_now().at, at, "actual WorldIC clock");
-        assert!(
-            prepare(
+        check_eq!(w.engine.world.world_ic_now().at, at, "actual WorldIC clock");
+        check!(
+            crate::test_checks::refused(prepare(
                 &mut w,
                 "roll",
                 "attest_owner_mind",
@@ -592,8 +583,7 @@ fn new_owner_term(
                 GOD,
                 START + 31,
                 json!({"owner_licence":owner.get()})
-            )
-            .is_err(),
+            ))?,
             "sanction includes original Grace"
         );
     }
@@ -612,17 +602,15 @@ fn new_owner_term(
         .into_iter()
         .find(|v| v.get("id") == Some(&json!(owner)))
         .ok_or("current owner")?;
-    assert_eq!(current.get("term"), Some(&json!("2")));
-    assert!(
+    check_eq!(current.get("term"), Some(&json!("2")));
+    check!(
         status(&w, owner)? == historical,
         "new term erased sanction history"
     );
     original_owner_available(&mut w, owner, true)?;
     private_status(&mut w, GOD, owner, false)?;
     let old = w.say(GOD, &format!("@mindrevoke/status {}/1", owner.get()))?;
-    assert!(
-        PlayerWorld::private_text(&old, GOD).contains("Registry revocation: your mind licence")
-    );
+    check!(PlayerWorld::private_text(&old, GOD).contains("Registry revocation: your mind licence"));
     let saved = capture(&w, &disk(&w));
     let mut cold = PlayerWorld::boot_revocation(f, &saved, policy.clone())?;
     original_owner_available(&mut cold, owner, true)?;
@@ -638,7 +626,7 @@ fn grace_admission(
     let term = own_term(&w, a.licence())?;
     w.engine.world.set_now(term.window().term_end().get());
     revoke(&mut w, a.licence(), START + 40)?;
-    assert_eq!(
+    check_eq!(
         status(&w, a.licence())?.get("window"),
         Some(&serde_json::to_value(term.window())?)
     );
@@ -651,11 +639,11 @@ fn grace_admission(
         .engine
         .world
         .set_now(term.window().grace_end().get());
-    assert!(
-        signed(&mut expired, START + 41, a.licence()).is_err(),
+    check!(
+        crate::test_checks::refused(signed(&mut expired, START + 41, a.licence()))?,
         "an already expired term is not a current sanction target"
     );
-    assert!(rows(&disk(&expired), "roll", CAUSES).is_empty());
+    check!(rows(&disk(&expired), "roll", CAUSES).is_empty());
     Ok(())
 }
 async fn already_sealed(

@@ -272,8 +272,8 @@ mod tests {
     }
     #[test]
     fn empty_actual_native_load_is_distinct_from_unloaded_history() -> TestResult {
-        assert!(Artifacts::default().conduct_history.require().is_err());
-        assert_eq!(loaded(&[])?.conduct_history.count()?, 0);
+        check!(Artifacts::default().conduct_history.require().is_err());
+        check_eq!(loaded(&[])?.conduct_history.count()?, 0);
         Ok(())
     }
     #[test]
@@ -292,14 +292,14 @@ mod tests {
                 format!("{}:unexpected", key.document()).into(),
             ] {
                 let docs = vec![(physical, serde_json::json!({"retained":"orphan"}))];
-                assert!(loaded(&docs)?.conduct_history.require().is_err());
+                check!(loaded(&docs)?.conduct_history.require().is_err());
             }
         }
         let malformed = format!(
             "tacsim:mindbulk:blob:{}:1:conduct_unknown",
             account.canonical_hash().to_hex()
         );
-        assert!(
+        check!(
             loaded(&[(malformed.into(), Value::Null)])?
                 .conduct_history
                 .require()
@@ -332,13 +332,13 @@ mod tests {
                 docs.push(extra);
             }
             let mut store = BulkStore::new(BulkConfig::default())?;
-            assert!(store.load(account, b"{}").is_err());
+            check!(store.load(account, b"{}").is_err());
             let mut artifacts = Artifacts::default();
             artifacts.load(&docs);
             artifacts.hydrate_conduct(&store, &docs);
-            assert!(artifacts.conduct_history.require().is_err());
-            assert!(artifacts.conduct_history.count().is_err());
-            assert_eq!(
+            check!(artifacts.conduct_history.require().is_err());
+            check!(artifacts.conduct_history.count().is_err());
+            check_eq!(
                 artifacts.conduct_history.require_disabled().is_ok(),
                 extra.is_none()
             );
@@ -354,11 +354,11 @@ mod tests {
         ] {
             let docs = vec![(key.clone(), value)];
             let mut store = BulkStore::new(BulkConfig::default())?;
-            assert!(store.load(account, b"{}").is_err());
+            check!(store.load(account, b"{}").is_err());
             let mut artifacts = Artifacts::default();
             artifacts.load(&docs);
             artifacts.hydrate_conduct(&store, &docs);
-            assert!(artifacts.conduct_history.require_disabled().is_err());
+            check!(artifacts.conduct_history.require_disabled().is_err());
         }
         Ok(())
     }
@@ -382,8 +382,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let artifacts = loaded(&docs)?;
-        assert!(artifacts.get(key).is_ok());
-        assert_eq!(artifacts.conduct_history.count()?, 0);
+        check!(artifacts.get(key).is_ok());
+        check_eq!(artifacts.conduct_history.count()?, 0);
         Ok(())
     }
 }

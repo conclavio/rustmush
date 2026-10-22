@@ -402,19 +402,19 @@ mod captured_tests {
                     RatingClass::III => CoreClass::III,
                 };
                 let think_ms = u64::try_from(policy.cfg.minds.classes.row(class).think_ms)?;
-                assert_eq!(case.physics.units, 3);
-                assert_eq!(case.maximum_thinks, 64);
-                assert_eq!(
+                check_eq!(case.physics.units, 3);
+                check_eq!(case.maximum_thinks, 64);
+                check_eq!(
                     case.maximum_ms,
                     probe_duration(64, think_ms, case.physics.native_ms)? + 210_000
                 );
                 losses += 1;
             }
         }
-        assert_eq!(losses, 3 * subject.pairs().len() * 2);
-        assert_eq!(policy.cfg.sensors.pass_ms, 10_000);
-        assert_eq!(policy.cfg.sensors.lost_after_passes, 20);
-        assert_eq!(
+        check_eq!(losses, 3 * subject.pairs().len() * 2);
+        check_eq!(policy.cfg.sensors.pass_ms, 10_000);
+        check_eq!(policy.cfg.sensors.lost_after_passes, 20);
+        check_eq!(
             schedule.maximum_unit_ms(),
             schedule.cases().iter().try_fold(0_u64, |sum, case| sum
                 .checked_add(case.maximum_unit_ms()?)

@@ -59,7 +59,7 @@ fn signed(
         },
     )?;
     let (exact, resolved, _) = resolved.into_authoritative_parts();
-    assert_eq!(exact, action);
+    check_eq!(exact, action);
     Ok(world
         .engine
         .prepare_registered_composed_resolved_authoritative_action(
@@ -86,7 +86,7 @@ fn unchanged(before: &Disk, after: &Disk, a: &EntitlementAllocationV1) -> TestRe
         {
             continue;
         }
-        assert!(
+        check!(
             after.get(key) == Some(value),
             "withdrawal changed preexisting non-status evidence"
         );
@@ -139,7 +139,7 @@ fn stage_withdraw(
 fn transfer(world: &mut PlayerWorld, a: &EntitlementAllocationV1) -> TestResult {
     let charter = a.charter().object();
     world.transfer_charter(charter, GOD, 49_000_000)?;
-    assert_eq!(
+    check_eq!(
         world
             .engine
             .world
@@ -155,12 +155,17 @@ fn transfer(world: &mut PlayerWorld, a: &EntitlementAllocationV1) -> TestResult 
 }
 fn fences(f: &PurchaseFixture, granted: &Durable, a: &EntitlementAllocationV1) -> TestResult {
     let mut disabled = PlayerWorld::boot_entitlements(f, granted)?;
-    assert!(action(&disabled, "roll", ACTION, 1).is_err());
-    assert!(prepare_withdraw(&mut disabled, BUYER, START, a).is_err());
+    check!(action(&disabled, "roll", ACTION, 1).is_err());
+    check!(crate::test_checks::refused(prepare_withdraw(
+        &mut disabled,
+        BUYER,
+        START,
+        a
+    ))?);
     for after_stage in [false, true] {
         let mut world = PlayerWorld::boot_withdrawal(f, granted)?;
-        assert!(
-            prepare_withdraw(&mut world, GOD, START, a).is_err(),
+        check!(
+            crate::test_checks::refused(prepare_withdraw(&mut world, GOD, START, a))?,
             "staff is not the personal author"
         );
         let (prepared, output) = prepare_withdraw(&mut world, BUYER, START + 1, a)?;
@@ -169,30 +174,30 @@ fn fences(f: &PurchaseFixture, granted: &Durable, a: &EntitlementAllocationV1) -
         // withdrawal cause is written.
         if after_stage {
             stage_withdraw(&mut world, START + 1, a, prepared, output)?;
-            assert!(
-                transfer(&mut world, a).is_err(),
+            check!(
+                crate::test_checks::refused(transfer(&mut world, a))?,
                 "title moved under a staged withdrawal"
             );
         } else {
-            assert!(
-                transfer(&mut world, a).is_err(),
+            check!(
+                crate::test_checks::refused(transfer(&mut world, a))?,
                 "title moved under a prepared withdrawal"
             );
             drop((prepared, output));
         }
-        assert!(rows(&disk(&world), "roll", CAUSES).is_empty());
-        assert_eq!(status(&world, a)?.get("withdrawn_by"), Some(&Value::Null));
+        check!(rows(&disk(&world), "roll", CAUSES).is_empty());
+        check_eq!(status(&world, a)?.get("withdrawn_by"), Some(&Value::Null));
         // After a real transfer on a clean engine the original author no
         // longer holds the title.
         let untouched = capture(&world, &disk(&world));
         let mut fresh = PlayerWorld::boot_withdrawal(f, &untouched)?;
         transfer(&mut fresh, a)?;
-        assert!(
-            prepare_withdraw(&mut fresh, BUYER, START + 2, a).is_err(),
+        check!(
+            crate::test_checks::refused(prepare_withdraw(&mut fresh, BUYER, START + 2, a))?,
             "original author no longer holds title"
         );
-        assert!(
-            prepare_withdraw(&mut fresh, GOD, START + 3, a).is_err(),
+        check!(
+            crate::test_checks::refused(prepare_withdraw(&mut fresh, GOD, START + 3, a))?,
             "new title holder is outside this personal-author producer"
         );
     }
@@ -211,19 +216,24 @@ fn fences(f: &PurchaseFixture, granted: &Durable, a: &EntitlementAllocationV1) -
         };
         if at == 0 {
             freeze(&world)?;
-            assert!(prepare_withdraw(&mut world, BUYER, START + 4, a).is_err());
+            check!(crate::test_checks::refused(prepare_withdraw(
+                &mut world,
+                BUYER,
+                START + 4,
+                a
+            ))?);
         } else {
             let (prepared, output) = prepare_withdraw(&mut world, BUYER, START + 4, a)?;
             if at == 1 {
                 freeze(&world)?;
-                assert!(stage_withdraw(&mut world, START + 4, a, prepared, output).is_err());
+                check!(stage_withdraw(&mut world, START + 4, a, prepared, output).is_err());
             } else {
                 stage_withdraw(&mut world, START + 4, a, prepared, output)?;
                 freeze(&world)?;
-                assert!(world.engine.take_staged_action().is_err());
+                check!(world.engine.take_staged_action().is_err());
             }
         }
-        assert!(
+        check!(
             disk(&world) == before,
             "frozen Economy cannot publish withdrawal"
         );
@@ -253,9 +263,9 @@ fn cold_corruptions(
                 _ => cause || root,
             })
         });
-        assert!(lost.disk.len() < before);
-        assert!(
-            PlayerWorld::boot_withdrawal(f, &lost).is_err(),
+        check!(lost.disk.len() < before);
+        check!(
+            crate::test_checks::refused(PlayerWorld::boot_withdrawal(f, &lost))?,
             "missing withdrawal obligation"
         );
     }
@@ -277,9 +287,9 @@ fn cold_corruptions(
                 changed = true;
             }
         }
-        assert!(changed);
-        assert!(
-            PlayerWorld::boot_withdrawal(f, &crossed).is_err(),
+        check!(changed);
+        check!(
+            crate::test_checks::refused(PlayerWorld::boot_withdrawal(f, &crossed))?,
             "status/cause mismatch or unauthorized recall"
         );
     }
@@ -304,9 +314,9 @@ fn cold_corruptions(
                 changed = true;
             }
         }
-        assert!(changed);
-        assert!(
-            PlayerWorld::boot_withdrawal(f, &crossed).is_err(),
+        check!(changed);
+        check!(
+            crate::test_checks::refused(PlayerWorld::boot_withdrawal(f, &crossed))?,
             "cause/root or initial-author mismatch"
         );
     }
@@ -332,43 +342,40 @@ fn withdraw_after_lapse(
     let before = disk(&world);
     let money = balances(&world)?;
     let prepared = signed(&mut world, START + 50, a)?;
-    assert!(
+    check!(
         disk(&world) == before && balances(&world)? == money,
         "preparation cannot publish withdrawal"
     );
     install(&mut world, prepared)?;
     let after = disk(&world);
     unchanged(&before, &after, a)?;
-    assert_eq!(balances(&world)?, money);
+    check_eq!(balances(&world)?, money);
     let cause = one(rows(&after, "roll", CAUSES))?;
-    assert_eq!(cause.get("author"), Some(&json!(BUYER)));
-    assert_eq!(cause.get("revision"), Some(&json!(a.revision())));
-    assert_eq!(
+    check_eq!(cause.get("author"), Some(&json!(BUYER)));
+    check_eq!(cause.get("revision"), Some(&json!(a.revision())));
+    check_eq!(
         status(&world, a)?.get("withdrawn_by"),
         Some(&json!(token(START + 50)))
     );
-    assert_eq!(status(&world, a)?.get("recalled_by"), Some(&Value::Null));
-    assert!(
-        prepare_withdraw(&mut world, BUYER, START + 51, a).is_err(),
+    check_eq!(status(&world, a)?.get("recalled_by"), Some(&Value::Null));
+    check!(
+        crate::test_checks::refused(prepare_withdraw(&mut world, BUYER, START + 51, a))?,
         "withdrawal is permanent, not a second cause"
     );
     source_answer(&mut world, GOD, a.licence(), Some(a.revision().source()))?;
     seat(&mut world)?;
-    assert!(
-        prepare(
-            &mut world,
-            "market",
-            "list_derived_mind",
-            1,
-            BUYER,
-            START + 52,
-            listing_params(owner, "open_resale", 100)
-        )
-        .is_err()
-    );
+    check!(crate::test_checks::refused(prepare(
+        &mut world,
+        "market",
+        "list_derived_mind",
+        1,
+        BUYER,
+        START + 52,
+        listing_params(owner, "open_resale", 100)
+    ))?);
     let saved = capture(&world, &after);
     let cold = PlayerWorld::boot_withdrawal(f, &saved)?;
-    assert!(
+    check!(
         disk(&cold) == after,
         "cold audited withdrawal preserves durable evidence"
     );
@@ -377,7 +384,7 @@ fn withdraw_after_lapse(
     let mut disabled = PlayerWorld::boot_entitlements(f, &saved)?;
     transfer(&mut disabled, a)?;
     let transferred = capture(&disabled, &disk(&disabled));
-    assert!(PlayerWorld::boot_entitlements(f, &transferred).is_ok());
+    check!(PlayerWorld::boot_entitlements(f, &transferred).is_ok());
     cold_corruptions(f, &saved, a)?;
     Ok(saved)
 }
@@ -403,28 +410,25 @@ fn eligible_withdrawal(
     source_answer(&mut world, BUYER, owner, Some(a.revision().source()))?;
     let before = disk(&world);
     let prepared = signed(&mut world, START + 61, a)?;
-    assert!(disk(&world) == before);
+    check!(disk(&world) == before);
     install(&mut world, prepared)?;
     unchanged(&before, &disk(&world), a)?;
     seat(&mut world)?;
-    assert!(
-        prepare(
-            &mut world,
-            "market",
-            "list_derived_mind",
-            1,
-            BUYER,
-            START + 62,
-            listing_params(owner, "open_resale", 100)
-        )
-        .is_err()
-    );
+    check!(crate::test_checks::refused(prepare(
+        &mut world,
+        "market",
+        "list_derived_mind",
+        1,
+        BUYER,
+        START + 62,
+        listing_params(owner, "open_resale", 100)
+    ))?);
     source_answer(&mut world, GOD, a.licence(), Some(a.revision().source()))?;
     // The author's owner licence Follows its line, and withdrawal excludes the
     // revision from follow resolution; only Pin holders keep it.
     source_answer(&mut world, BUYER, owner, None)?;
     let saved = capture(&world, &disk(&world));
-    assert!(PlayerWorld::boot_withdrawal(f, &saved).is_ok());
+    check!(PlayerWorld::boot_withdrawal(f, &saved).is_ok());
     Ok(saved)
 }
 async fn already_sealed(

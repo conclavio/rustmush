@@ -144,23 +144,23 @@ pub(super) fn exercise(base: &PurchaseFixture, saved: &Durable) -> TestResult {
                     if !accepted && mode == 0 {
                         continue;
                     }
-                    assert!(prepare(&mut f, &exact, actor, N + 1, p).is_err());
+                    check!(prepare(&mut f, &exact, actor, N + 1, p).is_err());
                 } else {
                     let (prepared, output) = prepare(&mut f, &exact, actor, N + 1, p.clone())?;
                     if boundary == 1 {
                         change(&mut f, mode)?;
-                        assert!(stage(&mut f, exact, actor, N + 1, p, prepared, output).is_err());
+                        check!(stage(&mut f, exact, actor, N + 1, p, prepared, output).is_err());
                     } else {
                         stage(&mut f, exact, actor, N + 1, p, prepared, output)?;
                         change(&mut f, mode)?;
-                        assert!(f.engine.take_staged_action().is_err());
+                        check!(f.engine.take_staged_action().is_err());
                     }
                 }
-                assert!(
+                check!(
                     f.disk == before,
                     "refused charter operation changed durable images"
                 );
-                assert_eq!(f.balances()?, money);
+                check_eq!(f.balances()?, money);
             }
         }
     }

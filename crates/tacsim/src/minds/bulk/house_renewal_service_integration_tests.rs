@@ -63,18 +63,18 @@ fn next(
         selected = w.engine.take_observed_authoritative_submit();
     }
     let driven = selected.ok_or("actual House renewal selector")?;
-    assert!(driven.is_observed());
+    check!(driven.is_observed());
     let (request, proof) = driven.into_parts();
-    assert_eq!(request.actor, actor);
-    assert_eq!(request.action.key().owner.as_str(), "market");
-    assert_eq!(request.action.key().id.as_str(), expected);
-    assert_eq!(request.subject, PerceivedRef::SelfActor);
-    assert!(request.targets.is_empty());
+    check_eq!(request.actor, actor);
+    check_eq!(request.action.key().owner.as_str(), "market");
+    check_eq!(request.action.key().id.as_str(), expected);
+    check_eq!(request.subject, PerceivedRef::SelfActor);
+    check!(request.targets.is_empty());
     let proof = *proof
         .ok_or("proof")?
         .downcast::<Arc<AtomicBool>>()
         .map_err(|_| "proof type")?;
-    assert!(!proof.load(Ordering::Acquire));
+    check!(!proof.load(Ordering::Acquire));
     Ok((request, proof))
 }
 fn none(w: &mut PlayerWorld) {
@@ -118,7 +118,7 @@ fn land(w: &mut PlayerWorld, request: &AuthoritativeSubmit, n: u128) -> TestResu
         },
     )?;
     let (action, invocation, _) = resolved.into_authoritative_parts();
-    assert_eq!(action, request.action);
+    check_eq!(action, request.action);
     let before = disk(w);
     let (prepared, _) = w
         .engine
@@ -127,14 +127,14 @@ fn land(w: &mut PlayerWorld, request: &AuthoritativeSubmit, n: u128) -> TestResu
             &invocation,
             token(n),
         )?;
-    assert!(disk(w) == before, "prepare publishes no private rows");
+    check!(disk(w) == before, "prepare publishes no private rows");
     apply(w, prepared)?;
     Ok(())
 }
 fn status(w: &mut PlayerWorld, actor: ObjId, id: LicenceId) -> TestResult<String> {
     let events = w.say(actor, &format!("@housemindrenewal/status {}", id.get()))?;
     let text = PlayerWorld::private_text(&events, actor);
-    assert!(
+    check!(
         !text.contains(SOURCE) && !text.contains("this.landed"),
         "source-free status"
     );
@@ -145,9 +145,9 @@ fn closed(w: &PlayerWorld, n: u128, reason: RenewalServiceCloseReason) -> TestRe
     let RenewalStateV1::UnfundedServiceClosed { closure } = row.state() else {
         return Err("actual House service close".into());
     };
-    assert_eq!(closure.actor(), GOD);
-    assert_eq!(closure.reason(), reason);
-    assert_eq!(closure.action().key().id.as_str(), SERVICE_CLOSE);
+    check_eq!(closure.actor(), GOD);
+    check_eq!(closure.reason(), reason);
+    check_eq!(closure.action().key().id.as_str(), SERVICE_CLOSE);
     Ok(())
 }
 pub(super) fn exercise(f: &Fixture, snapshot: &Durable, id: LicenceId) -> TestResult {
@@ -156,9 +156,9 @@ pub(super) fn exercise(f: &Fixture, snapshot: &Durable, id: LicenceId) -> TestRe
     let predecessor = paid(&w, id, 1)?;
     let payer = wallet(&w, EconomicOwner::Object(BUYER), None)?;
     let money = balance(&w, payer)?;
-    assert!(status(&mut w, BUYER, id)?.contains("No renewal offer"));
-    assert!(!status(&mut w, GOD, id)?.contains("Price:"));
-    assert!(
+    check!(status(&mut w, BUYER, id)?.contains("No renewal offer"));
+    check!(!status(&mut w, GOD, id)?.contains("Price:"));
+    check!(
         direct(
             &mut w,
             SERVICE_CLOSE,
@@ -173,15 +173,15 @@ pub(super) fn exercise(f: &Fixture, snapshot: &Durable, id: LicenceId) -> TestRe
     set_ic(&mut w, predecessor.window().term_end().get())?;
     fire(&mut w)?;
     let (draft, unknown) = next(&mut w, BUYER, DRAFT)?;
-    assert_eq!(draft.parameters, json!({"licence":id.get()}));
+    check_eq!(draft.parameters, json!({"licence":id.get()}));
     tick(&mut w)?;
     none(&mut w);
     land(&mut w, &draft, SERIAL)?;
-    assert!(!unknown.load(Ordering::Acquire));
+    check!(!unknown.load(Ordering::Acquire));
     tick(&mut w)?;
     none(&mut w);
-    assert!(status(&mut w, BUYER, id)?.contains("explicit acceptance"));
-    assert_eq!(balance(&w, payer)?, money, "automatic offer is unfunded");
+    check!(status(&mut w, BUYER, id)?.contains("explicit acceptance"));
+    check_eq!(balance(&w, payer)?, money, "automatic offer is unfunded");
     let drafted = saved(&w);
     w.say(BUYER, &format!("@housemindrenewal/accept {}", id.get()))?;
     let (fund, _) = next(&mut w, BUYER, FUND)?;
@@ -193,15 +193,15 @@ pub(super) fn exercise(f: &Fixture, snapshot: &Durable, id: LicenceId) -> TestRe
     set_ic(&mut w, expires)?;
     fire(&mut w)?;
     none(&mut w);
-    assert_eq!(balance(&w, payer)?, held, "Unknown Grant retains escrow");
+    check_eq!(balance(&w, payer)?, held, "Unknown Grant retains escrow");
     grant_unknown.store(true, Ordering::Release);
     tick(&mut w)?;
     let (refund, _) = next(&mut w, BUYER, REFUND)?;
-    assert_ne!(grant.action, refund.action);
+    check_ne!(grant.action, refund.action);
     land(&mut w, &refund, SERIAL + 2)?;
     tick(&mut w)?;
     none(&mut w);
-    assert_eq!(balance(&w, payer)?, money);
+    check_eq!(balance(&w, payer)?, money);
     current_same(&w, &old, &predecessor)?;
     let _cold = boot(f, &saved(&w))?;
 
@@ -215,7 +215,7 @@ pub(super) fn exercise(f: &Fixture, snapshot: &Durable, id: LicenceId) -> TestRe
     land(&mut healthy, &grant, SERIAL + 11)?;
     tick(&mut healthy)?;
     none(&mut healthy);
-    assert_eq!(licence(&healthy, id)?.term().get(), 2);
+    check_eq!(licence(&healthy, id)?.term().get(), 2);
     let _cold = boot(f, &saved(&healthy))?;
 
     for invalidated in [false, true] {
@@ -235,7 +235,7 @@ pub(super) fn exercise(f: &Fixture, snapshot: &Durable, id: LicenceId) -> TestRe
         }
         fire(&mut close)?;
         let (request, proof) = next(&mut close, GOD, SERVICE_CLOSE)?;
-        assert_eq!(
+        check_eq!(
             request.parameters,
             json!({}),
             "private service has no public selector fields"
@@ -250,17 +250,21 @@ pub(super) fn exercise(f: &Fixture, snapshot: &Durable, id: LicenceId) -> TestRe
                 }
                 _ => wrong.actor = BUYER,
             }
-            assert!(land(&mut close, &wrong, SERIAL + 80 + corrupt).is_err());
-            assert_eq!(balance(&close, payer)?, money);
+            check!(crate::test_checks::refused(land(
+                &mut close,
+                &wrong,
+                SERIAL + 80 + corrupt
+            ))?);
+            check_eq!(balance(&close, payer)?, money);
         }
         tick(&mut close)?;
         none(&mut close);
         proof.store(true, Ordering::Release);
         tick(&mut close)?;
         let (retry, _) = next(&mut close, GOD, SERVICE_CLOSE)?;
-        assert_eq!(retry.key, request.key);
-        assert_eq!(retry.action, request.action);
-        assert_eq!(retry.parameters, request.parameters);
+        check_eq!(retry.key, request.key);
+        check_eq!(retry.action, request.action);
+        check_eq!(retry.parameters, request.parameters);
         land(&mut close, &retry, SERIAL + 20 + u128::from(invalidated))?;
         closed(
             &close,
@@ -272,7 +276,7 @@ pub(super) fn exercise(f: &Fixture, snapshot: &Durable, id: LicenceId) -> TestRe
             },
         )?;
         current_same(&close, &old, &predecessor)?;
-        assert_eq!(balance(&close, payer)?, money);
+        check_eq!(balance(&close, payer)?, money);
         let _cold = boot(f, &saved(&close))?;
     }
     Ok(())
@@ -295,19 +299,19 @@ pub(super) fn retention(f: &Fixture, snapshot: &Durable, n: u128) -> TestResult 
         .ok_or("GC clock")?;
     w.engine.world.set_now(at);
     fire(&mut w)?;
-    assert_eq!(
+    check_eq!(
         economy(&w)?.last_sweep().0,
         at,
         "actual registered Economy sweep ran"
     );
-    assert!(
+    check!(
         economy(&w)?.snapshot().hold(hold).is_some(),
         "retained terminal hold"
     );
     let audit = economy(&w)?.house_renewal_audit()?;
     before.verify_history(&audit.get(token(n))?)?;
     let cold = boot(f, &saved(&w))?;
-    assert_eq!(operation(&cold, n)?, before);
-    assert!(economy(&cold)?.snapshot().hold(hold).is_some());
+    check_eq!(operation(&cold, n)?, before);
+    check!(economy(&cold)?.snapshot().hold(hold).is_some());
     Ok(())
 }

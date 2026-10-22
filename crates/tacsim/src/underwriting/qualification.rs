@@ -204,27 +204,27 @@ mod tests {
         for operations in [vec![], vec![token(1)?, token(1)?], vec![token(1)?; 17]] {
             let mut bad = good.clone();
             bad.selections.insert(key, operations);
-            assert!(bad.validate(std::slice::from_ref(&product)).is_err());
+            check!(bad.validate(std::slice::from_ref(&product)).is_err());
         }
         let mut missing = good.clone();
         missing.selections.clear();
-        assert!(missing.validate(std::slice::from_ref(&product)).is_err());
+        check!(missing.validate(std::slice::from_ref(&product)).is_err());
         let mut extra = good;
         extra
             .selections
             .insert(DefinitionDigest::from_bytes([99; 32]), vec![token(2)?]);
-        assert!(extra.validate(std::slice::from_ref(&product)).is_err());
+        check!(extra.validate(std::slice::from_ref(&product)).is_err());
         Ok(())
     }
     #[test]
     fn decoded_approval_without_real_proof_cannot_publish_qualification() -> TestResult {
         let product = super::super::product_tests::product()?;
         let decoded = CoverageProductV1::decode(&serde_json::to_vec(&product)?)?;
-        assert!(selections(&decoded, decoded.hulls().first(), &[]).is_err());
+        check!(selections(&decoded, decoded.hulls().first(), &[]).is_err());
         let mut raw = serde_json::to_value(&decoded)?;
         raw["approvals"] = serde_json::json!([]);
         let ordinary: CoverageProductV1 = serde_json::from_value(raw)?;
-        assert!(selections(&ordinary, None, &[])?.is_empty());
+        check!(selections(&ordinary, None, &[])?.is_empty());
         Ok(())
     }
     #[test]
@@ -245,7 +245,7 @@ mod tests {
             "profile":approval.profile(),"role":"escort","manifest":product.hulls().first().ok_or("hull")?});
         let data: mush_roll::commerce::coverage::CoverageConductRef =
             serde_json::from_value(raw.clone())?;
-        assert!(matches_retained(&selection, &data));
+        check!(matches_retained(&selection, &data));
         for (pointer, replacement) in [
             ("/trial", serde_json::json!(token(3)?)),
             (
@@ -270,7 +270,7 @@ mod tests {
             *changed.pointer_mut(pointer).ok_or("fixture field")? = replacement;
             let changed: mush_roll::commerce::coverage::CoverageConductRef =
                 serde_json::from_value(changed)?;
-            assert!(
+            check!(
                 !matches_retained(&selection, &changed),
                 "crossed qualification identity"
             );

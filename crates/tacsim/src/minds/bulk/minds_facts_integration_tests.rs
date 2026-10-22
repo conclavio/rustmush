@@ -56,14 +56,14 @@ fn selected(
     let Some(driven) = w.engine.take_observed_authoritative_submit() else {
         return Ok(None);
     };
-    assert!(driven.is_observed());
+    check!(driven.is_observed());
     let (request, proof) = driven.into_parts();
-    assert_eq!(request.actor, GOD);
-    assert_eq!(request.action.key().owner.as_str(), "roll");
-    assert_eq!(request.action.key().id.as_str(), ACTION);
-    assert_eq!(request.subject, PerceivedRef::SelfActor);
-    assert!(request.targets.is_empty());
-    assert_eq!(
+    check_eq!(request.actor, GOD);
+    check_eq!(request.action.key().owner.as_str(), "roll");
+    check_eq!(request.action.key().id.as_str(), ACTION);
+    check_eq!(request.subject, PerceivedRef::SelfActor);
+    check!(request.targets.is_empty());
+    check_eq!(
         request.parameters,
         json!({}),
         "private fixed offer has no public parameters"
@@ -134,17 +134,17 @@ fn land(w: &mut PlayerWorld, request: &AuthoritativeSubmit, number: u128) -> Tes
             &resolved,
             token(number),
         )?;
-    assert!(disk(w) == before, "preparation published no fact");
-    assert_eq!(balances(w)?, money, "lapse publication has no money effect");
+    check!(disk(w) == before, "preparation published no fact");
+    check_eq!(balances(w)?, money, "lapse publication has no money effect");
     let (writes, install) = prepared.into_parts();
     apply(w, &writes, install)?;
     for (key, value) in &before {
-        assert!(
+        check!(
             disk(w).get(key) == Some(value),
             "lapse rewrote existing evidence"
         );
     }
-    assert_eq!(balances(w)?, money);
+    check_eq!(balances(w)?, money);
     Ok(actual)
 }
 fn occurrence(w: &PlayerWorld, id: LicenceId, generation: u64) -> Option<Value> {
@@ -215,7 +215,7 @@ fn draft(w: &mut PlayerWorld, actor: ObjId, name: &str) -> TestResult<ContractId
         .map(|c| (c.id, c.name.clone(), c.state.clone()))
         .collect();
     let drafted = snapshot.contract(id).is_some_and(|c| c.name == name);
-    assert!(
+    check!(
         drafted,
         "{actor:?} draft refused: {}; open as issuer: {open:?}",
         PlayerWorld::private_text(&reply, actor)
@@ -233,7 +233,7 @@ fn acct(w: &PlayerWorld, actor: ObjId) -> TestResult<mush_economy::AccountId> {
         .accounts()
         .filter(|a| a.owner == mush_org::PrincipalId::Object(actor));
     let id = accounts.next().ok_or("actual personal account")?.id;
-    assert!(
+    check!(
         accounts.next().is_none(),
         "fixture has a unique personal account"
     );
@@ -256,15 +256,15 @@ fn paid_contract(w: &mut PlayerWorld, birth: &EntitlementAllocationV1) -> TestRe
         w.say(GOD, &line)?;
     }
     let attached = contract(w, id)?;
-    assert_eq!(attached.consent.conditions.len(), 1);
-    assert!(
+    check_eq!(attached.consent.conditions.len(), 1);
+    check!(
         attached.consent.fact_consent.is_some(),
         "actual subject attachment consent"
     );
     for (actor, verb) in [(GOD, "offer"), (GOD, "accept"), (BUYER, "accept")] {
         w.say(actor, &format!("@contract/{verb} {id}"))?;
     }
-    assert_eq!(
+    check_eq!(
         contract(w, id)?.state,
         ContractState::Active,
         "unknown lapse cannot settle"
@@ -280,16 +280,16 @@ fn public_and_private(
     let public = provider
         .resolve(&w.engine.world, "filed", &birth.filed().key(), Some(1))
         .ok_or("actual filed fact")?;
-    assert!(public.satisfied);
-    assert_eq!(public.actor, None);
-    assert_eq!(public.at, 0, "filing has no invented RealUTC timestamp");
+    check!(public.satisfied);
+    check_eq!(public.actor, None);
+    check_eq!(public.at, 0, "filing has no invented RealUTC timestamp");
     for (kind, id, revision) in [
         ("filed", birth.filed().key(), None),
         ("filed", birth.filed().key(), Some(2)),
         ("transferred", birth.licence().key(), Some(1)),
         ("licence.lapsed", birth.licence().key(), Some(1)),
     ] {
-        assert!(
+        check!(
             provider
                 .resolve(&w.engine.world, kind, &id, revision)
                 .is_none()
@@ -301,7 +301,7 @@ fn public_and_private(
         id: birth.licence().key().into(),
         revision: Some(1),
     };
-    assert!(
+    check!(
         WorldFacts {
             w: &w.engine.world,
             providers: Arc::new(vec![Arc::new(provider.clone())])
@@ -319,12 +319,12 @@ fn public_and_private(
             owner.key()
         ),
     )?;
-    assert!(
+    check!(
         contract(w, foreign)? == before,
         "staff did not attach another subject's fact"
     );
     let missing=w.say(GOD,&format!("@contract/condition {foreign}=fact minds licence.lapsed licence/ffffffffffffffff revision=1"))?;
-    assert_eq!(
+    check_eq!(
         PlayerWorld::private_text(&denied, GOD),
         PlayerWorld::private_text(&missing, GOD),
         "foreign and absent are indistinguishable"
@@ -337,9 +337,9 @@ fn public_and_private(
             owner.key()
         ),
     )?;
-    assert_eq!(contract(w, own)?.consent.conditions.len(), 1);
+    check_eq!(contract(w, own)?.consent.conditions.len(), 1);
     let private = w.say(GOD, &format!("@contract/show {own}"))?;
-    assert!(
+    check!(
         !PlayerWorld::private_text(&private, GOD).contains(&owner.key()),
         "unrelated staff receives no private fact id"
     );
@@ -352,7 +352,7 @@ fn public_and_private(
         START + 500,
         json!({"filed":birth.filed().get().to_string()}),
     )?;
-    assert_eq!(
+    check_eq!(
         provider.resolve(&w.engine.world, "filed", &birth.filed().key(), Some(1)),
         Some(public),
         "actual author withdrawal does not undo the historical filing fact"
@@ -377,9 +377,9 @@ fn corruption(f: &PurchaseFixture, saved: &Durable) -> TestResult {
             }
             !hit
         });
-        assert_eq!(broken.disk.len() + 1, before);
-        assert!(
-            PlayerWorld::boot_minds_facts(f, &broken).is_err(),
+        check_eq!(broken.disk.len() + 1, before);
+        check!(
+            crate::test_checks::refused(PlayerWorld::boot_minds_facts(f, &broken))?,
             "missing committed {missing}"
         );
     }
@@ -402,8 +402,8 @@ fn corruption(f: &PurchaseFixture, saved: &Durable) -> TestResult {
                 _ => json!({"clock":{"kind":"world_ic","generation":1},"at":i64::MIN}),
             },
         );
-        assert!(
-            PlayerWorld::boot_minds_facts(f, &broken).is_err(),
+        check!(
+            crate::test_checks::refused(PlayerWorld::boot_minds_facts(f, &broken))?,
             "crossed committed {field}"
         );
     }
@@ -420,8 +420,8 @@ fn actual_lapse(
     cash(&mut w)?;
     let id = paid_contract(&mut w, birth)?;
     let term = own_term(&w, birth.licence())?;
-    assert!(
-        prepare(
+    check!(
+        crate::test_checks::refused(prepare(
             &mut w,
             "roll",
             ACTION,
@@ -429,15 +429,14 @@ fn actual_lapse(
             GOD,
             START,
             json!({"licence":birth.licence(),"generation":"1"})
-        )
-        .is_err(),
+        ))?,
         "staff has no private service intent"
     );
     fire(&mut w)?;
-    assert!(selected(&mut w)?.is_none());
+    check!(selected(&mut w)?.is_none());
     w.engine.world.set_now(term.window().grace_end().get());
     fire(&mut w)?;
-    assert_eq!(
+    check_eq!(
         contract(&w, id)?.state,
         ContractState::Active,
         "clock alone did not invent occurrence"
@@ -446,7 +445,7 @@ fn actual_lapse(
     let key = first.key.clone();
     for _ in 0..3 {
         later(&mut w)?;
-        assert!(
+        check!(
             selected(&mut w)?.is_none(),
             "Unknown retains one actual attempt"
         );
@@ -454,15 +453,16 @@ fn actual_lapse(
     unknown.store(true, Ordering::Release);
     later(&mut w)?;
     let (retry, _) = next(&mut w)?;
-    assert_eq!(
-        retry.key, key,
+    check_eq!(
+        retry.key,
+        key,
         "definitive absence retries same intent identity"
     );
     land(&mut w, &retry, START + 1)?;
     let event = drain_until(&mut w, birth.licence(), 1, START + 10)?;
-    assert_eq!(event.pointer("/term/accepted_holder"), Some(&json!(GOD)));
-    assert_eq!(event.get("actor"), Some(&json!(GOD)));
-    assert!(event.get("at_utc").and_then(Value::as_i64).is_some());
+    check_eq!(event.pointer("/term/accepted_holder"), Some(&json!(GOD)));
+    check_eq!(event.get("actor"), Some(&json!(GOD)));
+    check!(event.get("at_utc").and_then(Value::as_i64).is_some());
     // Contracts settle only in the Economy sweep, one bounded pass per period.
     for _ in 0..2 * mush_economy::SWEEP_PERIOD_SECS {
         if matches!(contract(&w, id)?.state, ContractState::Settled { .. }) {
@@ -470,11 +470,11 @@ fn actual_lapse(
         }
         later(&mut w)?;
     }
-    assert!(
+    check!(
         matches!(contract(&w, id)?.state, ContractState::Settled { .. }),
         "actual committed scoped fact settled escrow"
     );
-    assert_eq!(
+    check_eq!(
         own_term(&w, birth.licence())?,
         term,
         "occurrence never extends own term"
@@ -482,11 +482,11 @@ fn actual_lapse(
     source_answer(&mut w, GOD, birth.licence(), None)?;
     let retained = capture(&w, &disk(&w));
     let cold = branch(f, &retained)?;
-    assert!(
+    check!(
         occurrence(&cold, birth.licence(), 1).as_ref() == Some(&event),
         "cold committed event unchanged"
     );
-    assert!(matches!(
+    check!(matches!(
         contract(&cold, id)?.state,
         ContractState::Settled { .. }
     ));
@@ -526,8 +526,8 @@ fn superseded(f: &PurchaseFixture, saved: &Durable, birth: &EntitlementAllocatio
         json!({"operation":token(START+100)}),
     )?;
     let current = current_term(&w, birth.licence())?;
-    assert_eq!(current.generation().get(), 2);
-    assert!(
+    check_eq!(current.generation().get(), 2);
+    check!(
         current.window().issued_at() < old.window().grace_end(),
         "actual successor prevents historical lapse"
     );
@@ -538,13 +538,13 @@ fn superseded(f: &PurchaseFixture, saved: &Durable, birth: &EntitlementAllocatio
             land(&mut w, &request, START + 110 + n)?;
         }
     }
-    assert!(
+    check!(
         occurrence(&w, birth.licence(), 1).is_none(),
         "retained expired predecessor was continuously renewed"
     );
     let saved = capture(&w, &disk(&w));
     let cold = branch(f, &saved)?;
-    assert!(occurrence(&cold, birth.licence(), 1).is_none());
+    check!(occurrence(&cold, birth.licence(), 1).is_none());
     Ok(())
 }
 fn stage_event(
@@ -610,19 +610,19 @@ fn stale_clock(
             stage_event(&mut w, START + 200, action, inv, guards, prepared, output)?;
             let epoch = w.engine.world.next_world_timeline_epoch(2)?;
             w.engine.world.append_world_timeline_epoch(epoch)?;
-            assert!(
+            check!(
                 w.engine.take_staged_action().is_err(),
                 "actual old-clock intent cannot cross custody"
             );
         } else {
             let epoch = w.engine.world.next_world_timeline_epoch(2)?;
             w.engine.world.append_world_timeline_epoch(epoch)?;
-            assert!(
+            check!(
                 stage_event(&mut w, START + 200, action, inv, guards, prepared, output).is_err(),
                 "actual old-clock intent cannot stage"
             );
         }
-        assert!(disk(&w) == before, "stale event published nothing");
+        check!(disk(&w) == before, "stale event published nothing");
     }
     Ok(())
 }
@@ -648,7 +648,7 @@ fn stale_service_actor(
                 .flags
                 .insert(mush_core::Flags::GOING);
             let _ = w.engine.world.take_dirty();
-            assert!(
+            check!(
                 w.engine
                     .prepare_registered_composed_authoritative_action(
                         &action,
@@ -680,7 +680,7 @@ fn stale_service_actor(
                     .flags
                     .insert(mush_core::Flags::GOING);
                 let _ = w.engine.world.take_dirty();
-                assert!(
+                check!(
                     w.engine.take_staged_action().is_err(),
                     "owner fence refuses departed service actor at custody"
                 );
@@ -692,14 +692,14 @@ fn stale_service_actor(
                     .flags
                     .insert(mush_core::Flags::GOING);
                 let _ = w.engine.world.take_dirty();
-                assert!(
+                check!(
                     stage_event(&mut w, START + 450, action, inv, guards, prepared, output)
                         .is_err(),
                     "owner fence refuses departed service actor at stage"
                 );
             }
         }
-        assert!(
+        check!(
             disk(&w) == before,
             "departed service actor published no occurrence"
         );
@@ -715,7 +715,7 @@ fn retained_after_attestation(f: &PurchaseFixture, saved: &Durable) -> TestResul
             .ok_or("actual original birth")?,
     )?;
     let birth_wire = serde_json::to_value(&birth)?;
-    assert!(birth_wire.get("parent").is_none());
+    check!(birth_wire.get("parent").is_none());
     let licence: LicenceId = serde_json::from_value(
         birth_wire
             .get("licence")
@@ -744,14 +744,14 @@ fn retained_after_attestation(f: &PurchaseFixture, saved: &Durable) -> TestResul
         .into_iter()
         .find(|v| v.get("id") == Some(&json!(licence)))
         .ok_or("current owner")?;
-    assert_eq!(current.get("term"), Some(&json!("2")));
-    assert!(
+    check_eq!(current.get("term"), Some(&json!("2")));
+    check!(
         occurrence(&w, licence, 1).as_ref() == Some(&event),
         "later accepted term did not erase committed lapse"
     );
     let saved = capture(&w, &disk(&w));
     let cold = branch(f, &saved)?;
-    assert!(occurrence(&cold, licence, 1).as_ref() == Some(&event));
+    check!(occurrence(&cold, licence, 1).as_ref() == Some(&event));
     Ok(())
 }
 pub(super) async fn exercise(

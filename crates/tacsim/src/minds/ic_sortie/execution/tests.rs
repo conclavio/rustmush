@@ -84,7 +84,7 @@ fn events(arena: &mut Arena) -> Result<Vec<crate::arena::LedgerEvent>, Box<dyn s
 
 #[test]
 fn retained_ic_abi_drop_preserves_seal_memory_and_cancels_old_answer_once() -> TestResult {
-    assert_ne!(
+    check_ne!(
         crate::minds::MIND_ABI,
         OLD_ABI,
         "paired API5 stabilization prerequisite"
@@ -102,27 +102,27 @@ fn retained_ic_abi_drop_preserves_seal_memory_and_cancels_old_answer_once() -> T
         arena.minds.get_mut(&UNIT).ok_or("mind")?.memory = memory.clone();
         arena.now_ms = 1250;
         arena.collect_think(UNIT, 0, 1001, &mut MotorCounters::default());
-        assert!(arena.minds.get(&UNIT).ok_or("mind")?.pending.is_some());
-        assert!(arena.collected.iter().any(|think| think.unit == UNIT));
+        check!(arena.minds.get(&UNIT).ok_or("mind")?.pending.is_some());
+        check!(arena.collected.iter().any(|think| think.unit == UNIT));
         execution.install(&mut arena)?;
         let row = arena.minds.get(&UNIT).ok_or("mind")?;
-        assert_eq!(row.memory, memory);
-        assert_eq!(row.dropped, Some(DropCause::Abi));
-        assert!(row.pending.is_none());
-        assert!(!arena.collected.iter().any(|think| think.unit == UNIT));
-        assert_eq!(arena.unit(UNIT).ok_or("unit")?.seal, original_seal);
-        assert_eq!(serde_json::to_vec(&execution)?, sealed_bytes);
+        check_eq!(row.memory, memory);
+        check_eq!(row.dropped, Some(DropCause::Abi));
+        check!(row.pending.is_none());
+        check!(!arena.collected.iter().any(|think| think.unit == UNIT));
+        check_eq!(arena.unit(UNIT).ok_or("unit")?.seal, original_seal);
+        check_eq!(serde_json::to_vec(&execution)?, sealed_bytes);
         let runtime = arena.profiles.get(&UNIT).ok_or("profile")?;
-        assert!(runtime.dropped);
-        assert_eq!(runtime.card.key(), runtime.rom.key());
-        assert!(runtime.program.rows.is_empty());
+        check!(runtime.dropped);
+        check_eq!(runtime.card.key(), runtime.rom.key());
+        check!(runtime.program.rows.is_empty());
         let generation = runtime.generation;
         execution.install(&mut arena)?;
-        assert_eq!(
+        check_eq!(
             arena.profiles.get(&UNIT).ok_or("profile")?.generation,
             generation
         );
-        assert_eq!(arena.minds.get(&UNIT).ok_or("mind")?.memory, memory);
+        check_eq!(arena.minds.get(&UNIT).ok_or("mind")?.memory, memory);
         let drops = events(&mut arena)?
             .into_iter()
             .filter(|event| {
@@ -132,14 +132,14 @@ fn retained_ic_abi_drop_preserves_seal_memory_and_cancels_old_answer_once() -> T
                 )
             })
             .count();
-        assert_eq!(drops, 1);
+        check_eq!(drops, 1);
         // Current native doctrine really answers the next collected job.
         let seq = arena.minds.get(&UNIT).ok_or("mind")?.think_seq;
         arena.collect_think(UNIT, seq, 2001, &mut MotorCounters::default());
         let next = arena.collected.pop().ok_or("native next think")?;
-        assert!(next.job().dropped);
-        assert_eq!(next.job().profile.class, CoreClass::Zero);
-        assert!(next.think().result.fault.is_none());
+        check!(next.job().dropped);
+        check_eq!(next.job().profile.class, CoreClass::Zero);
+        check!(next.think().result.fault.is_none());
     }
     Ok(())
 }
@@ -148,7 +148,7 @@ fn retained_ic_abi_drop_preserves_seal_memory_and_cancels_old_answer_once() -> T
 fn retained_ic_skips_old_compiler_but_keeps_exact_source_and_runtime_affinity() -> TestResult {
     let removed = "fn think(v,c) { missing_old_global; }";
     let (old, mut arena) = fixture(OLD_ABI, removed)?;
-    assert!(
+    check!(
         crate::minds::RhaiRunner::new(
             &old.arena,
             removed,
@@ -165,24 +165,24 @@ fn retained_ic_skips_old_compiler_but_keeps_exact_source_and_runtime_affinity() 
         .digest
         .first_mut()
         .ok_or("digest")? ^= 1;
-    assert!(old.install(&mut arena).is_err());
-    assert_eq!(arena.profiles.get(&UNIT), Some(&profile));
+    check!(old.install(&mut arena).is_err());
+    check_eq!(arena.profiles.get(&UNIT), Some(&profile));
     arena.unit_mut(UNIT).ok_or("unit")?.seal = old.seal.seal_ref();
     let mut corrupt = old.clone();
     corrupt.source.push(' ');
-    assert!(corrupt.compile().is_err());
-    assert!(corrupt.install(&mut arena).is_err());
-    assert_eq!(arena.profiles.get(&UNIT), Some(&profile));
+    check!(corrupt.compile().is_err());
+    check!(corrupt.install(&mut arena).is_err());
+    check_eq!(arena.profiles.get(&UNIT), Some(&profile));
     old.install(&mut arena)?;
     // A pre-existing permanent drop is not recast or journalled again.
     arena.minds.get_mut(&UNIT).ok_or("mind")?.dropped = Some(DropCause::Core);
     let generation = arena.profiles.get(&UNIT).ok_or("profile")?.generation;
     old.install(&mut arena)?;
-    assert_eq!(
+    check_eq!(
         arena.minds.get(&UNIT).ok_or("mind")?.dropped,
         Some(DropCause::Core)
     );
-    assert_eq!(
+    check_eq!(
         arena.profiles.get(&UNIT).ok_or("profile")?.generation,
         generation
     );
@@ -196,13 +196,13 @@ fn retained_current_abi_installs_actual_script_without_rom_drop() -> TestResult 
     arena.now_ms = 1250;
     arena.collect_think(UNIT, 0, 1001, &mut MotorCounters::default());
     let next = arena.collected.pop().ok_or("actual scripted think")?;
-    assert!(!next.job().dropped);
+    check!(!next.job().dropped);
     let result = next.think().result;
-    assert!(result.fault.is_none());
+    check!(result.fault.is_none());
     let memory = crate::arena::mind::decode_memory(&result.memory);
-    assert_eq!(memory.get("marker"), Some(&MemValue::Int(73)));
-    assert_eq!(arena.minds.get(&UNIT).ok_or("mind")?.dropped, None);
-    assert!(
+    check_eq!(memory.get("marker"), Some(&MemValue::Int(73)));
+    check_eq!(arena.minds.get(&UNIT).ok_or("mind")?.dropped, None);
+    check!(
         !events(&mut arena)?
             .iter()
             .any(|event| matches!(event.kind, EventKind::MindDropped { .. }))
@@ -219,10 +219,10 @@ fn retained_ic_abi_journal_capacity_refuses_before_runtime_changes() -> TestResu
         max_bytes: 1,
         ..crate::config::LedgerConfig::default()
     });
-    assert!(execution.install(&mut arena).is_err());
-    assert_eq!(arena.profiles.get(&UNIT), Some(&profile));
-    assert_eq!(arena.minds.get(&UNIT), Some(&mind));
-    assert!(!arena.runners.contains_key(&UNIT));
-    assert!(events(&mut arena)?.is_empty());
+    check!(execution.install(&mut arena).is_err());
+    check_eq!(arena.profiles.get(&UNIT), Some(&profile));
+    check_eq!(arena.minds.get(&UNIT), Some(&mind));
+    check!(!arena.runners.contains_key(&UNIT));
+    check!(events(&mut arena)?.is_empty());
     Ok(())
 }

@@ -44,7 +44,7 @@ fn source(world: &PlayerWorld) -> TestResult<Revision> {
 }
 fn input(world: &mut PlayerWorld) -> TestResult<Input> {
     let revision = source(world)?;
-    assert!(revision.require_original_access().is_err());
+    check!(revision.require_original_access().is_err());
     let account = bulk_world::account(&world.engine.world, BUYER)?;
     let nonce = quota(world)?.next_nonce(account)?;
     let text = mush_roll::SourceAdapter::read_source(
@@ -173,11 +173,11 @@ fn ack(
         .registry
         .take_acknowledged()
         .ok_or("actual Registry ACK")?;
-    assert_eq!(
+    check_eq!(
         (ack.ticket, ack.job, ack.operation, ack.transition),
         (ticket, job, token(number), transition)
     );
-    assert!(artifacts(world)?.registry.get(ticket).is_err());
+    check!(artifacts(world)?.registry.get(ticket).is_err());
     Ok(())
 }
 fn run(world: &PlayerWorld, binding: Binding) -> TestResult<Run> {
@@ -356,7 +356,7 @@ async fn freshness(f: &PurchaseFixture, saved: &Durable) -> TestResult {
 fn admit(world: &mut PlayerWorld, number: u128) -> TestResult<(Binding, Ready)> {
     let input = input(world)?;
     let (prepared, _) = prepare_admit(world, &input, number)?;
-    assert!(quota(world)?.active(input.account).is_none());
+    check!(quota(world)?.active(input.account).is_none());
     ack(
         world,
         prepared,
@@ -372,8 +372,8 @@ fn admit(world: &mut PlayerWorld, number: u128) -> TestResult<(Binding, Ready)> 
         run: quota(world)?.active(input.account).ok_or("actual run")?,
     };
     let job: RatingJob = typed(world, "rating_jobs", binding.job)?;
-    assert_eq!(job.subject().revision().revision(), input.reference);
-    assert!(source(world)?.require_original_access().is_err());
+    check_eq!(job.subject().revision().revision(), input.reference);
+    check!(source(world)?.require_original_access().is_err());
     Ok((
         binding,
         Ready::registry(binding, input.start, input.machine),

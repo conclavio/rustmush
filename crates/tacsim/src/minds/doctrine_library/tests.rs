@@ -68,7 +68,7 @@ fn rig(cfg: ReflexConfig) -> Result<(Engine, ObjId, Arc<AtomicUsize>), Box<dyn s
         &mut Effects::new(),
     );
     engine.world.take_dirty();
-    assert!(engine.take_module_ops().is_empty());
+    check!(engine.take_module_ops().is_empty());
     Ok((engine, actor, calls))
 }
 
@@ -115,23 +115,23 @@ fn every_documented_preset_is_a_bounded_actual_card_page() -> TestResult {
         "Hunter",
         "Rearguard",
     ];
-    assert_eq!(PRESETS, documented);
+    check_eq!(PRESETS, documented);
     for name in documented {
-        assert!(index.contains(&format!("  {name}:")));
+        check!(index.contains(&format!("  {name}:")));
         let text = page(&format!(" {} ", name.to_ascii_lowercase()), &cfg)?;
-        assert!(text.contains(&format!("Standard Doctrine / {name}")));
-        assert!(text.len() <= MAX_PAGE_BYTES);
+        check!(text.contains(&format!("Standard Doctrine / {name}")));
+        check!(text.len() <= MAX_PAGE_BYTES);
         for line in preset(name, &cfg)
             .ok_or("missing stock preset")?
             .read_back(&cfg, true)
         {
-            assert!(text.contains(&line.replace("[M2]", "[inert]")));
+            check!(text.contains(&line.replace("[M2]", "[inert]")));
         }
-        assert!(!text.contains("[M2]"));
-        assert!(text.contains("unarmed hull"));
+        check!(!text.contains("[M2]"));
+        check!(text.contains("unarmed hull"));
     }
-    assert!(page("Skirmisher", &cfg)?.contains("does not make it orbit"));
-    assert!(page("Sentry", &cfg)?.contains("holds no arc"));
+    check!(page("Skirmisher", &cfg)?.contains("does not make it orbit"));
+    check!(page("Sentry", &cfg)?.contains("holds no arc"));
     Ok(())
 }
 
@@ -150,13 +150,13 @@ fn actual_engine_uses_current_configuration_without_business_or_world_mutation()
         ..ReflexConfig::default()
     };
     let (mut engine, actor, calls) = rig(cfg)?;
-    assert!(
+    check!(
         engine
             .world
             .module_state::<mush_sim::AccountOracle>()
             .is_none()
     );
-    assert!(
+    check!(
         engine
             .world
             .module_state::<crate::store::TacsimStore>()
@@ -187,31 +187,31 @@ fn actual_engine_uses_current_configuration_without_business_or_world_mutation()
         "hunt_after 31 s",
         "(70/55/25)",
     ] {
-        assert!(
+        check!(
             line.contains(expected),
             "configured term {expected} must be visible"
         );
     }
     let sniper = read(&mut engine, actor, "@mind/doctrine Sniper");
-    assert!(sniper.contains("band 100%"));
-    assert!(sniper.contains("reserve 30%"));
-    assert!(sniper.contains("break_off 41%"));
-    assert!(sniper.contains("rally 7 s"));
+    check!(sniper.contains("band 100%"));
+    check!(sniper.contains("reserve 30%"));
+    check!(sniper.contains("break_off 41%"));
+    check!(sniper.contains("rally 7 s"));
     let index = read(&mut engine, actor, "@mind/doctrine");
-    assert!(index.contains("Six free public pages"));
+    check!(index.contains("Six free public pages"));
     for preset in PRESETS {
-        assert!(
+        check!(
             read(&mut engine, actor, &format!("@mind/doctrine {preset}"))
                 .contains(&format!("Standard Doctrine / {preset}"))
         );
     }
-    assert_eq!(
+    check_eq!(
         serde_json::to_vec(&engine.world.iter().collect::<Vec<_>>())?,
         before
     );
-    assert_eq!(engine.world.next_id(), allocator);
-    assert!(engine.world.take_dirty().is_empty());
-    assert_eq!(
+    check_eq!(engine.world.next_id(), allocator);
+    check!(engine.world.take_dirty().is_empty());
+    check_eq!(
         (
             engine.action_state().revision(),
             engine.action_state().len()
@@ -220,8 +220,8 @@ fn actual_engine_uses_current_configuration_without_business_or_world_mutation()
     );
     let roll = engine.world.module_state::<RollStore>().ok_or("roll")?;
     roll.check_prepared(&prepared)?;
-    assert!(roll.names(actor).is_empty());
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    check!(roll.names(actor).is_empty());
+    check_eq!(calls.load(Ordering::SeqCst), 0);
     Ok(())
 }
 
@@ -240,9 +240,9 @@ fn selectors_are_closed_and_never_fall_back_to_authored_or_filed_content() -> Te
         "Line\0",
         "Líne",
     ] {
-        assert!(page(bad, &cfg).is_err());
+        check!(page(bad, &cfg).is_err());
     }
-    assert!(page(&" ".repeat(MAX_SELECTOR_BYTES + 1), &cfg).is_err());
+    check!(page(&" ".repeat(MAX_SELECTOR_BYTES + 1), &cfg).is_err());
     let (mut engine, actor, calls) = rig(cfg)?;
     for selector in [
         "Private",
@@ -253,14 +253,14 @@ fn selectors_are_closed_and_never_fall_back_to_authored_or_filed_content() -> Te
         &"a".repeat(MAX_SELECTOR_BYTES + 1),
     ] {
         let text = read(&mut engine, actor, &format!("@mind/doctrine {selector}"));
-        assert!(text.contains(SELECT));
-        assert!(!text.contains("Current configured card"));
+        check!(text.contains(SELECT));
+        check!(!text.contains("Current configured card"));
     }
     let text = read(&mut engine, actor, "@mind/doctrine/source Line");
-    assert!(text.contains("@mind/doctrine"));
-    assert!(!text.contains("Current configured card"));
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
-    assert!(
+    check!(text.contains("@mind/doctrine"));
+    check!(!text.contains("Current configured card"));
+    check_eq!(calls.load(Ordering::SeqCst), 0);
+    check!(
         engine
             .world
             .module_state::<RollStore>()

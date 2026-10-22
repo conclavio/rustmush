@@ -50,31 +50,31 @@ fn composed(config: &MindCommerce, omit: Option<&str>) -> Result<Box<Engine>, Mo
 }
 #[test]
 fn ic_is_explicit_active_only_and_registers_exact_actual_four_owners() -> TestResult {
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_ic_minds(vec![base()?])
             .is_err()
     );
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_ic_minds(vec![])
             .is_err()
     );
     let b = base()?;
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_ic_minds(vec![b.clone(), b])
             .is_err()
     );
     let ordinary = composed(&prepare(CommerceMode::Active)?, None)?;
-    assert!(!has(&ordinary, "tacsim", "action", "open_ic_mind"));
-    assert!(!has(
+    check!(!has(&ordinary, "tacsim", "action", "open_ic_mind"));
+    check!(!has(
         &ordinary,
         "tactics",
         "owner_participant",
         "ic_custody"
     ));
-    assert!(!has(&ordinary, "sim", "owner_participant", "ic_exclusion"));
+    check!(!has(&ordinary, "sim", "owner_participant", "ic_exclusion"));
     let config = prepare(CommerceMode::Active)?.with_ic_minds(vec![base()?])?;
     let mut actual = composed(&config, None)?;
     for (owner, kind, id) in [
@@ -86,14 +86,14 @@ fn ic_is_explicit_active_only_and_registers_exact_actual_four_owners() -> TestRe
         ("roll", "owner_participant", "commercial_roots"),
         ("tacsim", "ic_base", "selected_ic_base"),
     ] {
-        assert!(
+        check!(
             has(&actual, owner, kind, id),
             "missing exact IC declaration {owner}/{kind}/{id}"
         );
     }
-    assert!(config.configure_tacsim(layer())?.ic_host().is_some());
+    check!(config.configure_tacsim(layer())?.ic_host().is_some());
     // Registration alone cannot invent acknowledged commercial initialization.
-    assert!(
+    check!(
         actual
             .modules_loaded(
                 Default::default(),
@@ -108,7 +108,7 @@ fn ic_is_explicit_active_only_and_registers_exact_actual_four_owners() -> TestRe
 fn ic_missing_physical_or_commercial_owner_refuses_actual_freeze() -> TestResult {
     for omitted in ["sim", "tactics", "tacsim", "roll"] {
         let config = prepare(CommerceMode::Active)?.with_ic_minds(vec![base()?])?;
-        assert!(
+        check!(
             composed(&config, Some(omitted)).is_err(),
             "missing owner {omitted} must refuse"
         );
@@ -120,10 +120,10 @@ fn ic_base_descriptor_is_exact_and_double_attachment_refuses() -> TestResult {
     let b = base()?;
     let actual = DefinitionRegistryBuilder::new()
         .register(OwnerId::new(crate::NS)?, b.registration_descriptor()?)?;
-    assert_eq!(&actual, b.definition());
+    check_eq!(&actual, b.definition());
     let configured = prepare(CommerceMode::Active)?.with_ic_minds(vec![b])?;
-    assert!(configured.with_ic_minds(vec![base()?]).is_err());
-    assert!(layer().ic_host().is_none());
+    check!(configured.with_ic_minds(vec![base()?]).is_err());
+    check!(layer().ic_host().is_none());
     Ok(())
 }
 

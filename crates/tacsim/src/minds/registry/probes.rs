@@ -656,10 +656,10 @@ mod tests {
             let to = terrain
                 .cell_of(&arena.unit(ObjId(2)).ok_or("target hull")?.pose)
                 .ok_or("target cell")?;
-            assert_eq!((from, to), ((5, 5), (7, 5)));
+            check_eq!((from, to), ((5, 5), (7, 5)));
             let ridge = terrain.get(6, 5).ok_or("ridge")?;
-            assert_eq!((ridge.elev_cm, ridge.move_cost), (10_000, 0));
-            assert_eq!(
+            check_eq!((ridge.elev_cm, ridge.move_cost), (10_000, 0));
+            check_eq!(
                 terrain.sight(Eye::standing(from), Eye::standing(to)).sight,
                 Sight::BlockedBy(Blocker::Elevation {
                     at: (6, 5),
@@ -705,11 +705,11 @@ mod tests {
             };
             let mut probe = Single::open(&policy, &subject, &case)?;
             let program = &probe.arena.profiles.get(&OWN).ok_or("runtime")?.program;
-            assert!(
+            check!(
                 !program.rows.is_empty(),
                 "an absent station never erases the authored program"
             );
-            assert!(
+            check!(
                 program
                     .rows
                     .iter()
@@ -719,19 +719,19 @@ mod tests {
                 .advance(u64::from(case.physics.native_ms))?
                 .result
                 .ok_or("actual row")?;
-            assert!(matches!(result.outcome(), CaseOutcome::Conformant {}));
-            assert_eq!(result.meter().thinks(), 1);
-            assert!(result.meter().max_fees() > crate::minds::fees::FEE_THINK);
-            assert!(result.coverage().complete());
+            check!(matches!(result.outcome(), CaseOutcome::Conformant {}));
+            check_eq!(result.meter().thinks(), 1);
+            check!(result.meter().max_fees() > crate::minds::fees::FEE_THINK);
+            check!(result.coverage().complete());
             let state = probe.arena.minds.get(&OWN).ok_or("state")?;
             let memory: serde_json::Value = serde_json::from_slice(&state.memory)?;
-            assert_eq!(
+            check_eq!(
                 memory.get("seen").and_then(serde_json::Value::as_u64),
                 Some(1)
             );
-            assert_eq!(state.strikes, 0);
-            assert!(state.dropped.is_none());
-            assert!(
+            check_eq!(state.strikes, 0);
+            check!(state.dropped.is_none());
+            check!(
                 probe.advance(u64::from(case.physics.native_ms)).is_err(),
                 "single case cannot be counted twice"
             );
@@ -765,11 +765,11 @@ mod tests {
                 .frame_for(OWN, probe.arena.clock.tempo())
                 .ok_or("frame")?;
             let view = probe.arena.mind_view(OWN).ok_or("view")?;
-            assert_eq!(
+            check_eq!(
                 view.contacts.len(),
                 policy.cfg.minds.classes.row(core(class)).rows
             );
-            assert_eq!(
+            check_eq!(
                 view.contacts.iter().filter(|c| !c.odds.is_empty()).count(),
                 expected
             );
@@ -780,12 +780,12 @@ mod tests {
                     .filter(|o| o.contact == row.id)
                     .map(|o| (o.weapon.clone(), o.p_permille))
                     .collect::<Vec<_>>();
-                assert_eq!(row.odds, public);
+                check_eq!(row.odds, public);
             }
             // Authored declaration remains I; the fitted/capped effective seal
             // controls the public projection, never source metadata.
-            assert_eq!(subject.subject().declared(), RatingClass::I);
-            assert_eq!(
+            check_eq!(subject.subject().declared(), RatingClass::I);
+            check_eq!(
                 probe
                     .advance(u64::from(case.physics.native_ms))?
                     .result
@@ -796,7 +796,7 @@ mod tests {
             );
             if class == RatingClass::III {
                 probe.arena.unit_mut(OWN).ok_or("hull")?.seal.class = CoreClass::I;
-                assert_eq!(
+                check_eq!(
                     probe
                         .arena
                         .frame_odds(OWN)
@@ -809,8 +809,8 @@ mod tests {
                 probe.arena.unit_mut(OWN).ok_or("hull")?.seal.class = CoreClass::III;
                 probe.arena.minds.get_mut(&OWN).ok_or("mind")?.dropped =
                     Some(crate::arena::mind::DropCause::Strikes);
-                assert_eq!(probe.arena.mind_class(OWN), CoreClass::Zero);
-                assert_eq!(
+                check_eq!(probe.arena.mind_class(OWN), CoreClass::Zero);
+                check_eq!(
                     probe
                         .arena
                         .frame_odds(OWN)
@@ -824,7 +824,7 @@ mod tests {
                 // Configured projection limits remain authoritative as well.
                 probe.arena.classes =
                     serde_json::from_value(serde_json::json!({"III":{"odds_rows":3}}))?;
-                assert_eq!(
+                check_eq!(
                     probe
                         .arena
                         .frame_odds(OWN)
@@ -834,7 +834,7 @@ mod tests {
                         .len(),
                     3
                 );
-                assert_eq!(
+                check_eq!(
                     probe
                         .arena
                         .mind_view(OWN)
@@ -859,8 +859,8 @@ mod tests {
                 )?;
                 let (damaged, _) = mush_tactics::apply(&saved_unit, &plan, 0)?;
                 probe.arena.unit_mut(OWN).ok_or("hull")?.unit = damaged;
-                assert_eq!(probe.arena.mind_class(OWN), CoreClass::Zero);
-                assert_eq!(
+                check_eq!(probe.arena.mind_class(OWN), CoreClass::Zero);
+                check_eq!(
                     probe
                         .arena
                         .frame_odds(OWN)
@@ -872,8 +872,8 @@ mod tests {
                 );
                 probe.arena.unit_mut(OWN).ok_or("hull")?.unit = saved_unit;
                 probe.arena.unit_mut(OWN).ok_or("hull")?.seal = crate::arena::mind::SealRef::none();
-                assert_eq!(probe.arena.mind_class(OWN), CoreClass::Zero);
-                assert_eq!(
+                check_eq!(probe.arena.mind_class(OWN), CoreClass::Zero);
+                check_eq!(
                     probe
                         .arena
                         .frame_odds(OWN)

@@ -51,12 +51,12 @@ fn connected(r: &mut Rig) -> Result {
     Ok(())
 }
 fn install_submit(r: &mut Rig, request: AuthoritativeSubmit) -> Result {
-    assert_eq!(request.actor, GOD);
-    assert!(request.targets.is_empty());
-    assert_eq!(request.subject, PerceivedRef::SelfActor);
-    assert_eq!(request.action.key().owner.as_str(), "roll");
-    assert!(request.action.key().id.as_str().starts_with("rating_"));
-    assert_eq!(
+    check_eq!(request.actor, GOD);
+    check!(request.targets.is_empty());
+    check_eq!(request.subject, PerceivedRef::SelfActor);
+    check_eq!(request.action.key().owner.as_str(), "roll");
+    check!(request.action.key().id.as_str().starts_with("rating_"));
+    check_eq!(
         request.parameters,
         json!({}),
         "actual private service selector"
@@ -100,7 +100,7 @@ fn install_submit(r: &mut Rig, request: AuthoritativeSubmit) -> Result {
         },
     )?;
     let (action, resolved, guards) = resolved.into_authoritative_parts();
-    assert_eq!(action, request.action);
+    check_eq!(action, request.action);
     let invocation = resolved.invocation().clone();
     let commit = driver::token(n);
     let prepared =
@@ -124,7 +124,7 @@ fn pulse(r: &mut Rig) -> Result {
         .engine_mut()
         .take_observed_authoritative_submit()
     {
-        assert!(submitted.is_observed());
+        check!(submitted.is_observed());
         let (request, _) = submitted.into_parts();
         install_submit(r, *request)?;
     }
@@ -245,16 +245,21 @@ fn term(r: &Rig) -> Result<PaidTermRecord> {
 fn fence(r: &mut Rig, name: &str, parameters: Value) -> Result {
     let buyer = r.buyer;
     member(r, false)?;
-    assert!(r.plan("market", name, buyer, parameters.clone()).is_err());
+    check!(crate::test_checks::refused(r.plan(
+        "market",
+        name,
+        buyer,
+        parameters.clone()
+    ))?);
     member(r, true)?;
     let planned = r.plan("market", name, buyer, parameters.clone())?;
     member(r, false)?;
-    assert!(r.stage(planned).is_err(), "membership lost before stage");
+    check!(r.stage(planned).is_err(), "membership lost before stage");
     member(r, true)?;
     let planned = r.plan("market", name, buyer, parameters)?;
     r.stage(planned)?;
     member(r, false)?;
-    assert!(
+    check!(
         r.world_mut().engine_mut().take_staged_action().is_err(),
         "membership lost before consuming take"
     );
@@ -383,7 +388,7 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
     connected(&mut r)?;
     command(r.world_mut(), GOD, "@mind/launch coprates=Coprates Drill")?;
     let (revision, rating) = certify(&mut r, &d.houses.coprates.source_name, 1).await?;
-    assert_eq!(
+    check_eq!(
         revision.source(),
         mush_roll::source_digest(&LaunchRecipe::Coprates.draft()?.source)
     );
@@ -413,15 +418,12 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
         GOD,
         json!({"owner_licence":owner_licence}),
     )?;
-    assert!(
-        r.plan(
-            "market",
-            "quote_house_mind",
-            buyer,
-            json!({"listing":listing})
-        )
-        .is_err()
-    );
+    check!(crate::test_checks::refused(r.plan(
+        "market",
+        "quote_house_mind",
+        buyer,
+        json!({"listing":listing})
+    ))?);
     member(&mut r, true)?;
     let (quote, _) = r.perform(
         "market",
@@ -431,7 +433,7 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
     )?;
     let before = r.money(r.payer)?;
     fence(&mut r, "purchase_house_mind", json!({"quote":quote}))?;
-    assert_eq!(r.money(r.payer)?, before);
+    check_eq!(r.money(r.payer)?, before);
     let (fund, _) = r.perform(
         "market",
         "purchase_house_mind",
@@ -447,24 +449,21 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
     )?;
     let accepted = paid(&r)?;
     let accepted_term = term(&r)?;
-    assert_eq!(before.0 - r.money(r.payer)?.0, 40000);
+    check_eq!(before.0 - r.money(r.payer)?.0, 40000);
     member(&mut r, false)?;
     reboot(&mut r, &d)?;
-    assert_eq!(paid(&r)?, accepted);
-    assert_eq!(
+    check_eq!(paid(&r)?, accepted);
+    check_eq!(
         term(&r)?,
         accepted_term,
         "loss of membership cannot revoke an accepted term"
     );
-    assert!(
-        r.plan(
-            "market",
-            "quote_house_mind",
-            buyer,
-            json!({"listing":listing})
-        )
-        .is_err()
-    );
+    check!(crate::test_checks::refused(r.plan(
+        "market",
+        "quote_house_mind",
+        buyer,
+        json!({"listing":listing})
+    ))?);
     // The issuer's original term is still in Grace at the buyer's actual due
     // boundary. The next paid term separately requires current membership.
     r.world_mut()
@@ -499,12 +498,12 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
         buyer,
         json!({"operation":draft}),
     )?;
-    assert_eq!(paid(&r)?.term().get(), 2);
-    assert_eq!(before.0 - r.money(r.payer)?.0, 80000);
+    check_eq!(paid(&r)?.term().get(), 2);
+    check_eq!(before.0 - r.money(r.payer)?.0, 80000);
     member(&mut r, false)?;
     let renewed = term(&r)?;
     reboot(&mut r, &d)?;
-    assert_eq!(term(&r)?, renewed);
+    check_eq!(term(&r)?, renewed);
     connected(&mut r)?;
     // The other two named publishers use the same actual services while the
     // buyer is outside Republic. Imports alone never stand in for publication.
@@ -524,15 +523,15 @@ async fn named_coprates_real_save_rate_house_sale_and_membership_fences() -> Res
         "safe_conduct",
     )
     .await?;
-    assert_eq!(r.rows("roll_mind_initial_filing").len(), 3);
-    assert_eq!(r.rows("market_mind_house_listing").len(), 3);
+    check_eq!(r.rows("roll_mind_initial_filing").len(), 3);
+    check_eq!(r.rows("market_mind_house_listing").len(), 3);
     let holdings = r.rows("roll_mind_personal_paid_licence");
-    assert_eq!(holdings.len(), 3);
+    check_eq!(holdings.len(), 3);
     for row in &holdings {
         let _: PersonalPaidLicence = serde_json::from_value(row.clone())?;
     }
-    assert_eq!(before.0 - r.money(r.payer)?.0, 160000);
+    check_eq!(before.0 - r.money(r.payer)?.0, 160000);
     reboot(&mut r, &d)?;
-    assert_eq!(r.rows("roll_mind_personal_paid_licence"), holdings);
+    check_eq!(r.rows("roll_mind_personal_paid_licence"), holdings);
     Ok(())
 }

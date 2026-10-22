@@ -49,8 +49,8 @@ pub(super) fn marked_store(mind: &Mind) -> Result<RollStore, Box<dyn std::error:
     })?;
     // The fixture preserves the exact original CAS/content, and must remain a
     // readable owner record; adapter refusal must be provenance, not corruption.
-    assert_eq!(store.mind(actor, mind.name())?.base(), mind.base());
-    assert_eq!(store.mind(actor, mind.name())?.draft(), mind.draft());
+    check_eq!(store.mind(actor, mind.name())?.base(), mind.base());
+    check_eq!(store.mind(actor, mind.name())?.draft(), mind.draft());
     Ok(store)
 }
 
@@ -74,16 +74,16 @@ fn marked_source_and_edits_refuse_without_rewriting_the_owned_record() -> TestRe
     let marked = marked_store(original.mind(actor, "mine")?)?;
     let mind = marked.mind(actor, "mine")?;
     let before = serde_json::to_vec(mind)?;
-    assert_eq!(mind.require_original_access(), Err(RollError::Missing));
-    assert_eq!(
+    check_eq!(mind.require_original_access(), Err(RollError::Missing));
+    check_eq!(
         owned_copy(&marked, &Sources, actor, &MindRef::parse("mine")?),
         Err(RollError::Missing)
     );
-    assert!(matches!(
+    check!(matches!(
         create(&marked, &Sources, actor, "fork", Some("mine")),
         Err(RollError::Missing)
     ));
-    assert!(matches!(
+    check!(matches!(
         edit_text(
             &marked,
             actor,
@@ -93,6 +93,6 @@ fn marked_source_and_edits_refuse_without_rewriting_the_owned_record() -> TestRe
         ),
         Err(RollError::Missing)
     ));
-    assert_eq!(serde_json::to_vec(marked.mind(actor, "mine")?)?, before);
+    check_eq!(serde_json::to_vec(marked.mind(actor, "mine")?)?, before);
     Ok(())
 }

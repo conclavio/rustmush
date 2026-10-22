@@ -98,16 +98,16 @@ fn actual_registration_is_opt_in_and_initialize_has_no_rating_actions() -> TestR
             Box::new(layer()),
         ],
     )?;
-    assert!(!has(&ordinary, "tacsim", "registry_manifest", "combat"));
-    assert!(!has(&ordinary, "roll", "action", "rating_admit"));
-    assert!(!has(&ordinary, "roll", "action", "initial_filing"));
+    check!(!has(&ordinary, "tacsim", "registry_manifest", "combat"));
+    check!(!has(&ordinary, "roll", "action", "rating_admit"));
+    check!(!has(&ordinary, "roll", "action", "initial_filing"));
 
     let initialize = prepare(CommerceMode::Initialize)?;
     let initialized = engine(&initialize)?;
-    assert!(has(&initialized, "tacsim", "registry_manifest", "combat"));
-    assert!(has(&initialized, "roll", "action", "initialize_commerce"));
-    assert!(!has(&initialized, "roll", "action", "rating_admit"));
-    assert!(!has(
+    check!(has(&initialized, "tacsim", "registry_manifest", "combat"));
+    check!(has(&initialized, "roll", "action", "initialize_commerce"));
+    check!(!has(&initialized, "roll", "action", "rating_admit"));
+    check!(!has(
         &initialized,
         "tacsim",
         "owner_participant",
@@ -115,9 +115,9 @@ fn actual_registration_is_opt_in_and_initialize_has_no_rating_actions() -> TestR
     ));
 
     let active = prepare(CommerceMode::Active)?;
-    assert_eq!(initialize.manifest(), active.manifest());
+    check_eq!(initialize.manifest(), active.manifest());
     let registered = engine(&active)?;
-    assert!(!has(&registered, "roll", "action", "initialize_commerce"));
+    check!(!has(&registered, "roll", "action", "initialize_commerce"));
     for id in [
         "rating_admit",
         "rating_grant",
@@ -125,15 +125,15 @@ fn actual_registration_is_opt_in_and_initialize_has_no_rating_actions() -> TestR
         "rating_cancel",
         "rating_recover",
     ] {
-        assert!(has(&registered, "roll", "action", id));
+        check!(has(&registered, "roll", "action", id));
     }
-    assert!(has(
+    check!(has(
         &registered,
         "tacsim",
         "owner_participant",
         "registry_quota"
     ));
-    assert!(has(
+    check!(has(
         &registered,
         "tacsim",
         "owner_participant",
@@ -147,11 +147,11 @@ fn actual_registration_is_opt_in_and_initialize_has_no_rating_actions() -> TestR
         .map(|entry| entry.reference())
         .find(|reference| *reference == active.manifest())
         .ok_or("actual manifest")?;
-    assert_eq!(actual, active.manifest());
+    check_eq!(actual, active.manifest());
     // This is registration evidence only: Active hydration without the real
     // acknowledged deployment must refuse, not manufacture commercial health.
     let mut uninitialized = registered;
-    assert!(
+    check!(
         uninitialized
             .modules_loaded(
                 Default::default(),
@@ -168,16 +168,16 @@ fn different_configuration_missing_owner_and_double_attachment_refuse() -> TestR
     let prepared = prepare(CommerceMode::Active)?;
     let mut changed = layer().config().clone();
     changed.match_.ai_fill = !changed.match_.ai_fill;
-    assert!(
+    check!(
         prepared
             .configure_tacsim(TacsimRuleset::with_config(changed))
             .is_err()
     );
     let configured = prepared.configure_tacsim(layer())?;
-    assert!(prepared.configure_tacsim(configured).is_err());
+    check!(prepared.configure_tacsim(configured).is_err());
     let mut changed_after_attachment = prepared.configure_tacsim(layer())?;
     changed_after_attachment.cfg.match_.ai_fill = !changed_after_attachment.cfg.match_.ai_fill;
-    assert!(
+    check!(
         compose_boxed(
             World::new_minimal(),
             Registry::new(),
@@ -194,7 +194,7 @@ fn different_configuration_missing_owner_and_double_attachment_refuse() -> TestR
         .is_err(),
         "actual Tacsim registration repeats the full configuration fence"
     );
-    assert!(
+    check!(
         compose_boxed(
             World::new_minimal(),
             Registry::new(),
@@ -216,7 +216,7 @@ fn different_configuration_missing_owner_and_double_attachment_refuse() -> TestR
 
 #[test]
 fn purchase_configuration_is_active_only_and_keeps_exact_shared_actions() -> TestResult {
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_original_purchases(quotes()?)
             .is_err()
@@ -228,10 +228,10 @@ fn purchase_configuration_is_active_only_and_keeps_exact_shared_actions() -> Tes
         .as_ref()
         .ok_or("prepared purchases")?
         .actions()?;
-    assert_eq!(prepared.state.purchase_actions.as_ref(), Some(&actual));
+    check_eq!(prepared.state.purchase_actions.as_ref(), Some(&actual));
     let configured = prepared.configure_tacsim(layer())?;
-    assert!(configured.personal_filed_holdings);
-    assert_eq!(
+    check!(configured.personal_filed_holdings);
+    check_eq!(
         configured.original_holdings.as_ref(),
         Some(prepared.manifest())
     );
@@ -256,7 +256,7 @@ fn purchase_configuration_is_active_only_and_keeps_exact_shared_actions() -> Tes
         ],
     )?;
     for action in &actual {
-        assert!(
+        check!(
             actual_engine
                 .registry
                 .definitions()
@@ -265,19 +265,19 @@ fn purchase_configuration_is_active_only_and_keeps_exact_shared_actions() -> Tes
                 .any(|entry| entry.reference() == action)
         );
     }
-    assert!(prepared.with_original_purchases(quotes()?).is_err());
+    check!(prepared.with_original_purchases(quotes()?).is_err());
     Ok(())
 }
 
 #[test]
 fn source_forms_are_an_explicit_host_protocol_with_a_distinct_paid_reader() -> TestResult {
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_original_source_purchases(quotes()?)
             .is_err()
     );
     let ordinary = prepare(CommerceMode::Active)?;
-    assert!(!ordinary.configure_tacsim(layer())?.personal_source_forms);
+    check!(!ordinary.configure_tacsim(layer())?.personal_source_forms);
     for source_forms in [false, true] {
         let prepared = prepare(CommerceMode::Active)?;
         let prepared = if source_forms {
@@ -286,7 +286,7 @@ fn source_forms_are_an_explicit_host_protocol_with_a_distinct_paid_reader() -> T
             prepared.with_original_purchases(quotes()?)?
         };
         let configured = prepared.configure_tacsim(layer())?;
-        assert_eq!(configured.personal_source_forms, source_forms);
+        check_eq!(configured.personal_source_forms, source_forms);
         let actual =
             compose_boxed(
                 World::new_minimal(),
@@ -304,7 +304,7 @@ fn source_forms_are_an_explicit_host_protocol_with_a_distinct_paid_reader() -> T
                     Box::new(configured),
                 ],
             )?;
-        assert_eq!(
+        check_eq!(
             has(&actual, "roll", "owner_read", "personal_paid_source"),
             source_forms
         );
@@ -321,7 +321,7 @@ fn source_forms_are_an_explicit_host_protocol_with_a_distinct_paid_reader() -> T
                     reference.key().owner.as_str() == "market" && reference.key().id.as_str() == id
                 })
                 .ok_or("real action")?;
-            assert_eq!(action.version(), if source_forms { 2 } else { 1 });
+            check_eq!(action.version(), if source_forms { 2 } else { 1 });
         }
     }
     Ok(())
@@ -331,17 +331,17 @@ fn source_forms_are_an_explicit_host_protocol_with_a_distinct_paid_reader() -> T
 // real Engine still performs registration and final validation in each case.
 #[inline(never)]
 fn authored_fork_prerequisites_refuse() -> TestResult {
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_authored_forks()
             .is_err()
     );
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_authored_forks()
             .is_err()
     );
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_original_purchases(quotes()?)?
             .with_authored_forks()
@@ -386,24 +386,24 @@ fn authored_fork_registration_matches_opt_in(forks: bool) -> TestResult {
         prepared
     };
     let configured = prepared.configure_tacsim(layer())?;
-    assert_eq!(
+    check_eq!(
         configured.fork_material.as_ref(),
         forks.then(|| prepared.manifest())
     );
     let actual = authored_fork_engine(&prepared, configured)??;
-    assert_eq!(has(&actual, "roll", "action", "fork_paid_mind"), forks);
-    assert_eq!(
+    check_eq!(has(&actual, "roll", "action", "fork_paid_mind"), forks);
+    check_eq!(
         has(&actual, "roll", "owner_read", "authored_draft_access"),
         forks
     );
-    assert_eq!(has(&actual, "roll", "outcome", "paid_mind_forked"), forks);
+    check_eq!(has(&actual, "roll", "outcome", "paid_mind_forked"), forks);
     // Real Engine freeze rejects duplicate declarations. The exact action
     // and outcome each enter once, then provider/grants reuse their refs.
     for (kind, id) in [
         ("action", "fork_paid_mind"),
         ("outcome", "paid_mind_forked"),
     ] {
-        assert_eq!(
+        check_eq!(
             actual
                 .registry
                 .definitions()
@@ -419,16 +419,16 @@ fn authored_fork_registration_matches_opt_in(forks: bool) -> TestResult {
             usize::from(forks)
         );
     }
-    assert_eq!(
+    check_eq!(
         has(&actual, "roll", "owner_read", "authored_fork_parent"),
         forks
     );
-    assert_eq!(
+    check_eq!(
         has(&actual, "tacsim", "owner_read", "authored_fork_material"),
         forks
     );
     if forks {
-        assert!(prepared.with_authored_forks().is_err());
+        check!(prepared.with_authored_forks().is_err());
     }
     Ok(())
 }
@@ -440,7 +440,7 @@ fn authored_fork_missing_source_reader_refuses() -> TestResult {
         .with_authored_forks()?;
     let mut detached = prepared.configure_tacsim(layer())?;
     detached.fork_material = None;
-    assert!(
+    check!(
         authored_fork_engine(&prepared, detached)?.is_err(),
         "a missing actual source service cannot be replaced by a structural descriptor"
     );
@@ -459,17 +459,17 @@ fn authored_forks_require_explicit_source_forms_and_register_exact_real_services
 
 #[test]
 fn marked_registry_is_explicit_saved_admission_with_unchanged_rating_protocol() -> TestResult {
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_marked_registry()
             .is_err()
     );
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_marked_registry()
             .is_err()
     );
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_original_source_purchases(quotes()?)?
             .with_marked_registry()
@@ -486,7 +486,7 @@ fn marked_registry_is_explicit_saved_admission_with_unchanged_rating_protocol() 
             prepared
         };
         let configured = prepared.configure_tacsim(layer())?;
-        assert_eq!(
+        check_eq!(
             configured.marked_registry.as_ref(),
             marked.then(|| prepared.manifest())
         );
@@ -507,7 +507,7 @@ fn marked_registry_is_explicit_saved_admission_with_unchanged_rating_protocol() 
                     Box::new(configured),
                 ],
             )?;
-        assert_eq!(
+        check_eq!(
             has(&actual, "roll", "owner_read", "marked_rating_admission"),
             marked
         );
@@ -524,17 +524,18 @@ fn marked_registry_is_explicit_saved_admission_with_unchanged_rating_protocol() 
             })
             .cloned()
             .collect();
-        assert_eq!(refs.len(), 5);
+        check_eq!(refs.len(), 5);
         if let Some(previous) = &ordinary_refs {
-            assert_eq!(
-                &refs, previous,
+            check_eq!(
+                &refs,
+                previous,
                 "existing protocol/history identities stay exact"
             );
         } else {
             ordinary_refs = Some(refs);
         }
         if marked {
-            assert!(prepared.with_marked_registry().is_err());
+            check!(prepared.with_marked_registry().is_err());
         }
     }
     Ok(())
@@ -555,27 +556,27 @@ fn registry_recall_configuration_is_explicit_stable_and_active_only() -> TestRes
         mush_org::OrgScopeId(5),
         vec![mush_core::ObjId(6)],
     )?;
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_registry_recall(policy.clone())
             .is_err()
     );
     let ordinary = prepare(CommerceMode::Active)?;
     let plain = engine(&ordinary)?;
-    assert!(!has(&plain, "roll", "action", "registry_revision_recall"));
+    check!(!has(&plain, "roll", "action", "registry_revision_recall"));
     let configured = ordinary.with_registry_recall(policy.clone())?;
     let actual = engine(&configured)?;
     let definitions = actual.registry.definitions().ok_or("real definitions")?;
-    assert!(definitions.get_exact(&policy.action()?).is_ok());
-    assert!(
+    check!(definitions.get_exact(&policy.action()?).is_ok());
+    check!(
         crate::composition::org_capability_vocabulary().contains(
             &mush_org::CapabilityId::new(REGISTRY_RECALL_CAPABILITY).ok_or("capability")?
         )
     );
     // Registration alone does not create an Org, scope, actor, grant or healthy
     // commerce world. The genuine child supplies those through real producers.
-    assert!(actual.world.module_state::<mush_org::OrgStore>().is_none());
-    assert!(configured.with_registry_recall(policy).is_err());
+    check!(actual.world.module_state::<mush_org::OrgStore>().is_none());
+    check!(configured.with_registry_recall(policy).is_err());
     Ok(())
 }
 
@@ -590,43 +591,43 @@ fn registry_revocation_configuration_is_explicit_stable_and_active_only() -> Tes
         mush_org::OrgScopeId(5),
         vec![mush_core::ObjId(6)],
     )?;
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_registry_revocation(policy.clone())
             .is_err()
     );
     let ordinary = prepare(CommerceMode::Active)?;
     let plain = engine(&ordinary)?;
-    assert!(!has(&plain, "roll", "action", "registry_term_revocation"));
+    check!(!has(&plain, "roll", "action", "registry_term_revocation"));
     let configured = ordinary.with_registry_revocation(policy.clone())?;
     let actual = engine(&configured)?;
     let definitions = actual.registry.definitions().ok_or("real definitions")?;
-    assert!(definitions.get_exact(&policy.action()?).is_ok());
-    assert!(crate::composition::org_capability_vocabulary().contains(
+    check!(definitions.get_exact(&policy.action()?).is_ok());
+    check!(crate::composition::org_capability_vocabulary().contains(
         &mush_org::CapabilityId::new(REGISTRY_REVOCATION_CAPABILITY).ok_or("capability")?
     ));
     // Registration alone does not create an Org, scope, actor, grant or healthy
     // commerce world. The genuine child supplies those through real producers.
-    assert!(actual.world.module_state::<mush_org::OrgStore>().is_none());
-    assert!(configured.with_registry_revocation(policy).is_err());
+    check!(actual.world.module_state::<mush_org::OrgStore>().is_none());
+    check!(configured.with_registry_revocation(policy).is_err());
     Ok(())
 }
 #[test]
 fn minds_facts_are_explicit_active_and_register_exact_service_and_action() -> TestResult {
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_minds_facts()
             .is_err()
     );
     let ordinary = prepare(CommerceMode::Active)?;
     let engine_without = engine(&ordinary)?;
-    assert!(!has(
+    check!(!has(
         &engine_without,
         "roll",
         "action",
         "record_mind_term_lapse"
     ));
-    assert!(!has(
+    check!(!has(
         &engine_without,
         "roll",
         "owner_read",
@@ -634,8 +635,8 @@ fn minds_facts_are_explicit_active_and_register_exact_service_and_action() -> Te
     ));
     let selected = prepare(CommerceMode::Active)?.with_minds_facts()?;
     let actual = engine(&selected)?;
-    assert!(has(&actual, "roll", "action", "record_mind_term_lapse"));
-    assert!(has(&actual, "roll", "owner_read", "minds_contract_facts"));
+    check!(has(&actual, "roll", "action", "record_mind_term_lapse"));
+    check!(has(&actual, "roll", "owner_read", "minds_contract_facts"));
     let count = actual
         .registry
         .definitions()
@@ -647,15 +648,16 @@ fn minds_facts_are_explicit_active_and_register_exact_service_and_action() -> Te
                 && d.reference().key().id.as_str() == "record_mind_term_lapse"
         })
         .count();
-    assert_eq!(
-        count, 1,
+    check_eq!(
+        count,
+        1,
         "the actual action is declared once and shared with its participant"
     );
-    assert!(selected.with_minds_facts().is_err());
+    check!(selected.with_minds_facts().is_err());
     // Merely registering a fact provider cannot fabricate commercial readiness.
     let provider = mush_roll::commerce::facts::MindsFactProvider::new();
     use mush_economy::FactProvider;
-    assert!(
+    check!(
         provider
             .resolve(&actual.world, "filed", "filed/0000000000000001", Some(1))
             .is_none()
@@ -665,16 +667,16 @@ fn minds_facts_are_explicit_active_and_register_exact_service_and_action() -> Te
 
 #[test]
 fn reconformance_requires_active_opt_in_and_exact_real_services() -> TestResult {
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_registry_reconformance()
             .is_err()
     );
     let absent = engine(&prepare(CommerceMode::Active)?)?;
-    assert!(!has(&absent, "roll", "action", "reconformance_admit"));
-    assert!(!has(&absent, "roll", "action", "recall_nonconforming_mind"));
+    check!(!has(&absent, "roll", "action", "reconformance_admit"));
+    check!(!has(&absent, "roll", "action", "recall_nonconforming_mind"));
     let configured = prepare(CommerceMode::Active)?.with_registry_reconformance()?;
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_registry_reconformance()?
             .with_registry_reconformance()
@@ -689,13 +691,13 @@ fn reconformance_requires_active_opt_in_and_exact_real_services() -> TestResult 
         "reconformance_recover",
         "recall_nonconforming_mind",
     ] {
-        assert!(has(&active, "roll", "action", id));
+        check!(has(&active, "roll", "action", id));
     }
-    assert!(has(&active, "roll", "owner_read", "registry_reconformance"));
-    assert!(has(&active, "roll", "action", "rating_admit"));
+    check!(has(&active, "roll", "owner_read", "registry_reconformance"));
+    check!(has(&active, "roll", "action", "rating_admit"));
     for id in ["registry_quota", "registry_artifacts"] {
         let definitions = active.registry.definitions().ok_or("actual definitions")?;
-        assert_eq!(
+        check_eq!(
             definitions
                 .iter()
                 .filter(|d| d.reference().key().owner.as_str() == "tacsim"
@@ -756,18 +758,18 @@ fn house_engine(c: &MindCommerce, market: bool) -> Result<Box<Engine>, ModError>
 }
 #[test]
 fn house_purchase_requires_explicit_active_house_and_all_actual_owners() -> TestResult {
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_house_minds(house_policy()?)
             .is_err()
     );
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_house_minds(house_policy()?)
             .is_err()
     );
     let ordinary = prepare(CommerceMode::Active)?.with_house_filings()?;
-    assert!(!has(
+    check!(!has(
         house_engine(&ordinary, true)?.as_ref(),
         "market",
         "action",
@@ -778,7 +780,7 @@ fn house_purchase_requires_explicit_active_house_and_all_actual_owners() -> Test
     let missing_provider = prepare(CommerceMode::Active)?
         .with_house_filings()?
         .with_house_minds(house_policy()?)?;
-    assert!(
+    check!(
         house_engine(&missing_provider, false).is_err(),
         "actual provider is mandatory"
     );
@@ -791,16 +793,16 @@ fn house_purchase_requires_explicit_active_house_and_all_actual_owners() -> Test
         "settle_house_mind",
         "refund_house_mind",
     ] {
-        assert!(has(&actual, "market", "action", id));
+        check!(has(&actual, "market", "action", id));
     }
-    assert!(has(&actual, "roll", "owner_read", "personal_house_holding"));
-    assert!(!has(
+    check!(has(&actual, "roll", "owner_read", "personal_house_holding"));
+    check!(!has(
         &actual,
         "roll",
         "owner_read",
         "personal_entitlement_holding"
     ));
-    assert!(selected.with_house_minds(house_policy()?).is_err());
+    check!(selected.with_house_minds(house_policy()?).is_err());
     Ok(())
 }
 #[test]
@@ -810,8 +812,8 @@ fn house_and_historical_personal_purchases_register_without_replacing_protocols(
         .with_house_filings()?
         .with_house_minds(house_policy()?)?;
     let actual = house_engine(&configured, true)?;
-    assert!(has(&actual, "market", "action", "purchase_original_mind"));
-    assert!(has(&actual, "market", "action", "purchase_house_mind"));
+    check!(has(&actual, "market", "action", "purchase_original_mind"));
+    check!(has(&actual, "market", "action", "purchase_house_mind"));
     let definitions = actual.registry.definitions().ok_or("definitions")?;
     let old = configured
         .state
@@ -823,15 +825,15 @@ fn house_and_historical_personal_purchases_register_without_replacing_protocols(
         .house_purchases
         .as_ref()
         .ok_or("house config")?;
-    assert_eq!(old.participants(), house.participants());
+    check_eq!(old.participants(), house.participants());
     for reference in old
         .actions()?
         .into_iter()
         .chain(house.purchase_actions(mush_roll::commerce::house_purchase::HouseProtocol::HouseV1)?)
     {
-        assert!(definitions.get_exact(&reference).is_ok());
+        check!(definitions.get_exact(&reference).is_ok());
     }
-    assert_eq!(
+    check_eq!(
         definitions
             .iter()
             .filter(|d| d.reference() == house.participants().economy())
@@ -854,12 +856,12 @@ fn house_renewal_policy() -> Result<mush_market::mind_house_renewal::RenewalPoli
 }
 #[test]
 fn house_renewal_requires_explicit_active_purchase_and_all_three_owners() -> TestResult {
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_house_mind_renewals(house_renewal_policy()?)
             .is_err()
     );
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_house_mind_renewals(house_renewal_policy()?)
             .is_err()
@@ -867,7 +869,7 @@ fn house_renewal_requires_explicit_active_purchase_and_all_three_owners() -> Tes
     let ordinary = prepare(CommerceMode::Active)?
         .with_house_filings()?
         .with_house_minds(house_policy()?)?;
-    assert!(!has(
+    check!(!has(
         house_engine(&ordinary, true)?.as_ref(),
         "market",
         "action",
@@ -881,7 +883,7 @@ fn house_renewal_requires_explicit_active_purchase_and_all_three_owners() -> Tes
             .with_house_minds(house_policy()?)?
             .with_house_mind_renewals(house_renewal_policy()?)
     };
-    assert!(house_engine(&configured()?, false).is_err());
+    check!(house_engine(&configured()?, false).is_err());
     let selected = configured()?;
     let actual = house_engine(&selected, true)?;
     for id in [
@@ -891,16 +893,16 @@ fn house_renewal_requires_explicit_active_purchase_and_all_three_owners() -> Tes
         "refund_house_mind_renewal",
         "close_house_mind_renewal",
     ] {
-        assert!(has(&actual, "market", "action", id));
+        check!(has(&actual, "market", "action", id));
     }
-    assert!(!has(
+    check!(!has(
         &actual,
         "market",
         "action",
         "close_house_mind_renewal_service"
     ));
-    assert!(has(&actual, "roll", "owner_read", "house_mind_renewal"));
-    assert!(
+    check!(has(&actual, "roll", "owner_read", "house_mind_renewal"));
+    check!(
         selected
             .with_house_mind_renewals(house_renewal_policy()?)
             .is_err()
@@ -909,7 +911,7 @@ fn house_renewal_requires_explicit_active_purchase_and_all_three_owners() -> Tes
 }
 #[test]
 fn house_renewal_service_is_optional_and_retains_exact_purchase_refs() -> TestResult {
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_house_mind_renewal_service()
             .is_err()
@@ -923,27 +925,27 @@ fn house_renewal_service_is_optional_and_retains_exact_purchase_refs() -> TestRe
     let definitions = actual.registry.definitions().ok_or("definitions")?;
     let house = selected.state.house_purchases.as_ref().ok_or("house")?;
     let renewal = selected.state.house_renewals.as_ref().ok_or("renewal")?;
-    assert_eq!(house.participants(), renewal.participants());
+    check_eq!(house.participants(), renewal.participants());
     for reference in renewal
         .actions()?
         .into_iter()
         .chain(house.purchase_actions(mush_roll::commerce::house_purchase::HouseProtocol::HouseV1)?)
     {
-        assert!(definitions.get_exact(&reference).is_ok());
+        check!(definitions.get_exact(&reference).is_ok());
     }
-    assert!(has(
+    check!(has(
         &actual,
         "market",
         "action",
         "close_house_mind_renewal_service"
     ));
-    assert!(!has(&actual, "market", "action", "draft_mind_renewal"));
+    check!(!has(&actual, "market", "action", "draft_mind_renewal"));
     // A missing paired native configuration must return its original error,
     // including at host composition, rather than panic on a private invariant.
     let mut missing = prepare(CommerceMode::Active)?;
     missing.state.house_renewal_service = selected.state.house_renewal_service.clone();
-    assert!(missing.configure_economy(EconomyModule::new()).is_err());
-    assert!(selected.with_house_mind_renewal_service().is_err());
+    check!(missing.configure_economy(EconomyModule::new()).is_err());
+    check!(selected.with_house_mind_renewal_service().is_err());
     Ok(())
 }
 
@@ -955,12 +957,12 @@ mod house_two_seat;
 
 #[test]
 fn derived_updates_require_real_dependent_services_and_the_distinct_fee_action() -> TestResult {
-    assert!(
+    check!(
         prepare(CommerceMode::Initialize)?
             .with_derived_updates()
             .is_err()
     );
-    assert!(
+    check!(
         prepare(CommerceMode::Active)?
             .with_derived_updates()
             .is_err()
@@ -973,7 +975,7 @@ fn derived_updates_require_real_dependent_services_and_the_distinct_fee_action()
             .with_dependent_owner_filings()?
             .with_derived_updates()
     };
-    assert!(configured()?.with_derived_updates().is_err());
+    check!(configured()?.with_derived_updates().is_err());
     for fee_owner in [false, true] {
         let prepared = configured()?;
         let action = prepared.state.roll.derived_update_action()?;
@@ -994,11 +996,11 @@ fn derived_updates_require_real_dependent_services_and_the_distinct_fee_action()
         }
         let result = compose_boxed(World::new_minimal(), Registry::new(), modules);
         if !fee_owner {
-            assert!(result.is_err());
+            check!(result.is_err());
             continue;
         }
         let actual = result?;
-        assert!(
+        check!(
             actual
                 .registry
                 .definitions()
@@ -1006,9 +1008,9 @@ fn derived_updates_require_real_dependent_services_and_the_distinct_fee_action()
                 .get_exact(&action)
                 .is_ok()
         );
-        assert!(has(&actual, "roll", "action", "update_derived_mind"));
-        assert!(!has(&actual, "roll", "action", "update_original_mind"));
-        assert!(has(&actual, "roll", "owner_read", "authored_fork_parent"));
+        check!(has(&actual, "roll", "action", "update_derived_mind"));
+        check!(!has(&actual, "roll", "action", "update_original_mind"));
+        check!(has(&actual, "roll", "owner_read", "authored_fork_parent"));
     }
     Ok(())
 }

@@ -98,16 +98,16 @@ mod tests {
             polls.set(polls.get() + 1);
             Err::<(), _>("original phase refusal")
         })?;
-        assert_eq!(polls.get(), 0, "construction does not poll the phase");
+        check_eq!(polls.get(), 0, "construction does not poll the phase");
         let waker = Waker::from(Arc::new(NoWake));
         let mut context = Context::from_waker(&waker);
-        assert_eq!(
+        check_eq!(
             future.as_mut().poll(&mut context),
             Poll::Ready(Err("original phase refusal"))
         );
-        assert_eq!(polls.get(), 1);
+        check_eq!(polls.get(), 1);
         drop(future);
-        assert_eq!(drops.get(), 1);
+        check_eq!(drops.get(), 1);
 
         let witness = OnDrop(&drops);
         let future = story_phase("test.cancel", || async {
@@ -116,8 +116,8 @@ mod tests {
             std::future::pending::<()>().await;
         })?;
         drop(future);
-        assert_eq!(polls.get(), 1, "dropping an unpolled phase does not run it");
-        assert_eq!(
+        check_eq!(polls.get(), 1, "dropping an unpolled phase does not run it");
+        check_eq!(
             drops.get(),
             2,
             "captured cleanup is still dropped exactly once"

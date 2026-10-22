@@ -310,7 +310,7 @@ impl Rig {
         };
         let supplier = account(stock_scope)?;
         let integrator = account(factory_scope)?;
-        assert_eq!(
+        check_eq!(
             snapshot
                 .account(supplier)
                 .ok_or("supplier")?
@@ -318,7 +318,7 @@ impl Rig {
                 .as_str(),
             crate::economy::CREDIT
         );
-        assert_eq!(
+        check_eq!(
             snapshot
                 .account(integrator)
                 .ok_or("integrator")?
@@ -429,7 +429,7 @@ impl Rig {
         ] {
             r.perform("industry", action, GOD, json!({}))?;
         }
-        assert!(
+        check!(
             r.plan("industry", "issue_core_die", agent, json!({"class":"i"}))
                 .is_err()
         );
@@ -488,8 +488,8 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
         serde_json::from_value::<mush_industry::workorder::WorkOrderId>(order["order"].clone())?
             .to_string();
     let params = json!({"order":id});
-    assert_eq!(r.money(r.payer)?, (money[0].0, money[0].1 + 300_000));
-    assert!(
+    check_eq!(r.money(r.payer)?, (money[0].0, money[0].1 + 300_000));
+    check!(
         r.plan(
             "industry",
             "complete_core_integration",
@@ -503,7 +503,7 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
     r.progress("advance_core_integration", 12)?;
     r.reboot(CoreOriginMode::Active)?;
     r.progress("advance_core_integration", 12)?;
-    assert_eq!(r.world().world().world_ic_now().at - accepted.at, 24 * 3600);
+    check_eq!(r.world().world().world_ic_now().at - accepted.at, 24 * 3600);
     let (_, completed) = r.perform(
         "industry",
         "complete_core_integration",
@@ -511,16 +511,16 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
         params.clone(),
     )?;
     let output = serde_json::from_value::<ObjId>(completed["object"].clone())?;
-    assert_eq!(
+    check_eq!(
         r.money(r.deployment.supplier_account)?.0,
         money[1].0 + 270_000
     );
-    assert_eq!(
+    check_eq!(
         r.money(r.deployment.integrator.account)?.0,
         money[2].0 + 30_000
     );
     r.perform("industry", "deliver_core_output", buyer, params)?;
-    assert_eq!(
+    check_eq!(
         r.world()
             .world()
             .get(output)
@@ -529,7 +529,7 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
         Some(buyer)
     );
     let native = mush_economy::core_integration::require_core_delivery(r.world().world(), accept)?;
-    assert_eq!(native.subject().requester, buyer);
+    check_eq!(native.subject().requester, buyer);
     let factory = r.deployment.factory;
     r.world_mut().world_mut().move_to(buyer, factory)?;
     let hull = r.world_mut().world_mut().create(
@@ -559,9 +559,9 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
     let intact = pristine
         .cell(&hull_internals)
         .ok_or("actual hull internals")?;
-    assert_eq!(intact.current, intact.max);
+    check_eq!(intact.current, intact.max);
     let damaged_internals = intact.current.checked_sub(1).ok_or("bounded hull damage")?;
-    assert!(damaged_internals > 0 && damaged_internals >= intact.min);
+    check!(damaged_internals > 0 && damaged_internals >= intact.min);
     let damage = mush_tactics::UnitMutationPlan::new(
         vec![mush_tactics::UnitMutationOp::SetCell {
             addr: hull_internals.clone(),
@@ -583,7 +583,7 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
     let before = mush_tactics::module::unit_of(r.world().world(), hull)
         .ok_or("native line unit")?
         .clone();
-    assert_eq!(
+    check_eq!(
         before.cell(&hull_internals).map(|cell| cell.current),
         Some(damaged_internals)
     );
@@ -597,7 +597,7 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
     let id =
         serde_json::from_value::<mush_industry::workorder::WorkOrderId>(order["order"].clone())?
             .to_string();
-    assert!(
+    check!(
         r.plan(
             "industry",
             "install_core_component",
@@ -616,24 +616,24 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
     let after = mush_tactics::module::unit_of(r.world().world(), hull)
         .ok_or("native fitted unit")?
         .clone();
-    assert_eq!(
+    check_eq!(
         after.cell(&hull_internals).map(|cell| cell.current),
         Some(damaged_internals)
     );
-    assert_eq!(
+    check_eq!(
         after.schema().key().id.as_str(),
         crate::definitions::core_replacement::LINE_I
     );
-    assert_eq!(after.object(), before.object());
+    check_eq!(after.object(), before.object());
     for (address, cell) in before.cells() {
         if !matches!(address, mush_tactics::CellAddr::Component { component, .. } if component.as_str() == "core")
         {
-            assert_eq!(after.cell(address), Some(cell));
+            check_eq!(after.cell(address), Some(cell));
         }
     }
     for (component, state) in before.components() {
         if component.as_str() != "core" {
-            assert_eq!(
+            check_eq!(
                 after
                     .components()
                     .find(|(id, _)| *id == component)
@@ -642,19 +642,19 @@ async fn shipped_origin_manufacture_delivery_refit_uses_real_signed_acknowledgem
             );
         }
     }
-    assert_eq!(r.money(r.payer)?.0, money[0].0 - 310_000);
-    assert_eq!(
+    check_eq!(r.money(r.payer)?.0, money[0].0 - 310_000);
+    check_eq!(
         r.money(r.deployment.integrator.account)?.0,
         money[2].0 + 40_000
     );
-    assert_eq!(r.money(r.payer)?.1, money[0].1);
-    assert!(!r.rows("core_component_exchanges").is_empty());
+    check_eq!(r.money(r.payer)?.1, money[0].1);
+    check!(!r.rows("core_component_exchanges").is_empty());
     r.reboot(CoreOriginMode::Active)?;
-    assert_eq!(
+    check_eq!(
         mush_tactics::module::unit_of(r.world().world(), hull),
         Some(&after)
     );
-    assert!(
+    check!(
         mush_economy::core_integration::require_core_delivery(r.world().world(), accept).is_ok()
     );
     Ok(())
@@ -672,8 +672,8 @@ async fn shipped_class_three_requires_actual_entitlement_and_never_charges_on_re
         r.deployment.clone(),
         &native,
     )?;
-    assert_eq!(hardware.origin_policy().monthly_quotas, [64, 16, 4]);
-    assert_eq!(
+    check_eq!(hardware.origin_policy().monthly_quotas, [64, 16, 4]);
+    check_eq!(
         hardware.payment_policy().delivery,
         Some(mush_economy::core_integration::CoreDeliveryPromise::PersonalCustodyV1)
     );
@@ -691,7 +691,7 @@ async fn shipped_class_three_requires_actual_entitlement_and_never_charges_on_re
             crate::definitions::core_replacement::LINE_III,
         ),
     ] {
-        assert_eq!(
+        check_eq!(
             hardware
                 .family()
                 .definition(class)
@@ -717,7 +717,7 @@ async fn shipped_class_three_requires_actual_entitlement_and_never_charges_on_re
         json!({"requester":buyer.0,"class":mush_industry::core_production::DieClass::III,"supplier_lot":lot.to_string()}),
     )?;
     let disk = r.boot.clone();
-    assert!(
+    check!(
         r.plan(
             "industry",
             "accept_core_integration",
@@ -726,13 +726,13 @@ async fn shipped_class_three_requires_actual_entitlement_and_never_charges_on_re
         )
         .is_err()
     );
-    assert_eq!(r.money(r.payer)?, before);
-    assert!(
+    check_eq!(r.money(r.payer)?, before);
+    check!(
         same_boot(&r.boot, &disk),
         "refused hardware acceptance changed retained images"
     );
     r.reboot(CoreOriginMode::Active)?;
-    assert_eq!(r.money(r.payer)?, before);
+    check_eq!(r.money(r.payer)?, before);
     Ok(())
 }
 
@@ -786,15 +786,15 @@ async fn shipped_signed_acceptance_rechecks_facility_before_stage_and_consuming_
             .insert(mush_core::Flags::GOING);
         r.world_mut().world_mut().take_dirty();
         if at_take {
-            assert!(r.take_install().is_err());
+            check!(r.take_install().is_err());
         } else {
-            assert!(
+            check!(
                 r.stage(plan.take().ok_or("prepared hardware action")?)
                     .is_err()
             );
         }
-        assert_eq!(r.money(r.payer)?, before);
-        assert!(
+        check_eq!(r.money(r.payer)?, before);
+        check!(
             same_boot(&r.boot, &disk),
             "stale hardware acceptance changed retained images"
         );

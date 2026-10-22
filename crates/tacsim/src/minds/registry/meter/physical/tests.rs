@@ -65,8 +65,8 @@ fn intact_core_cannot_authenticate_forged_rom_or_lower_class() -> TestResult {
         job.profile = &profile;
         job.dropped = rom;
         let _actual_unmodified_answer = meter.think(&job);
-        assert!(meter.reconcile(&arena).is_err());
-        assert!(
+        check!(meter.reconcile(&arena).is_err());
+        check!(
             meter.measurement().is_err(),
             "failed physical proof is sticky"
         );
@@ -93,8 +93,8 @@ fn invocation_identity_rejects_wrong_binding_profile_and_duplicate_or_gap_sequen
         }
         let actual = meter.think(&job);
         let plain = meter.runner.think(&job);
-        assert_eq!(actual, plain, "rejection never changes the real answer");
-        assert!(meter.reconcile(&arena).is_err());
+        check_eq!(actual, plain, "rejection never changes the real answer");
+        check!(meter.reconcile(&arena).is_err());
     }
     Ok(())
 }
@@ -104,19 +104,19 @@ fn trace_join_is_required_and_pending_evidence_cannot_escape_as_terminal() -> Te
     let (mut arena, meter) = fixture(8)?;
     let think = collect(&mut arena, 1000)?;
     let answer = think.think().result;
-    assert_eq!(arena.settle_collected(&think, answer).faults, 0);
+    check_eq!(arena.settle_collected(&think, answer).faults, 0);
     meter.reconcile(&arena)?;
-    assert_eq!(meter.measurement()?.summary.thinks(), 1);
-    assert!(
+    check_eq!(meter.measurement()?.summary.thinks(), 1);
+    check!(
         meter.require_complete().is_err(),
         "answer has not landed yet"
     );
     arena.traces.set_enabled(false);
-    assert!(
+    check!(
         meter.reconcile(&arena).is_err(),
         "missing trace is not healthy empty evidence"
     );
-    assert!(meter.measurement().is_err());
+    check!(meter.measurement().is_err());
     Ok(())
 }
 
@@ -148,12 +148,12 @@ fn invocation_bound_includes_rom_and_failed_evidence_never_resets_it() -> TestRe
     arena.set_unit(OWN, after, Arena::plan_touches_bands(&plan));
     arena.apply_consequence(OWN, &consequence, arena.now_ms, None, &mut Vec::new());
     let next = collect(&mut arena, 3000)?;
-    assert!(next.job().dropped);
+    check!(next.job().dropped);
     let actual = next.think().result;
-    assert_eq!(actual, meter.runner.think(&next.job()));
-    assert!(meter.reconcile(&arena).is_err());
+    check_eq!(actual, meter.runner.think(&next.job()));
+    check!(meter.reconcile(&arena).is_err());
     let state = meter.state.lock().map_err(|_| "poison")?;
-    assert_eq!(
+    check_eq!(
         state
             .physical
             .as_ref()
@@ -173,9 +173,9 @@ fn observation_storage_has_fixed_primitive_pending_bound_and_shared_source_bindi
     let physical = state.physical.as_ref().ok_or("physical")?;
     let owner = state.units.get(&OWN).ok_or("source")?;
     let observed = physical.units.get(&OWN).ok_or("observed")?;
-    assert!(Arc::ptr_eq(&owner.bindings, &observed.bindings));
-    assert!(std::mem::size_of::<Invocation>() <= 128);
-    assert_eq!(MAX_PENDING_PER_UNIT, 64);
+    check!(Arc::ptr_eq(&owner.bindings, &observed.bindings));
+    check!(std::mem::size_of::<Invocation>() <= 128);
+    check_eq!(MAX_PENDING_PER_UNIT, 64);
     Ok(())
 }
 
@@ -185,18 +185,18 @@ fn pending_overflow_refuses_without_evicting_the_oldest_proof() -> TestResult {
     for n in 0..=MAX_PENDING_PER_UNIT {
         let think = collect(&mut arena, 1000 + i64::try_from(n)? * 1000)?;
         let answer = think.think().result;
-        assert!(answer.fault.is_none());
+        check!(answer.fault.is_none());
     }
-    assert!(meter.reconcile(&arena).is_err());
+    check!(meter.reconcile(&arena).is_err());
     let state = meter.state.lock().map_err(|_| "poison")?;
     let physical = state.physical.as_ref().ok_or("physical")?;
     let observed = physical.units.get(&OWN).ok_or("unit")?;
-    assert_eq!(observed.pending.len(), MAX_PENDING_PER_UNIT);
-    assert!(
+    check_eq!(observed.pending.len(), MAX_PENDING_PER_UNIT);
+    check!(
         observed.pending.contains_key(&0),
         "no oldest-proof eviction"
     );
-    assert_eq!(
+    check_eq!(
         physical.summary.total_thinks,
         u64::try_from(MAX_PENDING_PER_UNIT)?
     );
@@ -210,10 +210,10 @@ fn physical_mode_cannot_start_on_a_preexisting_trace_or_collected_job() -> TestR
         if collected {
             let _ = collect(&mut arena, 1000)?;
         } else {
-            assert!(arena.traces.record(OWN, 7, 0, false, None, &[], &[], None));
+            check!(arena.traces.record(OWN, 7, 0, false, None, &[], &[], None));
         }
         let state = meter.state.lock().map_err(|_| "poison")?;
-        assert!(Physical::capture(&arena, &state.units, meter.profile).is_err());
+        check!(Physical::capture(&arena, &state.units, meter.profile).is_err());
     }
     Ok(())
 }

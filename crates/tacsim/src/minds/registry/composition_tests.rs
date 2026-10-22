@@ -16,9 +16,9 @@ fn fixed_ground_is_real_atlas_content_and_missing_tiles_refuse() -> TestResult {
     let policy = FrozenPolicy::capture(Arc::clone(&catalog), &records, enabled().config().clone())?;
     let reference = policy.definition_ref()?;
     let prepared = Registration::prepare(&enabled(), CommerceMode::Active)?;
-    assert_eq!(&reference, prepared.reference());
-    assert!(!records.regions.is_empty());
-    assert!(!records.tiles.is_empty());
+    check_eq!(&reference, prepared.reference());
+    check!(!records.regions.is_empty());
+    check!(!records.tiles.is_empty());
 
     let mut changed = records.clone();
     let ground_id = mush_core::CanonicalId::new("tacsim.arena.proving_ground")?;
@@ -33,33 +33,31 @@ fn fixed_ground_is_real_atlas_content_and_missing_tiles_refuse() -> TestResult {
     let tile = changed.tiles.get_mut(&tile_key).ok_or("applied tile")?;
     let mut cell = tile.cells.get(0, 0).ok_or("actual terrain cell")?;
     cell.elev_cm = cell.elev_cm.checked_add(1).ok_or("elevation headroom")?;
-    assert!(tile.cells.set(0, 0, cell));
+    check!(tile.cells.set(0, 0, cell));
     let changed_policy =
         FrozenPolicy::capture(Arc::clone(&catalog), &changed, enabled().config().clone())?;
-    assert_ne!(
+    check_ne!(
         reference,
         changed_policy.definition_ref()?,
         "actual ground bytes fence certification identity"
     );
 
     changed.tiles.clear();
-    assert!(
+    check!(
         FrozenPolicy::capture(Arc::clone(&catalog), &changed, enabled().config().clone()).is_err()
     );
     let mut missing = (*catalog).clone();
     missing.arenas.clear();
-    assert!(
-        FrozenPolicy::capture(Arc::new(missing), &records, enabled().config().clone()).is_err()
-    );
+    check!(FrozenPolicy::capture(Arc::new(missing), &records, enabled().config().clone()).is_err());
     Ok(())
 }
 
 #[test]
 fn capture_and_attachment_refuse_invalid_or_changed_inputs() -> TestResult {
-    assert!(Registration::prepare(&TacsimRuleset::new(), CommerceMode::Active).is_err());
+    check!(Registration::prepare(&TacsimRuleset::new(), CommerceMode::Active).is_err());
     let mut invalid = enabled().config().clone();
     invalid.arena.tempo.substep_max_ms = 0;
-    assert!(
+    check!(
         Registration::prepare(&TacsimRuleset::with_config(invalid), CommerceMode::Active).is_err()
     );
     let mut malformed = enabled().config().clone();
@@ -67,7 +65,7 @@ fn capture_and_attachment_refuse_invalid_or_changed_inputs() -> TestResult {
         name: "invalid-pack".into(),
         bytes: "{}".into(),
     });
-    assert!(
+    check!(
         Registration::prepare(&TacsimRuleset::with_config(malformed), CommerceMode::Active)
             .is_err()
     );
@@ -77,9 +75,9 @@ fn capture_and_attachment_refuse_invalid_or_changed_inputs() -> TestResult {
     registration.check(enabled().config(), &catalog)?;
     let mut stale = enabled().config().clone();
     stale.enabled = false;
-    assert!(registration.check(&stale, &catalog).is_err());
+    check!(registration.check(&stale, &catalog).is_err());
     catalog.references.clear();
-    assert!(registration.check(enabled().config(), &catalog).is_err());
+    check!(registration.check(enabled().config(), &catalog).is_err());
     Ok(())
 }
 
@@ -96,7 +94,7 @@ fn manifest_cannot_register_without_its_actual_content_definitions() -> TestResu
         }
     }
     let registration = Registration::prepare(&enabled(), CommerceMode::Initialize)?;
-    assert!(
+    check!(
         Engine::with_modules(
             World::new_minimal(),
             Registry::new(),

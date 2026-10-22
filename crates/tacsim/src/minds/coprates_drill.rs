@@ -116,16 +116,16 @@ impl Harness {
             },
         });
         let measured = self.runner.take_stats().pop().ok_or("actual measurement")?;
-        assert!(
+        check!(
             result.fault.is_none(),
             "source fault {:?}; operations={} fees={}",
             result.fault,
             measured.ops,
             measured.fee
         );
-        assert!(measured.ops + measured.fee <= 3000);
-        assert!(result.intents.len() <= 16);
-        assert!(
+        check!(measured.ops + measured.fee <= 3000);
+        check!(result.intents.len() <= 16);
+        check!(
             mush_mind::memory::decode(&result.memory)
                 .ok_or("canonical flat memory")?
                 .len()
@@ -223,25 +223,25 @@ fn coprates_has_exact_independent_source_and_provisional_profiles() -> TestResul
         ("source_sha256", SOURCE.as_bytes()),
         ("envelope_sha256", ENVELOPE.as_bytes()),
     ] {
-        assert_eq!(
+        check_eq!(
             manifest.get(key).and_then(|v| v.as_str()),
             Some(crate::arena::digest_text(&Sha256::digest(bytes).into()).as_str())
         );
     }
-    assert_eq!(
+    check_eq!(
         manifest.get("content_version").and_then(|v| v.as_u64()),
         Some(2)
     );
-    assert_eq!(
+    check_eq!(
         manifest.get("status").and_then(|v| v.as_str()),
         Some("unfiled_combat_content")
     );
     let envelope: Envelope = serde_json::from_str(ENVELOPE)?;
     super::authoring::RevisionRules.validate(SOURCE, &envelope)?;
-    assert_eq!(envelope.declared_class, "II");
-    assert_eq!(envelope.mind_abi, super::MIND_ABI);
-    assert_eq!(envelope.profiles.as_object().ok_or("profiles")?.len(), 2);
-    assert_eq!(envelope.presets, envelope.profiles);
+    check_eq!(envelope.declared_class, "II");
+    check_eq!(envelope.mind_abi, super::MIND_ABI);
+    check_eq!(envelope.profiles.as_object().ok_or("profiles")?.len(), 2);
+    check_eq!(envelope.presets, envelope.profiles);
     for forbidden in [
         "stock::think",
         "stock::hunt",
@@ -253,16 +253,16 @@ fn coprates_has_exact_independent_source_and_provisional_profiles() -> TestResul
         "standing(",
         "account(",
     ] {
-        assert!(
+        check!(
             !SOURCE.contains(forbidden),
             "unexpected content surface {forbidden}"
         );
     }
-    assert_ne!(
+    check_ne!(
         Sha256::digest(SOURCE.as_bytes()),
         Sha256::digest(super::STANDARD_RHAI.as_bytes())
     );
-    assert_ne!(
+    check_ne!(
         Sha256::digest(SOURCE.as_bytes()),
         Sha256::digest(include_bytes!(
             "../../content/minds/house/safe_conduct.rhai"
@@ -281,31 +281,31 @@ fn requested_hold_and_lock_are_not_already_observed_stationary_fire() -> TestRes
         let mut view = engaged();
         view.speed_cms = 100;
         let locking = harness.think(view.clone(), &[], 0)?;
-        assert!(has_goal(&locking, MotorGoal::Hold));
-        assert!(locking.intents.contains(&IntentKind::Lock {
+        check!(has_goal(&locking, MotorGoal::Hold));
+        check!(locking.intents.contains(&IntentKind::Lock {
             contact: fixture::HOSTILE
         }));
-        assert!(!arms(&locking));
+        check!(!arms(&locking));
         view.lock = Some(fixture::HOSTILE);
         view.t_ms += 500;
         let coasting = harness.think(view.clone(), &locking.memory, 1)?;
-        assert!(has_goal(&coasting, MotorGoal::Hold));
-        assert!(
+        check!(has_goal(&coasting, MotorGoal::Hold));
+        check!(
             !arms(&coasting),
             "confirmed lock alone does not prove stopped motion"
         );
         view.speed_cms = -1;
-        assert!(!arms(&harness.think(view.clone(), &coasting.memory, 2)?));
+        check!(!arms(&harness.think(view.clone(), &coasting.memory, 2)?));
         view.speed_cms = 0;
         view.t_ms += 500;
         let settled = harness.think(view.clone(), &coasting.memory, 3)?;
-        assert!(!conditions(&settled).is_empty());
+        check!(!conditions(&settled).is_empty());
         view.lock = Some(fixture::FRIEND);
         let changed = harness.think(view, &settled.memory, 4)?;
-        assert!(changed.intents.contains(&IntentKind::Lock {
+        check!(changed.intents.contains(&IntentKind::Lock {
             contact: fixture::HOSTILE
         }));
-        assert!(
+        check!(
             !arms(&changed),
             "a different observed lock is not the target"
         );
@@ -319,23 +319,23 @@ fn drill_and_guard_bind_actual_floor_rounds_and_current_target() -> TestResult {
         let harness = Harness::new(name)?;
         let result = harness.think(ready_target(), &[], 0)?;
         let rules = conditions(&result);
-        assert!(!rules.is_empty());
+        check!(!rules.is_empty());
         for rule in rules {
-            assert_eq!(
+            check_eq!(
                 rule.target,
                 SlotTarget::Contact {
                     id: fixture::HOSTILE
                 }
             );
-            assert_eq!(rule.min_permille, odds);
-            assert_eq!(rule.min_rounds_left, kept);
-            assert!(rule.max_range_m > 0);
+            check_eq!(rule.min_permille, odds);
+            check_eq!(rule.min_rounds_left, kept);
+            check!(rule.max_range_m > 0);
         }
         let mut lawful = ready_target();
         lawful.odds_floor_permille = 800;
         let result = harness.think(lawful, &[], 1)?;
-        assert!(!conditions(&result).is_empty());
-        assert!(
+        check!(!conditions(&result).is_empty());
+        check!(
             conditions(&result)
                 .iter()
                 .all(|rule| rule.min_permille == 800)
@@ -344,7 +344,7 @@ fn drill_and_guard_bind_actual_floor_rounds_and_current_target() -> TestResult {
         for weapon in &mut empty.weapons {
             weapon.rounds = kept;
         }
-        assert!(!arms(&harness.think(empty, &[], 2)?));
+        check!(!arms(&harness.think(empty, &[], 2)?));
     }
     Ok(())
 }
@@ -383,9 +383,9 @@ fn exact_ordered_target_does_not_substitute_a_fresh_other_hostile() -> TestResul
                 }
             }
             let result = harness.think(view, &[], mode)?;
-            assert!(has_goal(&result, MotorGoal::Hold));
-            assert!(!arms(&result));
-            assert!(
+            check!(has_goal(&result, MotorGoal::Hold));
+            check!(!arms(&result));
+            check!(
                 !result
                     .intents
                     .iter()
@@ -403,8 +403,8 @@ fn movement_drills_and_hold_do_not_fire_even_with_a_ready_hostile_lock() -> Test
         let mut advance = healthy(MindObjective::Advance { to: (6, 4) });
         advance.lock = Some(fixture::HOSTILE);
         let moving = harness.think(advance, &[], 0)?;
-        assert!(has_goal(&moving, MotorGoal::Cell { x: 6, y: 4 }));
-        assert!(!arms(&moving));
+        check!(has_goal(&moving, MotorGoal::Cell { x: 6, y: 4 }));
+        check!(!arms(&moving));
         for objective in [
             MindObjective::Hold,
             MindObjective::Support {
@@ -414,15 +414,15 @@ fn movement_drills_and_hold_do_not_fire_even_with_a_ready_hostile_lock() -> Test
             let mut view = healthy(objective);
             view.lock = Some(fixture::HOSTILE);
             let result = harness.think(view, &[], 1)?;
-            assert!(has_goal(&result, MotorGoal::Hold));
-            assert!(!arms(&result));
+            check!(has_goal(&result, MotorGoal::Hold));
+            check!(!arms(&result));
         }
         let mut withdrawing = healthy(MindObjective::Withdraw);
         withdrawing.cell = Some((3, 4));
         withdrawing.x_cm = 3500;
         let result = harness.think(withdrawing, &[], 2)?;
-        assert!(has_goal(&result, MotorGoal::Cell { x: 1, y: 4 }));
-        assert!(!arms(&result));
+        check!(has_goal(&result, MotorGoal::Cell { x: 1, y: 4 }));
+        check!(!arms(&result));
     }
     Ok(())
 }
@@ -440,9 +440,9 @@ fn screen_requires_current_arc_stopped_motion_and_confirmed_lock() -> TestResult
                 .ok_or("target")?
                 .bearing_deg = bearing;
             let result = harness.think(view, &[], 0)?;
-            assert!(has_goal(&result, MotorGoal::Hold));
-            assert!(result.intents.contains(&IntentKind::Heading { mdeg: 0 }));
-            assert_eq!(arms(&result), expected);
+            check!(has_goal(&result, MotorGoal::Hold));
+            check!(result.intents.contains(&IntentKind::Heading { mdeg: 0 }));
+            check_eq!(arms(&result), expected);
         }
     }
     Ok(())
@@ -464,9 +464,9 @@ fn missing_expired_or_hold_fire_order_clears_prior_conditions() -> TestResult {
             _ => view.order.as_mut().ok_or("order")?.hold_fire = true,
         }
         let result = Harness::new("Drill")?.think(view, &[], mode)?;
-        assert!(has_goal(&result, MotorGoal::Hold));
-        assert!(!arms(&result));
-        assert!(
+        check!(has_goal(&result, MotorGoal::Hold));
+        check!(!arms(&result));
+        check!(
             result
                 .intents
                 .contains(&IntentKind::Condition(Arming::Disarm { weapon: None }))
@@ -489,12 +489,12 @@ fn actual_order_range_cap_controls_stationary_firing_not_a_requested_stop() -> T
     target.range_m = 220;
     target.cell = Some((23, 4));
     let original = crate::arena::stock_mind::view_ranges(&view, 600, view.order.as_ref());
-    assert!(22000 < original.engage_cm);
-    assert!(arms(&harness.think(view.clone(), &[], 0)?));
+    check!(22000 < original.engage_cm);
+    check!(arms(&harness.think(view.clone(), &[], 0)?));
     view.order.as_mut().ok_or("order")?.max_range_band =
         Some(crate::deliberation::order::RangeBand::Close);
     let limited = crate::arena::stock_mind::view_ranges(&view, 600, view.order.as_ref());
-    assert!(limited.engage_cm < 22000);
+    check!(limited.engage_cm < 22000);
     let expected = crate::arena::stock_mind::stand_off_of(
         &harness.map,
         &view,
@@ -506,14 +506,14 @@ fn actual_order_range_cap_controls_stationary_firing_not_a_requested_stop() -> T
     )
     .ok_or("public station")?;
     let result = harness.think(view, &[], 1)?;
-    assert!(has_goal(
+    check!(has_goal(
         &result,
         MotorGoal::Cell {
             x: expected.0,
             y: expected.1
         }
     ));
-    assert!(
+    check!(
         !arms(&result),
         "a movement request cannot count as a completed stationary drill"
     );
@@ -546,14 +546,14 @@ fn support_follows_its_earned_charge_plot_and_refuses_lost_or_foreign_charge() -
     )
     .ok_or("public station")?;
     let moving = harness.think(view.clone(), &[], 0)?;
-    assert!(has_goal(
+    check!(has_goal(
         &moving,
         MotorGoal::Cell {
             x: expected.0,
             y: expected.1
         }
     ));
-    assert!(!arms(&moving));
+    check!(!arms(&moving));
     for mode in 0..3 {
         let mut missing = view.clone();
         match mode {
@@ -577,8 +577,8 @@ fn support_follows_its_earned_charge_plot_and_refuses_lost_or_foreign_charge() -
             }
         }
         let result = harness.think(missing, &moving.memory, mode)?;
-        assert!(has_goal(&result, MotorGoal::Hold));
-        assert!(!arms(&result));
+        check!(has_goal(&result, MotorGoal::Hold));
+        check!(!arms(&result));
     }
     Ok(())
 }
@@ -604,8 +604,8 @@ fn full_public_rows_and_unarmed_hulls_keep_the_real_runtime_limits() -> TestResu
         for sequence in 0..8 {
             view.t_ms += 500;
             let result = harness.think(view.clone(), &memory, sequence)?;
-            assert!(!conditions(&result).is_empty());
-            assert!(conditions(&result).iter().all(|rule| rule.target
+            check!(!conditions(&result).is_empty());
+            check!(conditions(&result).iter().all(|rule| rule.target
                 == SlotTarget::Contact {
                     id: fixture::HOSTILE
                 }));
@@ -613,7 +613,7 @@ fn full_public_rows_and_unarmed_hulls_keep_the_real_runtime_limits() -> TestResu
         }
         view.weapons.clear();
         let result = harness.think(view, &memory, 8)?;
-        assert!(
+        check!(
             result
                 .intents
                 .iter()
@@ -622,7 +622,7 @@ fn full_public_rows_and_unarmed_hulls_keep_the_real_runtime_limits() -> TestResu
         let mut unarmed = engaged();
         unarmed.weapons.clear();
         let result = harness.think(unarmed, &[], 9)?;
-        assert!(
+        check!(
             result
                 .intents
                 .iter()
@@ -661,14 +661,14 @@ fn drill_actual_native_no_route_repeats_only_after_each_fresh_delay() -> TestRes
         kind: IntentKind::Goal(goal),
         seq: 0,
     };
-    assert_eq!(
+    check_eq!(
         apply_intent(&mut arena, &input, IntentSource::Seat),
         IntentOutcome::AppliedContinuous
     );
     let mut counters = MotorCounters::default();
     arena.motor_step(fixture::UNIT, 5000, &mut counters);
     let mut actual = arena.mind_view(fixture::UNIT).ok_or("actual public view")?;
-    assert_eq!(
+    check_eq!(
         actual.motor.ok_or("actual motor")?.outcome,
         Some(DriveOutcome::NoRoute)
     );
@@ -676,13 +676,13 @@ fn drill_actual_native_no_route_repeats_only_after_each_fresh_delay() -> TestRes
     let mut harness = Harness::new("Drill")?;
     harness.map = Arc::clone(&arena.definition);
     let stopped = harness.think(actual.clone(), &[], 0)?;
-    assert!(has_goal(&stopped, MotorGoal::Hold));
+    check!(has_goal(&stopped, MotorGoal::Hold));
     let hold = Intent {
         kind: IntentKind::Goal(MotorGoal::Hold),
         seq: 1,
         ..input
     };
-    assert_eq!(
+    check_eq!(
         apply_intent(&mut arena, &hold, IntentSource::Seat),
         IntentOutcome::AppliedContinuous
     );
@@ -690,34 +690,34 @@ fn drill_actual_native_no_route_repeats_only_after_each_fresh_delay() -> TestRes
     let mut after_hold = arena.mind_view(fixture::UNIT).ok_or("after hold")?;
     after_hold.order = actual.order.clone();
     let waiting = harness.think(after_hold.clone(), &stopped.memory, 1)?;
-    assert!(
+    check!(
         has_goal(&waiting, MotorGoal::Hold),
         "HOLD removing a motor row must not erase retry delay"
     );
     after_hold.t_ms = 7000;
     let retry = harness.think(after_hold, &waiting.memory, 2)?;
-    assert!(has_goal(&retry, MotorGoal::Cell { x: 3, y: 6 }));
-    assert!(!arms(&retry));
+    check!(has_goal(&retry, MotorGoal::Cell { x: 3, y: 6 }));
+    check!(!arms(&retry));
 
     // Land that retry through the unchanged native route solver. The same
     // enclosed destination really fails again; it must earn a new delay.
     arena.now_ms = 7000;
     let second_attempt = Intent { seq: 2, ..input };
-    assert_eq!(
+    check_eq!(
         apply_intent(&mut arena, &second_attempt, IntentSource::Seat),
         IntentOutcome::AppliedContinuous
     );
     arena.motor_step(fixture::UNIT, 7000, &mut counters);
     let mut second_failure = arena.mind_view(fixture::UNIT).ok_or("second failure")?;
-    assert_eq!(
+    check_eq!(
         second_failure.motor.ok_or("second native motor")?.outcome,
         Some(DriveOutcome::NoRoute)
     );
     second_failure.order = actual.order.clone();
     let second_stop = harness.think(second_failure, &retry.memory, 3)?;
-    assert!(has_goal(&second_stop, MotorGoal::Hold));
+    check!(has_goal(&second_stop, MotorGoal::Hold));
     let second_hold = Intent { seq: 3, ..hold };
-    assert_eq!(
+    check_eq!(
         apply_intent(&mut arena, &second_hold, IntentSource::Seat),
         IntentOutcome::AppliedContinuous
     );
@@ -725,11 +725,11 @@ fn drill_actual_native_no_route_repeats_only_after_each_fresh_delay() -> TestRes
     let mut second_wait = arena.mind_view(fixture::UNIT).ok_or("second hold")?;
     second_wait.order = actual.order;
     let waiting_again = harness.think(second_wait.clone(), &second_stop.memory, 4)?;
-    assert!(has_goal(&waiting_again, MotorGoal::Hold));
+    check!(has_goal(&waiting_again, MotorGoal::Hold));
     second_wait.t_ms = 9000;
     let retry_again = harness.think(second_wait, &waiting_again.memory, 5)?;
-    assert!(has_goal(&retry_again, MotorGoal::Cell { x: 3, y: 6 }));
-    assert!(!arms(&retry_again));
+    check!(has_goal(&retry_again, MotorGoal::Cell { x: 3, y: 6 }));
+    check!(!arms(&retry_again));
     Ok(())
 }
 
@@ -748,7 +748,7 @@ fn drill_actual_native_arrival_holds_without_firing() -> TestResult {
         kind: IntentKind::Goal(MotorGoal::Cell { x: 3, y: 3 }),
         seq: 0,
     };
-    assert_eq!(
+    check_eq!(
         apply_intent(&mut arena, &input, IntentSource::Seat),
         IntentOutcome::AppliedContinuous
     );
@@ -756,15 +756,15 @@ fn drill_actual_native_arrival_holds_without_firing() -> TestResult {
     let mut view = arena
         .mind_view(fixture::UNIT)
         .ok_or("actual public arrival")?;
-    assert_eq!(
+    check_eq!(
         view.motor.ok_or("motor")?.outcome,
         Some(DriveOutcome::Arrived)
     );
     view.order = Some(order(MindObjective::Advance { to: (3, 3) }));
     let harness = Harness::new("Drill")?;
     let result = harness.think(view, &[], 0)?;
-    assert!(has_goal(&result, MotorGoal::Hold));
-    assert!(!arms(&result));
+    check!(has_goal(&result, MotorGoal::Hold));
+    check!(!arms(&result));
     Ok(())
 }
 
@@ -781,23 +781,23 @@ fn guard_withdraws_earlier_and_startup_requires_a_current_order() -> TestResult 
             facet.armor = facet.armor_max * 2 / 5;
         }
     }
-    assert!((300..450).contains(&crate::arena::stock_mind::health_permille(&hurt)));
-    assert!(arms(&Harness::new("Drill")?.think(hurt.clone(), &[], 0)?));
+    check!((300..450).contains(&crate::arena::stock_mind::health_permille(&hurt)));
+    check!(arms(&Harness::new("Drill")?.think(hurt.clone(), &[], 0)?));
     let guarded = Harness::new("Guard")?.think(hurt, &[], 0)?;
-    assert!(has_goal(&guarded, MotorGoal::Cell { x: 1, y: 4 }));
-    assert!(!arms(&guarded));
+    check!(has_goal(&guarded, MotorGoal::Cell { x: 1, y: 4 }));
+    check!(!arms(&guarded));
     for name in ["Drill", "Guard"] {
         let harness = Harness::new(name)?;
         let mut cold = ready_target();
         cold.power = Power::Off;
         let commanded = harness.think(cold.clone(), &[], 0)?;
-        assert!(commanded.intents.contains(&IntentKind::Startup));
-        assert!(!arms(&commanded));
+        check!(commanded.intents.contains(&IntentKind::Startup));
+        check!(!arms(&commanded));
         cold.order = None;
         let idle = harness.think(cold, &[], 1)?;
-        assert!(has_goal(&idle, MotorGoal::Hold));
-        assert!(!idle.intents.contains(&IntentKind::Startup));
-        assert!(!arms(&idle));
+        check!(has_goal(&idle, MotorGoal::Hold));
+        check!(!idle.intents.contains(&IntentKind::Startup));
+        check!(!arms(&idle));
     }
     Ok(())
 }

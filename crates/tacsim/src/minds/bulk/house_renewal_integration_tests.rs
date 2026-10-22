@@ -27,7 +27,7 @@ fn row<T: serde::de::DeserializeOwned>(
         .into_iter()
         .filter(|r| r.get(field) == Some(&value));
     let actual = all.next().ok_or("actual renewal row")?;
-    assert!(all.next().is_none(), "exact row is unique");
+    check!(all.next().is_none(), "exact row is unique");
     Ok(serde_json::from_value(actual)?)
 }
 fn licence(w: &PlayerWorld, id: LicenceId) -> TestResult<PersonalPaidLicence> {
@@ -48,7 +48,7 @@ fn paid(w: &PlayerWorld, id: LicenceId, generation: u64) -> TestResult<PaidTermR
                 && r.get("generation") == Some(&json!(generation.to_string()))
         });
     let value = all.next().ok_or("actual generation")?;
-    assert!(all.next().is_none());
+    check!(all.next().is_none());
     Ok(serde_json::from_value(value)?)
 }
 fn operation(w: &PlayerWorld, n: u128) -> TestResult<MindRenewalOperationV1> {
@@ -61,8 +61,8 @@ fn boot(registry: &Fixture, snapshot: &Durable) -> TestResult<Box<PlayerWorld>> 
     Ok(Box::new(super::boot_options(registry, snapshot, true)?))
 }
 fn current_same(w: &PlayerWorld, old: &PersonalPaidLicence, term: &PaidTermRecord) -> TestResult {
-    assert_eq!(licence(w, old.id())?, *old);
-    assert_eq!(paid(w, old.id(), term.generation().get())?, *term);
+    check_eq!(licence(w, old.id())?, *old);
+    check_eq!(paid(w, old.id(), term.generation().get())?, *term);
     Ok(())
 }
 fn fresh_fences(
@@ -82,26 +82,24 @@ fn fresh_fences(
             let before = balance(&w, wallet(&w, EconomicOwner::Object(BUYER), None)?)?;
             if boundary == 0 {
                 command(&mut w, "@org/status House=suspended")?;
-                assert!(direct(&mut w, action, BUYER, START + 70, params.clone()).is_err());
+                check!(direct(&mut w, action, BUYER, START + 70, params.clone()).is_err());
             } else {
                 let (p, o) = direct(&mut w, action, BUYER, START + 70, params.clone())?;
                 if boundary == 1 {
                     command(&mut w, "@org/status House=suspended")?;
-                    assert!(
-                        stage(&mut w, action, BUYER, START + 70, params.clone(), p, o).is_err()
-                    );
+                    check!(stage(&mut w, action, BUYER, START + 70, params.clone(), p, o).is_err());
                 } else {
                     stage(&mut w, action, BUYER, START + 70, params.clone(), p, o)?;
                     command(&mut w, "@org/status House=suspended")?;
                     let _ = w.engine.world.take_dirty();
-                    assert!(w.engine.take_staged_action().is_err());
+                    check!(w.engine.take_staged_action().is_err());
                 }
             }
-            assert_eq!(
+            check_eq!(
                 balance(&w, wallet(&w, EconomicOwner::Object(BUYER), None)?)?,
                 before
             );
-            assert!(
+            check!(
                 rows(&disk(&w), "market", OP) == rows(&base.disk, "market", OP),
                 "no renewed rows after issuer loss"
             );
@@ -118,12 +116,12 @@ fn fresh_fences(
             if after_stage {
                 stage(&mut w, action, BUYER, START + 71, params.clone(), p, o)?;
                 registry.accounts.epoch.invalidate();
-                assert!(w.engine.take_staged_action().is_err());
+                check!(w.engine.take_staged_action().is_err());
             } else {
                 registry.accounts.epoch.invalidate();
-                assert!(stage(&mut w, action, BUYER, START + 71, params.clone(), p, o).is_err());
+                check!(stage(&mut w, action, BUYER, START + 71, params.clone(), p, o).is_err());
             }
-            assert!(
+            check!(
                 disk(&w) == before,
                 "stale account publishes no private rows"
             );
@@ -144,52 +142,52 @@ pub(super) fn exercise(
     let predecessor = paid(&w, id, 1)?;
     let birth = rows(&disk(&w), "roll", "roll_mind_house_purchase");
     let birth_economics = rows(&disk(&w), "roll", "roll_mind_house_term_economics");
-    assert!(
+    check!(
         direct(&mut w, DRAFT, BUYER, START, json!({"licence":id.get()})).is_err(),
         "no early term truncation"
     );
     set_ic(&mut w, predecessor.window().term_end().get())?;
-    assert!(
+    check!(
         w.engine.world.world_ic_now().at < issuer_grace_end,
         "issuer still has actual Grace"
     );
     let due = saved(&w);
     step(&mut w, DRAFT, START, json!({"licence":id.get()}))?;
     let draft = operation(&w, START)?;
-    assert!(matches!(draft.state(), RenewalStateV1::Drafted {}));
-    assert_eq!(draft.offer().terms.price, Amount::from_minor(300));
-    assert_eq!(draft.binding().term_seconds(), TERM_SECONDS - 60);
-    assert_eq!(draft.binding().grace_seconds(), GRACE_SECONDS - 60);
-    assert_eq!(
+    check!(matches!(draft.state(), RenewalStateV1::Drafted {}));
+    check_eq!(draft.offer().terms.price, Amount::from_minor(300));
+    check_eq!(draft.binding().term_seconds(), TERM_SECONDS - 60);
+    check_eq!(draft.binding().grace_seconds(), GRACE_SECONDS - 60);
+    check_eq!(
         draft.offer().terms.organization,
         draft.binding().issuer().organization()
     );
-    assert_eq!(draft.offer().terms.scope, draft.binding().issuer().scope());
+    check_eq!(draft.offer().terms.scope, draft.binding().issuer().scope());
     let contract = economy(&w)?
         .snapshot()
         .contract(draft.contract())
         .ok_or("actual offered contract")?;
     let contract_value = serde_json::to_value(contract)?;
     // The buyer issues their own renewal (the House is paid through the split).
-    assert_eq!(
+    check_eq!(
         contract_value.get("issuer"),
         Some(&serde_json::to_value(mush_org::PrincipalId::Object(
             draft.offer().terms.buyer
         ))?)
     );
-    assert_eq!(
+    check_eq!(
         contract.acceptances.len(),
         0,
         "Draft never accepts buyer consent"
     );
     current_same(&w, &old, &predecessor)?;
-    assert!(
+    check!(
         direct(&mut w, DRAFT, BUYER, START + 1, json!({"licence":id.get()})).is_err(),
         "automatic predecessor offered once"
     );
     let drafted = saved(&w);
     let _cold_draft = boot(registry, &drafted)?;
-    assert!(
+    check!(
         super::boot(registry, &drafted).is_err(),
         "disabled renewal cannot ignore native offer"
     );
@@ -199,18 +197,18 @@ pub(super) fn exercise(
     let treasury_money = balance(&w, treasury)?;
     let registry_money = balance(&w, WalletId(1))?;
     let writes = step(&mut w, FUND, START + 2, json!({"operation":token(START)}))?;
-    assert_eq!(
+    check_eq!(
         typed_families(&writes),
         BTreeSet::from([OP.to_string(), ROLL_OP.to_string()])
     );
     let held = operation(&w, START)?;
-    assert_eq!(held.contract(), draft.contract());
-    assert_eq!(held.consent_hash(), draft.consent_hash());
+    check_eq!(held.contract(), draft.contract());
+    check_eq!(held.consent_hash(), draft.consent_hash());
     let RenewalStateV1::Funded { funding } = held.state() else {
         return Err("actual funded renewal".into());
     };
     let hold = funding.hold();
-    assert!(
+    check!(
         economy(&w)?
             .snapshot()
             .hold(hold)
@@ -218,7 +216,7 @@ pub(super) fn exercise(
             .status
             .is_held()
     );
-    assert_eq!(balance(&w, payer)?, (money.0, Amount::from_minor(300)));
+    check_eq!(balance(&w, payer)?, (money.0, Amount::from_minor(300)));
     current_same(&w, &old, &predecessor)?;
     let funded = saved(&w);
     let _cold_funded = boot(registry, &funded)?;
@@ -232,11 +230,11 @@ pub(super) fn exercise(
         START + 3,
         json!({"operation":token(START)}),
     )?;
-    assert_eq!(balance(&refund, payer)?, money);
+    check_eq!(balance(&refund, payer)?, money);
     current_same(&refund, &old, &predecessor)?;
     let _cold_refund = boot(registry, &saved(&refund))?;
     service::retention(registry, &saved(&refund), START)?;
-    assert!(
+    check!(
         direct(
             &mut refund,
             DRAFT,
@@ -255,14 +253,14 @@ pub(super) fn exercise(
         json!({"previous_operation":token(START)}),
     )?;
     let retry = operation(&refund, START + 4)?;
-    assert_eq!(
+    check_eq!(
         retry.attempt(),
         RenewalAttemptV1::BuyerRetry {
             previous_operation: token(START)
         }
     );
-    assert_ne!(retry.contract(), draft.contract());
-    assert_ne!(retry.consent_hash(), draft.consent_hash());
+    check_ne!(retry.contract(), draft.contract());
+    check_ne!(retry.consent_hash(), draft.consent_hash());
     step(
         &mut refund,
         CLOSE,
@@ -288,14 +286,14 @@ pub(super) fn exercise(
         json!({"operation":token(START+6)}),
     )?;
     let retry_cold = boot(registry, &saved(&refund))?;
-    assert_eq!(
+    check_eq!(
         licence(&retry_cold, id)?.term().get(),
         2,
         "closed attempts allow exact later next row"
     );
     // Original independent branch reaches actual Grant with exact seven target rows.
     let writes = step(&mut w, GRANT, START + 9, json!({"operation":token(START)}))?;
-    assert_eq!(
+    check_eq!(
         typed_families(&writes),
         BTreeSet::from(
             [
@@ -312,28 +310,28 @@ pub(super) fn exercise(
     );
     let actual = licence(&w, id)?;
     let next = paid(&w, id, 2)?;
-    assert_eq!(actual.operation(), old.operation());
-    assert_eq!(actual.term().get(), 2);
-    assert_eq!(next.operation(), token(START));
-    assert_eq!(next.policy(), predecessor.policy());
-    assert_eq!(next.terms(), predecessor.terms());
-    assert_eq!(
+    check_eq!(actual.operation(), old.operation());
+    check_eq!(actual.term().get(), 2);
+    check_eq!(next.operation(), token(START));
+    check_eq!(next.policy(), predecessor.policy());
+    check_eq!(next.terms(), predecessor.terms());
+    check_eq!(
         next.window().term_end().get() - next.window().eligibility_start().get(),
         TERM_SECONDS - 60
     );
-    assert_eq!(
+    check_eq!(
         balance(&w, payer)?,
         (Amount::from_minor(money.0.minor() - 300), Amount::ZERO)
     );
-    assert_eq!(
+    check_eq!(
         balance(&w, treasury)?.0,
         Amount::from_minor(treasury_money.0.minor() + 270)
     );
-    assert_eq!(
+    check_eq!(
         balance(&w, WalletId(1))?.0,
         Amount::from_minor(registry_money.0.minor() + 30)
     );
-    assert!(
+    check!(
         !economy(&w)?
             .snapshot()
             .hold(hold)
@@ -341,12 +339,12 @@ pub(super) fn exercise(
             .status
             .is_held()
     );
-    assert_eq!(paid(&w, id, 1)?, predecessor);
-    assert!(
+    check_eq!(paid(&w, id, 1)?, predecessor);
+    check!(
         rows(&disk(&w), "roll", "roll_mind_house_purchase") == birth,
         "immutable birth remains"
     );
-    assert!(
+    check!(
         birth_economics
             .iter()
             .all(|r| rows(&disk(&w), "roll", "roll_mind_house_term_economics").contains(r)),
@@ -355,12 +353,12 @@ pub(super) fn exercise(
     let granted = saved(&w);
     service::retention(registry, &granted, START)?;
     let cold = boot(registry, &granted)?;
-    assert_eq!(licence(&cold, id)?, actual);
+    check_eq!(licence(&cold, id)?, actual);
     let receipt: MindRenewalReceiptV1 =
         row(&cold, "market", RECEIPT, "operation", json!(token(START)))?;
-    assert!(matches!(receipt.state(), RenewalStateV1::Granted { .. }));
+    check!(matches!(receipt.state(), RenewalStateV1::Granted { .. }));
     let head: RenewalHeadV1 = row(&cold, "roll", HEAD, "licence", json!(id))?;
-    assert_eq!(head.current(), TermGeneration::new(2)?);
+    check_eq!(head.current(), TermGeneration::new(2)?);
     for (owner, family) in [
         ("market", OP),
         ("market", RECEIPT),
@@ -368,8 +366,8 @@ pub(super) fn exercise(
         ("roll", HEAD),
     ] {
         let mut missing = granted.clone();
-        assert!(remove_family(&mut missing, owner, family) > 0);
-        assert!(
+        check!(remove_family(&mut missing, owner, family) > 0);
+        check!(
             boot(registry, &missing).is_err(),
             "missing renewal inverse accepted"
         );
@@ -383,7 +381,7 @@ pub(super) fn exercise(
     ] {
         remove_family(&mut missing, owner, family);
     }
-    assert!(
+    check!(
         boot(registry, &missing).is_err(),
         "all missing typed history cannot hide native renewal"
     );
@@ -395,18 +393,18 @@ pub(super) fn exercise(
             .ok_or("scope")? = json!(draft.binding().issuer().scope().0 + 1);
         Ok(())
     })?;
-    assert!(boot(registry, &crossed).is_err());
+    check!(boot(registry, &crossed).is_err());
     // Existing paid generation is independent of issuer loss; no automatic extension.
     set_ic(&mut w, issuer_grace_end)?;
     command(&mut w, "@org/status House=suspended")?;
-    assert_eq!(
+    check_eq!(
         next.window()
             .phase_at(WorldIcSeconds::from_stamp(&w.engine.world.world_ic_now())?),
         TermPhase::Active
     );
     selection(&mut w, id, true)?;
     set_ic(&mut w, next.window().term_end().get())?;
-    assert!(
+    check!(
         direct(
             &mut w,
             DRAFT,
@@ -417,7 +415,7 @@ pub(super) fn exercise(
         .is_err(),
         "renewal still needs live issuer"
     );
-    assert_eq!(
+    check_eq!(
         next.window()
             .phase_at(WorldIcSeconds::from_stamp(&w.engine.world.world_ic_now())?),
         TermPhase::Grace

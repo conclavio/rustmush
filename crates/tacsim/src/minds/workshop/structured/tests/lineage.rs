@@ -68,11 +68,11 @@ fn invoke_cannot_read_replace_copy_check_or_save_a_marked_owned_draft() -> TestR
     .into_iter()
     .enumerate()
     {
-        assert!(
+        check!(
             matches!(invoke(&mut engine,7,GOD,81+u64::try_from(index)?,request),MindResponse::Error{code,..} if code=="missing")
         );
     }
-    assert_eq!(
+    check_eq!(
         serde_json::to_value(
             engine
                 .world
@@ -95,17 +95,17 @@ fn invoke_cannot_read_replace_copy_check_or_save_a_marked_owned_draft() -> TestR
             },
         },
     );
-    assert!(matches!(response, MindResponse::Edited { .. }));
+    check!(matches!(response, MindResponse::Edited { .. }));
     let renamed = engine
         .world
         .module_state::<RollStore>()
         .ok_or("roll")?
         .mind(GOD, "renamed")?;
-    assert_eq!(
+    check_eq!(
         serde_json::to_value(renamed)?.get("provenance"),
         before.get("provenance")
     );
-    assert_eq!(renamed.require_original_access(), Err(RollError::Missing));
+    check_eq!(renamed.require_original_access(), Err(RollError::Missing));
     Ok(())
 }
 
@@ -127,7 +127,7 @@ fn queued_check_and_save_recheck_lineage_before_any_remote_delivery() -> TestRes
                 base,
             }
         };
-        assert!(matches!(
+        check!(matches!(
             invoke(&mut engine, 7, GOD, 95, request),
             MindResponse::Queued { .. }
         ));
@@ -136,10 +136,10 @@ fn queued_check_and_save_recheck_lineage_before_any_remote_delivery() -> TestRes
         // Only retained owner provenance changes, so base equality is not ACL.
         mark(&mut engine)?;
         let out = poll(&mut engine, &service);
-        assert!(
+        check!(
             matches!(out.events(),[(Audience::Conn(7),OutputEvent::InvokeResult{id:95,result:InvokeResult::Mind(MindResponse::Error{code,..})})] if code=="missing")
         );
-        assert!(
+        check!(
             engine
                 .world
                 .module_state::<RollStore>()
@@ -148,8 +148,8 @@ fn queued_check_and_save_recheck_lineage_before_any_remote_delivery() -> TestRes
                 .latest()
                 .is_none()
         );
-        assert!(service.executor.ready().is_empty());
-        assert!(
+        check!(service.executor.ready().is_empty());
+        check!(
             poll(&mut engine, &service).events().is_empty(),
             "one-shot delivery"
         );
