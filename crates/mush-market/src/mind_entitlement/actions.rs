@@ -133,7 +133,7 @@ mod presentation_tests {
                     )?,
                 )?;
                 let p = presentation(&action)?;
-                assert!(verbs.insert(p.verb), "ambiguous entitlement line selector");
+                check!(verbs.insert(p.verb), "ambiguous entitlement line selector");
             }
         }
         let expected: BTreeSet<_> = [("original", 3), ("derived", 1)]
@@ -144,7 +144,7 @@ mod presentation_tests {
                     .map(move |t| format!("{product}-{t}-v{version}"))
             })
             .collect();
-        assert_eq!(verbs, expected);
+        check_eq!(verbs, expected);
         for (owner, kind, id, version) in [
             ("roll", "action", "list_original_mind", 3),
             ("market", "outcome", "list_original_mind", 3),
@@ -161,7 +161,7 @@ mod presentation_tests {
                     serde_json::json!({"presentation_probe":true}),
                 )?,
             )?;
-            assert!(presentation(&action).is_err());
+            check!(presentation(&action).is_err());
         }
         Ok(())
     }

@@ -268,20 +268,20 @@ fn new_protocols_roundtrip_and_derive_exact_e4_conservation() -> TestResult {
         (EntitlementProtocol::DerivedV1, 3),
     ] {
         let q = fixture(protocol, depth, PaidForm::Sealed {})?;
-        assert_eq!(EntitlementQuoteV1::decode(&serde_json::to_vec(&q)?)?, q);
+        check_eq!(EntitlementQuoteV1::decode(&serde_json::to_vec(&q)?)?, q);
         let e = q.economic_subject()?;
         let payouts = e.payouts()?;
-        assert_eq!(
+        check_eq!(
             payouts
                 .iter()
                 .try_fold(Amount::ZERO, |sum, p| sum.checked_add(p.amount))
                 .ok_or("sum")?,
             q.price
         );
-        assert_eq!(payouts.len(), usize::try_from(depth)? + 3);
-        assert_eq!(e.quote_digest, q.digest()?);
-        assert_eq!(e.grant_economics_digest, q.product.grant.digest()?);
-        assert_eq!(e.royalty_chain_digest, q.royalty.digest()?);
+        check_eq!(payouts.len(), usize::try_from(depth)? + 3);
+        check_eq!(e.quote_digest, q.digest()?);
+        check_eq!(e.grant_economics_digest, q.product.grant.digest()?);
+        check_eq!(e.royalty_chain_digest, q.royalty.digest()?);
     }
     Ok(())
 }
@@ -289,20 +289,20 @@ fn new_protocols_roundtrip_and_derive_exact_e4_conservation() -> TestResult {
 fn required_nulls_unknowns_duplicates_and_bounded_arrays_refuse() -> TestResult {
     let q = fixture(EntitlementProtocol::OriginalV3, 0, PaidForm::Sealed {})?;
     let raw = serde_json::to_string(&q)?;
-    assert!(EntitlementQuoteV1::decode(raw.replacen("{", "{\"format\":1,", 1).as_bytes()).is_err());
+    check!(EntitlementQuoteV1::decode(raw.replacen("{", "{\"format\":1,", 1).as_bytes()).is_err());
     let mut v = serde_json::to_value(&q)?;
     obj(&mut v)?.insert("allow".into(), json!(true));
-    assert!(serde_json::from_value::<EntitlementQuoteV1>(v).is_err());
+    check!(serde_json::from_value::<EntitlementQuoteV1>(v).is_err());
     let mut v = serde_json::to_value(&q)?;
     obj(v.get_mut("subject").ok_or("subject")?)?.remove("parent");
-    assert!(serde_json::from_value::<EntitlementQuoteV1>(v).is_err());
+    check!(serde_json::from_value::<EntitlementQuoteV1>(v).is_err());
     for raw in [
         r#"{"permille":0}"#,
         r#"{"permille":0,"recipient":null,"extra":1}"#,
     ] {
-        assert!(serde_json::from_str::<Cut>(raw).is_err());
+        check!(serde_json::from_str::<Cut>(raw).is_err());
     }
-    assert!(serde_json::from_str::<ParentCut>(r#"{"charter":1,"permille":0}"#).is_err());
+    check!(serde_json::from_str::<ParentCut>(r#"{"charter":1,"permille":0}"#).is_err());
     let mut v = serde_json::to_value(fixture(
         EntitlementProtocol::DerivedV1,
         3,
@@ -313,8 +313,8 @@ fn required_nulls_unknowns_duplicates_and_bounded_arrays_refuse() -> TestResult 
         .and_then(Value::as_array_mut)
         .ok_or("parents")?;
     parents.push(parents.first().ok_or("parent")?.clone());
-    assert!(serde_json::from_value::<EntitlementQuoteV1>(v).is_err());
-    assert!(EntitlementQuoteV1::decode(&vec![b' '; MAX_QUOTE_BYTES + 1]).is_err());
+    check!(serde_json::from_value::<EntitlementQuoteV1>(v).is_err());
+    check!(EntitlementQuoteV1::decode(&vec![b' '; MAX_QUOTE_BYTES + 1]).is_err());
     Ok(())
 }
 #[test]
@@ -323,18 +323,18 @@ fn product_protocol_parent_and_renewal_cannot_be_crossed_after_rehash() -> TestR
     let mut crossed = q.clone();
     crossed.product.protocol = EntitlementProtocol::OriginalV3;
     crossed.product_digest = crossed.product.digest()?;
-    assert!(crossed.validate().is_err());
+    check!(crossed.validate().is_err());
     let mut crossed = q.clone();
     crossed.policy = definition("market", "entitlement_policy", "personal", 2)?;
-    assert!(crossed.validate().is_err());
+    check!(crossed.validate().is_err());
     let mut crossed = q.clone();
     crossed.parents.0.first_mut().ok_or("parent")?.0.charter = ObjId(999);
-    assert!(crossed.validate().is_err());
+    check!(crossed.validate().is_err());
     let mut crossed = q.clone();
     crossed.instrument = InstrumentId::new("other").ok_or("instrument")?;
-    assert!(crossed.validate().is_err());
-    assert!(fixture(EntitlementProtocol::DerivedV1, 3, PaidForm::OpenResale {}).is_err());
-    assert!(fixture(EntitlementProtocol::DerivedV1, 3, PaidForm::Open {}).is_ok());
+    check!(crossed.validate().is_err());
+    check!(fixture(EntitlementProtocol::DerivedV1, 3, PaidForm::OpenResale {}).is_err());
+    check!(fixture(EntitlementProtocol::DerivedV1, 3, PaidForm::Open {}).is_ok());
     Ok(())
 }
 #[test]
@@ -355,17 +355,17 @@ fn payer_royalty_stays_a_credit_beside_full_gross_and_zero_cuts_keep_identity() 
     };
     reprice(&mut q)?;
     let e = q.economic_subject()?;
-    assert_eq!(e.price, Amount::from_minor(400));
-    assert!(
+    check_eq!(e.price, Amount::from_minor(400));
+    check!(
         e.payouts()?
             .iter()
             .any(|p| p.account == q.payer && p.amount == Amount::from_minor(40))
     );
     q.price = Amount::from_minor(1);
     reprice(&mut q)?;
-    assert_eq!(q.payouts.0.len(), 1);
+    check_eq!(q.payouts.0.len(), 1);
     q.parents.0.first_mut().ok_or("parent")?.0.title = None;
-    assert!(q.validate().is_err());
+    check!(q.validate().is_err());
     Ok(())
 }
 #[test]
@@ -377,7 +377,7 @@ fn allocation_economics_is_exact_and_old_shapes_do_not_become_new_births() -> Te
     )?)?;
     let a = allocation(&p)?;
     p.matches_allocation(&a)?;
-    assert_eq!(EntitlementPurchaseV1::decode(&serde_json::to_vec(&p)?)?, p);
+    check_eq!(EntitlementPurchaseV1::decode(&serde_json::to_vec(&p)?)?, p);
     for field in ["licence", "generation", "operation", "product_digest"] {
         let mut v = serde_json::to_value(&a)?;
         let economics = obj(v.get_mut("economics").ok_or("economics")?)?;
@@ -387,19 +387,19 @@ fn allocation_economics_is_exact_and_old_shapes_do_not_become_new_births() -> Te
             _ => json!(hash(99)),
         };
         economics.insert(field.into(), changed);
-        assert!(serde_json::from_value::<EntitlementAllocationV1>(v).is_err());
+        check!(serde_json::from_value::<EntitlementAllocationV1>(v).is_err());
     }
     let mut old = serde_json::to_value(&a)?;
     obj(&mut old)?.remove("economics");
     obj(&mut old)?.remove("protocol");
-    assert!(serde_json::from_value::<EntitlementAllocationV1>(old).is_err());
+    check!(serde_json::from_value::<EntitlementAllocationV1>(old).is_err());
     let mut crossed = p.clone();
     crossed.effect = protocol::historical_fund(
         EntitlementProtocol::DerivedV1,
         p.quote.subject.compatibility,
         &p.participants,
     )?;
-    assert!(crossed.validate().is_err());
+    check!(crossed.validate().is_err());
     Ok(())
 }
 #[test]
@@ -428,16 +428,16 @@ fn terminal_receipt_requires_exact_phase_stamp_and_grant_digest() -> TestResult 
         issued_at_ic: None,
     };
     r.matches_purchase(&p)?;
-    assert_eq!(EntitlementReceiptV1::decode(&serde_json::to_vec(&r)?)?, r);
+    check_eq!(EntitlementReceiptV1::decode(&serde_json::to_vec(&r)?)?, r);
     let mut v = serde_json::to_value(&r)?;
     obj(&mut v)?.remove("issued_at_ic");
-    assert!(serde_json::from_value::<EntitlementReceiptV1>(v).is_err());
+    check!(serde_json::from_value::<EntitlementReceiptV1>(v).is_err());
     let mut bad = r.clone();
     bad.grant_economics_digest = hash(99);
-    assert!(bad.matches_purchase(&p).is_err());
+    check!(bad.matches_purchase(&p).is_err());
     let mut bad = r.clone();
     bad.outcome = Outcome::Granted {};
-    assert!(bad.validate().is_err());
+    check!(bad.validate().is_err());
     p.phase = PurchasePhase::Granted { commit: token(5) };
     bad.issued_at_ic = Some(ClockStamp {
         clock: ClockRef::WorldIc { generation: 1 },
@@ -448,8 +448,8 @@ fn terminal_receipt_requires_exact_phase_stamp_and_grant_digest() -> TestResult 
         clock: ClockRef::WorldIc { generation: 2 },
         at: 170,
     });
-    assert!(bad.matches_purchase(&p).is_err());
-    assert!(r.matches_purchase(&p).is_err());
+    check!(bad.matches_purchase(&p).is_err());
+    check!(r.matches_purchase(&p).is_err());
     Ok(())
 }
 
@@ -473,16 +473,16 @@ fn closed_action_domains_bind_manifest_participants_and_protocol() -> TestResult
             let descriptor = protocol::descriptor(protocol, transition, &manifest, &participants)?;
             let reference =
                 DefinitionRegistryBuilder::new().register(OwnerId::new("market")?, descriptor)?;
-            assert_eq!(reference.version(), protocol.version());
-            assert_eq!(
+            check_eq!(reference.version(), protocol.version());
+            check_eq!(
                 reference.key().id.as_str(),
                 protocol::action(protocol, transition)
             );
-            assert!(identities.insert(reference.to_string()));
+            check!(identities.insert(reference.to_string()));
         }
         let historical = protocol::historical_fund(protocol, manifest.digest(), &participants)?;
         let changed = protocol::historical_fund(protocol, hash(91), &participants)?;
-        assert_ne!(historical, changed);
+        check_ne!(historical, changed);
         let changed_participants = PurchaseParticipants::new(
             definition("economy", "owner_participant", "initial_filing", 1)?,
             DefinitionRegistryBuilder::new().register(
@@ -495,21 +495,21 @@ fn closed_action_domains_bind_manifest_participants_and_protocol() -> TestResult
                 )?,
             )?,
         )?;
-        assert_ne!(
+        check_ne!(
             historical,
             protocol::historical_fund(protocol, manifest.digest(), &changed_participants)?
         );
     }
-    assert_eq!(identities.len(), 6);
-    assert_ne!(
+    check_eq!(identities.len(), 6);
+    check_ne!(
         protocol::domain(EntitlementProtocol::OriginalV3, "product")?,
         "market.original_product.v2"
     );
-    assert_ne!(
+    check_ne!(
         protocol::domain(EntitlementProtocol::DerivedV1, "quote")?,
         "market.original_quote.v3"
     );
-    assert!(
+    check!(
         protocol::descriptor(
             EntitlementProtocol::OriginalV3,
             protocol::Transition::Fund,
@@ -526,40 +526,40 @@ fn quote_bounds_and_measured_payouts_are_revalidated_after_repaired_hashes() -> 
     let q = fixture(EntitlementProtocol::DerivedV1, 3, PaidForm::Sealed {})?;
     let mut bad = q.clone();
     bad.expires_at_utc = bad.quoted_at_utc;
-    assert!(bad.validate().is_err());
+    check!(bad.validate().is_err());
     let mut bad = q.clone();
     bad.expires_at_utc = bad.quoted_at_utc + 601;
-    assert!(bad.validate().is_err());
+    check!(bad.validate().is_err());
     let mut bad = q.clone();
     bad.buyer = bad.subject.seller;
-    assert!(bad.validate().is_err());
+    check!(bad.validate().is_err());
     let mut bad = q.clone();
     bad.payer = bad.remainder.account;
-    assert!(bad.validate().is_err());
+    check!(bad.validate().is_err());
     let mut bad = q.clone();
     bad.payouts.0.first_mut().ok_or("payout")?.amount = Amount::from_minor(1);
-    assert!(bad.validate().is_err());
+    check!(bad.validate().is_err());
     let mut bad = q.clone();
     bad.payouts.0.reverse();
-    assert!(bad.validate().is_err());
+    check!(bad.validate().is_err());
     let mut bad = q.clone();
     bad.price = Amount::ZERO;
-    assert!(bad.validate().is_err());
+    check!(bad.validate().is_err());
     let mut bad = q.clone();
     bad.product.term_seconds = 0;
-    assert!(bad.product.digest().is_err());
+    check!(bad.product.digest().is_err());
     let p = purchase(q)?;
     let a = allocation(&p)?;
-    assert_eq!(p.key(), p.operation.to_hex());
-    assert_eq!(
+    check_eq!(p.key(), p.operation.to_hex());
+    check_eq!(
         EntitlementPurchaseV1::FAMILY,
         "market_mind_entitlement_purchase"
     );
-    assert!(serde_json::to_vec(&p)?.len() < EntitlementPurchaseV1::MAX_BYTES);
-    assert!(serde_json::to_vec(&a)?.len() < 8192);
+    check!(serde_json::to_vec(&p)?.len() < EntitlementPurchaseV1::MAX_BYTES);
+    check!(serde_json::to_vec(&a)?.len() < 8192);
     let mut bad = serde_json::to_value(a)?;
     obj(&mut bad)?.insert("term".into(), json!("2"));
     obj(bad.get_mut("economics").ok_or("economics")?)?.insert("generation".into(), json!("2"));
-    assert!(serde_json::from_value::<EntitlementAllocationV1>(bad).is_err());
+    check!(serde_json::from_value::<EntitlementAllocationV1>(bad).is_err());
     Ok(())
 }

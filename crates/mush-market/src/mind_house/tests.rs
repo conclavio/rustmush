@@ -227,25 +227,25 @@ fn obj(v: &mut Value) -> TestResult<&mut serde_json::Map<String, Value>> {
 #[test]
 fn house_quote_is_sealed_scoped_and_conserves_actual_native_recipe() -> TestResult {
     let q = fixture()?;
-    assert_eq!(HouseQuoteV1::decode(&serde_json::to_vec(&q)?)?, q);
-    assert_eq!(q.subject.issuer.organization(), mush_org::OrgId(0));
-    assert_eq!(q.subject.issuer.scope(), mush_org::OrgScopeId(0));
+    check_eq!(HouseQuoteV1::decode(&serde_json::to_vec(&q)?)?, q);
+    check_eq!(q.subject.issuer.organization(), mush_org::OrgId(0));
+    check_eq!(q.subject.issuer.scope(), mush_org::OrgScopeId(0));
     let e = q.economic_subject()?;
     let payouts = e.payouts()?;
-    assert_eq!(
+    check_eq!(
         payouts
             .iter()
             .try_fold(Amount::ZERO, |sum, p| sum.checked_add(p.amount))
             .ok_or("sum")?,
         q.price
     );
-    assert_eq!(payouts.len(), 3);
-    assert!(payouts.iter().any(|p| p.owner
+    check_eq!(payouts.len(), 3);
+    check!(payouts.iter().any(|p| p.owner
         == mush_org::PrincipalId::Organization(mush_org::OrgId(0))
         && p.amount == Amount::from_minor(372)));
     // The initial 400/900/90 product freezes independent 600/800/80 consent.
-    assert_eq!(q.product.grant.renewal().price(), Amount::from_minor(600));
-    assert_ne!(
+    check_eq!(q.product.grant.renewal().price(), Amount::from_minor(600));
+    check_ne!(
         q.product.grant.renewal().term_seconds(),
         q.product.term_seconds
     );
@@ -264,24 +264,24 @@ fn house_nested_wire_rejects_unknown_missing_null_and_duplicate_fields() -> Test
     ] {
         let mut v = serde_json::to_value(&q)?;
         obj(v.pointer_mut(path).ok_or("path")?)?.insert("authorized".into(), json!(true));
-        assert!(
+        check!(
             serde_json::from_value::<HouseQuoteV1>(v).is_err(),
             "unknown field accepted"
         );
     }
     let raw = String::from_utf8(serde_json::to_vec(&q)?)?;
-    assert!(HouseQuoteV1::decode(raw.replacen("{", "{\"format\":1,", 1).as_bytes()).is_err());
+    check!(HouseQuoteV1::decode(raw.replacen("{", "{\"format\":1,", 1).as_bytes()).is_err());
     let mut missing = serde_json::to_value(&q)?;
     obj(&mut missing)?.remove("remainder");
-    assert!(serde_json::from_value::<HouseQuoteV1>(missing).is_err());
+    check!(serde_json::from_value::<HouseQuoteV1>(missing).is_err());
     let mut scope = serde_json::to_value(&q)?;
     obj(scope
         .get_mut("subject")
         .and_then(|s| s.get_mut("issuer"))
         .ok_or("issuer")?)?
     .insert("scope".into(), Value::Null);
-    assert!(serde_json::from_value::<HouseQuoteV1>(scope).is_err());
-    assert!(HouseQuoteV1::decode(&vec![b' '; MAX_QUOTE_BYTES + 1]).is_err());
+    check!(serde_json::from_value::<HouseQuoteV1>(scope).is_err());
+    check!(HouseQuoteV1::decode(&vec![b' '; MAX_QUOTE_BYTES + 1]).is_err());
     Ok(())
 }
 #[test]
@@ -292,14 +292,14 @@ fn house_product_cannot_acquire_open_resale_follow_or_extra_seats() -> TestResul
         *v.pointer_mut("/product/terms/form").ok_or("form")? = serde_json::to_value(form)?;
         *v.pointer_mut("/product/grant/renewal/terms/form")
             .ok_or("renewal form")? = serde_json::to_value(form)?;
-        assert!(serde_json::from_value::<HouseQuoteV1>(v).is_err());
+        check!(serde_json::from_value::<HouseQuoteV1>(v).is_err());
     }
     let mut v = serde_json::to_value(&q)?;
     *v.pointer_mut("/product/terms/seats").ok_or("seats")? = json!(2);
-    assert!(serde_json::from_value::<HouseQuoteV1>(v).is_err());
+    check!(serde_json::from_value::<HouseQuoteV1>(v).is_err());
     let mut v = serde_json::to_value(&q)?;
     *v.pointer_mut("/product/revision").ok_or("revision")? = json!({"kind":"follow","line":"10"});
-    assert!(serde_json::from_value::<HouseQuoteV1>(v).is_err());
+    check!(serde_json::from_value::<HouseQuoteV1>(v).is_err());
     Ok(())
 }
 #[test]
@@ -316,10 +316,10 @@ fn house_allocation_requires_same_issuer_economics_pin_and_operation() -> TestRe
         let mut v = serde_json::to_value(&a)?;
         *v.pointer_mut(path).ok_or("path")? = value;
         if let Ok(crossed) = serde_json::from_value::<HouseAllocationV1>(v) {
-            assert!(p.matches_allocation(&crossed).is_err());
+            check!(p.matches_allocation(&crossed).is_err());
         }
     }
-    assert_eq!(HousePurchaseV1::decode(&serde_json::to_vec(&p)?)?, p);
+    check_eq!(HousePurchaseV1::decode(&serde_json::to_vec(&p)?)?, p);
     Ok(())
 }
 #[test]
@@ -327,7 +327,7 @@ fn house_native_payout_identity_cannot_be_hidden_by_rounding() -> TestResult {
     let mut q = fixture()?;
     q.price = Amount::from_minor(1);
     reprice(&mut q)?;
-    assert_eq!(q.payouts.0.len(), 1);
+    check_eq!(q.payouts.0.len(), 1);
     let mut e = q.economic_subject()?;
     e.venue
         .as_mut()
@@ -336,7 +336,7 @@ fn house_native_payout_identity_cannot_be_hidden_by_rounding() -> TestResult {
         .as_mut()
         .ok_or("recipient")?
         .account = e.registry.recipient.as_ref().ok_or("registry")?.account;
-    assert!(
+    check!(
         e.payouts().is_err(),
         "conflicting identities on rounded zero roles must refuse"
     );

@@ -17,8 +17,9 @@
 //! scoped, and they neither panic nor unwrap. The failure is built out of
 //! line, in [`failed`] and its siblings, so a check costs its caller's stack
 //! frame no more than the assert it replaced (`clippy::large_stack_frames`
-//! measures test functions too). A `macro_rules!` does not cross crates; the
-//! same module lives in `mush-roll` and `tacsim`.
+//! measures test functions too). A `macro_rules!` does not cross crates, so each
+//! crate that needs these keeps this module as its own copy: `mush-economy`,
+//! `mush-industry`, `mush-market`, `mush-roll` and `tacsim`.
 
 use std::error::Error;
 use std::fmt;

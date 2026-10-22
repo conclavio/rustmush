@@ -173,8 +173,8 @@ mod presentation_tests {
                     )?,
                 )?;
                 let p = presentation(&action)?;
-                assert!(!p.verb.bytes().any(|b| b.is_ascii_whitespace()));
-                assert!(verbs.insert(p.verb), "ambiguous House line selector");
+                check!(!p.verb.bytes().any(|b| b.is_ascii_whitespace()));
+                check!(verbs.insert(p.verb), "ambiguous House line selector");
             }
         }
         let expected: BTreeSet<_> = ["list", "quote", "fund", "grant", "refund"]
@@ -185,7 +185,7 @@ mod presentation_tests {
                     .map(move |capacity| format!("house-{t}-{capacity}-seat"))
             })
             .collect();
-        assert_eq!(verbs, expected);
+        check_eq!(verbs, expected);
         for (owner, kind, id, version) in [
             ("roll", "action", "list_house_mind", 1),
             ("market", "outcome", "list_house_mind", 1),
@@ -201,7 +201,7 @@ mod presentation_tests {
                     serde_json::json!({"presentation_probe":true}),
                 )?,
             )?;
-            assert!(presentation(&action).is_err());
+            check!(presentation(&action).is_err());
         }
         Ok(())
     }

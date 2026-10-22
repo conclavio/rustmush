@@ -273,11 +273,11 @@ fn five_states_and_explicit_retry_roundtrip_exact_shared_data() -> TestResult {
     for make in rows {
         let row = make(&draft, &fund)?;
         let bytes = serde_json::to_vec(&row)?;
-        assert_eq!(MindRenewalOperationV1::decode(&bytes)?, row);
+        check_eq!(MindRenewalOperationV1::decode(&bytes)?, row);
         row.matches_roll(&row.roll_projection()?)?;
         if !row.state.pending() {
             let r = receipt(&row)?;
-            assert_eq!(MindRenewalReceiptV1::decode(&serde_json::to_vec(&r)?)?, r);
+            check_eq!(MindRenewalReceiptV1::decode(&serde_json::to_vec(&r)?)?, r);
         }
     }
     let retry = MindRenewalOperationV1 {
@@ -287,7 +287,7 @@ fn five_states_and_explicit_retry_roundtrip_exact_shared_data() -> TestResult {
         ..draft
     };
     retry.validate()?;
-    assert_eq!(
+    check_eq!(
         MindRenewalOperationV1::decode(&serde_json::to_vec(&retry)?)?,
         retry
     );
@@ -306,15 +306,15 @@ fn raw_decoders_reject_duplicates_unknown_null_missing_and_oversized_collections
             _ => "null",
         };
         let duplicate = raw.replacen(needle, &format!("{needle}{value},{needle}"), 1);
-        assert!(MindRenewalOperationV1::decode(duplicate.as_bytes()).is_err());
+        check!(MindRenewalOperationV1::decode(duplicate.as_bytes()).is_err());
     }
     for key in ["attempt", "manifest", "participants", "offer", "state"] {
         let mut absent = serde_json::to_value(&row)?;
         absent.as_object_mut().ok_or("object")?.remove(key);
-        assert!(parsed(absent).is_err());
+        check!(parsed(absent).is_err());
         let mut null = serde_json::to_value(&row)?;
         put(&mut null, &[key], Value::Null)?;
-        assert!(parsed(null).is_err());
+        check!(parsed(null).is_err());
     }
     let mut value = serde_json::to_value(&row)?;
     value
@@ -323,14 +323,14 @@ fn raw_decoders_reject_duplicates_unknown_null_missing_and_oversized_collections
         .and_then(Value::as_object_mut)
         .ok_or("terms")?
         .insert("actor".into(), json!(ObjId(1)));
-    assert!(parsed(value).is_err());
+    check!(parsed(value).is_err());
     let mut value = serde_json::to_value(&row)?;
     put(
         &mut value,
         &["participants"],
         json!([row.participants(), row.participants()]),
     )?;
-    assert!(parsed(value).is_err());
+    check!(parsed(value).is_err());
     let mut value = serde_json::to_value(&row)?;
     put(
         &mut value,
@@ -340,13 +340,11 @@ fn raw_decoders_reject_duplicates_unknown_null_missing_and_oversized_collections
             {"charter":3,"permille":0,"title":null},{"charter":4,"permille":0,"title":null}
         ]),
     )?;
-    assert!(parsed(value).is_err());
-    assert!(
+    check!(parsed(value).is_err());
+    check!(
         MindRenewalOperationV1::decode(&vec![b' '; MindRenewalOperationV1::MAX_BYTES + 1]).is_err()
     );
-    assert!(
-        MindRenewalReceiptV1::decode(&vec![b' '; MindRenewalReceiptV1::MAX_BYTES + 1]).is_err()
-    );
+    check!(MindRenewalReceiptV1::decode(&vec![b' '; MindRenewalReceiptV1::MAX_BYTES + 1]).is_err());
     Ok(())
 }
 
@@ -371,7 +369,7 @@ fn exact_pair_rejects_individually_valid_crossed_roll_rows() -> TestResult {
         put(&mut value, path, replacement)?;
         let crossed: RenewalOperationV1 = serde_json::from_value(value)?;
         crossed.validate()?;
-        assert!(row.matches_roll(&crossed).is_err(), "crossed paired field");
+        check!(row.matches_roll(&crossed).is_err(), "crossed paired field");
     }
     Ok(())
 }
@@ -382,10 +380,10 @@ fn new_money_actions_require_exact_original_refs_but_cleanup_can_be_current() ->
     let newer = definition("tacsim", "registry_manifest", "combat", 99)?;
     let mut crossed = draft.clone();
     crossed.manifest = newer.clone();
-    assert!(crossed.validate().is_err());
+    check!(crossed.validate().is_err());
     let mut crossed = draft.clone();
     crossed.participants.swap(0, 1);
-    assert!(crossed.validate().is_err());
+    check!(crossed.validate().is_err());
     let fund = funded(&draft)?;
     let mut value = serde_json::to_value(&fund)?;
     put(
@@ -393,7 +391,7 @@ fn new_money_actions_require_exact_original_refs_but_cleanup_can_be_current() ->
         &["state", "funding", "action"],
         json!(action(Transition::Fund, &newer, &draft.participants)?),
     )?;
-    assert!(parsed(value).is_err());
+    check!(parsed(value).is_err());
     let grant = terminal(&fund, true)?;
     let mut value = serde_json::to_value(&grant)?;
     put(
@@ -401,7 +399,7 @@ fn new_money_actions_require_exact_original_refs_but_cleanup_can_be_current() ->
         &["state", "terminal", "action"],
         json!(action(Transition::Grant, &newer, &draft.participants)?),
     )?;
-    assert!(parsed(value).is_err());
+    check!(parsed(value).is_err());
     let refund = terminal(&fund, false)?;
     let mut value = serde_json::to_value(&refund)?;
     put(
@@ -438,7 +436,7 @@ fn repaired_offer_digest_cannot_change_the_accepted_template_or_binding() -> Tes
             _ => return Err("case".into()),
         }
         changed.offer_digest = changed.offer.digest()?;
-        assert!(
+        check!(
             changed.validate().is_err(),
             "changed binding/template case {case}"
         );
@@ -452,7 +450,7 @@ fn exact_clocks_enforce_admission_and_grant_but_refund_does_not_extend_terms() -
     for at in [99, 200] {
         let mut changed = row.clone();
         changed.created_at_ic = stamp(at);
-        assert!(changed.validate().is_err());
+        check!(changed.validate().is_err());
     }
     let fund = funded(&row)?;
     let mut value = serde_json::to_value(&fund)?;
@@ -461,7 +459,7 @@ fn exact_clocks_enforce_admission_and_grant_but_refund_does_not_extend_terms() -
         &["state", "funding", "at_ic"],
         json!(stamp(200)),
     )?;
-    assert!(parsed(value).is_err());
+    check!(parsed(value).is_err());
     let grant = terminal(&fund, true)?;
     let mut value = serde_json::to_value(&grant)?;
     put(
@@ -474,14 +472,14 @@ fn exact_clocks_enforce_admission_and_grant_but_refund_does_not_extend_terms() -
         &["state", "terminal", "issued_at_ic"],
         json!(stamp(200)),
     )?;
-    assert!(parsed(value).is_err());
+    check!(parsed(value).is_err());
     let mut value = serde_json::to_value(closed(&row, true)?)?;
     put(
         &mut value,
         &["state", "closure", "at_ic"],
         json!(stamp(199)),
     )?;
-    assert!(parsed(value).is_err());
+    check!(parsed(value).is_err());
     let mut value = serde_json::to_value(terminal(&fund, false)?)?;
     put(
         &mut value,
@@ -493,7 +491,7 @@ fn exact_clocks_enforce_admission_and_grant_but_refund_does_not_extend_terms() -
     )?;
     let refund = parsed(value)?;
     receipt(&refund)?;
-    assert!(
+    check!(
         refund
             .state
             .terminal()
@@ -507,28 +505,28 @@ fn exact_clocks_enforce_admission_and_grant_but_refund_does_not_extend_terms() -
 #[test]
 fn terminal_receipt_cannot_claim_pending_or_a_different_operation() -> TestResult {
     let draft = fixture()?;
-    assert!(receipt(&draft).is_err());
+    check!(receipt(&draft).is_err());
     let fund = funded(&draft)?;
-    assert!(receipt(&fund).is_err());
+    check!(receipt(&fund).is_err());
     let grant = terminal(&fund, true)?;
     let r = receipt(&grant)?;
     let mut different = r.clone();
     different.licence = LicenceId::new(8)?;
     different.validate()?;
-    assert!(different.matches_operation(&grant).is_err());
+    check!(different.matches_operation(&grant).is_err());
     let mut different = r.clone();
     different.operation = token(15);
     different.validate()?;
-    assert!(different.matches_operation(&grant).is_err());
+    check!(different.matches_operation(&grant).is_err());
     let refund = terminal(&fund, false)?;
-    assert!(r.matches_operation(&refund).is_err());
+    check!(r.matches_operation(&refund).is_err());
     let mut raw = serde_json::to_value(&r)?;
     raw.get_mut("state")
         .and_then(|v| v.get_mut("terminal"))
         .and_then(Value::as_object_mut)
         .ok_or("terminal")?
         .remove("issued_at_ic");
-    assert!(serde_json::from_value::<MindRenewalReceiptV1>(raw).is_err());
+    check!(serde_json::from_value::<MindRenewalReceiptV1>(raw).is_err());
     Ok(())
 }
 
@@ -545,18 +543,18 @@ fn receipt_wire_has_only_exact_fixed_terminal_fields_and_bounds() -> TestResult 
         ),
         1,
     );
-    assert!(MindRenewalReceiptV1::decode(duplicate.as_bytes()).is_err());
+    check!(MindRenewalReceiptV1::decode(duplicate.as_bytes()).is_err());
     let mut unknown = serde_json::to_value(&r)?;
     unknown
         .as_object_mut()
         .ok_or("receipt")?
         .insert("issued_at_ic".into(), json!(stamp(200)));
-    assert!(serde_json::from_value::<MindRenewalReceiptV1>(unknown).is_err());
+    check!(serde_json::from_value::<MindRenewalReceiptV1>(unknown).is_err());
     let mut value = serde_json::to_value(&r)?;
     put(&mut value, &["next"], json!(TermGeneration::new(3)?))?;
-    assert!(serde_json::from_value::<MindRenewalReceiptV1>(value).is_err());
-    assert!(serde_json::to_vec(&row)?.len() < MindRenewalOperationV1::MAX_BYTES);
-    assert!(serde_json::to_vec(&r)?.len() < MindRenewalReceiptV1::MAX_BYTES);
+    check!(serde_json::from_value::<MindRenewalReceiptV1>(value).is_err());
+    check!(serde_json::to_vec(&row)?.len() < MindRenewalOperationV1::MAX_BYTES);
+    check!(serde_json::to_vec(&r)?.len() < MindRenewalReceiptV1::MAX_BYTES);
     Ok(())
 }
 
