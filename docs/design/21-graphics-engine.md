@@ -1,5 +1,9 @@
 # 21. The graphics engine — one frame, three encoders
 
+**Draft 0.6.1 — 2026-10-22, G.2 smoked live on dev2.** Kitty in w11term, sixel in w11term (21 fps)
+and sixel in Windows Terminal over `ssh.exe`, all over the real path; a sixel frame is drawn at its
+own pixel size, small on a high-DPI terminal that draws sixel at real pixels (cut notes §G.2).
+
 **Draft 0.6 — 2026-10-22, G.2 landed; sixel at 20 Hz.** The sixel encoder, the cell-size probe,
 the encoder choice and a per-connection `@pixel/encoder`. Measured on the cockpit fixture, a sixel
 frame is 20.6 KB raw against kitty's 9.4 KB but 6.6 KB each after zlib, so the owner set sixel's
