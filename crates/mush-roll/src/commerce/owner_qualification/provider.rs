@@ -289,7 +289,7 @@ impl Provider {
             &self.roots,
             RootRequest::OwnerQualification(Box::new(request)),
         )
-        .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification provider.rs:{}", line!()); } invalid(e) }) /* TEMP M7 diag */?;
+        .map_err(|e| { if std::env::var_os("M7_CONDUCT_DIAG").is_some() { eprintln!("M7_CONDUCT_DIAG qualification roots participant: {e}"); } invalid(e) }) /* TEMP M7 diag */?;
         txn.insert(
             &self.families.owner_qualification_operations,
             &operation.key(),
