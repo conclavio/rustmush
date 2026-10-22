@@ -85,6 +85,24 @@ pub const MAP_TITLE_SITE: &str = "{site}: {family} shown";
 pub const MAP_NO_READINGS: &str = "You have no readings of {family} in view.";
 /// The pad's centre cell (the hull's `H`).
 const PAD_CELL: (i64, i64) = (128, 128);
+/// **The pushed status feed** (doc 20 cut SM.9; §13's SM.9 row, item 3.4, decision D13): one
+/// keyframe to a rig's operator each time its `tacsim:tv:<tv>` projection changes — a start's
+/// first fire, a due step, a tell — so the quarry screens pull `site.map` again. Shape `status`
+/// (not `grid`), so a line-mode connection prints nothing; push only, no query handler.
+pub const TV_STATUS_FEED: &str = "tv.status";
+/// **The run clause the screens show under a drilling rig's line** (doc 20 cut SM.9; the
+/// brief's 3.3 item 7): `{addr}`, `{ore}`, `{k}`, `{cycles}`, `{when}`, `{stop}` — the same words
+/// as `+tv` status's `RUN_LINE`, read from the operator's own projection, never the record's run.
+/// It is never appended to `site.lines` or `site.print` (`+tv/map` is unchanged).
+pub const MAP_RUN_CLAUSE: &str =
+    "drilling {addr} for {ore}, cycle {k} of {cycles}, this cycle done {when}{stop}";
+/// **The clause under a coring rig** (doc 20 cut SM.9; a blind core): `{addr}`, `{ore}`,
+/// `{when}`.
+pub const MAP_CORE_CLAUSE: &str = "coring {addr} for {ore}, done {when}";
+/// **The most log lines the frame carries** (doc 20 cut SM.9; §10's Right pane), newest last.
+pub const MAP_LOG_LINES: usize = 6;
+/// A site cell's edge, centimetres (the drive view's cell; `site.grid.cell_cm`).
+const SITE_CELL_EDGE_CM: i64 = 1_000;
 
 /// **Which view** (doc 20 §10).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -384,7 +402,63 @@ impl MapRefused {
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     drop(reg.panel_feed(SITE_MAP_FEED)?);
     reg.query_handler(SITE_MAP_FEED, Arc::new(SiteMapQuery))?;
+    // Doc 20 cut SM.9 (the brief's 3.4): push only — the surface tick pushes it through
+    // [`push_status`]; a subscribe to it is answered by the gateway's "subscribed" ack.
+    drop(reg.panel_feed(TV_STATUS_FEED)?);
     Ok(())
+}
+
+/// **One `tv.status` keyframe to the projection's operator** (doc 20 cut SM.9; the brief's 3.4,
+/// decision D13): `{ schema: { id: "tv.status", shape: "status", version: 1 }, rig: <the
+/// projection> }` — the operator's own `tacsim:tv:<tv>`, whose log holds only their own lines of
+/// this excursion (`crate::surface::tick`'s `projection_for`, D16) and which carries no truth
+/// (`RunView`, never `Run`). Called by the tick's `write_projection` only when the store wrote a
+/// changed record; a projection no act wrote (`operator: None`) pushes nothing. No submission,
+/// no write: one event.
+///
+/// The frame is a **whole-state keyframe** and carries the `retain: "latest"` marker
+/// ([`RETAIN_LATEST`](crate::match_::cockpit::RETAIN_LATEST), 16b cut Q.3): the session keeps
+/// only the newest `tv.status` in its feed's slot beside the resume ring, so a working pilot's
+/// few hundred projection changes an hour never evict the room text, pages and channel lines a
+/// reconnect replays, and a resume replays at most one re-pull cue.
+pub(crate) fn push_status(ctx: &mut Ctx<'_>, rec: &crate::surface::excursion::TvRec) {
+    let Some(operator) = rec.operator else {
+        return;
+    };
+    ctx.out.push(
+        mush_core::Audience::Actor(operator),
+        OutputEvent::Panel {
+            feed: SmolStr::new_static(TV_STATUS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: json!({
+                "schema": {
+                    "id": TV_STATUS_FEED,
+                    "shape": "status",
+                    "version": 1,
+                    "retain": crate::match_::cockpit::RETAIN_LATEST,
+                },
+                "rig": rec,
+            }),
+        },
+    );
+}
+
+/// **The query word of a family** (doc 20 cut SM.9; the brief's 3.3 item 3): `metals`,
+/// `volatiles`, `carbon`, `strategic` — each one `crate::surface::geology::family_of_word`
+/// accepts, so a client names a layer the server takes without knowing the aliases.
+#[must_use]
+pub(crate) fn family_param(family: OreFamily) -> &'static str {
+    match family {
+        OreFamily::Metals => "metals",
+        OreFamily::Volatiles => "volatiles",
+        OreFamily::CarbonFeedstock => "carbon",
+        OreFamily::StrategicElements => "strategic",
+    }
+}
+
+/// The four family words in [`OreFamily::ALL`] order (a frame's `families`).
+pub(crate) fn family_params() -> Vec<&'static str> {
+    OreFamily::ALL.into_iter().map(family_param).collect()
 }
 
 /// **`site.map`'s handler**: the asker's frame read through the typed snapshot, or a frame with
@@ -764,6 +838,65 @@ fn compose(grid: &mut [Vec<char>], layers: &Overlays) {
     }
 }
 
+/// **The marks the screens style** (doc 20 cut SM.9; the brief's 3.3 item 5, decision D6):
+/// `{ letters: [[fx, fy, "A"], …], hull: [fx, fy] | null, slots: [[fx, fy, n], …] }` — the frame
+/// cells where the composed `grid` shows a block letter, the hull's `H` or a rig's slot digit,
+/// each listed **only where the grid holds that very glyph at that cell** (R5's rule, as
+/// [`list_units`] does). This resolves doc 20 §10's collisions for the screens (letters `H`/`O`
+/// against the hull and the crater; slot digits against ore digits) without changing a glyph:
+/// line mode keeps doc 20's glyphs, collisions and all.
+fn frame_marks(grid: &[Vec<char>], layers: &Overlays) -> Value {
+    let glyph_at = |(fx, fy): (usize, usize)| grid.get(fy).and_then(|row| row.get(fx)).copied();
+    // The cells each layer above a mark covers: a mark is the cell's top layer or no mark at all
+    // (a block letter `H` under the hull is the hull's cell; an `O` letter over a crater is the
+    // letter's).
+    let rigs: BTreeSet<(usize, usize)> = layers.mine.iter().map(|(_, at, _)| *at).collect();
+    let digits: BTreeSet<(usize, usize)> = if layers.mine.len() >= 2 {
+        layers
+            .mine
+            .iter()
+            .filter_map(|(_, _, east)| *east)
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
+    let others: BTreeSet<(usize, usize)> = layers.others.iter().copied().collect();
+    let over_hull =
+        |at: &(usize, usize)| others.contains(at) || digits.contains(at) || rigs.contains(at);
+    let over_letter = |at: &(usize, usize)| {
+        layers.claims.iter().any(|(c, _)| c == at)
+            || layers.pits.iter().any(|(c, _)| c == at)
+            || layers.readings.contains_key(at)
+            || layers.hull.as_ref() == Some(at)
+            || over_hull(at)
+    };
+    let letters: Vec<Value> = layers
+        .letters
+        .iter()
+        .filter(|(at, letter)| !over_letter(at) && glyph_at(*at) == Some(*letter))
+        .map(|(at, letter)| json!([at.0, at.1, letter.to_string()]))
+        .collect();
+    let hull = layers
+        .hull
+        .filter(|at| !over_hull(at) && glyph_at(*at) == Some('H'))
+        .map(|at| json!([at.0, at.1]));
+    let slots: Vec<Value> = if layers.mine.len() >= 2 {
+        layers
+            .mine
+            .iter()
+            .filter_map(|(slot, _, east)| {
+                let east = (*east)?;
+                let digit = char::from_digit(u32::from(*slot), 10)?;
+                (!rigs.contains(&east) && glyph_at(east) == Some(digit))
+                    .then(|| json!([east.0, east.1, slot]))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    json!({ "letters": letters, "hull": hull, "slots": slots })
+}
+
 /// **The units overlay** (R5, binding): a unit is listed only where the composed `grid` already
 /// holds its glyph at its cell — so an `o` under an `@` or under a slot digit is not listed —
 /// the others first (`other-{k}`, `k` from 1 in the order listed, never an object number), then
@@ -799,16 +932,21 @@ fn list_units(grid: &[Vec<char>], layers: &Overlays, addressed: Option<u8>) -> V
 }
 
 /// One pocket the viewer has sounded: its pocket, its address cell and its R2 classes.
-struct Sounded {
-    pocket: (i64, i64),
-    classes: [Word; 4],
+pub(crate) struct Sounded {
+    /// The site-local pocket.
+    pub(crate) pocket: (i64, i64),
+    /// Its R2 classes, one per family.
+    pub(crate) classes: [Word; 4],
 }
 
 /// One field the viewer has scanned: its field, its readings and its footing.
-struct Scanned {
-    field: (i64, i64),
-    readings: [FieldReading; 4],
-    footing: Footing,
+pub(crate) struct Scanned {
+    /// The site-local field.
+    pub(crate) field: (i64, i64),
+    /// Its R1 readings, one per family.
+    pub(crate) readings: [FieldReading; 4],
+    /// The footing it was read from.
+    pub(crate) footing: Footing,
 }
 
 /// **The viewer's own readings** (§5): every pocket their row has sounded and every field it has
@@ -818,7 +956,7 @@ struct Scanned {
 /// a pocket only where `chart::row_reads_pocket` holds, a field only at the footing
 /// `chart::row_reads_field` gives, each through `read_r2`/`read_r1` over `chart::field_ground_at`
 /// — so the map never shows a reading the door would not.
-fn viewer_readings(
+pub(crate) fn viewer_readings(
     site: &chart::SiteContext,
     row: Option<&ChartRecord>,
 ) -> (Vec<Sounded>, Vec<Scanned>) {
@@ -909,7 +1047,7 @@ fn field_cell((fx, fy): (i64, i64)) -> (i64, i64) {
 }
 
 /// A field's reading restricted to one family, when it reads ore of it (never from ice).
-fn field_family_text(scanned: &Scanned, family: OreFamily) -> Option<String> {
+pub(crate) fn field_family_text(scanned: &Scanned, family: OreFamily) -> Option<String> {
     if scanned.footing == Footing::Ice {
         return None;
     }
@@ -928,6 +1066,124 @@ fn field_family_text(scanned: &Scanned, family: OreFamily) -> Option<String> {
     })
 }
 
+/// **The viewer's best reading of one site** (doc 20 cut SM.9; §1 beat 2, §3.1's ground chart),
+/// from their own row only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BestReading {
+    /// No row, an empty row, a row under another reading rule, or only ice scans (no return).
+    None,
+    /// Every pocket and field read is barren.
+    Barren,
+    /// `"{addr} {word} {family label}"`, e.g. "C117 rich metals" — the richest sounded pocket.
+    Pocket(String),
+    /// A field's family text, e.g. "C-NW fair–rich metals (5–16 pockets)" — only when no
+    /// ore-bearing pocket is sounded.
+    Field(String),
+}
+
+/// **The viewer's best reading of `site`** (doc 20 cut SM.9; the brief's 3.2, decision D14):
+/// pure over the row and the keyed ground — [`viewer_readings`]'s very gates and reads, so the
+/// ground chart never says a reading the door would not, and no warm site is wanted.
+/// Deterministic order: the **sounded pockets** first — the highest word (rich > fair > lean),
+/// then the family in [`OreFamily::ALL`] order, then the lowest block letter, then the lowest
+/// pocket number; only when no sounded pocket reads ore, the **scanned fields** through
+/// [`field_family_text`] — the reading's upper word, then an exact reading over a band at the
+/// same word, then the family order, then the field index. A row whose every read is barren is
+/// [`BestReading::Barren`]; ice scans read nothing (no return) and count as no read.
+#[must_use]
+pub(crate) fn best_reading(site: &chart::SiteContext, row: Option<&ChartRecord>) -> BestReading {
+    let (sounded, scanned) = viewer_readings(site, row);
+    best_of(&sounded, &scanned)
+}
+
+/// [`best_reading`]'s order over rendered readings (pure; unit-tested on hand-built rows).
+fn best_of(sounded: &[Sounded], scanned: &[Scanned]) -> BestReading {
+    // (word, family rank (lower first), letter, number) — the richest wins.
+    let mut pocket: Option<(Word, usize, char, u16, String)> = None;
+    for s in sounded {
+        let (Some(letter), Some(number), Some(addr)) = (
+            address::block_letter(s.pocket.0, s.pocket.1),
+            address::pocket_number(s.pocket.0, s.pocket.1),
+            address::pocket_address(s.pocket.0, s.pocket.1),
+        ) else {
+            continue;
+        };
+        for (rank, family) in OreFamily::ALL.into_iter().enumerate() {
+            let word = by_family(s.classes, family);
+            if word == Word::Barren {
+                continue;
+            }
+            let better = pocket.as_ref().is_none_or(|(w, r, l, n, _)| {
+                (
+                    word,
+                    std::cmp::Reverse(rank),
+                    std::cmp::Reverse(letter),
+                    std::cmp::Reverse(number),
+                ) > (
+                    *w,
+                    std::cmp::Reverse(*r),
+                    std::cmp::Reverse(*l),
+                    std::cmp::Reverse(*n),
+                )
+            });
+            if better {
+                let text = format!("{addr} {} {}", word.name(), family.label());
+                pocket = Some((word, rank, letter, number, text));
+            }
+        }
+    }
+    if let Some((_, _, _, _, text)) = pocket {
+        return BestReading::Pocket(text);
+    }
+    // (upper word, exact, family rank, field index) — the richest, exact first.
+    let mut field: Option<(Word, bool, usize, u8, String)> = None;
+    let mut read_any = !sounded.is_empty();
+    for s in scanned {
+        if s.footing == Footing::Ice {
+            continue;
+        }
+        read_any = true;
+        let index = address::field_index(s.field.0, s.field.1).unwrap_or(u8::MAX);
+        for (rank, family) in OreFamily::ALL.into_iter().enumerate() {
+            let Some(text) = field_family_text(s, family) else {
+                continue;
+            };
+            let (upper, exact) = match s.readings.get(rank) {
+                Some(FieldReading::Exact(word)) => (*word, true),
+                Some(FieldReading::Band(_, high)) => (*high, false),
+                Some(FieldReading::NoReturn) | None => continue,
+            };
+            let better = field.as_ref().is_none_or(|(w, e, r, i, _)| {
+                (
+                    upper,
+                    exact,
+                    std::cmp::Reverse(rank),
+                    std::cmp::Reverse(index),
+                ) > (*w, *e, std::cmp::Reverse(*r), std::cmp::Reverse(*i))
+            });
+            if better {
+                field = Some((upper, exact, rank, index, text));
+            }
+        }
+    }
+    match field {
+        Some((_, _, _, _, text)) => BestReading::Field(text),
+        None if read_any => BestReading::Barren,
+        None => BestReading::None,
+    }
+}
+
+/// **A readings row's words** (doc 20 cut SM.4b's join, factored by cut SM.9 so the frame's
+/// `readings[].line` and the `Readings, …:` line can never differ): `"{text} here"` at 0 m,
+/// else `"{text} {m} m {dir}"`.
+fn reading_line(text: &str, m: u64, dir: &str) -> String {
+    if m == 0 {
+        format!("{text} here")
+    } else {
+        format!("{text} {m} m {dir}")
+    }
+}
+
 /// `{m} m {dir}`, or `here`.
 fn bearing_words(from: (i64, i64), to: (i64, i64)) -> (u64, String) {
     let m = cells_apart(from, to).saturating_mul(10);
@@ -937,7 +1193,7 @@ fn bearing_words(from: (i64, i64), to: (i64, i64)) -> (u64, String) {
 }
 
 /// Wrap `line` at [`MAX_LINE_COLUMNS`] on spaces, continuation lines indented two spaces.
-fn wrap(line: &str) -> Vec<String> {
+pub(crate) fn wrap(line: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut current = String::new();
     for word in line.split(' ') {
@@ -1246,7 +1502,35 @@ pub(crate) fn site_map_frame(
             Place::Bay | Place::Away => None,
         })
         .collect();
+    // Doc 20 cut SM.9 (the brief's 0z ruling 1): the glyphs beneath the viewer's own rigs —
+    // the grid composed without their `@` and slot digits — so a client that places a moving
+    // rig along its leg restores what it leaves behind (`site.under`).
+    let mut bare = grid.clone();
+    compose(
+        &mut bare,
+        &Overlays {
+            mine: Vec::new(),
+            ..layers.clone()
+        },
+    );
     compose(&mut grid, &layers);
+    let glyph_at = |grid: &[Vec<char>], (fx, fy): (usize, usize)| {
+        grid.get(fy).and_then(|row| row.get(fx)).copied()
+    };
+    let mut under_cells: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for (_, at, east) in &layers.mine {
+        under_cells.insert(*at);
+        if layers.mine.len() >= 2
+            && let Some(east) = east
+        {
+            under_cells.insert(*east);
+        }
+    }
+    let under: Vec<Value> = under_cells
+        .iter()
+        .filter_map(|at| glyph_at(&bare, *at).map(|glyph| json!([at.0, at.1, glyph.to_string()])))
+        .collect();
+    let marks = frame_marks(&grid, &layers);
     // ---- the units overlay (R5): listed only where `rows` holds the glyph ----
     let addressed_slot = addressed.map(|rig| rig.rig.slot);
     let units = list_units(&grid, &layers, addressed_slot);
@@ -1269,10 +1553,16 @@ pub(crate) fn site_map_frame(
         let text = format!("{addr} {} {}", class.name(), family.label());
         let cell = pocket_cell(s.pocket);
         let (m, dir) = bearing_words(reference, cell);
+        // Doc 20 cut SM.9 (the brief's 3.3 item 6): the row's target, taken here (never parsed
+        // out of `text`), and its words as the readings line joins them.
+        let line = reading_line(&text, m, &dir);
         readings.push((
             m,
             text.clone(),
-            json!({ "text": text, "cell": [cell.0, cell.1], "m": m, "dir": dir }),
+            json!({
+                "text": text, "cell": [cell.0, cell.1], "m": m, "dir": dir,
+                "target": addr, "line": line,
+            }),
         ));
     }
     for s in scanned.iter().filter(in_view_field) {
@@ -1281,10 +1571,15 @@ pub(crate) fn site_map_frame(
         };
         let cell = field_cell(s.field);
         let (m, dir) = bearing_words(reference, cell);
+        let target = address::field_name(s.field.0, s.field.1).unwrap_or_default();
+        let line = reading_line(&text, m, &dir);
         readings.push((
             m,
             text.clone(),
-            json!({ "text": text, "cell": [cell.0, cell.1], "m": m, "dir": dir }),
+            json!({
+                "text": text, "cell": [cell.0, cell.1], "m": m, "dir": dir,
+                "target": target, "line": line,
+            }),
         ));
     }
     readings.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
@@ -1302,6 +1597,7 @@ pub(crate) fn site_map_frame(
     let ramp = berth.ramp_label.clone();
     let mut rig_rows: Vec<Value> = Vec::new();
     let mut rig_lines: Vec<String> = Vec::new();
+    let mut moving = false;
     for rig in &rigs {
         let battery = battery_of(rig.rig.tv);
         let charge = match (&battery, &rig.record) {
@@ -1323,8 +1619,12 @@ pub(crate) fn site_map_frame(
             Place::Ground(cell) => Some(cell),
             Place::Bay | Place::Away => None,
         };
-        let leg = act.and_then(|act| {
+        // Only an act on this very site carries its leg here — [`place_of`]'s own rule (a leg on
+        // another site's ground is in that site's cells), so a client that places the viewer's
+        // rigs along their legs (the SM.9 lead's 0z ruling 1) never draws one this map does not.
+        let leg = act.filter(|act| act.site == entry).and_then(|act| {
             act.params.leg().map(|(waypoints, _)| {
+                moving = true;
                 let launch = if act.params.launches() {
                     i64::from(LAUNCH_S)
                 } else {
@@ -1336,15 +1636,6 @@ pub(crate) fn site_map_frame(
                 })
             })
         });
-        rig_rows.push(json!({
-            "slot": rig.rig.slot,
-            "mark": rig.rig.mark,
-            "cell": cell.map(|(x, y)| json!([x, y])),
-            "charge_pct": charge,
-            "hopper": hopper,
-            "act": act.map(|act| json!({ "kind": act.kind.word(), "due_ic": act.due_ic })),
-            "leg": leg,
-        }));
         let doing = act.map_or_else(String::new, |act| {
             format!(
                 "; {}, there {}",
@@ -1357,11 +1648,34 @@ pub(crate) fn site_map_frame(
             (Place::Bay, None) => "in the bay".to_owned(),
             (_, None) => "away".to_owned(),
         };
-        rig_lines.push(format!(
+        let rig_line = format!(
             "Rig {}: {place}, charge {} %, hopper {hopper}{doing}.",
             rig.rig.slot,
             charge.map_or_else(|| "?".to_owned(), |c| c.to_string())
-        ));
+        );
+        // Doc 20 cut SM.9 (the brief's 3.3 item 7, lead ruling 4): the run as the operator's
+        // own projection shows it — never `RigRecord.run`, which holds the pocket's truth.
+        let run = projected_run(w, actor, rig.rig.tv);
+        // Doc 20 cut SM.8's queue (its lead note): a rig in the bay with an unload queued says
+        // so, in `+tv` status's own words, from the record — never "idle".
+        let queued = rig
+            .record
+            .as_ref()
+            .and_then(|record| record.queued.as_ref())
+            .map(|_| tv::QUEUED_LINE.trim());
+        rig_rows.push(json!({
+            "slot": rig.rig.slot,
+            "mark": rig.rig.mark,
+            "cell": cell.map(|(x, y)| json!([x, y])),
+            "charge_pct": charge,
+            "hopper": hopper,
+            "act": act.map(|act| json!({ "kind": act.kind.word(), "due_ic": act.due_ic })),
+            "leg": leg,
+            "line": rig_line,
+            "run": run,
+            "queued": queued,
+        }));
+        rig_lines.push(rig_line);
     }
     // Other rigs: where, and a loud sounding inside the IC hour (§5's transient mark) — one
     // made on THIS site (the review's correctness/F1: a sounding heard on another site's ground
@@ -1399,19 +1713,24 @@ pub(crate) fn site_map_frame(
         &read,
         &|tv| reads.rig(tv),
     );
+    // The two sentences the screens' Right pane shows whole (the lead's pre-commit round; the
+    // judge's correctness/F10): made once here, pushed into `lines` as before, and carried
+    // unwrapped as `site.no_readings` / `site.other_rigs` so no client picks them out of
+    // `lines` by their opening words.
+    let no_readings = readings
+        .is_empty()
+        .then(|| MAP_NO_READINGS.replace("{family}", family.label()));
+    let other_rigs =
+        (!other_words.is_empty()).then(|| format!("Other rigs: {}", other_words.join("; ")));
     let mut lines: Vec<String> = Vec::new();
-    if readings.is_empty() {
-        lines.push(MAP_NO_READINGS.replace("{family}", family.label()));
+    if let Some(line) = &no_readings {
+        lines.push(line.clone());
     } else {
         let rows: Vec<String> = readings
             .iter()
             .map(|(m, text, value)| {
                 let dir = value.get("dir").and_then(Value::as_str).unwrap_or("");
-                if *m == 0 {
-                    format!("{text} here")
-                } else {
-                    format!("{text} {m} m {dir}")
-                }
+                reading_line(text, *m, dir)
             })
             .collect();
         lines.extend(wrap(&format!(
@@ -1423,11 +1742,12 @@ pub(crate) fn site_map_frame(
     for line in rig_lines {
         lines.extend(wrap(&line));
     }
-    if !other_words.is_empty() {
-        lines.extend(wrap(&format!("Other rigs: {}", other_words.join("; "))));
+    if let Some(line) = &other_rigs {
+        lines.extend(wrap(line));
     }
-    if let Some(kg) = hold_room {
-        lines.push(format!("Hold: {} t of room unreserved.", kg / 1_000));
+    let hold_line = hold_room.map(|kg| format!("Hold: {} t of room unreserved.", kg / 1_000));
+    if let Some(line) = &hold_line {
+        lines.push(line.clone());
     }
     let title = match (view, addressed) {
         (MapView::Drive { .. }, Some(rig)) => MAP_TITLE_DRIVE
@@ -1466,7 +1786,17 @@ pub(crate) fn site_map_frame(
         ["1", "lean, 1 t a cycle"],
         ["+", "other family"],
         [".", "barren"],
+        // Doc 20 cut SM.9 (the brief's 3.3 item 1, lead ruling 2): the pairs name every glyph
+        // `SITE_LEGEND` names, so the screens show the legend from the pairs alone.
+        ["v", "pit, worked"],
+        ["V", "pit, worked out"],
+        ["#", "claim"],
     ]);
+    // Doc 20 cut SM.9 (the brief's 3.3 item 9, D16): the addressed rig's own projection's log,
+    // only this operator's and this excursion's lines.
+    let log = addressed
+        .map(|rig| viewer_log(w, actor, rig.rig.tv, rig.record.as_ref()))
+        .unwrap_or_default();
     let (origin_cell, extent) = match view {
         MapView::Drive { .. } => (json!([x0, y0]), json!([site_side, site_side])),
         MapView::Site => (json!([0, 0]), json!([side, side])),
@@ -1498,9 +1828,31 @@ pub(crate) fn site_map_frame(
             "readings": readings.into_iter().map(|(_, _, value)| value).collect::<Vec<_>>(),
             "rigs": rig_rows,
             "others": other_rows,
-            "hold": hold_room.map(|kg| json!({ "room_t": kg / 1_000 })),
+            "hold": hold_room.map(|kg| json!({ "room_t": kg / 1_000, "line": hold_line })),
             "footer": footer,
             "lines": lines,
+            // Doc 20 cut SM.9 (the brief's 3.3; vector keys only — no glyph, no line moves).
+            "addressed": addressed_slot,
+            "family_word": family_param(family),
+            "families": family_params(),
+            // Frame cell (fx, fy) spans the site cells from (x0 + fx·span, y0 + fy·span), `span`
+            // on a side; fy runs north from the window's south edge, as the rows do. `cell_cm` is
+            // a site cell's edge, for a leg's centimetres.
+            "grid": { "x0": x0, "y0": y0, "span": span, "cell_cm": SITE_CELL_EDGE_CM },
+            "marks": marks,
+            "under": under,
+            // The lead's 0z ruling 1: the frame's instant and the world's rate (IC seconds a
+            // real second), so a client places the viewer's own rigs along their legs between
+            // pulls; at the frame's own instant that is the cell the rows already show. Only
+            // while one of the viewer's rigs has a leg (`null` otherwise), so a frame with
+            // nothing moving stays byte-identical as the clock runs (D12's witness).
+            "clock": moving.then(|| json!({ "now_ic": now, "rate": w.world_timeline().current().rate })),
+            "log": log,
+            // The pre-commit round (F10): the no-readings sentence (`MAP_NO_READINGS`, `null`
+            // with readings in view) and the other-rigs sentence (`null` with none in view),
+            // each whole and unwrapped — `lines` holds the same words wrapped for line mode.
+            "no_readings": no_readings,
+            "other_rigs": other_rigs,
         },
     });
     let print = site_map_lines(&frame);
@@ -1508,6 +1860,116 @@ pub(crate) fn site_map_frame(
         block.insert("print".to_owned(), json!(print));
     }
     Ok(frame)
+}
+
+/// **The run clause of `tv`'s run** from its operator's own projection (doc 20 cut SM.9; the
+/// brief's 3.3 item 7, lead ruling 4): `tacsim:tv:<tv>`'s `run`, only when the projection is
+/// `actor`'s — `{ addr, ore, k, cycles, due_ic, stop, blind, text }` — else `null`. Never the
+/// authoritative `RigRecord.run` (the pocket's class and tonnes).
+fn projected_run(w: &World, actor: ObjId, tv: ObjId) -> Value {
+    let Some(crate::surface::excursion::TvRecState::Present(rec)) = w
+        .module_state::<crate::store::TacsimStore>()
+        .and_then(|store| store.tv_rec(tv))
+    else {
+        return Value::Null;
+    };
+    projection_run(rec, actor).map_or(Value::Null, |run| run_value(w, run))
+}
+
+/// A run view's vector form and its clause ([`MAP_RUN_CLAUSE`], or [`MAP_CORE_CLAUSE`] for a
+/// blind core).
+fn run_value(w: &World, run: &crate::surface::excursion::RunView) -> Value {
+    use crate::port::tv;
+    let ore = run
+        .good
+        .as_ref()
+        .map_or_else(String::new, |good| tv::ore_words(good.as_str()));
+    let text = run_clause(run, &tv::due_words(w, run.due_ic));
+    json!({
+        "addr": run.addr,
+        "ore": ore,
+        "k": run.k,
+        "cycles": run.cycles,
+        "due_ic": run.due_ic,
+        "stop": run.stop,
+        "blind": run.blind,
+        "text": text,
+    })
+}
+
+/// **A run view's clause** (pure): [`MAP_CORE_CLAUSE`] for a blind core, else
+/// [`MAP_RUN_CLAUSE`] with `RUN_STOP_CLAUSE` once a stop was asked; `{when}` as given.
+fn run_clause(run: &crate::surface::excursion::RunView, when: &str) -> String {
+    use crate::port::tv;
+    let ore = run
+        .good
+        .as_ref()
+        .map_or_else(String::new, |good| tv::ore_words(good.as_str()));
+    if run.blind {
+        MAP_CORE_CLAUSE
+            .replace("{addr}", &run.addr)
+            .replace("{ore}", &ore)
+            .replace("{when}", when)
+    } else {
+        MAP_RUN_CLAUSE
+            .replace("{addr}", &run.addr)
+            .replace("{ore}", &ore)
+            .replace("{k}", &run.k.to_string())
+            .replace("{cycles}", &run.cycles.to_string())
+            .replace("{when}", when)
+            .replace("{stop}", if run.stop { tv::RUN_STOP_CLAUSE } else { "" })
+    }
+}
+
+/// **The run a projection shows its viewer** (pure; lead ruling 4): `rec.run` only when the
+/// projection is `actor`'s.
+fn projection_run(
+    rec: &crate::surface::excursion::TvRec,
+    actor: ObjId,
+) -> Option<&crate::surface::excursion::RunView> {
+    match (&rec.run, rec.operator) {
+        (Some(run), Some(operator)) if operator == actor => Some(run),
+        _ => None,
+    }
+}
+
+/// **The log lines a viewer may see of their rig** (doc 20 cut SM.9; the brief's 3.3 item 9,
+/// D16): the projection's `log`, newest last, at most [`MAP_LOG_LINES`] — only when the
+/// projection is `actor`'s, its excursion is the rig's open one, and only the lines stamped at or
+/// after that excursion's launch; else none.
+fn viewer_log(w: &World, actor: ObjId, tv: ObjId, record: Option<&RigRecord>) -> Vec<Value> {
+    let Some(open) = record.and_then(|record| record.excursion.as_ref()) else {
+        return Vec::new();
+    };
+    let Some(crate::surface::excursion::TvRecState::Present(rec)) = w
+        .module_state::<crate::store::TacsimStore>()
+        .and_then(|store| store.tv_rec(tv))
+    else {
+        return Vec::new();
+    };
+    log_for(rec, actor, open.id)
+}
+
+/// [`viewer_log`]'s rule over one projection (pure).
+fn log_for(
+    rec: &crate::surface::excursion::TvRec,
+    actor: ObjId,
+    open: crate::surface::excursion::ExcursionId,
+) -> Vec<Value> {
+    if rec.operator != Some(actor) || rec.excursion != Some(open) {
+        return Vec::new();
+    }
+    let lines: Vec<&crate::surface::excursion::TvLogLine> = rec
+        .log
+        .iter()
+        .filter(|line| line.at_ic >= open.launch_ic)
+        .collect();
+    let skip = lines.len().saturating_sub(MAP_LOG_LINES);
+    lines
+        .into_iter()
+        .skip(skip)
+        .map(|line| json!({ "at_ic": line.at_ic, "text": line.text }))
+        .collect()
 }
 
 /// **The legend as printed** (doc 20 cut SM.4b): [`SITE_LEGEND`] verbatim — but doc 20 §10's
@@ -1877,6 +2339,285 @@ mod tests {
         }
         assert_eq!(pocket_cell((36, 56)), (146, 226), "C117's address cell");
         assert_eq!(field_cell((4, 7)), (144, 240), "C-NW's middle");
+    }
+
+    /// **The marks list only glyphs the grid shows** (doc 20 cut SM.9; the brief's 3.3 item 5,
+    /// decision D6): a block letter `H` under the hull is no letter mark (the grid shows the
+    /// hull's `H`, which is the hull mark); a letter under a reading is none; a slot digit under
+    /// the other rig's `@` is not listed; one rig alone has no slot marks.
+    #[test]
+    fn sm9_marks_list_only_glyphs_the_grid_shows() {
+        let mut grid = vec![vec![','; 8]; 2];
+        let layers = Overlays {
+            letters: vec![((0, 0), 'H'), ((2, 0), 'C'), ((4, 0), 'D')],
+            readings: [((4, 0), '2')].into_iter().collect(),
+            hull: Some((0, 0)),
+            // Rig 1 at (5, 0) with its digit at (6, 0); rig 2 at (6, 0) — over rig 1's digit —
+            // with its digit at (7, 0).
+            mine: vec![(1, (5, 0), Some((6, 0))), (2, (6, 0), Some((7, 0)))],
+            ..Overlays::default()
+        };
+        compose(&mut grid, &layers);
+        assert_eq!(
+            grid.first()
+                .map(|r| r.iter().collect::<String>())
+                .as_deref(),
+            Some("H,C,2@@2")
+        );
+        let marks = frame_marks(&grid, &layers);
+        assert_eq!(marks["letters"], json!([[2, 0, "C"]]), "only the C shows");
+        assert_eq!(marks["hull"], json!([0, 0]));
+        assert_eq!(
+            marks["slots"],
+            json!([[7, 0, 2]]),
+            "rig 1's digit is under rig 2's @"
+        );
+        // One rig on the ground: no digits, no slot marks.
+        let mut lone_grid = vec![vec![','; 3]; 1];
+        let lone = Overlays {
+            mine: vec![(1, (0, 0), Some((1, 0)))],
+            ..Overlays::default()
+        };
+        compose(&mut lone_grid, &lone);
+        assert_eq!(frame_marks(&lone_grid, &lone)["slots"], json!([]));
+        assert_eq!(frame_marks(&lone_grid, &lone)["hull"], Value::Null);
+    }
+
+    /// A run view as the projection carries it (doc 20 cut SM.9).
+    fn run_view(blind: bool, stop: bool) -> crate::surface::excursion::RunView {
+        crate::surface::excursion::RunView {
+            ordinal: 4,
+            k: 2,
+            cycles: 4,
+            due_ic: 9_000,
+            addr: "C117".to_owned(),
+            good: CanonicalId::new("metal_ore").ok(),
+            stop,
+            blind,
+        }
+    }
+
+    /// **The run text reads the projection** (doc 20 cut SM.9; the brief's 3.3 item 7, lead
+    /// ruling 4): the operator's own projection's run, in `MAP_RUN_CLAUSE`'s words (the stop
+    /// clause once asked), a blind core in `MAP_CORE_CLAUSE`'s; another operator's projection
+    /// gives no run.
+    #[test]
+    fn sm9_the_run_text_reads_the_projection() {
+        let mut rec = crate::surface::excursion::TvRec::new(ObjId(900), 1);
+        rec.operator = Some(ObjId(41));
+        rec.run = Some(Box::new(run_view(false, false)));
+        let run = projection_run(&rec, ObjId(41)).unwrap_or_else(|| panic!("the operator's run"));
+        assert_eq!(
+            run_clause(run, "soon"),
+            "drilling C117 for metal ore, cycle 2 of 4, this cycle done soon"
+        );
+        assert_eq!(
+            run_clause(&run_view(false, true), "soon"),
+            "drilling C117 for metal ore, cycle 2 of 4, this cycle done soon; it stops after this cycle"
+        );
+        assert_eq!(
+            run_clause(&run_view(true, false), "soon"),
+            "coring C117 for metal ore, done soon"
+        );
+        assert!(
+            projection_run(&rec, ObjId(42)).is_none(),
+            "another's projection"
+        );
+        rec.operator = None;
+        assert!(projection_run(&rec, ObjId(41)).is_none());
+        // The view carries no truth: its wire keys are the operator's own choice.
+        let wire = serde_json::to_value(run_view(false, true)).unwrap_or_else(|e| panic!("{e}"));
+        let keys: Vec<&str> = wire
+            .as_object()
+            .map(|o| o.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            keys,
+            ["addr", "cycles", "due_ic", "good", "k", "ordinal", "stop"]
+        );
+    }
+
+    /// **The family words round-trip** (doc 20 cut SM.9; the brief's 3.3 item 3): every
+    /// parameter word is one `family_of_word` accepts, in `OreFamily::ALL` order.
+    #[test]
+    fn sm9_family_params_round_trip() {
+        for family in OreFamily::ALL {
+            assert_eq!(
+                crate::surface::geology::family_of_word(family_param(family)),
+                Some(family)
+            );
+        }
+        assert_eq!(
+            family_params(),
+            ["metals", "volatiles", "carbon", "strategic"]
+        );
+    }
+
+    /// **The log is the viewer's excursion's only** (doc 20 cut SM.9; the brief's 3.3 item 9,
+    /// D16): another operator's projection, or another excursion's, gives no line; a line
+    /// stamped before the excursion's launch is dropped; at most `MAP_LOG_LINES`, newest last.
+    #[test]
+    fn sm9_the_log_is_the_viewers_excursions_only() {
+        use crate::surface::excursion::{ExcursionId, TvRec};
+        let open = ExcursionId {
+            tv: ObjId(900),
+            launch_ic: 1_000,
+        };
+        let mut rec = TvRec::new(ObjId(900), 1);
+        rec.operator = Some(ObjId(41));
+        rec.excursion = Some(open);
+        rec.push_log(900, "before the launch");
+        for i in 0..8 {
+            rec.push_log(1_000 + i, &format!("line {i}"));
+        }
+        let texts = |lines: Vec<Value>| -> Vec<String> {
+            lines
+                .iter()
+                .filter_map(|l| l.get("text").and_then(Value::as_str).map(str::to_owned))
+                .collect()
+        };
+        assert_eq!(
+            texts(log_for(&rec, ObjId(41), open)),
+            ["line 2", "line 3", "line 4", "line 5", "line 6", "line 7"]
+        );
+        assert!(
+            log_for(&rec, ObjId(42), open).is_empty(),
+            "another operator's"
+        );
+        let later = ExcursionId {
+            tv: ObjId(900),
+            launch_ic: 5_000,
+        };
+        assert!(
+            log_for(&rec, ObjId(41), later).is_empty(),
+            "another excursion's"
+        );
+        let mut short = TvRec::new(ObjId(900), 1);
+        short.operator = Some(ObjId(41));
+        short.excursion = Some(open);
+        short.push_log(999, "before");
+        short.push_log(1_000, "at the launch");
+        assert_eq!(texts(log_for(&short, ObjId(41), open)), ["at the launch"]);
+    }
+
+    /// **A pit worked out in one family reads `V` whatever else it holds** (doc 20 cut SM.9;
+    /// the brief's 3.10b, decision D9): the pit rule folds only the DRAWN rows, so a pocket
+    /// exhausted in one family and never drawn in another is `V` on every map — an undrawn family
+    /// never shows, because a `v` would tell a rival that a second family is there; a drawn row
+    /// not exhausted keeps it `v`.
+    #[test]
+    fn sm9_a_pit_worked_out_in_one_family_reads_v_whatever_else_it_holds() {
+        // One drawn row, exhausted: `V` (the other family has no drawn row, so no fold).
+        assert_eq!(fold_pit(None, true), Some('V'));
+        // Two drawn rows: `V` only when both are exhausted.
+        assert_eq!(fold_pit(fold_pit(None, true), true), Some('V'));
+        assert_eq!(fold_pit(fold_pit(None, true), false), Some('v'));
+        assert_eq!(fold_pit(fold_pit(None, false), true), Some('v'));
+        assert_eq!(fold_pit(None, false), Some('v'));
+    }
+
+    /// **The best reading orders pockets before fields** (doc 20 cut SM.9; the brief's 3.2):
+    /// the richest sounded pocket wins (then the family order, the block letter, the pocket
+    /// number); a field speaks only when no sounded pocket reads ore — the upper word first, an
+    /// exact reading over a band; a row read and all barren is `Barren`; ice scans and nothing
+    /// read is `None`.
+    #[test]
+    fn sm9_best_reading_orders_pockets_before_fields() {
+        let w = |classes: [Word; 4]| classes;
+        let pocket = |p: (i64, i64), classes: [Word; 4]| Sounded { pocket: p, classes };
+        let field = |f: (i64, i64), readings: [FieldReading; 4], footing: Footing| Scanned {
+            field: f,
+            readings,
+            footing,
+        };
+        let barren = [Word::Barren; 4];
+        let exact = |word: Word| FieldReading::Exact(word);
+        let nothing = [exact(Word::Barren); 4];
+        // C117 (36, 56) fair metals; C118 (37, 56) rich volatiles; a fair carbon one beside.
+        let c117 = pocket(
+            (36, 56),
+            w([Word::Fair, Word::Barren, Word::Barren, Word::Barren]),
+        );
+        let c118 = pocket(
+            (37, 56),
+            w([Word::Barren, Word::Rich, Word::Barren, Word::Barren]),
+        );
+        let fields = [field(
+            (4, 7),
+            [
+                FieldReading::Band(Word::Fair, Word::Rich),
+                exact(Word::Barren),
+                exact(Word::Barren),
+                exact(Word::Barren),
+            ],
+            Footing::Regolith,
+        )];
+        assert_eq!(
+            best_of(&[c117, c118], &fields),
+            BestReading::Pocket("C118 rich volatiles".to_owned()),
+            "the richest pocket, before any field"
+        );
+        // Equal words: the earlier family, then the lower pocket number.
+        let a = pocket(
+            (36, 56),
+            w([Word::Fair, Word::Fair, Word::Barren, Word::Barren]),
+        );
+        let b = pocket(
+            (37, 56),
+            w([Word::Fair, Word::Barren, Word::Barren, Word::Barren]),
+        );
+        assert_eq!(
+            best_of(&[b, a], &[]),
+            BestReading::Pocket("C117 fair metals".to_owned())
+        );
+        // No ore-bearing pocket: the field speaks; an exact rich over a fair–rich band.
+        let dud = pocket((36, 56), barren);
+        let rock = field(
+            (5, 7),
+            [
+                exact(Word::Barren),
+                exact(Word::Rich),
+                exact(Word::Barren),
+                exact(Word::Barren),
+            ],
+            Footing::Rock,
+        );
+        let best = best_of(
+            &[dud],
+            &[
+                field(
+                    (4, 7),
+                    [
+                        FieldReading::Band(Word::Fair, Word::Rich),
+                        exact(Word::Barren),
+                        exact(Word::Barren),
+                        exact(Word::Barren),
+                    ],
+                    Footing::Regolith,
+                ),
+                rock,
+            ],
+        );
+        match best {
+            BestReading::Field(text) => assert!(text.contains("rich volatiles"), "{text}"),
+            other => panic!("a field: {other:?}"),
+        }
+        // Read, all barren: Barren. Ice only, or nothing: None.
+        assert_eq!(
+            best_of(
+                &[pocket((36, 56), barren)],
+                &[field((4, 7), nothing, Footing::Rock)]
+            ),
+            BestReading::Barren
+        );
+        assert_eq!(
+            best_of(
+                &[],
+                &[field((4, 7), [FieldReading::NoReturn; 4], Footing::Ice)]
+            ),
+            BestReading::None
+        );
+        assert_eq!(best_of(&[], &[]), BestReading::None);
     }
 
     /// **Family words parse** (the brief's 3.9): every alias, case-insensitive; anything else

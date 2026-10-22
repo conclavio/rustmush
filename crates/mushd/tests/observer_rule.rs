@@ -767,7 +767,10 @@ async fn panel_query(ws: &mut Ws, id: u64, feed: &str) -> Value {
 async fn panel_query_seen(ws: &mut Ws, id: u64, feed: &str, seen: &mut String) -> Value {
     let request = ClientCommand::Req {
         id,
-        q: Query::PanelSubscribe { feed: feed.into() },
+        q: Query::PanelSubscribe {
+            feed: feed.into(),
+            params: None,
+        },
     };
     let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
     for _ in 0..RETRY_BUDGET {

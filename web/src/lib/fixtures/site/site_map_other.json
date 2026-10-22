@@ -55,6 +55,18 @@
     [
       ".",
       "barren"
+    ],
+    [
+      "v",
+      "pit, worked"
+    ],
+    [
+      "V",
+      "pit, worked out"
+    ],
+    [
+      "#",
+      "claim"
     ]
   ],
   "origin": [
@@ -2306,9 +2318,25 @@
     "version": 1
   },
   "site": {
+    "addressed": null,
+    "clock": null,
+    "families": [
+      "metals",
+      "volatiles",
+      "carbon",
+      "strategic"
+    ],
     "family": "metals",
+    "family_word": "metals",
     "footer": "the whole site, 80 m a cell, north up",
+    "grid": {
+      "cell_cm": 1000,
+      "span": 8,
+      "x0": 0,
+      "y0": 0
+    },
     "hold": {
+      "line": "Hold: 86 t of room unreserved.",
       "room_t": 86
     },
     "legend_line": "@ you  H hull  o rig  , regolith  ^ rock  = ice  O crater  1–3 ore (t a cycle)  + other family  . barren  v/V pit  # claim",
@@ -2318,6 +2346,98 @@
       "Other rigs: 500 m N",
       "Hold: 86 t of room unreserved."
     ],
+    "log": [],
+    "marks": {
+      "hull": [
+        16,
+        16
+      ],
+      "letters": [
+        [
+          0,
+          7,
+          "M"
+        ],
+        [
+          8,
+          7,
+          "N"
+        ],
+        [
+          16,
+          7,
+          "O"
+        ],
+        [
+          24,
+          7,
+          "P"
+        ],
+        [
+          0,
+          15,
+          "I"
+        ],
+        [
+          8,
+          15,
+          "J"
+        ],
+        [
+          16,
+          15,
+          "K"
+        ],
+        [
+          24,
+          15,
+          "L"
+        ],
+        [
+          0,
+          23,
+          "E"
+        ],
+        [
+          8,
+          23,
+          "F"
+        ],
+        [
+          16,
+          23,
+          "G"
+        ],
+        [
+          24,
+          23,
+          "H"
+        ],
+        [
+          0,
+          31,
+          "A"
+        ],
+        [
+          8,
+          31,
+          "B"
+        ],
+        [
+          16,
+          31,
+          "C"
+        ],
+        [
+          24,
+          31,
+          "D"
+        ]
+      ],
+      "slots": []
+    },
+    "no_readings": "You have no readings of metals in view.",
+    "other_rigs": "Other rigs: 500 m N",
     "others": [
       {
         "cell": [
@@ -2379,11 +2499,15 @@
         "charge_pct": 100,
         "hopper": "empty",
         "leg": null,
+        "line": "Rig 1: in the bay, charge 100 %, hopper empty.",
         "mark": "OWP-TV-02",
+        "queued": null,
+        "run": null,
         "slot": 1
       }
     ],
     "site": "Ahuna Flank",
+    "under": [],
     "view": "site"
   },
   "surface": "ground",

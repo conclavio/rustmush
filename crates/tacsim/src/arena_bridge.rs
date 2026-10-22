@@ -4168,8 +4168,9 @@ impl mush_core::QueryHandler for CockpitQuery {
 /// `available: false` with the sentence that says why not
 /// ([`crate::match_::replay::replay_answer`]).
 ///
-/// **It takes no parameters**, and cannot: `Query::PanelSubscribe` carries a
-/// feed and nothing else, and the web bridge forwards the feed alone. So the
+/// **It takes no parameters**: the replay cursor names the match (a
+/// `Query::PanelSubscribe` may carry parameters since doc 20 cut SM.9, and this
+/// handler reads none). So the
 /// match is the one the asker last opened with `SIM REPLAY` — which is also why
 /// a refused `SIM REPLAY` drops the cursor, so this never answers an earlier
 /// match's document by accident. The answer's shape is `replay`, not `grid`:

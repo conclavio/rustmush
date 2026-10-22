@@ -735,15 +735,33 @@ pub fn province_at(
     body: &BodyGeology,
     province: (u32, u32),
 ) -> Result<ProvinceGround, GeologyError> {
+    let mut words = [Word::Barren; 4];
+    for (slot, family) in words.iter_mut().zip(OreFamily::ALL) {
+        *slot = province_word(mac, body, province, family)?;
+    }
+    Ok(ProvinceGround { province, words })
+}
+
+/// **One family's R0 word of a province** (doc 20 cut SM.9; §3.1's ground chart): the one HMAC
+/// [`province_at`] draws for that family, so the body's wash in one family costs 1,568 draws a
+/// frame (56 × 28), not four times that. [`province_at`] is the four of these, so the two can
+/// never disagree (reading rule v1's literal pin holds it).
+///
+/// # Errors
+///
+/// [`GeologyError::OffLattice`] for a province off the 56 × 28 chart.
+pub fn province_word(
+    mac: &GeologyMac,
+    body: &BodyGeology,
+    province: (u32, u32),
+    family: OreFamily,
+) -> Result<Word, GeologyError> {
     if province.0 >= PROVINCE_COLUMNS || province.1 >= PROVINCE_ROWS {
         return Err(GeologyError::OffLattice);
     }
     let cell = (i64::from(province.0), i64::from(province.1));
-    let words = OreFamily::ALL.map(|family| {
-        let [d0, ..] = draw(mac, &body.body, LEVEL_PROVINCE, cell, family);
-        pick(by_family(body.table.province, family), d0)
-    });
-    Ok(ProvinceGround { province, words })
+    let [d0, ..] = draw(mac, &body.body, LEVEL_PROVINCE, cell, family);
+    Ok(pick(by_family(body.table.province, family), d0))
 }
 
 /// The ground of one field under a class `shift` (§3.1's block shift; 0 for the body's own

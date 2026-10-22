@@ -158,7 +158,11 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: crate::port::chart::CHART_VERB.into(),
             shape: ArgShape::Raw,
-            switches: ["body", "map"].iter().copied().map(SmolStr::new).collect(),
+            switches: ["body", "map", "ground"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
             help: crate::port::chart::CHART_HELP.into(),
             ..CommandSpec::default()
         },

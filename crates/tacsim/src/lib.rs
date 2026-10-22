@@ -581,6 +581,9 @@ impl GameModule for TacsimRuleset {
         port::chart_panel::register(reg)?;
         // Doc 20 cut SM.4b (§10, D-20-13): the `site.map` panel feed and its query.
         port::site_map::register(reg)?;
+        // Doc 20 cut SM.9 (§3.1, §10, D-20-13): the `body.ground` panel feed and its query (the
+        // manifest reads `sky.chart, site.map, tv.status, body.ground`).
+        port::ground_chart::register(reg)?;
         // Doc 20 cut SM.1 (§3.2, D-20-4): `@geology`, staff truth, in its own ReadOnly bracket.
         surface::commands::register(reg)?;
         // 16b cut C.2 (C1): the game's definitions, through the C1 registry.

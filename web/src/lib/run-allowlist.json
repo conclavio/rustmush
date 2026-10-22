@@ -1,6 +1,7 @@
 [
   "+actions",
   "+chart",
+  "+chart/ground",
   "+chart/map",
   "+contacts",
   "+intel",

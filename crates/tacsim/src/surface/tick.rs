@@ -79,8 +79,9 @@ use crate::surface::act::{
 use crate::surface::address::{self, Octant};
 use crate::surface::chart::{ChartKey, ChartRecord};
 use crate::surface::excursion::{
-    ActKind, ActResult, ActView, FrozenLeg, LAUNCH_S, Mined, Outcome, ReadSpan, RefusedCode,
-    RigKey, RigRecord, RunEnd, RunView, TvPose, TvRec, TvRecState, TvState, cells_apart, site_cell,
+    ActKind, ActResult, ActView, ExcursionId, FrozenLeg, LAUNCH_S, Mined, Outcome, ReadSpan,
+    RefusedCode, RigKey, RigRecord, RunEnd, RunView, TvPose, TvRec, TvRecState, TvState,
+    cells_apart, site_cell,
 };
 use crate::surface::reading::{Footing, READING_RULE_VERSION};
 
@@ -816,11 +817,12 @@ fn project_start(ctx: &mut Ctx<'_>, record: &RigRecord) {
     let Some(act) = &record.act else {
         return;
     };
-    let mut rec = projection_of(ctx.w, record.tv, act.slot);
+    let excursion = record.excursion.as_ref().map(|excursion| excursion.id);
+    let mut rec = projection_for(ctx.w, record.tv, act.slot, act.operator, excursion);
     rec.slot = act.slot;
     rec.operator = Some(act.operator);
     rec.hull = Some(act.hull);
-    rec.excursion = record.excursion.as_ref().map(|excursion| excursion.id);
+    rec.excursion = excursion;
     rec.site = record
         .excursion
         .as_ref()
@@ -845,11 +847,12 @@ fn project_run(ctx: &mut Ctx<'_>, record: &RigRecord) {
     let Some(run) = &record.run else {
         return;
     };
-    let mut rec = projection_of(ctx.w, record.tv, run.slot);
+    let excursion = record.excursion.as_ref().map(|excursion| excursion.id);
+    let mut rec = projection_for(ctx.w, record.tv, run.slot, run.operator, excursion);
     rec.slot = run.slot;
     rec.operator = Some(run.operator);
     rec.hull = Some(run.hull);
-    rec.excursion = record.excursion.as_ref().map(|excursion| excursion.id);
+    rec.excursion = excursion;
     rec.site = record
         .excursion
         .as_ref()
@@ -866,15 +869,44 @@ fn project_run(ctx: &mut Ctx<'_>, record: &RigRecord) {
     write_projection(ctx, &rec);
 }
 
-/// The projection as stored, else a new one.
-fn projection_of(w: &World, tv: ObjId, slot: u8) -> TvRec {
+/// **The projection as stored for its current operator, else a new one** (doc 20 cut SM.9; the
+/// brief's 3.4a, decision D16; doc 20 §5 and §16 — no surface shows another principal's
+/// knowledge): `tacsim:tv:<tv>` is keyed by the TV and the counter's rigs are leased again and
+/// again, so a stored record another operator wrote (its `operator` `Some(o)` with `o !=
+/// operator`), or one written for another excursion (its `excursion` differs from `excursion`),
+/// keeps **none of its log** — the last lessee's reading, arrival and cycle lines — and drops
+/// its `leg` and `run` (every writer overwrites them anyway; clearing them makes the rule
+/// plain). `applied`, `told`, `told_cycle`, `slot` and `tv` carry over: they are per-TV ordinals
+/// the tick's idempotency reads (`told_of`, `shown_of`, `shown_run_of`), and clearing them would
+/// re-tell or re-apply. A stored record no act ever wrote (`operator: None`) is taken as is.
+pub(crate) fn projection_for(
+    w: &World,
+    tv: ObjId,
+    slot: u8,
+    operator: ObjId,
+    excursion: Option<ExcursionId>,
+) -> TvRec {
     match w
         .module_state::<TacsimStore>()
         .and_then(|store| store.tv_rec(tv))
     {
-        Some(TvRecState::Present(rec)) => rec.clone(),
+        Some(TvRecState::Present(rec)) => carried_for(rec.clone(), operator, excursion),
         Some(TvRecState::Unreadable) | None => TvRec::new(tv, slot),
     }
+}
+
+/// **[`projection_for`]'s rule over one stored record** (pure; doc 20 cut SM.9, D16): the log,
+/// the leg and the run go when another operator or another excursion wrote it; the per-TV
+/// ordinals stay.
+fn carried_for(mut rec: TvRec, operator: ObjId, excursion: Option<ExcursionId>) -> TvRec {
+    if let Some(was) = rec.operator
+        && (was != operator || rec.excursion != excursion)
+    {
+        rec.log.clear();
+        rec.leg = None;
+        rec.run = None;
+    }
+    rec
 }
 
 /// The ground pose of `tv`, when it stands `Direct`.
@@ -914,7 +946,14 @@ fn write_projection(ctx: &mut Ctx<'_>, rec: &TvRec) -> bool {
         tracing::error!(tv = rec.tv.0, %error, "tacsim: a rig projection is out of bounds; it is not written");
         return false;
     }
-    put_tv_rec(ctx, &rec)
+    // Doc 20 cut SM.9 (the brief's 3.4, decision D13): a projection that changed is one pushed
+    // `tv.status` keyframe to its operator — the quarry screen's cue to pull the map again.
+    // Nothing is pushed for an equal record (the early return above) or a refused one.
+    let wrote = put_tv_rec(ctx, &rec);
+    if wrote {
+        crate::port::site_map::push_status(ctx, &rec);
+    }
+    wrote
 }
 
 /// **The due step's world write** (the brief's 3.5), idempotent by state: a launch places a
@@ -1068,11 +1107,12 @@ fn project_due(ctx: &mut Ctx<'_>, record: &RigRecord) {
     let Some(act) = &record.act else {
         return;
     };
-    let mut rec = projection_of(ctx.w, record.tv, act.slot);
+    let excursion = record.excursion.as_ref().map(|excursion| excursion.id);
+    let mut rec = projection_for(ctx.w, record.tv, act.slot, act.operator, excursion);
     rec.slot = act.slot;
     rec.operator = Some(act.operator);
     rec.hull = Some(act.hull);
-    rec.excursion = record.excursion.as_ref().map(|excursion| excursion.id);
+    rec.excursion = excursion;
     rec.site = record
         .excursion
         .as_ref()
@@ -1217,7 +1257,8 @@ fn tell(
     on_site: &OnSite,
 ) {
     let w: &World = ctx.w;
-    let mut rec = projection_of(w, record.tv, last.slot);
+    let excursion = record.excursion.as_ref().map(|excursion| excursion.id);
+    let mut rec = projection_for(w, record.tv, last.slot, last.operator, excursion);
     let hull = record
         .excursion
         .as_ref()
@@ -1248,7 +1289,7 @@ fn tell(
     rec.slot = last.slot;
     rec.operator = Some(last.operator);
     rec.hull = hull;
-    rec.excursion = record.excursion.as_ref().map(|excursion| excursion.id);
+    rec.excursion = excursion;
     rec.site = record
         .excursion
         .as_ref()
@@ -2623,6 +2664,58 @@ mod tests {
         state.attempts.insert((900, 4, 0), 2);
         state.attempts.insert((900, 3, 2), 1);
         assert_eq!(retried_ordinals(&state, ObjId(900)), vec![(3, 2), (4, 0)]);
+    }
+
+    /// **A new operator or excursion starts a clean log** (doc 20 cut SM.9; the brief's 3.4a,
+    /// decision D16): the counter's rigs are leased again and again, so a projection another
+    /// operator wrote — or one of another excursion — keeps none of its log, leg or run, while
+    /// the per-TV ordinals `applied`, `told` and `told_cycle` carry over (the tick's idempotency
+    /// reads them); the same operator on the same excursion keeps every line.
+    #[test]
+    fn sm9_a_new_operator_or_excursion_starts_a_clean_log() {
+        let a = ObjId(41);
+        let b = ObjId(42);
+        let first = Some(ExcursionId {
+            tv: ObjId(900),
+            launch_ic: 1_000,
+        });
+        let second = Some(ExcursionId {
+            tv: ObjId(900),
+            launch_ic: 9_000,
+        });
+        let mut stored = TvRec::new(ObjId(900), 1);
+        stored.operator = Some(a);
+        stored.excursion = first;
+        stored.applied = 7;
+        stored.told = 7;
+        stored.told_cycle = 2;
+        stored.leg = Some(FrozenLeg {
+            started_ic: 1_100,
+            waypoints: Vec::new(),
+        });
+        for (at, text) in [
+            (1_100, "A's scan"),
+            (1_200, "A's arrival"),
+            (1_300, "A's cycle"),
+        ] {
+            stored.push_log(at, text);
+        }
+        let ordinals = |rec: &TvRec| (rec.applied, rec.told, rec.told_cycle, rec.slot, rec.tv);
+        // Another operator: nothing of A's log, leg or run; the ordinals carry over.
+        let for_b = carried_for(stored.clone(), b, first);
+        assert!(for_b.log.is_empty() && for_b.leg.is_none() && for_b.run.is_none());
+        assert_eq!(ordinals(&for_b), ordinals(&stored));
+        // A again on a new excursion: a clean log too.
+        let next = carried_for(stored.clone(), a, second);
+        assert!(next.log.is_empty());
+        assert_eq!(ordinals(&next), ordinals(&stored));
+        // A on the same excursion: the three lines stand.
+        let same = carried_for(stored.clone(), a, first);
+        assert_eq!(same, stored);
+        assert_eq!(same.log.len(), 3);
+        // A record no act wrote is taken as is.
+        let fresh = TvRec::new(ObjId(900), 1);
+        assert_eq!(carried_for(fresh.clone(), b, second), fresh);
     }
 
     /// **The queued key is its own** (doc 20 cut SM.8; decision R15): `tacsim.surface/900/3/queued`,

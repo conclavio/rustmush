@@ -36,7 +36,7 @@ use crate::port::price::{
 use crate::port::readiness::report_ports;
 use crate::port::ship::{Berth, berth_of, hull_view};
 use crate::port::voyage::{
-    Basis, Destination, PassageOptions, basis, destinations, match_destination, occupants,
+    Basis, Destination, PassageOptions, basis_with, destinations, match_destination, occupants,
     real_span,
 };
 use crate::sky::{Sky, epoch_date};
@@ -49,7 +49,9 @@ pub const CHART_HELP: &str = "+chart                  the sky now, from the port
                    +chart <port>           the window: the passage to that port planned on every                    IC day of the next year — the fastest day, the cheapest and the worst, against                    now. A season that is not worth the fuel is a season to wait out.
                    +chart/body <body>      one body's row and the elements it moves on.
                    Without a charter the port's Dray is planned empty. Nothing is written.
-+chart/map              the sky as a flat map: the Sun, every orbit, the bodies by letter,                    the listed routes dotted, you at @ — the TUI's chart pane for a line player.";
++chart/map              the sky as a flat map: the Sun, every orbit, the bodies by letter,                    the listed routes dotted, you at @ — the TUI's chart pane for a line player.
++chart/ground [<body>]  the Registry's survey of a body: its sites by letter, each with the survey's words, its tenure, the passage now and your own best reading.
++chart/ground map [<body>] [<family>]  the survey as a map: the body flat, 56 by 28, one family's wash, the port and the sites by letter.";
 
 /// How many IC days `+chart <port>` scans (one IC year).
 pub const WINDOW_DAYS: i64 = 365;
@@ -87,6 +89,9 @@ pub(crate) struct Vantage<'w> {
     pub(crate) pack: &'w RulesPack,
     /// The sky.
     pub(crate) sky: Sky,
+    /// **Planned at the hull's load** (doc 20 cut SM.9; decision D5): `true` for the actor's
+    /// docked charter at its load, `false` for a port's programme hull planned empty.
+    pub(crate) loaded: bool,
 }
 
 /// The body a lane place stands on.
@@ -123,15 +128,32 @@ pub(crate) fn lag_text(secs: u64) -> String {
 /// the actor is nowhere the lane knows is refused), planned with the programme's
 /// Dray empty.
 fn vantage<'w>(ctx: &'w Ctx<'_>) -> Result<Vantage<'w>, CmdError> {
-    let w: &World = ctx.w;
+    vantage_reading(ctx.w, ctx, ctx.actor).map_err(CmdError::msg)
+}
+
+/// **The vantage from a `World` and any typed reader** (doc 20 cut SM.9; the brief's 3.5.0,
+/// decision D5): [`vantage`]'s rule — the actor's docked charter planned at its load (its hold
+/// and its rigs' hoppers read through `reads`, `crate::port::voyage::basis_with`), else
+/// [`vantage_for_world`] — so `+chart/ground` (a command's `Ctx`) and the `body.ground` feed (a
+/// query's `HookReadContext`) plan one passage for one viewer. The refusals and their order are
+/// [`vantage`]'s.
+///
+/// # Errors
+///
+/// No lane, nowhere the lane knows, or the charter's basis refusal.
+pub(crate) fn vantage_reading<'w>(
+    w: &'w World,
+    reads: &dyn crate::port::site_map::SurfaceReads,
+    actor: mush_core::ObjId,
+) -> Result<Vantage<'w>, String> {
     let store = w
         .module_state::<TacsimStore>()
-        .ok_or_else(|| CmdError::msg(CHART_NO_LANE))?;
+        .ok_or_else(|| CHART_NO_LANE.to_owned())?;
     let (pack, _) = report_ports(store, w);
-    let pack = pack.ok_or_else(|| CmdError::msg(CHART_NO_LANE))?;
+    let pack = pack.ok_or_else(|| CHART_NO_LANE.to_owned())?;
     let sky = Sky::from_pack(pack, &store.config().time.ephemeris);
     // A docked charter: its port, its load.
-    if let Some(charter) = helm_of(w, ctx.actor)
+    if let Some(charter) = helm_of(w, actor)
         && let Some(view) = hull_view(w, charter.hull)
         && let Berth::Docked { def, .. } = berth_of(w, charter.hull)
     {
@@ -139,8 +161,10 @@ fn vantage<'w>(ctx: &'w Ctx<'_>) -> Result<Vantage<'w>, CmdError> {
             .airlock()
             .map_or(0, |airlock| occupants(w, airlock))
             .max(1);
-        let basis = basis(ctx, &view, souls).map_err(CmdError::msg)?;
-        let body = body_of(pack, &def.location).ok_or_else(|| CmdError::msg(CHART_NOWHERE))?;
+        let basis = basis_with(w, &view, souls, &|endpoint, good| {
+            reads.pool(endpoint, good)
+        })?;
+        let body = body_of(pack, &def.location).ok_or_else(|| CHART_NOWHERE.to_owned())?;
         return Ok(Vantage {
             def,
             body,
@@ -150,9 +174,10 @@ fn vantage<'w>(ctx: &'w Ctx<'_>) -> Result<Vantage<'w>, CmdError> {
             occupants: souls,
             pack,
             sky,
+            loaded: true,
         });
     }
-    vantage_for_world(w, ctx.actor).map_err(CmdError::msg)
+    vantage_for_world(w, actor)
 }
 
 /// **The vantage without a helm** (doc 19 cut A.3b, for the `sky.chart` panel,
@@ -212,6 +237,7 @@ pub(crate) fn vantage_for_world(w: &World, actor: mush_core::ObjId) -> Result<Va
         occupants: 1,
         pack,
         sky,
+        loaded: false,
     })
 }
 
@@ -685,6 +711,11 @@ pub(crate) fn chart_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg(crate::commands::NOT_ENABLED));
     }
     let raw = ctx.args.raw().trim().to_owned();
+    // Doc 20 cut SM.9 (§3.1, §10; D-20-13): the ground chart — its own printer, the frame the
+    // `body.ground` feed answers.
+    if ctx.switches.has("ground") {
+        return crate::port::ground_chart::ground_cmd(ctx, &raw);
+    }
     let lines = if ctx.switches.has("body") {
         chart_body(ctx, &raw)?
     } else if ctx.switches.has("map") {

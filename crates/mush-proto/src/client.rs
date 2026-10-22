@@ -73,6 +73,13 @@ pub enum Query {
     PanelSubscribe {
         /// Panel feed id, e.g. `"wod.roll"`.
         feed: SmolStr,
+        /// **A pulled feed's query parameters** (doc 20 cut SM.9; the brief's 3.8, decision
+        /// D2): an object — `site.map`'s `view`/`rig`/`family`, `body.ground`'s
+        /// `body`/`family` — forwarded as the feed query's arguments; absent is `{}`, and a
+        /// subscribe without it is byte-identical on the wire to one before the field existed.
+        /// The gateway refuses a non-object or one past its size bound.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        params: Option<serde_json::Value>,
     },
 }
 

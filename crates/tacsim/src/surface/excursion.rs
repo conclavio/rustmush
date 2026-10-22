@@ -1633,10 +1633,15 @@ pub struct ActView {
     pub due_ic: i64,
 }
 
-/// **The run in flight, as the projection shows it** (doc 20 cut SM.7; §8): which run, its cycle
-/// and when that cycle is due — no pocket, family, yield or class (the projection decides nothing
-/// and shows nothing a blind core could leak).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// **The run in flight, as the projection shows it** (doc 20 cut SM.7; §8): the run as its
+/// operator chose it — which pocket, which family, how many cycles, whether it is a blind core,
+/// whether it stops after this cycle, when this cycle is due — **never** the pocket's class,
+/// yield or tonnes (the operator chose the pocket and family and knows whether they had a
+/// reading; nothing here is truth). **Doc 20 cut SM.9** (the brief's 3.3 item 7, under its lead
+/// ruling 4: "the screen's rig status reads `run` (pocket, family, k, cycles, next due)") added
+/// `addr`, `good`, `stop` and `blind`, reversing SM.7's rule that the view named no pocket and
+/// no family; the quarry screen's rig status reads this view, never `RigRecord.run`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunView {
     /// The run's ordinal.
@@ -1647,7 +1652,26 @@ pub struct RunView {
     pub cycles: u8,
     /// When the cycle in flight is due.
     pub due_ic: i64,
+    /// **The pocket's address** (doc 20 cut SM.9), e.g. `C117`; empty only on a view written
+    /// before SM.9 (skipped when empty).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub addr: String,
+    /// **The family's ore good** the operator chose (doc 20 cut SM.9); absent only on a view
+    /// written before SM.9.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub good: Option<CanonicalId>,
+    /// **`+tv/mine stop`**: the run closes after this cycle (doc 20 cut SM.9; skipped when
+    /// `false`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stop: bool,
+    /// **A blind core** (doc 20 cut SM.9): the operator had no reading of the pocket at the
+    /// start (skipped when `false`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub blind: bool,
 }
+
+/// The longest pocket address a run's view carries (`C117` is four bytes).
+pub const MAX_RUN_ADDR_BYTES: usize = 8;
 
 impl RunView {
     /// The view of `run`.
@@ -1658,6 +1682,11 @@ impl RunView {
             k: run.k,
             cycles: run.cycles,
             due_ic: run.due_ic,
+            addr: crate::surface::address::pocket_address(run.pocket[0], run.pocket[1])
+                .unwrap_or_default(),
+            good: Some(run.good.clone()),
+            stop: run.stop,
+            blind: run.blind,
         }
     }
 }
@@ -1821,8 +1850,9 @@ impl TvRec {
 
     /// **The projection's bounds**: the schema; at most [`MAX_TV_LOG_LINES`] log lines, each
     /// at most [`MAX_TV_LOG_BYTES`] and on one row; a leg of at most [`MAX_LEG_WAYPOINTS`];
-    /// the canonical JSON at most [`MAX_TV_REC_BYTES`]. (`told <= applied` is **not**
-    /// required: a refused finish is told without a placement.)
+    /// a run of at most [`MAX_RUN_CYCLES`] cycles whose address is at most
+    /// [`MAX_RUN_ADDR_BYTES`]; the canonical JSON at most [`MAX_TV_REC_BYTES`].
+    /// (`told <= applied` is **not** required: a refused finish is told without a placement.)
     ///
     /// # Errors
     ///
@@ -1862,6 +1892,15 @@ impl TvRec {
         {
             return Err(format!(
                 "a rig projection's run is a cycle of at most {MAX_RUN_CYCLES}"
+            ));
+        }
+        // Doc 20 cut SM.9 (the judge's conformance/F11): the run's pocket address, its own
+        // bound and its own sentence.
+        if let Some(run) = &self.run
+            && run.addr.len() > MAX_RUN_ADDR_BYTES
+        {
+            return Err(format!(
+                "a rig projection's run address is at most {MAX_RUN_ADDR_BYTES} bytes"
             ));
         }
         if self.told_cycle > MAX_RUN_CYCLES {
@@ -3198,7 +3237,26 @@ mod tests {
             cycles: 8,
             ..RunView::of(&run_sample(3))
         }));
-        assert!(bad.check().is_err());
+        assert_eq!(
+            bad.check(),
+            Err("a rig projection's run is a cycle of at most 8".to_owned())
+        );
+        // The address has its own bound and its own sentence (conformance/F11): eight bytes
+        // pass, nine are refused as an address, never as a cycle count.
+        let mut addr = rec.clone();
+        addr.run = Some(Box::new(RunView {
+            addr: "A".repeat(MAX_RUN_ADDR_BYTES),
+            ..RunView::of(&run_sample(3))
+        }));
+        assert_eq!(addr.check(), Ok(()));
+        addr.run = Some(Box::new(RunView {
+            addr: "A".repeat(MAX_RUN_ADDR_BYTES + 1),
+            ..RunView::of(&run_sample(3))
+        }));
+        assert_eq!(
+            addr.check(),
+            Err("a rig projection's run address is at most 8 bytes".to_owned())
+        );
     }
 
     /// An idle record (no act) holding a queued unload after its recover, ordinal 3.

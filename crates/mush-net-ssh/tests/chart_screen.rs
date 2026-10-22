@@ -48,7 +48,8 @@ fn chart_frame() -> OutputEvent {
 fn a3b_the_chart_screen_is_the_eleventh_on_the_letter_c() {
     let screens = builtin_screens();
     validate_screens(&screens).expect("the built-ins validate");
-    assert_eq!(screens.len(), 11);
+    // Doc 20 cut SM.9 took the twelfth, the quarry on `q`.
+    assert_eq!(screens.len(), 12);
     let chart = screens
         .iter()
         .find(|s| s.id == CHART_SCREEN)

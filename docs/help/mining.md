@@ -36,6 +36,15 @@ licence in force or in its grace.
 survey of its province (the same for everyone) and its tenure: commons, open,
 or held by an org.
 
+`+chart/ground` lists the sites of the body you are on (or the one you name) by
+letter: each one's survey, its tenure, the passage there now for your hull and
+your own best reading of it. `+chart/ground map` draws that body flat, 56 by 28,
+washed by the survey of one kind of ore (`.` barren, `-` lean, `+` fair, `*`
+rich), with the port and the sites by letter.
+
+  +chart/ground [<body>]   a body's sites: survey, tenure, passage, your best
+  +chart/ground map [<body>] [<family>]  the body flat, one kind of ore's wash
+
 **3. Hop and settle.** `+ship/plan <site>` and `+ship/undock <site>` fly you
 down. Nothing sells reaction mass or provisions on a pad, so the departure holds
 back the leg home: it is refused unless the tank and the locker cover the
@@ -61,6 +70,15 @@ map, and yours never show on theirs.
   +tv[/<n>]                each rig: where it stands, its charge, its act
   +tv/<n> launch [go]      down the ramp onto the site
   +tv[/<n>]/map [site] [family]  the site map around the rig, or the whole site
+
+**The quarry screen.** In the full-screen TUI (`help tui`) Alt+q opens the
+quarry, and on the web its tab does the same: your rigs on the left, the map in
+the middle and your readings and the log on the right. `s` `d` `x` `m` open the
+box with `+tv/<n> scan`, `drive `, `sound` or `mine` for the rig you picked,
+and nothing goes until you add `go`; `t` picks the next rig, `z` steps from the
+drive view to the whole site to the body's ground chart, `l` shows another kind
+of ore and `r` asks again. On the web a click on the map or on a reading opens
+the box with the drive there.
 
 **5. Scan.** `+tv/1 scan go` (or `+tv/1 survey go`) reads the nine fields around
 the rig's own — each one the rig's 2.5 m mast can see over the ground — by
@@ -213,7 +231,6 @@ sounding thumps through the ground from the southeast, over 1 km off."
 
 ## Still to come
 
-Staking and the Registry's claims; fill plans and awaiting a rig; the ground
-chart of a whole body.
+Staking and the Registry's claims; fill plans and awaiting a rig.
 
 See also: `help ships`, `help coop`, `help travel`, `help trade`.

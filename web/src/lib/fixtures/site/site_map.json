@@ -55,6 +55,18 @@
     [
       ".",
       "barren"
+    ],
+    [
+      "v",
+      "pit, worked"
+    ],
+    [
+      "V",
+      "pit, worked out"
+    ],
+    [
+      "#",
+      "claim"
     ]
   ],
   "origin": [
@@ -2306,9 +2318,25 @@
     "version": 1
   },
   "site": {
+    "addressed": 1,
+    "clock": null,
+    "families": [
+      "metals",
+      "volatiles",
+      "carbon",
+      "strategic"
+    ],
     "family": "carbon feedstock",
+    "family_word": "carbon",
     "footer": "the whole site, 80 m a cell, north up",
+    "grid": {
+      "cell_cm": 1000,
+      "span": 8,
+      "x0": 0,
+      "y0": 0
+    },
     "hold": {
+      "line": "Hold: 86 t of room unreserved.",
       "room_t": 86
     },
     "legend_line": "@ you  H hull  o rig  , regolith  ^ rock  = ice  O crater  1–3 ore (t a cycle)  + other family  . barren  v/V pit  # claim",
@@ -2321,6 +2349,115 @@
       "Rig 1: (146, 178), charge 95 %, hopper empty.",
       "Hold: 86 t of room unreserved."
     ],
+    "log": [
+      {
+        "at_ic": 9026,
+        "text": "Rig 1 is down the stern ramp on Ahuna Flank."
+      },
+      {
+        "at_ic": 9369,
+        "text": "Rig 1 arrives at G53."
+      },
+      {
+        "at_ic": 9975,
+        "text": "Rig 1 scanned 9 fields from rock:"
+      },
+      {
+        "at_ic": 11181,
+        "text": "Rig 1 sounded 16 pockets around G53 quietly; every pocket not named reads barren:"
+      }
+    ],
+    "marks": {
+      "hull": [
+        16,
+        16
+      ],
+      "letters": [
+        [
+          0,
+          7,
+          "M"
+        ],
+        [
+          8,
+          7,
+          "N"
+        ],
+        [
+          16,
+          7,
+          "O"
+        ],
+        [
+          24,
+          7,
+          "P"
+        ],
+        [
+          0,
+          15,
+          "I"
+        ],
+        [
+          8,
+          15,
+          "J"
+        ],
+        [
+          16,
+          15,
+          "K"
+        ],
+        [
+          24,
+          15,
+          "L"
+        ],
+        [
+          0,
+          23,
+          "E"
+        ],
+        [
+          8,
+          23,
+          "F"
+        ],
+        [
+          16,
+          23,
+          "G"
+        ],
+        [
+          24,
+          23,
+          "H"
+        ],
+        [
+          0,
+          31,
+          "A"
+        ],
+        [
+          8,
+          31,
+          "B"
+        ],
+        [
+          16,
+          31,
+          "C"
+        ],
+        [
+          24,
+          31,
+          "D"
+        ]
+      ],
+      "slots": []
+    },
+    "no_readings": null,
+    "other_rigs": null,
     "others": [],
     "print": [
       "Ahuna Flank: carbon feedstock shown",
@@ -2374,7 +2511,9 @@
           144
         ],
         "dir": "NW",
+        "line": "F-SE fair carbon feedstock (5–8 pockets) 160 m NW",
         "m": 160,
+        "target": "F-SE",
         "text": "F-SE fair carbon feedstock (5–8 pockets)"
       },
       {
@@ -2383,7 +2522,9 @@
           174
         ],
         "dir": "NE",
+        "line": "G71 lean carbon feedstock 460 m NE",
         "m": 460,
+        "target": "G71",
         "text": "G71 lean carbon feedstock"
       },
       {
@@ -2392,7 +2533,9 @@
           176
         ],
         "dir": "N",
+        "line": "F-NE lean carbon feedstock (1–4 pockets) 480 m N",
         "m": 480,
+        "target": "F-NE",
         "text": "F-NE lean carbon feedstock (1–4 pockets)"
       },
       {
@@ -2401,7 +2544,9 @@
           176
         ],
         "dir": "NE",
+        "line": "G-NE lean carbon feedstock (1–4 pockets) 480 m NE",
         "m": 480,
+        "target": "G-NE",
         "text": "G-NE lean carbon feedstock (1–4 pockets)"
       },
       {
@@ -2410,7 +2555,9 @@
           176
         ],
         "dir": "N",
+        "line": "G-NW lean carbon feedstock (1–4 pockets) 480 m N",
         "m": 480,
+        "target": "G-NW",
         "text": "G-NW lean carbon feedstock (1–4 pockets)"
       },
       {
@@ -2419,7 +2566,9 @@
           144
         ],
         "dir": "E",
+        "line": "G-SE lean carbon feedstock (1–4 pockets) 480 m E",
         "m": 480,
+        "target": "G-SE",
         "text": "G-SE lean carbon feedstock (1–4 pockets)"
       },
       {
@@ -2428,7 +2577,9 @@
           182
         ],
         "dir": "NE",
+        "line": "G38 lean carbon feedstock 540 m NE",
         "m": 540,
+        "target": "G38",
         "text": "G38 lean carbon feedstock"
       },
       {
@@ -2437,7 +2588,9 @@
           208
         ],
         "dir": "N",
+        "line": "B-SE lean carbon feedstock (1–4 pockets) 800 m N",
         "m": 800,
+        "target": "B-SE",
         "text": "B-SE lean carbon feedstock (1–4 pockets)"
       },
       {
@@ -2446,7 +2599,9 @@
           208
         ],
         "dir": "NE",
+        "line": "C-SE lean carbon feedstock (1–4 pockets) 800 m NE",
         "m": 800,
+        "target": "C-SE",
         "text": "C-SE lean carbon feedstock (1–4 pockets)"
       },
       {
@@ -2455,7 +2610,9 @@
           208
         ],
         "dir": "N",
+        "line": "C-SW lean carbon feedstock (1–4 pockets) 800 m N",
         "m": 800,
+        "target": "C-SW",
         "text": "C-SW lean carbon feedstock (1–4 pockets)"
       }
     ],
@@ -2469,11 +2626,21 @@
         "charge_pct": 95,
         "hopper": "empty",
         "leg": null,
+        "line": "Rig 1: (146, 178), charge 95 %, hopper empty.",
         "mark": "OWP-TV-01",
+        "queued": null,
+        "run": null,
         "slot": 1
       }
     ],
     "site": "Ahuna Flank",
+    "under": [
+      [
+        18,
+        22,
+        "1"
+      ]
+    ],
     "view": "site"
   },
   "surface": "ground",

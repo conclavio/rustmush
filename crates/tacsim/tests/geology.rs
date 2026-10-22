@@ -30,7 +30,7 @@ use tacsim::port::{Binding, LineState, ReadinessLine};
 use tacsim::surface::geology::{
     BodyGeology, FieldGround, GeologyError, GeologyTable, GeologyTableWire, Lattice, OreFamily,
     POCKETS_PER_FIELD_SIDE, PROVINCE_COLUMNS, PROVINCE_ROWS, Word, field_ground, pocket_at,
-    province_at,
+    province_at, province_word,
 };
 use tacsim::surface::ground::{
     SITE_CACHE_CAPACITY, SiteGeologySpec, SiteGround, SiteGroundCache, SiteGroundKey,
@@ -297,6 +297,35 @@ fn sm1_the_province_words_say_what_section_3_2_says() {
         count(&vesta, OreFamily::CarbonFeedstock, &|w| w == Word::Barren),
         1_568
     );
+}
+
+/// **Doc 20 cut SM.9 (the brief's 3.1)**: `province_word` is `province_at`'s word of each
+/// family, over every province of both test tables under the fixed key (the ground chart's wash
+/// draws one family, one HMAC a province), and refuses off the chart as `province_at` does.
+#[test]
+fn sm9_province_word_is_province_at_per_family() {
+    let k = mac(KEY_1);
+    for body in [ceres(), vesta()] {
+        for c in 0..PROVINCE_COLUMNS {
+            for r in 0..PROVINCE_ROWS {
+                let whole = province_at(&k, &body, (c, r)).expect("a province");
+                for family in OreFamily::ALL {
+                    assert_eq!(
+                        province_word(&k, &body, (c, r), family),
+                        Ok(by(whole.words, family)),
+                        "{} ({c}, {r}) {family:?}",
+                        body.body
+                    );
+                }
+            }
+        }
+        for off in [(PROVINCE_COLUMNS, 0), (0, PROVINCE_ROWS)] {
+            assert_eq!(
+                province_word(&k, &body, off, OreFamily::Metals),
+                Err(GeologyError::OffLattice)
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

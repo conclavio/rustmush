@@ -91,6 +91,12 @@ Titan's lanes fit the tank only throttled (`help trade`).
   +chart <port>           the window: that passage planned on every IC day of
                           the next year — the fastest, the cheapest, the worst
   +chart/body <body>      one body and the elements it moves on
+  +chart/ground [<body>]  the Registry's survey of a body: its sites by letter,
+                          each with the survey's words, its tenure, the passage
+                          now and your own best reading (`help mining`)
+  +chart/ground map [<body>] [<family>]
+                          the survey as a map: the body flat, 56 by 28, one
+                          family's wash, the port and the sites by letter
   +chart/map              the sky as a flat map: the Sun, every orbit, the bodies
                           by letter, the listed routes dotted, you at @ — what the
                           TUI's chart screen (Alt+c) and the web's chart tab draw

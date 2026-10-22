@@ -2031,7 +2031,24 @@ fn sm7_an_unread_pocket_cores_blind_and_never_tells_the_class() {
     let (_, queued) = advance_to(&mut rig, a_run.due_ic);
     let a_view = projection(&rig.tw, a_tv).and_then(|rec| rec.run);
     assert!(a_view.is_some(), "the projection shows the core");
-    assert_eq!(a_view, projection(&rig.tw, b_tv).and_then(|rec| rec.run));
+    // Doc 20 cut SM.9 (the brief's 3.3 item 7): the view names each operator's own pocket —
+    // their choice, never its class — and is otherwise the same for the barren and the ore one.
+    let b_view = projection(&rig.tw, b_tv).and_then(|rec| rec.run);
+    let without_addr = |view: Option<Box<tacsim::surface::RunView>>| {
+        view.map(|mut view| {
+            view.addr.clear();
+            view
+        })
+    };
+    assert_eq!(
+        a_view.as_ref().map(|v| v.addr.as_str()),
+        Some(empty.addr.as_str())
+    );
+    assert_eq!(
+        b_view.as_ref().map(|v| v.addr.as_str()),
+        Some(ore.addr.as_str())
+    );
+    assert_eq!(without_addr(a_view), without_addr(b_view));
     let done = finishes(&queued);
     assert_eq!(done.len(), 2, "both cores at one instant");
     land_all(&mut rig, &queued);

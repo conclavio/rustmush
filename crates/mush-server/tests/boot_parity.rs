@@ -298,6 +298,11 @@ fn expected_panels() -> Vec<&'static str> {
     panels.push("sky.chart");
     // Doc 20 cut SM.4b: the site map's pulled feed, registered right after the sky chart's.
     panels.push("site.map");
+    // Doc 20 cut SM.9: the pushed rig-status feed (push only: the quarry screens' cue to pull
+    // the map again), registered right after the site map's...
+    panels.push("tv.status");
+    // ...and the ground chart's pulled feed, registered right after the site map's module.
+    panels.push("body.ground");
     // 16b cut T.2: the arena's cockpit frame feed, registered by the TacSim LAYER
     // (module `tacsim`) rather than by the sheet (module `pilot`) — hence after
     // `tacsim.sheet` in registration order. It is registered whether or not

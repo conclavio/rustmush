@@ -37,6 +37,8 @@ import { isOwnRoll } from "./roll";
 import { ARENA_MAP_FEED, COCKPIT_FEED, decodeArenaMap, isNoticeSentence } from "./cockpit";
 import { SKY_CHART_FEED } from "./chart";
 import { ChartStore } from "./stores/chart.svelte";
+import { BODY_GROUND_FEED, SITE_MAP_FEED, TV_STATUS_FEED, groundParams, rigPrefill, siteParams } from "./quarry";
+import { QuarryStore } from "./stores/quarry.svelte";
 import { OBSERVER_FEED, REPLAY_FEED, decodeReplayGrid } from "./replay";
 import { exitKeys, type NavIntent } from "./keys";
 import { paletteEntries, type PaletteEntry } from "./palette";
@@ -53,7 +55,13 @@ import { LlmDashboardStore } from "./stores/llm.svelte";
 import { MailStore } from "./stores/mail.svelte";
 import { PresenceStore } from "./stores/presence.svelte";
 import { RollsStore } from "./stores/rolls.svelte";
-import { CHART_SCREEN, ScreensStore, UNIT_SCREEN, type GateInput } from "./stores/screens.svelte";
+import {
+  CHART_SCREEN,
+  QUARRY_SCREEN,
+  ScreensStore,
+  UNIT_SCREEN,
+  type GateInput,
+} from "./stores/screens.svelte";
 import { ScrollbackStore, type SbOlderBlock } from "./stores/scrollback.svelte";
 import { SessionStore } from "./stores/session.svelte";
 import { SheetStore } from "./stores/sheet.svelte";
@@ -112,7 +120,9 @@ type PendingReq =
   | { kind: "arena.replay" }
   | { kind: "arena.observer" }
   | { kind: "scenes" }
-  | { kind: "chart" };
+  | { kind: "chart" }
+  | { kind: "site.map" }
+  | { kind: "body.ground" };
 
 const HELP_LINES = [
   "Client commands (handled locally, never sent to the game):",
@@ -246,6 +256,9 @@ export class GameApp {
   replay = new ReplayStore();
   /** The sky chart (doc 19 cut A.3b): the `sky.chart` keyframe. */
   chart = new ChartStore();
+  /** The quarry (doc 20 cut SM.9): the `site.map` and `body.ground` keyframes and the
+   * screen's view. */
+  quarry = new QuarryStore();
   presence = new PresenceStore();
   genericViews = new GenericViewStore();
   requests = new RequestStore();
@@ -499,6 +512,10 @@ export class GameApp {
     this.commands.clear();
     this.vitals.clear();
     this.cockpit.clear();
+    // Doc 20 cut SM.9 (§5, D16): the quarry's frames hold the viewer's own readings, log and
+    // best readings — another character's session never shows them, nor asks with their rig,
+    // family or view.
+    this.quarry.clear();
     this.replay.clear(); // 16b cut I.2: nothing open, nothing dismissed
     this.#armMapHeal(); // unseated: stops the heal (16b cut B.2)
     this.genericViews.clear();
@@ -708,6 +725,13 @@ export class GameApp {
       !this.screens.feedScreens.some((f) => f.def.id === CHART_SCREEN.def.id)
     ) {
       this.#screenRefused(CHART_SCREEN.def.label, this.screens.registerFeedScreen(CHART_SCREEN));
+    }
+    // The quarry (doc 20 cut SM.9), the same way, on its letter hotkey `q`.
+    if (
+      this.session.panels.some((p) => p.endsWith(QUARRY_SCREEN.suffix)) &&
+      !this.screens.feedScreens.some((f) => f.def.id === QUARRY_SCREEN.def.id)
+    ) {
+      this.#screenRefused(QUARRY_SCREEN.def.label, this.screens.registerFeedScreen(QUARRY_SCREEN));
     }
     let mapAsked = false;
     for (const { pending, q } of hydrationQueries(this.session)) {
@@ -1001,6 +1025,21 @@ export class GameApp {
       // The sky chart (doc 19 cut A.3b): every frame is a whole keyframe.
       if (d.kind === "keyframe") {
         this.chart.applyKeyframe(d.data);
+      }
+    } else if (d.feed === SITE_MAP_FEED) {
+      // The quarry's site map (doc 20 cut SM.9): pulled, every frame a whole keyframe.
+      if (d.kind === "keyframe") {
+        this.quarry.applySite(d.data, Date.now());
+      }
+    } else if (d.feed === BODY_GROUND_FEED) {
+      if (d.kind === "keyframe") {
+        this.quarry.applyGround(d.data);
+      }
+    } else if (d.feed === TV_STATUS_FEED) {
+      // A rig's projection changed (doc 20 cut SM.9, decision D13): the quarry, when it is
+      // the screen, pulls the site map again; anywhere else the cue is dropped.
+      if (d.kind === "keyframe" && this.screens.active === QUARRY_SCREEN.def.id) {
+        this.refreshQuarrySite();
       }
     } else if (d.feed === REPLAY_FEED) {
       // A finished match (16b cut I.2; 16c N9): the pushed grid opens it, the
@@ -1347,9 +1386,9 @@ export class GameApp {
   act(intent: NavIntent): boolean {
     switch (intent.kind) {
       case "screen":
-        return this.screens.switchDigit(intent.digit, this.gate);
+        return this.#entered(this.screens.switchDigit(intent.digit, this.gate));
       case "screenKey":
-        return this.screens.switchHotkey(intent.key, this.gate);
+        return this.#entered(this.screens.switchHotkey(intent.key, this.gate));
       case "compose":
         this.focusComposer(intent.prefill.length > 0 ? intent.prefill : undefined);
         return true;
@@ -1408,6 +1447,20 @@ export class GameApp {
     queueMicrotask(() => this.composer?.focus(prefill));
   }
 
+  /** **Switch to the screen `id`** (a tab's click), pulling what it reads where it pulls on
+   * entry (doc 20 cut SM.9: the quarry asks for both frames). */
+  switchScreen(id: string): boolean {
+    return this.#entered(this.screens.switchTo(id, this.gate));
+  }
+
+  /** A switch that landed on the quarry pulls its frames (doc 20 cut SM.9). */
+  #entered(switched: boolean): boolean {
+    if (switched && this.screens.active === QUARRY_SCREEN.def.id) {
+      this.refreshQuarry();
+    }
+    return switched;
+  }
+
   /** Run the active screen's binding for `key` (D-I-18): a prefill opens
    * the box with the line ready, a run sends a read-only verb, a local
    * action refreshes or clears. */
@@ -1419,6 +1472,11 @@ export class GameApp {
     switch (b.action.kind) {
       case "prefill":
         this.focusComposer(b.action.line);
+        return true;
+      case "prefillRig":
+        // Doc 20 cut SM.9 (lead ruling 6): the act's line for the quarry's rig; nothing is
+        // sent until the pilot adds the target and `go`.
+        this.focusComposer(rigPrefill(this.quarry.selectedRig, b.action.act));
         return true;
       case "run":
         this.submit(b.action.cmd);
@@ -1441,9 +1499,26 @@ export class GameApp {
       | "picturePrev"
       | "pictureNext"
       | "pictureFocus"
-      | "pictureClose",
+      | "pictureClose"
+      | "quarryRig"
+      | "quarryZoom"
+      | "quarryLayer",
   ): void {
     switch (action) {
+      // Doc 20 cut SM.9: the quarry's view keys — client steps over the held frames, then both
+      // frames asked again with the new parameters. Nothing here submits a `+tv` line.
+      case "quarryRig":
+        this.quarry.stepRig();
+        this.refreshQuarry();
+        return;
+      case "quarryZoom":
+        this.quarry.stepMode();
+        this.refreshQuarry();
+        return;
+      case "quarryLayer":
+        this.quarry.stepFamily();
+        this.refreshQuarry();
+        return;
       // 16b cut I.2: the picture's four keys, over the document the client
       // holds — nothing is sent.
       case "picturePrev":
@@ -1537,6 +1612,9 @@ export class GameApp {
           case "chart":
             this.refreshChart();
             return;
+          case "quarry":
+            this.refreshQuarry();
+            return;
           default:
             this.refreshWho();
         }
@@ -1547,6 +1625,33 @@ export class GameApp {
   /** Ask for the sky chart again (doc 19 cut A.3b, the chart screen's `r`). */
   refreshChart(): void {
     this.#req({ kind: "chart" }, { t: "panel_subscribe", d: { feed: SKY_CHART_FEED } });
+  }
+
+  /** **Ask for the quarry's frames** (doc 20 cut SM.9): the site map with the screen's view,
+   * rig and family, and the ground chart with its family — the ground chart only where the
+   * hello's manifest carries it. */
+  refreshQuarry(): void {
+    this.refreshQuarrySite();
+    if (this.session.hasPanel(BODY_GROUND_FEED)) {
+      this.#req(
+        { kind: "body.ground" },
+        { t: "panel_subscribe", d: { feed: BODY_GROUND_FEED, params: groundParams(this.quarry.family) } },
+      );
+    }
+  }
+
+  /** The site map alone (a pushed `tv.status` asks no ground chart: no act moves it). */
+  refreshQuarrySite(): void {
+    this.#req(
+      { kind: "site.map" },
+      {
+        t: "panel_subscribe",
+        d: {
+          feed: SITE_MAP_FEED,
+          params: siteParams(this.quarry.mode, this.quarry.rig, this.quarry.family),
+        },
+      },
+    );
   }
 
   /** Re-subscribe every `.vitals` feed (the rolls screen's board, I6). A

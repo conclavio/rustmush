@@ -2954,7 +2954,8 @@ fn sm4b_the_map_shows_your_readings_and_nothing_else() {
 const ORE_GLYPHS: [char; 5] = ['1', '2', '3', '+', '.'];
 
 /// A frame with its `others` rows' `sounding` set to false and the mark's words struck from its
-/// text (`site.lines`, `site.print`): what the frame would be without the transient mark.
+/// text (`site.lines`, `site.print`, `site.other_rigs`): what the frame would be without the
+/// transient mark.
 fn without_mark(mut frame: Value) -> Value {
     if let Some(others) = frame["site"]["others"].as_array_mut() {
         for other in others {
@@ -2971,6 +2972,11 @@ fn without_mark(mut frame: Value) -> Value {
                 *line = json!(text);
             }
         }
+    }
+    // Doc 20 cut SM.9's pre-commit round: the other-rigs sentence rides whole as
+    // `site.other_rigs` too, the mark in it.
+    if let Some(text) = frame["site"]["other_rigs"].as_str() {
+        frame["site"]["other_rigs"] = json!(text.replace(" (a sounding)", ""));
     }
     frame
 }

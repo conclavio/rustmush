@@ -1302,14 +1302,31 @@ pub(crate) fn carried_of(
     ctx: &Ctx<'_>,
     view: &HullView<'_>,
 ) -> Result<(Vec<crate::port::passage::CarriedRig>, u64), String> {
-    let w: &World = ctx.w;
+    carried_of_with(ctx.w, view, &|endpoint, good| {
+        read_pool(ctx, endpoint, good)
+    })
+}
+
+/// **[`carried_of`] over any pool reader** (doc 20 cut SM.9; the brief's 3.5.0, decision D5):
+/// the same body with `read` in place of the command's `read_pool`, every error text identical,
+/// so a feed query (a `HookReadContext`, whose pool reads are `read_pool_in`) weighs the rigs as
+/// a command does.
+///
+/// # Errors
+///
+/// [`carried_of`]'s.
+pub(crate) fn carried_of_with(
+    w: &World,
+    view: &HullView<'_>,
+    read: &dyn Fn(EndpointRef, &CanonicalId) -> Result<u64, crate::port_tick::PoolReadError>,
+) -> Result<(Vec<crate::port::passage::CarriedRig>, u64), String> {
     let goods = w
         .module_state::<TacsimStore>()
         .and_then(TacsimStore::goods)
         .ok_or_else(|| "the goods table is not loaded".to_owned())?;
     let rigs = crate::port::vehicle::carried_rigs(w, view, goods)?;
     let kg = crate::port::passage::carried_kg(goods, &rigs, |hopper, good| {
-        read_pool(ctx, EndpointRef(VaultId(hopper)), good).map_err(|error| PlanError::Unreadable {
+        read(EndpointRef(VaultId(hopper)), good).map_err(|error| PlanError::Unreadable {
             what: format!("a hopper's {good} ({error:?})"),
         })
     })
@@ -1324,13 +1341,34 @@ pub(crate) fn carried_of(
 /// ([`carried_of`]). A hull whose unit record boot held plans nothing
 /// (`PlanError::Unreadable`; reviewer F6).
 pub(crate) fn basis(ctx: &Ctx<'_>, view: &HullView<'_>, occupants: u32) -> Result<Basis, String> {
+    basis_with(ctx.w, view, occupants, &|endpoint, good| {
+        read_pool(ctx, endpoint, good)
+    })
+}
+
+/// **[`basis`] over any pool reader** (doc 20 cut SM.9; the brief's 3.5.0, decision D5): the
+/// same body with `read` in place of the command's `read_pool` and `w` in place of `ctx.w`,
+/// every error text identical — so `+chart/ground` (a command) and the `body.ground` feed (a
+/// `HookReadContext`) plan the hull at its load through one function.
+///
+/// # Errors
+///
+/// [`basis`]'s.
+pub(crate) fn basis_with(
+    w: &World,
+    view: &HullView<'_>,
+    occupants: u32,
+    read_pool_of: &dyn Fn(
+        EndpointRef,
+        &CanonicalId,
+    ) -> Result<u64, crate::port_tick::PoolReadError>,
+) -> Result<Basis, String> {
     if view.unit_held {
         return Err(PlanError::Unreadable {
             what: format!("hull #{}'s unit record (held at boot)", view.hull().0),
         }
         .to_string());
     }
-    let w: &World = ctx.w;
     let store = w
         .module_state::<TacsimStore>()
         .ok_or_else(|| "the layer's state is absent".to_owned())?;
@@ -1344,11 +1382,11 @@ pub(crate) fn basis(ctx: &Ctx<'_>, view: &HullView<'_>, occupants: u32) -> Resul
     let (digest, spec) = hull_spec_of(store.definitions(), goods, &view.unit)?;
     let vault = hold_vault(w, view).ok_or_else(|| "the hull has no hold vault".to_owned())?;
     let read = |good: &CanonicalId| {
-        read_pool(ctx, EndpointRef(vault), good).map_err(|error| PlanError::Unreadable {
+        read_pool_of(EndpointRef(vault), good).map_err(|error| PlanError::Unreadable {
             what: format!("the hold's {good} ({error:?})"),
         })
     };
-    let (carried, carried_weight) = carried_of(ctx, view)?;
+    let (carried, carried_weight) = carried_of_with(w, view, read_pool_of)?;
     let payload = payload_kg(goods, &spec.accepted, read, occupants, spec.allowance_kg)
         .map_err(|e| e.to_string())?
         .checked_add(carried_weight)

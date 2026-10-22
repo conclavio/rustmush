@@ -214,6 +214,7 @@ fn roundtrip_every_client_command_variant() {
             id: 7,
             q: Query::PanelSubscribe {
                 feed: "wod.roll".into(),
+                params: None,
             },
         },
         ClientCommand::Req {
@@ -370,6 +371,51 @@ fn golden_panel() {
     assert_eq!(
         serde_json::to_string(&ev).unwrap(),
         r#"{"t":"panel","d":{"feed":"wod.roll","kind":"keyframe","data":{"pool":7}}}"#
+    );
+}
+
+/// **Doc 20 cut SM.9 (the brief's 3.8)**: a `panel_subscribe` carries its pulled feed's
+/// parameters when it has them and is byte-identical to the old wire when it has none; both
+/// round-trip, and a request with no `params` key decodes to `None`.
+#[test]
+fn sm9_panel_subscribe_carries_params() {
+    let bare = ClientCommand::Req {
+        id: 3,
+        q: Query::PanelSubscribe {
+            feed: "site.map".into(),
+            params: None,
+        },
+    };
+    assert_eq!(
+        serde_json::to_string(&bare).unwrap(),
+        r#"{"t":"req","d":{"id":3,"q":{"t":"panel_subscribe","d":{"feed":"site.map"}}}}"#
+    );
+    roundtrip(&bare);
+    let with = ClientCommand::Req {
+        id: 4,
+        q: Query::PanelSubscribe {
+            feed: "site.map".into(),
+            params: Some(json!({ "view": "site", "rig": 1, "family": "metals" })),
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&with).unwrap()["d"]["q"]["d"]["params"],
+        json!({ "view": "site", "rig": 1, "family": "metals" })
+    );
+    roundtrip(&with);
+    let old: ClientCommand = serde_json::from_str(
+        r#"{"t":"req","d":{"id":5,"q":{"t":"panel_subscribe","d":{"feed":"body.ground"}}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        old,
+        ClientCommand::Req {
+            id: 5,
+            q: Query::PanelSubscribe {
+                feed: "body.ground".into(),
+                params: None,
+            },
+        }
     );
 }
 

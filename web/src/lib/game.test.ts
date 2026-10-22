@@ -2331,3 +2331,193 @@ describe("the live picture on screen 0 (16b cut I.4)", () => {
     expect(app.replay.open).toBe(false);
   });
 });
+
+// Doc 20 cut SM.9: the quarry screen — its asks, its keys and its cue.
+describe("the quarry (doc 20 cut SM.9)", () => {
+  const QUARRY_PANELS = ["site.map", "body.ground", "tv.status"];
+  const siteFixture = (): unknown =>
+    JSON.parse(readFileSync(resolve(__dirname, "fixtures/site/site_map.json"), "utf8")) as unknown;
+  const paramsOf = (r: ReqFrame): unknown =>
+    r.q.t === "panel_subscribe" ? (r.q.d as { params?: unknown }).params : undefined;
+
+  it("registers on site.map and asks for both frames with their params on entry", () => {
+    const { app, ws } = boot(QUARRY_PANELS);
+    expect(app.screens.feedScreens.some((f) => f.def.id === "quarry")).toBe(true);
+    const before = ws.reqs().length;
+    expect(app.act({ kind: "screenKey", key: "q" })).toBe(true);
+    expect(app.screens.active).toBe("quarry");
+    const asked = ws.reqs().slice(before);
+    expect(asked.map(feedOf)).toEqual(["site.map", "body.ground"]);
+    expect(paramsOf(asked[0]!)).toEqual({ view: "drive" });
+    expect(paramsOf(asked[1]!)).toEqual({});
+  });
+
+  it("no key on the quarry sends a line; the view keys re-ask with their params", () => {
+    const { app, ws } = boot(QUARRY_PANELS);
+    app.act({ kind: "screenKey", key: "q" });
+    const site = ws.reqs().filter((r) => feedOf(r) === "site.map").at(-1)!;
+    ws.deliver(reply(5, site.id, panelEvent("site.map", "keyframe", siteFixture())));
+    expect(app.quarry.site?.site?.addressed).toBe(1);
+    for (const key of ["s", "d", "x", "m", "t", "z", "l", "r"]) {
+      expect(app.runBinding(key)).toBe(true);
+    }
+    expect(ws.sentJson().filter((f) => f.t === "line")).toEqual([]);
+    const last = ws.reqs().filter((r) => feedOf(r) === "site.map").at(-1)!;
+    expect(paramsOf(last)).toEqual({ view: "site", rig: 1, family: "strategic" });
+  });
+
+  it("a tv.status keyframe re-pulls the site map on the quarry, and nowhere else", () => {
+    const { app, ws } = boot(QUARRY_PANELS);
+    const status = { schema: { id: "tv.status", shape: "status", version: 1 }, rig: {} };
+    let before = ws.reqs().length;
+    ws.deliver(panel(6, "tv.status", "keyframe", status));
+    expect(ws.reqs().length).toBe(before);
+    app.act({ kind: "screenKey", key: "q" });
+    before = ws.reqs().length;
+    ws.deliver(panel(7, "tv.status", "keyframe", status));
+    expect(ws.reqs().slice(before).map(feedOf)).toEqual(["site.map"]);
+  });
+
+  it("never re-pulls on a timer, even with a leg in flight", () => {
+    const { app, ws } = boot(QUARRY_PANELS);
+    app.act({ kind: "screenKey", key: "q" });
+    const moving = siteFixture() as { site: { rigs: Record<string, unknown>[]; clock: unknown } };
+    moving.site.rigs[0]!.leg = {
+      started_ic: 1_000,
+      waypoints: [
+        { x_cm: 0, y_cm: 0, at_s: 0 },
+        { x_cm: 9_000, y_cm: 0, at_s: 90 },
+      ],
+    };
+    moving.site.clock = { now_ic: 1_010, rate: 1 };
+    ws.deliver(panel(8, "site.map", "keyframe", moving));
+    expect(app.quarry.site?.site?.rigs[0]?.leg).not.toBeNull();
+    const before = ws.reqs().length;
+    vi.advanceTimersByTime(30_000);
+    expect(ws.reqs().slice(before).filter((r) => feedOf(r) === "site.map")).toEqual([]);
+  });
+
+  it("asks no body.ground of a server without it", () => {
+    const { app, ws } = boot(["site.map"]);
+    app.act({ kind: "screenKey", key: "q" });
+    expect(ws.reqs().map(feedOf)).not.toContain("body.ground");
+    expect(ws.reqs().map(feedOf)).toContain("site.map");
+  });
+
+  // Lead ruling 6: s/d/x/m put the act's line for the quarry's rig in the box — the frame's
+  // addressed rig, or the one `t` picked — and nothing more; with no frame, no rig is named.
+  it("the prefill keys open the box with the rig's act line and send nothing", async () => {
+    const { app, ws } = boot(QUARRY_PANELS);
+    const focuses: (string | undefined)[] = [];
+    app.composer = {
+      focus: (prefill?: string) => {
+        focuses.push(prefill);
+      },
+      blur: () => {},
+      cycleMode: () => {},
+      text: () => "",
+      setText: () => {},
+    };
+    app.act({ kind: "screenKey", key: "q" });
+    expect(app.runBinding("s")).toBe(true);
+    await Promise.resolve();
+    expect(focuses).toEqual(["+tv scan"]);
+    const site = ws.reqs().filter((r) => feedOf(r) === "site.map").at(-1)!;
+    ws.deliver(reply(5, site.id, panelEvent("site.map", "keyframe", siteFixture())));
+    focuses.length = 0;
+    for (const key of ["s", "d", "x", "m"]) {
+      expect(app.runBinding(key)).toBe(true);
+    }
+    await Promise.resolve();
+    expect(focuses).toEqual(["+tv/1 scan", "+tv/1 drive ", "+tv/1 sound", "+tv/1 mine"]);
+    // Two rigs listed: `t` picks rig 2 and the prefill follows it.
+    const two = siteFixture() as { site: { rigs: Record<string, unknown>[] } };
+    two.site.rigs.push({ ...two.site.rigs[0]!, slot: 2, line: "Rig 2: in the bay." });
+    ws.deliver(panel(6, "site.map", "keyframe", two));
+    expect(app.runBinding("t")).toBe(true);
+    focuses.length = 0;
+    expect(app.runBinding("d")).toBe(true);
+    await Promise.resolve();
+    expect(focuses).toEqual(["+tv/2 drive "]);
+    expect(ws.sentJson().filter((f) => f.t === "line")).toEqual([]);
+  });
+
+  // The pre-commit round (the judge's correctness/F7): a frame that no longer lists the rig `t`
+  // picked — returned, or the hull moved — clears the pick, so the next drive-view ask carries
+  // no rig (the server addresses its own default); a reason frame lists none and clears it too.
+  it("a frame that drops the picked rig clears the pick, and the next ask names no rig", () => {
+    const { app, ws } = boot(QUARRY_PANELS);
+    app.act({ kind: "screenKey", key: "q" });
+    const two = siteFixture() as { site: { rigs: Record<string, unknown>[] } };
+    two.site.rigs.push({ ...two.site.rigs[0]!, slot: 2, line: "Rig 2: in the bay." });
+    ws.deliver(panel(6, "site.map", "keyframe", two));
+    expect(app.runBinding("t")).toBe(true);
+    expect(app.quarry.rig).toBe(2);
+    ws.deliver(panel(7, "site.map", "keyframe", two));
+    expect(app.quarry.rig).toBe(2);
+    // Rig 2 returned: the frame lists rig 1 alone.
+    ws.deliver(panel(8, "site.map", "keyframe", siteFixture()));
+    expect(app.quarry.rig).toBeNull();
+    expect(app.runBinding("r")).toBe(true);
+    let last = ws.reqs().filter((r) => feedOf(r) === "site.map").at(-1)!;
+    expect(paramsOf(last)).toEqual({ view: "drive" });
+    // A reason frame (the server's MAP_NO_RIG) lists no rigs: a pick goes with it.
+    ws.deliver(panel(9, "site.map", "keyframe", two));
+    expect(app.runBinding("t")).toBe(true);
+    expect(app.quarry.rig).toBe(2);
+    const reason = {
+      schema: { id: "site.map", shape: "grid", version: 1 },
+      window: 0,
+      title: "Rig 2 is not on Ahuna Mons's ground or in the bay.",
+      width: 0,
+      height: 0,
+      rows: [],
+      legend: [],
+      units: [],
+      you: null,
+    };
+    ws.deliver(panel(10, "site.map", "keyframe", reason));
+    expect(app.quarry.rig).toBeNull();
+    expect(app.runBinding("r")).toBe(true);
+    last = ws.reqs().filter((r) => feedOf(r) === "site.map").at(-1)!;
+    expect(paramsOf(last)).toEqual({ view: "drive" });
+  });
+
+  // §5, D16: the quarry's frames are the viewer's own knowledge; a character switch in the
+  // same tab (or a reconnect) starts it empty, and the next ask carries none of its view.
+  it("a character switch clears the quarry", () => {
+    vi.stubGlobal(
+      "localStorage",
+      memoryStorage({
+        "rustmush.token": "tok",
+        "rustmush.chars": JSON.stringify([
+          { key: 7, name: "Atlas" },
+          { key: 8, name: "Bryn" },
+        ]),
+      }),
+    );
+    const app = makeApp();
+    app.client.connect("tok", "7");
+    const ws = openHello(QUARRY_PANELS);
+    app.act({ kind: "screenKey", key: "q" });
+    const site = ws.reqs().filter((r) => feedOf(r) === "site.map").at(-1)!;
+    ws.deliver(reply(5, site.id, panelEvent("site.map", "keyframe", siteFixture())));
+    app.runBinding("t");
+    app.runBinding("l");
+    app.runBinding("z");
+    expect(app.quarry.site).not.toBeNull();
+    expect(app.quarry.rig).toBe(1);
+
+    app.enterGame(8);
+
+    expect(app.quarry.site).toBeNull();
+    expect(app.quarry.ground).toBeNull();
+    expect(app.quarry.rig).toBeNull();
+    expect(app.quarry.family).toBeNull();
+    expect(app.quarry.mode).toBe("drive");
+    const next = openHello(QUARRY_PANELS);
+    app.act({ kind: "screenKey", key: "q" });
+    const asked = next.reqs().filter((r) => feedOf(r) === "site.map").at(-1)!;
+    expect(paramsOf(asked)).toEqual({ view: "drive" });
+  });
+});
