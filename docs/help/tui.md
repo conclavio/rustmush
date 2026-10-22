@@ -107,8 +107,9 @@ From either mode:
                focused list (wrapping); Ctrl-O swaps between the IC and OOC
                lists. Elsewhere both do nothing.
   Ctrl-G       In a tank's seat, open or close the first-person picture of
-               the arena, on a terminal that can show one (`help cockpit`,
-               "The picture").
+               the arena, on a terminal that can show one, with your armour,
+               weapons, contacts and the comms as text under it; Enter there
+               opens a chat line (`help cockpit`, "The picture").
   Ctrl-]       Detach to line mode.
 
 A single key in nav mode never sends anything that changes the world: it

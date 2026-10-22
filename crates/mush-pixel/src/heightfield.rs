@@ -45,7 +45,8 @@ use crate::Frame;
 use crate::frame::Rgb;
 use crate::raycast::{
     Base, Camera, EYE_HEIGHT_CM, FOG_CELLS, Ground, HORIZON, Map, PLANE, SKY_STEPS,
-    SPRITE_HEIGHT_CM, SPRITE_WIDTH_CM, Shades, Sprite, SpriteAt, SpriteKind, draw_sprite, fog_step,
+    SPRITE_HEIGHT_CM, SPRITE_WIDTH_CM, Shades, Sprite, SpriteAt, SpriteKind, draw_sprite, focal,
+    fog_step,
 };
 
 /// How far out the march begins, in cells.
@@ -453,7 +454,7 @@ pub fn render(
     let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
     let (dirx, diry) = heading.to_radians().sin_cos();
     let (planex, planey) = (diry * PLANE, -dirx * PLANE);
-    let hf = h as f32;
+    let hf = focal(w);
     let horizon = (h / 2) as f32;
     let eye = eye_cm.map_or_else(|| terrain.height(posx, posy), |z| z as f32 / cell)
         + EYE_HEIGHT_CM as f32 / cell;
@@ -532,7 +533,7 @@ fn draw_sprites(
     let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
     let (dirx, diry) = heading.to_radians().sin_cos();
     let (planex, planey) = (diry * PLANE, -dirx * PLANE);
-    let hf = h as f32;
+    let hf = focal(w);
     let horizon = (h / 2) as f32;
     let invdet = 1.0 / (planex * diry - dirx * planey);
     let mut placed: Vec<(f32, f32, f32, SpriteKind)> = sprites

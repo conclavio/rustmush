@@ -1,5 +1,13 @@
 # 21. The graphics engine — one frame, three encoders
 
+**Draft 0.12 — 2026-10-22, the text cockpit (D-21-10 revised, D-21-26).** The owner: the player
+must read and send chat while navigating, so the picture takes the **top two-thirds** of the
+terminal, drawn at that box's shape (640 wide, the renderers' vertical scale following the width so
+a wide frame is the same world cropped, not squashed), with only a **flight HUD** in its pixels —
+heading tape, reticle boxing the lock, speed bar; the armour doll, weapons and heat, contacts,
+notices and the comms move to **terminal text** in the bottom third, and **Enter opens a chat line**
+that owns the keys until Enter sends it or Esc goes back to flying (cut notes, "Text cockpit").
+
 **Draft 0.11 — 2026-10-22, the picture measures sight as the sim does.** Both producers now use
 the sim's line-of-sight numbers — a 1.5 m eye (a unit's sensor height), 3 m walls, 6 m light and 8 m
 heavy woods — mirrored from `mush-atlas` and pinned by a contract test; the raycaster walks past a
@@ -234,11 +242,20 @@ with the HUD's twenty writes a second).
 
 ### 3.5 Placement — D-21-10
 
-The frame is placed as **one image** under one fixed id and placement, scaled by the terminal into
-the cell box the view computes from the terminal's size and the frame's aspect (the HUD line above,
-the key legend below). Instruments live inside the frame (the owner's ruling), so there is one image
-to replace a tick, one id to free, and no z-order to reason about. A bucket-C form that embeds a
+The frame is placed as **one image** under one fixed id and placement, so there is one image to
+replace a tick, one id to free, and no z-order to reason about. A bucket-C form that embeds a
 bucket-B scene places it the same way, as one image beside the text.
+
+**Revised 2026-10-22 (the text cockpit).** The image takes the **top two-thirds** of the terminal
+under the status line, and the frame is drawn at that box's shape — 640 (or 320) wide, its height
+from the box in the terminal's cell pixels, between 4:1 and 4:3 — so a kitty terminal scales it over
+the whole box and a sixel one is encoded up to fill it. Only the **flight HUD** stays in the pixels
+(heading tape, reticle and lock box, speed bar), because those are read off the view; the
+instruments that are numbers and states — the armour doll, weapons and heat, contacts, notices —
+are **terminal text** under the picture, beside the comms, because the player has to read and send
+chat while flying (the owner, superseding "instruments inside the frame" of 2026-10-21). The
+instruments-in-the-frame overlay stays in `mush-pixel` as `Overlay::Instruments` for a client with
+no text beside the picture.
 
 ## 4. The three encoders
 
@@ -421,7 +438,9 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
   text, sprites, embedded frames; one rasteriser for every bucket-B use.
 - **D-21-9** The deadline clock per connection; pictures only on the clock; idle writes nothing;
   the step-down to 320x220 and 10 Hz on back-pressure.
-- **D-21-10** One image a frame, instruments inside it, placed into the cell box by aspect.
+- **D-21-10** One image a frame, placed into the cell box by aspect. *Revised 2026-10-22:* the
+  picture is the top two-thirds, drawn at that box's shape, with the flight HUD alone in its pixels;
+  the doll, weapons and heat, contacts, notices and comms are terminal text under it.
 - **D-21-11** 640x480 at 20 Hz is the target and the budget is a quarter of a vCPU and 110 KB/s a
   viewer; twenty bucket-A viewers a vCPU after G.1.
 - **D-21-12** Both terminal encoders ship early because Windows needs sixel and WezTerm needs kitty.
@@ -440,6 +459,10 @@ No deploy without the owner; dev2 is the box these cuts smoke on.
   or the probe says so; the client maps names to files it holds, refuses paths from the server,
   and debounces; an alarm is a repeated name, never a loop (G.10). Amended 2026-10-22 from
   mintty's form to w11term's after the review of w11term 331a550.
+- **D-21-26** The text cockpit's chat line (2026-10-22): Enter opens it over the flying view,
+  stopping a held turn; while open it owns every key (typing never steers); Enter sends the line as
+  typed and returns to flying; Esc returns keeping the draft, which the next Enter brings back; Esc
+  while flying closes the view.
 - **D-21-25** Client-side assets (sounds, sprites, a font, help) are fetched over the player's
   own SSH connection through a read-only `sftp` subsystem on the gateway, from a manifest with
   content hashes whose version the Hello carries; never over a second port or a second login

@@ -1,17 +1,26 @@
 //! The arena cockpit as a [`Picture`] (bucket A): the `arena.cockpit` and
 //! `arena.map` keyframes read into the raycaster's map, camera and sprites
-//! and the instruments' inputs. This is the one place that reads those
+//! and the overlay's inputs. This is the one place that reads those
 //! frames' JSON for the picture, shared by every renderer and the fixture
 //! example.
+//!
+//! What is drawn over the view is an [`Overlay`]: the flight HUD alone
+//! (heading tape, reticle, speed bar) by default — the text cockpit of
+//! 2026-10-22 puts the doll, the weapons, the heat and the contacts in
+//! terminal text under the picture, and the web's cockpit tab has its own
+//! — or every instrument inside the frame, the 640x480 cockpit of
+//! 2026-10-21.
 
 use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::Frame;
-use crate::overlay::{self, Facet, Heat, MapMark, Section, Spot, Status, WeaponRow};
+use crate::overlay::{
+    self, Facet, Heat, Hud, HudLock, LockAt, MapMark, Section, Spot, Status, TapeMark, WeaponRow,
+};
 use crate::picture::{BUCKET_A_INTERVAL, Feeds, Look, Picture};
-use crate::raycast::{Camera, Ground, Map, Sprite, SpriteKind, render};
+use crate::raycast::{Camera, Ground, Map, Sprite, SpriteKind, project, render};
 
 /// The pilot's own frame: pose, contacts, hull, weapons, heat.
 pub const COCKPIT_FEED: &str = "arena.cockpit";
@@ -21,8 +30,19 @@ pub const ARENA_MAP_FEED: &str = "arena.map";
 /// the eye never sees its edge.
 const OPEN_MAP_CELLS: usize = 512;
 
+/// What a [`CockpitPicture`] draws over the view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Overlay {
+    /// The flight HUD: heading tape, reticle, speed bar ([`overlay::draw_hud`]).
+    #[default]
+    Hud,
+    /// Every instrument in the frame: minimap, heat, weapons, the armour
+    /// doll and the status strip ([`draw_instruments`]).
+    Instruments,
+}
+
 /// The first-person cockpit: the raycaster over the held arena map, the
-/// contacts as billboards, the instruments drawn into the frame.
+/// contacts as billboards, its [`Overlay`] drawn into the frame.
 #[derive(Debug)]
 pub struct CockpitPicture {
     /// What `arena` was built from: `None` before the first draw, then the
@@ -30,6 +50,8 @@ pub struct CockpitPicture {
     built_for: Option<Option<i64>>,
     /// The arena map, open ground until an `arena.map` is held.
     arena: Map,
+    /// What is drawn over the view.
+    overlay: Overlay,
 }
 
 impl Default for CockpitPicture {
@@ -39,12 +61,19 @@ impl Default for CockpitPicture {
 }
 
 impl CockpitPicture {
-    /// A cockpit picture with no map built yet.
+    /// A cockpit picture with no map built yet, the flight HUD over it.
     #[must_use]
     pub fn new() -> CockpitPicture {
+        CockpitPicture::with(Overlay::Hud)
+    }
+
+    /// A cockpit picture with `overlay` over it.
+    #[must_use]
+    pub fn with(overlay: Overlay) -> CockpitPicture {
         CockpitPicture {
             built_for: None,
             arena: Map::new(OPEN_MAP_CELLS, OPEN_MAP_CELLS, 1000),
+            overlay,
         }
     }
 
@@ -79,12 +108,16 @@ impl Picture for CockpitPicture {
         let map = feeds.feed(ARENA_MAP_FEED);
         let cam = camera(cockpit, look);
         let sprites = contacts_as_sprites(cockpit, &cam);
+        let overlay = self.overlay;
         let arena = self.ensure_map(map);
         render(frame, arena, &cam, &sprites);
-        // The instruments, over the picture (the owner's 640x480 target of
-        // 2026-10-21): minimap, heat, weapons, the armour doll and the status
-        // strip, all from the frame the text panes already read.
-        draw_instruments(frame, arena, cockpit, map, &cam);
+        match overlay {
+            Overlay::Hud => overlay::draw_hud(frame, &hud(frame, arena, cockpit, look, &cam)),
+            // The owner's 640x480 target of 2026-10-21: minimap, heat,
+            // weapons, the armour doll and the status strip, all from the
+            // frame the text panes already read.
+            Overlay::Instruments => draw_instruments(frame, arena, cockpit, map, &cam),
+        }
         true
     }
 }
@@ -208,6 +241,75 @@ pub fn contacts_as_sprites(cockpit: &Value, cam: &Camera) -> Vec<Sprite> {
             )
         })
         .collect()
+}
+
+/// The flight HUD's inputs: the camera's heading, the hull's (the sim's
+/// turned by the helm's prediction) and an ordered one from `look`, the
+/// speed, the contacts for the tape, and the lock placed in the picture as
+/// [`render`] draws it — boxed where it stands, or off a side.
+#[must_use]
+pub fn hud(frame: &Frame, arena: &Map, cockpit: &Value, look: &Look, cam: &Camera) -> Hud {
+    let heading = num(cockpit.get("heading_mdeg"));
+    let contacts = cockpit
+        .get("contacts")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let bearing = |c: &Value| c.get("bearing_deg").and_then(Value::as_f64).unwrap_or(0.0);
+    let marks = contacts
+        .iter()
+        .map(|c| TapeMark {
+            bearing_mdeg: (bearing(c) * 1_000.0).round() as i64,
+            kind: contact_kind(c),
+        })
+        .collect();
+    let lock_id = cockpit.get("lock").and_then(Value::as_str);
+    let lock = contacts
+        .iter()
+        .find(|c| lock_id.is_some() && c.get("id").and_then(Value::as_str) == lock_id)
+        .map(|c| {
+            let range_m = c.get("range_m").and_then(Value::as_f64).unwrap_or(0.0);
+            let sprite = Sprite::at_bearing(cam, bearing(c), range_m, contact_kind(c));
+            let (w, h) = (frame.width(), frame.height());
+            let at = match project(arena, cam, w, h, &sprite) {
+                Some(p) if p.screenx >= 0.0 && p.screenx < w as f32 => LockAt::Box(
+                    (p.screenx - p.width / 2.0) as i64,
+                    (p.bottom - p.height) as i64,
+                    p.width.ceil() as i64,
+                    p.height.ceil() as i64,
+                ),
+                _ => {
+                    let rel = (bearing(c) * 1_000.0).round() as i64 - i64::from(cam.heading_mdeg);
+                    LockAt::Off(if (rel + 180_000).rem_euclid(360_000) < 180_000 {
+                        -1
+                    } else {
+                        1
+                    })
+                }
+            };
+            HudLock {
+                designator: cockpit
+                    .get("lock_designator")
+                    .and_then(Value::as_str)
+                    .or_else(|| c.get("designator").and_then(Value::as_str))
+                    .unwrap_or("?")
+                    .to_string(),
+                range_m: cockpit
+                    .get("lock_range_m")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(range_m.round() as i64),
+                percent: cockpit.get("lock_percent").and_then(Value::as_i64),
+                at,
+            }
+        });
+    Hud {
+        heading_mdeg: i64::from(cam.heading_mdeg),
+        hull_mdeg: (heading + look.hull_offset_mdeg).rem_euclid(360_000),
+        ordered_mdeg: look.ordered_mdeg,
+        speed_kph: num(cockpit.get("speed_kph")),
+        marks,
+        lock,
+    }
 }
 
 fn num(v: Option<&Value>) -> i64 {
@@ -429,6 +531,7 @@ mod tests {
         let ahead = frame.hash();
         let look = Look {
             offset_mdeg: 30_000,
+            ..Look::default()
         };
         assert!(picture.draw(&mut frame, &feeds, &look));
         assert_ne!(frame.hash(), ahead, "the look turns the camera");
@@ -477,5 +580,70 @@ mod tests {
         render(&mut frame, &arena, &cam, &sprites);
         draw_instruments(&mut frame, &arena, &cockpit, None, &cam);
         assert!(frame.count_colours(256) <= 256);
+    }
+
+    /// The flight HUD (the text cockpit, 2026-10-22): the lock ahead is
+    /// boxed where it stands; swung away by a look it is an arrow at the
+    /// side it lies off, and the hull is marked where the look parted the
+    /// camera from it; an ordered heading rides along; the HUD keeps the
+    /// frame inside the palette; and the cockpit picture draws the HUD by
+    /// default, the instruments on request.
+    #[test]
+    fn the_hud_boxes_the_lock_or_points_to_it() {
+        let cockpit = parsed(COCKPIT);
+        let mut arena = Map::new(96, 64, 1000);
+        for y in 0..64 {
+            for x in 0..96 {
+                arena.set(x, y, Ground::Grass);
+            }
+        }
+        let mut frame = Frame::new(640, 256);
+        let ahead = Look::default();
+        let cam = camera(&cockpit, &ahead);
+        let h = hud(&frame, &arena, &cockpit, &ahead, &cam);
+        assert_eq!(
+            (h.heading_mdeg, h.hull_mdeg, h.speed_kph),
+            (45_000, 45_000, 43)
+        );
+        assert_eq!(h.marks.len(), 4);
+        let lock = h.lock.clone().expect("BA is locked");
+        assert_eq!(
+            (lock.designator.as_str(), lock.range_m, lock.percent),
+            ("BA", 440, Some(62))
+        );
+        let LockAt::Box(x, y, w, bh) = lock.at else {
+            panic!("BA at 045 is dead ahead: {:?}", lock.at);
+        };
+        assert!(x <= 320 && x + w >= 320, "boxed at the centre column");
+        assert!(y < 128 + 8 && y + bh > 128, "on the horizon, 450 m out");
+
+        // A look 90° right: BA lies off to the left; the hull, still at
+        // 045, is marked; an order rides along.
+        let look = Look {
+            offset_mdeg: 90_000,
+            hull_offset_mdeg: 0,
+            ordered_mdeg: Some(60_000),
+        };
+        let cam = camera(&cockpit, &look);
+        let h = hud(&frame, &arena, &cockpit, &look, &cam);
+        assert_eq!((h.heading_mdeg, h.hull_mdeg), (135_000, 45_000));
+        assert_eq!(h.ordered_mdeg, Some(60_000));
+        assert_eq!(h.lock.as_ref().map(|l| l.at), Some(LockAt::Off(-1)));
+        render(&mut frame, &arena, &cam, &[]);
+        overlay::draw_hud(&mut frame, &h);
+        assert!(frame.count_colours(256) <= 256);
+
+        let mut feeds = std::collections::HashMap::new();
+        feeds.insert(COCKPIT_FEED.to_string(), cockpit);
+        feeds.insert(ARENA_MAP_FEED.to_string(), parsed(MAP));
+        let mut with_hud = Frame::new(640, 480);
+        let mut with_instruments = Frame::new(640, 480);
+        assert!(CockpitPicture::new().draw(&mut with_hud, &feeds, &ahead));
+        assert!(CockpitPicture::with(Overlay::Instruments).draw(
+            &mut with_instruments,
+            &feeds,
+            &ahead
+        ));
+        assert_ne!(with_hud.hash(), with_instruments.hash());
     }
 }

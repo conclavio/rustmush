@@ -333,6 +333,16 @@ const MAX_SPANS: usize = 4;
 const MARK_MIN_PX: f32 = 6.0;
 /// Half the field of view as the camera plane's length (66 degrees).
 pub(crate) const PLANE: f32 = 0.66;
+
+/// The picture's vertical scale: pixels a cell of height spans at a cell's
+/// distance. Three-quarters of the frame's width, which is the height of a
+/// 4:3 frame and within 1 % of the horizontal scale [`PLANE`] gives, so the
+/// pixels are square and a frame shaped to a wide box (the text cockpit's
+/// top two-thirds, 2026-10-22) shows the same world as a 4:3 one, cropped
+/// above and below rather than squashed.
+pub(crate) fn focal(w: usize) -> f32 {
+    w as f32 * 0.75
+}
 /// How far a ray walks before giving up (cells).
 const MAX_STEPS: usize = 160;
 /// How wide the floor's cell lines are, as a fraction of a cell.
@@ -463,6 +473,27 @@ struct Eye {
 }
 
 impl Eye {
+    /// See [`project`].
+    fn project(&self, w: usize, h: usize, s: &Sprite) -> Option<SpriteAt> {
+        let invdet = 1.0 / (self.planex * self.diry - self.dirx * self.planey);
+        let relx = s.x_cm as f32 / self.cell - self.posx;
+        let rely = s.y_cm as f32 / self.cell - self.posy;
+        let tx = invdet * (self.diry * relx - self.dirx * rely);
+        let ty = invdet * (-self.planey * relx + self.planex * rely);
+        if ty <= 0.05 {
+            return None;
+        }
+        let hf = focal(w);
+        Some(SpriteAt {
+            screenx: (w as f32 / 2.0) * (1.0 + tx / ty),
+            bottom: (h / 2) as f32 + self.eye * hf / ty,
+            depth: ty,
+            height: SPRITE_HEIGHT_CM as f32 / self.cell * hf / ty,
+            width: SPRITE_WIDTH_CM as f32 / self.cell * hf / ty,
+            kind: s.kind,
+        })
+    }
+
     fn new(map: &Map, cam: &Camera) -> Eye {
         let cell = map.cell_cm() as f32;
         let heading = (cam.heading_mdeg % 360_000) as f32 / 1000.0;
@@ -497,7 +528,7 @@ pub fn render(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
         return;
     }
     let e = Eye::new(map, cam);
-    let hf = h as f32;
+    let hf = focal(w);
     let horizon = h / 2;
     let hz = horizon as f32;
     let shades = Shades::new();
@@ -525,7 +556,7 @@ pub fn render(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
                 return true;
             }
             let end = if col.n == 0 {
-                (hz + e.eye * hf / perp).min(hf) as usize
+                (hz + e.eye * hf / perp).min(h as f32) as usize
             } else {
                 min_top.max(0.0) as usize
             };
@@ -584,36 +615,24 @@ pub fn render(frame: &mut Frame, map: &Map, cam: &Camera, sprites: &[Sprite]) {
             None => f32::INFINITY,
         }
     };
-    let invdet = 1.0 / (e.planex * e.diry - e.dirx * e.planey);
-    let mut placed: Vec<(f32, f32, SpriteKind)> = sprites
-        .iter()
-        .map(|s| {
-            let relx = s.x_cm as f32 / e.cell - e.posx;
-            let rely = s.y_cm as f32 / e.cell - e.posy;
-            let tx = invdet * (e.diry * relx - e.dirx * rely);
-            let ty = invdet * (-e.planey * relx + e.planex * rely);
-            (tx, ty, s.kind)
-        })
-        .filter(|(_, ty, _)| *ty > 0.05)
-        .collect();
-    placed.sort_by(|a, b| b.1.total_cmp(&a.1));
-    for (tx, ty, kind) in placed {
-        let screenx = (w as f32 / 2.0) * (1.0 + tx / ty);
-        let bottom = hz + e.eye * hf / ty;
-        draw_sprite(
-            frame,
-            &shades,
-            SpriteAt {
-                screenx,
-                bottom,
-                depth: ty,
-                height: SPRITE_HEIGHT_CM as f32 / e.cell * hf / ty,
-                width: SPRITE_WIDTH_CM as f32 / e.cell * hf / ty,
-                kind,
-            },
-            &depth,
-        );
+    let mut placed: Vec<SpriteAt> = sprites.iter().filter_map(|s| e.project(w, h, s)).collect();
+    placed.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+    for at in placed {
+        draw_sprite(frame, &shades, at, &depth);
     }
+}
+
+/// Where `sprite` stands in a `w` by `h` picture of flat `map` from `cam`:
+/// its centre column, base row, distance and size, as [`render`] draws it;
+/// `None` behind the eye. The cockpit's HUD boxes the lock with it.
+pub(crate) fn project(
+    map: &Map,
+    cam: &Camera,
+    w: usize,
+    h: usize,
+    sprite: &Sprite,
+) -> Option<SpriteAt> {
+    Eye::new(map, cam).project(w, h, sprite)
 }
 
 /// A sprite placed on the screen: its centre column, the row its base

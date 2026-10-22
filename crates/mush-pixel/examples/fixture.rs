@@ -3,7 +3,10 @@
 //! that speaks the kitty graphics protocol) and `fixture.sixel` (to `cat` or
 //! `type` in one that draws sixel: Windows Terminal, foot, xterm, mintty)
 //! into the directory given as the first argument, then print render and
-//! encode timings.
+//! encode timings. The scene is the text cockpit's (2026-10-22): the flight
+//! HUD over a 640x256 frame, the shape of the top two-thirds of a 160x50
+//! terminal; `fixture_instruments.png` is the 640x480 frame with every
+//! instrument inside it, as the 2026-10-21 cockpit drew it.
 //!
 //! ```text
 //! cargo run -p mush-pixel --example fixture -- out/
@@ -12,7 +15,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use mush_pixel::cockpit::{ARENA_MAP_FEED, COCKPIT_FEED, CockpitPicture, map_from_feed};
+use mush_pixel::cockpit::{ARENA_MAP_FEED, COCKPIT_FEED, CockpitPicture, Overlay, map_from_feed};
 use mush_pixel::heightfield;
 use mush_pixel::picture::{Look, Picture};
 use mush_pixel::raycast::{Camera, Sprite, SpriteKind};
@@ -48,8 +51,9 @@ fn main() {
     .collect();
     let mut picture = CockpitPicture::new();
 
-    // 640x480: the target frame (the owner's ruling of 2026-10-21).
-    let mut frame = Frame::new(640, 480);
+    // 640 wide (the owner's ruling of 2026-10-21), shaped to the text
+    // cockpit's picture box: 160 by 32 cells of 10x20 pixels.
+    let mut frame = Frame::new(640, 256);
     const N: u32 = 200;
     let t0 = Instant::now();
     for _ in 0..N {
@@ -62,7 +66,7 @@ fn main() {
         bytes = png::encode(&frame);
     }
     let encode_us = t1.elapsed().as_micros() / u128::from(N);
-    let stream = kitty::frame_bytes(&bytes, 1, 1, 2, 120, 30);
+    let stream = kitty::frame_bytes(&bytes, 1, 1, 2, 160, 32);
     let t2 = Instant::now();
     let mut six = Vec::new();
     for _ in 0..N {
@@ -81,6 +85,14 @@ fn main() {
     }
     if let Err(err) = std::fs::write(format!("{out_dir}/fixture.sixel"), &six_stream) {
         eprintln!("fixture.sixel: {err}");
+    }
+    let mut full = Frame::new(640, 480);
+    CockpitPicture::with(Overlay::Instruments).draw(&mut full, &feeds, &Look::default());
+    if let Err(err) = std::fs::write(
+        format!("{out_dir}/fixture_instruments.png"),
+        png::encode(&full),
+    ) {
+        eprintln!("fixture_instruments.png: {err}");
     }
 
     // G.7a: the heightfield producer over the proving ground's real relief,
@@ -115,7 +127,7 @@ fn main() {
         frame.count_colours(300)
     );
     println!(
-        "render + instruments {render_us} us, png encode {encode_us} us, png {} bytes, kitty stream {} bytes",
+        "render + HUD {render_us} us, png encode {encode_us} us, png {} bytes, kitty stream {} bytes",
         bytes.len(),
         stream.len()
     );

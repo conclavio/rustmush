@@ -28,6 +28,15 @@
 //!   tick advances the turn, renders, and sends the frame only when its
 //!   pixels (or the cell box it is scaled into) changed since the last send.
 //!
+//! **The text cockpit** (2026-10-22, the owner: "the player is going to need
+//! to be able to read and send chat messages while navigating"): the
+//! picture takes the top two-thirds of the screen ([`picture_area`]) and is
+//! drawn at that box's shape ([`frame_size`]), the flight HUD alone over it;
+//! the armour doll, weapons and heat, contacts, notices and the chat are
+//! terminal text in the bottom third (`super::cockpit_text`). Enter opens
+//! the chat line, which owns the keys until Enter sends it or Esc goes back
+//! to flying ([`PixelView::chat_opened`] stops a turn first).
+//!
 //! The picture, the PNG, the sixel stream and the kitty framing are
 //! `mush-pixel`; the probe replies arrive through the key parser as
 //! [`Key::GraphicsOk`], [`Key::GraphicsErr`], [`Key::CellSize`] and
@@ -45,20 +54,16 @@ use serde_json::Value;
 use super::helm::{Helm, arc};
 use super::keys::{Arrow, Key};
 
-/// The rendered frame's size; a kitty terminal scales it into the cell box,
-/// and a sixel frame is this or the largest of its aspect that fits.
-/// **640x480 at 20 Hz is the target** (the owner's ruling of 2026-10-21,
-/// after the load experiment measured it at 21 % of a vCPU and 100 KB/s a
-/// viewer): the extra pixels are for the minimap, heat gauges, weapon
-/// recycle states and the armour doll a real cut will draw into the frame.
+/// The rendered frame's width; its height is the picture box's shape
+/// ([`frame_size`]). A kitty terminal scales the frame into the cell box,
+/// and a sixel frame is this or the largest of its shape that fits.
+/// **640 wide at 20 Hz is the target** (the owner's ruling of 2026-10-21,
+/// after the load experiment measured 640x480 at 21 % of a vCPU and
+/// 100 KB/s a viewer; the text cockpit's wider box is fewer pixels).
 pub const FRAME_W: usize = 640;
-/// See [`FRAME_W`].
-pub const FRAME_H: usize = 480;
-/// The smaller frame `r` switches to: the spike's original 320x220, a
-/// quarter of the pixels and the cost, for a slow link or a loaded box.
+/// The narrower frame `r` switches to, a quarter of the pixels and the
+/// cost, for a slow link or a loaded box.
 pub const FRAME_W_LO: usize = 320;
-/// See [`FRAME_W_LO`].
-pub const FRAME_H_LO: usize = 220;
 /// The frame clock's wait when `u` uncaps it: as fast as render, encode
 /// and the write allow (tokio's timer floor).
 pub const FRAME_INTERVAL_UNCAPPED: Duration = Duration::from_millis(1);
@@ -154,8 +159,8 @@ pub struct PixelView {
     /// (the terminal scales it), the box-filling size a sixel frame was
     /// encoded up to.
     shown_size: (usize, usize),
-    /// The frame `r` asks for: 640x480, or 320x220.
-    want: (usize, usize),
+    /// The frame width `r` asks for: 640, or 320.
+    want: usize,
     frame: Frame,
     /// The encoder of the picture now on screen, and the cell box it is in
     /// (`col`, `row` 1-based, `cols`, `rows`): what a close or a resize has
@@ -203,9 +208,9 @@ impl PixelView {
             term_bytes: Vec::new(),
             last_tick: None,
             last_sent: None,
-            want: (FRAME_W, FRAME_H),
-            shown_size: (FRAME_W, FRAME_H),
-            frame: Frame::new(FRAME_W, FRAME_H),
+            want: FRAME_W,
+            shown_size: (FRAME_W, FRAME_W * 3 / 4),
+            frame: Frame::new(FRAME_W, FRAME_W * 3 / 4),
             shown: None,
             wipe_pending: false,
             picture: Box::new(CockpitPicture::new()),
@@ -359,6 +364,25 @@ impl PixelView {
         self.active
     }
 
+    /// The chat line opened over the view: a turn in progress stops where
+    /// the picture shows the tank, and the look stops swinging, so nothing
+    /// steers while the pilot types.
+    pub fn chat_opened(&mut self, now: Instant) {
+        self.helm.stop(now);
+        self.look_turn = 0;
+    }
+
+    /// The camera's heading as the view draws it, millidegrees: the frame's
+    /// heading carried by the helm's prediction, plus the look.
+    #[must_use]
+    pub fn camera_mdeg(&self, cockpit: Option<&Value>, now: Instant) -> i64 {
+        let heading = cockpit
+            .and_then(|c| c.get("heading_mdeg"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        (self.helm.predicted(now).unwrap_or(heading) + self.look_mdeg).rem_euclid(360_000)
+    }
+
     /// `^G`: open the view (only where the probe found an encoder) or close
     /// it. Returns whether it is open afterwards.
     pub fn toggle(&mut self, now: Instant) -> bool {
@@ -468,7 +492,8 @@ impl PixelView {
     /// - space stops the tank's turn and the look's swing.
     /// - `r` and `u` are the load experiment's switches; Esc and `q` close.
     ///
-    /// Every other key is swallowed: the view is modal.
+    /// Every other key is swallowed: the view is modal. Enter, which opens
+    /// the chat line, never reaches here (the app routes it).
     pub fn key(&mut self, key: Key, now: Instant) {
         let held = self.keyboard_pushed;
         let steer = |helm: &mut Helm, dir: i8, toggle: bool| {
@@ -501,10 +526,10 @@ impl PixelView {
             // size and the clock cap. Either resets the last-sent key so the
             // next tick sends whatever the new shape is.
             Key::Char('r') => {
-                self.want = if self.want == (FRAME_W, FRAME_H) {
-                    (FRAME_W_LO, FRAME_H_LO)
+                self.want = if self.want == FRAME_W {
+                    FRAME_W_LO
                 } else {
-                    (FRAME_W, FRAME_H)
+                    FRAME_W
                 };
                 self.last_sent = None;
             }
@@ -565,18 +590,12 @@ impl PixelView {
         let Some(encoder) = self.encoder(now) else {
             return Vec::new();
         };
+        let cell = self.cell.unwrap_or(CellSize::DEFAULT);
+        let area = picture_area(cols, rows);
+        let want = frame_size(self.want, area, cell);
         let (size, shown, placed) = match encoder {
-            Encoder::Kitty => (
-                self.want,
-                self.want,
-                image_box(cols, rows, self.want.0, self.want.1),
-            ),
-            Encoder::Sixel => sixel_box(
-                cols,
-                rows,
-                self.want,
-                self.cell.unwrap_or(CellSize::DEFAULT),
-            ),
+            Encoder::Kitty => (want, want, image_box(area, want, cell)),
+            Encoder::Sixel => sixel_box(area, want, cell),
         };
         if (self.frame.width(), self.frame.height()) != size {
             self.frame = Frame::new(size.0, size.1);
@@ -592,8 +611,15 @@ impl PixelView {
             self.helm.observe(c, now);
         }
         let predicted = self.helm.predicted(now).unwrap_or(frame_heading);
+        let hull_offset_mdeg = arc(frame_heading, predicted);
         let look = Look {
-            offset_mdeg: arc(frame_heading, predicted) + self.look_mdeg,
+            offset_mdeg: hull_offset_mdeg + self.look_mdeg,
+            hull_offset_mdeg,
+            // An order the picture already shows reached is not marked.
+            ordered_mdeg: self
+                .helm
+                .ordered()
+                .filter(|o| arc(predicted, *o).abs() > 1_000),
         };
         let t0 = Instant::now();
         if !self.picture.draw(&mut self.frame, feeds, &look) {
@@ -643,7 +669,14 @@ impl PixelView {
             self.wipe_pending = true;
         }
         self.shown = Some((encoder, placed));
-        wire
+        // The picture's bytes move the cursor to its corner: save and restore
+        // it around them, so the chat line's cursor stays where the text
+        // frame put it.
+        let mut out = Vec::with_capacity(wire.len() + 4);
+        out.extend_from_slice(b"\x1b7");
+        out.extend_from_slice(&wire);
+        out.extend_from_slice(b"\x1b8");
+        out
     }
 
     /// The HUD's two lines: the top status and the bottom key legend.
@@ -712,7 +745,7 @@ impl PixelView {
                 "←/→ or a/d: turn the tank (again to stop)"
             };
             format!(
-                "{arrows}   ,/.: look   space: stop   c: centre the look   r: 640x480/320x220   u: clock/uncapped   Esc/q: close   ^]: detach"
+                "{arrows}   ,/.: look   space: stop   c: centre   Enter: chat   r: 640/320 wide   u: clock   Esc/q: close   ^]: detach"
             )
         } else {
             "No cockpit frame held: take a seat in the arena, then ^G.   Esc/q: close".to_string()
@@ -722,65 +755,97 @@ impl PixelView {
 }
 
 /// How far a sixel frame is scaled up to fill its box, at most: three
-/// times 640x480 is 1920x1440, and the bytes grow with the rows shown.
+/// times 640 wide is 1920, and the bytes grow with the rows shown.
 pub const SIXEL_MAX_SCALE: usize = 3;
 
-/// A sixel picture's render size, shown size and cell box (D-21-10 for
-/// sixel; G.2b fills the box). The picture is shown as large as the space
-/// between the HUD lines holds at `want`'s aspect, in `cell`'s pixels, up to
-/// [`SIXEL_MAX_SCALE`] times `want`: a kitty terminal stretches its image
-/// over the box, and a sixel one shows pixels as sent, so the encoder scales
-/// the frame up. A frame is rendered at `want`, or at the shown size when
-/// that is smaller (the instruments' text then drawn at the size it is
-/// seen). The box is the shown size in whole cells, placed at the box's top
-/// left, so the picture never reaches the key legend and the terminal never
-/// scrolls under it. Returns the render size, the shown size and
+/// **The picture's area** (the text cockpit, 2026-10-22): every column,
+/// from under the status line down two-thirds of what is below it; the
+/// text panel, the chat line and the key legend take the rest.
 /// `(col, row, cols, rows)`, 1-based.
 #[must_use]
-pub fn sixel_box(cols: u16, rows: u16, want: Pixels, cell: CellSize) -> (Pixels, Pixels, CellBox) {
+pub fn picture_area(cols: u16, rows: u16) -> CellBox {
+    let below = u32::from(rows.saturating_sub(1));
+    let tall = u16::try_from(below * 2 / 3).unwrap_or(u16::MAX).max(1);
+    (1, 2, cols.max(1), tall)
+}
+
+/// The frame a picture `width` pixels wide is drawn at to fill `area`, of
+/// `cell`-sized cells: the area's shape, its height between a quarter and
+/// three-quarters of its width (a 4:3 frame at most), and even. The
+/// renderers' vertical scale follows the width, so a wide frame shows the
+/// world a 4:3 one does, cropped above and below.
+#[must_use]
+pub fn frame_size(width: usize, area: CellBox, cell: CellSize) -> Pixels {
+    let (_, _, cols, rows) = area;
+    let aw = usize::from(cols.max(1)) * usize::from(cell.width.max(1));
+    let ah = usize::from(rows.max(1)) * usize::from(cell.height.max(1));
+    let h = (width * ah / aw).clamp(width / 4, width * 3 / 4) & !1;
+    (width, h.max(2))
+}
+
+/// A sixel picture's render size, shown size and cell box (D-21-10 for
+/// sixel; G.2b fills the box). The picture is shown as large as `area`
+/// holds at `want`'s shape, in `cell`'s pixels, up to [`SIXEL_MAX_SCALE`]
+/// times `want`: a kitty terminal stretches its image over the box, and a
+/// sixel one shows pixels as sent, so the encoder scales the frame up. A
+/// frame is rendered at `want`, or at the shown size when that is smaller
+/// (the HUD's text then drawn at the size it is seen). The box is the shown
+/// size in whole cells, centred across the area at its top, so the picture
+/// never reaches the text panel and the terminal never scrolls under it.
+/// Returns the render size, the shown size and `(col, row, cols, rows)`,
+/// 1-based.
+#[must_use]
+pub fn sixel_box(area: CellBox, want: Pixels, cell: CellSize) -> (Pixels, Pixels, CellBox) {
+    let (col, row, cols, rows) = area;
     let (cw, ch) = (
         usize::from(cell.width.max(1)),
         usize::from(cell.height.max(1)),
     );
     let avail_cols = usize::from(cols.max(1));
-    let avail_rows = usize::from(rows.saturating_sub(2).max(1));
+    let avail_rows = usize::from(rows.max(1));
     let (w, h) = sixel::fill(want, (avail_cols * cw, avail_rows * ch), SIXEL_MAX_SCALE);
     let render = if w <= want.0 { (w, h) } else { want };
     let c = w.div_ceil(cw).clamp(1, avail_cols);
     let r = h.div_ceil(ch).clamp(1, avail_rows);
+    let left = u16::try_from((avail_cols - c) / 2).unwrap_or(0);
     (
         render,
         (w, h),
         (
-            1,
-            2,
+            col + left,
+            row,
             u16::try_from(c).unwrap_or(1),
             u16::try_from(r).unwrap_or(1),
         ),
     )
 }
 
-/// The cell box a `w` by `h` picture is scaled into: below the top HUD
-/// line, above the bottom one, as wide as keeps roughly the frame's aspect
-/// at the usual 1:2 cell. Returns `(col, row, cols, rows)`, 1-based.
+/// The cell box a kitty picture of `size` is scaled into: the largest of its
+/// shape `area` holds in `cell`-sized cells, centred across the area at its
+/// top. Returns `(col, row, cols, rows)`, 1-based.
 #[must_use]
-pub fn image_box(cols: u16, rows: u16, w: usize, h: usize) -> (u16, u16, u16, u16) {
-    let avail_rows = rows.saturating_sub(2).max(1);
-    let avail_cols = cols.max(1);
-    let (fw, fh) = (w.max(1) as u32, h.max(1) as u32);
-    let wide = u32::from(avail_rows) * 2 * fw / fh;
-    let (c, r) = if wide <= u32::from(avail_cols) {
-        (u16::try_from(wide).unwrap_or(avail_cols).max(1), avail_rows)
+pub fn image_box(area: CellBox, size: Pixels, cell: CellSize) -> CellBox {
+    let (col, row, cols, rows) = area;
+    let (cw, ch) = (u64::from(cell.width.max(1)), u64::from(cell.height.max(1)));
+    let (fw, fh) = (size.0.max(1) as u64, size.1.max(1) as u64);
+    let (avail_cols, avail_rows) = (u64::from(cols.max(1)), u64::from(rows.max(1)));
+    // As wide as the area's height allows, in cells, or as tall as its width.
+    let wide = (avail_rows * ch * fw / fh / cw).max(1);
+    let (c, r) = if wide <= avail_cols {
+        (wide, avail_rows)
     } else {
-        let tall = u32::from(avail_cols) * fh / (2 * fw);
         (
             avail_cols,
-            u16::try_from(tall)
-                .unwrap_or(avail_rows)
-                .clamp(1, avail_rows),
+            (avail_cols * cw * fh / fw / ch).clamp(1, avail_rows),
         )
     };
-    (1, 2, c, r)
+    let left = u16::try_from((avail_cols - c) / 2).unwrap_or(0);
+    (
+        col + left,
+        row,
+        u16::try_from(c).unwrap_or(1),
+        u16::try_from(r).unwrap_or(1),
+    )
 }
 
 #[cfg(test)]
@@ -898,18 +963,18 @@ mod tests {
         assert_eq!(wt.interval(), FRAME_INTERVAL, "sixel runs at 20 Hz too");
         let first = String::from_utf8_lossy(&wt.paint(&both_feeds, 120, 40, t0)).into_owned();
         assert!(
-            first.starts_with("\x1b[?2026h\x1b[2;1H\x1bP0;1;0q\"1;1;1013;760"),
+            first.starts_with("\x1b7\x1b[?2026h\x1b[2;1H\x1bP0;1;0q\"1;1;1200;517"),
             "{}",
             &first[..60.min(first.len())]
         );
-        assert!(first.ends_with("\x1b\\\x1b[?2026l"));
+        assert!(first.ends_with("\x1b\\\x1b[?2026l\x1b8"));
         assert!(
             wt.paint(&both_feeds, 120, 40, t0).is_empty(),
             "unchanged: skipped"
         );
         let (top, _) = wt.hud(Some(&cockpit), t0);
         assert!(top.contains("sixel graphics OK, drawing sixel"), "{top}");
-        assert!(top.contains("640x480 shown 1013x760 20 Hz"), "{top}");
+        assert!(top.contains("640x276 shown 1200x517 20 Hz"), "{top}");
         // Both: kitty OK, then DA1 with 4.
         let mut both = supported(t0);
         both.device_attributes(da1("?62;4;22"));
@@ -954,47 +1019,71 @@ mod tests {
         assert_eq!(v.shown(), None);
     }
 
-    /// A sixel picture fills the space between the HUD lines at the frame's
-    /// aspect, up to three times the frame, in the terminal's cell pixels;
-    /// the frame is rendered at its own size and scaled up, or rendered
-    /// smaller when the box is smaller.
+    /// The text cockpit's geometry: the picture's area is the top
+    /// two-thirds under the status line, and the frame is drawn at that
+    /// area's shape, 640 (or `r`'s 320) wide, between 4:1 and 4:3.
+    #[test]
+    fn the_frame_is_shaped_to_the_top_two_thirds() {
+        let cell = CellSize::DEFAULT;
+        assert_eq!(picture_area(160, 50), (1, 2, 160, 32));
+        assert_eq!(picture_area(120, 40), (1, 2, 120, 26));
+        assert_eq!(picture_area(1, 1), (1, 2, 1, 1));
+        // 160 by 32 cells of 10x20 is 1600 by 640 pixels: 5:2.
+        assert_eq!(frame_size(640, picture_area(160, 50), cell), (640, 256));
+        assert_eq!(frame_size(320, picture_area(160, 50), cell), (320, 128));
+        // 120 by 26: 1200 by 520, kept even.
+        assert_eq!(frame_size(640, picture_area(120, 40), cell), (640, 276));
+        // Wider than 4:1 is cut to it; taller than 4:3 likewise.
+        assert_eq!(frame_size(640, picture_area(120, 20), cell), (640, 160));
+        assert_eq!(frame_size(640, picture_area(80, 60), cell), (640, 480));
+    }
+
+    /// A sixel picture fills its area at the frame's shape, up to three
+    /// times the frame, in the terminal's cell pixels, centred across the
+    /// area; the frame is rendered at its own size and scaled up, or
+    /// rendered smaller when the area is smaller.
     #[test]
     fn a_sixel_picture_fills_its_cell_box() {
         let ten_by_twenty = CellSize::DEFAULT;
-        // 120x40 at 10x20: 1200 by 760 pixels of room, height-bound: the
-        // 640x480 frame shown at 1013x760 in 102 by 38 cells.
-        assert_eq!(
-            sixel_box(120, 40, (640, 480), ten_by_twenty),
-            ((640, 480), (1013, 760), (1, 2, 102, 38))
-        );
-        // A terminal that reported 8x16 cells: 960 by 608 of room.
-        let small = CellSize {
-            width: 8,
-            height: 16,
+        let at = |cols, rows, width, cell| {
+            let area = picture_area(cols, rows);
+            sixel_box(area, frame_size(width, area, cell), cell)
         };
+        // 160x50 at 10x20: the 640x256 frame shown at 1600x640, every cell.
         assert_eq!(
-            sixel_box(120, 40, (640, 480), small),
-            ((640, 480), (810, 608), (1, 2, 102, 38))
+            at(160, 50, 640, ten_by_twenty),
+            ((640, 256), (1600, 640), (1, 2, 160, 32))
         );
-        // w11term at 240x48 on a high-DPI screen, 15x28 cells.
+        // 120x40: 1200 by 520 of room, the 640x276 frame at 1200x517.
+        assert_eq!(
+            at(120, 40, 640, ten_by_twenty),
+            ((640, 276), (1200, 517), (1, 2, 120, 26))
+        );
+        // w11term at 240x48 on a high-DPI screen, 15x28 cells: the 4:1
+        // frame capped at three times, centred.
         let hidpi = CellSize {
             width: 15,
             height: 28,
         };
         assert_eq!(
-            sixel_box(240, 48, (640, 480), hidpi),
-            ((640, 480), (1717, 1288), (1, 2, 115, 46))
+            at(240, 48, 640, hidpi),
+            ((640, 160), (1920, 480), (57, 2, 128, 18))
         );
-        // 80x20: 18 rows of 20 px = 360, smaller than the frame: rendered
-        // at 480x360 and shown as rendered.
+        // A short terminal: the area is wider than 4:1, so the picture is
+        // height-bound and centred.
         assert_eq!(
-            sixel_box(80, 20, (640, 480), ten_by_twenty),
-            ((480, 360), (480, 360), (1, 2, 48, 18))
+            at(120, 20, 640, ten_by_twenty),
+            ((640, 160), (960, 240), (13, 2, 96, 12))
+        );
+        // Room for less than the frame: rendered at the shown size.
+        assert_eq!(
+            at(60, 20, 640, ten_by_twenty),
+            ((600, 240), (600, 240), (1, 2, 60, 12))
         );
         // `r`'s frame, capped at three times its size.
         assert_eq!(
-            sixel_box(120, 40, (320, 220), ten_by_twenty),
-            ((320, 220), (960, 660), (1, 2, 96, 33))
+            at(160, 50, 320, ten_by_twenty),
+            ((320, 128), (960, 384), (33, 2, 96, 20))
         );
     }
 
@@ -1013,15 +1102,20 @@ mod tests {
         });
         wt.toggle(t0);
         assert!(!wt.paint(&both_feeds, 120, 40, t0).is_empty());
-        assert_eq!(wt.sixel_box(), Some((0, 1, 102, 38)));
+        assert_eq!(wt.sixel_box(), Some((0, 1, 120, 26)));
         assert!(!wt.take_wipe(), "the first picture moves nothing");
         assert!(wt.paint(&both_feeds, 120, 40, t0).is_empty());
         wt.text_touched();
         assert!(!wt.paint(&both_feeds, 120, 40, t0).is_empty(), "resent");
-        // `r`: a smaller frame in a smaller box, under a wipe.
+        // `r`: a smaller frame scaled up into the same box, no wipe.
         wt.key(Key::Char('r'), t0);
         assert!(!wt.paint(&both_feeds, 120, 40, t0).is_empty());
-        assert_eq!(wt.size(), (320, 220));
+        assert_eq!(wt.size(), (320, 138));
+        assert_eq!(wt.sixel_box(), Some((0, 1, 120, 26)));
+        assert!(!wt.take_wipe());
+        // A taller terminal moves the box: under a wipe.
+        assert!(!wt.paint(&both_feeds, 160, 50, t0).is_empty());
+        assert_eq!(wt.sixel_box(), Some((20, 1, 120, 24)));
         assert!(wt.take_wipe());
         assert!(!wt.take_wipe(), "once");
         wt.key(Key::Esc, t0);
@@ -1151,8 +1245,11 @@ mod tests {
         let first = v.paint(&both, 120, 40, t0);
         assert!(!first.is_empty());
         let s = String::from_utf8(first.clone()).expect("ascii");
-        assert!(s.starts_with("\x1b[?2026h\x1b[2;1H\x1b_Ga=T,f=100,t=d,i=1,p=1,q=2,C=1,c="));
-        assert!(s.ends_with("\x1b[?2026l"));
+        assert!(s.starts_with("\x1b7\x1b[?2026h\x1b[2;1H\x1b_Ga=T,f=100,t=d,i=1,p=1,q=2,C=1,c="));
+        assert!(
+            s.ends_with("\x1b[?2026l\x1b8"),
+            "the cursor is restored where the text frame left it"
+        );
         assert_eq!(v.stats.sent, 1);
         assert!(
             v.stats.image_bytes > 0 && v.stats.image_bytes < 40_000,
@@ -1188,17 +1285,23 @@ mod tests {
         assert!(bottom.contains("turn the tank (again to stop)"), "{bottom}");
     }
 
+    /// A kitty picture is scaled into the largest box of its shape the
+    /// area holds, centred across it: the whole area when the frame was
+    /// shaped to it.
     #[test]
     fn the_image_box_keeps_the_aspect_and_fits() {
-        // 40 rows: 38 for the picture, 110 cells wide at 1:2 cells.
-        assert_eq!(image_box(120, 40, 320, 220), (1, 2, 110, 38));
-        // A narrow terminal: width-bound.
-        let (_, _, c, r) = image_box(80, 60, 320, 220);
-        assert_eq!(c, 80);
-        assert!((1..=58).contains(&r));
-        assert_eq!(image_box(1, 1, 320, 220), (1, 2, 1, 1));
-        // The 4:3 frame is squarer: 38 rows take 101 columns.
-        assert_eq!(image_box(120, 40, 640, 480), (1, 2, 101, 38));
+        let cell = CellSize::DEFAULT;
+        let at = |cols, rows| {
+            let area = picture_area(cols, rows);
+            image_box(area, frame_size(640, area, cell), cell)
+        };
+        assert_eq!(at(160, 50), (1, 2, 160, 32));
+        assert_eq!(at(120, 40), (1, 2, 120, 26));
+        // Wider than 4:1: height-bound, centred.
+        assert_eq!(at(120, 20), (13, 2, 96, 12));
+        // Taller than 4:3: width-bound.
+        assert_eq!(at(80, 60), (1, 2, 80, 30));
+        assert_eq!(at(1, 1), (1, 2, 1, 1));
     }
 
     /// The load experiment's switches (2026-10-21): `r` swaps the frame
@@ -1218,10 +1321,10 @@ mod tests {
         let small = String::from_utf8_lossy(&v.paint(&both, 120, 40, t0)).into_owned();
         assert_eq!(
             v.size(),
-            (320, 220),
-            "the next frame drawn is the small one"
+            (320, 138),
+            "the next frame drawn is the narrow one, the same shape"
         );
-        assert!(small.contains("c=110,r=38"), "{}", &small[..80]);
+        assert!(small.contains("c=120,r=26"), "{}", &small[..80]);
         assert!(v.stats.image_bytes > 0);
         v.key(Key::Char('u'), t0);
         assert!(v.uncapped());
@@ -1231,12 +1334,12 @@ mod tests {
             "re-sent after the switch"
         );
         let (top, bottom) = v.hud(Some(&cockpit), t0);
-        assert!(top.contains("320x220 uncapped"), "{top}");
-        assert!(bottom.contains("640x480/320x220") && bottom.contains("uncapped"));
+        assert!(top.contains("320x138 uncapped"), "{top}");
+        assert!(bottom.contains("640/320 wide") && bottom.contains("u: clock"));
         v.key(Key::Char('r'), t0);
         v.key(Key::Char('u'), t0);
         assert!(!v.paint(&both, 120, 40, t0).is_empty());
-        assert_eq!((v.size(), v.uncapped()), ((640, 480), false));
+        assert_eq!((v.size(), v.uncapped()), ((640, 276), false));
     }
 
     /// The feed names the engine's cockpit picture reads are the ones this

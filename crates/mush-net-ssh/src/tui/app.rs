@@ -38,7 +38,8 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use serde_json::Value;
 
-use super::keys::{Key, KeyParser};
+use super::cockpit_text;
+use super::keys::{Arrow, Key, KeyParser};
 use super::mind_workshop::MindWorkshop;
 use super::panels::{
     ARENA_MAP_FEED, COCKPIT_FEED, ChanMsg, NOTICE_SENTENCE_TAG, OBSERVER_FEED, PanelOutcome,
@@ -48,8 +49,8 @@ use super::pixel::PixelView;
 use super::render::{
     BODY_GROUND_FEED, Entry, GUTTER_W, PaneRows, RenderCtx, SITE_MAP_FEED, TV_STATUS_FEED,
     dim_span_owned, floor_line, legend_line, render_backlog_rows, render_channels_rows,
-    render_event, render_rolls_rows, render_sheet_rows, render_vitals_rows, render_who_rail,
-    status_line, tab_strip, vitals_line, wrap_spans,
+    render_cockpit_notices_rows, render_event, render_rolls_rows, render_sheet_rows,
+    render_vitals_rows, render_who_rail, status_line, tab_strip, vitals_line, wrap_spans,
 };
 use super::replay::{Document, Live, Picture, REPLAY_DOCUMENT_SHAPE, REPLAY_GRID_SHAPE};
 use super::screen::{
@@ -2412,7 +2413,8 @@ impl TuiApp {
         r.redraw = true;
         // Pixel cockpit spike (2026-10-21): the probe's replies are not keys
         // a person pressed; `^G` opens or closes the view; while it is open
-        // it owns every key but the detach.
+        // it owns every key but the detach (the text cockpit's chat line
+        // among them, `Self::pixel_key`).
         match key {
             Key::GraphicsOk | Key::GraphicsErr => {
                 self.pixel.graphics_reply(key == Key::GraphicsOk);
@@ -2435,15 +2437,16 @@ impl TuiApp {
                 return;
             }
             Key::Ctrl('g') => {
-                self.pixel.toggle(Instant::now());
+                // The view opens flying: a line being typed is kept as the
+                // draft its chat line brings back.
+                if self.pixel.toggle(Instant::now()) && self.mode == Mode::Input {
+                    self.leave_input(true);
+                }
                 r.submit.extend(self.pixel.take_orders());
                 return;
             }
-            // Doc 21 cut G.4: the view's helm orders go to the world as the
-            // lines a pilot would type (`HEADING <deg>`).
             _ if self.pixel.is_active() && key != Key::Ctrl(']') => {
-                self.pixel.key(key, Instant::now());
-                r.submit.extend(self.pixel.take_orders());
+                self.pixel_key(key, r);
                 return;
             }
             // A held key's repeat or release that outlived the view.
@@ -2536,6 +2539,57 @@ impl TuiApp {
             Mode::Nav => self.nav_key(key, r),
             Mode::Input => self.input_key(key, r),
         }
+    }
+
+    /// A key while the pixel view is open (the text cockpit, 2026-10-22).
+    ///
+    /// The chat line owns the keys while it is open, as the input box does
+    /// (typing never steers): Enter sends the line as typed and goes back to
+    /// flying, Esc goes back keeping the draft. A held arrow's repeats move
+    /// the line's cursor and its release is nothing; Alt keys, which would
+    /// act on a screen the view hides, and the command palette are not
+    /// offered here.
+    ///
+    /// Flying, Enter opens the line (with the draft Esc kept), stopping a
+    /// turn in progress first; every other key is the view's (doc 21 cut
+    /// G.4: its helm orders go to the world as the lines a pilot would type,
+    /// `HEADING <deg>`).
+    fn pixel_key(&mut self, key: Key, r: &mut InputResult) {
+        if self.mode == Mode::Input {
+            match key {
+                Key::Repeat(arrow) => {
+                    let key = match arrow {
+                        Arrow::Up => Key::Up,
+                        Arrow::Down => Key::Down,
+                        Arrow::Left => Key::Left,
+                        Arrow::Right => Key::Right,
+                    };
+                    self.input_key(key, r);
+                }
+                Key::Release(_) | Key::Alt(_) => r.redraw = false,
+                Key::Enter => {
+                    self.input_key(key, r);
+                    if self.mode == Mode::Input {
+                        self.leave_input(false);
+                    }
+                }
+                _ => self.input_key(key, r),
+            }
+            self.palette = None;
+            return;
+        }
+        if key == Key::Enter {
+            self.pixel.chat_opened(Instant::now());
+            r.submit.extend(self.pixel.take_orders());
+            self.mode = Mode::Input;
+            match self.draft.take() {
+                Some(draft) => self.line.set(&draft),
+                None => self.line.clear(),
+            }
+            return;
+        }
+        self.pixel.key(key, Instant::now());
+        r.submit.extend(self.pixel.take_orders());
     }
 
     /// Invocations queued by a response (for example authoritative read after edit).
@@ -3796,30 +3850,70 @@ impl TuiApp {
     /// rather than being stuck behind keys that do nothing), and an ask the
     /// engine has not expired (it is answered from the keyboard, so it must be
     /// seen). Every piece of app state is left as it is.
-    /// The pixel view's chrome (spike, 2026-10-21): a status line on top,
-    /// the key legend at the bottom, and nothing between — the picture is
-    /// placed over those cells by the kitty bytes [`Self::pixel_paint`]
-    /// yields after the frame.
+    /// **The text cockpit** (2026-10-22; the pixel view's chrome since the
+    /// spike of 2026-10-21): the status line on top, the picture's rows
+    /// cleared for the picture [`Self::pixel_paint`] places over them after
+    /// the frame, the text panel (armour, weapons and heat, contacts, the
+    /// notices over the comms), the chat line and the key legend
+    /// ([`cockpit_text`]). The comms are the scrollback's tail, so they are
+    /// seen as they land.
     fn draw_pixel(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        let now = Instant::now();
         let cockpit = self.panels.get(COCKPIT_FEED).cloned();
-        let (top, bottom) = self.pixel.hud(cockpit.as_ref(), Instant::now());
+        let (top, bottom) = self.pixel.hud(cockpit.as_ref(), now);
+        let camera_mdeg = self.pixel.camera_mdeg(cockpit.as_ref(), now);
+        self.notice_unseen = 0;
+        let chatting = self.mode == Mode::Input;
+        let areas = cockpit_text::areas(area);
         frame.render_widget(Clear, area);
-        let [top_area, _, bottom_area] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .areas(area);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 top,
                 Style::default().add_modifier(Modifier::BOLD),
             ))),
-            top_area,
+            areas.status,
         );
+        let ctx = self.render_ctx();
+        let held = cockpit.clone().unwrap_or(Value::Null);
+        cockpit_text::draw_panel(
+            frame,
+            areas.panel,
+            &cockpit_text::Panel {
+                cockpit: cockpit.as_ref(),
+                camera_mdeg,
+                utf8: self.caps.utf8,
+            },
+            &|w, h| {
+                render_cockpit_notices_rows(
+                    &held,
+                    &RenderCtx {
+                        pane: Some((w, h)),
+                        ..ctx
+                    },
+                )
+            },
+            &|w| self.scrollback_rows(w),
+        );
+        let cursor = match self.input_mode {
+            InputMode::NoEcho => 0,
+            _ => self.line.cursor(),
+        };
+        cockpit_text::draw_input(
+            frame,
+            areas.input,
+            chatting,
+            &self.shown_input(),
+            cursor,
+            self.draft.as_deref(),
+        );
+        let legend = if chatting {
+            cockpit_text::CHAT_LEGEND.to_string()
+        } else {
+            bottom
+        };
         frame.render_widget(
-            Paragraph::new(Line::from(dim_span_owned(&bottom))),
-            bottom_area,
+            Paragraph::new(Line::from(dim_span_owned(&legend))),
+            areas.legend,
         );
     }
 

@@ -659,10 +659,28 @@ other channel's, and the notices list does not repeat them.
 ## The picture
 
 In `@tui`, `Ctrl-G` opens a first-person picture of the arena from your seat,
-drawn in the terminal itself, with the instruments inside it: a minimap of the
-ground around you, your heat, your weapons with their cycles, what is left of
-your armour, and a strip with your callsign, speed, heading, lock and power.
-`Ctrl-G` again, `Esc` or `q` closes it; `Ctrl-]` still detaches.
+drawn in the terminal itself across the top two-thirds of the screen. Over the
+picture: a heading tape along the top (your heading read out under it, your
+contacts as coloured marks above it), the reticle in the middle with a box
+around the machine you have locked (its designator, range and your chance
+under it, or an arrow at the edge when it is off to one side), and your speed
+as a bar on the right. `Ctrl-G` again, `Esc` or `q` closes it; `Ctrl-]` still
+detaches.
+
+Under the picture, in plain text: your armour as a small top-down tank, each
+part coloured by what is left of it (green, yellow, red, grey when gone), with
+a line a section; your heat and your weapons (ready, or the seconds to the
+next shot, rounds left, your chance on the lock); your contacts, nearest
+first, with an arrow for where each one lies from where you are looking; the
+arena's notices; and the comms, the tail of everything said around you, so
+you read chat while you drive.
+
+**Chat while you drive.** `Enter` opens the chat line at the bottom. While it
+is open your keys type, they never steer, and opening it stops a turn you were
+holding. `Enter` sends the line exactly as you typed it (`say`, `:`, a channel
+alias, any command) and puts you back at the controls; `Esc` puts you back
+without sending and keeps what you typed for the next `Enter`. Up and Down
+walk your history, as in the input box.
 
 It shows what your cockpit screen shows and nothing more. A contact is drawn
 where your own scope plots it (red hostile, blue friendly, khaki not told
@@ -680,20 +698,24 @@ While the picture is open:
                  the same key again stops it
   c              look along your tank's heading again
   space          stop turning, and stop the look swinging
-  r              a smaller picture (320 by 220 rather than 640 by 480), for a
+  Enter          open the chat line
+  r              a smaller picture (320 pixels wide rather than 640), for a
                  slow link
   Esc or q       close the picture
 
-Every other key does nothing while it is open. **The turn keys steer the tank**:
+Every other key does nothing while you are at the controls. **The turn keys
+steer the tank**:
 each turn is a `HEADING` order, exactly as if you had typed it, so it needs your
 seat to hold the helm and the power to be online, and you will see the
-`Steering to …` lines when you close the picture. The tank turns at its own rate
+`Steering to …` lines in the comms. The tank turns at its own rate
 and the arena moves it on its pulses; between them the picture shows where the
 tank will be, and lets go of that guess if the order was refused. The line over
 the picture says the camera's heading, the tank's and the one it was ordered to,
-and your look: `camera 120° (tank 090° → 135°, look +30°)`. Letting go of a turn
-orders the heading the picture was showing, so the tank stops about where you
-saw it.
+and your look: `camera 120° (tank 090° → 135°, look +30°)`; on the heading tape a
+green mark is where your tank points when your look has swung away from it,
+and a yellow box is a heading it was ordered to and has not reached. Letting
+go of a turn orders the heading the picture was showing, so the tank stops
+about where you saw it.
 
 **Which terminals show it.** The picture is sent one of two ways, whichever
 your terminal can show: as a kitty graphics image, or as sixel.

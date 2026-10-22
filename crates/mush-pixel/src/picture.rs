@@ -46,6 +46,14 @@ impl Feeds for HashMap<String, Value> {
 pub struct Look {
     /// The camera's heading offset from the sim's, millidegrees.
     pub offset_mdeg: i64,
+    /// Of that offset, how far the hull itself has turned from the sim's
+    /// heading as the viewer's helm predicts it between pulses (G.4); the
+    /// rest is the look. The flight HUD marks the hull on its tape where the
+    /// two part.
+    pub hull_offset_mdeg: i64,
+    /// A heading the viewer's helm has ordered and the hull has not reached,
+    /// millidegrees (the HUD marks it on the tape).
+    pub ordered_mdeg: Option<i64>,
 }
 
 /// One producer, its instruments and its clock.

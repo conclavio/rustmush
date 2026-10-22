@@ -20,6 +20,7 @@
 
 pub mod app;
 mod backend;
+mod cockpit_text;
 pub mod helm;
 pub mod keys;
 mod mind_workshop;
@@ -478,10 +479,10 @@ mod tests {
         let bytes = sess.pixel_frame();
         let text = String::from_utf8_lossy(&bytes);
         assert!(
-            text.contains("\x1b[?2026h\x1b[2;1H\x1b_Ga=T,f=100,t=d,i=1,p=1,q=2,C=1,c=101,r=38,m="),
-            "the 640x480 frame scaled into 101 by 38 cells: {text:?}"
+            text.contains("\x1b[?2026h\x1b[2;1H\x1b_Ga=T,f=100,t=d,i=1,p=1,q=2,C=1,c=120,r=26,m="),
+            "the 640x276 frame scaled into the top two-thirds, 120 by 26 cells: {text:?}"
         );
-        assert!(text.ends_with("\x1b[?2026l"));
+        assert!(text.ends_with("\x1b[?2026l\x1b8"));
         // The same picture is not sent twice — and an idle frame tick writes
         // NOTHING, not even a cursor move: twenty small writes a second would
         // fill a stalled client's SSH window (dev2's first live smoke).
@@ -520,6 +521,92 @@ mod tests {
         plain.feed_input(b"\x1b[?62;22c\x1b_Gi=31;OK\x1b\\");
         plain.feed_input(b"\x07");
         assert!(!plain.pixel_active());
+    }
+
+    /// **The text cockpit** (2026-10-22): chat is read and sent while
+    /// flying. The comms show the scrollback's tail under the picture; Enter
+    /// opens the chat line and stops a turn in progress; typed letters never
+    /// steer; Enter sends the line as typed and flies again; Esc goes back to
+    /// flying with the draft kept (the view stays open) and the next Enter
+    /// brings it back; Esc while flying closes the view.
+    #[test]
+    fn the_text_cockpit_chats_while_flying() {
+        let mut wide = caps();
+        wide.width = 160;
+        wide.height = 50;
+        let mut sess = TuiSession::new(wide, TuiManifest::default());
+        let _ = sess.probe_bytes();
+        sess.feed_input(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+        let cockpit: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+        ))
+        .expect("cockpit fixture");
+        sess.apply_event(&OutputEvent::Panel {
+            feed: "arena.cockpit".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: cockpit,
+        });
+        sess.apply_event(&OutputEvent::Narrative {
+            kind: NarrativeKind::Say,
+            actor: Some(ObjRef::new("#2", "Vasquez")),
+            text: RichText::plain("contact bearing ninety"),
+        });
+        sess.feed_input(b"\x07");
+        assert!(sess.pixel_active());
+        let screen = String::from_utf8_lossy(&sess.paint()).into_owned();
+        for word in [
+            "ARMOUR", "WEAPONS", "CONTACTS", "COMMS", "Vasquez", "ninety", "READY",
+        ] {
+            assert!(screen.contains(word), "{word} under the picture");
+        }
+        sess.pixel_tick();
+        assert!(
+            !sess.pixel_frame().is_empty(),
+            "the picture, which the helm reads"
+        );
+
+        // Flying: `a` turns the tank.
+        let r = sess.feed_input(b"a");
+        assert!(r.submit.iter().all(|l| l.starts_with("HEADING ")) && r.submit.len() == 1);
+        // Enter opens the chat line and stops the turn.
+        let r = sess.feed_input(b"\r");
+        assert_eq!(r.submit.len(), 1, "the stop order: {:?}", r.submit);
+        assert!(r.submit[0].starts_with("HEADING "));
+        let screen = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(screen.contains("send"), "the chat legend");
+        // Typing never steers.
+        let r = sess.feed_input(b"on my way ad");
+        assert!(r.submit.is_empty(), "{:?}", r.submit);
+        assert!(sess.pixel_active());
+        // Enter sends the line as typed and flies again.
+        let r = sess.feed_input(b"\r");
+        assert_eq!(r.submit, ["on my way ad"]);
+        let r = sess.feed_input(b"d");
+        assert!(r.submit.iter().all(|l| l.starts_with("HEADING ")) && r.submit.len() == 1);
+        sess.feed_input(b" ");
+
+        // Esc goes back to flying with the draft kept; the view stays open.
+        sess.feed_input(b"\rhalf a tho");
+        sess.feed_input(b"\x1b");
+        assert!(
+            sess.pixel_active(),
+            "Esc in the chat line does not close the view"
+        );
+        let screen = String::from_utf8_lossy(&sess.paint()).into_owned();
+        assert!(screen.contains("(draft:"), "{screen:?}");
+        let r = sess.feed_input(b"xyz");
+        assert!(r.submit.is_empty(), "flying: those letters were keys");
+        let r = sess.feed_input(b"\r");
+        assert!(
+            r.submit.iter().all(|l| l.starts_with("HEADING ")),
+            "the draft is back on the line, nothing sent: {:?}",
+            r.submit
+        );
+        let r = sess.feed_input(b"!\r");
+        assert_eq!(r.submit, ["half a tho!"]);
+        // Esc while flying closes the view.
+        sess.feed_input(b"\x1b");
+        assert!(!sess.pixel_active());
     }
 
     /// Doc 21 cut G.2, end to end through the session: a terminal that
@@ -565,8 +652,8 @@ mod tests {
         sess.pixel_tick();
         let first = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
         assert!(
-            first.contains("\x1b[2;1H\x1bP0;1;0q\"1;1;1013;760"),
-            "the 640x480 frame shown at 1013x760, filling the box"
+            first.contains("\x1b[2;1H\x1bP0;1;0q\"1;1;1200;517"),
+            "the 640x276 frame shown at 1200x517, filling the top two-thirds"
         );
         assert!(!first.contains("\x1b_G"), "no kitty bytes");
         sess.pixel_tick();

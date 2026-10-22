@@ -106,6 +106,7 @@ impl WebPicture {
         }
         let look = Look {
             offset_mdeg: self.look_mdeg,
+            ..Look::default()
         };
         if !self.picture.draw(&mut self.frame, &self.feeds, &look) {
             return None;

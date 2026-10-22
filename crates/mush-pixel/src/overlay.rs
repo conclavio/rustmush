@@ -15,6 +15,13 @@
 //!   facets, turret, tracks and engine are coloured by what is left of them.
 //! - [`draw_status`]: the one-line strip — callsign, speed, heading, lock.
 //!
+//! **The flight HUD** ([`draw_hud`], the text cockpit of 2026-10-22): when
+//! the doll, the weapons, the heat and the contacts move to terminal text
+//! under the picture, the picture keeps only what a pilot reads off the
+//! view itself — a heading tape across the top (the hull's heading, an
+//! ordered one and the contacts marked on it), the reticle in the centre
+//! boxing the lock, and a speed bar on the right.
+//!
 //! Everything is opaque and drawn from a small fixed set of colours, so the
 //! frame stays under the palette PNG's 256; there is no alpha blending here
 //! on purpose. The glyphs are a 5x7 bitmap font (capitals, digits, a little
@@ -559,6 +566,232 @@ pub fn draw_status(frame: &mut Frame, status: &Status) {
     let y0 = 4 * s;
     panel(frame, x0 - 1, y0 - 1, w + 2, 9 * s + 2);
     text(frame, x0 + s, y0 + s, &words, TEXT, s as usize);
+}
+
+// ---- the flight HUD --------------------------------------------------------
+
+/// The heading tape's reach either side of the camera, degrees.
+const TAPE_HALF_DEG: i64 = 30;
+/// The speed bar's full scale, km/h, until the speed passes it (the cockpit
+/// frame carries no top speed yet): then the next 20 above.
+const SPEED_FULL_KPH: i64 = 60;
+
+/// A contact marked on the heading tape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TapeMark {
+    /// Its bearing, clockwise from north, millidegrees.
+    pub bearing_mdeg: i64,
+    /// Drawn as.
+    pub kind: SpriteKind,
+}
+
+/// Where the lock is in the picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LockAt {
+    /// In view: its box, `(x, y, w, h)` in pixels.
+    Box(i64, i64, i64, i64),
+    /// Off the side of the view: `-1` left, `1` right.
+    Off(i8),
+}
+
+/// The lock, for the reticle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HudLock {
+    /// Its designator.
+    pub designator: String,
+    /// Range, metres.
+    pub range_m: i64,
+    /// The hit chance, percent, when the frame gives one.
+    pub percent: Option<i64>,
+    /// Where it is drawn.
+    pub at: LockAt,
+}
+
+/// What the flight HUD draws.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Hud {
+    /// The camera's heading, millidegrees: the tape's centre.
+    pub heading_mdeg: i64,
+    /// The hull's heading, millidegrees: marked on the tape where a look
+    /// has swung the camera off it.
+    pub hull_mdeg: i64,
+    /// A heading the helm has ordered and the hull has not reached.
+    pub ordered_mdeg: Option<i64>,
+    /// Speed, km/h.
+    pub speed_kph: i64,
+    /// The contacts, marked on the tape at their bearings.
+    pub marks: Vec<TapeMark>,
+    /// The lock, boxed by the reticle.
+    pub lock: Option<HudLock>,
+}
+
+/// The signed arc from `from` to `to`, millidegrees in `-180_000..180_000`.
+fn arc_mdeg(from: i64, to: i64) -> i64 {
+    (to - from + 180_000).rem_euclid(360_000) - 180_000
+}
+
+/// The flight HUD over the view: the heading tape, the reticle and the
+/// speed bar.
+pub fn draw_hud(frame: &mut Frame, hud: &Hud) {
+    let s = scale_for(frame) as i64;
+    let (w, h) = (frame.width() as i64, frame.height() as i64);
+    draw_tape(frame, hud, s, w);
+    draw_reticle(frame, hud.lock.as_ref(), s, w, h);
+    draw_speed(frame, hud.speed_kph, s, w, h);
+}
+
+/// A small triangle `size` rows deep with its point at `apex`, pointing up
+/// (`dir` -1), down (1), left (-2) or right (2).
+fn caret(frame: &mut Frame, (ax, ay): (i64, i64), size: i64, dir: i8, px: Rgb) {
+    for i in 0..size {
+        match dir {
+            -1 => fill_rect(frame, ax - i, ay + i, 2 * i + 1, 1, px),
+            1 => fill_rect(frame, ax - i, ay - i, 2 * i + 1, 1, px),
+            -2 => fill_rect(frame, ax + i, ay - i, 1, 2 * i + 1, px),
+            _ => fill_rect(frame, ax - i, ay - i, 1, 2 * i + 1, px),
+        }
+    }
+}
+
+/// The heading tape, top centre: ticks every 5°, a label every 10° (`N`,
+/// `E`, `S`, `W` at the cardinals), the camera's heading read out under a
+/// caret at its centre; the contacts as pips above it, the hull's heading
+/// (when the look parts the camera from it) and an ordered one as markers
+/// on it, pinned to the tape's end when they lie past it.
+fn draw_tape(frame: &mut Frame, hud: &Hud, s: i64, w: i64) {
+    let tw = w * 3 / 5;
+    let x0 = (w - tw) / 2;
+    let cx = w / 2;
+    let y0 = 5 * s;
+    let band = 14 * s;
+    let cam = hud.heading_mdeg.rem_euclid(360_000);
+    let reach = TAPE_HALF_DEG * 1_000;
+    let at = |rel: i64| cx + rel.clamp(-reach, reach) * (tw / 2) / reach;
+    panel(frame, x0, y0, tw, band);
+    let lo = (cam / 1_000 - TAPE_HALF_DEG).div_euclid(5) * 5;
+    for d in (lo..=cam / 1_000 + TAPE_HALF_DEG + 5).step_by(5) {
+        let deg = d.rem_euclid(360);
+        let rel = arc_mdeg(cam, deg * 1_000);
+        if rel.abs() > reach {
+            continue;
+        }
+        let x = at(rel);
+        let len = if deg % 10 == 0 { 4 * s } else { 2 * s };
+        fill_rect(frame, x, y0 + band - s - len, s, len, DIM);
+        if deg % 10 == 0 {
+            let label = match deg {
+                0 => "N".to_string(),
+                90 => "E".to_string(),
+                180 => "S".to_string(),
+                270 => "W".to_string(),
+                d => format!("{d:03}"),
+            };
+            let lw = label.len() as i64 * 6 * s - s;
+            if x - lw / 2 > x0 + s && x + lw / 2 < x0 + tw - s {
+                text(frame, x - lw / 2, y0 + 2 * s, &label, TEXT, s as usize);
+            }
+        }
+    }
+    // The contacts, as pips above the tape.
+    for m in &hud.marks {
+        let rel = arc_mdeg(cam, m.bearing_mdeg);
+        if rel.abs() <= reach {
+            fill_rect(
+                frame,
+                at(rel) - s,
+                y0 - 3 * s,
+                2 * s,
+                2 * s,
+                kind_rgb(m.kind),
+            );
+        }
+    }
+    // The hull, where the look has parted the camera from it.
+    let hull = arc_mdeg(cam, hud.hull_mdeg);
+    if hull.abs() > 1_000 {
+        caret(frame, (at(hull), y0 + band - s), 3 * s, 1, GOOD);
+    }
+    if let Some(ordered) = hud.ordered_mdeg {
+        let x = at(arc_mdeg(cam, ordered));
+        outline_rect(frame, x - 2 * s, y0 + band - 6 * s, 4 * s, 5 * s, WARN);
+    }
+    // The centre caret and the readout.
+    caret(frame, (cx, y0 + band), 3 * s, -1, YOU);
+    let readout = format!("{:03}", cam / 1_000);
+    let rw = 3 * 6 * s + 3 * s;
+    let ry = y0 + band + 4 * s;
+    panel(frame, cx - rw / 2, ry, rw, 11 * s);
+    text(
+        frame,
+        cx - rw / 2 + 2 * s,
+        ry + 2 * s,
+        &readout,
+        YOU,
+        s as usize,
+    );
+}
+
+/// The reticle at the centre, and the lock: boxed where it stands with its
+/// designator, range and hit chance under the box, or an arrow at the side
+/// of the view it lies off.
+fn draw_reticle(frame: &mut Frame, lock: Option<&HudLock>, s: i64, w: i64, h: i64) {
+    let (cx, cy) = (w / 2, h / 2);
+    let (gap, arm) = (3 * s, 5 * s);
+    fill_rect(frame, cx - gap - arm, cy, arm, s, TEXT);
+    fill_rect(frame, cx + gap + 1, cy, arm, s, TEXT);
+    fill_rect(frame, cx, cy - gap - arm, s, arm, TEXT);
+    fill_rect(frame, cx, cy + gap + 1, s, arm, TEXT);
+    let Some(lock) = lock else {
+        return;
+    };
+    let mut label = format!("{} {}M", lock.designator.to_ascii_uppercase(), lock.range_m);
+    if let Some(p) = lock.percent {
+        label.push_str(&format!(" {p}%"));
+    }
+    let lw = label.len() as i64 * 6 * s;
+    match lock.at {
+        LockAt::Box(x, y, bw, bh) => {
+            let m = 2 * s;
+            let (bx, by) = (x - m, y - m);
+            let (bw, bh) = ((bw + 2 * m).max(8 * s), (bh + 2 * m).max(8 * s));
+            outline_rect(frame, bx, by, bw, bh, HOSTILE);
+            outline_rect(frame, bx + 1, by + 1, bw - 2, bh - 2, HOSTILE);
+            let lx = (bx + bw / 2 - lw / 2).clamp(0, (w - lw).max(0));
+            text(frame, lx, by + bh + 2 * s, &label, HOSTILE, s as usize);
+        }
+        LockAt::Off(side) => {
+            let (ax, dir, lx) = if side < 0 {
+                (2 * s, -2, 8 * s)
+            } else {
+                (w - 2 * s, 2, w - 8 * s - lw)
+            };
+            caret(frame, (ax, cy), 5 * s, dir, HOSTILE);
+            text(frame, lx, cy - 3 * s, &label, HOSTILE, s as usize);
+        }
+    }
+}
+
+/// The speed bar, right of centre: filled from the bottom against
+/// [`SPEED_FULL_KPH`] (or the next 20 above a faster speed), the speed over
+/// it and `KPH` under it.
+fn draw_speed(frame: &mut Frame, speed_kph: i64, s: i64, w: i64, h: i64) {
+    let full = SPEED_FULL_KPH.max((speed_kph.max(0) + 19) / 20 * 20);
+    let (bw, bh) = (4 * s, h * 2 / 5);
+    let (x, y) = (w - 12 * s, h * 3 / 10);
+    panel(frame, x, y, bw, bh);
+    let fill = (bh - 2) * speed_kph.clamp(0, full) / full.max(1);
+    fill_rect(frame, x + 1, y + bh - 1 - fill, bw - 2, fill, GOOD);
+    let speed = format!("{}", speed_kph.max(0));
+    let sw = speed.len() as i64 * 6 * s - s;
+    text(frame, x + bw - sw, y - 9 * s, &speed, TEXT, s as usize);
+    text(
+        frame,
+        x + bw - 17 * s,
+        y + bh + 2 * s,
+        "KPH",
+        DIM,
+        s as usize,
+    );
 }
 
 #[cfg(test)]
