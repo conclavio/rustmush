@@ -304,3 +304,7 @@ elevation a cell). Over the proving ground's shipped relief, decoded by `tests/s
 640x480 frame takes ~2.45 ms on the owner's box (the raycaster: 0.95 ms); `relief.png` from the
 fixture example is the look. The feed half (`arena.map` with elevations) is G.7b, after the mining
 train. Details in `docs/design/21-cut-notes.md` §G.7a.
+
+The baked colour map (`Terrain::bake`, the Voxel Space colour map): +5 % render, a 33–42 ms bake
+once a map, frames 3–4 KB; `relief_baked.png`, `crater.png` and `crater_baked.png` from the fixture
+example show the difference. Cut notes §G.7a addendum.

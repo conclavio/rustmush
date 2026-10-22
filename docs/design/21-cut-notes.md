@@ -147,3 +147,22 @@ The engine half of G.7, taken while the mining train holds `tacsim` (the half th
 **Owed (G.7b, after the mining train).** `arena.map` carries an elevation a cell (a schema version, compactly: whole metres in a byte against a datum, run-length coded like the rows; mind the feed's size); `CockpitPicture` draws with the heightfield producer when the map has heights and the raycaster when not; the arena's relief reworked so the picture shows it (the owner's word); the light chosen against it; the VPS figure.
 
 **Verified.** The producer's tests (heights between cell centres and past the edge, a terrace step shaded, a crater's rim above the horizon from its floor and the plain below it from outside, a 15 m ridge hiding a tank the open ground shows, walls and woods inside the palette at both sizes) and the proving ground's (the shipped relief decodes to 256x256 with relief both ways and walls in its classes, and renders at four headings inside the palette with a ragged skyline); clippy, rustfmt, rustdoc.
+
+### G.7a addendum: the baked colour map
+
+The owner, reading Voxel Space (s-macke): would a colour map make sense for our maps? The renderer already was Voxel Space's algorithm; its other half, the **colour map**, is now `Terrain::bake(seed)`. Agreed constraints: baked from what the viewer's feed carries (heights and classes), never from content the feed does not carry — on Ceres the geology key must not paint its deposits (D-21-1); heights stay at the sim's resolution (only colour is finer); a small palette, judged on frame bytes.
+
+- **Two levels**: a fine map of 2.5 m texels (four to a cell side) for ground nearer than 8 cells, and a coarse one (a texel a cell) beyond — at distance the fine texels aliased, a light level's edge shimmering into dashes across neighbouring columns (the first try); the coarse level removed it.
+- **The light**: the normal of the interpolated surface (its relief exaggerated four times, so metre terraces read) against a north-west sun 45° up, **minus a steepness term** (any steep slope darkens, whichever way it faces — the fix for slopes facing across the sun, which a pure directional light leaves flat), minus a little in hollows (a cell below its 5×5 neighbourhood's mean), plus a soft seeded mottle in blobs of two to five cells; quantized to 4 levels × 6 ground kinds × 6 fog steps (144 colours at most, a frame using a few dozen).
+- **Cost and bytes** (640x480, release, the owner's box; render times swing ±10 % with the box's load):
+
+| scene | | render | colours | PNG |
+|---|---|---|---|---|
+| proving ground, middle, looking north | per-cell light | 2.50–2.86 ms | 41 | 1,932 B |
+| | baked | 2.65–3.00 ms (+5 %) | 41 | 3,053 B |
+| crater 240 m × 30 m, from its floor | per-cell light | — | 25 | 3,670 B |
+| | baked | — | 26 | 4,096 B |
+| (the raycaster's cockpit, for scale) | | 0.95 ms | 57 | 6,967 B |
+
+  The bake is 33–42 ms once a map (65,536 cells → 1,048,576 fine texels + the coarse map). The baked crater reads as a crater (its near wall in shadow, its far wall lit, its floor modelled) where the per-cell light drew flat bands split by a jagged cell edge; on the terraced proving ground it shows the terraces as bands.
+- **Not decided here**: whether the cockpit uses the bake by default (G.7b, with the reworked arena), the sun's direction and the gains, and where a bake runs (once per map in the gateway, shareable across a match's viewers, or in the browser at G.3b).

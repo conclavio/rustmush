@@ -234,7 +234,7 @@ impl Base {
     /// How many bases there are: the rows of the shade table.
     const COUNT: usize = 16;
 
-    fn rgb(self) -> Rgb {
+    pub(crate) fn rgb(self) -> Rgb {
         match self {
             Base::Open => [112, 96, 70],
             Base::Grass => [78, 120, 52],

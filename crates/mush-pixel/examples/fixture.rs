@@ -137,6 +137,70 @@ fn main() {
         relief.count_colours(300),
         relief_png.len()
     );
+    // The baked colour map (Voxel Space's other half): the same pose, once
+    // baked.
+    let mut baked_ground = ground.clone();
+    let t4 = Instant::now();
+    baked_ground.bake(2350);
+    let bake_ms = t4.elapsed().as_millis();
+    let mut baked = Frame::new(640, 480);
+    let t5 = Instant::now();
+    for _ in 0..N {
+        heightfield::render(&mut baked, &baked_ground, &cam, None, &[tank]);
+    }
+    let baked_us = t5.elapsed().as_micros() / u128::from(N);
+    let baked_png = png::encode(&baked);
+    if let Err(err) = std::fs::write(format!("{out_dir}/relief_baked.png"), &baked_png) {
+        eprintln!("relief_baked.png: {err}");
+    }
+    println!(
+        "heightfield baked: bake {bake_ms} ms once, render {baked_us} us, {} colours, png {} bytes",
+        baked.count_colours(300),
+        baked_png.len()
+    );
+    // A crater 240 m across and 30 m deep on open regolith, the kind of
+    // ground a Ceres site would be: unbaked and baked, from its floor
+    // looking north-east across to the far wall.
+    let mut crater_map = mush_pixel::raycast::Map::new(128, 128, 1000);
+    for y in 0..128 {
+        for x in 0..128 {
+            crater_map.set(x, y, mush_pixel::raycast::Ground::Open);
+        }
+    }
+    let mut crater = heightfield::Terrain::new(crater_map);
+    for y in 0..128 {
+        for x in 0..128 {
+            let d = ((x as f32 - 64.0).powi(2) + (y as f32 - 72.0).powi(2)).sqrt() / 12.0;
+            let cm = if d < 1.0 {
+                -3000.0 + 3800.0 * d * d
+            } else {
+                800.0 * (-(d - 1.0) * 1.5).exp()
+            };
+            crater.set_elev_cm(x, y, cm as i32);
+        }
+    }
+    let rim = Camera {
+        x_cm: 58_000,
+        y_cm: 66_000,
+        heading_mdeg: 35_000,
+    };
+    for (name, bake) in [("crater", false), ("crater_baked", true)] {
+        let mut t = crater.clone();
+        if bake {
+            t.bake(9);
+        }
+        let mut f = Frame::new(640, 480);
+        heightfield::render(&mut f, &t, &rim, None, &[]);
+        let bytes = png::encode(&f);
+        if let Err(err) = std::fs::write(format!("{out_dir}/{name}.png"), &bytes) {
+            eprintln!("{name}.png: {err}");
+        }
+        println!(
+            "{name}: {} colours, png {} bytes",
+            f.count_colours(300),
+            bytes.len()
+        );
+    }
     // Sixel filling a box (G.2b): Windows Terminal's 120x40 at its virtual
     // 10x20 cell, and a high-DPI w11term pane of 240x48 at 15x28.
     for (ow, oh) in [(1013, 760), (1717, 1288)] {

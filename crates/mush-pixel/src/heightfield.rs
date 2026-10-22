@@ -26,8 +26,21 @@
 //!
 //! The colours are the raycaster's closed set (`Shades`), so the two
 //! producers draw the same ground the same colour.
+//!
+//! **The baked colour map** (Voxel Space's other half, the owner's ask of
+//! 2026-10-22). [`Terrain::bake`] computes, once a map, a colour for every
+//! [`TEXELS`]×[`TEXELS`] texel of every cell (2.5 m on the arena's 10 m
+//! cells) from the heights and the terrain classes alone — what the viewer's
+//! own map feed carries, never anything the feed does not (D-21-1): smooth
+//! light from the interpolated surface's normal against a north-west sun,
+//! darker on any steep slope whichever way it faces, darker in hollows, and a
+//! soft seeded mottle in blobs of two to five cells, quantized to a few light
+//! levels so a frame stays inside the palette and compresses like a flat
+//! one. A baked terrain is drawn from the map (one lookup a sample); an
+//! unbaked one with the per-cell light above.
 
 use crate::Frame;
+use crate::frame::Rgb;
 use crate::raycast::{
     Base, Camera, EYE, FOG_CELLS, Ground, HORIZON, Map, PLANE, SKY_STEPS, SPRITE_H, SPRITE_W,
     Shades, Sprite, SpriteKind, WALL_H, fog_step, tank,
@@ -55,6 +68,9 @@ pub struct Terrain {
     /// Each cell's light (faces the north-west sun), kept up to date as
     /// heights are set rather than worked out a sample at a time.
     lit: Vec<bool>,
+    /// The baked colour map, once [`Terrain::bake`] has run (setting a height
+    /// afterwards drops it).
+    baked: Option<ColourMap>,
 }
 
 impl Terrain {
@@ -67,6 +83,7 @@ impl Terrain {
             elev_cm: vec![0; n],
             height: vec![0.0; n],
             lit: vec![true; n],
+            baked: None,
         }
     }
 
@@ -83,6 +100,7 @@ impl Terrain {
             return;
         }
         let cell = self.map.cell_cm() as f32;
+        self.baked = None;
         if let Some(e) = self.elev_cm.get_mut(y * w + x) {
             *e = cm;
         }
@@ -193,6 +211,218 @@ impl Terrain {
     }
 }
 
+/// Texels a cell side in a baked colour map: 2.5 m texels on 10 m cells.
+pub const TEXELS: usize = 4;
+/// Beyond this distance (cells) a baked terrain is drawn from its coarse,
+/// one-texel-a-cell map: the fine texels would alias there, a light level's
+/// edge shimmering into dashes across neighbouring columns.
+const FINE_DETAIL_CELLS: f32 = 8.0;
+/// Light levels a baked texel is quantized to.
+const LEVELS: usize = 4;
+/// Fog steps a baked texel is drawn in (the sprites and blocks of the
+/// unbaked path keep the raycaster's twelve).
+const BAKED_FOG: usize = 6;
+/// The light levels' brightness against the base colour.
+const LEVEL_GAIN: [f32; LEVELS] = [0.60, 0.80, 1.00, 1.15];
+/// How much steeper the light sees the ground than it is, so the arena's
+/// metre-high terraces read.
+const RELIEF_GAIN: f32 = 4.0;
+/// The ground kinds a texel can be, in table order.
+const KINDS: [Ground; 6] = [
+    Ground::Open,
+    Ground::Grass,
+    Ground::Water,
+    Ground::Road,
+    Ground::Wall,
+    Ground::Woods,
+];
+
+/// One level of a baked colour map: `kind * LEVELS + level` per texel,
+/// `per_cell` texels a cell side, the southern row first.
+#[derive(Clone, Debug, PartialEq)]
+struct BakedLevel {
+    per_cell: usize,
+    w: usize,
+    h: usize,
+    index: Vec<u8>,
+}
+
+impl BakedLevel {
+    fn get(&self, px: f32, py: f32) -> Option<u8> {
+        let k = self.per_cell as f32;
+        let tx = ((px * k).floor().max(0.0) as usize).min(self.w.saturating_sub(1));
+        let ty = ((py * k).floor().max(0.0) as usize).min(self.h.saturating_sub(1));
+        self.index.get(ty * self.w + tx).copied()
+    }
+}
+
+/// A baked colour map: the fine level (2.5 m texels) for near ground, a
+/// coarse one (a texel a cell) for far ground, and the colours their
+/// indices stand for at each fog step.
+#[derive(Clone, Debug, PartialEq)]
+struct ColourMap {
+    fine: BakedLevel,
+    coarse: BakedLevel,
+    /// Each index's colour at each fog step.
+    table: Vec<[Rgb; BAKED_FOG]>,
+}
+
+impl ColourMap {
+    /// The colour at a point (in cells) seen from `z` cells away, at fog
+    /// `step` (of the raycaster's twelve).
+    fn colour(&self, px: f32, py: f32, z: f32, step: usize) -> Rgb {
+        let level = if z < FINE_DETAIL_CELLS {
+            &self.fine
+        } else {
+            &self.coarse
+        };
+        let fog = (step * BAKED_FOG / crate::raycast::FOG_STEPS).min(BAKED_FOG - 1);
+        level
+            .get(px, py)
+            .and_then(|k| self.table.get(usize::from(k)))
+            .and_then(|row| row.get(fog))
+            .copied()
+            .unwrap_or(HORIZON)
+    }
+}
+
+/// A seeded value in `0..1` for a lattice point.
+fn lattice(seed: u64, x: i64, y: i64) -> f32 {
+    let mut h = seed
+        ^ (x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (y as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    h ^= h >> 31;
+    h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h ^= h >> 29;
+    (h >> 40) as f32 / (1u64 << 24) as f32
+}
+
+/// Value noise at a point, smooth between lattice points `period` cells
+/// apart.
+fn value_noise(seed: u64, px: f32, py: f32, period: f32) -> f32 {
+    let (gx, gy) = (px / period, py / period);
+    let (x0, y0) = (gx.floor(), gy.floor());
+    let (fx, fy) = (gx - x0, gy - y0);
+    let (fx, fy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+    let (x0, y0) = (x0 as i64, y0 as i64);
+    let a = lattice(seed, x0, y0);
+    let b = lattice(seed, x0 + 1, y0);
+    let c = lattice(seed, x0, y0 + 1);
+    let d = lattice(seed, x0 + 1, y0 + 1);
+    let south = a + (b - a) * fx;
+    let north = c + (d - c) * fx;
+    south + (north - south) * fy
+}
+
+impl Terrain {
+    /// Bake the colour map (see the module docs): `seed` picks the mottle,
+    /// so one map always bakes the same. Runs once a map; a later height
+    /// change drops it.
+    pub fn bake(&mut self, seed: u64) {
+        let fine = self.bake_level(seed, TEXELS);
+        let coarse = self.bake_level(seed, 1);
+        let mut table = Vec::with_capacity(KINDS.len() * LEVELS);
+        for kind in KINDS {
+            let rgb = base(kind, true).rgb();
+            for gain in LEVEL_GAIN {
+                let lit = rgb.map(|c| (f32::from(c) * gain).round().min(255.0) as u8);
+                let mut row = [[0u8; 3]; BAKED_FOG];
+                for (step, px) in row.iter_mut().enumerate() {
+                    let t = step as f32 / (BAKED_FOG - 1) as f32;
+                    *px = [0, 1, 2].map(|i| {
+                        let (a, b) = (
+                            f32::from(lit.get(i).copied().unwrap_or(0)),
+                            f32::from(HORIZON.get(i).copied().unwrap_or(0)),
+                        );
+                        (a + (b - a) * t).round() as u8
+                    });
+                }
+                table.push(row);
+            }
+        }
+        self.baked = Some(ColourMap {
+            fine,
+            coarse,
+            table,
+        });
+    }
+
+    /// One level of the bake at `per_cell` texels a cell side: each texel's
+    /// light from the surface at its centre (see the module docs).
+    fn bake_level(&self, seed: u64, per_cell: usize) -> BakedLevel {
+        let (cw, ch) = (self.map.width(), self.map.height());
+        let (w, h) = (cw * per_cell, ch * per_cell);
+        // The neighbourhood's mean height a cell, for the hollows.
+        let mut mean = vec![0.0f32; cw * ch];
+        for y in 0..ch as i64 {
+            for x in 0..cw as i64 {
+                let mut sum = 0.0;
+                for dy in -2..=2 {
+                    for dx in -2..=2 {
+                        sum += self.cell_height(x + dx, y + dy);
+                    }
+                }
+                if let Some(m) = mean.get_mut(y as usize * cw + x as usize) {
+                    *m = sum / 25.0;
+                }
+            }
+        }
+        // The sun: from the north-west, 45° up.
+        let (lx, ly, lz) = (-0.5f32, 0.5f32, std::f32::consts::FRAC_1_SQRT_2);
+        // The slope is read across a quarter cell whatever the level, so the
+        // two levels light the same ground alike.
+        let d = 1.0 / TEXELS as f32;
+        let step = 1.0 / per_cell as f32;
+        let mut index = vec![0u8; w * h];
+        for ty in 0..h {
+            for tx in 0..w {
+                let (px, py) = ((tx as f32 + 0.5) * step, (ty as f32 + 0.5) * step);
+                let ground = self.map.get(px.floor() as i64, py.floor() as i64);
+                let kind = KINDS.iter().position(|k| *k == ground).unwrap_or(0);
+                let dhdx =
+                    (self.height(px + d, py) - self.height(px - d, py)) / (2.0 * d) * RELIEF_GAIN;
+                let dhdy =
+                    (self.height(px, py + d) - self.height(px, py - d)) / (2.0 * d) * RELIEF_GAIN;
+                let norm = (dhdx * dhdx + dhdy * dhdy + 1.0).sqrt();
+                let lambert = ((-dhdx * lx - dhdy * ly + lz) / norm).max(0.0);
+                let steep = (dhdx * dhdx + dhdy * dhdy).sqrt();
+                let cell = (py.floor().max(0.0) as usize).min(ch.saturating_sub(1)) * cw
+                    + (px.floor().max(0.0) as usize).min(cw.saturating_sub(1));
+                let hollow = mean.get(cell).map_or(0.0, |m| self.height(px, py) - m);
+                let mottle =
+                    0.6 * value_noise(seed, px, py, 2.0) + 0.4 * value_noise(seed ^ 1, px, py, 5.0);
+                let light = 0.30 + 0.75 * lambert - 0.25 * steep.min(1.0)
+                    + (hollow * RELIEF_GAIN).clamp(-0.15, 0.08)
+                    + (mottle - 0.5) * 0.14;
+                let level = if light < 0.48 {
+                    0
+                } else if light < 0.66 {
+                    1
+                } else if light < 0.88 {
+                    2
+                } else {
+                    3
+                };
+                if let Some(slot) = index.get_mut(ty * w + tx) {
+                    *slot = u8::try_from(kind * LEVELS + level).unwrap_or(0);
+                }
+            }
+        }
+        BakedLevel {
+            per_cell,
+            w,
+            h,
+            index,
+        }
+    }
+
+    /// Whether [`bake`](Self::bake) has run since the last height change.
+    #[must_use]
+    pub fn is_baked(&self) -> bool {
+        self.baked.is_some()
+    }
+}
+
 /// The colour base a sample is drawn in, lit or shaded.
 fn base(ground: Ground, lit: bool) -> Base {
     match ground {
@@ -252,7 +482,10 @@ pub fn render(
             if start >= *low {
                 continue;
             }
-            let px_rgb = shades.shade(base(ground, terrain.lit(px, py)), step);
+            let px_rgb = match &terrain.baked {
+                Some(map) => map.colour(px, py, z, step),
+                None => shades.shade(base(ground, terrain.lit(px, py)), step),
+            };
             for row in start..*low {
                 frame.put(i, row, px_rgb);
                 if let Some(d) = depth.get_mut(row * w + i) {
@@ -385,6 +618,63 @@ mod tests {
             }
         }
         t
+    }
+
+    /// A baked map is the same for the same seed, darkens a slope that faces
+    /// across the sun (which the per-cell light leaves lit), and keeps a
+    /// frame inside the palette.
+    #[test]
+    fn a_baked_map_reads_every_slope_and_stays_in_the_palette() {
+        let mut t = crater();
+        t.bake(7);
+        assert!(t.is_baked());
+        let again = {
+            let mut u = crater();
+            u.bake(7);
+            u.baked
+        };
+        assert!(again == t.baked, "the same seed bakes the same map");
+        // A ramp rising toward the south-west, 1.5 m a cell each way, faces
+        // north-east: across a north-west sun. The per-cell light calls it
+        // lit, the baked map shades it.
+        let mut map = Map::new(32, 32, 1000);
+        for y in 0..32 {
+            for x in 0..32 {
+                map.set(x, y, Ground::Grass);
+            }
+        }
+        let mut ramp = Terrain::new(map);
+        for y in 0..32 {
+            for x in 0..32 {
+                let cm = if (8..24).contains(&x) && (8..24).contains(&y) {
+                    (48 - x as i32 - y as i32) * 150
+                } else {
+                    0
+                };
+                ramp.set_elev_cm(x, y, cm);
+            }
+        }
+        assert!(ramp.lit(15.5, 15.5), "per cell: lit");
+        ramp.bake(1);
+        let flat = ramp.baked.as_ref().map(|m| m.colour(2.5, 2.5, 1.0, 0));
+        let slope = ramp.baked.as_ref().map(|m| m.colour(15.5, 15.5, 1.0, 0));
+        assert!(flat != slope, "baked: the slope reads");
+        for (w, h) in [(640, 480), (320, 220)] {
+            let mut f = Frame::new(w, h);
+            let cam = Camera {
+                x_cm: 32_000,
+                y_cm: 32_000,
+                heading_mdeg: 30_000,
+            };
+            render(&mut f, &t, &cam, None, &[]);
+            assert!(
+                f.count_colours(256) <= 160,
+                "{w}x{h}: {}",
+                f.count_colours(300)
+            );
+        }
+        t.set_elev_cm(0, 0, 5);
+        assert!(!t.is_baked(), "a height change drops the bake");
     }
 
     /// A terrace's drop toward the north faces away from a north-west sun:
