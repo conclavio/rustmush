@@ -764,7 +764,8 @@ up for ten seconds. `r` picks the narrower picture yourself.
 stops while the tab is hidden or you leave the seat. Click the picture to give
 it the keys: the arrows turn the tank (hold), `,` and `.` swing your look (again
 to stop), `c` centres it, space stops both. The map, the panes and the orders
-below it work as before.
+below it work as before, and the damage pane opens with the same small picture
+of your machine the terminal draws, each part coloured by what is left of it.
 
 `@pixel/stats` tells this connection's picture in numbers: what your terminal
 showed and what it draws, the picture's size and clock, what the last frame

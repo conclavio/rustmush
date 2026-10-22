@@ -52,3 +52,15 @@ Both halves rebuilt from origin/main (U.1–U.3 and G.1b on top of SM.10), full 
 - **A far contact was invisible**: BB at 550 m dead ahead was drawn — three pixels fogged nearly to the horizon's colour — under the reticle's centre, so the bracket rule (which fired only when *nothing* was drawn) never fired. A contact drawn under 10 pixels tall, or in the last third of the fog, is now bracketed as well, at least 10 pixels a side in its unfogged team colour (`raycast::MARK_FAR_PX`).
 - **The picture drew from the map's corner after the match**: a frame with `seated: false` carries no pose, and the camera fell back to 0,0. The cockpit picture now draws a plain `NOT IN A COCKPIT` card (`overlay::draw_card`), which also replaces the last picture on screen.
 - **The biped's torso fell off the armour column**: eight doll rows and six sections are fourteen rows, one more than a 48-row terminal's panel holds. Where they do not fit, the sections now pair up two a row with shorter bars (`armour_rows`' `rows`).
+
+## U.4
+
+The web client's doll, from the same looks.
+
+- **One source**: the web bundles `crates/mush-pixel/looks/*.json` at build time (`import.meta.glob` in `web/src/lib/look.ts`), so the cockpit tab's doll and the terminal's are the same file; the files are checked where they live (`Look::parse`, the `unit_looks` contract test) and read leniently here — a malformed look is no look. The legend's characters are taken in sorted order, as the Rust reader takes them, so a part's index and its tone agree on both sides.
+- **The frame**: the web's decoder keeps the frame's own `unit_type` (`CockpitFrame.unit_type`) — the pilot's own, never a secret from them.
+- **The doll** (`components/DollView.svelte`, at the top of the damage pane): the grid as SVG, one square a drawn cell, coloured by `dollColour` (the instruments' green, amber, red and grey) from `dollCondition` (a named facet's armour, else the section's internals, none once destroyed), touching parts in the same state a lighter shade apart (`dollTones`, the same greedy pick as `Doll::tones`); each square carries its section's name as a tooltip. A unit type with no look gets the damage rows alone, as before. The pane's rows and bars below it are unchanged.
+- The cockpit screen's observer rule is untouched: the look is static art keyed by the frame's own field, not a lookup into another store.
+
+**Verified.** vitest (672: every shipped look read and the same count as the directory, a broken doll refused, the sorted legend order, the fixture tank's facet and internals and destroyed track, the tones apart for touching hull, turret, plate and engine, the ramp, and the mounted screen drawing the 24x16 grid's 352 cells), `svelte-check` with no errors or warnings. Not smoked in a browser yet.
+

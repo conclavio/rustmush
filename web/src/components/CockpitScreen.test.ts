@@ -517,3 +517,15 @@ describe("the picture", () => {
   });
 });
 
+// Doc 22 cut U.4: the damage pane opens with the pilot's own doll, the look
+// grid the terminal draws, one square a drawn cell.
+describe("the doll", () => {
+  it("draws the fixture tank's look grid at the top of the damage pane", async () => {
+    await seated();
+    const doll = screen.getByRole("img", { name: "Tracked tank armour" });
+    expect(doll.getAttribute("viewBox")).toBe("0 0 24 16");
+    // 24 x 16 less the gaps between the tracks and the hull.
+    expect(doll.querySelectorAll("rect").length).toBe(24 * 16 - 2 * 16);
+  });
+});
+

@@ -21,6 +21,7 @@ class MockWebSocket implements WebSocketLike {
   static instances: MockWebSocket[] = [];
 
   readyState = 0; // CONNECTING
+  binaryType?: string;
   sent: string[] = [];
   onopen: (() => void) | null = null;
   onclose: ((ev: { code: number; wasClean: boolean }) => void) | null = null;

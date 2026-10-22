@@ -46,6 +46,8 @@
   } from "$lib/cockpit";
   import { TERRAIN_COLOURS } from "$lib/stores/map.svelte";
   import PictureView from "./PictureView.svelte";
+  import DollView from "./DollView.svelte";
+  import { lookFor } from "$lib/look";
 
   let { app }: { app: GameApp } = $props();
 
@@ -77,6 +79,9 @@
     frame !== null && ground !== null ? composeWindow(ground, frame, cells, cells) : null,
   );
   const view = $derived(frame === null ? null : cockpitView(frame, win, app.cockpit.notices));
+  /** Doc 22 cut U.4: the pilot's own unit's look — static art keyed by the
+   * frame's own `unit_type`, never a lookup into another store. */
+  const look = $derived(frame === null ? null : lookFor(frame.unit_type));
 
   /** The drawn size of one cell: big enough to see, small enough that a 256
    * cell window still fits a phone. */
@@ -277,6 +282,9 @@
 
       <section class="pane" aria-label="damage">
         <h4 class="pt">damage</h4>
+        {#if look?.doll && frame}
+          <DollView doll={look.doll} sections={frame.sections} label={look.label} />
+        {/if}
         {#each view.damage as row, i (i)}
           <p class="line" title={damageText(row)}>
             <span class="rowid">{row.id}</span>
